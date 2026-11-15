@@ -604,25 +604,19 @@ function ClientPage(
           KIN_CLIENTS.weOwe,
           view.weOwe,
           KIN_CLIENTS.nothingOwed,
-          addTask("ours", KIN_CLIENTS.addWeOwe),
+          <span className="flex items-center gap-1">
+            {addTask("ours", KIN_CLIENTS.addWeOwe)}
+            {view.theyOwe.total === 0 ? addTask("theirs", KIN_CLIENTS.addTheyOwe) : null}
+          </span>,
         )}
-        {owed(
-          KIN_CLIENTS.theyOwe,
-          view.theyOwe,
-          KIN_CLIENTS.nothingOwing,
-          addTask("theirs", KIN_CLIENTS.addTheyOwe),
-        )}
-        {view.touches === null ? null : (
-          <KinClientContact
-            environmentId={environmentId}
-            orgId={orgId}
-            clientKey={view.key}
-            touches={view.touches}
-            lastContact={view.lastContact}
-            canChange={canChange && !view.closed}
-            onChanged={props.onRefresh}
-          />
-        )}
+        {view.theyOwe.total === 0
+          ? null
+          : owed(
+              KIN_CLIENTS.theyOwe,
+              view.theyOwe,
+              KIN_CLIENTS.nothingOwing,
+              addTask("theirs", KIN_CLIENTS.addTheyOwe),
+            )}
         <KinWorkPlaceLists
           environmentId={environmentId}
           orgId={orgId}
@@ -655,13 +649,6 @@ function ClientPage(
             </ul>
           )}
         </KinWorkSection>
-        <KinDocsUnder
-          environmentId={props.environmentId}
-          orgId={props.orgId}
-          directory={props.directory}
-          under={{ party: props.clientKey }}
-          onOpen={props.onOpenDoc}
-        />
         <KinWorkSection
           title={KIN_CLIENTS.contacts}
           action={
@@ -700,51 +687,73 @@ function ClientPage(
             </>
           )}
         </KinWorkSection>
-        {view.address === null ? null : (
-          <KinWorkSection title={KIN_WORK_FORM_COPY.party.address}>
-            <p className="whitespace-pre-wrap text-sm text-foreground">{view.address}</p>
-          </KinWorkSection>
-        )}
-        {view.vendor && view.tax === null ? null : (
-          <KinWorkSection title={KIN_CLIENTS.tax}>
-            <p
-              className={cn(
-                "text-sm",
-                view.tax === null ? "text-muted-foreground" : "text-foreground",
-              )}
-            >
-              {view.tax ?? KIN_CLIENTS.noTax}
-            </p>
-          </KinWorkSection>
-        )}
-        <KinWorkSection title={KIN_CLIENTS.terms} action={<KinWorkPrivateMark />}>
-          {view.terms === null ? (
-            <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noTerms}</p>
-          ) : (
-            <p className="whitespace-pre-wrap text-sm text-foreground">{view.terms}</p>
-          )}
-          <p className="text-xs text-muted-foreground">{KIN_CLIENTS.termsPrivate}</p>
-        </KinWorkSection>
-        <KinWorkSection title={KIN_CLIENTS.notes}>
-          {view.notes === null ? (
-            <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noNotes}</p>
-          ) : (
-            <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
-          )}
-        </KinWorkSection>
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <Label htmlFor={privateId}>{KIN_CLIENTS.privateLabel}</Label>
-            <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
-          </div>
-          <Switch
-            id={privateId}
-            checked={view.privacy.private}
-            disabled={!canChange || busy}
-            onCheckedChange={(checked) => void change({ sensitive: checked })}
+        <KinDocsUnder
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          directory={props.directory}
+          under={{ party: props.clientKey }}
+          onOpen={props.onOpenDoc}
+        />
+        {view.touches === null ? null : (
+          <KinClientContact
+            environmentId={environmentId}
+            orgId={orgId}
+            clientKey={view.key}
+            touches={view.touches}
+            lastContact={view.lastContact}
+            canChange={canChange && !view.closed}
+            onChanged={props.onRefresh}
           />
-        </div>
-        <KinWorkSection title={KIN_CLIENTS.history}>
+        )}
+        <KinWorkSection title={KIN_CLIENTS.details} fold={{ summary: KIN_CLIENTS.detailsSummary }}>
+          <div className="flex flex-col gap-6">
+            {view.address === null ? null : (
+              <KinWorkSection title={KIN_WORK_FORM_COPY.party.address}>
+                <p className="whitespace-pre-wrap text-sm text-foreground">{view.address}</p>
+              </KinWorkSection>
+            )}
+            {view.vendor && view.tax === null ? null : (
+              <KinWorkSection title={KIN_CLIENTS.tax}>
+                <p
+                  className={cn(
+                    "text-sm",
+                    view.tax === null ? "text-muted-foreground" : "text-foreground",
+                  )}
+                >
+                  {view.tax ?? KIN_CLIENTS.noTax}
+                </p>
+              </KinWorkSection>
+            )}
+            <KinWorkSection title={KIN_CLIENTS.terms} action={<KinWorkPrivateMark />}>
+              {view.terms === null ? (
+                <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noTerms}</p>
+              ) : (
+                <p className="whitespace-pre-wrap text-sm text-foreground">{view.terms}</p>
+              )}
+              <p className="text-xs text-muted-foreground">{KIN_CLIENTS.termsPrivate}</p>
+            </KinWorkSection>
+            <KinWorkSection title={KIN_CLIENTS.notes}>
+              {view.notes === null ? (
+                <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noNotes}</p>
+              ) : (
+                <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
+              )}
+            </KinWorkSection>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <Label htmlFor={privateId}>{KIN_CLIENTS.privateLabel}</Label>
+                <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
+              </div>
+              <Switch
+                id={privateId}
+                checked={view.privacy.private}
+                disabled={!canChange || busy}
+                onCheckedChange={(checked) => void change({ sensitive: checked })}
+              />
+            </div>
+          </div>
+        </KinWorkSection>
+        <KinWorkSection title={KIN_CLIENTS.history} fold={{ summary: null }}>
           {history.state.loading ? (
             <div role="status" aria-label="Loading history">
               <KinWorkRowSkeletons />

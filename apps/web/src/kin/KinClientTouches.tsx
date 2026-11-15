@@ -54,6 +54,9 @@ export function KinClientContact(
   return (
     <KinWorkSection
       title={KIN_CLIENTS.recentContact}
+      fold={{
+        summary: props.lastContact ?? (props.touches.length === 0 ? "None logged" : null),
+      }}
       action={
         props.canChange ? (
           <Button size="xs" variant="ghost" onClick={() => setAdding(true)}>
@@ -63,9 +66,6 @@ export function KinClientContact(
         ) : undefined
       }
     >
-      {props.lastContact === null ? null : (
-        <p className="text-sm text-foreground">{props.lastContact}</p>
-      )}
       {props.touches.length === 0 ? (
         <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noTouches}</p>
       ) : (
