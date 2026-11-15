@@ -13,13 +13,17 @@ export const KIN_COMPANY = {
   title: "Company details",
   summary: "Legal name, tax ids and bank details",
   private:
-    "Private. Only you see these. Your agents read them only when you ask for something that needs them, like an invoice.",
+    "Private. Only the owner and co-owners see these. Agents read them only when asked for something that needs them, like an invoice.",
   loadFailed: "Couldn't load your company details",
   edit: "Edit",
   save: "Save",
   cancel: "Cancel",
   saved: "Saved.",
   notSet: "Not set",
+  timeZone: "Time zone",
+  timeZoneUse: "Check-ins, due days and your agents' times follow it. Your phone keeps it current.",
+  timeZoneFromHost:
+    "None set yet, so Kin uses the computer's. Open Kin on your phone to set yours.",
   empty: "Nothing here yet. Add what goes on your invoices.",
   changed:
     "These changed while you were editing. What you typed is still here. Check what's new, then save again.",

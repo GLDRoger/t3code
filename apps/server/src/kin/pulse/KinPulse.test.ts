@@ -381,9 +381,12 @@ describe("KinPulse", () => {
       yield* sql`UPDATE kin_records SET due_at = ${B + 10 * DAY + HOUR} WHERE record_id = 'r-W-1'`;
       const [after] = keyed((yield* read(B + 11 * DAY)).facts, "task_late", "W-1");
       assert.notStrictEqual(before!.key, after!.key);
+      // Calendar days where the owner is: due late on the 11th, read early on the 12th.
+      assert.strictEqual(before!.consequence, "Was due 2026-11-11, yesterday.");
+      assert.strictEqual(after!.consequence, "Was due 2026-11-11, yesterday.");
 
       const overdue = keyed((yield* read(B + 12 * DAY)).facts, "invoice_overdue", "INV-1")[0]!;
-      assert.strictEqual(overdue.consequence, "₹1,77,000.00 owed, 10 days past due (2026-11-03).");
+      assert.strictEqual(overdue.consequence, "₹1,77,000 owed, 10 days past due (2026-11-03).");
       assert.deepStrictEqual(overdue.actor, { _tag: "agent", agentId: finance });
       assert.deepStrictEqual(overdue.measure?.from, { _tag: "default" });
       const lumen = keyed((yield* read(B + 9 * DAY)).facts, "invoice_overdue", "INV-5")[0]!;
@@ -535,7 +538,7 @@ describe("KinPulse", () => {
 
       // The weekly brief leads with goals, then overdue money from the same rows.
       const week = yield* buildWeeklySection({ orgId, now: at });
-      assert.match(week.goals[0]!, /^G-1 .*₹1,00,000\.00 of ₹10,00,000\.00.*behind$/);
+      assert.match(week.goals[0]!, /^G-1 .*₹1,00,000 of ₹10,00,000.*behind$/);
       assert.isTrue(week.money.unpaid.some((line) => /^INV-1:.*days past due$/.test(line)));
       // The weekly brief carries the renewal and the open quote it was missing.
       assert.include(week.money.renewalsThisMonth.join("\n"), "DT-1");

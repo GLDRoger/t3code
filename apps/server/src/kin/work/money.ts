@@ -106,6 +106,9 @@ export const formatMinor = (minor: bigint, currency: string) => {
     : `${sign}${whole}.${(size % unit).toString().padStart(digits, "0")}`;
 };
 
+/** A line people read: `₹4,20,000`, with paise only when there are some. */
+export const formatMoneyPlain = (money: KinMoney) => formatMoney(money).replace(/\.0+$/, "");
+
 /** One exact total per currency: INR first, then by code. Refuses a total past a safe integer. */
 export const addUp = (amounts: Iterable<KinMoney>): ReadonlyArray<KinMoney> => {
   const sums = new Map<string, bigint>();

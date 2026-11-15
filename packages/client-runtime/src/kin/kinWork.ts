@@ -105,6 +105,10 @@ export function kinWorkName(who: KinWorkPrincipal, names: KinWorkNames, you = "Y
   return isMe(who, names) ? you : (names.people.get(who.personId) ?? "A teammate");
 }
 
+/** A name inside a sentence: the stand-ins "An agent" and "A teammate" lose their capital. */
+export const kinMidSentence = (name: string) =>
+  name === "An agent" || name === "A teammate" ? name.toLowerCase() : name;
+
 /** The task's holder is an agent its owner retired, so nobody is doing it. */
 const kinWorkRetired = (who: KinWorkPrincipal, names: KinWorkNames): boolean =>
   who._tag === "agent" && names.retired?.has(who.agentId) === true;
@@ -725,7 +729,7 @@ export const KIN_WORK_PRIVATE = "Private";
 export const KIN_WORK_HAND_BACK = {
   button: "Hand back",
   title: "Hand back this task?",
-  detail: (to: string) => `It goes back to ${to} to give to someone else.`,
+  detail: (to: string) => `It goes back to ${kinMidSentence(to)} to give to someone else.`,
   reasonLabel: "Why (optional)",
   reasonPlaceholder: "I'm on the release this week",
   confirm: "Hand back",

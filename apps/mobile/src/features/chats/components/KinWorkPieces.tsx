@@ -341,7 +341,7 @@ export function KinFoldSection(props: {
       >
         <ListRowLayout
           label={props.title}
-          {...(props.summary === null ? {} : { detail: props.summary })}
+          {...(props.summary === null ? {} : { description: props.summary })}
           accessory={
             <SymbolView
               name={onOpen !== undefined ? "chevron.right" : open ? "chevron.up" : "chevron.down"}

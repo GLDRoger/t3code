@@ -52,17 +52,15 @@ export function KinPlaceLists(props: Shared) {
   );
 }
 
-/** What this client owes us and how late, from the same figures as Money. */
+/** What this client owes us and how late, from the same figures as Money; its invoices follow. */
 function PlaceOwed(props: Shared & { readonly party: KinWorkRef }) {
   const lists = useKinLists(props, { enabled: true, seq: props.seq });
   const { state } = useKinMoneySummary(props, { enabled: true, seq: props.seq });
-  const openList = useKinOpenPlaceList(props);
   if (state._tag !== "ready") return null;
   const client = kinMoneyView(state.value, kinListsOf(lists)).clients.find(
     (held) => held.key === props.party.key,
   );
   if (client === undefined) return null;
-  const { open } = client;
   return (
     <ListSection title={KIN_MONEY.owed}>
       <View className="gap-0.5 px-4 py-3">
@@ -82,9 +80,6 @@ function PlaceOwed(props: Shared & { readonly party: KinWorkRef }) {
           </Text>
         )}
       </View>
-      {open === null ? null : (
-        <ListActionRow label={`Show ${client.invoices}`} onPress={() => openList("money", open)} />
-      )}
     </ListSection>
   );
 }
@@ -104,7 +99,9 @@ function PlaceList(props: Shared & { readonly def: KinListDefinition }) {
   return (
     <ListSection
       title={def.name}
-      {...(header.totals.length === 0 ? {} : { footer: `${header.totals.join(" and ")} in all` })}
+      {...(header.totals.length === 0 || state.total < 2
+        ? {}
+        : { footer: `${header.totals.join(" and ")} in all` })}
     >
       {state.records.slice(0, SHOWN).map((record) => {
         const row = kinListRow(record, def, context, {
@@ -121,10 +118,12 @@ function PlaceList(props: Shared & { readonly def: KinListDefinition }) {
           />
         );
       })}
-      <ListActionRow
-        label={state.total > SHOWN ? `See all ${state.total}` : "Open list"}
-        onPress={() => openList(kinInMoney(def) ? "money" : "docs", { list: def.list, filter })}
-      />
+      {state.total > SHOWN ? (
+        <ListActionRow
+          label={`See all ${state.total}`}
+          onPress={() => openList(kinInMoney(def) ? "money" : "docs", { list: def.list, filter })}
+        />
+      ) : null}
     </ListSection>
   );
 }

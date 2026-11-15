@@ -30,7 +30,13 @@ import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
-import { isKinChatError, kinWorkName, kinWorkRefused, type KinWorkNames } from "./kinWork.ts";
+import {
+  isKinChatError,
+  kinMidSentence,
+  kinWorkName,
+  kinWorkRefused,
+  type KinWorkNames,
+} from "./kinWork.ts";
 
 export const KIN_DOCS = {
   title: "Docs",
@@ -197,7 +203,7 @@ export function kinDocChangeLine(change: Change, names: KinWorkNames, now: Date)
   const restoredTo =
     change.kind === "restored" ? (/^restored (version \d+)$/i.exec(said)?.[1] ?? null) : null;
   const verb = restoredTo === null ? VERB[change.kind] : `${VERB.restored} ${restoredTo}`;
-  const lead = `${verb} ${kinDocWhen(change.at, now)} by ${actorName(change.by, names, "you")}`;
+  const lead = `${verb} ${kinDocWhen(change.at, now)} by ${kinMidSentence(actorName(change.by, names, "you"))}`;
   const summary =
     restoredTo !== null || (change.kind === "created" && said.toLowerCase() === "created")
       ? ""

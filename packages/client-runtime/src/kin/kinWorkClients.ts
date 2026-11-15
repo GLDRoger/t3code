@@ -216,7 +216,7 @@ export function kinTouchAt(day: string, now: Date): string | undefined {
 
 export interface KinTouchView {
   readonly id: string;
-  /** "Call with Asha", "Invoice issued: INV-3". */
+  /** "Call · Asha" (who on our side), "Invoice issued: INV-3". */
   readonly title: string;
   readonly note: string | null;
   readonly when: string;
@@ -230,7 +230,7 @@ function kinTouchView(touch: KinClientTouch, now: Date): KinTouchView {
   return {
     id: touch.id,
     title: touch.logged
-      ? `${base}${touch.who === null ? "" : ` with ${touch.who}`}`
+      ? `${base}${touch.who === null ? "" : ` · ${touch.who}`}`
       : `${base}${touch.record === null ? "" : `: ${touch.record.key}`}`,
     note: touch.logged ? (note === "" ? null : note) : (touch.record?.title ?? null),
     when: formatKinTime(new Date(touch.at), now),
@@ -293,7 +293,8 @@ export interface KinClientRowView {
 export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): KinClientRowView {
   const line = [
     row.kind === "vendor" ? "Vendor" : null,
-    row.active ? kinOwedLine(row) : "Closed",
+    // A teammate's row comes without counts (and without a contact day): it names, it doesn't count.
+    row.active ? (row.lastContactAt === undefined ? null : kinOwedLine(row)) : "Closed",
     row.active && row.kind === "client" ? kinLastContactLine(row.lastContactAt, now) : null,
   ]
     .filter((part) => part !== null)
@@ -313,7 +314,7 @@ export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): 
     private: row.sensitive,
     closed: !row.active,
     accessibilityLabel: [row.name, line, next, row.sensitive ? "Private" : null]
-      .filter((part) => part !== null)
+      .filter((part) => part !== null && part !== "")
       .join(". "),
   };
 }
