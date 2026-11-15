@@ -373,6 +373,8 @@ export const KinIssueResult = Schema.Struct({
   ),
   /** Why a document couldn't be made again; the number stands either way. */
   problems: Schema.Array(Schema.String),
+  /** Said plainly when its number follows entries dated after it, as a backdated one's does. */
+  notice: Schema.optional(Schema.String),
 });
 export type KinIssueResult = typeof KinIssueResult.Type;
 /** The number Issue would give the entry now; another issue first may take it. */
@@ -448,6 +450,8 @@ const KinCurrencyRates = Schema.Array(KinCurrencyRate).check(
     { expected: "one rate above zero per currency" },
   ),
 );
+/** A SAC or HSN code as GST writes it: 4 to 8 digits. */
+export const KinSacCode = Schema.String.check(Schema.isPattern(/^\d{4,8}$/));
 const KinCompanyProfileFields = {
   legalName: ProfileText,
   tradeName: ProfileText,
@@ -457,8 +461,13 @@ const KinCompanyProfileFields = {
   /** The State the company supplies from, as a GST state code or name. */
   placeOfSupply: Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(60))),
   /** The services accounting code its invoices usually carry. */
-  sac: Schema.NullOr(Schema.String.check(Schema.isPattern(/^\d{4,8}$/))),
+  sac: Schema.NullOr(KinSacCode),
   bank: KinCompanyBank,
+  /** The letter of undertaking exports go under without IGST: its ARN, and the day it was filed. */
+  lutNumber: Schema.optional(
+    Schema.NullOr(Schema.String.check(Schema.isPattern(/^[A-Z0-9]{8,20}$/))),
+  ),
+  lutDate: Schema.optional(Schema.NullOr(KinDay)),
   // Profiles stored before the logo and brand existed read as having neither.
   logo: Schema.NullOr(KinCompanyLogo).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   brand: KinCompanyBrand.pipe(Schema.withDecodingDefaultKey(Effect.succeed(NO_BRAND))),
@@ -488,6 +497,8 @@ export const KinCompanyProfileSetInput = Schema.Struct({
   pan: Schema.optional(KinCompanyProfileFields.pan),
   placeOfSupply: Schema.optional(KinCompanyProfileFields.placeOfSupply),
   sac: Schema.optional(KinCompanyProfileFields.sac),
+  lutNumber: KinCompanyProfileFields.lutNumber,
+  lutDate: KinCompanyProfileFields.lutDate,
   bank: Schema.optional(
     Schema.Struct({
       accountName: Schema.optional(KinCompanyBank.fields.accountName),

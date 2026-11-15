@@ -71,14 +71,13 @@ const SteerInput = Schema.Struct({
 });
 
 /**
- * An event's lane, the chat a wake-up answers: a human message's or card tap's own chat, or
- * the chat a reported worker was asked for in, else the lead's direct chat with its owner. A due
- * deferral asked from another chat gets a lane of its own, so that chat's level never mixes with
- * owner-chat events in one wake-up. Derived from stored rows only, never model text.
+ * An event's lane, the chat a wake-up answers: a message's or tap's chat, a worker's or teammate
+ * task's asking chat, else the lead's direct chat with its owner. A due deferral from another chat
+ * gets its own lane so its level never mixes with owner-chat events. From stored rows, never model text.
  */
 const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
   THEN json_extract(e.json, '$.chatId')
-  WHEN e.tag = 'worker.report' AND json_extract(e.json, '$.chatId') IS NOT NULL
+  WHEN e.tag IN ('worker.report', 'record.changed') AND json_extract(e.json, '$.chatId') IS NOT NULL
   THEN json_extract(e.json, '$.chatId')
   WHEN e.tag IN ('deferral.due', 'worker.report') AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
   THEN 'origin:' || json_extract(e.json, '$.origin.agentId') || ':' || json_extract(e.json, '$.origin.chatId')

@@ -13,7 +13,6 @@ import {
 import * as NodeCrypto from "node:crypto";
 
 import * as Clock from "effect/Clock";
-import * as Config from "effect/Config";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -69,8 +68,6 @@ export const wakeEvent = (
 // Matches the resume expiry: older unanswered messages are not worth a wake-up after downtime.
 const CATCH_UP_WINDOW = { hours: 24 } as const;
 const CATCH_UP_LIMIT_PER_ORG = 200;
-/** Lead turns one teammate's messages and taps may ask for in any 24 hours, unless configured. */
-const DEFAULT_TEAMMATE_DAILY_TURNS = 50;
 
 /**
  * Turns committed human chat posts and widget taps into `chat.message` and `widget.action`
@@ -84,15 +81,7 @@ const make = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const queue = yield* KinEventQueue;
   const presence = yield* Effect.serviceOption(KinPresence);
-  const dailyTurns = yield* Config.Int("KIN_TEAMMATE_DAILY_TURNS").pipe(
-    Config.withDefault(DEFAULT_TEAMMATE_DAILY_TURNS),
-    Effect.map((value) => Math.max(0, value)),
-    Effect.catch((cause) =>
-      Effect.logWarning("KIN_TEAMMATE_DAILY_TURNS is not a number; using the default", {
-        cause,
-      }).pipe(Effect.as(DEFAULT_TEAMMATE_DAILY_TURNS)),
-    ),
-  );
+  const dailyTurns = yield* LeadAccess.dailyTurns;
   // The working line shows the moment a message is accepted, before any wake-up claims it.
   const showQueued = Effect.fn("KinChatWake.showQueued")(
     function* (orgId: KinOrgId, chatId: KinChatId, agentId: KinAgentId) {

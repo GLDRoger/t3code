@@ -54,8 +54,13 @@ export type RecordRow = {
   readonly dueAt: number | null;
   readonly dueAllDay: number;
   readonly sensitive: number;
+  /** The owner shared it with the team (`teamView.ts`). */
+  readonly teamShared: number;
   readonly confirmed: number;
   readonly notes: string;
+  /** The person whose words the title and the notes are (`KinRecords` sets them on each write). */
+  readonly titleBy: string | null;
+  readonly notesBy: string | null;
   readonly rev: number;
   readonly sourceChatId: string | null;
   readonly sourceMessageId: string | null;
@@ -164,6 +169,19 @@ const takesPayments = (sql: SqlClient.SqlClient) =>
  * The columns every read selects, with the derived ones: a running worker, the last PR, the client
  * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
  */
+/**
+ * The one rule for what a figure, a chart or a file counts: an entry `r` that isn't void, dropped
+ * or undone, unless the filter it answers names dropped entries itself. Every query that adds up
+ * or exports amounts uses it or `countedPayment`; `counted.test.ts` finds one that doesn't.
+ */
+export const countedEntry = (
+  sql: SqlClient.SqlClient,
+  asked?: ReadonlyArray<KinRecordState> | undefined,
+) => (asked?.includes("dropped") === true ? sql`1 = 1` : sql`r.state <> 'dropped'`);
+/** A payment `p` not taken back, on an entry `r` that counts. */
+export const countedPayment = (sql: SqlClient.SqlClient) =>
+  sql`p.voided_at IS NULL AND ${countedEntry(sql)}`;
+
 /** An entry's money day: its own date, else when it was added. Filters, groups and Money share it. */
 export const moneyDay = (sql: SqlClient.SqlClient) => sql`COALESCE(r.date_at, r.created_at)`;
 
@@ -172,7 +190,8 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.title, r.state,
     r.waiting_on_kind AS "waitingOnKind", r.waiting_on_id AS "waitingOnId",
     r.owner_kind AS "ownerKind", r.owner_id AS "ownerId", r.side, r.category,
-    r.due_at AS "dueAt", r.due_all_day AS "dueAllDay", r.sensitive, r.confirmed, r.notes, r.rev,
+    r.due_at AS "dueAt", r.due_all_day AS "dueAllDay", r.sensitive, r.team_shared AS "teamShared",
+    r.confirmed, r.notes, r.title_by AS "titleBy", r.notes_by AS "notesBy", r.rev,
     r.source_chat_id AS "sourceChatId", r.source_message_id AS "sourceMessageId",
     r.created_by_kind AS "createdByKind", r.created_by_id AS "createdById",
     r.assigned_by_person_id AS "assignedBy", r.assigned_at AS "assignedAt",

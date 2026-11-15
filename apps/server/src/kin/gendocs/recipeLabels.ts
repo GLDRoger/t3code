@@ -5,7 +5,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { readProfile } from "../work/companyProfile.ts";
 import { logoFile, logoPath } from "./brand.ts";
-import { checkedSample, type Recipe, type Value } from "./recipe.ts";
+import { computeData } from "./compute.ts";
+import { checkedSample, declaredFigures, issuable, type Recipe, type Value } from "./recipe.ts";
 import { KinDocRenderer, type Rendered } from "./render.ts";
 import {
   type ChangedBy,
@@ -77,6 +78,15 @@ export const renderSample: (
         logoInputs.map((input) => [input.name, shown ? logoPath(logo.extension) : null]),
       ),
     };
+    const computed = issuable(change.recipe)
+      ? computeData(inputs, change.recipe.computed)
+      : undefined;
+    const figures =
+      computed === undefined || "error" in computed
+        ? undefined
+        : declaredFigures(change.recipe, computed.data);
+    if (figures !== undefined && "error" in figures)
+      return `Kin can't read its amount from its sample: ${figures.error}`;
     const rendered = yield* renderer.render({
       orgId,
       recipe: change.recipe,

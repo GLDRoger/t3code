@@ -305,7 +305,11 @@ export const subscribe = (
       const records = yield* KinRecords;
       return records.changes(input.orgId).pipe(
         Stream.filter((tick) => tick.key === undefined || tick.key.startsWith(DOC_KEY)),
-        Stream.map((tick) => ({ _tag: "changed" as const, ...tick })),
+        Stream.map((tick) => ({
+          _tag: "changed" as const,
+          seq: tick.seq,
+          ...(tick.key === undefined ? {} : { key: tick.key }),
+        })),
       );
     }),
   );
@@ -360,6 +364,7 @@ export const render = Effect.fn("KinDocs.render")(function* (
     recipe: input.recipe,
     entry: input.entry,
     given: input.inputs ?? {},
+    doc: input.doc,
     title: input.title ?? input.recipe,
     requester: { _tag: "owner", personId: person.personId, writer: ownerWriter(person) },
     jobKey: `owner:${person.personId}:${input.clientRequestId}`,

@@ -1894,6 +1894,7 @@ describe("KinActionExecutor", () => {
     // the caller's (`profiles`, `contacts`). Nothing else the server runs (MCP, agent toolkits,
     // routes, schedules) reaches this module, and no RPC reaches what the CLI does unchecked.
     assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), [
+      "kin/chat/refreshes.ts",
       "kin/chat/rpcHandlers.ts",
       "kin/cli/lead.ts",
     ]);
@@ -1901,6 +1902,12 @@ describe("KinActionExecutor", () => {
     assert.notMatch(
       source("kin/chat/rpcHandlers.ts"),
       /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|KinLeadProvisionError\b|ts\b)\w+/,
+    );
+    // The refresh stream reads only the caller's own lead list to tell them it moved.
+    assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
+    assert.notMatch(
+      source("kin/chat/refreshes.ts"),
+      /\bLeadProvision\.(?!profiles\b|contacts\b|ts\b)\w+/,
     );
     assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
     const served = new Set<string>();
