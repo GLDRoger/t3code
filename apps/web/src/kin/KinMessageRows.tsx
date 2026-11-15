@@ -100,7 +100,7 @@ function KinDocRefs(props: {
         return (
           <Link
             key={`${ref.key}:${ref.section ?? ""}`}
-            to="/kin/$environmentId/$orgId/work"
+            to="/kin/$environmentId/$orgId/docs"
             params={{ environmentId: props.environmentId, orgId: props.orgId }}
             search={{ doc: ref.key, ...(ref.section === null ? {} : { section: ref.section }) }}
             aria-label={`Open ${label}`}
