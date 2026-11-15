@@ -90,6 +90,7 @@ describe("command permissions", () => {
     "kin.memory.setVisibility",
     "kin.memory.confirmSuggestions",
     "kin.memory.forget",
+    "kin.memory.restore",
     "kin.workers.network.get",
     "kin.workers.network.allow",
     "kin.workers.network.remove",

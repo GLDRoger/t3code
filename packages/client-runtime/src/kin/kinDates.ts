@@ -158,7 +158,7 @@ function kinDateRowView(row: KinDateRow, names: KinWorkNames, now: Date): KinDat
     .join(" · ");
   const when = kinWorkDueLabel(day, new Date(`${kinOwnerToday(now, names)}T12:00:00`));
   return {
-    id: `${record.key}:${row.kind}`,
+    id: `${record.key}:${row.field ?? row.kind}`,
     key: record.key,
     day,
     when,

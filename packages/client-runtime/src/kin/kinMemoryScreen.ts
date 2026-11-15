@@ -42,7 +42,13 @@ export const KIN_MEMORY_FORGET = {
   action: "Forget",
   title: "Forget this?",
   body: (title: string) =>
-    `Your agents will stop using “${title}”. You can't bring it back from here.`,
+    `Your agents will stop using “${title}”. You can bring it back under Forgotten.`,
+};
+export const KIN_MEMORY_FORGOTTEN = {
+  title: "Forgotten",
+  count: (n: number) => (n === 0 ? "None" : String(n)),
+  restore: "Restore",
+  failed: "Couldn't bring that back. Try again.",
 };
 const SHARE = "Let the team know";
 const KEEP = "Keep to myself";

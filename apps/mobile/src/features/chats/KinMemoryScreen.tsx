@@ -4,6 +4,7 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import {
   KIN_MEMORY_EMPTY,
   KIN_MEMORY_FORGET,
+  KIN_MEMORY_FORGOTTEN,
   KIN_MEMORY_LOAD_FAILED,
   KIN_MEMORY_NO_EDITS,
   KIN_MEMORY_SEARCH_PLACEHOLDER,
@@ -19,6 +20,7 @@ import {
 import {
   EnvironmentId,
   KinOrgId,
+  type KinMemoryItemId,
   type KinLeadsListResult,
   type KinMemoryListResult,
   type KinPeopleListResult,
@@ -42,7 +44,9 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { ListRow } from "../../components/ui/ListRow";
 import { KinListBanner } from "./components/KinListBanner";
+import { KinFoldSection } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 
 export type KinMemoryParams = { readonly environmentId: string; readonly orgId: string };
@@ -241,6 +245,13 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
             contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
           >
             {message}
+            {view?.total === 0 ? (
+              <KinMemoryForgotten
+                environmentId={environmentId}
+                orgId={orgId}
+                onRestored={() => appAtomRegistry.refresh(listAtom)}
+              />
+            ) : null}
           </ScreenScrollView>
         ) : (
           <LegendList
@@ -263,6 +274,15 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
                   <ErrorBanner message={edits.problem} />
                 </View>
               )
+            }
+            ListFooterComponent={
+              <View className="px-4 pt-6">
+                <KinMemoryForgotten
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  onRestored={() => appAtomRegistry.refresh(listAtom)}
+                />
+              </View>
             }
             renderItem={({ item: row }) =>
               row.type === "section" ? (
@@ -290,6 +310,48 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
           />
         )}
       </ScreenContent>
+    </View>
+  );
+}
+
+/** What the owner forgot, one folded row; a tap on one brings it back. */
+function KinMemoryForgotten(props: KinMemoryTarget & { readonly onRestored: () => void }) {
+  const { environmentId, orgId } = props;
+  const forgottenAtom = kinClient.memory({ environmentId, input: { orgId, forgotten: true } });
+  const result = useAtomValue(forgottenAtom);
+  const restore = useAtomCommand(kinClient.memoryRestore, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const items = Option.getOrNull(AsyncResult.value(result))?.items ?? null;
+  if (items === null) return null;
+  const bringBack = async (itemId: KinMemoryItemId) => {
+    setBusy(true);
+    setFailed(false);
+    const outcome = await restore({ environmentId, input: { orgId, itemId } });
+    setBusy(false);
+    if (AsyncResult.isSuccess(outcome)) {
+      appAtomRegistry.refresh(forgottenAtom);
+      props.onRestored();
+    } else setFailed(true);
+  };
+  return (
+    <View className="gap-2">
+      {failed ? <ErrorBanner message={KIN_MEMORY_FORGOTTEN.failed} /> : null}
+      <KinFoldSection
+        title={KIN_MEMORY_FORGOTTEN.title}
+        summary={KIN_MEMORY_FORGOTTEN.count(items.length)}
+      >
+        {[...items].reverse().map((item) => (
+          <ListRow
+            key={item.itemId}
+            label={item.title}
+            {...(item.preview === undefined ? {} : { description: item.preview })}
+            detail={KIN_MEMORY_FORGOTTEN.restore}
+            disabled={busy}
+            onPress={() => void bringBack(item.itemId)}
+          />
+        ))}
+      </KinFoldSection>
     </View>
   );
 }
