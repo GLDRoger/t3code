@@ -33,6 +33,7 @@ import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { listDef } from "../registers.ts";
 import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
+import type { FileOutcome } from "./statementFiles.ts";
 import { readIsolated } from "./statementReader.ts";
 import { matchRows, type RowMatch } from "./statementMatch.ts";
 import {
@@ -307,16 +308,23 @@ const ownRows = Effect.fn("KinStatements.ownRows")(function* (
  */
 export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
   orgId: KinOrgId,
-  statement: Statement,
+  read: Statement,
   format: string | null,
   source: "file" | "agent",
-  statementId?: string,
+  statementId: string,
 ) {
+  const before = yield* statementRow(orgId, statementId);
+  const stored = before?.reviewJson == null ? undefined : reviewOf(before.reviewJson);
+  // Read before account identities, a statement keeps its rows' old identity on every read again.
+  const { accountId: _accountId, ...legacy } = read;
+  const statement =
+    stored !== undefined && stored.statement.accountId === undefined ? legacy : read;
   const def = yield* findBankList(orgId);
-  const known = new Map(yield* knownRows(orgId, def, statement));
+  const found = yield* knownRows(orgId, def, statement, statementId);
+  const known = new Map(found.known);
   const missing: Array<Missing> = [];
   const used = new Set<number>();
-  for (const earlier of statementId === undefined ? [] : yield* ownRows(orgId, statementId)) {
+  for (const earlier of yield* ownRows(orgId, statementId)) {
     const fits = statement.rows.filter(
       (row) =>
         !used.has(row.index) &&
@@ -348,12 +356,26 @@ export const buildReview = Effect.fn("KinStatements.buildReview")(function* (
     return had === undefined || (states !== undefined && had.state === states.open);
   });
   const results = matchRows(open, yield* candidates(orgId, statement, statementId));
+  // A possible duplicate is the owner's call: nothing is ticked or matched for it.
+  const judged = open.map((row, index): RowMatch => {
+    const like = found.possible.get(row.index);
+    return like === undefined
+      ? results[index]!
+      : {
+          group: "unmatched",
+          candidates: [],
+          suggestion: {
+            action: "ignore",
+            why: `It may already be in Bank transactions as ${like.key}, from another statement or account; ignore it if it is.`,
+          },
+        };
+  });
   return {
     statement,
     format,
     source,
     known,
-    matches: new Map(open.map((row, index) => [row.index, results[index]!])),
+    matches: new Map(open.map((row, index) => [row.index, judged[index]!])),
     ...(missing.length === 0 ? {} : { missing }),
   } satisfies Review;
 });
@@ -705,7 +727,42 @@ export const tryKeptPasswords = Effect.fn("KinStatements.tryKept")(function* (
 
 /** Reads a statement file, with a password for a locked PDF; nothing of it leaves this call. */
 export const readWith = (bytes: Uint8Array, password?: Redacted.Redacted<string>) =>
-  readIsolated(bytes, password);
+  readIsolated(bytes, password).pipe(Effect.flatMap(identified));
+
+const ACCOUNT_KEY = "kin-bank-account-key";
+/**
+ * The file's full account number as its keyed identity with its bank, so two accounts that end
+ * in the same four digits stay two; the number itself is dropped here and never kept.
+ */
+const identified = Effect.fn("KinStatements.identified")(function* (outcome: FileOutcome) {
+  if (outcome._tag !== "read" && outcome._tag !== "pages") return outcome;
+  const facts = outcome._tag === "read" ? outcome.statement : outcome.facts;
+  const number = facts.accountNumber;
+  const bank = facts.bank;
+  const accountId =
+    number == null || bank === null
+      ? null
+      : yield* (yield* ServerSecretStore.ServerSecretStore).getOrCreateRandom(ACCOUNT_KEY, 32).pipe(
+          Effect.map((key) =>
+            NodeCrypto.createHmac("sha256", key)
+              .update(`${bank.toLowerCase()}|${number}`)
+              .digest("hex")
+              .slice(0, 32),
+          ),
+          // Without the key the account stays unidentified, whose rows Kin never merges on its own.
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't key a statement's account", { cause }).pipe(
+              Effect.as(null),
+            ),
+          ),
+        );
+  if (outcome._tag === "read") {
+    const { accountNumber: _number, ...statement } = outcome.statement;
+    return { ...outcome, statement: { ...statement, accountId } };
+  }
+  const { accountNumber: _number, ...kept } = outcome.facts;
+  return { ...outcome, facts: { ...kept, accountId } };
+});
 
 export const keepPassword = Effect.fn("KinStatements.keepPassword")(function* (
   orgId: KinOrgId,

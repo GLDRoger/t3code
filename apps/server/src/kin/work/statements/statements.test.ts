@@ -581,28 +581,49 @@ describe("bank statements", () => {
       assert.strictEqual(october._tag, "read");
       const tail = october._tag === "read" ? october.statement.rows.slice(-4) : [];
       const money = (minor: number) => (minor / 100).toFixed(2);
-      const csv = [
-        "Account No :50100000004821",
-        "Date,Narration,Chq/Ref Number,Debit Amount,Credit Amount",
-        ...tail.map((row) =>
+      const csv = (heading: ReadonlyArray<string>) =>
+        new TextEncoder().encode(
           [
-            row.date.split("-").reverse().join("/"),
-            `"${row.description}"`,
-            row.reference ?? "",
-            row.direction === "debit" ? money(row.amountMinor) : "",
-            row.direction === "credit" ? money(row.amountMinor) : "",
-          ].join(","),
-        ),
-        '02/11/2026,"UPI-NEW VENDOR-new@invbank",0000700000000001,999.00,',
-        '03/11/2026,"NEFT CR-SOMEONE NEW",N300000000000001,,500.00',
-      ].join("\n");
-      const third = opened(yield* read(3, "november.csv", new TextEncoder().encode(csv)));
+            ...heading,
+            "Date,Narration,Chq/Ref Number,Debit Amount,Credit Amount",
+            ...tail.map((row) =>
+              [
+                row.date.split("-").reverse().join("/"),
+                `"${row.description}"`,
+                row.reference ?? "",
+                row.direction === "debit" ? money(row.amountMinor) : "",
+                row.direction === "credit" ? money(row.amountMinor) : "",
+              ].join(","),
+            ),
+            '02/11/2026,"UPI-NEW VENDOR-new@invbank",0000700000000001,999.00,',
+            '03/11/2026,"NEFT CR-SOMEONE NEW",N300000000000001,,500.00',
+          ].join("\n"),
+        );
+      const third = opened(
+        yield* read(3, "november.csv", csv(["HDFC Bank", "Account No :50100000004821"])),
+      );
       assert.strictEqual(third.rows, 6);
       yield* OwnerStatements.apply(
         people,
         yield* confirmAll((yield* reviewCardOf(third.statement)).card),
       );
       assert.lengthOf(yield* bankRows, 22);
+      // Another HDFC account ending 4821, and an export that names no bank: neither is this
+      // account, so its rows are only possible duplicates, for the owner to judge.
+      for (const [n, heading] of [
+        [4, ["HDFC Bank", "Account No :50100099994821"]],
+        [5, ["Account No :50100000004821"]],
+      ] as const) {
+        const other = opened(yield* read(n, `other-${n}.csv`, csv(heading)));
+        assert.strictEqual(other.counts.recorded, 0);
+        const card = (yield* reviewCardOf(other.statement)).card;
+        assert.lengthOf(
+          card.unmatched.filter(
+            (one) => one.suggestion === "ignore" && one.why?.startsWith("It may already be"),
+          ),
+          6,
+        );
+      }
     }).pipe(Effect.provide(layer)),
   );
 

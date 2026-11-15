@@ -11,13 +11,12 @@ import type { FileOutcome, StatementPage } from "./statementFiles.ts";
 import {
   bindRows,
   datedLinesOf,
-  isHeaderLine,
   type NotRow,
   type Problem,
   pagesFor,
-  printed,
   proveStatement,
   type ReadRow,
+  stated,
 } from "./statementProof.ts";
 import {
   attachmentBytes,
@@ -28,7 +27,7 @@ import {
   type StatementRow as StoredStatement,
   tryKeptPasswords,
 } from "./statementReview.ts";
-import type { Statement, StatementFacts } from "./statementTable.ts";
+import { currencyIn, isHeaderLine, type Statement, type StatementFacts } from "./statementTable.ts";
 
 /**
  * The model reads, the server proves. A PDF whose table Kin reads and ties to its text goes
@@ -114,8 +113,6 @@ export const readStored = Effect.fn("KinStatements.readStored")(function* (
 });
 
 const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "");
-const currencyOf = (texts: ReadonlyArray<string>) =>
-  /\bcurrency\s*:?\s*([A-Z]{3})\b/.exec(texts.join("\n"))?.[1] ?? "INR";
 const NO_BALANCES =
   "Each row is printed on its page, but the statement prints no running balance beside its rows, so Kin couldn't prove each one.";
 
@@ -130,7 +127,7 @@ export const provenTable = (statement: Statement, pages: ReadonlyArray<Statement
     currency: statement.currency,
     opening: statement.openingMinor,
     texts,
-    pages: pagesFor(texts, statement.rows),
+    pages: pagesFor(texts, statement.rows, statement.currency),
   });
   const balanced = bound.pages.every((page) => page.rows.every((row) => row.balanceMinor !== null));
   const proof = proveStatement({
@@ -144,6 +141,7 @@ export const provenTable = (statement: Statement, pages: ReadonlyArray<Statement
     bound: {
       problems: bound.problems,
       unproven: balanced ? bound.unproven : [NO_BALANCES, ...bound.unproven],
+      gaps: bound.gaps,
     },
   });
   return proof.check.status === "off"
@@ -317,9 +315,14 @@ export type RowInput = {
   readonly reference?: string | undefined;
   readonly balance?: string | undefined;
 };
-const minorOf = (text: string) => {
-  const parsed = parseAmount(text.replace(/\b(cr|dr)\b\.?|^\s*-|[()]/gi, ""), "INR");
-  return "error" in parsed ? parsed.error : parsed.money.minor;
+const minorOf = (text: string, currency: string) => {
+  const parsed = parseAmount(text.replace(/\b(cr|dr)\b\.?|^\s*-|[()]/gi, ""), currency);
+  if ("error" in parsed) return parsed.error;
+  return parsed.money.currency === currency
+    ? parsed.money.minor
+    : invalid(
+        `${text.slice(0, 40)} is in ${parsed.money.currency}; the statement is in ${currency}.`,
+      );
 };
 const negativeBalance = (text: string) => /^\s*[-(]/.test(text);
 
@@ -353,6 +356,7 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
   readonly account?: string | undefined;
   readonly bank?: string | undefined;
   readonly kind?: "account" | "card" | undefined;
+  readonly currency?: string | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const stored = pagesOf(input.stored);
@@ -360,6 +364,11 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
     return yield* invalid(
       "Pass pages only while Kin says this statement waits for you to read it; call statement_read without them first.",
     );
+  const texts = stored.pages.map((page) => page.text);
+  // The text's own currency; a scan has none to check one against, so it is Kin's default.
+  const said = currencyIn(texts.join("\n"), input.currency);
+  if ("refused" in said) return yield* invalid(`${said.refused} Nothing was kept from this call.`);
+  const { currency } = said;
   const draft = draftOf(input.stored);
   const given = new Map(draft.pages.map((one) => [partKey(one[0], one[3] ?? 1), one]));
   for (const one of input.pages) {
@@ -374,11 +383,11 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
       );
     const rows: Array<ReadRow> = [];
     for (const [at, row] of one.rows.entries()) {
-      const amount = minorOf(row.amount);
+      const amount = minorOf(row.amount, currency);
       const where = `Page ${one.page}, row ${at + 1}`;
       if (typeof amount !== "number")
         return yield* invalid(`${where}: ${amount.message} Nothing was kept from this call.`);
-      const balance = row.balance === undefined ? null : minorOf(row.balance);
+      const balance = row.balance === undefined ? null : minorOf(row.balance, currency);
       if (balance !== null && typeof balance !== "number")
         return yield* invalid(`${where}: ${balance.message} Nothing was kept from this call.`);
       rows.push({
@@ -400,7 +409,7 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
   }
   const money = (text: string | undefined, kept: number | null) => {
     if (text === undefined) return kept;
-    const minor = minorOf(text);
+    const minor = minorOf(text, currency);
     return typeof minor === "number" ? (negativeBalance(text) ? -minor : minor) : kept;
   };
   const next: Draft = {
@@ -418,7 +427,6 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
     return { _tag: "more", reading: readingFor(stored, next) } satisfies Submitted;
 
   const facts = stored.facts;
-  const texts = stored.pages.map((page) => page.text);
   const scanned = texts.every((text) => text === "");
   const all = texts.join("\n");
   // What the page's text says outranks what was read from it; what only the lead says must be in it.
@@ -431,7 +439,6 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
         ? ("account" as const)
         : undefined;
   const kind = textKind ?? input.kind ?? "account";
-  const currency = currencyOf(texts);
   const opening = facts?.openingMinor ?? next.opening;
   const closing = facts?.closingMinor ?? next.closing;
   const unproven: Array<string> = [];
@@ -445,12 +452,6 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
         row: null,
         line: `The statement's text reads as a ${textKind === "card" ? "card" : "bank account"} statement, not a ${input.kind === "card" ? "card" : "bank account"}'s: read it as one.`,
       });
-    for (const [which, value, own] of [
-      ["opening", next.opening, facts?.openingMinor ?? null],
-      ["closing", next.closing, facts?.closingMinor ?? null],
-    ] as const)
-      if (own === null && value !== null && !printed(texts, value))
-        unproven.push(`The ${which} balance you gave isn't printed in the statement's text.`);
   }
   let index = 0;
   const pages = stored.pages.map((_, at) => {
@@ -469,8 +470,26 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
         })),
         problems: [],
         unproven: [SCAN],
+        gaps: [],
+        ends: { opening: null, closing: null },
       }
     : bindRows({ kind, currency, opening, texts, pages });
+  // A balance only the lead gave counts where the text labels it so, or the rows' own run of
+  // balances starts or ends on it; never a figure printed only as a row's.
+  if (!scanned)
+    for (const [which, value, own] of [
+      ["opening", next.opening, facts?.openingMinor ?? null],
+      ["closing", next.closing, facts?.closingMinor ?? null],
+    ] as const)
+      if (
+        own === null &&
+        value !== null &&
+        !stated(texts, which, value, currency) &&
+        bound.ends[which] !== value
+      )
+        unproven.push(
+          `The ${which} balance you gave isn't printed as the statement's ${which} balance.`,
+        );
   const proof = proveStatement({
     kind,
     currency,
@@ -479,7 +498,11 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
     from: facts?.from ?? null,
     to: facts?.to ?? null,
     pages: bound.pages,
-    bound: { problems: [...fixed, ...bound.problems], unproven: [...unproven, ...bound.unproven] },
+    bound: {
+      problems: [...fixed, ...bound.problems],
+      unproven: [...unproven, ...bound.unproven],
+      gaps: bound.gaps,
+    },
   });
   const disagree = [
     ...(facts?.openingMinor != null && next.opening !== null && next.opening !== facts.openingMinor
@@ -521,6 +544,7 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
     kind,
     bank,
     account: facts?.account ?? input.account ?? null,
+    accountId: facts?.accountId ?? null,
     currency,
     from: facts?.from ?? days[0] ?? null,
     to: facts?.to ?? days.at(-1) ?? null,

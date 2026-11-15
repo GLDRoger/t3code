@@ -1,6 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { bindRows, type ProofPage, proveStatement, type ReadRow } from "./statementProof.ts";
+import {
+  bindRows,
+  type ProofPage,
+  proveStatement,
+  type ReadRow,
+  stated,
+} from "./statementProof.ts";
 import { readingFor } from "./statementReading.ts";
 import type { StatementRow } from "./statementTable.ts";
 
@@ -189,6 +195,120 @@ describe("bindRows", () => {
     );
     assert.deepStrictEqual(loose.problems, []);
     assert.include(loose.unproven[0], "which way 2 rows went");
+  });
+});
+
+describe("what the file itself proves", () => {
+  const prove = (bound: ReturnType<typeof bindRows>, opening: number, closing: number) =>
+    proveStatement({
+      kind: "account",
+      currency: "INR",
+      opening,
+      closing,
+      from: null,
+      to: null,
+      pages: bound.pages,
+      bound,
+    });
+  const headerless = (rows: ReadonlyArray<ReadRow>, text: string) =>
+    bindRows({
+      kind: "account",
+      currency: "INR",
+      opening: 30_000,
+      texts: [text],
+      pages: [{ page: 1, rows, notRows: [] }],
+    });
+  const vendor = (date: string, amountMinor: number, balanceMinor: number): ReadRow => ({
+    date,
+    description: "VENDOR",
+    reference: null,
+    amountMinor,
+    direction: "debit",
+    balanceMinor,
+  });
+
+  it("never lets a reader pick which number is the balance on a page with no header", () => {
+    const one = "Opening balance 300.00\n02/04/26 VENDOR 100.00 200.00";
+    // The reader swaps amount and balance: one line can't show which is which, so nothing adds up.
+    const swapped = headerless([vendor("2026-04-02", 20_000, 10_000)], one);
+    assert.strictEqual(prove(swapped, 30_000, 10_000).check.status, "unchecked");
+    assert.include(swapped.unproven.join(" "), "couldn't tell each line's amount from its balance");
+    assert.isFalse(stated([one], "closing", 10_000, "INR"));
+    assert.isTrue(stated([one], "opening", 30_000, "INR"));
+    // Two rows: the balance is the place that runs on from row to row, so the file settles it.
+    const two = `${one}\n03/04/26 VENDOR 50.00 150.00`;
+    const honest = headerless(
+      [vendor("2026-04-02", 10_000, 20_000), vendor("2026-04-03", 5_000, 15_000)],
+      two,
+    );
+    assert.deepStrictEqual([honest.problems, honest.unproven], [[], []]);
+    assert.deepStrictEqual(honest.ends, { opening: null, closing: 15_000 });
+    assert.strictEqual(prove(honest, 30_000, 15_000).check.status, "adds_up");
+    const turned = headerless(
+      [vendor("2026-04-02", 20_000, 10_000), vendor("2026-04-03", 15_000, 5_000)],
+      two,
+    );
+    assert.strictEqual(prove(turned, 30_000, 5_000).check.status, "off");
+  });
+
+  it("marks a page with no text as not checked, unless the balances run on across it", () => {
+    const columns = line([
+      [0, "Date", "left"],
+      [10, "Narration", "left"],
+      [50, "Withdrawal Amt.", "left"],
+      [70, "Deposit Amt.", "left"],
+    ]);
+    const text = [
+      columns,
+      line([
+        [0, "02/04/26", "left"],
+        [10, "NEFT CR-NORTHWIND", "left"],
+        [82, "500.00", "right"],
+      ]),
+    ].join("\n");
+    const rows = (balanceMinor: number | null) =>
+      bindRows({
+        kind: "account",
+        currency: "INR",
+        opening: 100_000,
+        texts: [text, ""],
+        pages: [
+          {
+            page: 1,
+            rows: [
+              {
+                date: "2026-04-02",
+                description: "NEFT CR-NORTHWIND",
+                reference: null,
+                amountMinor: 50_000,
+                direction: "credit",
+                balanceMinor,
+              },
+            ],
+          },
+          { page: 2, rows: [] },
+        ],
+      });
+    const unbalanced = prove(rows(null), 100_000, 150_000);
+    assert.deepStrictEqual(
+      [unbalanced.check.status, unbalanced.check.line.split(".")[0]],
+      ["unchecked", "Page 2 could not be checked against the file: it has no text Kin can read"],
+    );
+    assert.deepStrictEqual(rows(null).gaps, [2]);
+  });
+
+  it("adds up exactly past what a number holds, and refuses what it can't", () => {
+    const huge = proveStatement({
+      kind: "account",
+      currency: "INR",
+      opening: Number.MAX_SAFE_INTEGER,
+      closing: Number.MAX_SAFE_INTEGER + 1,
+      from: null,
+      to: null,
+      pages: [{ page: 1, rows: [row(0, "2026-04-02", 2, "credit", null)] }],
+    });
+    assert.deepStrictEqual(huge.check.status, "off");
+    assert.include(huge.check.line, "past what Kin can add up exactly");
   });
 });
 

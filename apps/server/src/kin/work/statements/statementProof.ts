@@ -1,13 +1,17 @@
-import { formatMoney } from "../money.ts";
+import { currencyDigits } from "../money.ts";
 import {
   type BalanceCheck,
   type Direction,
   END_OF_TABLE,
   FOREIGN,
+  isExact,
+  isHeaderLine,
   looksLikeMoney,
   parseAmount,
   parseDay,
+  signedMoney,
   type StatementRow,
+  TOO_LARGE,
 } from "./statementTable.ts";
 
 /**
@@ -33,17 +37,9 @@ export type Proof = { readonly check: BalanceCheck; readonly problems: ReadonlyA
 const MAX_PROBLEMS = 20;
 const SHORT = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", timeZone: "UTC" });
 const day = (date: string) => SHORT.format(Date.parse(`${date}T00:00:00Z`));
-const signed = (minor: number, currency: string) =>
-  `${minor < 0 ? "−" : ""}${formatMoney({ minor: Math.abs(minor), currency })}`;
 const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "");
 const where = (index: number, page: number, date: string, minor: number, currency: string) =>
-  `Row ${index + 1} (page ${page}, ${day(date)}, ${signed(minor, currency)})`;
-
-/** The line naming a date, the narration and an amount: the columns the rows sit under. */
-export const isHeaderLine = (line: string) =>
-  /\bdate\b/i.test(line) &&
-  /narration|description|particular|detail/i.test(line) &&
-  /withdrawal|debit|deposit|credit|amount/i.test(line);
+  `Row ${index + 1} (page ${page}, ${day(date)}, ${signedMoney(minor, currency)})`;
 
 type Role = "debit" | "credit" | "amount" | "balance";
 type Column = { readonly role: Role; readonly start: number; readonly end: number };
@@ -78,12 +74,13 @@ const CODES = new Set(
   "USD EUR GBP SGD AED AUD CAD JPY CHF HKD NZD SEK THB MYR CNY ZAR SAR QAR".split(" "),
 );
 /** The money printed on a line, where it sits; a foreign amount after its code isn't one. */
-const tokensOf = (line: string): ReadonlyArray<Token> => {
+const tokensOf = (line: string, digits: number): ReadonlyArray<Token> => {
   const words = [...line.matchAll(/\S+/g)];
   return words.flatMap((word, at) => {
-    if (!looksLikeMoney(word[0]) || CODES.has(words[at - 1]?.[0].toUpperCase() ?? "")) return [];
+    if (!looksLikeMoney(word[0], digits) || CODES.has(words[at - 1]?.[0].toUpperCase() ?? ""))
+      return [];
     const mark = /^(cr|dr)\.?$/i.test(words[at + 1]?.[0] ?? "") ? ` ${words[at + 1]![0]}` : "";
-    const amount = parseAmount(`${word[0]}${mark}`);
+    const amount = parseAmount(`${word[0]}${mark}`, digits);
     return amount === undefined
       ? []
       : [{ ...amount, start: word.index, end: word.index + word[0].length }];
@@ -102,7 +99,9 @@ type Dated = {
   /** Money on the dated line itself, then on the lines its narration wraps onto. */
   readonly own: ReadonlyArray<Token>;
   readonly wrapped: Array<Token>;
-  readonly columns: ReadonlyArray<Column>;
+  columns: ReadonlyArray<Column>;
+  /** Without columns: which of `own`, from the right, the balance chain shows is the balance. */
+  balanceAt?: number;
   /** The line before it and its block, squashed, for its narration and reference. */
   said: string;
   raw: string;
@@ -110,7 +109,7 @@ type Dated = {
 };
 
 /** The lines of a page that start with a date, each with the block its narration wraps onto. */
-const datedOf = (text: string, header: ReadonlyArray<Column>) => {
+const datedOf = (text: string, header: ReadonlyArray<Column>, digits: number) => {
   const lines = text.split("\n");
   let columns = header;
   let current: Dated | undefined;
@@ -130,7 +129,7 @@ const datedOf = (text: string, header: ReadonlyArray<Column>) => {
           : "";
       current = {
         date,
-        own: tokensOf(line),
+        own: tokensOf(line, digits),
         wrapped: [],
         columns,
         said: squash(`${prior} ${line}`),
@@ -141,7 +140,7 @@ const datedOf = (text: string, header: ReadonlyArray<Column>) => {
     } else if (current !== undefined) {
       if (END_OF_TABLE.test(line.trim())) current = undefined;
       else {
-        current.wrapped.push(...tokensOf(line));
+        current.wrapped.push(...tokensOf(line, digits));
         current.said += squash(line);
         current.raw += ` ${line.trim()}`;
       }
@@ -149,6 +148,52 @@ const datedOf = (text: string, header: ReadonlyArray<Column>) => {
   }
   return dated;
 };
+
+/** The minor units a token stands for, signed as a balance prints it. */
+const valueOf = (one: Token) => (one.negative || one.marker === "debit" ? -one.minor : one.minor);
+
+/**
+ * Settles where a page's money sits, from the file alone: a header carried from an earlier page
+ * holds where every dated line prints money under its columns; with no header, the balance is the
+ * one place on each line that runs on from row to row, at least once and never broken.
+ */
+const settleColumns = (dated: ReadonlyArray<Dated>, carried: ReadonlyArray<Column>) => {
+  const onCarried = dated.filter((line) => line.columns === carried && carried.length > 0);
+  const fits = onCarried.every(
+    (line) => line.own.length === 0 || line.own.some((one) => roleOf(one, carried) !== undefined),
+  );
+  const loose = fits ? [] : onCarried;
+  const bare = [...dated.filter((line) => line.columns.length === 0), ...loose];
+  if (bare.length === 0) return;
+  const ways = [0, 1, 2].filter((k) => {
+    let holds = 0;
+    for (const [at, line] of bare.entries()) {
+      const before = bare[at - 1];
+      if (before === undefined || before.own.length < 2 || line.own.length < 2) continue;
+      if (k >= before.own.length || k >= line.own.length) return false;
+      const from = valueOf(before.own[before.own.length - 1 - k]!);
+      const to = valueOf(line.own[line.own.length - 1 - k]!);
+      const moved = Math.abs(to - from);
+      if (!line.own.some((one, place) => place !== line.own.length - 1 - k && one.minor === moved))
+        return false;
+      holds += 1;
+    }
+    return holds > 0;
+  });
+  for (const line of bare) {
+    if (loose.includes(line)) line.columns = [];
+    if (ways.length === 1) line.balanceAt = ways[0]!;
+  }
+};
+
+/** A token's column: by the header's labels, or by the balance chain on a page without one. */
+const roleIn = (line: Dated, one: Token): Role | undefined => {
+  if (line.columns.length > 0) return roleOf(one, line.columns);
+  if (line.balanceAt === undefined) return undefined;
+  const at = line.own.indexOf(one);
+  return at === -1 ? undefined : at === line.own.length - 1 - line.balanceAt ? "balance" : "amount";
+};
+const settled = (line: Dated) => line.columns.length > 0 || line.balanceAt !== undefined;
 
 /** How many lines of a page's text start with a date: what its rows must account for. */
 export const datedLinesOf = (text: string) =>
@@ -164,6 +209,10 @@ export type Bound = {
   readonly problems: ReadonlyArray<Problem>;
   /** Why the rows can't be proven, though nothing contradicts them. */
   readonly unproven: ReadonlyArray<string>;
+  /** Pages with no text and no rows: proven only by the balances running on across them. */
+  readonly gaps: ReadonlyArray<number>;
+  /** The balance before the first row and after the last, where the file's columns prove them. */
+  readonly ends: { readonly opening: number | null; readonly closing: number | null };
 };
 
 const IN_WORDS: Readonly<Record<Role, string>> = {
@@ -172,11 +221,17 @@ const IN_WORDS: Readonly<Record<Role, string>> = {
   amount: "the amount column",
   balance: "the balance column",
 };
+const MONEY_ROLES = new Set<Role | undefined>(["debit", "credit", "amount"]);
+const noText = (page: number) =>
+  `Page ${page} could not be checked against the file: it has no text Kin can read.`;
+const unsettled = (page: number) =>
+  `Page ${page} prints no column header Kin could place its numbers by, and its balances don't run on from row to row, so Kin couldn't tell each line's amount from its balance.`;
 
 /**
  * Ties each row to a dated line of its page's text: its date, amount and any balance must be
- * printed there, its narration's first words and reference in that line's block. The numbers and
- * direction are taken from the text; every dated line is one row or marked as none.
+ * printed there, in the columns the file itself shows, its narration's first words and reference
+ * in that line's block. The numbers and direction are taken from the text; every dated line is
+ * one row or marked as none.
  */
 export const bindRows = (input: {
   readonly kind: "account" | "card";
@@ -191,57 +246,75 @@ export const bindRows = (input: {
   }>;
 }): Bound => {
   const { currency } = input;
-  const money = (minor: number) => signed(minor, currency);
+  const digits = currencyDigits(currency);
+  const money = (minor: number) => signedMoney(minor, currency);
   const headerLine = input.texts.flatMap((text) => text.split("\n")).find(isHeaderLine);
   const header = headerLine === undefined ? [] : columnsOf(headerLine);
   const problems: Array<Problem> = [];
   const unproven = new Set<string>();
+  const gaps: Array<number> = [];
   const add = (problem: Problem) => {
     if (problems.length < MAX_PROBLEMS) problems.push(problem);
   };
   const sign = (direction: Direction, minor: number) =>
-    (direction === "credit") === (input.kind === "account") ? minor : -minor;
-  let running = input.opening;
+    BigInt((direction === "credit") === (input.kind === "account") ? minor : -minor);
+  let running = input.opening === null ? null : BigInt(input.opening);
+  const follow = (row: ReadRow, direction: Direction, balance: number | null) => {
+    running =
+      balance !== null
+        ? BigInt(balance)
+        : running === null
+          ? null
+          : running + sign(direction, row.amountMinor);
+  };
+  const proven = new Set<number>();
+  // Rows whose way the file itself shows, not the balance before them: the opening may be a guess.
+  const placed = new Set<number>();
   let index = 0;
   let undirected = 0;
   const pages = input.pages.map(({ page, rows, notRows = [] }) => {
     const text = input.texts[page - 1] ?? "";
-    const dated = datedOf(text, header);
+    const blank = text.trim() === "";
+    if (blank && rows.length === 0) gaps.push(page);
+    const dated = blank ? [] : datedOf(text, header, digits);
+    settleColumns(dated, header);
     let last = -1;
     const bound = rows.map((row): StatementRow => {
       const at = index++;
       const named = where(at, page, row.date, row.amountMinor, currency);
-      if (text === "") {
-        unproven.add(`Page ${page} has no text, so Kin couldn't check its rows against the PDF.`);
-        if (row.balanceMinor !== null) running = row.balanceMinor;
-        else if (running !== null) running += sign(row.direction, row.amountMinor);
+      if (blank) {
+        unproven.add(noText(page));
+        follow(row, row.direction, row.balanceMinor);
         return { ...row, index: at, foreign: null };
       }
       const lead = squash(row.description).slice(0, 8);
       const reference = squash(row.reference ?? "").replace(/^0+/, "");
       const fit = (line: Dated) => {
         const tokens = [...line.own, ...line.wrapped];
+        const sure = settled(line);
         const amount = tokens.find(
-          (one) => one.minor === row.amountMinor && roleOf(one, line.columns) !== "balance",
+          (one) =>
+            one.minor === row.amountMinor &&
+            (sure ? MONEY_ROLES.has(roleIn(line, one)) : roleIn(line, one) !== "balance"),
         );
-        const balanceOf = (one: Token) =>
-          one.negative || one.marker === "debit" ? -one.minor : one.minor;
         const balance =
           amount === undefined
             ? undefined
             : row.balanceMinor !== null
-              ? (tokens.find(
+              ? tokens.find(
                   (one) =>
                     one !== amount &&
-                    balanceOf(one) === row.balanceMinor &&
-                    roleOf(one, line.columns) === "balance",
-                ) ?? tokens.find((one) => one !== amount && balanceOf(one) === row.balanceMinor))
-              : line.own.find((one) => one !== amount && roleOf(one, line.columns) === "balance");
+                    valueOf(one) === row.balanceMinor &&
+                    (!sure || roleIn(line, one) === "balance"),
+                )
+              : line.own.find((one) => one !== amount && roleIn(line, one) === "balance");
         return {
           amount,
-          balance: balance === undefined ? null : balanceOf(balance),
+          balance: balance === undefined ? null : valueOf(balance),
           printsBalance: row.balanceMinor === null || balance !== undefined,
           words: line.said.includes(lead) && line.said.includes(reference),
+          // Two numbers and nothing in the file to say which is which: the reader's word only.
+          guessed: !sure && line.own.length + line.wrapped.length > 1,
         };
       };
       const order = dated
@@ -266,21 +339,24 @@ export const bindRows = (input: {
                   ? `${named}: the balance ${money(row.balanceMinor ?? 0)} isn't printed on its line.`
                   : `${named}: its narration's first words or its reference aren't on the line dated ${day(row.date)} that prints ${money(row.amountMinor)}.`,
         });
-        if (row.balanceMinor !== null) running = row.balanceMinor;
-        else if (running !== null) running += sign(row.direction, row.amountMinor);
+        follow(row, row.direction, row.balanceMinor);
         return { ...row, index: at, foreign: null };
       }
       found.line.used = true;
       last = found.position;
-      const { amount, balance } = fit(found.line);
-      const role = roleOf(amount!, found.line.columns);
+      const { amount, balance, guessed } = fit(found.line);
+      if (guessed) unproven.add(unsettled(page));
+      else if (balance !== null) proven.add(at);
+      const role = roleIn(found.line, amount!);
+      const step =
+        running === null || balance === null || guessed ? null : BigInt(balance) - running;
       const moved =
-        running === null || balance === null || Math.abs(balance - running) !== row.amountMinor
+        step === null || (step !== BigInt(row.amountMinor) && step !== -BigInt(row.amountMinor))
           ? undefined
-          : balance > running === (input.kind === "account")
+          : step > 0n === (input.kind === "account")
             ? ("credit" as const)
             : ("debit" as const);
-      const proven: { direction: Direction; why: string } | undefined =
+      const shown: { direction: Direction; why: string } | undefined =
         role === "debit" || role === "credit"
           ? { direction: role, why: `its amount is printed in ${IN_WORDS[role]}` }
           : amount!.marker !== null
@@ -291,19 +367,22 @@ export const bindRows = (input: {
             : moved !== undefined
               ? { direction: moved, why: "the balance beside it moves by its amount that way" }
               : undefined;
-      if (proven === undefined) undirected += 1;
-      else if (proven.direction !== row.direction)
+      if (role === "debit" || role === "credit" || amount!.marker !== null) placed.add(at);
+      if (shown === undefined) undirected += 1;
+      else if (shown.direction !== row.direction)
         add({
           page,
           row: at,
-          line: `${named}: ${proven.why}, so it is a ${proven.direction}, not a ${row.direction}.`,
+          line: `${named}: ${shown.why}, so it is a ${shown.direction}, not a ${row.direction}.`,
         });
-      const direction = proven?.direction ?? row.direction;
-      running = balance ?? (running === null ? null : running + sign(direction, row.amountMinor));
+      const direction = shown?.direction ?? row.direction;
+      follow(row, direction, balance);
       const foreign = FOREIGN.exec(found.line.raw);
-      const foreignAmount =
-        foreign === null ? undefined : parseAmount(foreign[2] ?? foreign[3] ?? "");
       const code = foreign === null ? undefined : (foreign[1] ?? foreign[4])!;
+      const foreignAmount =
+        foreign === null || code === undefined
+          ? undefined
+          : parseAmount(foreign[2] ?? foreign[3] ?? "", currencyDigits(code));
       return {
         ...row,
         index: at,
@@ -316,7 +395,7 @@ export const bindRows = (input: {
             : { currency: code, amountMinor: foreignAmount.minor },
       };
     });
-    if (text !== "") {
+    if (!blank) {
       for (const other of notRows) {
         const words = squash(other.text).slice(0, 8);
         const line = dated.find(
@@ -330,11 +409,10 @@ export const bindRows = (input: {
           });
           continue;
         }
-        const roles = line.own.map((one) => roleOf(one, line.columns));
-        const pair =
-          line.columns.length === 0
-            ? line.own.length >= 2
-            : roles.includes("balance") && roles.some((role) => role !== "balance");
+        const roles = line.own.map((one) => roleIn(line, one));
+        const pair = !settled(line)
+          ? line.own.length >= 2
+          : roles.includes("balance") && roles.some((role) => role !== "balance");
         if (pair)
           add({
             page,
@@ -356,15 +434,36 @@ export const bindRows = (input: {
     unproven.add(
       `Kin couldn't tell from the statement's text which way ${undirected} row${undirected === 1 ? "" : "s"} went: no debit or credit column, Cr or Dr mark, or running balance shows it.`,
     );
-  return { pages, problems, unproven: [...unproven] };
+  const all = pages.flatMap((page) => page.rows);
+  const first = all[0];
+  const final = all.at(-1);
+  const before =
+    first === undefined || !proven.has(first.index) || !placed.has(first.index)
+      ? null
+      : BigInt(first.balanceMinor!) - sign(first.direction, first.amountMinor);
+  return {
+    pages,
+    problems,
+    unproven: [...unproven],
+    gaps,
+    ends: {
+      opening: before === null || !isExact(before) ? null : Number(before),
+      closing: final === undefined || !proven.has(final.index) ? null : final.balanceMinor,
+    },
+  };
 };
 
 /** Rows read from the whole file, each on the page whose next dated line prints its amount. */
-export const pagesFor = (texts: ReadonlyArray<string>, rows: ReadonlyArray<ReadRow>) => {
+export const pagesFor = (
+  texts: ReadonlyArray<string>,
+  rows: ReadonlyArray<ReadRow>,
+  currency: string,
+) => {
   const headerLine = texts.flatMap((text) => text.split("\n")).find(isHeaderLine);
   const header = headerLine === undefined ? [] : columnsOf(headerLine);
+  const digits = currencyDigits(currency);
   const lines = texts.flatMap((text, at) =>
-    datedOf(text, header).map((line) => ({ ...line, page: at + 1 })),
+    datedOf(text, header, digits).map((line) => ({ ...line, page: at + 1 })),
   );
   const pages = texts.map((_, at) => ({ page: at + 1, rows: [] as Array<ReadRow> }));
   let next = 0;
@@ -382,11 +481,31 @@ export const pagesFor = (texts: ReadonlyArray<string>, rows: ReadonlyArray<ReadR
   return pages;
 };
 
-/** Whether this amount is printed anywhere in the statement's text. */
-export const printed = (texts: ReadonlyArray<string>, minor: number) =>
-  texts.some((text) =>
-    text.split("\n").some((line) => tokensOf(line).some((one) => one.minor === Math.abs(minor))),
-  );
+const LABELS = {
+  opening: /\b(?:opening|previous|brought\s+forward|b\/f|last\s+statement)\b/i,
+  closing: /\b(?:closing|carried\s+forward|c\/f|total\s+(?:amount\s+)?dues?|amount\s+due)\b/i,
+};
+/**
+ * Whether the statement prints this as its opening or closing balance: beside its label, or on
+ * the line under a row of labels. A figure printed anywhere else, such as a row's, isn't one.
+ */
+export const stated = (
+  texts: ReadonlyArray<string>,
+  which: "opening" | "closing",
+  minor: number,
+  currency: string,
+) => {
+  const digits = currencyDigits(currency);
+  return texts.some((text) => {
+    const lines = text.split("\n");
+    return lines.some((line, at) => {
+      if (!LABELS[which].test(line)) return false;
+      const own = tokensOf(line, digits);
+      const figures = own.length > 0 ? own : tokensOf(lines[at + 1] ?? "", digits);
+      return figures.some((one) => one.minor === Math.abs(minor));
+    });
+  });
+};
 
 export const proveStatement = (input: {
   readonly kind: "account" | "card";
@@ -397,14 +516,16 @@ export const proveStatement = (input: {
   readonly to: string | null;
   readonly pages: ReadonlyArray<ProofPage>;
   /** What tying the rows to the PDF's text found; absent when there was no text to tie them to. */
-  readonly bound?: Pick<Bound, "problems" | "unproven">;
+  readonly bound?: Pick<Bound, "problems" | "unproven"> & Partial<Pick<Bound, "gaps">>;
 }): Proof => {
   const { currency } = input;
-  const money = (minor: number) => signed(minor, currency);
+  const money = (minor: number | bigint) => signedMoney(minor, currency);
   const sign = (row: StatementRow) =>
-    (row.direction === "credit") === (input.kind === "account")
-      ? row.amountMinor
-      : -row.amountMinor;
+    BigInt(
+      (row.direction === "credit") === (input.kind === "account")
+        ? row.amountMinor
+        : -row.amountMinor,
+    );
   const problems: Array<Problem> = [...(input.bound?.problems ?? [])].slice(0, MAX_PROBLEMS);
   const add = (problem: Problem) => {
     if (problems.length < MAX_PROBLEMS) problems.push(problem);
@@ -412,38 +533,50 @@ export const proveStatement = (input: {
   const rows = input.pages.flatMap((page) => page.rows.map((row) => ({ row, page: page.page })));
   const at = (row: StatementRow, page: number) =>
     where(row.index, page, row.date, row.amountMinor, currency);
+  let exact = true;
 
   // Each printed balance follows from the one before it; a break resets, so later ones still count.
-  let previous = input.opening;
+  let previous = input.opening === null ? null : BigInt(input.opening);
   for (const { row, page } of rows) {
     if (row.balanceMinor === null) {
       if (previous !== null) previous += sign(row);
+      if (previous !== null && !isExact(previous)) exact = false;
       continue;
     }
-    if (previous !== null && previous + sign(row) !== row.balanceMinor)
+    const expected = previous === null ? null : previous + sign(row);
+    if (expected !== null && !isExact(expected)) exact = false;
+    else if (expected !== null && expected !== BigInt(row.balanceMinor)) {
+      const gap = expected - BigInt(row.balanceMinor);
       add({
         page,
         row: row.index,
-        line: `${at(row, page)}: ${money(previous)} ${sign(row) >= 0 ? "+" : "−"} ${money(row.amountMinor)} is ${money(previous + sign(row))}, but the balance printed beside it is ${money(row.balanceMinor)}, ${money(Math.abs(previous + sign(row) - row.balanceMinor))} apart. A row before it may be missing, or this one misread.`,
+        line: `${at(row, page)}: ${money(previous!)} ${sign(row) >= 0n ? "+" : "−"} ${money(row.amountMinor)} is ${money(expected)}, but the balance printed beside it is ${money(row.balanceMinor)}, ${money(gap < 0n ? -gap : gap)} apart. A row before it may be missing, or this one misread.`,
       });
-    previous = row.balanceMinor;
+    }
+    previous = BigInt(row.balanceMinor);
   }
 
-  const net = rows.reduce((sum, { row }) => sum + sign(row), 0);
+  const net = rows.reduce((sum, { row }) => sum + sign(row), 0n);
   const total = (direction: Direction) =>
     rows
       .filter(({ row }) => row.direction === direction)
-      .reduce((sum, { row }) => sum + row.amountMinor, 0);
+      .reduce((sum, { row }) => sum + BigInt(row.amountMinor), 0n);
+  const credits = total("credit");
+  const debits = total("debit");
+  const start = BigInt(input.opening ?? 0);
+  if (![net, credits, debits, start + net].every(isExact)) exact = false;
+  if (!exact) return { check: { status: "off", line: TOO_LARGE }, problems: [] };
   const sum =
     input.kind === "account"
-      ? `${money(input.opening ?? 0)} + credits ${money(total("credit"))} − debits ${money(total("debit"))}`
-      : `${money(input.opening ?? 0)} + spends ${money(total("debit"))} − payments ${money(total("credit"))}`;
+      ? `${money(start)} + credits ${money(credits)} − debits ${money(debits)}`
+      : `${money(start)} + spends ${money(debits)} − payments ${money(credits)}`;
   const complete = input.opening !== null && input.closing !== null;
-  if (complete && input.opening! + net !== input.closing!)
+  const apart = complete ? start + net - BigInt(input.closing!) : 0n;
+  if (apart !== 0n)
     add({
       page: null,
       row: null,
-      line: `It doesn't add up: ${sum} is ${money(input.opening! + net)}, but the statement's closing balance is ${money(input.closing!)}, ${money(Math.abs(input.opening! + net - input.closing!))} apart.`,
+      line: `It doesn't add up: ${sum} is ${money(start + net)}, but the statement's closing balance is ${money(input.closing!)}, ${money(apart < 0n ? -apart : apart)} apart.`,
     });
 
   for (const { row, page } of rows) {
@@ -474,8 +607,11 @@ export const proveStatement = (input: {
     }
   }
 
-  const unproven = input.bound?.unproven ?? [];
   const hasBalances = rows.some(({ row }) => row.balanceMinor !== null);
+  // A page with no text holds nothing Kin can see; only balances running on across it prove so.
+  const chained = complete && rows.every(({ row }) => row.balanceMinor !== null);
+  const gaps = chained ? [] : (input.bound?.gaps ?? []);
+  const unproven = [...(input.bound?.unproven ?? []), ...gaps.map(noText)];
   const check: BalanceCheck =
     problems.length > 0
       ? {

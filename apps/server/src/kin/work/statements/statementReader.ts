@@ -55,6 +55,9 @@ const StatementOut = Schema.Struct({
   kind: Schema.Literals(["account", "card"]),
   bank: Schema.NullOr(Short),
   account: Schema.NullOr(Short),
+  accountNumber: Schema.optionalKey(
+    Schema.NullOr(Schema.String.check(Schema.isPattern(/^\d{8,30}$/))),
+  ),
   currency: Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/)),
   from: Schema.NullOr(Day),
   to: Schema.NullOr(Day),

@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { formatMoney } from "../money.ts";
+import { currencyDigits, DEFAULT_CURRENCY, formatMoney, isCurrency } from "../money.ts";
 
 /**
  * A bank or card statement read from its table: whatever the file was, it arrives here as lines
@@ -40,6 +40,13 @@ export type Statement = {
   readonly bank: string | null;
   /** The account's or card's last four digits, when the statement states them. */
   readonly account: string | null;
+  /** The full number the file prints, only as the reader returns it; never kept (`accountId`). */
+  readonly accountNumber?: string | null;
+  /**
+   * The account's keyed identity from its full number and bank; null when the file doesn't print
+   * both. Absent on a statement first read before identities: its rows go by `account` alone.
+   */
+  readonly accountId?: string | null;
   readonly currency: string;
   readonly from: string | null;
   readonly to: string | null;
@@ -49,6 +56,12 @@ export type Statement = {
   readonly check: BalanceCheck;
 };
 export type StatementFacts = Omit<Statement, "rows" | "check" | "currency">;
+
+const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+/** Whether a sum of minor units is still a number Kin keeps exactly. */
+export const isExact = (value: bigint) => value <= SAFE && value >= -SAFE;
+export const TOO_LARGE =
+  "Its figures run past what Kin can add up exactly, so Kin couldn't check them. Send a shorter period.";
 export type TableResult =
   | { readonly _tag: "read"; readonly statement: Statement }
   | { readonly _tag: "no_table"; readonly reason: string };
@@ -147,17 +160,22 @@ export type ParsedAmount = {
   readonly marker: Direction | null;
 };
 const AMOUNT =
-  /^(?<pre>[+-]|\()?\s*(?:₹|rs\.?|inr|c)?\s*(?<sign>[+-])?\s*(?<num>\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)\s*(?<post>\)|-)?\s*(?<mark>cr|dr|c|d)?\.?$/i;
+  /^(?<pre>[+-]|\()?\s*(?:₹|rs\.?|inr|[$€£¥]|c)?\s*(?<sign>[+-])?\s*(?<num>\d{1,3}(?:,\d{2,3})*(?:\.\d{1,3})?|\d+(?:\.\d{1,3})?)\s*(?<post>\)|-)?\s*(?<mark>cr|dr|c|d)?\.?$/i;
 
-/** An amount as statements print it: "1,23,456.78", "(500.00)", "1,200.00 Cr", "-45", "₹ 99". */
-export const parseAmount = (text: string): ParsedAmount | undefined => {
+/**
+ * An amount as statements print it, in minor units of a currency with `digits` of them:
+ * "1,23,456.78", "(500.00)", "1,200.00 Cr", "-45", "₹ 99"; "1,500" in yen.
+ */
+export const parseAmount = (text: string, digits = 2): ParsedAmount | undefined => {
   const said = text.trim().replace(/ /g, " ");
   if (said === "" || said.length > 40) return undefined;
   const found = AMOUNT.exec(said);
   if (found?.groups === undefined) return undefined;
   const { pre, sign, num, post, mark } = found.groups;
   const [whole, fraction = ""] = num!.replace(/,/g, "").split(".");
-  const minor = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  if (fraction.length > digits && !/^0*$/.test(fraction.slice(digits))) return undefined;
+  const minor =
+    Number(whole) * 10 ** digits + Number(fraction.slice(0, digits).padEnd(digits, "0") || "0");
   if (!Number.isSafeInteger(minor)) return undefined;
   const marker = mark === undefined ? null : /^c/i.test(mark) ? "credit" : "debit";
   return {
@@ -166,9 +184,68 @@ export const parseAmount = (text: string): ParsedAmount | undefined => {
     marker: pre === "+" || sign === "+" ? "credit" : marker,
   };
 };
+const SHAPES = [0, 1, 2, 3, 4].map((digits) =>
+  digits === 0 ? /\d,\d{3}/ : new RegExp(String.raw`\d[.,]\d{${digits}}\b|\d,\d{3}`),
+);
 /** Only something printed as money: with paise or grouping, so a cheque number never reads as one. */
-export const looksLikeMoney = (text: string) =>
-  /\d[.,]\d{2}\b|\d,\d{3}/.test(text) && parseAmount(text) !== undefined;
+export const looksLikeMoney = (text: string, digits = 2) =>
+  (SHAPES[digits] ?? SHAPES[2]!).test(text) && parseAmount(text, digits) !== undefined;
+
+/** The line naming a date, the narration and an amount: the columns the rows sit under. */
+export const isHeaderLine = (line: string) =>
+  /\bdate\b/i.test(line) &&
+  /narration|description|particular|detail/i.test(line) &&
+  /withdrawal|debit|deposit|credit|amount/i.test(line);
+
+const UNAMBIGUOUS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/₹/u, "INR"],
+  [/€/u, "EUR"],
+  [/£/u, "GBP"],
+];
+const LABELLED = /\bcurrency(?:\s+code)?\s*[:-]?\s*([A-Za-z]{3})\b/i;
+const NAMED =
+  /\((?:in\s+)?([A-Z]{3})\)|\bin\s+([A-Z]{3})\b|\b([A-Z]{3})\s+[-(]?\d[\d,]*\.\d|\d\.\d+\)?\s+([A-Z]{3})\b/g;
+const SUMMARY = /opening|closing|balance|total|summary/i;
+const printsCode = (text: string, code: string) =>
+  new RegExp(String.raw`\b${code}\b`).test(text) ||
+  UNAMBIGUOUS.some(([symbol, named]) => named === code && symbol.test(text));
+
+/**
+ * The currency a statement's text gives its amounts in: a "Currency" label, else the codes or
+ * unambiguous symbols its column header and summary lines print. `proposed` counts only where the
+ * text prints it; with nothing printed, Kin's default. Refused when Kin can't keep it exactly.
+ */
+export const currencyIn = (
+  text: string,
+  proposed?: string,
+): { readonly currency: string } | { readonly refused: string } => {
+  const exact = (code: string) =>
+    isCurrency(code) && currencyDigits(code) <= 4
+      ? { currency: code }
+      : {
+          refused: `The statement's amounts are in ${code.slice(0, 3)}, which Kin can't record exactly.`,
+        };
+  const labelled = LABELLED.exec(text)?.[1]?.toUpperCase();
+  if (labelled !== undefined) return exact(labelled);
+  const found = new Set<string>();
+  for (const line of text.split("\n")) {
+    if (!isHeaderLine(line) && !SUMMARY.test(line)) continue;
+    for (const match of line.matchAll(NAMED)) {
+      const code = match.slice(1).find((one) => one !== undefined)!;
+      if (isCurrency(code)) found.add(code);
+    }
+    for (const [symbol, code] of UNAMBIGUOUS) if (symbol.test(line)) found.add(code);
+  }
+  const named = proposed?.toUpperCase();
+  if (named !== undefined && (found.has(named) || (found.size === 0 && printsCode(text, named))))
+    return exact(named);
+  if (found.size === 1) return exact([...found][0]!);
+  if (found.size > 1)
+    return {
+      refused: `The statement names more than one currency (${[...found].toSorted().join(", ")}), so Kin can't tell which its amounts are in.`,
+    };
+  return { currency: DEFAULT_CURRENCY };
+};
 
 const BANKS: ReadonlyArray<readonly [RegExp, string]> = [
   [/\bhdfc\b/i, "HDFC Bank"],
@@ -267,7 +344,7 @@ const mergeHeaderCells = (line: Line): Line => {
 const NUMERIC_ROLES = new Set<Role>(["debit", "credit", "amount", "balance"]);
 
 /** A PDF line's cells by the header's columns: money by right edge, words by where they start. */
-const placeCells = (line: Line, header: Header): Map<Role, Array<Cell>> => {
+const placeCells = (line: Line, header: Header, digits: number): Map<Role, Array<Cell>> => {
   const placed = new Map<Role, Array<Cell>>();
   const put = (role: Role, cell: Cell) => {
     const cells = placed.get(role);
@@ -290,13 +367,13 @@ const placeCells = (line: Line, header: Header): Map<Role, Array<Cell>> => {
       // A "Cr" printed beside an amount belongs to it.
       const before = line
         .slice(0, index)
-        .findLast((one) => looksLikeMoney(one.text) && one.x !== undefined);
+        .findLast((one) => looksLikeMoney(one.text, digits) && one.x !== undefined);
       if (before !== undefined) {
         put("drcr", cell);
         continue;
       }
     }
-    if (looksLikeMoney(cell.text)) {
+    if (looksLikeMoney(cell.text, digits)) {
       const right = cell.right ?? cell.x;
       const center = (cell.x + right) / 2;
       const numeric = byLeft.filter((column) => NUMERIC_ROLES.has(column.role));
@@ -330,9 +407,9 @@ const joined = (cells: ReadonlyArray<Cell> | undefined) =>
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
-const firstAmount = (cells: ReadonlyArray<Cell> | undefined) => {
+const firstAmount = (cells: ReadonlyArray<Cell> | undefined, digits: number) => {
   for (const cell of cells ?? []) {
-    const amount = parseAmount(cell.text);
+    const amount = parseAmount(cell.text, digits);
     if (amount !== undefined) return amount;
   }
   return undefined;
@@ -353,12 +430,17 @@ type Draft = {
 };
 
 /** The facts around the table: the account, the bank, the period and the stated balances. */
-export const readFacts = (lines: ReadonlyArray<Line>) => {
+export const readFacts = (lines: ReadonlyArray<Line>, currency = DEFAULT_CURRENCY) => {
   const text = lines.map(lineText).join("\n");
   const card = CARD.exec(text);
   const account = ACCOUNT.exec(text);
   const digits = (found: RegExpExecArray | null) =>
     found === null ? null : (/(\d{4})\D*$/.exec(found[1]!)?.[1] ?? null);
+  // Printed whole, unmasked: what tells two accounts with the same last four digits apart.
+  const whole = (found: RegExpExecArray | null) => {
+    const number = found === null || /[Xx*•]/.test(found[1]!) ? "" : found[1]!.replace(/\D/g, "");
+    return number.length >= 8 ? number : null;
+  };
   const period = PERIOD.exec(text);
   const bank = BANKS.find(([pattern]) => pattern.test(text))?.[1] ?? null;
   const isCard =
@@ -368,9 +450,10 @@ export const readFacts = (lines: ReadonlyArray<Line>) => {
     kind: isCard ? ("card" as const) : ("account" as const),
     bank,
     account: isCard ? digits(card) : (digits(account) ?? digits(card)),
+    accountNumber: isCard ? whole(card) : account !== null ? whole(account) : whole(card),
     from: period === null ? null : (parseDay(period[1]!) ?? null),
     to: period === null ? null : (parseDay(period[2]!) ?? null),
-    ...statedBalances(lines),
+    ...statedBalances(lines, currencyDigits(currency)),
   };
 };
 
@@ -381,7 +464,11 @@ const CLOSING = /^(closing|total)\s*(bal|balance|dues?|amount due)\b|^total amou
  * Opening and closing balances, written beside their label ("Opening Balance : 1,000.00") or
  * as a summary row of labels with the figures on the line under it.
  */
-const statedBalances = (lines: ReadonlyArray<Line>) => {
+const statedBalances = (lines: ReadonlyArray<Line>, digits: number) => {
+  const stated = new RegExp(
+    String.raw`(opening balance|previous balance|closing balance|closing bal|total dues|total amount due)\s*[:-]?\s*(?:[a-z]{3}\s+)?((?:₹|rs\.?|inr|[$€£¥])?\s*-?[\d,]+${digits === 0 ? "" : String.raw`\.\d{${digits}}`}\s*(?:cr|dr)?)`,
+    "gi",
+  );
   let openingMinor: number | null = null;
   let closingMinor: number | null = null;
   const set = (label: string, amount: ParsedAmount | undefined) => {
@@ -392,10 +479,8 @@ const statedBalances = (lines: ReadonlyArray<Line>) => {
   };
   for (const [at, line] of lines.entries()) {
     const text = lineText(line);
-    for (const found of text.matchAll(
-      /(opening balance|previous balance|closing balance|closing bal|total dues|total amount due)\s*[:-]?\s*((?:₹|rs\.?|inr)?\s*-?[\d,]+\.\d{2}\s*(?:cr|dr)?)/gi,
-    ))
-      set(words(found[1]!), parseAmount(found[2]!));
+    for (const found of text.matchAll(stated))
+      set(words(found[1]!), parseAmount(found[2]!, digits));
     const labels = line.flatMap((cell, index) => {
       const said = words(cell.text);
       return OPENING.test(said) || CLOSING.test(said) ? [{ said, index, cell }] : [];
@@ -404,7 +489,7 @@ const statedBalances = (lines: ReadonlyArray<Line>) => {
       continue;
     const next = lines[at + 1];
     if (next === undefined) continue;
-    const figures = next.filter((cell) => parseAmount(cell.text) !== undefined);
+    const figures = next.filter((cell) => parseAmount(cell.text, digits) !== undefined);
     for (const label of labels) {
       const figure =
         label.cell.x === undefined
@@ -414,7 +499,7 @@ const statedBalances = (lines: ReadonlyArray<Line>) => {
                 Math.abs(centerOf(left) - centerOf(label.cell)) -
                 Math.abs(centerOf(right) - centerOf(label.cell)),
             )[0];
-      set(label.said, figure === undefined ? undefined : parseAmount(figure.text));
+      set(label.said, figure === undefined ? undefined : parseAmount(figure.text, digits));
     }
   }
   return { openingMinor, closingMinor };
@@ -422,14 +507,15 @@ const statedBalances = (lines: ReadonlyArray<Line>) => {
 const centerOf = (cell: Cell) => ((cell.x ?? 0) + (cell.right ?? cell.x ?? 0)) / 2;
 
 /** Every transaction in the table, multi-line narrations joined, repeated page headers skipped. */
-export const readTable = (lines: ReadonlyArray<Line>, currency = "INR"): TableResult => {
+export const readTable = (lines: ReadonlyArray<Line>, currency = DEFAULT_CURRENCY): TableResult => {
+  const digits = currencyDigits(currency);
   const header = findHeader(lines);
   if (header === undefined)
     return {
       _tag: "no_table",
       reason: "Kin found no table with a date, a description and an amount column in this file.",
     };
-  const facts = readFacts(lines);
+  const facts = readFacts(lines, currency);
   const drafts: Array<Draft> = [];
   let ended = false;
   for (const line of lines.slice(header.at + 1)) {
@@ -439,7 +525,7 @@ export const readTable = (lines: ReadonlyArray<Line>, currency = "INR"): TableRe
       ended = drafts.length > 0;
       continue;
     }
-    const cells = placeCells(line, header);
+    const cells = placeCells(line, header, digits);
     const dateCell = cells.get("date")?.[0];
     const date = dateCell === undefined ? undefined : parseDay(dateCell.text, dateCell.serial);
     if (date === undefined) {
@@ -462,10 +548,10 @@ export const readTable = (lines: ReadonlyArray<Line>, currency = "INR"): TableRe
       continue;
     }
     if (ended) continue;
-    const debit = firstAmount(cells.get("debit"));
-    const credit = firstAmount(cells.get("credit"));
-    const amount = firstAmount(cells.get("amount"));
-    const balance = firstAmount(cells.get("balance"));
+    const debit = firstAmount(cells.get("debit"), digits);
+    const credit = firstAmount(cells.get("credit"), digits);
+    const amount = firstAmount(cells.get("amount"), digits);
+    const balance = firstAmount(cells.get("balance"), digits);
     const drcr = words(joined(cells.get("drcr")));
     const marked: Direction | null = /^(cr|c|credit|deposit)/.test(drcr)
       ? "credit"
@@ -540,7 +626,9 @@ const settleDirections = (
     if (draft.balanceMinor !== null) previous = draft.balanceMinor;
     const foreign = FOREIGN.exec(draft.description);
     const foreignAmount =
-      foreign === null ? undefined : parseAmount(foreign[2] ?? foreign[3] ?? "");
+      foreign === null
+        ? undefined
+        : parseAmount(foreign[2] ?? foreign[3] ?? "", currencyDigits((foreign[1] ?? foreign[4])!));
     return {
       index,
       date: draft.date,
@@ -557,8 +645,12 @@ const settleDirections = (
   });
 };
 
-const money = (minor: number, currency: string) =>
-  `${minor < 0 ? "−" : ""}${formatMoney({ minor: Math.abs(minor), currency })}`;
+/** A signed amount for people; only ever given one `isExact` holds. */
+export const signedMoney = (value: number | bigint, currency: string) => {
+  const minor = BigInt(value);
+  return `${minor < 0n ? "−" : ""}${formatMoney({ minor: Number(minor < 0n ? -minor : minor), currency })}`;
+};
+const money = signedMoney;
 
 /**
  * Whether the statement adds up: opening plus credits less debits is closing (a card's dues go
@@ -572,45 +664,57 @@ export const checkBalances = (
   currency: string,
 ): BalanceCheck => {
   const sign = (row: StatementRow) =>
-    (row.direction === "credit") === (kind === "account") ? row.amountMinor : -row.amountMinor;
-  let previous = opening;
+    BigInt(
+      (row.direction === "credit") === (kind === "account") ? row.amountMinor : -row.amountMinor,
+    );
+  const tooLarge = { status: "off", line: TOO_LARGE } as const;
+  let previous = opening === null ? null : BigInt(opening);
   for (const row of rows) {
     if (row.balanceMinor === null) continue;
-    if (previous !== null && previous + sign(row) !== row.balanceMinor)
-      return {
-        status: "off",
-        line: `The running balance doesn't follow on ${row.date} (row ${row.index + 1}): ${money(previous, currency)} ${sign(row) >= 0 ? "+" : "−"} ${money(row.amountMinor, currency)} isn't the ${money(row.balanceMinor, currency)} shown. A row may be missing or misread.`,
-      };
-    previous = row.balanceMinor;
+    if (previous !== null && previous + sign(row) !== BigInt(row.balanceMinor))
+      return isExact(previous + sign(row))
+        ? {
+            status: "off",
+            line: `The running balance doesn't follow on ${row.date} (row ${row.index + 1}): ${money(previous, currency)} ${sign(row) >= 0n ? "+" : "−"} ${money(row.amountMinor, currency)} isn't the ${money(row.balanceMinor, currency)} shown. A row may be missing or misread.`,
+          }
+        : tooLarge;
+    previous = BigInt(row.balanceMinor);
   }
-  const net = rows.reduce((sum, row) => sum + sign(row), 0);
+  const total = (some: ReadonlyArray<StatementRow>, each: (row: StatementRow) => bigint) =>
+    some.reduce((sum, row) => sum + each(row), 0n);
+  const net = total(rows, sign);
   const firstBalance = rows.find((row) => row.balanceMinor !== null);
   const start =
-    opening ??
-    (firstBalance === undefined
-      ? null
-      : firstBalance.balanceMinor! -
-        rows.slice(0, firstBalance.index + 1).reduce((sum, row) => sum + sign(row), 0));
-  const end = closing ?? rows.findLast((row) => row.balanceMinor !== null)?.balanceMinor ?? null;
+    opening !== null
+      ? BigInt(opening)
+      : firstBalance === undefined
+        ? null
+        : BigInt(firstBalance.balanceMinor!) - total(rows.slice(0, firstBalance.index + 1), sign);
+  const last = rows.findLast((row) => row.balanceMinor !== null)?.balanceMinor ?? null;
+  const end = closing ?? last;
   if (start === null || end === null)
     return {
       status: "unchecked",
       line: "The statement gives no balances, so Kin couldn't check its totals.",
     };
-  const credits = rows
-    .filter((row) => row.direction === "credit")
-    .reduce((sum, row) => sum + row.amountMinor, 0);
-  const debits = rows
-    .filter((row) => row.direction === "debit")
-    .reduce((sum, row) => sum + row.amountMinor, 0);
+  const credits = total(
+    rows.filter((row) => row.direction === "credit"),
+    (row) => BigInt(row.amountMinor),
+  );
+  const debits = total(
+    rows.filter((row) => row.direction === "debit"),
+    (row) => BigInt(row.amountMinor),
+  );
+  if (![net, start, credits, debits, start + net].every(isExact)) return tooLarge;
   const sum =
     kind === "account"
       ? `${money(start, currency)} + credits ${money(credits, currency)} − debits ${money(debits, currency)}`
       : `${money(start, currency)} + spends ${money(debits, currency)} − payments ${money(credits, currency)}`;
-  if (start + net !== end)
+  const gap = start + net - BigInt(end);
+  if (gap !== 0n)
     return {
       status: "off",
-      line: `It doesn't add up: ${sum} is ${money(start + net, currency)}, but the statement's closing balance is ${money(end, currency)}, ${money(Math.abs(start + net - end), currency)} apart.`,
+      line: `It doesn't add up: ${sum} is ${money(start + net, currency)}, but the statement's closing balance is ${money(end, currency)}, ${money(gap < 0n ? -gap : gap, currency)} apart.`,
     };
   return { status: "adds_up", line: `It adds up: ${sum} = ${money(end, currency)}.` };
 };

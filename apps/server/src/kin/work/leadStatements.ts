@@ -578,7 +578,7 @@ const runRows = Effect.fnUntraced(function* (lead: Lead, input: typeof RowsInput
   const saved = new Map<number, { key: string; state: string }>();
   if (def !== undefined && page.length > 0) {
     const sql = yield* SqlClient.SqlClient;
-    const fingerprints = rowFingerprints(statement);
+    const fingerprints = rowFingerprints(statement, input.statement);
     const keys = page.map((row) => originKeyOf(fingerprints[row.index]!));
     const found = yield* sql<{ key: string; state: string; originKey: string }>`SELECT key, state,
         origin_key AS "originKey" FROM kin_records

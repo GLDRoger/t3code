@@ -205,7 +205,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         statement.kind,
       );
       const label = accountLabel(statement);
-      const fingerprints = rowFingerprints(statement);
+      const fingerprints = rowFingerprints(statement, input.statementId);
       // An undone confirm's payments stay as void lines, so each undo starts a generation of keys.
       const retryKey = (index: number, what: string) =>
         `statement:${input.statementId}:g${stored.generation}:${index}:${what}`;
