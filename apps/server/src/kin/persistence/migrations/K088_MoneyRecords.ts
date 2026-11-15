@@ -2,12 +2,16 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 /**
- * What each issued document showed, kept as it was rendered: the evidence any later check of an
- * entry's amount reads, never a figure worked out again. And which issued invoices with no amount
- * the owner was told about, so each is told once.
+ * A Dates list takes an amount, as a renewal's fee, changed only by adding that. What each issued
+ * document showed, kept as rendered: the evidence a later check of an entry's amount reads. And
+ * which issued invoices with no amount the owner was told about, so each is told once.
  */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_registers
+    SET definition_json = json_set(definition_json, '$.amount', json('true')), rev = rev + 1
+    WHERE register_id = 'dates' AND built_in = 0
+      AND json_extract(definition_json, '$.amount') = 0`;
   yield* sql`CREATE TABLE IF NOT EXISTS kin_doc_job_figures (
     org_id TEXT NOT NULL,
     worker_id TEXT NOT NULL,
