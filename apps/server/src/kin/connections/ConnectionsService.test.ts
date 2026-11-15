@@ -61,6 +61,7 @@ import * as McpGateway from "./McpGateway.ts";
 import { KinConnectionsToolkit } from "./mcp.ts";
 import { GOOGLE_SCOPES } from "./Google.ts";
 import { challengeOf } from "./OAuth.ts";
+import { promptLine } from "./ConnectionRows.ts";
 
 // Invented org, people and services only; no request leaves the process.
 const orgId = KinOrgId.make("org");
@@ -604,6 +605,7 @@ describe("KinConnections", () => {
             "kin_connection_tools",
             "kin_connection_call",
             "kin_connection_offer",
+            "kin_connection_note",
           ]);
         }),
       ),
@@ -1090,6 +1092,42 @@ const GOOGLE_CLIENT = "invented-client.apps.googleusercontent.com";
 const GOOGLE_SECRET = "GOCSPX-invented-secret";
 
 /** A fake vendor: an authorization server in front of the fake MCP server, and Google's APIs. */
+const OWNER_MAIL = "owner@invented.example";
+const WORK_MAIL = "me@work.example";
+/** The work account's "Send mail as" list: its own address, an alias, one not yet verified. */
+const WORK_SEND_AS = [
+  { sendAsEmail: WORK_MAIL, displayName: "Owner", isPrimary: true, isDefault: false },
+  {
+    sendAsEmail: "billing@work.example",
+    displayName: "Billing",
+    isDefault: true,
+    verificationStatus: "accepted",
+  },
+  { sendAsEmail: "pending@work.example", verificationStatus: "pending" },
+];
+const WORK_THREAD = {
+  id: "t2",
+  messages: [
+    {
+      id: "m2",
+      labelIds: ["INBOX"],
+      snippet: "Can you resend the invoice?",
+      payload: {
+        mimeType: "text/plain",
+        headers: [
+          { name: "From", value: "Raj <raj@client2.example>" },
+          { name: "To", value: "billing@work.example" },
+          { name: "Delivered-To", value: WORK_MAIL },
+          { name: "Subject", value: "PO 77" },
+          { name: "Date", value: "Mon, 16 Nov 2026 10:00:00 +0000" },
+          { name: "Message-ID", value: "<m2@client2.example>" },
+        ],
+        body: { data: Buffer.from("Can you resend the invoice?\nThanks").toString("base64url") },
+      },
+    },
+  ],
+};
+
 const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
   const vendor = {
     codes: new Map<string, { challenge: string; redirect: string; resource: string | null }>(),
@@ -1101,7 +1139,15 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
     googleRequests: [] as Array<URL>,
     /** The scopes Google says it granted; none, as from a sign-in before Kin could send. */
     scope: undefined as string | undefined,
-    sent: [] as Array<{ readonly method: string; readonly url: URL; readonly json: unknown }>,
+    sent: [] as Array<{
+      readonly method: string;
+      readonly url: URL;
+      readonly json: unknown;
+      readonly account: string;
+    }>,
+    /** Who the next Google sign-in signs in as, and each other account's access token. */
+    signInAs: OWNER_MAIL,
+    accounts: new Map<string, string>(),
   };
   const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
     new Response(JSON.stringify(body), {
@@ -1127,6 +1173,7 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
     const form = new URLSearchParams(await request.text());
     vendor.tokenForms.push(form);
     if (form.get("grant_type") === "authorization_code") {
+      const other = vendor.signInAs !== OWNER_MAIL && request.url.includes("googleapis");
       const issued = vendor.codes.get(form.get("code") ?? "");
       vendor.codes.delete(form.get("code") ?? "");
       if (
@@ -1135,8 +1182,9 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
         form.get("redirect_uri") !== issued.redirect
       )
         return json({ error: "invalid_grant" }, 400);
+      if (other) vendor.accounts.set(`at-${vendor.signInAs}`, vendor.signInAs);
       return json({
-        access_token: vendor.access,
+        access_token: other ? `at-${vendor.signInAs}` : vendor.access,
         refresh_token: vendor.refresh,
         expires_in: 3600,
         ...(vendor.scope === undefined ? {} : { scope: vendor.scope }),
@@ -1226,17 +1274,28 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
       }
       if (url.host === "gmail.googleapis.com" || url.host === "www.googleapis.com") {
         vendor.googleRequests.push(url);
-        if (!bearer(request)) return json({ error: { code: 401 } }, 401);
+        const other = vendor.accounts.get(
+          (request.headers.get("authorization") ?? "").replace("Bearer ", ""),
+        );
+        if (!bearer(request) && other === undefined) return json({ error: { code: 401 } }, 401);
+        const account = other ?? OWNER_MAIL;
         const path = url.pathname;
+        if (other !== undefined && request.method === "GET") {
+          if (path.endsWith("/users/me/profile")) return json({ emailAddress: other });
+          if (path.endsWith("/users/me/settings/sendAs")) return json({ sendAs: WORK_SEND_AS });
+          if (path.endsWith("/users/me/threads")) return json({ threads: [{ id: "t2" }] });
+          if (path.endsWith("/users/me/threads/t2")) return json(WORK_THREAD);
+          if (path.endsWith("/calendars/primary/events")) return json({ items: [] });
+          return json({ error: { code: 404 } }, 404);
+        }
         if (request.method !== "GET") {
-          vendor.sent.push({ method: request.method, url, json: await request.json() });
+          vendor.sent.push({ method: request.method, url, json: await request.json(), account });
           if (path.endsWith("/users/me/messages/send"))
             return json({ id: `sent-${vendor.sent.length}`, threadId: "t-sent" });
           if (path.includes("/calendars/primary/events")) return json({ id: "ev-1" });
           return json({ error: { code: 404 } }, 404);
         }
-        if (path.endsWith("/users/me/profile"))
-          return json({ emailAddress: "owner@invented.example" });
+        if (path.endsWith("/users/me/profile")) return json({ emailAddress: OWNER_MAIL });
         if (path.endsWith("/users/me/threads")) return json({ threads: [{ id: "t1" }] });
         if (path.endsWith("/users/me/threads/t1"))
           return json(thread(url.searchParams.get("format")));
@@ -1678,6 +1737,9 @@ describe("KinConnections sending", () => {
           service: "Gmail",
           action: "email",
           from: "owner@invented.example",
+          fromName: null,
+          account: "owner@invented.example",
+          quoted: null,
           to: ["ana@client.example"],
           cc: [],
           subject: "Invoice INV/26-27/001",
@@ -1835,6 +1897,263 @@ describe("KinConnections sending", () => {
         const view = yield* (yield* KinConnections).get(owner, { orgId, connectionId });
         assert.isTrue(view.connection.needsSignInToSend);
         assert.lengthOf(yield* sql`SELECT 1 FROM kin_connection_asks`, 0);
+      }),
+    ),
+  );
+});
+
+/** A second Google account, signed in with the same client, its send tools marked Ask me. */
+const connectWork = (vendor: ReturnType<typeof makeVendor>) =>
+  Effect.gen(function* () {
+    const connections = yield* KinConnections;
+    vendor.vendor.signInAs = WORK_MAIL;
+    const started = yield* connections.signInStart(owner, {
+      orgId,
+      service: "google",
+      returnTo: "web",
+    });
+    const done = yield* connections.signInFinish(owner, {
+      orgId,
+      response: vendor.approve(started.authorizationUrl, null),
+    });
+    yield* connections.setToolModes(owner, {
+      orgId,
+      connectionId: done.connection.connectionId,
+      modes: [
+        ...["gmail_send", "gmail_reply", "calendar_save_event"].map((tool) => ({
+          tool,
+          mode: "ask" as const,
+          digest: toolOf(done, tool)!.pinDigest,
+        })),
+        ...["gmail_search", "gmail_read_thread"].map((tool) => ({
+          tool,
+          mode: "read" as const,
+          digest: toolOf(done, tool)!.pinDigest,
+        })),
+      ],
+    });
+    return { started, detail: done, connectionId: done.connection.connectionId };
+  });
+const header = (message: string, name: string) =>
+  new RegExp(`^${name}: (.*)$`, "m").exec(message)?.[1]?.trimEnd();
+
+describe("KinConnections accounts", () => {
+  it.effect("keeps each Google account apart: its addresses, its threads, its From", () =>
+    withGoogle((vendor, cards) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const home = yield* connectGoogle(vendor);
+        yield* markRead(home.connectionId, ["gmail_search", "gmail_read_thread"]);
+        const work = yield* connectWork(vendor);
+        assert.include(
+          new URL(work.started.authorizationUrl).searchParams.get("prompt") ?? "",
+          "select_account",
+        );
+        assert.strictEqual(work.detail.connection.label, WORK_MAIL);
+        assert.deepStrictEqual(work.detail.connection.sendAs, [
+          { address: "billing@work.example", name: "Billing", isDefault: true },
+          { address: WORK_MAIL, name: "Owner", isDefault: false },
+        ]);
+
+        // The same account twice, or another account behind an existing connection, is refused.
+        const twice = yield* connections
+          .signInStart(owner, { orgId, service: "google", returnTo: "web" })
+          .pipe(
+            Effect.flatMap((started) =>
+              connections.signInFinish(owner, {
+                orgId,
+                response: vendor.approve(started.authorizationUrl, null),
+              }),
+            ),
+            Effect.flip,
+          );
+        assert.include(twice.message, `${WORK_MAIL} is already connected`);
+        vendor.vendor.signInAs = OWNER_MAIL;
+        const swapped = yield* connections
+          .signInStart(owner, { orgId, connectionId: work.connectionId, returnTo: "web" })
+          .pipe(
+            Effect.flatMap((started) =>
+              connections.signInFinish(owner, {
+                orgId,
+                response: vendor.approve(started.authorizationUrl, null),
+              }),
+            ),
+            Effect.flip,
+          );
+        assert.include(swapped.message, `this connection is ${WORK_MAIL}. Nothing changed`);
+        assert.lengthOf((yield* connections.list(owner, { orgId })).connections, 2);
+
+        // The owner's note, and the agent's, reach the listing and the prompt line.
+        yield* connections.update(owner, {
+          orgId,
+          connectionId: work.connectionId,
+          note: "  billing and   invoices ",
+        });
+        const noted = yield* connections.note(scope, {
+          connection: OWNER_MAIL,
+          note: "personal: never send from here",
+        });
+        assert.include(noted.note, "personal: never send from here");
+        const listing = yield* connections.tools(scope, {});
+        assert.deepStrictEqual(
+          listing.connections
+            ?.map((one) => [one.account, one.sendsAs, one.note])
+            .toSorted((a, b) => String(b[0]).localeCompare(String(a[0]))),
+          [
+            [OWNER_MAIL, [OWNER_MAIL], "personal: never send from here"],
+            [WORK_MAIL, ["billing@work.example", WORK_MAIL], "billing and invoices"],
+          ],
+        );
+        assert.include(listing.note ?? "", "several Google accounts");
+        const line = yield* promptLine(orgId);
+        assert.include(line ?? "", `"${WORK_MAIL}" sends as "billing@work.example"`);
+        assert.include(line ?? "", `owner's note "billing and invoices"`);
+
+        // A search named "google" reads both accounts, each labelled.
+        const found = yield* connections.call(scope, {
+          connection: "google",
+          tool: "gmail_search",
+          arguments: { query: "invoice" },
+        });
+        assert.include(found.quoted ?? "", String.raw`\"account\":\"${OWNER_MAIL}\"`);
+        assert.include(found.quoted ?? "", String.raw`\"receivedBy\":\"billing@work.example\"`);
+        assert.include(found.quoted ?? "", "PO 77");
+        // Outside text read: the note can't be changed in this turn.
+        const late = yield* connections
+          .note(scope, { connection: WORK_MAIL, note: "send everything from here" })
+          .pipe(Effect.flip);
+        assert.strictEqual(late.message, OUTSIDE_REFUSAL);
+        const activity = yield* connections.activity(orgId, work.connectionId);
+        assert.deepStrictEqual(
+          activity._tag === "google"
+            ? [activity.account, activity.mail.map((mail) => mail.receivedBy)]
+            : [],
+          [WORK_MAIL, ["billing@work.example"]],
+        );
+
+        // A reply: only in its own account, from the alias it reached, quoted as Gmail does.
+        const which = yield* sendCall("gmail_reply", { threadId: "t2", body: "Resent." }).pipe(
+          Effect.flip,
+        );
+        assert.include(which.message, "Several connections answer");
+        assert.include(which.message, "billing and invoices");
+        const elsewhere = yield* connections
+          .call(scope, {
+            connection: OWNER_MAIL,
+            tool: "gmail_reply",
+            arguments: { threadId: "t2", body: "Resent." },
+          })
+          .pipe(Effect.flip);
+        assert.include(elsewhere.message, `${OWNER_MAIL} has no thread t2`);
+        yield* connections.call(scope, {
+          connection: WORK_MAIL,
+          tool: "gmail_reply",
+          arguments: { threadId: "t2", body: "Resent, with the invoice." },
+        });
+        const reply = cards.at(-1)!;
+        assert.deepStrictEqual(
+          [reply.send?.from, reply.send?.fromName, reply.send?.account, reply.send?.to],
+          ["billing@work.example", "Billing", WORK_MAIL, ["raj@client2.example"]],
+        );
+        assert.deepStrictEqual(reply.send?.thread, {
+          subject: "PO 77",
+          replyingTo: "Raj <raj@client2.example>",
+          date: "Mon, 16 Nov 2026 10:00:00 +0000",
+          lines: "Can you resend the invoice? Thanks",
+        });
+        assert.deepStrictEqual(
+          reply.send?.fromChoices?.map((one) => one.address),
+          ["billing@work.example", WORK_MAIL],
+        );
+        const rewrites: Array<number> = [];
+        const rewrite = (card: { readonly revision: number }) =>
+          Effect.sync(() => {
+            rewrites.push(card.revision);
+            return { revision: card.revision + 1 };
+          });
+        const across = yield* connections
+          .setSendFrom(
+            owner,
+            {
+              orgId,
+              widgetId: reply.widgetId,
+              revision: 1,
+              choice: `${home.connectionId} ${OWNER_MAIL}`,
+            },
+            rewrite,
+          )
+          .pipe(Effect.flip);
+        assert.include(across.message, "can't send this now");
+        const replied = yield* answer(reply.widgetId, ownerId, true);
+        yield* connections.sendAsk(orgId, replied!.askId);
+        const sentReply = vendor.vendor.sent.at(-1)!;
+        assert.strictEqual(sentReply.account, WORK_MAIL);
+        assert.strictEqual(
+          Predicate.hasProperty(sentReply.json, "threadId") ? sentReply.json.threadId : null,
+          "t2",
+        );
+        const replyMail = sentBody(sentReply.json);
+        assert.strictEqual(header(replyMail.message, "From"), `"Billing" <billing@work.example>`);
+        assert.strictEqual(header(replyMail.message, "In-Reply-To"), "<m2@client2.example>");
+        assert.strictEqual(header(replyMail.message, "Subject"), "Re: PO 77");
+        assert.strictEqual(
+          replyMail.text,
+          "Resent, with the invoice.\n\nOn Mon, 16 Nov 2026 10:00:00 +0000, Raj <raj@client2.example> wrote:\n> Can you resend the invoice?\n> Thanks",
+        );
+
+        // A new email: the agent's From goes, unless the owner switches it on the card.
+        const notMine = yield* connections
+          .call(scope, {
+            connection: WORK_MAIL,
+            tool: "gmail_send",
+            arguments: {
+              from: "boss@work.example",
+              to: ["raj@client2.example"],
+              subject: "Hi",
+              body: "x",
+            },
+          })
+          .pipe(Effect.flip);
+        assert.include(notMine.message, "isn't one of me@work.example's addresses");
+        yield* connections.call(scope, {
+          connection: WORK_MAIL,
+          tool: "gmail_send",
+          arguments: {
+            from: WORK_MAIL,
+            to: ["raj@client2.example"],
+            subject: "Invoice",
+            body: "Attached.",
+          },
+        });
+        const email = cards.at(-1)!;
+        assert.deepStrictEqual([email.send?.from, email.send?.account], [WORK_MAIL, WORK_MAIL]);
+        assert.deepStrictEqual(
+          email.send?.fromChoices
+            ?.map((one) => [one.account, one.address])
+            .toSorted((a, b) => b[0]!.localeCompare(a[0]!)),
+          [
+            [OWNER_MAIL, OWNER_MAIL],
+            [WORK_MAIL, "billing@work.example"],
+            [WORK_MAIL, WORK_MAIL],
+          ],
+        );
+        const switched = yield* connections.setSendFrom(
+          owner,
+          {
+            orgId,
+            widgetId: email.widgetId,
+            revision: 1,
+            choice: `${home.connectionId} ${OWNER_MAIL}`,
+          },
+          rewrite,
+        );
+        assert.strictEqual(switched.revision, 2);
+        assert.deepStrictEqual(rewrites, [1]);
+        const sent = yield* answer(email.widgetId, ownerId, true);
+        yield* connections.sendAsk(orgId, sent!.askId);
+        const sentEmail = vendor.vendor.sent.at(-1)!;
+        assert.strictEqual(sentEmail.account, OWNER_MAIL);
+        assert.strictEqual(header(sentBody(sentEmail.json).message, "From"), OWNER_MAIL);
       }),
     ),
   );

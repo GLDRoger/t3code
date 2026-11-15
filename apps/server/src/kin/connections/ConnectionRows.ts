@@ -7,6 +7,7 @@ import type {
   KinConnectionTool,
   KinConnectionToolDefinition,
   KinConnectionToolMode,
+  KinMailAddress,
   KinOrgId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -25,6 +26,8 @@ export type ConnectionRow = {
   readonly reach: KinConnectionReach;
   readonly state: KinConnectionState;
   readonly accountLabel: string | null;
+  readonly note: string | null;
+  readonly sendAsJson: string | null;
   readonly protocolVersion: string | null;
   readonly instructionsText: string | null;
   readonly instructionsDigest: string | null;
@@ -64,7 +67,8 @@ export const changed = (tool: ToolRow) =>
 
 const connectionColumns = (sql: SqlClient.SqlClient) => sql`connection_id AS "connectionId",
   preset, label, kind, url, url_host AS "urlHost", auth, auth_header AS "authHeader", reach,
-  state, account_label AS "accountLabel", protocol_version AS "protocolVersion",
+  state, account_label AS "accountLabel", note, send_as_json AS "sendAsJson",
+  protocol_version AS "protocolVersion",
   instructions_text AS "instructionsText", instructions_digest AS "instructionsDigest",
   instructions_accepted_text AS "instructionsAcceptedText",
   instructions_accepted_digest AS "instructionsAcceptedDigest", created_at AS "createdAt",
@@ -104,8 +108,8 @@ export const toolsOf = Effect.fn("KinConnectionRows.tools")(function* (
 });
 
 /**
- * The live connection an agent named: by id, else by label or service, ignoring case. Several
- * matches are `ambiguous`, so a guess never picks one.
+ * The live connection an agent named: by id, else by label, account or service, ignoring case.
+ * Several matches are `ambiguous`, so a guess never picks one.
  */
 export const resolveConnection = Effect.fn("KinConnectionRows.resolve")(function* (
   orgId: KinOrgId,
@@ -115,10 +119,36 @@ export const resolveConnection = Effect.fn("KinConnectionRows.resolve")(function
   const byId = live.find((row) => row.connectionId === name);
   if (byId !== undefined) return { _tag: "found" as const, row: byId };
   const wanted = name.trim().toLowerCase();
-  const matches = live.filter((row) => row.label.toLowerCase() === wanted || row.preset === wanted);
+  const matches = live.filter(
+    (row) =>
+      row.label.toLowerCase() === wanted ||
+      row.accountLabel?.toLowerCase() === wanted ||
+      row.preset === wanted,
+  );
   if (matches.length === 1) return { _tag: "found" as const, row: matches[0]! };
   return { _tag: matches.length === 0 ? ("missing" as const) : ("ambiguous" as const), live };
 });
+
+/**
+ * A mail account's From addresses as last read from Gmail, default first; before they were read,
+ * just the account's own address.
+ */
+export const sendAsOf = (
+  row: Pick<ConnectionRow, "kind" | "accountLabel" | "sendAsJson">,
+): ReadonlyArray<KinMailAddress> => {
+  if (row.kind !== "builtin") return [];
+  const listed: unknown = row.sendAsJson === null ? [] : JSON.parse(row.sendAsJson);
+  const addresses = (Array.isArray(listed) ? listed : []).flatMap((one: unknown) => {
+    const address = text(field(one, "address"));
+    return address === null
+      ? []
+      : [{ address, name: text(field(one, "name")), isDefault: field(one, "isDefault") === true }];
+  });
+  if (addresses.length > 0) return addresses;
+  return row.accountLabel === null
+    ? []
+    : [{ address: row.accountLabel, name: null, isDefault: true }];
+};
 
 const field = (value: unknown, name: string) =>
   Predicate.hasProperty(value, name) ? value[name] : undefined;
@@ -167,6 +197,8 @@ export const connectionView = (
   state: row.state,
   paused: row.pausedAt !== null,
   accountLabel: row.accountLabel,
+  note: row.note,
+  ...(row.kind === "builtin" ? { sendAs: sendAsOf(row) } : {}),
   protocolVersion: row.protocolVersion,
   instructions: row.instructionsText,
   instructionsDigest: row.instructionsDigest,
@@ -198,7 +230,15 @@ export const promptLine = Effect.fn("KinConnectionRows.promptLine")(function* (o
         const names = read.map((tool) => tool.name).filter((name) => TOOL_NAME.test(name));
         const shown = names.slice(0, PROMPT_TOOLS).join(", ");
         const more = names.length > PROMPT_TOOLS ? ", …" : "";
-        const who = `${JSON.stringify(row.label)}${row.accountLabel === null ? "" : ` ${JSON.stringify(row.accountLabel)}`}`;
+        const account =
+          row.accountLabel === null || row.accountLabel === row.label
+            ? ""
+            : ` ${JSON.stringify(row.accountLabel)}`;
+        const aliases = sendAsOf(row)
+          .map((one) => one.address)
+          .filter((address) => address !== row.accountLabel);
+        // The note is the owner's own words; addresses are Gmail's, as plain JSON strings.
+        const who = `${JSON.stringify(row.label)}${account}${aliases.length === 0 ? "" : ` sends as ${aliases.map((one) => JSON.stringify(one)).join(", ")}`}${row.note === null ? "" : `, owner's note ${JSON.stringify(row.note)}`}`;
         return row.pausedAt !== null || row.state === "needs_sign_in" || row.state === "error"
           ? `${who} (not reachable now)`
           : `${who} (read: ${read.length} tools${read.length === 0 ? "" : `: ${shown}${more}`})`;

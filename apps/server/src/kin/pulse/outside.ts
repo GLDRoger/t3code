@@ -51,6 +51,8 @@ const linesOf = (
         ...activity.mail.map((mail): KinPulseOutsideLine => ({
           source: "mail",
           connection,
+          ...(activity.account === null ? {} : { account: cut(activity.account, 320)! }),
+          ...(mail.receivedBy === null ? {} : { to: cut(mail.receivedBy, 320)! }),
           id: cut(`${mail.threadId}:${mail.date ?? ""}`, 200)!,
           at: cut(mail.date, 60),
           who: cut(mail.from, 300),
@@ -60,6 +62,7 @@ const linesOf = (
         ...activity.calendar.map((event): KinPulseOutsideLine => ({
           source: "calendar",
           connection,
+          ...(activity.account === null ? {} : { account: cut(activity.account, 320)! }),
           id: cut(`${event.eventId}:${event.updated ?? ""}`, 200)!,
           at: cut(event.updated, 60),
           who: null,
