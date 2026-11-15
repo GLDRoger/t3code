@@ -96,13 +96,13 @@ export const KinWorkToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_assign", {
     ...shared,
-    description: `Give open tasks to people or agents, one call for a whole plan (up to 50): each with key, to ("me", an agent's agentId, or a person as people_read names them), reason (one line on why them) and optionally due. Taking a late or stalled task over is giving it to "me" or another agent with the reason. Kin shows the reason on the task and tells each person once, in their own chat with you (or the team agent), every task that came to them or was taken from them, with its due date; told names who heard, so don't message them again. A private task can't go to a teammate. Refused rows come back with why; the rest are given. Pass this turn's sourceEventId.`,
+    description: `Give open tasks to people or agents, one call for a whole plan (up to 50): each with key, to ("me", an agent's agentId, or a person as people_read names them), reason (one line on why them) and optionally due. Taking a late or stalled task over is giving it to "me" or another agent with the reason. Kin shows the reason on the task and tells each person once, in their own chat with you (or the team agent), every task that came to them or was taken from them, with its due date; told names who heard, so don't message them again. Giving a task to a person shares it with them, even a private one. A task someone handed back goes to them again only after something on it changed or the owner says so. Refused rows come back with why; the rest are given. Pass this turn's sourceEventId.`,
     parameters: Work.AssignInput,
     success: Work.AssignResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_hand_back", {
     ...shared,
-    description: `Give a task back to whoever gave it: one you hold, or one held by the person asking you in this turn when they say they can't take it ("I'm on the release"). Pass their words as note. It goes back open to the agent or person that gave it; an agent is woken with the note to give it to someone else or ask the owner. Pass this turn's sourceEventId.`,
+    description: `Give a task back to whoever gave it: one you hold, or one held by the person asking you in this turn when they say they can't take it ("I'm on the release"). Pass their words as note; handing back your own, say in note what blocks it and what would unblock it. It goes back open to the agent or person that gave it; an agent is woken with the note to give it to someone else or ask the owner, and can't give it straight back to you until something on it changes or the owner says so. Pass this turn's sourceEventId.`,
     parameters: Work.HandBackInput,
     success: Work.HandBackResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

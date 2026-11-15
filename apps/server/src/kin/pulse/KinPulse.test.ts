@@ -462,10 +462,14 @@ describe("KinPulse", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("people behind a shared turn see only Work facts on tasks all of them may see", () =>
+  it.effect("people see only facts on tasks all of them may see, and only their own holds", () =>
     Effect.gen(function* () {
       yield* seed;
+      const sql = yield* SqlClient.SqlClient;
       const at = B + 12 * DAY;
+      // G02: with Clients on, a client's facts are still owner-level.
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mate}`;
+      assert.isNotEmpty(keyed((yield* read(at)).facts, "client_waiting_on_us", "C-1"));
       const shown = (yield* read(at, { _tag: "people", people: [mate] })).facts;
       // W-14 is Meera's own meeting: its follow-up is hers to see.
       assert.sameMembers(
@@ -476,6 +480,33 @@ describe("KinPulse", () => {
       const both = (yield* read(at, { _tag: "people", people: [mate, KinPersonId.make("other")] }))
         .facts;
       assert.deepStrictEqual([...new Set(both.map((fact) => fact.subject.key))], ["W-9"]);
+      // G10: the check-in snoozing Meera's late task hides it from the owner's view, not hers.
+      const late = keyed(shown, "task_late", "W-8")[0]!;
+      yield* KinPulse.handle({
+        orgId,
+        at,
+        viewer: { _tag: "owner" },
+        by: { _tag: "agent", agentId: chief },
+        factKey: late.key,
+        action: "got_it",
+      });
+      const handledFor = (viewer: KinPulse.Viewer) =>
+        read(at, viewer).pipe(
+          Effect.map((result) => keyed(result.facts, "task_late", "W-8")[0]?.handled ?? null),
+        );
+      assert.isNotNull(yield* handledFor({ _tag: "owner" }));
+      assert.isNull(yield* handledFor({ _tag: "people", people: [mate] }));
+      // Her own "I've got it" is hers alone.
+      yield* KinPulse.handle({
+        orgId,
+        at,
+        viewer: { _tag: "people", people: [mate] },
+        by: { _tag: "person", personId: mate },
+        factKey: late.key,
+        action: "got_it",
+      });
+      assert.isNotNull(yield* handledFor({ _tag: "people", people: [mate] }));
+      assert.isNull(yield* handledFor({ _tag: "owner" }));
     }).pipe(Effect.provide(layer)),
   );
 

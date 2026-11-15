@@ -31,6 +31,7 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { SHARED_REFUSAL, effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
+import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
 import {
@@ -59,6 +60,7 @@ import {
   iso,
   notFound,
   ownerZone,
+  principalId,
   type RecordRow,
   sensitiveNow,
   toRecord,
@@ -72,13 +74,15 @@ import {
   stateLabel,
   unknownList,
 } from "./registers.ts";
+import { isSensitiveRefusal, sensitiveShown, showsSensitive } from "./workerAttempts.ts";
 import {
-  isSensitiveRefusal,
-  sensitiveShown,
-  showsSensitive,
-  turnSensitive,
-} from "./workerAttempts.ts";
-import { ledProjects, TEAM_REFUSED, teamChanges, viewSees, viewVisible } from "./teamView.ts";
+  ledProjects,
+  TEAM_REFUSED,
+  teamChanges,
+  teamPairs,
+  viewSees,
+  viewVisible,
+} from "./teamView.ts";
 import { type AssignNotice, tellPeople } from "./assignNotices.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 
@@ -411,8 +415,9 @@ export const AssignResult = Schema.Struct({
 export const HandBackInput = Schema.Struct({
   key: KinRecordKey,
   sourceEventId: TrimmedNonEmptyString,
-  note: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(280))).annotate({
-    description: "Why, in the holder's own words when a person is handing it back.",
+  note: TrimmedNonEmptyString.check(Schema.isMaxLength(280)).annotate({
+    description:
+      'What blocks it and what would unblock it ("needs the repo URL and hosting choice"); a person\'s own words when they hand it back.',
   }),
 });
 export const HandBackResult = Schema.Struct({
@@ -1272,26 +1277,8 @@ export const get = leadTool("KinWorkTools.get", runGet);
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   yield* admitted(lead, "record_create", input);
   const records = yield* KinRecords;
+  // In a turn others read, the write's own check (`viewGuard`) decides what may be made for them.
   const team = yield* viewOf(lead);
-  // Inside a project everyone behind the turn leads, it files and assigns as they would; the
-  // write's own check (`teamGuard`) decides again for each of them.
-  const leads = new Set<string>();
-  if (team !== undefined)
-    for (const row of input.records) {
-      const projectId = yield* refOrNull(lead, row.project, "projects");
-      if (
-        projectId !== null &&
-        projectId !== undefined &&
-        (yield* viewLeads(lead, team, projectId))
-      )
-        leads.add(row.project ?? "");
-      else if (
-        (row.list !== undefined && row.list !== "work") ||
-        (row.owner !== undefined && row.owner !== "me") ||
-        ownersInput(row, ["suggested"])
-      )
-        return yield* TEAM_REFUSED;
-    }
   const source = yield* sourceOf(lead, input.sourceEventId);
   const owned = yield* writerFor(lead);
   const writer =
@@ -1299,8 +1286,6 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       ? owned
       : { ...viewWriter(owned, team), teamShared: yield* inCompanyChat(lead) };
   const lists = yield* allLists(lead.orgId);
-  // A turn shown something sensitive may be writing it down, so what it writes is labelled too.
-  const marked = yield* turnSensitive(lead.orgId, lead.wakeupId);
   const results = [];
   const notices: Array<AssignNotice> = [];
   for (const row of input.records) {
@@ -1351,17 +1336,15 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     const fields = { ...fieldsFrom(row), ...spineSet, ...goal };
     const inProject = projectId !== undefined ? projectId : spine.projectId;
     const { row: stored, created } = yield* records.create(lead.orgId, writer, {
-      // A teammate files only Work, which is the default; a project's lead in its lists too.
-      ...(team === undefined || leads.has(row.project ?? "\u0000") ? { list } : {}),
+      list,
       originKey,
       title: row.title,
       owner,
       ...(partyId === undefined ? {} : { partyId }),
       ...(inProject === undefined ? {} : { projectId: inProject }),
       ...(row.repo === undefined ? {} : { repo: row.repo }),
-      ...(row.sensitive === undefined &&
-      !marked &&
-      !(row.measure !== undefined && isMoneyMeasure(row.measure))
+      // Private only when asked, or a money goal; never for what the turn happened to read.
+      ...(row.sensitive === undefined && !(row.measure !== undefined && isMoneyMeasure(row.measure))
         ? {}
         : { sensitive: true }),
       ...(Object.keys(fields).length === 0 ? {} : { fields }),
@@ -1411,7 +1394,6 @@ const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
   return row;
 });
 
-const UNCARRYING = new Set(["state", "owner", "waitingOn", "confirmed"]);
 const reasonOf = (row: RecordRow) => {
   const reason = parseFields(row.fieldsJson).reason;
   return typeof reason === "string" ? reason : null;
@@ -1483,6 +1465,35 @@ const explainedHonestly = Effect.fn("KinWorkTools.explainedHonestly")(function* 
       `${before.key} stays unexplained: no invoice payment or expense records its money yet. Record that first (payment_record, or an expense with record_create), or ask the owner to confirm it on the statement's card; a transfer, bank charges or interest may be marked so with its category. Don't say it is explained.`,
     );
 });
+/**
+ * G13: a task handed back goes to the same holder again only once something on it changed since,
+ * or the owner says so in this turn; otherwise ask the owner or give it to someone else.
+ */
+const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
+  lead: Lead,
+  before: RecordRow,
+  to: KinWorkPrincipal,
+) {
+  const [last] = (yield* (yield* KinRecords).detail(before, 1)).changes;
+  const back = last?.fields.find((field) => field.field === "handedBack");
+  if (back === undefined || back.from !== `${to._tag}:${principalId(to)}`) return;
+  const sql = yield* SqlClient.SqlClient;
+  const owners = [...(yield* ownerLevelPeople(lead.orgId))];
+  const said = yield* sql`SELECT 1 FROM kin_events e
+    JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+      AND m.chat_id = json_extract(e.json, '$.chatId')
+    WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
+      AND e.wakeup_id = ${lead.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
+      AND m.author_person_id IN ${sql.in(owners.length === 0 ? [""] : owners)}
+    LIMIT 1`;
+  if (said.length > 0) return;
+  const name = yield* namer(lead);
+  return yield* new KinChatError({
+    reason: "not_allowed",
+    message: `${name(to) ?? "They"} handed ${before.key} back${back.to === null ? "" : `: "${back.to}"`}. Nothing on it has changed since, so don't give it straight back. Fix what blocks it first, ask the owner, or give it to someone else.`,
+  });
+});
+
 const runUpdate = Effect.fnUntraced(function* (lead: Lead, input: typeof UpdateInput.Type) {
   const { result, notices } = yield* updateCore(lead, input);
   return { ...(yield* tell(lead, notices)), ...result };
@@ -1498,14 +1509,6 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, input: typeof Update
   if (before === undefined) return yield* notFound(input.key);
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(input.key);
-  // Who holds a task is the owner's to change here, and its lead's inside their project: a new
-  // holder clears its assigner. The write's own check (`teamGuard`) decides again.
-  if (
-    team !== undefined &&
-    ownersInput(input, ["owner"]) &&
-    !(yield* viewLeads(lead, team, before.projectId))
-  )
-    return yield* TEAM_REFUSED;
   if (listOf(before.registerId) === "docs") return yield* isDoc(input.key);
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category);
   const def = yield* listFor(lead, before.registerId);
@@ -1525,6 +1528,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, input: typeof Update
     ...(input.repo === undefined ? {} : { repo: input.repo }),
     ...(input.sensitive === undefined ? {} : { sensitive: true }),
   };
+  if (patch.owner !== undefined) yield* notBouncedBack(lead, before, patch.owner);
   const partyId = yield* refOrNull(lead, input.client, "clients");
   const projectId = yield* refOrNull(lead, input.project, "projects");
   const spine = yield* spineOf(
@@ -1548,24 +1552,17 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, input: typeof Update
     ...money,
     ...spine.at,
   };
-  // As in create; a state, owner or confirmation alone carries nothing the turn read. Nor does
-  // an assignment's who, why, size and when: what the one it goes to is told.
-  const assigning = input.owner !== undefined;
-  const carries = Object.entries(written).some(
-    ([field, value]) =>
-      !UNCARRYING.has(field) &&
-      !(assigning && (field === "dueAt" || field === "dueAllDay")) &&
-      !(
-        assigning &&
-        field === "fields" &&
-        Object.keys(value as object).every((key) => key === "reason" || key === "size")
-      ),
+  const seenBefore = yield* teamPairs(lead.orgId, [before.recordId]);
+  const after = yield* records.update(lead.orgId, writer, input.key, written, input.expectedRev);
+  const seenAfter = new Set(
+    (yield* teamPairs(lead.orgId, [after.recordId])).map((p) => p.personId),
   );
-  const full: Patch =
-    carries && (yield* turnSensitive(lead.orgId, lead.wakeupId))
-      ? { ...written, sensitive: true }
-      : written;
-  const after = yield* records.update(lead.orgId, writer, input.key, full, input.expectedRev);
+  const name = yield* namer(lead);
+  const hiddenFrom = seenBefore
+    .filter((pair) => !seenAfter.has(pair.personId))
+    .map(
+      (pair) => name({ _tag: "person", personId: KinPersonId.make(pair.personId) }) ?? "a teammate",
+    );
   // Kin's own change, a label kept on, follows the lead's in the same write.
   const changed =
     after.rev === before.rev
@@ -1585,6 +1582,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, input: typeof Update
       state: after.state,
       changed,
       ...marksOf(lists, after),
+      ...(hiddenFrom.length === 0 ? {} : { noLongerSeenBy: hiddenFrom }),
     },
     notices: movedNotices(before, after),
   };
@@ -1594,7 +1592,6 @@ export const update = leadTool("KinWorkTools.update", runUpdate);
 /** Several tasks given out at once: each person hears once, however many came to them. */
 const runAssign = Effect.fnUntraced(function* (lead: Lead, input: typeof AssignInput.Type) {
   yield* admitted(lead, "record_assign", input);
-  if ((yield* viewOf(lead)) !== undefined) return yield* TEAM_REFUSED;
   const name = yield* namer(lead);
   const notices: Array<AssignNotice> = [];
   const tasks = [];
@@ -1651,11 +1648,19 @@ const runHandBack = Effect.fnUntraced(function* (lead: Lead, input: typeof HandB
     });
   const owned = yield* writerFor(lead);
   const writer = team === undefined ? owned : viewWriter(owned, team);
-  const after = yield* records.handBack(lead.orgId, writer, input.key, holder, input.note ?? null);
+  const after = yield* records.handBack(lead.orgId, writer, input.key, holder, input.note);
   const to = toRecord(after, 0).owner;
   const notices: Array<AssignNotice> =
     to._tag === "person"
-      ? [{ personId: to.personId, kind: "returned", row: after, why: input.note ?? null }]
+      ? [
+          {
+            personId: to.personId,
+            kind: "returned",
+            row: after,
+            why: input.note,
+            ...(holder._tag === "person" ? { by: name(holder) ?? "Your teammate" } : {}),
+          },
+        ]
       : [];
   return {
     ...(yield* tell(lead, notices)),

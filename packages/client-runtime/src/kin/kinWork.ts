@@ -737,6 +737,8 @@ export function kinWorkPrivacy(input: {
   readonly inherited: boolean;
   /** What makes it private when it is not its own label: "its client", "Acme". */
   readonly because: string;
+  /** Who still sees it when its own label is on, where that is more than you. */
+  readonly privateNote?: string;
 }): KinWorkPrivacy {
   return {
     private: input.sensitive || input.inherited,
@@ -744,7 +746,7 @@ export function kinWorkPrivacy(input: {
     note: input.inherited
       ? `Private because ${input.because} is.`
       : input.sensitive
-        ? "Only you see this."
+        ? (input.privateNote ?? "Only you see this.")
         : "Not kept from your team.",
   };
 }
@@ -752,7 +754,7 @@ export function kinWorkPrivacy(input: {
 export const KIN_WORK_SHARE = {
   label: "Share with team",
   on: "Your teammates can see this task and follow it.",
-  off: "Teammates don't see this unless it's theirs.",
+  off: "Teammates see this only if they hold it, or it's in a project they lead or are on.",
   failed: "Couldn't change who sees this. Try again.",
 };
 
@@ -1021,7 +1023,13 @@ export function kinWorkItemView(
   const given =
     lastMove !== undefined && handBack !== undefined
       ? `${kinWorkActorName(lastMove.by, names)} handed this back · ${formatKinTime(new Date(lastMove.at), now)}`
-      : giver === null || kinWorkSamePrincipal(giver, item.owner)
+      : giver === null ||
+          kinWorkSamePrincipal(giver, item.owner) ||
+          // An agent that made the task for itself was given it by no one.
+          (item.assignedByAgent === undefined &&
+            lastMove?.kind === "created" &&
+            item.createdBy._tag !== "system" &&
+            kinWorkSamePrincipal(item.createdBy, item.owner))
         ? null
         : [
             `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}`,
@@ -1107,10 +1115,12 @@ export function kinWorkItemView(
     project:
       item.project === undefined ? null : { key: item.project.key, title: item.project.title },
     side: item.side,
+    // A task is private only by its own label; whoever holds it still sees it.
     privacy: kinWorkPrivacy({
       sensitive: item.sensitive,
-      inherited: item.sensitiveInherited === true,
+      inherited: false,
       because: "its client or project",
+      privateNote: "Only you, co-owners and whoever holds it see this.",
     }),
     shared: item.shared === true,
   };
@@ -1168,7 +1178,7 @@ export interface KinWorkAssignee {
 export const KIN_WORK_ASSIGN = {
   title: "Give this to",
   leads: "Agents",
-  leadsHint: "An agent starts on it right away. Its progress shows here.",
+  leadsHint: "Given to an agent, it starts right away. Its progress shows here.",
   people: "People",
   /** A re-invited teammate who hasn't opened the new link yet. */
   invited: "Invited, hasn't joined yet",
@@ -1386,8 +1396,9 @@ function problemOf(error: unknown, doing: Refused): string {
       return KIN_WORK_CHANGED;
     case "not_found":
       return "That isn't there any more. Someone may have left, or the task was removed.";
+    // The host says what is true for this person and task, in words meant for them.
     case "not_allowed":
-      return "Only the owner can change Work for now.";
+      return error.message.trim() === "" ? "You can't change this task." : error.message;
     case "unavailable":
     case "disabled":
       return "Kin isn't answering right now. Try again in a moment.";
