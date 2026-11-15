@@ -4479,7 +4479,7 @@ interface ClaudeLiveQueryContext {
   selection: CompiledClaudeModelSelection;
   readonly closed: Deferred.Deferred<void, never>;
   lastTurn: ActiveClaudeTurnContext | null;
-  // Set when the process ended before any turn attached, such as a binary that isn't there.
+  // Set when the process failed before any turn attached, such as a binary that isn't there.
   exitedBeforeTurn: { readonly cause: unknown } | null;
   // "early" echoes on the first frame; "acknowledged" confirms uuid acceptance, but resume turns can still precede the prompt.
   promptEchoMode: "unknown" | "acknowledged" | "early" | "result_only";
@@ -8494,9 +8494,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           // A replacement query can reuse the native thread id; only this query's turn is ours.
           const context = closedQuery.lastTurn;
           if (context === null) {
-            closedQuery.exitedBeforeTurn = {
-              cause: cause === undefined ? undefined : Cause.squash(cause),
-            };
+            if (cause !== undefined) closedQuery.exitedBeforeTurn = { cause: Cause.squash(cause) };
             return;
           }
           const interrupted =
