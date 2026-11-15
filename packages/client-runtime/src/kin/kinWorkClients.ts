@@ -16,6 +16,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { kinLinkToOpen } from "./kinChatFeed.ts";
+import { kinMoneyText } from "./kinLists.ts";
 import { formatKinTime } from "./kinScreenState.ts";
 import {
   kinWorkAllDay,
@@ -111,6 +112,14 @@ export const KIN_PROJECTS = {
   privateLabel: "Keep private",
   privateOn: "Private. Only you see this project and its tasks.",
   privateOff: "Your team will be able to see this project.",
+  milestones: "Milestones",
+  addMilestone: "Add milestone",
+  noMilestones: "No milestones yet. Ask an agent to plan it from the PRD, or add one.",
+  people: "People",
+  meetings: "Meetings",
+  specChanged: "Spec changed",
+  money: "Money",
+  seeAllMoney: "See all in Money",
 };
 
 export const KIN_PROJECT_GONE = {
@@ -585,9 +594,14 @@ export function kinWorkTimeline(
   return items.map((item) => ({
     key: String(item.seq),
     when: formatKinTime(new Date(item.at), now),
-    text: kinWorkChangeText(item, names, now, item.record.list),
+    text: kinWorkChangeText(
+      item,
+      names,
+      now,
+      item.record.list === "milestones" ? "work" : item.record.list,
+    ),
     about: item.record.key === own ? null : item.record.title,
-    task: item.record.list === "work" ? item.record.key : null,
+    task: item.record.list === "work" || item.record.list === "milestones" ? item.record.key : null,
   }));
 }
 
@@ -638,6 +652,99 @@ export interface KinProjectPageView {
   readonly changedMore: string | null;
   readonly repos: ReadonlyArray<string>;
   readonly notes: string | null;
+  /** "Fixed price · ₹6,00,000 · 18 Nov to 1 Mar"; null when none of it is set. */
+  readonly terms: string | null;
+  readonly milestones: ReadonlyArray<KinMilestoneView>;
+  readonly people: ReadonlyArray<{
+    readonly key: string;
+    readonly name: string;
+    /** "Lead · 3 open, 1 late". */
+    readonly line: string;
+  }>;
+  readonly meetings: ReadonlyArray<KinWorkRowView>;
+  readonly specChanged: ReadonlyArray<{
+    readonly key: KinRecordKey;
+    readonly title: string;
+    /** "Lumen spec · checkout section changed", or "… was removed". */
+    readonly line: string;
+    readonly doc: KinRecordKey;
+  }>;
+  /** Quoted, invoiced, received, unpaid, each per currency; empty when nothing is filed here. */
+  readonly money: ReadonlyArray<{ readonly label: string; readonly value: string }>;
+}
+
+export interface KinMilestoneView {
+  readonly key: KinRecordKey;
+  readonly title: string;
+  /** "3 of 8 done · due Fri 20 Nov". */
+  readonly line: string;
+  /** Done share, 0 to 1. */
+  readonly progress: number;
+  readonly tone: "late" | "at_risk" | "done" | null;
+  /** "Late", "At risk" or "Done". */
+  readonly badge: string | null;
+}
+
+const BILLING: Record<string, string> = {
+  fixed: "Fixed price",
+  hourly: "Hourly",
+  retainer: "Retainer",
+};
+/** "1 Dec" for a `YYYY-MM-DD` day, read as that calendar day wherever the viewer is. */
+const dayText = (day: string) =>
+  new Date(`${day}T12:00:00Z`).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
+
+function projectTerms(project: KinProjectPage["project"], target: string | null): string | null {
+  const parts = [
+    project.billing === undefined || project.billing === null ? null : BILLING[project.billing],
+    project.value === undefined || project.value === null
+      ? null
+      : `${kinMoneyText(project.value)}${project.billing === "retainer" ? " a period" : ""}`,
+    project.startsOn === undefined || project.startsOn === null
+      ? null
+      : target === null
+        ? `From ${dayText(project.startsOn)}`
+        : `${dayText(project.startsOn)} to ${target}`,
+    project.renewsOn === undefined || project.renewsOn === null
+      ? null
+      : `Renews ${dayText(project.renewsOn)}`,
+  ].filter((part) => part !== null && part !== undefined);
+  return parts.length === 0 ? null : parts.join(" · ");
+}
+
+function kinMilestoneView(
+  milestone: NonNullable<KinProjectPage["milestones"]>[number],
+  names: KinWorkNames,
+  now: Date,
+): KinMilestoneView {
+  const due = kinWorkDueText(milestone, names, now);
+  const tone =
+    milestone.state === "done"
+      ? "done"
+      : milestone.late
+        ? "late"
+        : milestone.atRisk
+          ? "at_risk"
+          : null;
+  return {
+    key: milestone.key,
+    title: milestone.title,
+    line: [
+      milestone.total === 0 ? "No tasks yet" : `${milestone.done} of ${milestone.total} done`,
+      due === null ? null : `due ${due}`,
+      milestone.state === "dropped" ? "dropped" : null,
+    ]
+      .filter((part) => part !== null)
+      .join(" · "),
+    progress: milestone.total === 0 ? 0 : milestone.done / milestone.total,
+    tone,
+    badge:
+      tone === "done" ? "Done" : tone === "late" ? "Late" : tone === "at_risk" ? "At risk" : null,
+  };
 }
 
 export function kinProjectPageView(
@@ -726,6 +833,44 @@ export function kinProjectPageView(
     changedMore: more > 0 ? `and ${more} more` : null,
     repos: project.repos,
     notes: notes === "" ? null : notes,
+    terms: projectTerms(project, target),
+    milestones: (page.milestones ?? []).map((one) => kinMilestoneView(one, names, now)),
+    people: (page.people ?? []).map((one) => ({
+      key: one.who._tag === "agent" ? `agent:${one.who.agentId}` : `person:${one.who.personId}`,
+      name: kinWorkName(one.who, names),
+      line: [
+        one.lead ? "Lead" : one.member ? "Member" : null,
+        one.open === 0
+          ? "nothing open"
+          : `${one.open} open${one.late > 0 ? `, ${one.late} late` : ""}`,
+      ]
+        .filter((part) => part !== null)
+        .join(" · "),
+    })),
+    meetings: (page.meetings ?? []).map((one) =>
+      kinWorkRow(one, names, now, { party: null, project: ref }),
+    ),
+    specChanged: (page.specChanged ?? []).map((one) => ({
+      key: one.record.key,
+      title: one.record.title,
+      line: `${one.doc.title} · ${one.section} section ${one.gone ? "was removed" : "changed"}`,
+      doc: one.doc.key,
+    })),
+    money:
+      page.money === undefined
+        ? []
+        : (
+            [
+              ["Quoted", page.money.quoted],
+              ["Invoiced", page.money.invoiced],
+              ["Received", page.money.received],
+              ["Unpaid", page.money.unpaid],
+            ] as const
+          ).flatMap(([label, sums]) =>
+            sums.length === 0
+              ? []
+              : [{ label, value: sums.map((money) => kinMoneyText(money)).join(" + ") }],
+          ),
   };
 }
 
@@ -738,6 +883,9 @@ export const kinProjectPageKeys = (page: KinProjectPage): ReadonlySet<string> =>
     ...(page.nextDue === null ? [] : [page.nextDue.key]),
     ...page.pullRequests.map((pull) => pull.record.key),
     ...page.changedThisWeek.items.map((item) => item.record.key),
+    ...(page.milestones ?? []).map((one) => one.key),
+    ...(page.meetings ?? []).map((one) => one.key),
+    ...(page.specChanged ?? []).map((one) => one.record.key),
   ]);
 
 /** A client or project as a filter, a form or a picker holds it. */

@@ -701,6 +701,8 @@ export interface KinWorkItemView {
   readonly side: KinRecordSide;
   /** Whether it is kept to the owner, and whether that is its own label to change. */
   readonly privacy: KinWorkPrivacy;
+  /** The owner shared it with the team. */
+  readonly shared: boolean;
 }
 
 /** How private something is, and what to say about it beside the label. */
@@ -726,11 +728,23 @@ export function kinWorkPrivacy(input: {
       ? `Private because ${input.because} is.`
       : input.sensitive
         ? "Only you see this."
-        : "Your team will be able to see this.",
+        : "Not kept from your team.",
   };
 }
 
-const CATEGORY_LABEL = { task: null, issue: "Issue", obligation: "Commitment" } as const;
+export const KIN_WORK_SHARE = {
+  label: "Share with team",
+  on: "Your teammates can see this task and follow it.",
+  off: "Teammates don't see this unless it's theirs.",
+  failed: "Couldn't change who sees this. Try again.",
+};
+
+const CATEGORY_LABEL = {
+  task: null,
+  issue: "Issue",
+  obligation: "Commitment",
+  meeting: "Meeting",
+} as const;
 
 export const kinWorkActorName = (actor: KinWorkActor, names: KinWorkNames) =>
   actor._tag === "system" ? "Kin" : kinWorkName(actor, names);
@@ -1047,6 +1061,7 @@ export function kinWorkItemView(
       inherited: item.sensitiveInherited === true,
       because: "its client or project",
     }),
+    shared: item.shared === true,
   };
 }
 

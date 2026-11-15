@@ -27,7 +27,6 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinListBanner } from "./components/KinListBanner";
-import { KinVisualHosts } from "./KinVisualHosts";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 
 export type KinTeamParams = { readonly environmentId: string; readonly orgId: string };
@@ -178,7 +177,6 @@ function KinTeamBody(target: KinTeamTarget) {
               </ListSection>
             </>
           )}
-          {team.allowed ? <KinVisualHosts environmentId={environmentId} orgId={orgId} /> : null}
         </ScreenScrollView>
       </ScreenContent>
     </View>

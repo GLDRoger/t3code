@@ -35,8 +35,19 @@ export const LISTS: Record<ListName, List> = {
     prefix: "W",
     noun: "entry",
     states: ["open", "doing", "waiting", "done", "dropped"],
-    categories: ["task", "issue", "obligation"],
-    fields: [],
+    categories: ["task", "issue", "obligation", "meeting"],
+    // The project spine: a milestone's key, S/M/L, why its holder was picked, the doc section it
+    // came from with that section's hash then, and a meeting's people and place.
+    fields: [
+      "milestone",
+      "size",
+      "reason",
+      "fromDoc",
+      "fromSection",
+      "fromHash",
+      "attendees",
+      "where",
+    ],
   },
   clients: {
     name: "Clients",
@@ -61,7 +72,16 @@ export const LISTS: Record<ListName, List> = {
     noun: "project",
     states: ["open", "done", "dropped"],
     categories: [],
-    fields: ["repos"],
+    // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`.
+    fields: ["repos", "billing", "value", "startsOn", "renewsOn", "members"],
+  },
+  milestones: {
+    name: "Milestones",
+    prefix: "M",
+    noun: "milestone",
+    states: ["open", "done", "dropped"],
+    categories: [],
+    fields: [],
   },
   docs: {
     name: "Docs",
@@ -89,7 +109,9 @@ export const sensitiveFields = (list: ListName): ReadonlyArray<string> =>
     ? KIN_SENSITIVE_FIELDS.clients
     : list === "contacts"
       ? KIN_SENSITIVE_FIELDS.contacts
-      : [];
+      : list === "projects"
+        ? KIN_SENSITIVE_FIELDS.projects
+        : [];
 
 export type FieldValue = KinFieldValue;
 export type FieldValues = Readonly<Record<string, FieldValue>>;

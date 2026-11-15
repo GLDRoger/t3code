@@ -1,5 +1,6 @@
 import {
   KIN_CHOICE_CARD_ACTION,
+  type KinChatError,
   KIN_CHOICE_CARD_TTL_MS,
   KinChoiceCardState,
   type KinPersonId,
@@ -9,6 +10,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { type KinCardNotice, kinActionFailureNotice } from "./kinDeferralPresentation.ts";
 import { kinSentences } from "./kinScreenState.ts";
 
 export const KIN_CHOICE_EXPIRED_TEXT = "This question expired. Answer in the chat instead.";
@@ -102,4 +104,15 @@ export function kinChoiceActInput(
     value: optionId,
     clientActionId,
   };
+}
+
+/**
+ * Why a choice tap was refused. A card Kin asked for itself (a receipt, a statement's currency)
+ * refuses in the owner's words, such as "The figures changed…", so those are shown as said.
+ */
+export function kinChoiceFailureNotice(cause: KinChatError): KinCardNotice {
+  const said = cause.message.trim();
+  if ((cause.reason === "conflict" || cause.reason === "widget_changed") && said !== "")
+    return { kind: cause.reason === "conflict" ? "error" : "stale", text: said };
+  return kinActionFailureNotice(cause);
 }
