@@ -8,7 +8,13 @@ import type {
 } from "@t3tools/contracts";
 
 import { kinEstimate, kinTotalsEstimate, type KinRates } from "./kinCurrency.ts";
-import { kinFieldText, kinMoneyText, kinTotalsLines, type KinListContext } from "./kinLists.ts";
+import {
+  kinFieldText,
+  kinMinorDigits,
+  kinMoneyText,
+  kinTotalsLines,
+  type KinListContext,
+} from "./kinLists.ts";
 
 /**
  * Subscriptions: a list people keep, read as what the company pays for again and again. Kin
@@ -363,7 +369,11 @@ export function kinSubscriptionsView(
     a.sortDay.localeCompare(b.sortDay);
   const strip = ({ sortDay: _sortDay, ...row }: (typeof rows)[number]): KinSubscriptionRow => row;
   const active = rows.filter((row) => !row.cancelled).sort(bySoonest);
-  const monthlyTotals = totalsOf(monthly);
+  // A yearly plan averaged over twelve months is an estimate; it shows in whole units.
+  const monthlyTotals = totalsOf(monthly).map((money) => {
+    const unit = 10 ** kinMinorDigits(money.currency);
+    return { ...money, minor: Math.round(money.minor / unit) * unit };
+  });
   const allMonthly = kinTotalsEstimate(monthlyTotals, rates);
   const runRateTotals = totalsOf(runRate);
   const missing = [

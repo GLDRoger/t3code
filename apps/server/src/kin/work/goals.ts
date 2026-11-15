@@ -18,7 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRecords, requestHashOf } from "./KinRecords.ts";
 import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
-import { DEFAULT_CURRENCY, dayIn, formatMoney, parseAmount } from "./money.ts";
+import { DEFAULT_CURRENCY, dayIn, formatMoneyPlain, parseAmount } from "./money.ts";
 import { inList, ownerWriter, theOwner } from "./ownerWork.ts";
 import { playbookThreshold } from "./playbooks.ts";
 import { countedPayment, endOfDay, ownerZone, startOfDay } from "./recordRows.ts";
@@ -222,7 +222,7 @@ const progressOf = Effect.fn("KinGoals.progress")(function* (
 export const goalFigure = (goal: KinGoal, value: number, withUnit = true) =>
   goal.currency === undefined
     ? `${Math.round(value)}${goal.unit === undefined || !withUnit ? "" : ` ${goal.unit}`}`
-    : formatMoney({ minor: Math.round(value / 100) * 100, currency: goal.currency });
+    : formatMoneyPlain({ minor: Math.round(value / 100) * 100, currency: goal.currency });
 
 /** One line per goal for a prompt: where it stands against its line. */
 export const goalLine = (goal: KinGoal) =>

@@ -6,6 +6,7 @@ import { waitingSince } from "../../work/crm.ts";
 import { DAY_MS, threshold, toMs } from "../thresholds.ts";
 import {
   dayOf,
+  daysAgoText,
   daysText,
   elapsed,
   entryColumns,
@@ -56,7 +57,6 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
     ORDER BY r.due_at, r.key LIMIT ${SENSE_CAP * 2}`;
   for (const row of late) {
     const due = row.dueAt!;
-    const days = elapsed(due, at, "days");
     const ours = row.side === "ours";
     facts.push(
       workFact(ctx, row, {
@@ -64,7 +64,7 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
         key: `${ours ? "task_late" : "theirs_late"}:${row.key}:due=${due}`,
         since: iso(due + toMs(grace)),
         measure: measure(elapsed(due, at, "hours"), grace),
-        consequence: `${ours ? "Was due" : "They owed it by"} ${dayOf(ctx, due)}, ${days < 1 ? "today" : `${daysText(days)} ago`}.`,
+        consequence: `${ours ? "Was due" : "They owed it by"} ${dayOf(ctx, due)}, ${daysAgoText(ctx, due)}.`,
         wake: "sweep",
       }),
     );

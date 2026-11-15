@@ -5,7 +5,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
-import { formatMinor } from "../../work/money.ts";
+import { formatMoneyPlain } from "../../work/money.ts";
 import { countedEntry, endOfDay, invoiceDue } from "../../work/recordRows.ts";
 import { DAY_MS, type Threshold, threshold, toMs } from "../thresholds.ts";
 import {
@@ -37,7 +37,7 @@ const projectValue = (json: string | null) =>
 const amountText = (row: Pick<EntryRow, "amountMinor" | "currency">) =>
   row.amountMinor === null || row.currency === null
     ? undefined
-    : formatMinor(BigInt(row.amountMinor), row.currency);
+    : formatMoneyPlain({ minor: row.amountMinor, currency: row.currency });
 
 /** Money facts are the owner's alone and go to the Finance agent, else the Chief of staff. */
 const moneyFact = (
@@ -84,7 +84,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     const chase = yield* forClient("chase_invoice_after_days", row.clientId);
     if (row.base > at - toMs(chase)) continue;
     const days = elapsed(row.base, at, "days");
-    const owed = formatMinor(BigInt(row.amountMinor! - row.paid), row.currency!);
+    const owed = formatMoneyPlain({ minor: row.amountMinor! - row.paid, currency: row.currency! });
     facts.push(
       moneyFact(ctx, row, {
         sense: "invoice_overdue",

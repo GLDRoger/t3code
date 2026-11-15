@@ -115,7 +115,7 @@ describe("kinSubscriptions", () => {
           fields: { billing: "Monthly", usedFor: "Design", usedBy: `person:${owner}` },
         }),
         entry("SUB-2", {
-          amount: { minor: 120_00, currency: "USD" },
+          amount: { minor: 125_00, currency: "USD" },
           dateAt: day("2027-03-01"),
           repeat: { every: "year" },
         }),
@@ -142,18 +142,19 @@ describe("kinSubscriptions", () => {
       ["SUB-4", "No renewal day", "Cycle not set"],
     ]);
     expect(view.active[0]).toMatchObject({ purpose: "Design", who: "You", amount: "₹2,000" });
-    expect(view.active[1]?.estimate).toBe("about ₹10,080");
+    expect(view.active[1]?.estimate).toBe("about ₹10,500");
     expect(view.renewing.map((row) => row.key)).toEqual(["SUB-1"]);
     // Cancelled with a renewal still ahead: it runs until that day.
     expect(view.cancelled.map((row) => [row.key, row.when])).toEqual([
       ["SUB-3", `Ends ${short(11, 5)}`],
     ]);
+    // $125 a year is $10.42 a month: an average, shown in whole dollars.
     expect(view.monthly.map((line) => [line.text, line.estimate])).toEqual([
       ["₹2,000", null],
       ["$10", "about ₹840"],
     ]);
     expect(view.monthlyAll).toBe("about ₹2,840 in all");
-    expect(view.runRate.map((line) => line.text)).toEqual(["₹24,000", "$120"]);
+    expect(view.runRate.map((line) => line.text)).toEqual(["₹24,000", "$125"]);
     // Since April: seven monthly renewals of ₹2,000; SUB-3's monthly $10 from April to its end.
     expect(view.yearSoFar.map((line) => line.text)).toEqual(["₹14,000", "$80"]);
     expect(view.thisMonth.map((line) => line.text)).toEqual(["₹2,000", "$10"]);

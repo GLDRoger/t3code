@@ -99,6 +99,11 @@ export const elapsed = (from: number, to: number, unit: "hours" | "days") =>
   Math.floor((to - from) / (unit === "hours" ? HOUR_MS : DAY_MS));
 
 export const dayOf = (ctx: SenseContext, ms: number) => dayIn(ms, ctx.zone);
+/** How long ago a day was in the owner's zone, by calendar day: "today", "yesterday", "3 days ago". */
+export const daysAgoText = (ctx: SenseContext, ms: number) => {
+  const days = Math.round((Date.parse(dayOf(ctx, ctx.at)) - Date.parse(dayOf(ctx, ms))) / DAY_MS);
+  return days < 1 ? "today" : days === 1 ? "yesterday" : `${daysText(days)} ago`;
+};
 /** A moment in the owner's zone, such as "Thu 19 Nov, 15:00". */
 export const whenOf = (ctx: SenseContext, ms: number) =>
   new Intl.DateTimeFormat("en-GB", {
