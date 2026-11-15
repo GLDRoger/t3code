@@ -19,7 +19,10 @@ export const KinConnectionId = TrimmedNonEmptyString.check(Schema.isMaxLength(64
 );
 export type KinConnectionId = typeof KinConnectionId.Type;
 
-/** `off`: never called. `read`: agents call it in owner-only turns. `ask`: a card per call (later). */
+/**
+ * `off`: never called. `read`: agents call it in owner-only turns. `ask`: a call runs only when
+ * the owner taps Confirm on a card showing exactly what it sends.
+ */
 export const KinConnectionToolMode = Schema.Literals(["off", "read", "ask"]);
 export type KinConnectionToolMode = typeof KinConnectionToolMode.Type;
 
@@ -84,6 +87,8 @@ export const KinConnection = Schema.Struct({
   listedAt: Schema.NullOr(NonNegativeInt),
   lastOkAt: Schema.NullOr(NonNegativeInt),
   lastError: Schema.NullOr(Schema.String),
+  /** Signed in before Kin asked to send: sending needs one more sign-in. */
+  needsSignInToSend: Schema.optional(Schema.Boolean),
 });
 export type KinConnection = typeof KinConnection.Type;
 
@@ -107,6 +112,8 @@ export const KinConnectionTool = Schema.Struct({
   pinDigest: Schema.String,
   mode: KinConnectionToolMode,
   suggestedMode: KinConnectionToolMode,
+  /** It sends something out of the company: only `off` or `ask`, never run without asking. */
+  alwaysAsk: Schema.optional(Schema.Boolean),
   openWorld: Schema.Boolean,
   changed: Schema.Boolean,
   firstSeenAt: NonNegativeInt,

@@ -4,6 +4,7 @@ import {
   KIN_CHOICE_CARD_TTL_MS,
   KinChoiceCardState,
   type KinPersonId,
+  type KinSendCard,
   type KinWidget,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -29,9 +30,70 @@ export interface KinChoiceCardView {
     readonly personId: KinPersonId;
     readonly emoji: string | null;
   } | null;
+  /** What a send card would send, in full: shown instead of `detail`. */
+  readonly send: KinSendView | null;
   /** When an unanswered card stops taking taps; the host refuses later ones. */
   readonly expiresAtMs: number;
   readonly closed: boolean;
+}
+
+export interface KinSendView {
+  /** "Email from owner@company.com", "Event in Google Calendar". */
+  readonly heading: string;
+  /** Labelled lines, in order: To, Cc, Subject or Event. */
+  readonly lines: ReadonlyArray<{ readonly label: string; readonly value: string }>;
+  readonly body: string;
+  readonly attachments: ReadonlyArray<{ readonly name: string; readonly detail: string }>;
+  /** After the tap: "Sending…", "Sent", or why it wasn't sent. */
+  readonly outcome: { readonly tone: "pending" | "ok" | "error"; readonly text: string } | null;
+}
+
+const kb = (bytes: number) =>
+  bytes < 1024 * 1024
+    ? `${Math.max(1, Math.round(bytes / 1024))} KB`
+    : `${(bytes / 1048576).toFixed(1)} MB`;
+
+function kinSendView(send: KinSendCard): KinSendView {
+  const account = send.from === null ? "" : ` from ${send.from}`;
+  const heading =
+    send.action === "event"
+      ? `Event in ${send.service}${account}`
+      : send.action === "call"
+        ? `${send.service}${account}`
+        : `${send.action === "reply" ? "Reply" : "Email"}${account}`;
+  const lines =
+    send.action === "event"
+      ? [
+          { label: "Event", value: send.subject },
+          { label: "Invites", value: send.to.length === 0 ? "No one" : send.to.join(", ") },
+        ]
+      : send.action === "call"
+        ? [{ label: "Tool", value: send.subject }]
+        : [
+            { label: "To", value: send.to.join(", ") },
+            ...(send.cc.length === 0 ? [] : [{ label: "Cc", value: send.cc.join(", ") }]),
+            { label: "Subject", value: send.subject },
+          ];
+  return {
+    heading,
+    lines,
+    body: send.body,
+    attachments: send.attachments.map((file) => ({
+      name: file.name,
+      detail: [file.label, kb(file.bytes)].filter((part) => part !== null).join(" · "),
+    })),
+    outcome:
+      send.outcome === null
+        ? null
+        : send.outcome.state === "sending"
+          ? { tone: "pending", text: "Sending…" }
+          : send.outcome.state === "sent"
+            ? { tone: "ok", text: send.action === "event" ? "Saved and invitations sent" : "Sent" }
+            : {
+                tone: "error",
+                text: `Not sent: ${send.outcome.reason ?? "Kin couldn't send it."}`,
+              },
+  };
 }
 
 const decode = Schema.decodeUnknownOption(KinChoiceCardState);
@@ -57,6 +119,7 @@ export function kinChoiceCardView(widget: KinWidget): KinChoiceCardView | null {
     detail: card.detail === null || card.detail.trim() === "" ? null : card.detail.trim(),
     options,
     image: card.image === undefined ? null : card.image,
+    send: card.send === undefined ? null : kinSendView(card.send),
     answer:
       card.answer === null
         ? null
@@ -89,6 +152,14 @@ export function kinChoiceAnswerText(
 }
 
 export function kinChoiceAccessibilityLabel(view: KinChoiceCardView, status: string | null) {
+  if (view.send !== null)
+    return kinSentences([
+      view.question,
+      ...view.send.lines.map((line) => `${line.label}: ${line.value}`),
+      ...view.send.attachments.map((file) => `Attached: ${file.name}`),
+      view.send.outcome?.text ?? null,
+      status,
+    ]);
   return kinSentences(["Question", view.question, view.detail, status]);
 }
 
