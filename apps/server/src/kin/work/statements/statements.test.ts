@@ -1682,6 +1682,55 @@ describe("bank statement safety", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("tells nothing of a statement in its chat once that chat is shared", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const result = yield* read(1, "hdfc-account.pdf");
+      const { card } = yield* reviewCardOf(result.statement);
+      yield* OwnerStatements.apply(people, yield* confirmAll(card));
+      // The lead's own chat with the owner, and the statement's chat shared with a teammate
+      // after a tap committed, before Kin told the lead of it.
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('owner-direct', ${orgId}, 'direct', 'owner:lead:2', 0, ${at})`;
+      for (const [member, kind, person, agent] of [
+        ["direct-owner", "person", ownerId, null],
+        ["direct-lead", "agent", null, lead],
+      ] as const)
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, agent_id, role, joined_at)
+          VALUES (${member}, ${orgId}, 'owner-direct', ${kind}, ${person}, ${agent},
+            ${kind === "person" ? "owner" : "member"}, ${at})`;
+      yield* sql`UPDATE kin_leads SET owner_chat_id = 'owner-direct'`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('mate', ${orgId}, 'mate', 'Mate', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at)
+        VALUES ('lead-chat-mate', ${orgId}, 'lead-chat', 'person', 'mate', 'member', ${at})`;
+      const before = (yield* sql`SELECT 1 FROM kin_messages WHERE chat_id = 'lead-chat'`).length;
+      const [{ widgetId }] = (yield* sql<{ widgetId: string }>`SELECT review_widget_id AS
+          "widgetId" FROM kin_bank_statements WHERE statement_id = ${result.statement}`) as [
+        { widgetId: string },
+      ];
+      const told = yield* sql.withTransaction(
+        tellLead({
+          orgId,
+          statementId: result.statement,
+          widgetId,
+          tap: "read_again",
+          outcome: "20 rows read.",
+        }),
+      );
+      // Nothing of it in the shared chat: the owner's own chat with the lead has it, and why.
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_messages WHERE chat_id = 'lead-chat'`, before);
+      assert.strictEqual(told.message.chatId, "owner-direct");
+      assert.include(
+        JSON.parse(told.message.body).text,
+        "The chat this statement was sent in is shared now",
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("tells a build that sends no revision to update, and applies nothing", () =>
     Effect.gen(function* () {
       yield* seed;
