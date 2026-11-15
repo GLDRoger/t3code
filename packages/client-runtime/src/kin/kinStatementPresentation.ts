@@ -371,8 +371,21 @@ export function kinStatementSections(card: KinStatementReviewCard): ReadonlyArra
   }));
 }
 
-export const kinStatementTargetLine = (target: KinStatementTarget) =>
-  target.note === undefined ? target.label : `${target.label}, ${target.note.toLowerCase()}`;
+export const kinStatementTargetLine = (target: KinStatementTarget, shared?: string | null) =>
+  target.note === undefined || target.note === shared
+    ? target.label
+    : `${target.label}, ${target.note.toLowerCase()}`;
+
+/**
+ * The note every option of a row carries, such as open invoices offered for money nothing
+ * matched: said once above the options, and left off each.
+ */
+export function kinStatementSharedNote(options: ReadonlyArray<KinStatementTarget>): string | null {
+  const note = options[0]?.note;
+  return options.length > 1 && note !== undefined && options.every((one) => one.note === note)
+    ? note
+    : null;
+}
 
 export function kinStatementStatusLines(card: KinStatementReviewCard): ReadonlyArray<string> {
   switch (card.status) {

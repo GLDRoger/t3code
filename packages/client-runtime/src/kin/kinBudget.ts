@@ -1,7 +1,7 @@
 import type { KinBudget, KinBudgetLimits } from "@t3tools/contracts";
 
-// The host's old defaults; it has no limit until the owner picks one. Choices scale both.
-const USUAL = { leadUnits: 2_000_000, workerUnits: 6_000_000 };
+// What a host that doesn't send its own usual limit means by it; choices scale both.
+const FALLBACK_USUAL = { leadUnits: 2_000_000, workerUnits: 6_000_000 };
 const CHOICES = [
   { times: 0.5, label: "Half the usual" },
   { times: 1, label: "The usual" },
@@ -34,6 +34,7 @@ export function kinDailyLimitChoices(budget: KinBudget | null): {
 } {
   // A teammate's own share is set apart from these choices, so picking one keeps it.
   const teammateUnits = budget?.limits.teammateUnits;
+  const usual = budget?.usual ?? FALLBACK_USUAL;
   const kept = teammateUnits === undefined ? {} : { teammateUnits };
   const choices: Array<KinDailyLimitChoice> = [
     {
@@ -45,8 +46,8 @@ export function kinDailyLimitChoices(budget: KinBudget | null): {
       value: String(times),
       label,
       limits: {
-        leadUnits: Math.round(USUAL.leadUnits * times),
-        workerUnits: Math.round(USUAL.workerUnits * times),
+        leadUnits: Math.round(usual.leadUnits * times),
+        workerUnits: Math.round(usual.workerUnits * times),
         ...kept,
       },
     })),
@@ -75,7 +76,7 @@ const share = (units: number, of: number) => {
 export function kinDailyLimitUse(budget: KinBudget | null): string | null {
   if (budget === null || budget.ownerUnits === undefined) return null;
   const limit = budget.limits.leadUnits;
-  const of = limit === null || limit === 0 ? USUAL.leadUnits : limit;
+  const of = limit === null || limit === 0 ? (budget.usual ?? FALLBACK_USUAL).leadUnits : limit;
   const unit = limit === null || limit === 0 ? "of a usual day" : "of the limit";
   const teammates = budget.teammateUnits ?? 0;
   return teammates === 0

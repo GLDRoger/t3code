@@ -55,7 +55,7 @@ export function KinAttentionItem(
             row.urgent ? "text-destructive-foreground" : "text-muted-foreground",
           )}
         >
-          {row.about === null ? row.detail : `${row.about} · ${row.detail}`}
+          {row.about === null ? row.detail : `${row.detail.replace(/\.$/, "")} · ${row.about}`}
         </span>
       </span>
     </>

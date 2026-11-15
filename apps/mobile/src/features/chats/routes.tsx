@@ -43,6 +43,7 @@ import { KinWorkHandBackScreen } from "./KinWorkHandBackScreen";
 import {
   KinClientFormScreen,
   KinContactFormScreen,
+  KinMilestoneFormScreen,
   KinProjectFormScreen,
 } from "./KinWorkFormScreens";
 import { KinTouchFormScreen } from "./KinTouchFormScreen";
@@ -222,6 +223,10 @@ export const KIN_SCREENS = {
   KinProjectForm: createNativeStackScreen({
     screen: KinProjectFormScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinMilestoneForm: createNativeStackScreen({
+    screen: KinMilestoneFormScreen,
+    options: sheetRoute({ detent: 0.6 }),
   }),
   KinTeam: createNativeStackScreen({
     screen: KinTeamScreen,

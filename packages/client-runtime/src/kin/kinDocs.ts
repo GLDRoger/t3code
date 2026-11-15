@@ -342,7 +342,7 @@ export function kinDocLibrary(rows: ReadonlyArray<KinDocRow>): {
     } else unfiled.push(row);
   }
   return {
-    recent: rows.length > RECENT_MAX + 2 ? latestFirst.slice(0, RECENT_MAX) : [],
+    recent: rows.length > RECENT_MAX * 3 ? latestFirst.slice(0, RECENT_MAX) : [],
     homes: [
       ...[...clients.entries()].map(([id, held]) => ({
         id: `client:${id}`,

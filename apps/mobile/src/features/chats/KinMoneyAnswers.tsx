@@ -19,6 +19,8 @@ import {
   kinOutlookView,
   kinQuoteActions,
   kinQuoteRow,
+  kinQuotesSummary,
+  kinBudgetsSummary,
   type KinBudgetDraft,
   type KinBudgetView,
   type KinLineDraft,
@@ -51,7 +53,7 @@ import { Notice } from "../../components/ui/Notice";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
-import { KinWorkFrame, KinWorkTextField } from "./components/KinWorkPieces";
+import { KinFoldSection, KinWorkFrame, KinWorkTextField } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import {
   kinListsOf,
@@ -81,6 +83,7 @@ function Row(props: {
   readonly estimate?: string | null;
   readonly extra?: ReadonlyArray<string>;
   readonly onPress?: () => void;
+  readonly children?: React.ReactNode;
 }) {
   return (
     <Pressable
@@ -106,10 +109,11 @@ function Row(props: {
           </Text>
         )}
         {(props.extra ?? []).map((line) => (
-          <Text key={line} textRole="footnote" className="text-warning-foreground">
+          <Text key={line} textRole="footnote" className="text-foreground-muted">
             {line}
           </Text>
         ))}
+        {props.children}
       </View>
       {props.amount === null ? null : (
         <View className="items-end">
@@ -146,10 +150,12 @@ const useOpenEntry = (target: KinWorkTarget) => {
   return (task: KinRecordKey) => navigation.navigate("KinWorkItem", { ...target, task });
 };
 
-/** Bank balances of record, what isn't counted yet and why, and the estimate apart from them. */
+/** Bank balances of record, one line each; why a figure is held back sits behind Why. */
 export function KinCashSection(props: Section) {
   const now = new Date(useNowMinuteMs());
   const { state, refresh } = useKinCash(props, true, props.seq);
+  const [why, setWhy] = useState<string | null>(null);
+  const [details, setDetails] = useState(false);
   if (state._tag === "refused" || state._tag === "gone") return null;
   const view = state._tag === "ready" ? kinCashView(state.value, props.rates, now) : null;
   return (
@@ -165,12 +171,25 @@ export function KinCashSection(props: Section) {
             <Row
               key={one.id}
               label={one.label}
-              note={one.when}
-              late={one.stale}
+              note={[one.when, one.flag].filter((part) => part !== null).join(" · ")}
+              late={one.stale || one.flag !== null}
               amount={one.amount}
               estimate={one.estimate}
-              extra={one.notes}
-            />
+              extra={why === one.id ? one.notes : []}
+            >
+              {one.notes.length === 0 ? null : (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setWhy(why === one.id ? null : one.id)}
+                  hitSlop={8}
+                  className="self-start active:opacity-60"
+                >
+                  <Text textRole="footnote" className="font-t3-medium text-primary">
+                    {why === one.id ? KIN_CASH.hideWhy : KIN_CASH.why}
+                  </Text>
+                </Pressable>
+              )}
+            </Row>
           ))}
           {view.currencies.map((one) => (
             <View key={one.currency} className="gap-1 bg-grouped-card px-4 py-2.5">
@@ -189,36 +208,48 @@ export function KinCashSection(props: Section) {
                   )}
                 </View>
               </View>
-              <Text textRole="footnote" className="text-foreground-muted">
-                {`${one.recordedLabel}: ${KIN_CASH.in} ${one.received}, ${KIN_CASH.out} ${one.spent}`}
-              </Text>
               {one.estimate === null ? null : (
-                <>
-                  <View className="flex-row justify-between gap-3">
-                    <Text textRole="footnote" className="font-t3-medium text-foreground-muted">
-                      {`${KIN_CASH.estimate} (estimate)`}
-                    </Text>
-                    <View className="items-end">
-                      <Text textRole="body" className="tabular-nums text-foreground">
-                        {one.estimate}
-                      </Text>
-                      {one.estimateAbout === null ? null : (
-                        <Text textRole="footnote" className="text-foreground-muted">
-                          {one.estimateAbout}
-                        </Text>
-                      )}
-                    </View>
-                  </View>
-                  <Text textRole="footnote" className="text-foreground-muted">
-                    {KIN_CASH.estimateNote}
+                <View className="flex-row justify-between gap-3">
+                  <Text textRole="footnote" className="font-t3-medium text-foreground-muted">
+                    {`${KIN_CASH.estimate} (estimate)`}
                   </Text>
-                </>
+                  <View className="items-end">
+                    <Text textRole="body" className="tabular-nums text-foreground">
+                      {one.estimate}
+                    </Text>
+                    {one.estimateAbout === null ? null : (
+                      <Text textRole="footnote" className="text-foreground-muted">
+                        {one.estimateAbout}
+                      </Text>
+                    )}
+                  </View>
+                </View>
               )}
+              {details ? (
+                <>
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {`${one.recordedLabel}: ${KIN_CASH.in} ${one.received}, ${KIN_CASH.out} ${one.spent}`}
+                  </Text>
+                  {one.estimate === null ? null : (
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {KIN_CASH.estimateNote}
+                    </Text>
+                  )}
+                </>
+              ) : null}
             </View>
           ))}
-          {view.notCounted.map((one) => (
-            <Plain key={one.id}>{`${KIN_CASH.notCounted}: ${one.text}`}</Plain>
-          ))}
+          {details
+            ? view.notCounted.map((one) => (
+                <Plain key={one.id}>{`${KIN_CASH.notCounted}: ${one.text}`}</Plain>
+              ))
+            : null}
+          {view.currencies.length + view.notCounted.length === 0 ? null : (
+            <ListActionRow
+              label={details ? KIN_CASH.hideWhy : KIN_CASH.details}
+              onPress={() => setDetails(!details)}
+            />
+          )}
         </>
       )}
     </ListSection>
@@ -232,13 +263,13 @@ function OutlookRows(props: {
   readonly more: number;
   readonly onOpen: (key: KinRecordKey) => void;
 }) {
-  if (props.rows.length === 0) return null;
+  if (props.rows.length === 0 || !props.all) return null;
   return (
     <>
       <Text textRole="footnote" className="bg-grouped-card px-4 pt-2 text-foreground-muted">
         {props.title}
       </Text>
-      {(props.all ? props.rows : props.rows.slice(0, PEEK)).map((row) => (
+      {props.rows.map((row) => (
         <Row
           key={row.id}
           label={row.title}
@@ -261,11 +292,7 @@ export function KinOutlookSection(props: Section) {
   const [all, setAll] = useState(false);
   if (state._tag === "refused" || state._tag === "gone") return null;
   const view = state._tag === "ready" ? kinOutlookView(state.value, props.rates, now) : null;
-  const longer =
-    view !== null &&
-    (view.incoming.length > PEEK ||
-      view.outgoing.length > PEEK ||
-      view.more.incoming + view.more.outgoing > 0);
+  const longer = view !== null && view.incoming.length + view.outgoing.length > 0;
   return (
     <ListSection title={KIN_OUTLOOK.title}>
       {state._tag === "loading" ? (
@@ -319,9 +346,11 @@ export function KinOutlookSection(props: Section) {
             more={view.more.outgoing}
             onOpen={open}
           />
-          {[...view.notes, ...view.runway.map((one) => one.text)].map((note) => (
-            <Plain key={note}>{note}</Plain>
-          ))}
+          {view.notes.length + view.runway.length === 0 ? null : (
+            <Text textRole="footnote" className="bg-grouped-card px-4 py-2 text-foreground-muted">
+              {[...view.notes, ...view.runway.map((one) => one.text)].join(" ")}
+            </Text>
+          )}
           {longer ? (
             <ListActionRow
               label={all ? "Show less" : KIN_QUOTES.seeAll}
@@ -351,7 +380,10 @@ function QuotesPeek(props: Section) {
   const { state } = useKinListEntries(props, KIN_QUOTES_LIST, OPEN_QUOTES, props.seq);
   const rows = state.records.map((record) => kinQuoteRow(record, props.rates, now));
   return (
-    <ListSection title={KIN_QUOTES.title}>
+    <KinFoldSection
+      title={KIN_QUOTES.title}
+      summary={state.loading && rows.length === 0 ? null : kinQuotesSummary(rows, state.total)}
+    >
       {state.loading && rows.length === 0 ? (
         <Plain>Loading…</Plain>
       ) : state.failed != null && rows.length === 0 ? (
@@ -384,7 +416,7 @@ function QuotesPeek(props: Section) {
           })
         }
       />
-    </ListSection>
+    </KinFoldSection>
   );
 }
 
@@ -447,7 +479,8 @@ export function KinBudgetsSection(
   const expenses = props.lists.find((one) => one.list === "expenses") ?? null;
   if (state._tag === "refused" || state._tag === "gone") return null;
   const views = state._tag === "ready" ? kinBudgetsView(state.value, expenses, props.rates) : [];
-  if (expenses === null && views.length === 0) return null;
+  // Absent with none set: Money's Add sets the first one.
+  if (state._tag === "ready" && views.length === 0) return null;
   const edit = (budget: KinMoneyBudget | null) =>
     navigation.navigate("KinBudget", {
       environmentId: String(props.environmentId),
@@ -455,7 +488,10 @@ export function KinBudgetsSection(
       ...(budget === null ? {} : { budget: JSON.stringify(budget) }),
     });
   return (
-    <ListSection title={KIN_BUDGETS.title}>
+    <KinFoldSection
+      title={KIN_BUDGETS.title}
+      summary={views.length === 0 ? null : kinBudgetsSummary(views)}
+    >
       {state._tag === "loading" ? (
         <Plain>Loading…</Plain>
       ) : state._tag === "failed" ? (
@@ -477,7 +513,7 @@ export function KinBudgetsSection(
       {canChange && expenses !== null ? (
         <ListActionRow label={KIN_BUDGETS.add} onPress={() => edit(null)} />
       ) : null}
-    </ListSection>
+    </KinFoldSection>
   );
 }
 

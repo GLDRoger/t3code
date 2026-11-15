@@ -28,7 +28,7 @@ import { useKinDates } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
 /** One dated entry: what it is, which list it is in, and what it is waiting for. */
-export function KinDateRow(props: {
+function KinDateRow(props: {
   readonly row: KinDateRowView;
   /** Outside an agenda, where no heading says the day. */
   readonly showDay?: boolean;

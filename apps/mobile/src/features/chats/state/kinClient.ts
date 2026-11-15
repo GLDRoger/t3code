@@ -1220,6 +1220,11 @@ export const kinClient = {
     tag: "kin.memory.forget",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
   }),
+  memoryRestore: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:memory:restore",
+    tag: "kin.memory.restore",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
+  }),
   /** The owner's daily limit. The host announces no change to it, so a set re-reads it here. */
   /** What needs attention, handled ones included; read again whenever the host's facts move. */
   attention: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -1255,7 +1260,7 @@ export const kinClient = {
       return yield* readBudget(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: sessionGeneration,
+    refreshTrigger: kinRefreshOn("budget"),
   }),
   budgetSet: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:budget:set",

@@ -380,7 +380,7 @@ describe("a task on an older host", () => {
       "Tech lead is retired, so nobody is working on this. Give it to someone else, or restore Tech lead.",
     );
     expect(kinWorkRow(record({ owner: lead }), retired, now).line).toBe(
-      "W-1 · Tech lead (retired) · Not started",
+      "Tech lead (retired) · W-1",
     );
     expect(kinWorkRow(record({ owner: lead }), names, now).ownerRetired).toBe(false);
   });
@@ -470,12 +470,10 @@ describe("kinWorkRow", () => {
       title: "Invented Foods",
     } as const;
     const owed = record({ party, side: "theirs" });
-    expect(kinWorkRow(owed, names, now).line).toBe(
-      "W-1 · Invented Foods · You · They owe this · Not started",
-    );
+    expect(kinWorkRow(owed, names, now).line).toBe("They owe this · Invented Foods · You · W-1");
     expect(kinWorkRow(owed, names, now, { party: party, project: null }).about).toBeNull();
     // A host from before clients sends none of it: the row and the ways in show nothing new.
-    expect(kinWorkRow(record(), names, now).line).toBe("W-1 · You · Not started");
+    expect(kinWorkRow(record(), names, now).line).toBe("You · W-1");
     expect(kinWorkHostClients(null)).toBe(false);
   });
 });

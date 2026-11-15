@@ -336,36 +336,6 @@ function ProjectPage(
           </ul>
         )}
       </KinWorkSection>
-      {view.people.length === 0 ? null : (
-        <KinWorkSection title={KIN_PROJECTS.people}>
-          <ul className="flex flex-col gap-1">
-            {view.people.map((row) => (
-              <li key={row.key} className="flex min-w-0 items-baseline justify-between gap-3">
-                <span className="truncate text-sm text-foreground">{row.name}</span>
-                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                  {row.line}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </KinWorkSection>
-      )}
-      {view.meetings.length === 0 ? null : (
-        <KinWorkSection title={KIN_PROJECTS.meetings}>
-          <ul className="-mx-2 flex flex-col">
-            {view.meetings.map((row) => (
-              <li key={row.key}>
-                <KinWorkRow
-                  row={row}
-                  saving={false}
-                  onOpen={() => props.onOpenTask(row.key)}
-                  onAct={null}
-                />
-              </li>
-            ))}
-          </ul>
-        </KinWorkSection>
-      )}
       {view.blocked.length === 0 ? null : (
         <KinWorkSection title={KIN_PROJECTS.blocked}>
           <ul className="-mx-2 flex flex-col">
@@ -384,20 +354,26 @@ function ProjectPage(
           </ul>
         </KinWorkSection>
       )}
-      {view.nextDue === null ? null : (
-        <KinWorkSection title={KIN_PROJECTS.nextDue}>
-          <KinWorkRow
-            row={view.nextDue}
-            saving={false}
-            onOpen={() => {
-              if (view.nextDue !== null) props.onOpenTask(view.nextDue.key);
-            }}
-            onAct={null}
-          />
+      {view.money.length === 0 ? null : (
+        <KinWorkSection
+          title={KIN_PROJECTS.money}
+          fold={{ summary: view.money.map((line) => `${line.label} ${line.value}`)[0] ?? null }}
+        >
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+            {view.money.map((line) => (
+              <div key={line.label} className="contents">
+                <dt className="text-muted-foreground">{line.label}</dt>
+                <dd className="text-end text-foreground tabular-nums">{line.value}</dd>
+              </div>
+            ))}
+          </dl>
         </KinWorkSection>
       )}
       {view.pullRequests.length === 0 ? null : (
-        <KinWorkSection title={KIN_PROJECTS.pullRequests}>
+        <KinWorkSection
+          title={KIN_PROJECTS.pullRequests}
+          fold={{ summary: String(view.pullRequests.length) }}
+        >
           <ul className="-mx-2 flex flex-col">
             {view.pullRequests.map((pull) => {
               const content = (
@@ -439,6 +415,42 @@ function ProjectPage(
           </ul>
         </KinWorkSection>
       )}
+      {view.people.length === 0 ? null : (
+        <KinWorkSection
+          title={KIN_PROJECTS.people}
+          fold={{ summary: KIN_PROJECTS.count(view.people.length, "person", "people") }}
+        >
+          <ul className="flex flex-col gap-1">
+            {view.people.map((row) => (
+              <li key={row.key} className="flex min-w-0 items-baseline justify-between gap-3">
+                <span className="truncate text-sm text-foreground">{row.name}</span>
+                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                  {row.line}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </KinWorkSection>
+      )}
+      {view.meetings.length === 0 ? null : (
+        <KinWorkSection
+          title={KIN_PROJECTS.meetings}
+          fold={{ summary: KIN_PROJECTS.count(view.meetings.length, "meeting", "meetings") }}
+        >
+          <ul className="-mx-2 flex flex-col">
+            {view.meetings.map((row) => (
+              <li key={row.key}>
+                <KinWorkRow
+                  row={row}
+                  saving={false}
+                  onOpen={() => props.onOpenTask(row.key)}
+                  onAct={null}
+                />
+              </li>
+            ))}
+          </ul>
+        </KinWorkSection>
+      )}
       <KinDocsUnder
         environmentId={props.environmentId}
         orgId={props.orgId}
@@ -446,7 +458,15 @@ function ProjectPage(
         under={{ project: props.projectKey }}
         onOpen={props.onOpenDoc}
       />
-      <KinWorkSection title={KIN_PROJECTS.changed}>
+      <KinWorkSection
+        title={KIN_PROJECTS.changed}
+        fold={{
+          summary:
+            view.changed.length === 0
+              ? KIN_PROJECTS.nothingChanged
+              : KIN_PROJECTS.count(view.changed.length, "change", "changes"),
+        }}
+      >
         {view.changed.length === 0 ? (
           <p className="text-sm text-muted-foreground">{KIN_PROJECTS.nothingChanged}</p>
         ) : (
@@ -456,41 +476,35 @@ function ProjectPage(
           <p className="text-xs text-muted-foreground">{view.changedMore}</p>
         )}
       </KinWorkSection>
-      {view.repos.length === 0 ? null : (
-        <KinWorkSection title={KIN_PROJECTS.repos}>
-          <p className="text-sm text-foreground">{view.repos.join(", ")}</p>
-        </KinWorkSection>
-      )}
-      {view.notes === null ? null : (
-        <KinWorkSection title={KIN_PROJECTS.notes}>
-          <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
-        </KinWorkSection>
-      )}
-      {canChange ? (
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex min-w-0 flex-col gap-0.5">
-            <Label htmlFor={privateId}>{KIN_PROJECTS.privateLabel}</Label>
-            <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
-          </div>
-          <Switch
-            id={privateId}
-            checked={view.privacy.private}
-            // Its client keeps it private whatever its own label says, so there is nothing to change.
-            disabled={busy || view.privacy.inherited}
-            onCheckedChange={(checked) => void change({ sensitive: checked })}
-          />
-        </div>
-      ) : null}
-      {view.money.length === 0 ? null : (
-        <KinWorkSection title={KIN_PROJECTS.money}>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-            {view.money.map((line) => (
-              <div key={line.label} className="contents">
-                <dt className="text-muted-foreground">{line.label}</dt>
-                <dd className="text-end text-foreground tabular-nums">{line.value}</dd>
+      {!canChange && view.repos.length === 0 && view.notes === null ? null : (
+        <KinWorkSection title={KIN_PROJECTS.details} fold={{ summary: null }}>
+          <div className="flex flex-col gap-6">
+            {view.repos.length === 0 ? null : (
+              <KinWorkSection title={KIN_PROJECTS.repos}>
+                <p className="text-sm text-foreground">{view.repos.join(", ")}</p>
+              </KinWorkSection>
+            )}
+            {view.notes === null ? null : (
+              <KinWorkSection title={KIN_PROJECTS.notes}>
+                <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
+              </KinWorkSection>
+            )}
+            {canChange ? (
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <Label htmlFor={privateId}>{KIN_PROJECTS.privateLabel}</Label>
+                  <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
+                </div>
+                <Switch
+                  id={privateId}
+                  checked={view.privacy.private}
+                  // Its client keeps it private whatever its own label says, so there is nothing to change.
+                  disabled={busy || view.privacy.inherited}
+                  onCheckedChange={(checked) => void change({ sensitive: checked })}
+                />
               </div>
-            ))}
-          </dl>
+            ) : null}
+          </div>
         </KinWorkSection>
       )}
       <KinWorkPlaceLists

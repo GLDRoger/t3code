@@ -40,6 +40,14 @@ export const KIN_MONEY = {
   year: "This financial year",
   months: "The last 12 months",
   upcoming: "Coming-up dates",
+  upcomingCount: (count: number) =>
+    count === 1 ? "1 in the next 30 days" : `${count} in the next 30 days`,
+  /** "₹2,50,000 in · ₹1,63,485 out". */
+  monthSummary: (received: ReadonlyArray<string>, spent: ReadonlyArray<string>) =>
+    `${received.join(" and ")} in · ${spent.join(" and ")} out`,
+  add: "Add",
+  newQuote: "Ask for a quote",
+  rates: "Exchange rates",
   nothingUpcoming: "Nothing is due in the next 30 days.",
   allDates: "All dates",
   lists: "Lists",

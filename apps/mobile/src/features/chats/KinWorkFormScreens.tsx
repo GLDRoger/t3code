@@ -916,3 +916,88 @@ function ProjectForm(
     </FormShell>
   );
 }
+
+export type KinMilestoneFormParams = {
+  readonly environmentId: string;
+  readonly orgId: string;
+  readonly project: string;
+};
+
+/** Add a milestone to a project, as a sheet over it. */
+export function KinMilestoneFormScreen({ route }: StaticScreenProps<KinMilestoneFormParams>) {
+  const target = targetOf(route.params);
+  const project = keyParam(route.params.project);
+  if (target === null || project === null)
+    return <FormMessage title={KIN_PROJECTS.addMilestone}>{NO_LINK}</FormMessage>;
+  return <MilestoneForm {...target} project={project} />;
+}
+
+function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }) {
+  const navigation = useNavigation();
+  const { environmentId, orgId } = props;
+  const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
+  const [requestId] = useState(uuidv4);
+  const [name, setName] = useState("");
+  const [due, setDue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
+  const canSave = name.trim() !== "" && (due === "" || /^\d{4}-\d{2}-\d{2}$/.test(due));
+  const save = async () => {
+    if (saving || !canSave) return;
+    setSaving(true);
+    setProblem(null);
+    const outcome = await kinWorkSend({
+      online: () => kinHostConnected(environmentId),
+      send: () =>
+        create({
+          environmentId,
+          input: {
+            orgId,
+            list: "milestones",
+            title: name.trim(),
+            project: props.project,
+            ...(due === "" ? {} : { dueAt: due, dueAllDay: true }),
+            clientRequestId: requestId,
+          },
+        }),
+      noun: "project",
+      name: name.trim(),
+      own: null,
+    });
+    setSaving(false);
+    if (outcome.ok) navigation.goBack();
+    else setProblem(outcome.problem);
+  };
+  return (
+    <FormShell
+      title={KIN_PROJECTS.addMilestone}
+      submit={KIN_PROJECTS.addMilestone}
+      saving={saving}
+      canSave={canSave}
+      problem={problem}
+      onOpenExisting={(task) => navigation.navigate("KinWorkItem", { environmentId, orgId, task })}
+      onSave={() => void save()}
+    >
+      <ListSection>
+        <KinWorkTextField
+          label={COPY.project.name}
+          value={name}
+          autoFocus
+          disabled={saving}
+          maxLength={KIN_WORK_FORM_LIMITS.name}
+          placeholder="Beta to the client"
+          onChangeText={setName}
+        />
+        <KinWorkTextField
+          label="Due"
+          value={due}
+          keyboard="numbers"
+          disabled={saving}
+          maxLength={10}
+          placeholder="2026-12-31"
+          onChangeText={(text) => setDue(text.trim())}
+        />
+      </ListSection>
+    </FormShell>
+  );
+}

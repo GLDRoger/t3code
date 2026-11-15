@@ -11,6 +11,7 @@ import {
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
+import { useState } from "react";
 import { Pressable, TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
@@ -18,6 +19,9 @@ import { AppBar } from "../../../components/ui/AppBar";
 import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
+import { ListRowLayout } from "../../../components/ui/ListRowLayout";
+import { ListSection } from "../../../components/ui/ListSection";
+import { RowPressable } from "../../../components/ui/RowPressable";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
@@ -311,5 +315,44 @@ export function KinWorkStaleNotice(props: {
       message={KIN_WORK_REFRESH_FAILED}
       action={{ label: "Try again", onPress: props.onRetry }}
     />
+  );
+}
+
+/**
+ * A secondary block as one row, its title and a summary, that unfolds the block's rows under it in
+ * the same group; with `onOpen` the row opens a screen instead.
+ */
+export function KinFoldSection(props: {
+  readonly title: string;
+  readonly summary: string | null;
+  readonly onOpen?: () => void;
+  readonly children?: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const { onOpen } = props;
+  return (
+    <ListSection>
+      <RowPressable
+        accessibilityRole="button"
+        accessibilityLabel={[props.title, props.summary].filter((part) => part !== null).join(". ")}
+        {...(onOpen === undefined ? { accessibilityState: { expanded: open } } : {})}
+        onPress={onOpen ?? (() => setOpen(!open))}
+        className="bg-grouped-card"
+      >
+        <ListRowLayout
+          label={props.title}
+          {...(props.summary === null ? {} : { detail: props.summary })}
+          accessory={
+            <SymbolView
+              name={onOpen !== undefined ? "chevron.right" : open ? "chevron.up" : "chevron.down"}
+              size={13}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
+            />
+          }
+        />
+      </RowPressable>
+      {open && onOpen === undefined ? props.children : null}
+    </ListSection>
   );
 }

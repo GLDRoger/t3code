@@ -155,7 +155,7 @@ function SubscriptionRow(props: {
   );
 }
 
-/** Money's Subscriptions: what they cost a month, and what renews next. Opens the full view. */
+/** Money's Subscriptions: one line of what they cost a month, opening the full view. */
 export function KinSubscriptionsSection(
   props: KinWorkTarget & {
     readonly lists: ReadonlyArray<KinListDefinition>;
@@ -163,37 +163,21 @@ export function KinSubscriptionsSection(
     readonly seq: number | null;
     readonly rates: KinRates | null;
     readonly onOpen: () => void;
-    readonly onOpenKey: (key: KinRecordKey) => void;
   },
 ) {
   const def = kinSubscriptionsList(props.lists);
-  const agent = useKinAskAgent(props);
-  if (def === null)
-    return agent === null ? null : (
-      <KinWorkSection title={KIN_SUBSCRIPTIONS.title}>
-        <div className="px-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => agent.ask(KIN_SUBSCRIPTIONS.addMessage)}
-          >
-            <PlusIcon />
-            {KIN_SUBSCRIPTIONS.add}
-          </Button>
-        </div>
-      </KinWorkSection>
-    );
-  return <KinSubscriptionsPeek {...props} def={def} />;
+  // Absent until there is a list: Money's Add asks an agent to start one.
+  if (def === null) return null;
+  return <KinSubscriptionsLine {...props} def={def} />;
 }
 
-function KinSubscriptionsPeek(
+function KinSubscriptionsLine(
   props: KinWorkTarget & {
     readonly def: KinListDefinition;
     readonly directory: KinWorkDirectory;
     readonly seq: number | null;
     readonly rates: KinRates | null;
     readonly onOpen: () => void;
-    readonly onOpenKey: (key: KinRecordKey) => void;
   },
 ) {
   const { view, state } = useKinSubscriptions(
@@ -203,57 +187,15 @@ function KinSubscriptionsPeek(
     props.seq,
     props.rates,
   );
-  const soon = view.renewing.slice(0, 3);
   return (
     <KinWorkSection
       title={KIN_SUBSCRIPTIONS.title}
-      action={
-        <Button size="xs" variant="ghost" onClick={props.onOpen}>
-          All subscriptions
-        </Button>
-      }
+      fold={{
+        summary: state.loading && state.records.length === 0 ? null : view.summary,
+        onOpen: props.onOpen,
+      }}
     >
-      <button
-        type="button"
-        onClick={props.onOpen}
-        className={cn("flex w-full flex-col items-start gap-0.5 px-2 py-1.5 text-start", OPENS)}
-      >
-        <span className="text-sm text-foreground">
-          {state.loading && state.records.length === 0 ? "Loading subscriptions" : view.summary}
-        </span>
-        {view.monthly.length > 1 ? (
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {view.monthly.map((line) => line.text).join(" and ")} a month
-          </span>
-        ) : null}
-      </button>
-      {soon.length === 0 ? null : (
-        <ul className="flex flex-col">
-          {soon.map((row) => (
-            <li key={row.key}>
-              <button
-                type="button"
-                aria-label={row.accessibilityLabel}
-                onClick={() => props.onOpenKey(row.key as KinRecordKey)}
-                className={cn("flex w-full items-start gap-3 px-2 py-1.5 text-start", OPENS)}
-              >
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="truncate text-sm text-foreground">{row.title}</span>
-                  <span className="truncate text-xs text-muted-foreground">
-                    {[row.when, row.cycle].join(" · ")}
-                  </span>
-                </span>
-                <span className="flex shrink-0 flex-col items-end text-sm text-foreground tabular-nums">
-                  {row.amount}
-                  {row.estimate === null ? null : (
-                    <span className="text-xs text-muted-foreground">{row.estimate}</span>
-                  )}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      {null}
     </KinWorkSection>
   );
 }

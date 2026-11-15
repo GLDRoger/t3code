@@ -61,7 +61,12 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAssetUrlState } from "../../state/assets";
-import { KinWorkFrame, KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
+import {
+  KinFoldSection,
+  KinWorkFrame,
+  KinWorkLoading,
+  KinWorkTextField,
+} from "./components/KinWorkPieces";
 import { KinLinesFields } from "./KinMoneyAnswers";
 import { kinClient } from "./state/kinClient";
 import {
@@ -698,8 +703,23 @@ export function KinReceiptsSection(props: KinWorkTarget & { readonly seq: number
   const receipts =
     state._tag === "ready" ? state.value.receipts.map((one) => kinReceiptView(one, now)) : [];
   const shown = all ? receipts : receipts.slice(0, 8);
+  // Absent with none: Money's Add makes the first one.
+  if (state._tag === "ready" && receipts.length === 0) return null;
+  const settable = receipts.filter((one) => one.settable !== null).length;
   return (
-    <ListSection title={KIN_RECEIPTS.title}>
+    <KinFoldSection
+      title={KIN_RECEIPTS.title}
+      summary={
+        state._tag !== "ready"
+          ? null
+          : [
+              receipts.length === 1 ? "1 receipt" : `${receipts.length} receipts`,
+              settable === 0 ? null : `${settable} to set against an invoice`,
+            ]
+              .filter((part) => part !== null)
+              .join(", ")
+      }
+    >
       {state._tag === "loading" ? (
         <KinWorkLoading label="Loading receipts" />
       ) : state._tag !== "ready" ? (
@@ -760,7 +780,7 @@ export function KinReceiptsSection(props: KinWorkTarget & { readonly seq: number
           onPress={() => navigation.navigate("KinReceiptNew", { environmentId, orgId })}
         />
       ) : null}
-    </ListSection>
+    </KinFoldSection>
   );
 }
 

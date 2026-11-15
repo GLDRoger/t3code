@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   KinAgentId,
+  KinEvent,
   KinOrgId,
   KinPersonId,
   KinWakeupId,
@@ -10,6 +11,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -18,7 +20,7 @@ import { goalsNow } from "../work/goals.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinPulse from "./KinPulse.ts";
-import { buildWeeklySection } from "./weekly.ts";
+import { buildWeeklySection, wantsWeekly } from "./weekly.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -269,6 +271,8 @@ const SENSES: ReadonlyArray<readonly [string, string, number]> = [
   ["pr_ready", "acme/app#2", B + DAY],
 ];
 
+const decodeEvent = Schema.decodeUnknownSync(KinEvent);
+
 describe("KinPulse", () => {
   it.effect("each sense is absent a minute before its line and present at it", () =>
     Effect.gen(function* () {
@@ -415,6 +419,26 @@ describe("KinPulse", () => {
       const week = yield* buildWeeklySection({ orgId, now: at });
       assert.match(week.goals[0]!, /^G-1 .*₹1,00,000\.00 of ₹10,00,000\.00.*behind$/);
       assert.isTrue(week.money.overdue.some((line) => line.startsWith("INV-1")));
+      // The seeded weekly check-in arrives as a pulse and gets the same section.
+      const checkIn = (scheduleId: string) =>
+        decodeEvent({
+          _tag: "pulse",
+          orgId,
+          eventId: `pulse-${scheduleId}`,
+          agentId: "agent-1",
+          receivedAt: "2026-11-16T03:30:00.000Z",
+          dedupeKey: null,
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId,
+            title: "Check-in",
+            what: "Look over the week.",
+            slot: "2026-11-16",
+          },
+        });
+      assert.isTrue(wantsWeekly([checkIn("checkin-weekly")]));
+      assert.isFalse(wantsWeekly([checkIn("checkin-morning")]));
     }).pipe(Effect.provide(layer)),
   );
 });

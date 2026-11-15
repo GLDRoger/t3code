@@ -26,7 +26,6 @@ import { AppBar } from "../../components/ui/AppBar";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -35,7 +34,7 @@ import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
+import { KinFoldSection, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { KinEstimateText, KinSetRateLink } from "./KinMoneyEstimate";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
@@ -188,7 +187,7 @@ function SubscriptionRow(props: {
   );
 }
 
-/** Money's Subscriptions: what they cost a month, and what renews next. Opens the full view. */
+/** Money's Subscriptions: one row of what they cost a month, opening the full view. */
 export function KinSubscriptionsSection(
   props: KinWorkTarget & {
     readonly lists: ReadonlyArray<KinListDefinition>;
@@ -199,18 +198,10 @@ export function KinSubscriptionsSection(
 ) {
   const def = kinSubscriptionsList(props.lists);
   const navigation = useNavigation();
-  const agent = useKinAskAgent(props);
-  if (def === null)
-    return agent === null ? null : (
-      <ListSection title={KIN_SUBSCRIPTIONS.title}>
-        <ListActionRow
-          label={KIN_SUBSCRIPTIONS.add}
-          onPress={() => agent.ask(KIN_SUBSCRIPTIONS.addMessage)}
-        />
-      </ListSection>
-    );
+  // Absent until there is a list: Money's Add asks an agent to start one.
+  if (def === null) return null;
   return (
-    <KinSubscriptionsPeek
+    <KinSubscriptionsLine
       {...props}
       def={def}
       onOpen={() =>
@@ -223,7 +214,7 @@ export function KinSubscriptionsSection(
   );
 }
 
-function KinSubscriptionsPeek(
+function KinSubscriptionsLine(
   props: KinWorkTarget & {
     readonly def: KinListDefinition;
     readonly directory: KinWorkDirectory;
@@ -232,7 +223,6 @@ function KinSubscriptionsPeek(
     readonly onOpen: () => void;
   },
 ) {
-  const navigation = useNavigation();
   const { view, state } = useKinSubscriptions(
     props,
     props.def,
@@ -240,60 +230,12 @@ function KinSubscriptionsPeek(
     props.seq,
     props.rates,
   );
-  const soon = view.renewing.slice(0, 3);
   return (
-    <ListSection title={KIN_SUBSCRIPTIONS.title}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${KIN_SUBSCRIPTIONS.title}: ${view.summary}`}
-        onPress={props.onOpen}
-        className="min-h-12 justify-center gap-0.5 bg-grouped-card px-4 py-2.5 active:opacity-60"
-      >
-        <Text textRole="body" className="text-foreground">
-          {state.loading && state.records.length === 0 ? "Loading subscriptions" : view.summary}
-        </Text>
-        {view.monthly.length > 1 ? (
-          <Text textRole="footnote" className="tabular-nums text-foreground-muted">
-            {view.monthly.map((line) => line.text).join(" and ")} a month
-          </Text>
-        ) : null}
-      </Pressable>
-      {soon.map((row) => (
-        <Pressable
-          key={row.key}
-          accessibilityRole="button"
-          accessibilityLabel={row.accessibilityLabel}
-          onPress={() =>
-            navigation.navigate("KinWorkItem", {
-              environmentId: String(props.environmentId),
-              orgId: String(props.orgId),
-              task: row.key,
-            })
-          }
-          className="min-h-12 flex-row items-center gap-3 bg-grouped-card px-4 py-2.5 active:opacity-60"
-        >
-          <View className="min-w-0 flex-1 gap-0.5">
-            <Text textRole="body" numberOfLines={1} className="text-foreground">
-              {row.title}
-            </Text>
-            <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
-              {[row.when, row.cycle].join(" · ")}
-            </Text>
-          </View>
-          <View className="items-end">
-            <Text textRole="body" className="tabular-nums text-foreground">
-              {row.amount ?? ""}
-            </Text>
-            {row.estimate === null ? null : (
-              <Text textRole="footnote" className="tabular-nums text-foreground-muted">
-                {row.estimate}
-              </Text>
-            )}
-          </View>
-        </Pressable>
-      ))}
-      <ListActionRow label="All subscriptions" onPress={props.onOpen} />
-    </ListSection>
+    <KinFoldSection
+      title={KIN_SUBSCRIPTIONS.title}
+      summary={state.loading && state.records.length === 0 ? null : view.summary}
+      onOpen={props.onOpen}
+    />
   );
 }
 

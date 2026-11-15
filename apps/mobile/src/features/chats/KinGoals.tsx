@@ -3,6 +3,7 @@ import {
   KIN_GOALS,
   kinGoalDraft,
   kinGoalView,
+  kinGoalsSummary,
   type KinGoalDraft,
 } from "@t3tools/client-runtime/kin/kinAttention";
 import { KIN_GOAL_MEASURES, type KinGoal } from "@t3tools/contracts";
@@ -17,7 +18,7 @@ import { RowPressable } from "../../components/ui/RowPressable";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
-import { KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
+import { KinFoldSection, KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, keyParam, targetOf } from "./KinWorkFormScreens";
 import { useKinGoals } from "./state/useKinAttention";
 import type { KinWorkTarget } from "./state/useKinWork";
@@ -47,14 +48,14 @@ function GoalBar(props: {
   );
 }
 
-/** The company's goals at the top of Money; absent when there are none and none can be added. */
+/** The company's goals, one folded row in Money; absent with none (Money's Add makes one). */
 export function KinGoals(props: KinWorkTarget & { readonly seq: number | null }) {
   const navigation = useNavigation();
   const goals = useKinGoals(props, { enabled: true, seq: props.seq });
   const now = new Date(useNowMinuteMs());
   if (goals.state._tag !== "ready") return null;
   const list = goals.state.value.goals;
-  if (list.length === 0 && !goals.canSave) return null;
+  if (list.length === 0) return null;
   const base = { environmentId: String(props.environmentId), orgId: String(props.orgId) };
   const add = goals.canSave ? (
     <ListActionRow
@@ -64,7 +65,10 @@ export function KinGoals(props: KinWorkTarget & { readonly seq: number | null })
     />
   ) : null;
   return (
-    <ListSection title={list.length === 0 ? undefined : KIN_GOALS.title}>
+    <KinFoldSection
+      title={KIN_GOALS.title}
+      summary={kinGoalsSummary(list.map((goal) => kinGoalView(goal, now)))}
+    >
       {list.map((goal) => {
         const view = kinGoalView(goal, now);
         const status =
@@ -109,7 +113,7 @@ export function KinGoals(props: KinWorkTarget & { readonly seq: number | null })
         );
       })}
       {add}
-    </ListSection>
+    </KinFoldSection>
   );
 }
 

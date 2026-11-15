@@ -76,16 +76,12 @@ const reader = Effect.fn("KinWork.crm.reader")(function* (
   if (!places.reaches.clients) return yield* noClients;
   return viewer.person.personId;
 });
-/** A client row as anyone besides the owner reads it: who they are, not what is owed. */
-const nameOnly = <A extends KinPartyRow>(row: A): A => ({
-  ...row,
-  weOwe: 0,
-  theyOwe: 0,
-  late: 0,
-  overdue: 0,
-  next: null,
-  ...(row.lastContactAt === undefined ? {} : { lastContactAt: null }),
-});
+/**
+ * A client row as anyone besides the owner reads it: who they are, not what is owed. The contact
+ * log is the owner's, so the row carries no word on it rather than "none logged".
+ */
+const nameOnly = <A extends KinPartyRow>({ lastContactAt: _, ...row }: A): A =>
+  ({ ...row, weOwe: 0, theyOwe: 0, late: 0, overdue: 0, next: null }) as A;
 const unseen = Effect.fn("KinWork.crm.unseen")(function* (
   team: KinPersonId | undefined,
   row: RecordRow,

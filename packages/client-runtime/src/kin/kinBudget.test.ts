@@ -21,6 +21,12 @@ describe("the daily limit", () => {
       leadUnits: 1_000_000,
       workerUnits: 3_000_000,
     });
+    // A host that sends its own usual scales the choices from it.
+    const scaled = {
+      ...budget(1_000_000, 4_000_000),
+      usual: { leadUnits: 500_000, workerUnits: 2_000_000 },
+    };
+    expect(kinDailyLimitChoices(scaled).current).toBe("2");
   });
 
   it("names no limit, the default, and keeps a teammate's own share through a pick", () => {

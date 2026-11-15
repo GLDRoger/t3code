@@ -26,6 +26,7 @@ import {
   kinStatementUndoLabel,
   kinStatementSuggestionsLeft,
   kinStatementTakenBy,
+  kinStatementSharedNote,
   kinStatementTargetLine,
   kinStatementTicked,
   kinStatementTotal,
@@ -443,6 +444,7 @@ function ChooseRows(props: RowsProps) {
           const other = kinStatementTakenBy(rows.choose, selection, one.row, option);
           return other === undefined ? [] : [{ option, other }];
         });
+        const shared = kinStatementSharedNote(one.options);
         return (
           <li key={one.row} className="flex flex-col gap-1 py-1">
             <RowLine row={one} />
@@ -451,6 +453,7 @@ function ChooseRows(props: RowsProps) {
               aria-label={`Matches for ${one.text}`}
               className="flex flex-col gap-1 sm:pl-14"
             >
+              {shared === null ? null : <p className="text-xs text-muted-foreground">{shared}</p>}
               {one.options.map((option) => (
                 <Button
                   key={option.option}
@@ -466,7 +469,7 @@ function ChooseRows(props: RowsProps) {
                     })
                   }
                 >
-                  {kinStatementTargetLine(option)}
+                  {kinStatementTargetLine(option, shared)}
                 </Button>
               ))}
               {taken.map(({ option, other }) => (

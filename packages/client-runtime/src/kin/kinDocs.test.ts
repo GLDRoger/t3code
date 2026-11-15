@@ -155,9 +155,17 @@ describe("kinDocLibrary", () => {
       ["Company", ["D-7", "D-5"]],
       ["Unfiled", ["D-1"]],
     ]);
-    expect(library.recent.map((held) => held.key)).toEqual(["D-4", "D-7", "D-6", "D-5"]);
-    // A handful of docs needs no strip above them.
-    expect(kinDocLibrary([row("D-1"), row("D-2")]).recent).toEqual([]);
+    // Seven docs read fine by home; the recent strip only repeats them.
+    expect(library.recent).toEqual([]);
+    const many = Array.from({ length: 13 }, (_, index) =>
+      row(`D-${index + 1}`, { updatedAt: at(index + 1) }),
+    );
+    expect(kinDocLibrary(many).recent.map((held) => held.key)).toEqual([
+      "D-13",
+      "D-12",
+      "D-11",
+      "D-10",
+    ]);
   });
 
   it("asks the host for one shelf at a time and leaves made files out unless asked", () => {

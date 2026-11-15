@@ -1,17 +1,15 @@
 import { useNavigation } from "@react-navigation/native";
 import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
-import {
-  KIN_DATES,
-  kinDateRowView,
-  type KinDateRowView,
-} from "@t3tools/client-runtime/kin/kinDates";
+import { KIN_DATES, type KinDateRowView } from "@t3tools/client-runtime/kin/kinDates";
 import {
   KIN_MONEY,
   kinMoneyView,
   type KinListOpen,
   type KinMoneyFigure,
 } from "@t3tools/client-runtime/kin/kinMoney";
-import type { KinAttentionOpen } from "@t3tools/client-runtime/kin/kinAttention";
+import { KIN_GOALS, type KinAttentionOpen } from "@t3tools/client-runtime/kin/kinAttention";
+import { KIN_BUDGETS, KIN_QUOTES } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
+import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
 import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { useAtomValue } from "@effect/atom-react";
@@ -23,7 +21,6 @@ import {
   kinTotalsEstimate,
   type KinEstimate,
 } from "@t3tools/client-runtime/kin/kinCurrency";
-import { useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -31,7 +28,6 @@ import type { AppBarMenuItem } from "../../components/ui/AppBar.types";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
-import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { KinAttentionSection } from "./KinAttention";
 import { KinGoals } from "./KinGoals";
@@ -47,9 +43,8 @@ import { KinSubscriptionsSection } from "./KinSubscriptions";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { cn } from "../../lib/cn";
-import { useNowMinuteMs } from "../../lib/clock";
 import { useKinTab } from "./components/KinTab";
-import { KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
+import { KinFoldSection, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import {
   kinListsOf,
@@ -89,6 +84,10 @@ function AreaFrame(props: {
   const tab = useKinTab();
   const agent = useKinAskAgent(props.target, "money");
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(props.target.environmentId));
+  const canGoal = useAtomValue(kinClient.goalSave.permissionAtom(props.target.environmentId));
+  const canBudget = useAtomValue(
+    kinClient.workSetBudget.permissionAtom(props.target.environmentId),
+  );
   const base = {
     environmentId: String(props.target.environmentId),
     orgId: String(props.target.orgId),
@@ -115,6 +114,44 @@ function AreaFrame(props: {
           },
         ]
       : []),
+    ...(canBudget
+      ? [
+          {
+            id: "budget",
+            title: KIN_BUDGETS.add,
+            icon: "gauge" as const,
+            onPress: () => navigation.navigate("KinBudget", base),
+          },
+        ]
+      : []),
+    ...(canGoal
+      ? [
+          {
+            id: "goal",
+            title: KIN_GOALS.add,
+            icon: "flag" as const,
+            onPress: () => navigation.navigate("KinGoalForm", base),
+          },
+        ]
+      : []),
+    ...(agent === null
+      ? []
+      : [
+          {
+            id: "subscription",
+            title: KIN_SUBSCRIPTIONS.add,
+            subtitle: `${agent.name} keeps it`,
+            icon: "arrow.clockwise" as const,
+            onPress: () => agent.ask(KIN_SUBSCRIPTIONS.addMessage),
+          },
+          {
+            id: "quote",
+            title: KIN_MONEY.newQuote,
+            subtitle: `${agent.name} drafts it`,
+            icon: "doc.plaintext" as const,
+            onPress: () => agent.ask(KIN_QUOTES.askMessage),
+          },
+        ]),
   ];
   // The counts may be what failed, so they are read again with the area's own figures.
   const refresh = () => {
@@ -316,14 +353,6 @@ export function KinDateRowLine(props: {
   );
 }
 
-function Heading(props: { readonly children: string }) {
-  return (
-    <Text textRole="headline" accessibilityRole="header" className="text-foreground">
-      {props.children}
-    </Text>
-  );
-}
-
 /** Money: who owes us, what came in and went out, the year so far, and what is coming up. */
 export function KinMoneyArea(props: Shared) {
   const navigation = useNavigation();
@@ -333,9 +362,7 @@ export function KinMoneyArea(props: Shared) {
   const lists = useKinLists(target, { enabled: true, seq });
   const agent = useKinAskAgent(target);
   const rates = useKinRates(target);
-  const [yearOpen, setYearOpen] = useState(false);
   const openList = useKinOpenList(target);
-  const now = new Date(useNowMinuteMs());
   const { names } = props.directory;
   const { state } = money;
   const frame = {
@@ -371,7 +398,6 @@ export function KinMoneyArea(props: Shared) {
   };
   const top = (
     <>
-      <KinGoals {...target} seq={seq} />
       <KinAttentionSection
         {...target}
         scope={{ type: "money" }}
@@ -403,7 +429,6 @@ export function KinMoneyArea(props: Shared) {
       </AreaFrame>
     );
   }
-  const upcoming = summary.upcoming.map((row) => kinDateRowView(row, names, now));
   // Every exact figure stays in its own currency; beside a foreign one, "about ₹x" when a rate is set.
   const estimates = kinEstimatesByLine(
     [
@@ -427,7 +452,6 @@ export function KinMoneyArea(props: Shared) {
     ],
     rates,
   );
-  const openEntry = (task: string) => navigation.navigate("KinWorkItem", { ...target, task });
   return (
     <AreaFrame {...frame}>
       {top}
@@ -470,133 +494,109 @@ export function KinMoneyArea(props: Shared) {
           )}
         </ListSection>
       </View>
-      <KinCashSection {...target} seq={seq} rates={rates} />
       <KinOutlookSection {...target} seq={seq} rates={rates} />
-      <KinQuotesSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
-      <View className="gap-4">
-        <View className="px-2">
-          <Heading>{view.monthLabel}</Heading>
-        </View>
-        <View className="flex-row gap-4 px-2">
-          <Figure figure={view.received} onOpen={openList} estimates={estimates} />
-          <Figure figure={view.spent} onOpen={openList} estimates={estimates} />
-        </View>
-        {view.tdsDeducted === null ? null : (
-          <View className="flex-row gap-4 px-2">
-            <Figure figure={view.tdsDeducted} onOpen={openList} />
+      <KinCashSection {...target} seq={seq} rates={rates} />
+      <View className="gap-2">
+        <KinFoldSection
+          title={view.monthLabel}
+          summary={KIN_MONEY.monthSummary(view.received.lines, view.spent.lines)}
+        >
+          <View className="flex-row gap-4 bg-grouped-card px-4 py-2.5">
+            <Figure figure={view.received} onOpen={openList} estimates={estimates} />
+            <Figure figure={view.spent} onOpen={openList} estimates={estimates} />
           </View>
-        )}
-        {view.categories.length === 0 ? null : (
-          <ListSection title={KIN_MONEY.byCategory}>
-            {view.categories.map((category) => {
-              const { open } = category;
-              return (
-                <AmountRow
-                  key={category.key}
-                  label={category.label}
-                  amounts={[category.amount]}
-                  onOpen={open === null ? null : () => openList(open)}
-                />
-              );
-            })}
-          </ListSection>
-        )}
-      </View>
-      <KinBudgetsSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
-      <KinSubscriptionsSection
-        {...target}
-        lists={kinListsOf(lists)}
-        directory={props.directory}
-        seq={seq}
-        rates={rates}
-      />
-      <ListSection title={KIN_MONEY.upcoming}>
-        {upcoming.length === 0 ? (
-          <Text textRole="body" className="px-4 py-3 text-foreground-muted">
-            {KIN_MONEY.nothingUpcoming}
-          </Text>
-        ) : (
-          upcoming.map((row) => (
-            <KinDateRowLine key={row.id} row={row} dated onPress={() => openEntry(row.key)} />
-          ))
-        )}
-        <ListActionRow
-          label={KIN_MONEY.allDates}
-          onPress={() => navigation.navigate("KinDates", target)}
-        />
-      </ListSection>
-      <KinReceiptsSection {...target} seq={seq} />
-      <ListSection>
-        <ListActionRow
-          label={yearOpen ? `Hide ${view.yearLabel.toLowerCase()}` : view.yearLabel}
-          onPress={() => setYearOpen(!yearOpen)}
-        />
-      </ListSection>
-      {yearOpen ? (
-        <>
-          <View className="gap-4">
-            <View className="px-2">
-              <Heading>{view.yearLabel}</Heading>
+          {view.tdsDeducted === null ? null : (
+            <View className="flex-row gap-4 bg-grouped-card px-4 py-2.5">
+              <Figure figure={view.tdsDeducted} onOpen={openList} />
             </View>
-            <View className="flex-row gap-4 px-2">
-              <Figure figure={view.yearReceived} onOpen={openList} estimates={estimates} />
-              <Figure figure={view.yearSpent} onOpen={openList} estimates={estimates} />
-            </View>
-            {view.yearTdsDeducted === null ? null : (
-              <View className="flex-row gap-4 px-2">
-                <Figure figure={view.yearTdsDeducted} onOpen={openList} />
-              </View>
-            )}
+          )}
+          {view.categories.map((category) => {
+            const { open } = category;
+            return (
+              <AmountRow
+                key={category.key}
+                label={category.label}
+                amounts={[category.amount]}
+                onOpen={open === null ? null : () => openList(open)}
+              />
+            );
+          })}
+        </KinFoldSection>
+        <KinQuotesSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
+        <KinBudgetsSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
+        <KinSubscriptionsSection
+          {...target}
+          lists={kinListsOf(lists)}
+          directory={props.directory}
+          seq={seq}
+          rates={rates}
+        />
+        {summary.upcoming.length === 0 ? null : (
+          <KinFoldSection
+            title={KIN_MONEY.upcoming}
+            summary={KIN_MONEY.upcomingCount(summary.upcomingTotal)}
+            onOpen={() => navigation.navigate("KinDates", target)}
+          />
+        )}
+        <KinReceiptsSection {...target} seq={seq} />
+        <KinGoals {...target} seq={seq} />
+        <KinFoldSection title={view.yearLabel} summary={null}>
+          <View className="flex-row gap-4 bg-grouped-card px-4 py-2.5">
+            <Figure figure={view.yearReceived} onOpen={openList} estimates={estimates} />
+            <Figure figure={view.yearSpent} onOpen={openList} estimates={estimates} />
           </View>
+          {view.yearTdsDeducted === null ? null : (
+            <View className="flex-row gap-4 bg-grouped-card px-4 py-2.5">
+              <Figure figure={view.yearTdsDeducted} onOpen={openList} />
+            </View>
+          )}
           {view.charts.map((chart) => (
-            <View key={chart.unit.kind === "money" ? chart.unit.currency : ""} className="px-2">
+            <View
+              key={chart.unit.kind === "money" ? chart.unit.currency : ""}
+              className="bg-grouped-card px-4 py-2.5"
+            >
               <KinChart view={kinChartView(chart)} />
             </View>
           ))}
-          {view.charts.length === 0 ? null : (
-            <ListSection title={KIN_MONEY.months}>
-              {view.months.map((month) => {
-                const received = month.openReceived;
-                const spent = month.openSpent;
-                return (
-                  <View key={month.month} className="gap-1 bg-grouped-card px-4 py-2.5">
-                    <Text textRole="footnote" className="text-foreground-muted">
-                      {month.label}
-                    </Text>
-                    <View className="flex-row gap-4">
-                      <MonthFigure
-                        label={KIN_MONEY.received}
-                        amount={month.received}
-                        onOpen={received === null ? null : () => openList(received)}
-                      />
-                      <MonthFigure
-                        label={KIN_MONEY.spent}
-                        amount={month.spent}
-                        onOpen={spent === null ? null : () => openList(spent)}
-                      />
-                    </View>
-                  </View>
-                );
-              })}
-            </ListSection>
-          )}
-        </>
-      ) : null}
-      <ListSection title={KIN_CURRENCY.rates} footer={KIN_CURRENCY.ratesDetail}>
-        <ListActionRow
-          label={
+          {view.months.map((month) => {
+            const received = month.openReceived;
+            const spent = month.openSpent;
+            return (
+              <View key={month.month} className="gap-1 bg-grouped-card px-4 py-2.5">
+                <Text textRole="footnote" className="text-foreground-muted">
+                  {month.label}
+                </Text>
+                <View className="flex-row gap-4">
+                  <MonthFigure
+                    label={KIN_MONEY.received}
+                    amount={month.received}
+                    onOpen={received === null ? null : () => openList(received)}
+                  />
+                  <MonthFigure
+                    label={KIN_MONEY.spent}
+                    amount={month.spent}
+                    onOpen={spent === null ? null : () => openList(spent)}
+                  />
+                </View>
+              </View>
+            );
+          })}
+        </KinFoldSection>
+        <KinFoldSection
+          title={KIN_CURRENCY.rates}
+          summary={
             rates === null || rates.rates.length === 0
               ? KIN_CURRENCY.setRate
-              : rates.rates.map((rate) => kinRateLine(rate, rates.home)).join("\n")
+              : rates.rates.map((rate) => kinRateLine(rate, rates.home)).join(", ")
           }
-          onPress={() =>
+          onOpen={() =>
             navigation.navigate("KinRates", {
               environmentId: String(target.environmentId),
               orgId: String(target.orgId),
             })
           }
         />
-      </ListSection>
+      </View>
     </AreaFrame>
   );
 }

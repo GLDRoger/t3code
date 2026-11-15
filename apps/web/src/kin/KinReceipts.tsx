@@ -74,9 +74,23 @@ export function KinReceiptsSection(
   const receipts =
     state._tag === "ready" ? state.value.receipts.map((one) => kinReceiptView(one, now)) : [];
   const shown = all ? receipts : receipts.slice(0, SHOWN);
+  // Absent with none: Money's Add makes the first one.
+  if (state._tag === "ready" && receipts.length === 0) return null;
+  const settable = receipts.filter((one) => one.settable !== null).length;
   return (
     <KinWorkSection
       title={KIN_RECEIPTS.title}
+      fold={{
+        summary:
+          state._tag !== "ready"
+            ? null
+            : [
+                receipts.length === 1 ? "1 receipt" : `${receipts.length} receipts`,
+                settable === 0 ? null : `${settable} to set against an invoice`,
+              ]
+                .filter((part) => part !== null)
+                .join(", "),
+      }}
       action={
         canMake ? (
           <Button size="xs" variant="ghost" onClick={() => setAdding(true)}>
@@ -204,6 +218,12 @@ export function KinReceiptsSection(
 }
 
 type Actions = ReturnType<typeof useKinMoneyActions>;
+
+/** A new receipt from outside the receipts section, which is absent until the first one. */
+export function KinNewReceiptDialog(props: KinWorkTarget & { readonly onClose: () => void }) {
+  const actions = useKinMoneyActions(props);
+  return <KinAdvanceDialog {...props} actions={actions} onClose={props.onClose} />;
+}
 
 /** Money received before any invoice: its receipt, numbered, with its PDF. */
 function KinAdvanceDialog(
