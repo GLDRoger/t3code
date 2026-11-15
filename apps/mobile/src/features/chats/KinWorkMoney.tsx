@@ -1,6 +1,10 @@
 import { useNavigation } from "@react-navigation/native";
 import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
-import { KIN_DATES, type KinDateRowView } from "@t3tools/client-runtime/kin/kinDates";
+import {
+  KIN_DATES,
+  kinDatesAgenda,
+  type KinDateRowView,
+} from "@t3tools/client-runtime/kin/kinDates";
 import {
   KIN_MONEY,
   kinMoneyView,
@@ -42,6 +46,7 @@ import {
 import { KinSubscriptionsSection } from "./KinSubscriptions";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { useNowMinuteMs } from "../../lib/clock";
 import { cn } from "../../lib/cn";
 import { useKinTab } from "./components/KinTab";
 import { KinFoldSection, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
@@ -362,6 +367,9 @@ export function KinMoneyArea(props: Shared) {
   const lists = useKinLists(target, { enabled: true, seq });
   const agent = useKinAskAgent(target);
   const rates = useKinRates(target);
+  const ratesAllowed = useAtomValue(kinClient.companyRead.permissionAtom(target.environmentId));
+  const datesAllowed = useAtomValue(kinClient.workDates.permissionAtom(target.environmentId));
+  const now = new Date(useNowMinuteMs());
   const openList = useKinOpenList(target);
   const { names } = props.directory;
   const { state } = money;
@@ -531,12 +539,28 @@ export function KinMoneyArea(props: Shared) {
           seq={seq}
           rates={rates}
         />
-        {summary.upcoming.length === 0 ? null : (
+        {summary.upcoming.length === 0 ? null : datesAllowed ? (
           <KinFoldSection
             title={KIN_MONEY.upcoming}
             summary={KIN_MONEY.upcomingCount(summary.upcomingTotal)}
             onOpen={() => navigation.navigate("KinDates", target)}
           />
+        ) : (
+          // A teammate can't read the whole calendar; what Money already sent unfolds here.
+          <KinFoldSection
+            title={KIN_MONEY.upcoming}
+            summary={KIN_MONEY.upcomingCount(summary.upcomingTotal)}
+          >
+            {kinDatesAgenda(summary.upcoming, names, now).flatMap((day) =>
+              day.rows.map((row) => (
+                <KinDateRowLine
+                  key={row.id}
+                  row={row}
+                  onPress={() => navigation.navigate("KinWorkItem", { ...target, task: row.key })}
+                />
+              )),
+            )}
+          </KinFoldSection>
         )}
         <KinReceiptsSection {...target} seq={seq} />
         <KinGoals {...target} seq={seq} />
@@ -582,20 +606,23 @@ export function KinMoneyArea(props: Shared) {
             );
           })}
         </KinFoldSection>
-        <KinFoldSection
-          title={KIN_CURRENCY.rates}
-          summary={
-            rates === null || rates.rates.length === 0
-              ? KIN_CURRENCY.setRate
-              : rates.rates.map((rate) => kinRateLine(rate, rates.home)).join(", ")
-          }
-          onOpen={() =>
-            navigation.navigate("KinRates", {
-              environmentId: String(target.environmentId),
-              orgId: String(target.orgId),
-            })
-          }
-        />
+        {/* Rates live in the company profile; a teammate can't read or set them. */}
+        {!ratesAllowed ? null : (
+          <KinFoldSection
+            title={KIN_CURRENCY.rates}
+            summary={
+              rates === null || rates.rates.length === 0
+                ? KIN_CURRENCY.setRate
+                : rates.rates.map((rate) => kinRateLine(rate, rates.home)).join(", ")
+            }
+            onOpen={() =>
+              navigation.navigate("KinRates", {
+                environmentId: String(target.environmentId),
+                orgId: String(target.orgId),
+              })
+            }
+          />
+        )}
       </View>
     </AreaFrame>
   );
