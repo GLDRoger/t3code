@@ -177,9 +177,13 @@ const makeFake = Effect.fnUntraced(function* (initial: Spec) {
     if (!(response.headers.get("content-type") ?? "").includes("json")) return response;
     const body: unknown = await response.json();
     const result = Predicate.hasProperty(body, "result") ? body.result : undefined;
-    const listing = Predicate.hasProperty(result, "tools") && Array.isArray(result.tools);
-    if (listing)
-      for (const listed of result.tools) {
+    const tools =
+      Predicate.hasProperty(result, "tools") && Array.isArray(result.tools)
+        ? result.tools
+        : undefined;
+    const listing = tools !== undefined;
+    if (tools !== undefined)
+      for (const listed of tools) {
         const name = Predicate.hasProperty(listed, "name") ? listed.name : undefined;
         const set = spec.tools.find((tool) => tool.name === name)?.annotations;
         if (Predicate.isObject(listed)) Reflect.set(listed, "annotations", set);

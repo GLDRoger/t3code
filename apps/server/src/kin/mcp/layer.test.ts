@@ -421,8 +421,8 @@ it.effect.each([true, false])(
         const refusal = yield* Effect.promise(() => HttpServerResponse.toWeb(visual).text());
         assert.include(refusal, "not_allowed");
         assert.include(refusal, '"isError":true');
-        yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at)
-          SELECT org_id, wakeup_id, 0 FROM kin_wakeups WHERE agent_id = ${agentId}
+        yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+          SELECT org_id, wakeup_id, 0, 'conn_fixture' FROM kin_wakeups WHERE agent_id = ${agentId}
             AND status = 'running'`;
         const delegated = yield* request(
           "/kin/mcp",

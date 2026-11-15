@@ -45,6 +45,7 @@ import StatementSafety from "./migrations/K083_StatementSafety.ts";
 import RecipeDefaults from "./migrations/K084_RecipeDefaults.ts";
 import StatementReading from "./migrations/K085_StatementReading.ts";
 import StatementChatPasswords from "./migrations/K086_StatementChatPasswords.ts";
+import TeamWork from "./migrations/K087_TeamWork.ts";
 import Connections from "./migrations/K092_Connections.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -171,6 +172,7 @@ const loader = Migrator.fromRecord({
   "84_RecipeDefaults": RecipeDefaults,
   "85_StatementReading": StatementReading,
   "86_StatementChatPasswords": StatementChatPasswords,
+  "87_TeamWork": TeamWork,
   "92_Connections": Connections,
 });
 
