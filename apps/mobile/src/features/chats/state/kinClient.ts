@@ -951,6 +951,12 @@ export const kinClient = {
     label: "kin:work:update",
     tag: "kin.work.update",
   }),
+  /** The owner shares tasks with the team, or takes them back. */
+  workShare: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:share",
+    tag: "kin.work.share",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.keys.join(",") },
+  }),
   workConfirm: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:work:confirm",
     tag: "kin.work.confirm",
@@ -1082,6 +1088,11 @@ export const kinClient = {
   docLabel: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:docs:label",
     tag: "kin.docs.label",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
+  docFile: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:file",
+    tag: "kin.docs.file",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
   }),
   memorySetVisibility: createEnvironmentRpcCommand(connectionAtomRuntime, {

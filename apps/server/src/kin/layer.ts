@@ -25,6 +25,8 @@ import * as FileSystem from "effect/FileSystem";
 import { ServerConfig } from "../config.ts";
 import { answerChoice } from "./work/cardAnswers.ts";
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
+import { KinIdentity } from "./chat/KinIdentity.ts";
+import { seedPlaybooks } from "./work/playbookSeeds.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
 export { KinServer } from "./KinServer.ts";
@@ -49,6 +51,14 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
     Effect.gen(function* () {
       const services = yield* Effect.context<Services>();
       yield* requireRefreshObserver(services);
+      const { owner } = yield* KinIdentity;
+      // A failed seed leaves Kin running; the next start tries the missing ones again.
+      yield* seedPlaybooks(owner.orgId, owner.personId).pipe(
+        Effect.provide(services),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin default playbooks not written", Cause.pretty(cause)),
+        ),
+      );
       const hub = yield* KinChatHub;
       const scope = yield* Effect.scope;
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();

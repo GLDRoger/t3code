@@ -129,6 +129,18 @@ describe("money", () => {
       ok: false,
       problem: "That's more than the ₹60,000.00 still owed.",
     });
+    // TDS counts towards what is owed, and alone it may settle the rest.
+    const day = { paidOn: "2026-11-12", note: "" };
+    expect(kinPaymentCheck({ ...day, amount: "54,000", tds: "6,000" }, left)).toEqual({
+      ok: true,
+      amount: { minor: 5_400_000, currency: "INR" },
+      tds: { minor: 600_000, currency: "INR" },
+    });
+    expect(kinPaymentCheck({ ...day, amount: "", tds: "6,000" }, left)).toMatchObject({
+      ok: true,
+      amount: { minor: 0 },
+    });
+    expect(kinPaymentCheck({ ...day, amount: "55,000", tds: "6,000" }, left).ok).toBe(false);
   });
 });
 
@@ -471,5 +483,11 @@ describe("a list by its definition", () => {
       { minor: 1200, currency: "JPY" },
     ])
       expect(kinParseMoney(kinMoneyDraft(money, "INR"), "INR")).toEqual(money);
+    // Each symbol an amount is shown with reads back as its own currency, not as dollars.
+    expect(
+      ["S$40", "A$40", "CA$40", "HK$40", "NZ$40", "US$40", "$40", "€40", "¥40", "CN¥40"].map(
+        (text) => kinParseMoney(text, "INR")?.currency,
+      ),
+    ).toEqual(["SGD", "AUD", "CAD", "HKD", "NZD", "USD", "USD", "EUR", "JPY", "CNY"]);
   });
 });

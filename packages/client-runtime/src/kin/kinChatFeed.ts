@@ -24,7 +24,7 @@ import {
   type KinChatClosedReason,
   type KinChatState,
 } from "./kinInboxModel.ts";
-import { kinTapText } from "./kinTap.ts";
+import { kinTapAnswersChoice, kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
 import { kinSentences } from "./kinScreenState.ts";
@@ -360,7 +360,11 @@ export function buildKinFeedRows(
   now: Date = new Date(),
   drafts: ReadonlyArray<KinHeldDraft> = [],
 ): ReadonlyArray<KinFeedRow> {
-  const visible = messages.filter((message) => message.status !== "dismissed");
+  const visible = messages.filter(
+    (message) =>
+      message.status !== "dismissed" &&
+      !(message.kind === "widget_action" && kinTapAnswersChoice(message.body)),
+  );
   const rows: KinFeedRow[] = [];
   const foldKeys = new Set<string>();
   let previousAuthor: string | null = null;

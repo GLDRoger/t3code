@@ -24,6 +24,7 @@ import {
   type KinConnectionsParams,
   type KinConnectionsTarget,
 } from "./kinConnectionTarget";
+import { KinVisualHosts } from "../KinVisualHosts";
 
 /** Settings → Connections: the owner's connections; one opens as its record. */
 export function KinConnectionsScreen({ route }: StaticScreenProps<KinConnectionsParams>) {
@@ -112,6 +113,7 @@ function ConnectionsList(props: {
               </ListSection>
             </>
           )}
+          <KinVisualHosts environmentId={target.environmentId} orgId={target.orgId} />
         </ScreenScrollView>
       </ScreenContent>
     </View>

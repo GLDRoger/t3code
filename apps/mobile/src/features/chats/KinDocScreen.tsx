@@ -10,11 +10,16 @@ import {
 import { kinLinkToOpen } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_DOCS,
+  KIN_DOC_HOMES,
+  KIN_DOC_KIND_LABELS,
+  kinDocKindOf,
+  kinDocUnfiled,
   kinDocChangeLine,
   kinDocChat,
   kinDocExport,
   kinDocHasContents,
   kinDocOutline,
+  kinDocPdfInput,
   kinDocPieceKey,
   kinDocPieces,
   kinDocPrevious,
@@ -36,6 +41,7 @@ import {
 } from "@t3tools/contracts";
 import * as Linking from "expo-linking";
 import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 import { Fragment, useRef, useState, type ComponentRef, type ReactNode } from "react";
 import { File, Paths } from "expo-file-system";
@@ -55,6 +61,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useContentTopInset } from "../../components/ui/useBarInset";
 import { useNowMinuteMs } from "../../lib/clock";
+import { uuidv4 } from "../../lib/uuid";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { shareFileFromSource } from "../../lib/shareFileFromSource";
 import {
@@ -284,6 +291,9 @@ function KinDocBody(
   const styles = useMarkdownPreviewStyles();
   const openLink = useOpenPullRequest();
   const restore = useKinDocRestore(target, doc.key);
+  const canRender = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
+  const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
+  const [making, setMaking] = useState(false);
   const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
   // On iOS the page scrolls under the bar, so a section's top sits that far down the screen.
   const bar = useContentTopInset();
@@ -310,6 +320,9 @@ function KinDocBody(
   const previous = kinDocPrevious(doc.version);
   const privacy = kinDocPrivacy(doc);
   const label = useKinDocLabel(target, doc);
+  const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
+  const fileIt = () => navigation.navigate("KinDocFile", { environmentId, orgId, doc: doc.key });
+  const kind = kinDocKindOf(doc);
   const chats = inbox.state._tag === "ready" ? inbox.state.inbox.value.chats : [];
   const chat = kinDocChat(chats, doc, names.me);
   const first = doc.outline.find((section) => section.id !== "top");
@@ -346,6 +359,16 @@ function KinDocBody(
       { mimeType: "text/markdown", UTI: "net.daringfireball.markdown", dialogTitle: doc.title },
       "kin-doc",
     );
+  };
+  const exportPdf = async () => {
+    const input = kinDocPdfInput(orgId, doc, uuidv4());
+    if (input === null || making) return;
+    setMaking(true);
+    const result = await render({ environmentId, input });
+    setMaking(false);
+    const made = AsyncResult.isSuccess(result) ? result.value.documents[0] : undefined;
+    if (made === undefined) return Alert.alert(KIN_DOCS.exportPdfFailed);
+    openRecord("KinDoc", { environmentId, orgId, doc: made.key });
   };
   const jump = (id: string) => {
     const y = id === "top" ? 0 : offsets.current.get(id);
@@ -389,6 +412,16 @@ function KinDocBody(
             navigation.navigate("KinDocHistory", { environmentId, orgId, doc: doc.key }),
         },
         { id: "export", title: KIN_DOCS.export, onPress: () => void share() },
+        ...(canRender && kinDocPdfInput(orgId, doc, "pdf") !== null
+          ? [
+              {
+                id: "pdf",
+                title: making ? KIN_DOCS.exportingPdf : KIN_DOCS.exportPdf,
+                onPress: () => void exportPdf(),
+              },
+            ]
+          : []),
+        ...(canFile ? [{ id: "file", title: KIN_DOC_HOMES.fileTitle, onPress: fileIt }] : []),
         ...(label.action === null
           ? []
           : [{ id: "label", title: label.action.label, onPress: label.ask }]),
@@ -464,8 +497,35 @@ function KinDocBody(
             <Text textRole="footnote" className="text-foreground-muted">
               {line.text}
             </Text>
-            {party === undefined && project === undefined ? null : (
+            {
               <View className="flex-row flex-wrap gap-2">
+                <Chip
+                  size="small"
+                  icon="doc.text"
+                  label={KIN_DOC_KIND_LABELS[kind].one}
+                  accessibilityLabel={`${KIN_DOC_HOMES.kind}: ${KIN_DOC_KIND_LABELS[kind].one}`}
+                  {...(canFile ? { onPress: fileIt } : {})}
+                />
+                {doc.company === true ? (
+                  <Chip
+                    size="small"
+                    icon="folder.fill"
+                    label={KIN_DOC_HOMES.company}
+                    {...(canFile ? { onPress: fileIt } : {})}
+                  />
+                ) : null}
+                {kinDocUnfiled(doc) ? (
+                  <Chip
+                    size="small"
+                    icon="tray.and.arrow.down"
+                    label={
+                      canFile
+                        ? `${KIN_DOC_HOMES.unfiled} · ${KIN_DOC_HOMES.file}`
+                        : KIN_DOC_HOMES.unfiled
+                    }
+                    {...(canFile ? { onPress: fileIt } : {})}
+                  />
+                ) : null}
                 {party === undefined ? null : (
                   <Chip
                     size="small"
@@ -489,7 +549,7 @@ function KinDocBody(
                   />
                 )}
               </View>
-            )}
+            }
             {previous === null ? null : (
               <Pressable
                 accessibilityRole="button"

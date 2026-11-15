@@ -20,7 +20,12 @@ import {
   kinDocChangeLine,
   kinDocPieces,
   kinSearchHit,
-  kinDocGroups,
+  KIN_DOCS_DEFAULT_FILTER,
+  kinDocFileDraft,
+  kinDocFileInput,
+  kinDocLibrary,
+  kinDocsChip,
+  kinDocsQuery,
   kinDocRef,
   kinDocRefLabel,
   kinDocRestoreOutcome,
@@ -128,26 +133,73 @@ describe("kinSearchHit", () => {
   });
 });
 
-describe("kinDocGroups", () => {
-  it("groups by client with the unlinked docs last", () => {
+describe("kinDocLibrary", () => {
+  it("files docs by home: clients latest first with their projects, then Company, then Unfiled", () => {
     const acme = { recordId: KinRecordId.make("c1"), key: "C-1", title: "Acme" };
     const zed = { recordId: KinRecordId.make("c2"), key: "C-2", title: "Zed" };
-    const groups = kinDocGroups(
-      [
-        row("D-1"),
-        row("D-2", { party: zed }),
-        row("D-3", { party: acme }),
-        row("D-4", { party: zed }),
-      ],
-      "client",
-      names,
-    );
-    expect(groups.map((group) => [group.title, group.rows.map((held) => held.key)])).toEqual([
-      ["Acme", ["D-3"]],
-      ["Zed", ["D-2", "D-4"]],
-      ["No client", ["D-1"]],
+    const loose = { recordId: KinRecordId.make("p9"), key: "P-9", title: "Loose project" };
+    const at = (day: number) => new Date(2026, 10, day).toISOString();
+    const library = kinDocLibrary([
+      row("D-1", { updatedAt: at(1) }),
+      row("D-2", { party: zed, updatedAt: at(2) }),
+      row("D-3", { party: acme, updatedAt: at(3) }),
+      row("D-4", { party: zed, updatedAt: at(9) }),
+      row("D-5", { company: true, kind: "playbook", updatedAt: at(4) }),
+      row("D-6", { project: loose, updatedAt: at(5) }),
+      row("D-7", { company: true, updatedAt: at(8) }),
     ]);
-    expect(kinDocGroups([row("D-1")], "agent", names)[0]?.title).toBe("Growth");
+    expect(library.homes.map((home) => [home.title, home.rows.map((held) => held.key)])).toEqual([
+      ["Zed", ["D-4", "D-2"]],
+      ["No client", ["D-6"]],
+      ["Acme", ["D-3"]],
+      ["Company", ["D-7", "D-5"]],
+      ["Unfiled", ["D-1"]],
+    ]);
+    expect(library.recent.map((held) => held.key)).toEqual(["D-4", "D-7", "D-6", "D-5"]);
+    // A handful of docs needs no strip above them.
+    expect(kinDocLibrary([row("D-1"), row("D-2")]).recent).toEqual([]);
+  });
+
+  it("asks the host for one shelf at a time and leaves made files out unless asked", () => {
+    const orgId = "org" as Parameters<typeof kinDocsQuery>[0];
+    const filter = { ...KIN_DOCS_DEFAULT_FILTER, text: " plan " };
+    expect(kinDocsQuery(orgId, filter)).toEqual({
+      orgId,
+      archived: false,
+      text: "plan",
+      files: false,
+    });
+    expect(
+      kinDocsQuery(orgId, { ...filter, show: { _tag: "kind", kind: "playbook" } }),
+    ).toMatchObject({ kind: "playbook", files: false });
+    expect(kinDocsQuery(orgId, { ...filter, show: { _tag: "unfiled" } })).toMatchObject({
+      home: "unfiled",
+    });
+    expect(kinDocsQuery(orgId, { ...filter, show: { _tag: "files" } })).toMatchObject({
+      files: true,
+    });
+    expect(kinDocsChip(KIN_DOCS_DEFAULT_FILTER)).toBeNull();
+    expect(
+      kinDocsChip({ ...KIN_DOCS_DEFAULT_FILTER, archived: true, show: { _tag: "company" } }),
+    ).toBe("Company · Archived");
+  });
+
+  it("files a doc under a client, the company, or nowhere", () => {
+    const orgId = "org" as Parameters<typeof kinDocFileInput>[0];
+    const doc = row("D-1", { rev: 4 });
+    expect(kinDocFileDraft(doc)).toEqual({ kind: "other", home: "none", project: null });
+    expect(
+      kinDocFileInput(orgId, doc, { kind: "policy", home: "company", project: "P-1" }),
+    ).toEqual({ orgId, key: "D-1", rev: 4, kind: "policy", company: true });
+    expect(kinDocFileInput(orgId, doc, { kind: "quote", home: "C-1", project: null })).toEqual({
+      orgId,
+      key: "D-1",
+      rev: 4,
+      kind: "quote",
+      company: false,
+      party: "C-1",
+      project: null,
+    });
   });
 });
 
@@ -269,6 +321,14 @@ describe("kinDocRestoreOutcome", () => {
         AsyncResult.failure(Cause.fail(new Error("offline"))) as AtomCommandResult<never, unknown>,
       ),
     ).toMatchObject({ _tag: "refused", moved: false });
+    const playbook = "D-4: chase invoice after days must be 1 to 120 days; nothing was changed.";
+    expect(
+      kinDocRestoreOutcome(
+        AsyncResult.failure(
+          Cause.fail(new KinChatError({ reason: "invalid_state", message: playbook })),
+        ) as AtomCommandResult<never, unknown>,
+      ),
+    ).toMatchObject({ _tag: "refused", text: playbook });
   });
 });
 

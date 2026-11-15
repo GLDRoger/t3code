@@ -2,15 +2,21 @@ import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import {
   KIN_DOCS,
-  KIN_DOC_GROUPINGS,
+  KIN_DOCS_ALL,
+  KIN_DOCS_SHOWS,
+  KIN_DOC_HOMES,
+  KIN_DOC_SHELVES,
   KIN_SEARCH,
-  kinDocGroups,
+  kinDocLibrary,
   kinDocRow,
+  kinDocUnfiled,
+  kinDocsChip,
   kinDocsFooter,
+  kinDocsSameShow,
   kinSearchHit,
   kinSearchNothing,
-  type KinDocGrouping,
   type KinDocRowView,
+  type KinDocsShow,
   type KinSearchHitView,
   type KinSearchState,
 } from "@t3tools/client-runtime/kin/kinDocs";
@@ -26,13 +32,15 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinDocRow, KinRecordKey } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
-import { Pressable, View } from "react-native";
+import { Pressable, ScrollView, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
+import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
@@ -42,33 +50,33 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { kinTabBar, useKinTab } from "./components/KinTab";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
+import { kinClient } from "./state/kinClient";
 import { useKinDocsList, useKinDocsLive, useKinDocsUnder, useKinSearch } from "./state/useKinDocs";
 import { useKinAskAgent, useKinLists } from "./state/useKinMoney";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
 
-/** A doc as a row that opens it: its name, then when it last changed, by whom and how. */
+/** A doc as a row that opens it: its name, its kind and last change, and where it is filed. */
 function KinDocRowButton(props: {
   readonly row: KinDocRowView;
-  /** Under its own client or project the row needn't name them again. */
+  /** Under its own home the row needn't name it again. */
   readonly bare?: boolean;
   /** Inside a rounded section the divider keeps to the section's edges. */
   readonly inset?: boolean;
   readonly onPress: () => void;
+  /** An unfiled doc's one-tap way to file it. */
+  readonly onFile?: () => void;
 }) {
-  const { row } = props;
+  const { row, onFile } = props;
   return (
     <>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={row.accessibilityLabel}
-        onPress={props.onPress}
-        className={cn(
-          "min-h-16 flex-row items-start gap-3 py-3 active:opacity-60",
-          props.inset ? "px-4" : "px-5",
-        )}
-      >
-        <View className="min-w-0 flex-1 gap-0.5">
+      <View className={cn("min-h-16 flex-row items-center gap-3", props.inset ? "px-4" : "px-5")}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={row.accessibilityLabel}
+          onPress={props.onPress}
+          className="min-w-0 flex-1 gap-0.5 py-3 active:opacity-60"
+        >
           <View className="flex-row items-center gap-2">
             <Text textRole="body" numberOfLines={1} className="min-w-0 shrink text-foreground">
               {row.title}
@@ -83,13 +91,22 @@ function KinDocRowButton(props: {
               {row.under}
             </Text>
           )}
-        </View>
+        </Pressable>
         {row.archived ? (
           <Text textRole="footnote" className="font-t3-medium text-foreground-muted">
             {KIN_DOCS.archived}
           </Text>
         ) : null}
-      </Pressable>
+        {onFile === undefined ? null : (
+          <Button
+            tone="secondary"
+            size="compact"
+            label={KIN_DOC_HOMES.file}
+            accessibilityLabel={`${KIN_DOC_HOMES.file} ${row.title}`}
+            onPress={onFile}
+          />
+        )}
+      </View>
       <View className={cn("h-px bg-border-subtle", props.inset ? "ml-4" : "ml-5")} />
     </>
   );
@@ -189,17 +206,66 @@ export function KinSearchHits(props: {
 }
 
 type Item =
-  | { readonly type: "group"; readonly id: string; readonly title: string }
-  | { readonly type: "doc"; readonly id: string; readonly row: KinDocRow }
-  | { readonly type: "list"; readonly id: string; readonly row: KinListIndexRow };
+  | { readonly type: "group"; readonly id: string; readonly title: string; readonly unfiled?: true }
+  | { readonly type: "recent"; readonly id: string; readonly rows: ReadonlyArray<KinDocRow> }
+  | { readonly type: "doc"; readonly id: string; readonly row: KinDocRow; readonly bare: boolean }
+  | { readonly type: "list"; readonly id: string; readonly row: KinListIndexRow }
+  | { readonly type: "moreLists"; readonly id: string; readonly label: string };
 
 const DOCS_ONLY = ["docs"] as const;
+const LISTS_FOLDED = 3;
 
-type Kind = "all" | "docs" | "lists";
+/** The last few docs changed, as a strip of cards to scroll sideways. */
+function KinRecentStrip(props: {
+  readonly rows: ReadonlyArray<KinDocRow>;
+  readonly names: KinWorkDirectory["names"];
+  readonly now: Date;
+  readonly onOpen: (key: KinRecordKey) => void;
+}) {
+  return (
+    <View className="gap-1 pt-2">
+      <View className="px-5 pb-1">
+        <Text
+          textRole="footnote"
+          accessibilityRole="header"
+          className="font-t3-medium text-foreground-muted"
+        >
+          {KIN_DOC_HOMES.recent}
+        </Text>
+      </View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerClassName="gap-3 px-4"
+      >
+        {props.rows.map((doc) => {
+          const row = kinDocRow(doc, props.names, props.now);
+          return (
+            <Pressable
+              key={doc.recordId}
+              accessibilityRole="button"
+              accessibilityLabel={row.accessibilityLabel}
+              onPress={() => props.onOpen(doc.key)}
+              className="w-44 gap-1 rounded-2xl bg-grouped-card px-3.5 py-3 active:opacity-60"
+            >
+              <Text textRole="body" numberOfLines={2} className="font-t3-medium text-foreground">
+                {row.title}
+              </Text>
+              <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+                {row.under ?? KIN_DOC_HOMES.unfiled}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
 
 /**
- * Every doc under its client, project or keeper, with a search over what they say, and above
- * them the lists people keep that Money doesn't: a list is a doc with columns.
+ * Docs as a library: the last few changed on top, the lists people keep, then every doc under
+ * its home (each client with its projects, then the company's own, then the unfiled). One
+ * filter picks a kind or a shelf; Playbooks and Company are a tap away above the list.
  */
 export function KinDocsList(
   props: KinWorkTarget & {
@@ -217,8 +283,8 @@ export function KinDocsList(
   const { refused, live } = useKinDocsLive(props);
   const { state, list } = useKinDocsList(props, props.stale ? null : (live?.seq ?? null));
   const { state: found, search } = useKinSearch(props, DOCS_ONLY);
-  const [by, setBy] = useState<KinDocGrouping>("client");
-  const [kind, setKind] = useState<Kind>("all");
+  const [allLists, setAllLists] = useState(false);
+  const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
   const { filter } = state;
   const lists = useKinLists(props, {
     enabled: true,
@@ -231,7 +297,9 @@ export function KinDocsList(
     lists.refresh();
   };
   const searching = found.text.trim() !== "";
-  const passages = searching && kind !== "lists" && (found.hits?.length ?? 0) > 0;
+  const passages = searching && (found.hits?.length ?? 0) > 0;
+  const everything = filter.show._tag === "all";
+  const chip = kinDocsChip(filter);
   const index = kinListsIndex(
     lists.state._tag === "ready" ? kinPlaceLists(lists.state.value.lists) : [],
   );
@@ -239,29 +307,51 @@ export function KinDocsList(
   const listRows = (filter.archived ? index.archived : index.active).filter(
     (row) => words === "" || row.name.toLowerCase().includes(words),
   );
+  const library = kinDocLibrary(state.records);
+  const shownLists = allLists ? listRows : listRows.slice(0, LISTS_FOLDED);
   const listItems: ReadonlyArray<Item> =
-    kind === "docs" || listRows.length === 0
+    !everything || listRows.length === 0
       ? []
       : [
           { type: "group", id: "group:lists", title: `${KIN_LISTS.title} · ${listRows.length}` },
-          ...listRows.map((row): Item => ({ type: "list", id: `list:${row.list}`, row })),
+          ...shownLists.map((row): Item => ({ type: "list", id: `list:${row.list}`, row })),
+          ...(listRows.length > LISTS_FOLDED
+            ? [
+                {
+                  type: "moreLists" as const,
+                  id: "more-lists",
+                  label: allLists ? KIN_DOC_HOMES.fewerLists : KIN_DOC_HOMES.seeAllLists,
+                },
+              ]
+            : []),
         ];
-  const docItems: ReadonlyArray<Item> =
-    refused || kind === "lists"
-      ? []
-      : kinDocGroups(state.records, by, names).flatMap((group): ReadonlyArray<Item> => [
+  // A shelf or a kind is one flat list; everything is filed under its home.
+  const docItems: ReadonlyArray<Item> = refused
+    ? []
+    : !everything || searching
+      ? state.records.map((row): Item => ({ type: "doc", id: row.recordId, row, bare: false }))
+      : library.homes.flatMap((home): ReadonlyArray<Item> => [
           {
             type: "group",
-            id: `group:${group.id}`,
-            title: `${group.title} · ${group.rows.length}`,
+            id: `group:${home.id}`,
+            title: `${home.title} · ${home.rows.length}`,
+            ...(home.kind === "unfiled" ? { unfiled: true as const } : {}),
           },
-          ...group.rows.map((row): Item => ({ type: "doc", id: row.recordId, row })),
+          ...home.rows.map((row): Item => ({
+            type: "doc",
+            id: row.recordId,
+            row,
+            bare: home.kind !== "client",
+          })),
         ]);
-  const items = [...listItems, ...docItems];
+  const recent: ReadonlyArray<Item> =
+    everything && !searching && !filter.archived && library.recent.length > 0
+      ? [{ type: "recent", id: "recent", rows: library.recent }]
+      : [];
+  const items = [...recent, ...listItems, ...docItems];
   // With lists showing, the docs' own loading or failure still needs saying under them.
-  const docsPending = listItems.length > 0 && kind !== "lists" && docItems.length === 0;
-  const footer =
-    kind === "lists" ? null : kinDocsFooter(state.records.length, state.total, state.more);
+  const docsPending = listItems.length > 0 && docItems.length === 0;
+  const footer = kinDocsFooter(state.records.length, state.total, state.more);
   const open = (doc: KinRecordKey, section?: string) =>
     navigation.navigate("KinDoc", {
       environmentId,
@@ -269,6 +359,9 @@ export function KinDocsList(
       doc,
       ...(section === undefined ? {} : { section }),
     });
+  const fileDoc = (doc: KinRecordKey) =>
+    navigation.navigate("KinDocFile", { environmentId, orgId, doc });
+  const show = (next: KinDocsShow) => list.setFilter({ ...filter, show: next });
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
@@ -295,24 +388,28 @@ export function KinDocsList(
           : {
               menus: [
                 {
-                  title: KIN_WORK_HOME.show,
+                  title: "Filter",
                   icon: "line.3.horizontal.decrease.circle",
                   items: [
                     {
-                      id: "kind",
+                      id: "show",
                       title: KIN_WORK_HOME.show,
                       inline: true,
-                      items: (
-                        [
-                          ["all", KIN_DOCS.docsAndLists],
-                          ["docs", KIN_DOCS.title],
-                          ["lists", KIN_LISTS.title],
-                        ] as const
-                      ).map(([id, title]) => ({
-                        id: `kind:${id}`,
-                        title,
-                        selected: kind === id,
-                        onPress: () => setKind(id),
+                      items: KIN_DOCS_SHOWS.slice(0, 3).map((one) => ({
+                        id: `show:${one.label}`,
+                        title: one.label,
+                        selected: kinDocsSameShow(filter.show, one.show),
+                        onPress: () => show(one.show),
+                      })),
+                    },
+                    {
+                      id: "kind",
+                      title: KIN_DOC_HOMES.kind,
+                      items: KIN_DOCS_SHOWS.slice(3, -1).map((one) => ({
+                        id: `show:${one.label}`,
+                        title: one.label,
+                        selected: kinDocsSameShow(filter.show, one.show),
+                        onPress: () => show(one.show),
                       })),
                     },
                     {
@@ -320,36 +417,22 @@ export function KinDocsList(
                       title: KIN_DOCS.which,
                       inline: true,
                       items: [
-                        {
-                          id: "current",
-                          title: KIN_DOCS.current,
-                          selected: !filter.archived,
-                          onPress: () => {
-                            list.setFilter({ ...filter, archived: false });
-                            search.setClosed(false);
-                          },
-                        },
+                        ...KIN_DOCS_SHOWS.slice(-1).map((one) => ({
+                          id: "show:files",
+                          title: one.label,
+                          selected: kinDocsSameShow(filter.show, one.show),
+                          onPress: () => show(one.show),
+                        })),
                         {
                           id: "archived",
                           title: KIN_DOCS.archived,
                           selected: filter.archived,
                           onPress: () => {
-                            list.setFilter({ ...filter, archived: true });
-                            search.setClosed(true);
+                            list.setFilter({ ...filter, archived: !filter.archived });
+                            search.setClosed(!filter.archived);
                           },
                         },
                       ],
-                    },
-                    {
-                      id: "by",
-                      title: "Group",
-                      inline: true,
-                      items: KIN_DOC_GROUPINGS.map((held) => ({
-                        id: `by:${held.id}`,
-                        title: `By ${held.label.toLowerCase()}`,
-                        selected: by === held.id,
-                        onPress: () => setBy(held.id),
-                      })),
                     },
                   ],
                 },
@@ -380,44 +463,54 @@ export function KinDocsList(
           contentContainerStyle={{ paddingBottom: tab === null ? 96 : 32 + tab.bottomClearance }}
           data={items}
           keyExtractor={(item) => item.id}
-          extraData={[state, by, found, kind, lists.state]}
+          extraData={[state, found, lists.state, allLists, canFile]}
           estimatedItemSize={72}
           recycleItems
           onEndReached={() => void list.loadMore()}
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
-            props.stale || state.stale ? (
-              <View className="px-4 pt-2">
-                <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
+            refused ? null : (
+              <View className="gap-2 pt-2">
+                {props.stale || state.stale ? (
+                  <View className="px-4">
+                    <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
+                  </View>
+                ) : null}
+                <View className="flex-row flex-wrap gap-2 px-4">
+                  {chip === null ? (
+                    KIN_DOC_SHELVES.map((shelf) => (
+                      <Chip
+                        key={shelf.label}
+                        label={shelf.label}
+                        icon={shelf.show._tag === "company" ? "folder.fill" : "list.number"}
+                        accessibilityLabel={`Show ${shelf.label}`}
+                        onPress={() => show(shelf.show)}
+                      />
+                    ))
+                  ) : (
+                    <Chip
+                      label={chip}
+                      selected
+                      trailingIcon="xmark"
+                      accessibilityLabel={`Showing ${chip}. ${KIN_WORK_HOME.clearFilter}`}
+                      onPress={() => {
+                        list.setFilter({ ...filter, archived: false, show: KIN_DOCS_ALL });
+                        search.setClosed(false);
+                      }}
+                    />
+                  )}
+                </View>
+                {filter.show._tag === "files" ? (
+                  <Text textRole="footnote" className="px-5 text-foreground-muted">
+                    {KIN_DOC_HOMES.filesDetail}
+                  </Text>
+                ) : null}
               </View>
-            ) : filter.archived ? (
-              <View className="px-5 pt-2">
-                <Text textRole="footnote" className="text-foreground-muted">
-                  {KIN_DOCS.archived}
-                </Text>
-              </View>
-            ) : null
+            )
           }
           ListEmptyComponent={
             <View className="pt-4">
-              {kind === "lists" ? (
-                <EmptyState
-                  variant="plain"
-                  {...(words === "" ? KIN_LISTS.none : KIN_DOCS.noMatch)}
-                  {...(agent === null || words !== ""
-                    ? {}
-                    : {
-                        action: (
-                          <Button
-                            tone="primary"
-                            icon="bubble.left"
-                            label={KIN_LISTS.ask}
-                            onPress={() => agent.ask(KIN_LISTS.askMessage)}
-                          />
-                        ),
-                      })}
-                />
-              ) : refused ? (
+              {refused ? (
                 <EmptyState variant="plain" {...KIN_DOCS.unavailable} />
               ) : state.loading ? (
                 <KinWorkLoading label={KIN_DOCS.loading} />
@@ -428,7 +521,7 @@ export function KinDocsList(
                   detail="Check your connection to the server and try again."
                   action={<Button tone="secondary" label="Try again" onPress={list.refresh} />}
                 />
-              ) : passages ? null : searching ? (
+              ) : passages ? null : searching || !everything ? (
                 <EmptyState variant="plain" {...KIN_DOCS.noMatch} />
               ) : (
                 <EmptyState
@@ -488,27 +581,55 @@ export function KinDocsList(
             </>
           }
           renderItem={({ item }) =>
-            item.type === "list" ? (
+            item.type === "recent" ? (
+              <KinRecentStrip rows={item.rows} names={names} now={now} onOpen={open} />
+            ) : item.type === "list" ? (
               <KinListRowButton
                 row={item.row}
                 onPress={() =>
                   navigation.navigate("KinList", { environmentId, orgId, list: item.row.list })
                 }
               />
+            ) : item.type === "moreLists" ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setAllLists(!allLists)}
+                className="min-h-11 justify-center px-5 active:opacity-60"
+              >
+                <Text textRole="body" className="text-accent-foreground">
+                  {item.label}
+                </Text>
+              </Pressable>
             ) : item.type === "group" ? (
-              <View className="px-5 pb-1 pt-4">
+              <View className="flex-row items-end gap-3 px-5 pb-1 pt-5">
                 <Text
                   textRole="footnote"
                   accessibilityRole="header"
-                  className="font-t3-medium text-foreground-muted"
+                  className="min-w-0 flex-1 font-t3-medium text-foreground-muted"
                 >
                   {item.title}
                 </Text>
+                {item.unfiled === true && agent !== null ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`${KIN_DOC_HOMES.fileAll}, ${agent.name}`}
+                    onPress={() => agent.ask(KIN_DOC_HOMES.fileAllMessage)}
+                    className="min-h-8 justify-center active:opacity-60"
+                  >
+                    <Text textRole="footnote" className="font-t3-medium text-accent-foreground">
+                      {KIN_DOC_HOMES.fileAll}
+                    </Text>
+                  </Pressable>
+                ) : null}
               </View>
             ) : (
               <KinDocRowButton
                 row={kinDocRow(item.row, names, now)}
+                bare={item.bare}
                 onPress={() => open(item.row.key)}
+                {...(canFile && kinDocUnfiled(item.row) && filter.show._tag !== "files"
+                  ? { onFile: () => fileDoc(item.row.key) }
+                  : {})}
               />
             )
           }
