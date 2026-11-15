@@ -86,6 +86,14 @@ export const startWakeupRun = Effect.fn("test.startWakeupRun")(function* (
   return (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
 });
 
+export type WakeupEventBase = {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly eventId: KinEventId;
+  readonly receivedAt: DateTime.Utc;
+  readonly dedupeKey: null;
+};
+
 export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
@@ -95,6 +103,8 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
   readonly reaction?: KinReactionEmoji;
   /** Marks the reaction as a changed answer, from this emoji. */
   readonly changedFrom?: KinReactionEmoji;
+  /** Wakes on this event instead, built on the wake-up's own base fields. */
+  readonly event?: (base: WakeupEventBase) => KinEvent;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -129,21 +139,23 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
     dedupeKey: null,
   };
   const event: KinEvent =
-    input.message === undefined
-      ? { ...base, _tag: "routine", provenance: { _tag: "system" }, routine: "morning_brief" }
-      : {
-          ...base,
-          ...(input.reaction === undefined
-            ? { _tag: "chat.message" }
-            : {
-                _tag: "chat.reaction",
-                emoji: input.reaction,
-                ...(input.changedFrom === undefined ? {} : { changedFrom: input.changedFrom }),
-              }),
-          provenance: input.message.author,
-          chatId: input.message.chatId,
-          messageId: input.message.messageId,
-        };
+    input.event !== undefined
+      ? input.event(base)
+      : input.message === undefined
+        ? { ...base, _tag: "routine", provenance: { _tag: "system" }, routine: "morning_brief" }
+        : {
+            ...base,
+            ...(input.reaction === undefined
+              ? { _tag: "chat.message" }
+              : {
+                  _tag: "chat.reaction",
+                  emoji: input.reaction,
+                  ...(input.changedFrom === undefined ? {} : { changedFrom: input.changedFrom }),
+                }),
+            provenance: input.message.author,
+            chatId: input.message.chatId,
+            messageId: input.message.messageId,
+          };
   yield* queue.enqueue(event);
   // The owner's message is claimed after its short burst window; anyone else's waits the full one.
   yield* TestClock.adjust(input.message?.authorRole === "owner" ? 2_000 : 20_000);

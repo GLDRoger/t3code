@@ -155,6 +155,18 @@ it.effect(
         personId: member.person.personId,
         githubLogin: "suraj-ios",
       });
+      // F12: the owner names themself; a teammate can't rename the owner.
+      assert.equal(
+        (yield* service.setOwnerName(ownerSession, { orgId: input.orgId, displayName: "Arjun" }))
+          .displayName,
+        "Arjun",
+      );
+      assert.include(
+        yield* service
+          .setOwnerName(verified, { orgId: input.orgId, displayName: "Not the owner" })
+          .pipe(Effect.flip),
+        { reason: "not_allowed" },
+      );
       assert.lengthOf(
         (yield* service.listDevices(ownerSession, {
           orgId: input.orgId,

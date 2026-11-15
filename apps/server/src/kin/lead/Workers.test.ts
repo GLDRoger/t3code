@@ -652,6 +652,8 @@ interface LocalRun {
   status: OrchestrationV2RunStatus;
   readonly completedAt: null;
   reply?: string;
+  /** What the provider said ended the run, as its failed error item carries it. */
+  error?: string;
 }
 /**
  * This server's own thread launch and runs, for workers that run here. Threads are created in
@@ -738,6 +740,11 @@ const fakeLocal = () => {
         messages: (runs.get(threadId) ?? []).flatMap((run) =>
           run.reply === undefined ? [] : [{ role: "assistant", runId: run.id, text: run.reply }],
         ),
+        turnItems: (runs.get(threadId) ?? []).flatMap((run) =>
+          run.error === undefined
+            ? []
+            : [{ type: "error", status: "failed", runId: run.id, failure: { message: run.error } }],
+        ),
       } as never),
     dispatch: (command: unknown) => Effect.sync(() => void dispatched.push(command) as never),
     interruptThread: (input: ThreadManagement.ThreadManagementInterruptInput) =>
@@ -758,11 +765,17 @@ const fakeLocal = () => {
       }),
   };
   /** Ends the thread's latest run here, as the worker's last turn or the owner's stop would. */
-  const finish = (threadId: ThreadId, status: OrchestrationV2RunStatus, reply?: string) =>
+  const finish = (
+    threadId: ThreadId,
+    status: OrchestrationV2RunStatus,
+    reply?: string,
+    error?: string,
+  ) =>
     Effect.gen(function* () {
       const last = runs.get(threadId)!.at(-1)!;
       last.status = status;
       if (reply !== undefined) last.reply = reply;
+      if (error !== undefined) last.error = error;
       yield* signal();
     });
   return { launches, runs, dispatched, interrupted, interrupts, hooks, launcher, threads, finish };
@@ -2408,11 +2421,11 @@ it.effect("a worker's report answers where its work was asked, for everyone who 
       // The group's answer is shared, so its prompt has no notes and it keeps no journal.
       assert.deepStrictEqual(yield* answering(sql, ctx.orgId, fromTeam.eventId, "report-team"), {
         audience: "shared",
-        lane: { chatId: KinChatId.make("team"), mode: "notice", leadName: "Lead" },
+        lane: { chatId: KinChatId.make("team"), mode: "notice", owed: true, leadName: "Lead" },
       });
       assert.deepStrictEqual(yield* answering(sql, ctx.orgId, fromDm.eventId, "report-dm"), {
         audience: "owner_only",
-        lane: { chatId: ctx.chat.chatId, mode: "notice", leadName: "Lead" },
+        lane: { chatId: ctx.chat.chatId, mode: "notice", owed: true, leadName: "Lead" },
       });
     }),
   ),
@@ -2500,7 +2513,7 @@ it.effect(
           yield* answering(sql, ctx.orgId, reported!.event.eventId, "report-dm"),
           {
             audience: "owner_only",
-            lane: { chatId: ctx.chat.chatId, mode: "notice", leadName: "Lead" },
+            lane: { chatId: ctx.chat.chatId, mode: "notice", owed: true, leadName: "Lead" },
           },
         );
         assert.deepStrictEqual(yield* sinceShared(sql, "team"), []);
@@ -2613,7 +2626,7 @@ it.effect(
           yield* answering(sql, ctx.orgId, reported!.event.eventId, "report-team"),
           {
             audience: "shared",
-            lane: { chatId: KinChatId.make("team"), mode: "notice", leadName: "Lead" },
+            lane: { chatId: KinChatId.make("team"), mode: "notice", owed: true, leadName: "Lead" },
           },
         );
         // Shared turns get no notes and keep no journal; the owner's next word there is shared too.
@@ -3168,6 +3181,36 @@ it.effect.each(["failed", "interrupted", "cancelled"] as const)(
         );
       }),
     ),
+);
+
+it.effect("a local run that fails without a report tells its lead what ended it", () =>
+  run(({ ctx, remote, local, workers, tracker }) =>
+    Effect.gen(function* () {
+      yield* goLocal(ctx, remote);
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      // Review 48: provider text can carry a token and a private path into the lead's prompt.
+      const token = "ghp_ABCDEFabcdef0123456789ABCDEFabcdef01";
+      yield* local.finish(
+        localThreadId(workerId),
+        "failed",
+        undefined,
+        `Usage limit hit with ${token} reading /Users/someone/secret/notes.md. Try again at 3pm.`,
+      );
+      yield* settled(tracker, ctx.orgId, workerId);
+      const [reported] = yield* reports(ctx.sql, ctx.orgId);
+      assert.strictEqual(
+        reported!.event.report.summary,
+        "Worker ended failed without a report. Failure: unknown, during its run. What Kin saw: Usage limit hit with [redacted] reading [path] Try again at 3pm.",
+      );
+      // What the prompt reads: the report event and the worker row.
+      const stored = JSON.stringify([
+        yield* ctx.sql`SELECT json FROM kin_events WHERE org_id = ${ctx.orgId}`,
+        yield* ctx.sql`SELECT report_json FROM kin_workers WHERE org_id = ${ctx.orgId}`,
+      ]);
+      assert.notInclude(stored, token);
+      assert.notInclude(stored, "/Users/someone");
+    }),
+  ),
 );
 
 /** A direct chat between a teammate and the lead, where the owner isn't. */
@@ -4023,7 +4066,7 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
       (yield* runKinMigrations()).map(([id]) => id),
       [
         59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-        82, 83, 84, 85, 86, 87, 88, 106, 107, 113,
+        82, 83, 84, 85, 86, 87, 88, 106, 107, 110, 113,
       ],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);

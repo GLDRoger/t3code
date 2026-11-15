@@ -94,7 +94,7 @@ export class KinPresence extends Context.Service<
   }
 >()("t3/kin/reply/KinPresence") {}
 
-type QueueLabel = (typeof PHASE_LABELS)["queued" | "preparing"];
+type QueueLabel = (typeof PHASE_LABELS)["queued" | "preparing" | "held"];
 
 const same = (a: Presence | undefined, b: Presence) =>
   a !== undefined &&
@@ -303,19 +303,25 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(KinPresence, make);
 
-/** Chats where a human message, card tap or waking reaction to the agent is queued and ready. */
+/**
+ * Chats where a human message, card tap or waking reaction to the agent is queued and ready, and
+ * chats where work a limit held back waits for tomorrow (`held`): the asker's, else the lead's own.
+ */
 const waitingChats = Effect.fn("KinPresence.waitingChats")(
   function* (orgId: KinOrgId, agentId: KinAgentId) {
     const sql = yield* SqlClient.SqlClient;
     const now = yield* Clock.currentTimeMillis;
-    const rows = yield* sql<{ chatId: string }>`
-      SELECT DISTINCT json_extract(json, '$.chatId') AS "chatId" FROM kin_events
-      WHERE org_id = ${orgId} AND agent_id = ${agentId} AND state = 'queued'
-        AND tag IN ('chat.message', 'widget.action', 'chat.reaction')
-        AND json_extract(json, '$.provenance._tag') = 'human'
-        AND (not_before IS NULL OR not_before <= ${now})
-      ORDER BY 1`;
-    return new Set(rows.map((row) => KinChatId.make(row.chatId)));
+    const rows = yield* sql<{ chatId: string; held: number }>`
+      SELECT COALESCE(json_extract(e.json, '$.chatId'), l.owner_chat_id) AS "chatId",
+        MIN(e.budget_deferred) AS held
+      FROM kin_events e JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+      WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.state = 'queued'
+        AND ((e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+            AND json_extract(e.json, '$.provenance._tag') = 'human'
+            AND (e.not_before IS NULL OR e.not_before <= ${now}))
+          OR (e.budget_deferred = 1 AND e.not_before > ${now}))
+      GROUP BY 1 ORDER BY 1`;
+    return new Map(rows.map((row) => [KinChatId.make(row.chatId), row.held === 1]));
   },
   Effect.mapError(toPersistenceSqlError("KinPresence.waitingChats")),
 );
@@ -338,11 +344,12 @@ export const queueLabel = Effect.fn("KinPresence.queueLabel")(
 export const syncQueued = Effect.fn("KinPresence.syncQueued")(
   function* (presence: KinPresence["Service"], orgId: KinOrgId, agentId: KinAgentId) {
     const waiting = yield* waitingChats(orgId, agentId);
-    yield* presence.clearQueued(orgId, agentId, waiting);
+    yield* presence.clearQueued(orgId, agentId, new Set(waiting.keys()));
     if (waiting.size === 0) return;
     const label = yield* queueLabel(orgId, agentId);
     const now = yield* Clock.currentTimeMillis;
-    for (const chatId of waiting) yield* presence.queued(orgId, chatId, agentId, label, now);
+    for (const [chatId, held] of waiting)
+      yield* presence.queued(orgId, chatId, agentId, held ? PHASE_LABELS.held : label, now);
   },
   Effect.catchCause((cause) => Effect.logWarning("Kin queue line sync failed", { cause })),
 );

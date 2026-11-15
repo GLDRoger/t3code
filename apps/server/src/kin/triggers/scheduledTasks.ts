@@ -362,6 +362,10 @@ const make = Effect.gen(function* () {
       lead === undefined
         ? false
         : yield* budget.admit(orgId, "P2").pipe(
+            // Held for a limit: the owner hears it once a day, with what waits.
+            Effect.tap((admission) =>
+              admission.allowed ? Effect.void : budget.notifyOwner(orgId, "org"),
+            ),
             Effect.map((admission) => admission.allowed),
             Effect.orElseSucceed(() => false),
           );
@@ -566,6 +570,10 @@ const make = Effect.gen(function* () {
       lead === undefined
         ? false
         : yield* budget.admit(orgId, "P2").pipe(
+            // Held for a limit: the owner hears it once a day, with what waits.
+            Effect.tap((admission) =>
+              admission.allowed ? Effect.void : budget.notifyOwner(orgId, "org"),
+            ),
             Effect.map((admission) => admission.allowed),
             Effect.orElseSucceed(() => false),
           );
