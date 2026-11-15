@@ -80,13 +80,24 @@ describe("kinAttention", () => {
 
   it("leaves out of Needs you what an attention row already covers", () => {
     const attention = kinAttention(
-      read([fact("task_late", "W-2"), fact("invoice_overdue", "INV-1")]),
+      read([
+        fact("task_late", "W-2"),
+        fact("invoice_overdue", "INV-1"),
+        fact("task_stalled", "W-7", {
+          handled: {
+            by: { _tag: "person", personId: KinPersonId.make("owner") },
+            at,
+            until: DateTime.makeUnsafe(Date.UTC(2026, 10, 18)),
+            note: null,
+          },
+        }),
+      ]),
       {
         scope: { type: "all" },
         names,
         now,
       },
-    ).open;
+    );
     const row = (id: string, open: KinNeedsYouRow["open"]): KinNeedsYouRow => ({
       id,
       kind: "task",
@@ -99,6 +110,7 @@ describe("kinAttention", () => {
       [
         row("task:W-2", { type: "task", key: "W-2" }),
         row("task:W-5", { type: "task", key: "W-5" }),
+        row("task:W-7", { type: "task", key: "W-7" }),
         row("money:overdue", { type: "money" }),
       ],
       attention,

@@ -13,14 +13,13 @@ import type { KinNeedsYouRow } from "./kinWorkHome.ts";
 export const KIN_ATTENTION = {
   title: "Needs attention",
   gotIt: "I've got it",
-  snooze: "Snooze",
   notAProblem: "Not a problem",
   handled: "Handled",
   undo: "Undo",
   ask: (name: string) => `Ask ${name}`,
-  snoozeTomorrow: "Tomorrow",
-  snoozeMonday: "Monday",
-  snoozeWeek: "In a week",
+  snoozeTomorrow: "Snooze until tomorrow",
+  snoozeMonday: "Snooze until Monday",
+  snoozeWeek: "Snooze for a week",
   failed: "Couldn't save that. Try again.",
 } as const;
 
@@ -73,7 +72,8 @@ const inScope = (fact: KinPulseFact, scope: KinAttentionScope) => {
     case "client":
       return fact.scope.clientKey === scope.key;
     case "money":
-      return fact.family === "money" || (fact.family === "goals" && fact.sensitive);
+      // Goals sit above it on Money with their own bars; Tasks keeps their answers.
+      return fact.family === "money";
   }
 };
 
@@ -179,8 +179,10 @@ export const kinAttentionBadge = (count: number) =>
  */
 export function kinNeedsYouBeside(
   rows: ReadonlyArray<KinNeedsYouRow>,
-  attention: ReadonlyArray<KinAttentionRow>,
+  { open, handled }: ReturnType<typeof kinAttention>,
 ): ReadonlyArray<KinNeedsYouRow> {
+  // Something already answered stays answered here too, not back as a plain row.
+  const attention = [...open, ...handled];
   const covered = new Set(
     attention.flatMap((row) => (row.open.type === "record" ? [row.open.key] : [])),
   );
@@ -258,7 +260,7 @@ export interface KinGoalView {
 const figureOf = (goal: KinGoal, value: number, withUnit = true) =>
   goal.currency === undefined
     ? `${Math.round(value)}${goal.unit === undefined || !withUnit ? "" : ` ${goal.unit}`}`
-    : kinMoneyText({ minor: Math.round(value), currency: goal.currency });
+    : kinMoneyText({ minor: Math.round(value / 100) * 100, currency: goal.currency });
 
 const clamp = (value: number) => Math.max(0, Math.min(1, value));
 const shortDay = (day: string, now: Date) => {

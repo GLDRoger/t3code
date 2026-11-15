@@ -93,7 +93,7 @@ export function KinNeedsYou(
           names,
           now,
         });
-  const needs = before === null ? null : kinNeedsYouBeside(before, attention.open);
+  const needs = before === null ? null : kinNeedsYouBeside(before, attention);
   const total = needs === null ? 0 : needs.length + attention.open.length;
   if (props.hideWhenNone && needs !== null && total === 0 && attention.handled.length === 0)
     return null;

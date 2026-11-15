@@ -78,15 +78,11 @@ export function KinAttentionItem(
         accessibilityLabel={`Answer ${row.title}`}
         actions={[
           { id: GOT_IT, title: KIN_ATTENTION.gotIt, image: "hand.raised" },
-          {
-            id: "snooze",
-            title: KIN_ATTENTION.snooze,
+          ...kinSnoozeDays(now).map((choice) => ({
+            id: `${SNOOZE}${choice.until}`,
+            title: choice.label,
             image: "clock",
-            subactions: kinSnoozeDays(now).map((choice) => ({
-              id: `${SNOOZE}${choice.until}`,
-              title: choice.label,
-            })),
-          },
+          })),
           { id: NOT_A_PROBLEM, title: KIN_ATTENTION.notAProblem, image: "checkmark" },
           ...(asker === null
             ? []

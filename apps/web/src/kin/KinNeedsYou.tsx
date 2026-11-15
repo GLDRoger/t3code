@@ -84,7 +84,7 @@ export function KinNeedsYou(
     names,
     now,
   });
-  const rows = kinNeedsYouBeside(before, attention.open);
+  const rows = kinNeedsYouBeside(before, attention);
   const openAttention = (to: KinAttentionOpen) => {
     if (to.type === "record") props.onOpenTask(to.key);
     else if (to.type === "money") props.onOpenMoney();

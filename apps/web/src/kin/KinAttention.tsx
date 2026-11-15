@@ -12,16 +12,7 @@ import { CircleAlertIcon, ClockIcon, EllipsisIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "../components/ui/button";
-import {
-  Menu,
-  MenuItem,
-  MenuPopup,
-  MenuSeparator,
-  MenuSub,
-  MenuSubPopup,
-  MenuSubTrigger,
-  MenuTrigger,
-} from "../components/ui/menu";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
 import { KinWorkSection } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
@@ -100,19 +91,14 @@ export function KinAttentionItem(
             <EllipsisIcon />
           </MenuTrigger>
           <MenuPopup align="end">
-            <MenuSub>
-              <MenuSubTrigger>{KIN_ATTENTION.snooze}</MenuSubTrigger>
-              <MenuSubPopup>
-                {kinSnoozeDays(now).map((choice) => (
-                  <MenuItem
-                    key={choice.label}
-                    onClick={() => void handler.send(row.factKey, "got_it", choice.until)}
-                  >
-                    {choice.label}
-                  </MenuItem>
-                ))}
-              </MenuSubPopup>
-            </MenuSub>
+            {kinSnoozeDays(now).map((choice) => (
+              <MenuItem
+                key={choice.label}
+                onClick={() => void handler.send(row.factKey, "got_it", choice.until)}
+              >
+                {choice.label}
+              </MenuItem>
+            ))}
             <MenuItem onClick={() => void handler.send(row.factKey, "not_a_problem")}>
               {KIN_ATTENTION.notAProblem}
             </MenuItem>
