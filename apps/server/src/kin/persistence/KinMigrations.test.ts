@@ -1238,7 +1238,7 @@ describe("Kin migrations", () => {
           [87, "TeamWork"],
           [98, "MoneyBudgets"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-52), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-53), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },

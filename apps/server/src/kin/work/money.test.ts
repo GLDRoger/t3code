@@ -2086,11 +2086,9 @@ describe("money answers", () => {
           ],
         );
         const [withheld] = twins.byCurrency;
-        assert.deepStrictEqual(
-          [withheld?.totalOfTheseAccounts, withheld?.estimate],
-          [undefined, undefined],
-        );
-        assert.include(withheld?.totalWithheld ?? "", "can't tell");
+        if (withheld === undefined || !("totalWithheld" in withheld)) return assert.fail("a total");
+        assert.isUndefined(withheld.estimate);
+        assert.include(withheld.totalWithheld, "can't tell");
         const [runway] = outlookAnswer(yield* outlook(orgId, now)).runway;
         assert.deepStrictEqual(
           [runway?.currency, runway?.runwayMonths, runway?.cash],
