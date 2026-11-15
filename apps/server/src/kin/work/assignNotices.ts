@@ -26,6 +26,8 @@ export type AssignNotice = {
   readonly row: RecordRow;
   /** The agent's one line on why, or the holder's words on a hand back. */
   readonly why: string | null;
+  /** Who handed it back, when it is not the agent telling them. */
+  readonly by?: string;
 };
 type Turn = {
   readonly orgId: KinOrgId;
@@ -52,8 +54,10 @@ const line = (notice: AssignNotice, zone: string) => {
     ? `${task}${dueText(notice.row, zone)}${notice.why === null ? "" : `. Why: ${notice.why}`}`
     : notice.kind === "taken"
       ? `took over ${task}${why}`
-      : `handed back ${task}${why}`;
+      : `${notice.by === undefined ? "" : `${notice.by} `}handed ${task} back${why}`;
 };
+/** A sentence ends once: a note that ends in its own stop gets no second one. */
+const ended = (text: string) => (/[.!?…]["”’)]?$/.test(text) ? text : `${text}.`);
 
 /** One message for the person: a line when it is one task, else a list under one heading. */
 const bodyFor = (agent: string, notices: ReadonlyArray<AssignNotice>, zone: string) => {
@@ -61,14 +65,16 @@ const bodyFor = (agent: string, notices: ReadonlyArray<AssignNotice>, zone: stri
   const other = notices.filter((notice) => notice.kind !== "given");
   if (notices.length === 1)
     return given.length === 1
-      ? `${agent} gave you ${line(given[0]!, zone)}.`
-      : `${agent} ${line(other[0]!, zone)}.`;
+      ? ended(`${agent} gave you ${line(given[0]!, zone)}`)
+      : ended(
+          other[0]!.by === undefined ? `${agent} ${line(other[0]!, zone)}` : line(other[0]!, zone),
+        );
   return [
     given.length === 0
       ? `${agent}:`
       : `${agent} gave you ${given.length === 1 ? "a task" : `${given.length} tasks`}:`,
     ...given.map((notice) => `• ${line(notice, zone)}`),
-    ...other.map((notice) => `• It ${line(notice, zone)}`),
+    ...other.map((notice) => `• ${notice.by === undefined ? "It " : ""}${line(notice, zone)}`),
   ].join("\n");
 };
 

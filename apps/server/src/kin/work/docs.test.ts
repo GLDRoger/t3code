@@ -733,11 +733,13 @@ it.effect("one search finds entries and docs, and the team view hides what label
       category: "client",
       sensitive: true,
     });
+    // A task is private by its own label, never its client's.
     yield* records.create(orgId, writer, {
       originKey: "hush-work",
       title: "Invented pricing review",
       owner: me,
       partyId: secret.row.recordId,
+      sensitive: true,
     });
     const found = (viewer: "owner" | "team") =>
       search(orgId, { text: "pricing", limit: 20, viewer }).pipe(

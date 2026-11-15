@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
+import { LISTS } from "./lists.ts";
 import { inheritedSensitive, notFound, sensitiveNow } from "./recordRows.ts";
 
 /** Lists a project's lead writes in, inside that project; quotes and invoices only as drafts. */
@@ -54,17 +55,29 @@ const inLedProject = (sql: SqlClient.SqlClient, personId: KinPersonId | Statemen
       OR (r.register_id = 'clients' AND lp.party_id = r.record_id)
       OR (r.register_id = 'contacts' AND lp.party_id = r.party_id)))`;
 
+/** `r`'s project names this person among its members (`fields.members`). */
+const onProject = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+  sql`EXISTS (SELECT 1 FROM kin_records mp, json_each(mp.fields_json, '$.members') m
+    WHERE mp.org_id = r.org_id AND mp.register_id = 'projects' AND mp.record_id = r.project_id
+      AND m.value = 'person:' || ${personId})`;
+
+/** `r` is a meeting this person is one of the people at (`fields.attendees`). */
+const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+  sql`EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.attendees') a
+    WHERE a.value = 'person:' || ${personId})`;
+
 /**
- * What a person who isn't owner-level may see; every screen, live update, count, search and turn
- * of theirs reads it, and anything else is no entry at all. Tasks shared or theirs; everything of
- * a project they lead (`owner` of it) but the owner's own labels; with a place on, clients and
- * contacts, docs shared with the team, or list entries shared with the team.
+ * What a person who isn't owner-level may see, on every screen, count, search and turn of theirs.
+ * A task they hold or attend, always. Unlabelled, a task they made or gave, or one shared or on a
+ * project they're on. Their led project's own entries and held tasks. Places they have switched on.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
-  sql`((r.register_id = 'work' AND NOT ${sensitiveNow(sql)} AND (r.team_shared = 1
-    OR (r.owner_kind = 'person' AND r.owner_id = ${personId})
-    OR (r.created_by_kind = 'person' AND r.created_by_id = ${personId})
-    OR r.assigned_by_person_id = ${personId}))
+  sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
+      OR ${attends(sql, personId)} OR (r.owner_kind = 'person' AND ${inLedProject(sql, personId)})
+      OR (r.sensitive = 0 AND ((r.created_by_kind = 'person' AND r.created_by_id = ${personId})
+        OR r.assigned_by_person_id = ${personId}))))
+  OR (r.register_id IN ('work', 'milestones') AND r.sensitive = 0
+    AND (r.team_shared = 1 OR ${onProject(sql, personId)}))
   OR (${ownLabelOff(sql)} AND r.register_id <> 'bank_transactions'
     AND ${inLedProject(sql, personId)})
   OR (NOT ${sensitiveNow(sql)} AND (
@@ -135,8 +148,9 @@ export const viewVisible = Effect.fn("KinTeamView.viewVisible")(function* (
 });
 
 /**
- * A turn's write in a chat others read, inside its transaction: every person behind it still sees
- * the task, and each who asked for the change may make it, as their own screens would let them.
+ * A turn's write in a chat others read, inside its transaction. A task, meeting or milestone that
+ * everyone there sees, and stays shared, may be made or changed for any of them (`roomWork`);
+ * anything else only as each person behind it could on their own screens.
  */
 export const viewGuard = Effect.fn("KinTeamView.viewGuard")(function* (
   orgId: KinOrgId,
@@ -147,11 +161,58 @@ export const viewGuard = Effect.fn("KinTeamView.viewGuard")(function* (
   write: Parameters<typeof teamGuard>[2],
 ) {
   if (view.people.length === 0) return yield* noLongerTeam;
+  if (yield* roomWork(orgId, view.people, write)) return;
   for (const person of view.people)
     yield* teamGuard(orgId, person, {
       ...write,
       changes: write.changes && view.askers.includes(person),
     });
+});
+
+/** Lists a turn others read writes for the room, shared with the team (`KinRecords.insert`). */
+export const ROOM_LISTS = ["work", "milestones"] as const;
+/** What a room's write never sets: labels, sharing, money, repeats, sources, links, lists. */
+const ROOM_REFUSED = [
+  "sensitive",
+  "team",
+  "confirmed",
+  "amount",
+  "repeat",
+  "source",
+  "links",
+] as const;
+const ROOM_FIELDS: ReadonlySet<string> = new Set(LISTS.work.fields);
+
+/** Whether the write is team-visible work everyone behind the turn sees, before and after. */
+const roomWork = Effect.fn("KinTeamView.roomWork")(function* (
+  orgId: KinOrgId,
+  people: ReadonlyArray<KinPersonId>,
+  write: Parameters<typeof teamGuard>[2],
+) {
+  const { row, input } = write;
+  if (ROOM_REFUSED.some((field) => input[field] !== undefined)) return false;
+  const fields = input.fields;
+  if (
+    fields !== undefined &&
+    (typeof fields !== "object" ||
+      fields === null ||
+      Object.keys(fields).some((key) => !ROOM_FIELDS.has(key)))
+  )
+    return false;
+  const sql = yield* SqlClient.SqlClient;
+  const letIn = yield* sql<{ personId: string }>`SELECT DISTINCT b.person_id AS "personId"
+    FROM kin_session_bindings b WHERE b.org_id = ${orgId} AND b.revoked_at IS NULL
+      AND b.person_id IN ${sql.in(people)} ORDER BY b.person_id`;
+  if (letIn.length !== new Set(people).size) return yield* noLongerTeam;
+  if (row === undefined) {
+    const list = typeof input.list === "string" ? input.list : "work";
+    return (ROOM_LISTS as ReadonlyArray<string>).includes(list);
+  }
+  if (input.list !== undefined) return false;
+  const seen = yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${orgId}
+    AND r.record_id = ${row.recordId} AND r.register_id IN ${sql.in(ROOM_LISTS)}
+    AND r.sensitive = 0 AND ${viewSees(sql, people)} LIMIT 1`;
+  return seen.length > 0;
 });
 
 /**

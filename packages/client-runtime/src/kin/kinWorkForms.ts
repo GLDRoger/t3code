@@ -475,7 +475,7 @@ function kinWorkFormProblem(
     case "not_found":
       return failed(`That ${about.noun} isn't there any more.`);
     case "not_allowed":
-      return failed("Only the owner can change this for now.");
+      return failed(error.message.trim() === "" ? "You can't change this." : error.message);
     case "unavailable":
     case "disabled":
       return failed("Kin isn't answering right now. Try again in a moment.");

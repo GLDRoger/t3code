@@ -28,6 +28,7 @@ import { KinConnections } from "../connections/ConnectionsService.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
+import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
@@ -60,8 +61,9 @@ export const needsJudgement = (facts: ReadonlyArray<Pick<KinPulseFact, "sense">>
 const encodeScope = Schema.encodeEffect(Schema.fromJsonString(KinPulseFact.fields.scope));
 
 /**
- * Who a read is for: the owner sees every fact; people behind a shared turn see only Work facts,
- * not sensitive, on tasks every one of them may see (`viewSees`).
+ * Who a read is for: the owner sees every fact; people see only facts about tasks and milestones,
+ * not sensitive, that every one of them may see (`viewSees`). Clients, money, goals and the
+ * company's own facts are owner-level.
  */
 export type Viewer =
   | { readonly _tag: "owner" }
@@ -134,10 +136,25 @@ const storedRows = Effect.fn("KinPulse.stored")(function* (
   return rows;
 });
 
-/** A stored hold that still applies at `at`; an expired "I've got it" brings the fact back. */
-const handledOf = (row: StoredRow | undefined, at: number): KinPulseHandled | null => {
+/**
+ * A stored hold that still applies at `at`; an expired "I've got it" brings the fact back. With a
+ * reader, only theirs: an agent's or an owner-level person's hold the owner's view, a person's own
+ * hold theirs. Handling a fact hides it from no one else, and never hides the task.
+ */
+const handledOf = (
+  row: StoredRow | undefined,
+  at: number,
+  reader?: { readonly viewer: Viewer; readonly level: ReadonlySet<string> },
+): KinPulseHandled | null => {
   if (row?.byKind == null || row.byId === null || row.handledAt === null) return null;
   if (row.until !== null && row.until <= at) return null;
+  if (reader !== undefined) {
+    const theirs =
+      reader.viewer._tag === "owner"
+        ? row.byKind === "agent" || reader.level.has(row.byId)
+        : row.byKind === "person" && reader.viewer.people.some((person) => person === row.byId);
+    if (!theirs) return null;
+  }
   return {
     by:
       row.byKind === "agent"
@@ -149,14 +166,19 @@ const handledOf = (row: StoredRow | undefined, at: number): KinPulseHandled | nu
   };
 };
 
-const withStored = (fact: SensedFact, row: StoredRow | undefined, at: number): KinPulseFact => {
+const withStored = (
+  fact: SensedFact,
+  row: StoredRow | undefined,
+  at: number,
+  reader: { readonly viewer: Viewer; readonly level: ReadonlySet<string> },
+): KinPulseFact => {
   return {
     ...fact,
     since:
       row !== undefined && row.firstSeenAt < DateTime.toEpochMillis(fact.since)
         ? iso(row.firstSeenAt)
         : fact.since,
-    handled: handledOf(row, at),
+    handled: handledOf(row, at, reader),
   };
 };
 
@@ -181,7 +203,7 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
     for (const row of yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId"
       FROM kin_records r WHERE r.org_id = ${orgId}
         AND r.record_id IN ${sql.in(ids.slice(start, start + 500))}
-        AND ${viewSees(sql, viewer.people)}
+        AND r.register_id IN ('work', 'milestones') AND ${viewSees(sql, viewer.people)}
       ORDER BY r.record_id`)
       seen.add(row.recordId);
   return candidates.filter((fact) => seen.has(fact.subject.recordId!));
@@ -210,8 +232,9 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
     orgId,
     scoped.map((fact) => fact.key),
   );
+  const reader = { viewer: input.viewer, level: yield* ownerLevelPeople(orgId) };
   const facts = scoped
-    .map((fact) => withStored(fact, stored.get(fact.key), at))
+    .map((fact) => withStored(fact, stored.get(fact.key), at, reader))
     .filter((fact) => input.includeHandled === true || fact.handled === null);
   return {
     asOf: iso(at),
@@ -346,7 +369,10 @@ export const handle = Effect.fn("KinPulse.handle")(function* (input: {
     }),
   );
   const stored = yield* storedRows(orgId, [fact.key]);
-  return withStored(fact, stored.get(fact.key), at);
+  return withStored(fact, stored.get(fact.key), at, {
+    viewer: input.viewer,
+    level: yield* ownerLevelPeople(orgId),
+  });
 });
 
 /**
