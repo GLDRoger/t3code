@@ -1,8 +1,6 @@
-import { kinTabBar, useKinTab } from "./components/KinTab";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import { KIN_WORK_TITLE } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_CLIENTS,
   KIN_PROJECTS,
@@ -12,28 +10,27 @@ import {
   kinProjectRow,
   kinProjectsNothing,
   type KinHealthView,
+  type KinProjectsFilter,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
+import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
-import { Pressable, ScrollView, View } from "react-native";
+import { useState } from "react";
+import { Pressable, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
+import type { AppBarAction, AppBarMenu } from "../../components/ui/AppBar.types";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
-import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
-import {
-  KinWorkAreaSwitch,
-  KinWorkLoading,
-  KinWorkPrivateMark,
-  KinWorkStaleNotice,
-  type KinWorkAreas,
-} from "./components/KinWorkPieces";
+import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
+import { useKinAskAgent } from "./state/useKinMoney";
+import { useKinChoicesLive } from "./state/useKinWorkHome";
 import {
   refreshKinWorkLive,
   useKinClientsList,
@@ -120,13 +117,15 @@ type ListProps = KinWorkTarget & {
   readonly live: KinWorkLive;
   readonly stale: boolean;
   readonly directory: KinWorkDirectory;
-  readonly areas: KinWorkAreas;
 };
 
-/** One of Work's two named lists: only the rows in view mount, and more load at the foot. */
+/** Clients or projects as a list: only the rows in view mount, and more load at the foot. */
 function NamedList(props: {
   readonly environmentId: EnvironmentId;
-  readonly areas: KinWorkAreas;
+  readonly title: string;
+  /** What the list shows, as one menu in the bar. */
+  readonly menu: AppBarMenu;
+  readonly ask: AppBarAction | null;
   readonly stale: boolean;
   readonly rows: ReadonlyArray<NamedRow>;
   readonly state: {
@@ -140,12 +139,8 @@ function NamedList(props: {
   readonly list: { readonly refresh: () => void; readonly loadMore: () => Promise<void> | void };
   readonly search: { readonly text: string; readonly placeholder: string };
   readonly onSearch: (text: string) => void;
-  readonly views: ReadonlyArray<{
-    readonly id: string;
-    readonly label: string;
-    readonly selected: boolean;
-    readonly onPress: () => void;
-  }>;
+  /** Below the rows: the projects with no client, under the clients. */
+  readonly after?: React.ReactNode;
   readonly nothing: {
     readonly title: string;
     readonly detail: string;
@@ -158,26 +153,27 @@ function NamedList(props: {
   readonly onOpen: (key: KinRecordKey) => void;
 }) {
   const navigation = useNavigation();
-  const tab = useKinTab();
   const { state, list, add, nothing, rows } = props;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
-        title={KIN_WORK_TITLE}
+        title={props.title}
         refresh={{ accessibilityLabel: "Refresh", onPress: list.refresh }}
-        {...(add === null
-          ? {}
-          : { actions: [{ accessibilityLabel: add.label, icon: "plus", onPress: add.onPress }] })}
-        {...kinTabBar(tab, {
-          onBack: () => navigation.goBack(),
-          search: {
-            value: props.search.text,
-            onChangeText: props.onSearch,
-            placeholder: props.search.placeholder,
-            closeAccessibilityLabel: "Close search",
-            clearAccessibilityLabel: "Clear search",
-          },
-        })}
+        actions={[
+          ...(props.ask === null ? [] : [props.ask]),
+          ...(add === null
+            ? []
+            : [{ accessibilityLabel: add.label, icon: "plus" as const, onPress: add.onPress }]),
+        ]}
+        menus={[props.menu]}
+        onBack={() => navigation.goBack()}
+        search={{
+          value: props.search.text,
+          onChangeText: props.onSearch,
+          placeholder: props.search.placeholder,
+          closeAccessibilityLabel: "Close search",
+          clearAccessibilityLabel: "Clear search",
+        }}
       />
       <ScreenContent surface="screen">
         <LegendList<NamedRow>
@@ -186,8 +182,8 @@ function NamedList(props: {
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
-          // The search field, or the tab dock, floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: tab === null ? 96 : 24 + tab.bottomClearance }}
+          // The search field floats over the foot of the list.
+          contentContainerStyle={{ paddingBottom: 96 }}
           data={rows}
           keyExtractor={(row) => row.key}
           extraData={props.extra}
@@ -196,29 +192,11 @@ function NamedList(props: {
           onEndReached={() => void list.loadMore()}
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
-            <View className="gap-3 pb-1 pt-2">
-              <KinWorkAreaSwitch {...props.areas} />
-              {props.stale ? (
-                <View className="px-4">
-                  <KinWorkStaleNotice environmentId={props.environmentId} onRetry={list.refresh} />
-                </View>
-              ) : null}
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={{ paddingHorizontal: 16, gap: 8 }}
-              >
-                {props.views.map((view) => (
-                  <Chip
-                    key={view.id}
-                    label={view.label}
-                    selected={view.selected}
-                    onPress={view.onPress}
-                  />
-                ))}
-              </ScrollView>
-            </View>
+            props.stale ? (
+              <View className="px-4 pt-2">
+                <KinWorkStaleNotice environmentId={props.environmentId} onRetry={list.refresh} />
+              </View>
+            ) : null
           }
           ListEmptyComponent={
             <View className="px-4 pt-4">
@@ -244,23 +222,26 @@ function NamedList(props: {
             </View>
           }
           ListFooterComponent={
-            !state.more ? null : (
-              <View className="items-start gap-2 px-5 py-4">
-                <Text textRole="footnote" className="text-foreground-muted">
-                  {state.moreFailed
-                    ? "Couldn't load more."
-                    : `Showing ${rows.length} of ${state.total ?? rows.length}`}
-                </Text>
-                <Button
-                  tone="secondary"
-                  size="compact"
-                  label={state.moreFailed ? "Try again" : "Show more"}
-                  loading={state.loadingMore}
-                  disabled={state.loadingMore}
-                  onPress={() => void list.loadMore()}
-                />
-              </View>
-            )
+            <>
+              {!state.more ? null : (
+                <View className="items-start gap-2 px-5 py-4">
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {state.moreFailed
+                      ? "Couldn't load more."
+                      : `Showing ${rows.length} of ${state.total ?? rows.length}`}
+                  </Text>
+                  <Button
+                    tone="secondary"
+                    size="compact"
+                    label={state.moreFailed ? "Try again" : "Show more"}
+                    loading={state.loadingMore}
+                    disabled={state.loadingMore}
+                    onPress={() => void list.loadMore()}
+                  />
+                </View>
+              )}
+              {props.after}
+            </>
           }
           renderItem={({ item: row }) => (
             <KinWorkNamedRow row={row} onPress={() => props.onOpen(row.key)} />
@@ -271,22 +252,91 @@ function NamedList(props: {
   );
 }
 
-/** Every client and vendor: what is owed each way, and what is late. */
-export function KinClientsList(props: ListProps) {
+type Showing = "clients" | "closed" | KinProjectsFilter["view"];
+
+/** Clients' one menu: active or closed clients, or projects by how far along they are. */
+function showMenu(showing: Showing, onShow: (showing: Showing) => void): AppBarMenu {
+  return {
+    title: KIN_WORK_HOME.show,
+    icon: "line.3.horizontal.decrease.circle",
+    items: [
+      {
+        id: "clients",
+        title: KIN_CLIENTS.title,
+        inline: true,
+        items: [
+          {
+            id: "clients",
+            title: "Active",
+            selected: showing === "clients",
+            onPress: () => onShow("clients"),
+          },
+          {
+            id: "closed",
+            title: KIN_CLIENTS.closed,
+            selected: showing === "closed",
+            onPress: () => onShow("closed"),
+          },
+        ],
+      },
+      {
+        id: "projects",
+        title: KIN_PROJECTS.title,
+        inline: true,
+        items: KIN_PROJECT_VIEWS.map((view) => ({
+          id: `projects:${view.id}`,
+          title: `${KIN_PROJECTS.title}: ${view.label.toLowerCase()}`,
+          selected: showing === view.id,
+          onPress: () => onShow(view.id),
+        })),
+      },
+    ],
+  };
+}
+
+/**
+ * Clients, with each one's projects on its own page. Projects with no client sit under the list,
+ * and the menu turns the list into projects by how far along they are.
+ */
+export function KinClientsList(props: ListProps & { readonly projects: boolean }) {
+  const [showing, setShowing] = useState<Showing>(props.projects ? "open" : "clients");
+  const agent = useKinAskAgent(props, "clients");
+  const ask =
+    agent === null
+      ? null
+      : {
+          accessibilityLabel: `Ask ${agent.name}`,
+          icon: "bubble.left" as const,
+          onPress: () => agent.ask(kinWorkAskDraft("clients")),
+        };
+  const menu = showMenu(showing, setShowing);
+  return showing === "clients" || showing === "closed" ? (
+    <ClientsView key={showing} {...props} closed={showing === "closed"} menu={menu} ask={ask} />
+  ) : (
+    <ProjectsView key={showing} {...props} view={showing} menu={menu} ask={ask} />
+  );
+}
+
+type ViewProps = ListProps & { readonly menu: AppBarMenu; readonly ask: AppBarAction | null };
+
+function ClientsView(props: ViewProps & { readonly closed: boolean }) {
   const navigation = useNavigation();
   const { environmentId, orgId } = props;
   const canAdd = useAtomValue(kinClient.workClientCreate.permissionAtom(environmentId));
   const now = new Date(useNowMinuteMs());
-  const { state, list } = useKinClientsList(
-    props,
-    props.stale ? null : props.live.seq,
-    props.areas.words,
-  );
+  const seq = props.stale ? null : props.live.seq;
+  const { state, list } = useKinClientsList(props, seq, props.closed);
   const { filter } = state;
+  // Open projects with no client still belong under Clients, after the clients themselves.
+  const choices = useKinChoicesLive(props, !props.closed, seq);
+  const noClient =
+    filter.text.trim() === "" ? (choices?.projects ?? []).filter((row) => row.party === null) : [];
   return (
     <NamedList
       environmentId={environmentId}
-      areas={props.areas}
+      title={KIN_CLIENTS.title}
+      menu={props.menu}
+      ask={props.ask}
       stale={props.stale || state.stale}
       rows={state.records.map((row) => kinClientRow(row, props.directory.names, now))}
       state={state}
@@ -298,26 +348,33 @@ export function KinClientsList(props: ListProps) {
           list.refresh();
         },
       }}
-      extra={state}
+      extra={[state, noClient]}
       search={{ text: filter.text, placeholder: KIN_CLIENTS.search }}
-      onSearch={(text) => {
-        props.areas.onWords(text);
-        list.setFilter({ ...filter, text });
-      }}
-      views={[
-        {
-          id: "active",
-          label: "Active",
-          selected: !filter.closed,
-          onPress: () => list.setFilter({ ...filter, closed: false }),
-        },
-        {
-          id: "closed",
-          label: KIN_CLIENTS.closed,
-          selected: filter.closed,
-          onPress: () => list.setFilter({ ...filter, closed: true }),
-        },
-      ]}
+      onSearch={(text) => list.setFilter({ ...filter, text })}
+      after={
+        noClient.length === 0 ? null : (
+          <View className="pt-4">
+            <View className="px-5 pb-1">
+              <Text
+                textRole="footnote"
+                accessibilityRole="header"
+                className="font-t3-medium text-foreground-muted"
+              >
+                {`${KIN_WORK_HOME.noClient} · ${noClient.length}`}
+              </Text>
+            </View>
+            {noClient.map((row) => (
+              <KinWorkNamedRow
+                key={row.key}
+                row={kinProjectRow(row, props.directory.names, now)}
+                onPress={() =>
+                  navigation.navigate("KinProject", { environmentId, orgId, project: row.key })
+                }
+              />
+            ))}
+          </View>
+        )
+      }
       nothing={kinClientsNothing(filter)}
       add={
         canAdd
@@ -334,8 +391,7 @@ export function KinClientsList(props: ListProps) {
   );
 }
 
-/** Every project: how each is going, worked out by the server. */
-export function KinProjectsList(props: ListProps) {
+function ProjectsView(props: ViewProps & { readonly view: KinProjectsFilter["view"] }) {
   const navigation = useNavigation();
   const { environmentId, orgId } = props;
   const canAdd = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
@@ -343,13 +399,15 @@ export function KinProjectsList(props: ListProps) {
   const { state, list } = useKinProjectsList(
     props,
     props.stale ? null : props.live.seq,
-    props.areas.words,
+    props.view,
   );
   const { filter } = state;
   return (
     <NamedList
       environmentId={environmentId}
-      areas={props.areas}
+      title={KIN_PROJECTS.title}
+      menu={props.menu}
+      ask={props.ask}
       stale={props.stale || state.stale}
       rows={state.records.map((row) => kinProjectRow(row, props.directory.names, now))}
       state={state}
@@ -363,16 +421,7 @@ export function KinProjectsList(props: ListProps) {
       }}
       extra={state}
       search={{ text: filter.text, placeholder: KIN_PROJECTS.search }}
-      onSearch={(text) => {
-        props.areas.onWords(text);
-        list.setFilter({ ...filter, text });
-      }}
-      views={KIN_PROJECT_VIEWS.map((view) => ({
-        id: view.id,
-        label: view.label,
-        selected: filter.view === view.id,
-        onPress: () => list.setFilter({ ...filter, view: view.id }),
-      }))}
+      onSearch={(text) => list.setFilter({ ...filter, text })}
       nothing={kinProjectsNothing(filter)}
       add={
         canAdd

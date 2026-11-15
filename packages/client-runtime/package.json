@@ -695,6 +695,10 @@
       "types": "./src/kin/kinWorkChanges.ts",
       "default": "./src/kin/kinWorkChanges.ts"
     },
+    "./kin/kinWorkHome": {
+      "types": "./src/kin/kinWorkHome.ts",
+      "default": "./src/kin/kinWorkHome.ts"
+    },
     "./kin/kinWorkList": {
       "types": "./src/kin/kinWorkList.ts",
       "default": "./src/kin/kinWorkList.ts"

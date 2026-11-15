@@ -5,11 +5,7 @@ import {
   type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
-import {
-  KIN_WORK_AREAS,
-  type KinWorkArea,
-  type KinWorkTimelineLine,
-} from "@t3tools/client-runtime/kin/kinWorkClients";
+import type { KinWorkTimelineLine } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_FORM_COPY,
   type KinWorkFormProblem,
@@ -25,7 +21,6 @@ import { Button } from "../../../components/ui/Button";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
-import { SegmentedControl } from "../../../components/ui/SegmentedControl";
 import { cn } from "../../../lib/cn";
 import { useKinHostAt } from "../state/useKinHost";
 import { KinWorkStateSymbol } from "./KinWorkStateSymbol";
@@ -56,27 +51,6 @@ export function KinWorkFrame(
           {children}
         </ScreenScrollView>
       </ScreenContent>
-    </View>
-  );
-}
-
-export type KinWorkAreas = {
-  readonly area: KinWorkArea;
-  readonly onArea: (area: KinWorkArea) => void;
-  /** The search bar keeps its words across parts, so each part searches with them too. */
-  readonly words: string;
-  readonly onWords: (words: string) => void;
-};
-
-/** Tasks, clients or projects: the three parts of Work, at the head of each list. */
-export function KinWorkAreaSwitch(props: KinWorkAreas) {
-  return (
-    <View className="px-4">
-      <SegmentedControl
-        options={KIN_WORK_AREAS.map((held) => ({ value: held.id, label: held.label }))}
-        selected={props.area}
-        onSelect={props.onArea}
-      />
     </View>
   );
 }

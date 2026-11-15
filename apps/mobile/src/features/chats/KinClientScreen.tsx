@@ -63,6 +63,7 @@ import {
   useKinWorkHistory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { useKinWorkLink } from "./state/kinWorkLink";
 
 export type KinClientParams = {
   readonly environmentId: string;
@@ -144,6 +145,7 @@ function KinClientBody(
   },
 ) {
   const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const { environmentId, orgId, page } = props;
   const target = { environmentId, orgId };
   const work = useKinWork(target);
@@ -220,9 +222,7 @@ function KinClientBody(
             inset
             row={row}
             saving={changed.pending[row.key] !== undefined}
-            onPress={() =>
-              navigation.navigate("KinWorkItem", { environmentId, orgId, task: row.key })
-            }
+            onPress={() => openRecord("KinWorkItem", { environmentId, orgId, task: row.key })}
             onAct={canChangeTasks ? (action) => act(row.key, action) : null}
           />
         ))
@@ -230,7 +230,7 @@ function KinClientBody(
       {side.more === null ? null : (
         <ListActionRow
           label={side.more}
-          onPress={() => navigation.navigate("KinWork", { environmentId, orgId, ...about })}
+          onPress={() => openRecord("KinWork", { environmentId, orgId, ...about })}
         />
       )}
       {canAddTask && !view.closed ? (
@@ -319,9 +319,7 @@ function KinClientBody(
               key={row.key}
               inset
               row={row}
-              onPress={() =>
-                navigation.navigate("KinProject", { environmentId, orgId, project: row.key })
-              }
+              onPress={() => openRecord("KinProject", { environmentId, orgId, project: row.key })}
             />
           ))
         )}
@@ -460,9 +458,7 @@ function KinClientBody(
         ) : (
           <KinWorkTimelineLines
             lines={kinWorkTimeline(history.state.records, names, now, view.key)}
-            onOpenTask={(task) =>
-              navigation.navigate("KinWorkItem", { environmentId, orgId, task })
-            }
+            onOpenTask={(task) => openRecord("KinWorkItem", { environmentId, orgId, task })}
           />
         )}
         {history.state.more ? (
