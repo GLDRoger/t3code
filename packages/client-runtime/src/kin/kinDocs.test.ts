@@ -152,9 +152,11 @@ describe("kinDocLibrary", () => {
       ["Zed", ["D-4", "D-2"]],
       ["No client", ["D-6"]],
       ["Acme", ["D-3"]],
-      ["Company", ["D-7", "D-5"]],
+      ["Company", ["D-7"]],
       ["Unfiled", ["D-1"]],
     ]);
+    // The playbooks fold into one row of their own.
+    expect(library.playbooks.map((held) => held.key)).toEqual(["D-5"]);
     // Seven docs read fine by home; the recent strip only repeats them.
     expect(library.recent).toEqual([]);
     const many = Array.from({ length: 13 }, (_, index) =>

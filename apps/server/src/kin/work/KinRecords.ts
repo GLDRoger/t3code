@@ -264,6 +264,9 @@ type Sums = {
   readonly owed?: ReadonlyArray<KinMoney>;
   /** With a paid window: the payments made in it. */
   readonly received?: ReadonlyArray<KinMoney>;
+  /** Quotes sent and waiting, and accepted. */
+  readonly sent?: ReadonlyArray<KinMoney>;
+  readonly accepted?: ReadonlyArray<KinMoney>;
 };
 export type Totals = Sums & {
   readonly counted: number;
@@ -1917,6 +1920,12 @@ const make = Effect.gen(function* () {
                       .filter((row) => owesIn(listDef, row.state) && row.minor > row.paid)
                       .map((row) => ({ minor: row.minor - row.paid, currency: row.currency })),
                   ),
+                }
+              : {}),
+            ...(listDef.id === "quotes"
+              ? {
+                  sent: addUp(priced.filter((row) => row.state === "waiting")),
+                  accepted: addUp(priced.filter((row) => row.state === "done")),
                 }
               : {}),
             ...(windowed

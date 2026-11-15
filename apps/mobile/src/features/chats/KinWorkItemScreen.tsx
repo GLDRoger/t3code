@@ -5,10 +5,10 @@ import {
   KIN_WORK_GONE,
   KIN_WORK_HAND_BACK,
   KIN_WORK_ITEM_FAILED,
+  KIN_WORK_MILESTONE,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
   KIN_WORK_ONLY_OWNER,
-  KIN_WORK_PRIVATE,
   KIN_WORK_TITLE_MAX,
   kinWorkAssignees,
   kinWorkHostClients,
@@ -47,7 +47,6 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
@@ -60,14 +59,10 @@ import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinNotesVersions } from "./KinNotesVersions";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
-import {
-  KinWorkDueRow,
-  KinWorkPlaceRow,
-  KinWorkSideRow,
-  KinWorkStatusRow,
-} from "./components/KinWorkTaskMenus";
+import { KinWorkDueRow, KinWorkPlaceRow, KinWorkStatusRow } from "./components/KinWorkTaskMenus";
 import { KinListEntryBody } from "./KinListEntry";
-import { KinWorkShareRow } from "./KinWorkShareRow";
+import { KinWorkTaskRow } from "./components/KinWorkPieces";
+import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
 import {
   useKinWork,
@@ -170,7 +165,12 @@ function KinWorkItemBody(props: ItemTarget) {
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
   const { state: changed, changes } = useKinWorkChanges(props);
   const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
-  useKinWorkItemWatch(props, itemKey, state._tag === "ready" ? state.item.seq : null);
+  useKinWorkItemWatch(
+    props,
+    itemKey,
+    state._tag === "ready" ? state.item.seq : null,
+    state._tag === "ready" ? state.item.tasks?.map((task) => task.key) : undefined,
+  );
   const directory = useKinWorkDirectory(props, true);
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
@@ -291,6 +291,10 @@ function KinWorkItemBody(props: ItemTarget) {
     navigation.goBack();
     navigation.navigate("KinChat", { environmentId, orgId, chatId });
   };
+  const openParty = () =>
+    openRecord("KinClient", { environmentId, orgId, party: view.party?.key ?? "" });
+  const openProject = () =>
+    openRecord("KinProject", { environmentId, orgId, project: view.project?.key ?? "" });
   const openLink = (link: KinWorkLinkView) => {
     const { open } = link;
     if (open === null) return;
@@ -538,13 +542,8 @@ function KinWorkItemBody(props: ItemTarget) {
                 icon="person.2"
                 label={KIN_WORK_NEW_COPY.clientLabel}
                 detail={view.party.title}
-                onPress={() =>
-                  openRecord("KinClient", {
-                    environmentId,
-                    orgId,
-                    party: view.party?.key ?? "",
-                  })
-                }
+                {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
+                onPress={openParty}
               />
             )
           ) : (
@@ -556,13 +555,8 @@ function KinWorkItemBody(props: ItemTarget) {
               choices={choices.clients}
               disabled={saving}
               onPick={(party) => act({ type: "place", party })}
-            />
-          )}
-          {act === null || view.party === null ? null : (
-            <KinWorkSideRow
-              side={view.side}
-              disabled={saving}
-              onPick={(side) => act({ type: "place", side })}
+              onOpen={openParty}
+              side={{ value: view.side, onPick: (side) => act({ type: "place", side }) }}
             />
           )}
           {act === null ? (
@@ -571,13 +565,7 @@ function KinWorkItemBody(props: ItemTarget) {
                 icon="folder"
                 label={KIN_WORK_NEW_COPY.projectLabel}
                 detail={view.project.title}
-                onPress={() =>
-                  openRecord("KinProject", {
-                    environmentId,
-                    orgId,
-                    project: view.project?.key ?? "",
-                  })
-                }
+                onPress={openProject}
               />
             )
           ) : (
@@ -589,50 +577,48 @@ function KinWorkItemBody(props: ItemTarget) {
               choices={choices.projects}
               disabled={saving}
               onPick={(project) => act({ type: "place", project })}
+              onOpen={openProject}
             />
           )}
-          {view.party === null ? null : (
-            <ListActionRow
-              label={`Open ${view.party.title}`}
+          {view.milestone === null ? null : (
+            <ListRow
+              icon="list.bullet"
+              label={KIN_WORK_MILESTONE.label}
+              detail={view.milestone.title}
               onPress={() =>
-                openRecord("KinClient", {
+                openRecord("KinWorkItem", {
                   environmentId,
                   orgId,
-                  party: view.party?.key ?? "",
+                  task: view.milestone?.key ?? "",
                 })
               }
             />
           )}
-          {view.project === null ? null : (
-            <ListActionRow
-              label={`Open ${view.project.title}`}
-              onPress={() =>
-                openRecord("KinProject", {
-                  environmentId,
-                  orgId,
-                  project: view.project?.key ?? "",
-                })
-              }
-            />
-          )}
-          {act === null && !view.privacy.private ? null : (
-            <ListToggleRow
-              icon="lock"
-              label={KIN_WORK_PRIVATE}
-              description={view.privacy.note}
-              value={view.privacy.private}
-              disabled={act === null || saving || view.privacy.inherited}
-              onValueChange={(on) => act?.({ type: "private", private: on })}
-            />
-          )}
-          {act === null || view.privacy.private ? null : (
-            <KinWorkShareRow
-              environmentId={environmentId}
-              orgId={orgId}
-              itemKey={item.key}
-              shared={view.shared}
-              disabled={saving}
-            />
+          <KinWorkAudienceRow
+            environmentId={environmentId}
+            orgId={orgId}
+            itemKey={item.key}
+            view={view}
+            disabled={saving}
+            onMark={act === null ? null : (on) => act({ type: "private", private: on })}
+          />
+        </ListSection>
+      )}
+      {view.tasks === null ? null : (
+        <ListSection title={KIN_WORK_MILESTONE.tasks}>
+          {view.tasks.length === 0 ? (
+            <ListRowLayout label={KIN_WORK_MILESTONE.noTasks} disabled />
+          ) : (
+            view.tasks.map((row) => (
+              <KinWorkTaskRow
+                key={row.key}
+                row={row}
+                saving={false}
+                inset
+                onAct={null}
+                onPress={() => openRecord("KinWorkItem", { environmentId, orgId, task: row.key })}
+              />
+            ))
           )}
         </ListSection>
       )}

@@ -1,8 +1,10 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+import { KIN_VISUAL_HOSTS as COPY } from "@t3tools/client-runtime/kin/kinConnections";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
+import { ChevronDownIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "../components/ui/button";
@@ -29,6 +31,7 @@ export function KinVisualHosts(props: {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
 
   const change = async (host: string, on: boolean) => {
     if (busy) return;
@@ -41,62 +44,71 @@ export function KinVisualHosts(props: {
       if (on) setDraft("");
       return;
     }
-    setProblem(failureText(result, on ? "Couldn't add that host." : "Couldn't remove that host."));
+    setProblem(failureText(result, on ? COPY.addFailed : COPY.removeFailed));
   };
 
   return (
-    <section aria-label="Visuals" className="flex flex-col gap-2 border-t border-border/60 pt-4">
-      <h3 className="text-xs font-medium text-muted-foreground">Visuals</h3>
-      <p className="text-sm text-muted-foreground">
-        A visual an agent sends can't reach the internet. A host you add here is the exception: any
-        visual can load images, fonts and data from it, and send it what the visual shows.
-      </p>
-      {hosts === null ? null : hosts.length === 0 ? (
-        <p className="text-sm">No hosts added.</p>
-      ) : (
-        <ul className="flex flex-col">
-          {hosts.map((host) => (
-            <li
-              key={host}
-              className="flex items-center gap-2 border-b border-border/60 py-1.5 last:border-b-0"
-            >
-              <span className="min-w-0 flex-1 truncate font-mono text-sm">{host}</span>
-              <Button
-                size="xs"
-                variant="ghost-destructive"
-                disabled={busy}
-                onClick={() => void change(host, false)}
-              >
-                Remove
-              </Button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <form
-        className="flex items-center gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (draft.trim() !== "") void change(draft, true);
-        }}
-      >
-        <Input
-          aria-label="Host to add"
-          placeholder="tiles.example.com"
-          value={draft}
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-          onChange={(event) => setDraft(event.target.value)}
-        />
-        <Button type="submit" variant="outline" disabled={busy || draft.trim() === ""}>
-          Add host
+    <section aria-label={COPY.title} className="flex flex-col gap-2 border-t border-border/60 pt-4">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-xs font-medium text-muted-foreground">
+          {open ? COPY.title : COPY.advanced}
+        </h3>
+        <Button size="xs" variant="ghost" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? "Hide" : `${COPY.title} · ${hosts === null ? "…" : COPY.count(hosts.length)}`}
+          <ChevronDownIcon className={open ? "rotate-180" : undefined} />
         </Button>
-      </form>
-      {problem === null ? null : (
-        <p role="alert" className="text-xs text-destructive-foreground">
-          {problem}
-        </p>
+      </div>
+      {!open ? null : (
+        <>
+          <p className="text-sm text-muted-foreground">{COPY.detail}</p>
+          {hosts === null ? null : hosts.length === 0 ? (
+            <p className="text-sm">{COPY.none}</p>
+          ) : (
+            <ul className="flex flex-col">
+              {hosts.map((host) => (
+                <li
+                  key={host}
+                  className="flex items-center gap-2 border-b border-border/60 py-1.5 last:border-b-0"
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono text-sm">{host}</span>
+                  <Button
+                    size="xs"
+                    variant="ghost-destructive"
+                    disabled={busy}
+                    onClick={() => void change(host, false)}
+                  >
+                    {COPY.remove}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (draft.trim() !== "") void change(draft, true);
+            }}
+          >
+            <Input
+              aria-label={COPY.inputLabel}
+              placeholder={COPY.placeholder}
+              value={draft}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              onChange={(event) => setDraft(event.target.value)}
+            />
+            <Button type="submit" variant="outline" disabled={busy || draft.trim() === ""}>
+              {COPY.add}
+            </Button>
+          </form>
+          {problem === null ? null : (
+            <p role="alert" className="text-xs text-destructive-foreground">
+              {problem}
+            </p>
+          )}
+        </>
       )}
     </section>
   );

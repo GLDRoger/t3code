@@ -26,6 +26,8 @@ import {
   kinWorkDraftCheck,
   kinWorkHostClients,
   kinWorkAssignees,
+  kinWorkAudience,
+  kinWorkAudienceMove,
   kinWorkHostEdits,
   kinWorkItemView,
   kinWorkListFooter,
@@ -347,6 +349,35 @@ describe("kinWorkItemView", () => {
     expect(view.links.map((held) => [held.label, held.open?.type ?? null])).toEqual([
       ["PR #12 merged", "url"],
     ]);
+  });
+
+  it("puts who sees a task as one answer, and a pick changes only what it must", () => {
+    const project = { key: "P-1", title: "Invented app" };
+    const at = (sensitive: boolean, shared: boolean) =>
+      kinWorkItemView(
+        detail({ sensitive, ...(shared ? { shared: true } : {}) }),
+        names,
+        now,
+        50,
+        place,
+      );
+    const owner = { mark: true, share: true };
+    const plain = kinWorkAudience({ ...at(false, false), project }, owner);
+    expect(plain.current).toBe("people");
+    expect(plain.answer).toBe("You, whoever has it and the people on Invented app");
+    expect(plain.choices.map((one) => one.id)).toEqual(["people", "team", "me"]);
+    // Marked private wins over an old share, so it reads as only you.
+    expect(kinWorkAudience(at(true, true), owner).current).toBe("me");
+    expect(kinWorkAudienceMove({ private: true, shared: true }, "people")).toEqual({
+      private: false,
+      shared: false,
+    });
+    expect(kinWorkAudienceMove({ private: false, shared: false }, "team")).toEqual({
+      private: null,
+      shared: true,
+    });
+    // A project's lead who can't share or mark sees the answer with nothing to pick.
+    expect(kinWorkAudience(at(false, false), { mark: false, share: false }).choices).toEqual([]);
   });
 });
 

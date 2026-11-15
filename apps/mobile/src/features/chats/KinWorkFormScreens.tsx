@@ -152,6 +152,7 @@ export function FormShell(props: {
   return (
     <KinWorkFrame
       form
+      showTop={props.problem?.text ?? null}
       title={props.title}
       onClose={() => navigation.goBack()}
       confirm={{

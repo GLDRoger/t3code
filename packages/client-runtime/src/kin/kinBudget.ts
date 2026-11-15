@@ -64,26 +64,6 @@ export function kinDailyLimitChoices(budget: KinBudget | null): {
   return { choices: [custom, ...choices], current: custom.value };
 }
 
-const share = (units: number, of: number) => {
-  const percent = Math.round((units / of) * 100);
-  return units > 0 && percent === 0 ? "under 1%" : `${percent}%`;
-};
-
-/**
- * Today's use in the owner's words: theirs beside their teammates', as a share of the limit, or of
- * a usual day when there is none. Null when the host doesn't say whose turns used what.
- */
-export function kinDailyLimitUse(budget: KinBudget | null): string | null {
-  if (budget === null || budget.ownerUnits === undefined) return null;
-  const limit = budget.limits.leadUnits;
-  const of = limit === null || limit === 0 ? (budget.usual ?? FALLBACK_USUAL).leadUnits : limit;
-  const unit = limit === null || limit === 0 ? "of a usual day" : "of the limit";
-  const teammates = budget.teammateUnits ?? 0;
-  return teammates === 0
-    ? `Today: you ${share(budget.ownerUnits, of)} ${unit}.`
-    : `Today: you ${share(budget.ownerUnits, of)}, teammates ${share(teammates, of)} ${unit}.`;
-}
-
 const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** Work held for the limit, one line per agent: "Finance: 2 messages, 1 task". */

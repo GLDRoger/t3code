@@ -31,6 +31,7 @@ import { LegendList } from "@legendapp/list/react";
 import {
   BookOpenIcon,
   Building2Icon,
+  ChevronDownIcon,
   FolderInputIcon,
   MessageSquareIcon,
   TableIcon,
@@ -195,7 +196,8 @@ type Item =
   | { readonly type: "recent"; readonly id: string; readonly rows: ReadonlyArray<KinDocRow> }
   | { readonly type: "doc"; readonly id: string; readonly row: KinDocRow; readonly bare: boolean }
   | { readonly type: "list"; readonly id: string; readonly row: KinListIndexRow }
-  | { readonly type: "moreLists"; readonly id: string; readonly hidden: number };
+  | { readonly type: "moreLists"; readonly id: string; readonly hidden: number }
+  | { readonly type: "playbooks"; readonly id: string; readonly count: number };
 
 const DOCS_ONLY = ["docs"] as const;
 const LISTS_FOLDED = 3;
@@ -236,6 +238,7 @@ export function KinDocsList(
   const { state, list } = useKinDocsList(props, props.stale ? null : (live?.seq ?? null));
   const { state: found, search } = useKinSearch(props, DOCS_ONLY);
   const [allLists, setAllLists] = useState(false);
+  const [playbooksOpen, setPlaybooksOpen] = useState(false);
   const [filing, setFiling] = useState<KinDocRow | null>(null);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(props.environmentId));
   const { filter } = state;
@@ -287,11 +290,34 @@ export function KinDocsList(
       bare: home.kind !== "client",
     })),
   ]);
+  // Folded to one row on the whole library; asked for by name or words, they show as found.
+  const folded = everything && !searching;
+  const playbookItems: ReadonlyArray<Item> =
+    library.playbooks.length === 0
+      ? []
+      : [
+          folded
+            ? { type: "playbooks", id: "playbooks", count: library.playbooks.length }
+            : {
+                type: "group",
+                id: "group:playbooks",
+                title: KIN_DOC_HOMES.playbooks,
+                count: library.playbooks.length,
+              },
+          ...(folded && !playbooksOpen
+            ? []
+            : library.playbooks.map((row): Item => ({
+                type: "doc",
+                id: row.recordId,
+                row,
+                bare: true,
+              }))),
+        ];
   const recent: ReadonlyArray<Item> =
     everything && !searching && !filter.archived && library.recent.length > 0
       ? [{ type: "recent", id: "recent", rows: library.recent }]
       : [];
-  const items = [...recent, ...listItems, ...docItems];
+  const items = [...recent, ...listItems, ...docItems, ...playbookItems];
   const footer = kinDocsFooter(state.records.length, state.total, state.more);
   const chip = kinDocsChip(filter);
   const show = (next: KinDocsShow) => list.setFilter({ ...filter, show: next });
@@ -302,7 +328,7 @@ export function KinDocsList(
       <LegendList<Item>
         data={items}
         keyExtractor={(item) => item.id}
-        extraData={[state, found, allLists, canFile, props.selected]}
+        extraData={[state, found, allLists, playbooksOpen, canFile, props.selected]}
         recycleItems
         onEndReached={() => void list.loadMore()}
         onEndReachedThreshold={0.5}
@@ -366,7 +392,7 @@ export function KinDocsList(
                       variant="ghost"
                       onClick={() => show(shelf.show)}
                     >
-                      {shelf.show._tag === "company" ? <Building2Icon /> : <BookOpenIcon />}
+                      <Building2Icon />
                       {shelf.label}
                     </Button>
                   ))
@@ -405,7 +431,10 @@ export function KinDocsList(
         }
         ListFooterComponent={
           <>
-            {items.length > 0 && docItems.length === 0 && !state.loading ? (
+            {items.length > 0 &&
+            docItems.length === 0 &&
+            playbookItems.length === 0 &&
+            !state.loading ? (
               <div className="mx-auto w-full max-w-3xl px-4 pt-4">
                 <KinWorkNotice
                   {...(searching
@@ -496,6 +525,36 @@ export function KinDocsList(
                   {KIN_DOC_HOMES.fileAll}
                 </Button>
               ) : null}
+            </div>
+          ) : item.type === "playbooks" ? (
+            <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1">
+              <button
+                type="button"
+                aria-expanded={playbooksOpen}
+                onClick={() => setPlaybooksOpen(!playbooksOpen)}
+                className={ROW}
+              >
+                <BookOpenIcon
+                  aria-hidden
+                  className="mt-0.5 size-4 shrink-0 text-muted-foreground"
+                />
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="truncate text-sm text-foreground">
+                    {KIN_DOC_HOMES.playbooks}
+                  </span>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {KIN_DOC_HOMES.playbooksLine(item.count)}
+                  </span>
+                </span>
+                <ChevronDownIcon
+                  aria-hidden
+                  className={
+                    playbooksOpen
+                      ? "mt-0.5 size-4 shrink-0 rotate-180 text-muted-foreground"
+                      : "mt-0.5 size-4 shrink-0 text-muted-foreground"
+                  }
+                />
+              </button>
             </div>
           ) : item.type === "moreLists" ? (
             <div className="mx-auto w-full max-w-3xl px-4 py-1">

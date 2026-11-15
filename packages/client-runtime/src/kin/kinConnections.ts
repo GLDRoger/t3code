@@ -180,6 +180,35 @@ export interface KinConnectionStatus {
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
+/** The outside websites visuals may load from: rarely needed, so folded under Advanced. */
+export const KIN_VISUAL_HOSTS = {
+  advanced: "Advanced",
+  title: "Websites charts can load from",
+  count: (count: number) => (count === 0 ? "None" : String(count)),
+  detail:
+    "Charts and pictures your agents make can't reach the internet. Add a website only if one needs maps, images or data from it. That website can see what the chart shows.",
+  none: "None added.",
+  placeholder: "maps.example.com",
+  inputLabel: "Website to add",
+  add: "Add",
+  remove: "Remove",
+  addFailed: "Couldn't add that website.",
+  removeFailed: "Couldn't remove that website.",
+} as const;
+
+const PROVIDER_NAMES: Record<NonNullable<KinConnection["preset"]>, string> = {
+  github: "GitHub",
+  posthog: "PostHog",
+  sentry: "Sentry",
+  google: "Google",
+  zoho_books: "Zoho Books",
+  microsoft: "Microsoft",
+};
+
+/** Who a connection is with, said beside its address: "Google", or the server's own host. */
+export const kinConnectionProvider = (connection: Pick<KinConnection, "preset" | "urlHost">) =>
+  connection.preset === null ? connection.urlHost : PROVIDER_NAMES[connection.preset];
+
 /** One line on how a connection stands: paused, broken, waiting on the owner, or working. */
 export function kinConnectionStatus(connection: KinConnection): KinConnectionStatus {
   if (connection.paused)

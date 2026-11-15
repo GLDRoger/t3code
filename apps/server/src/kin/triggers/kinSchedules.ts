@@ -27,6 +27,7 @@ import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
+import { leadProjectId } from "../lead/leadProject.ts";
 import { KIN_COMMAND_PREFIX, KIN_TASK_PREFIX } from "./taskIds.ts";
 
 export const KIN_SCHEDULE_TASK_PREFIX = `${KIN_TASK_PREFIX}schedule:`;
@@ -212,8 +213,8 @@ const make = Effect.gen(function* () {
     const models = yield* decodeModels(lead.models).pipe(
       Effect.catch(failed("The schedule could not be saved.")),
     );
-    // The lead's own project, as its wake-ups use (WakeupRunner).
-    const projectId = ProjectId.make(`kin:${input.orgId}:${input.agentId}`);
+    // The lead's own project, as its wake-ups use; the scheduled-tasks tick makes it before any.
+    const projectId = leadProjectId(input.orgId, input.agentId);
     const inbox = yield* inboxThread(input.orgId, input.agentId, projectId, models.cheap).pipe(
       Effect.catch(failed("The schedule could not be saved.")),
     );

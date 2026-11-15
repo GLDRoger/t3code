@@ -127,6 +127,10 @@ const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 const NONE = "none";
 
 /** The client or the project something sits under: one of the ones there are, or none. */
+const OPEN = "open";
+const SIDE = "side";
+
+/** A client or project: open it, pick another or none, and for a client, who owes the task. */
 export function KinWorkPlaceRow(props: {
   readonly icon: AppSymbolName;
   readonly label: string;
@@ -135,8 +139,13 @@ export function KinWorkPlaceRow(props: {
   readonly choices: ReadonlyArray<KinWorkRef>;
   readonly disabled: boolean;
   readonly onPick: (ref: KinWorkRef | null) => void;
+  readonly onOpen?: () => void;
+  readonly side?: {
+    readonly value: "ours" | "theirs";
+    readonly onPick: (side: "ours" | "theirs") => void;
+  };
 }) {
-  const { held } = props;
+  const { held, side } = props;
   // The one it already has stays pickable after that one closes.
   const choices =
     held === null || props.choices.some((choice) => choice.key === held.key)
@@ -149,15 +158,33 @@ export function KinWorkPlaceRow(props: {
       accessibilityRole="button"
       accessibilityLabel={`${props.label}: ${detail}. Change`}
       actions={[
+        ...(held === null || props.onOpen === undefined
+          ? []
+          : [{ id: OPEN, title: `Open ${held.title}`, image: "arrow.up.right" }]),
         ...choices.map((choice) => ({
           id: choice.key,
           title: choice.title,
           state: choice.key === held?.key ? ("on" as const) : ("off" as const),
         })),
         { id: NONE, title: props.none, state: held === null ? ("on" as const) : ("off" as const) },
+        ...(held === null || side === undefined
+          ? []
+          : [
+              {
+                id: SIDE,
+                title:
+                  side.value === "theirs"
+                    ? KIN_WORK_NEW_COPY.sideOurs
+                    : `${KIN_WORK_NEW_COPY.sideTheirs}, not us`,
+                image: "arrow.left.arrow.right",
+              },
+            ]),
       ]}
       onPressAction={({ nativeEvent: { event } }) => {
+        if (event === OPEN) return props.onOpen?.();
         if (props.disabled) return;
+        if (event === SIDE && side !== undefined)
+          return side.onPick(side.value === "theirs" ? "ours" : "theirs");
         if (event === NONE) return props.onPick(null);
         const picked = choices.find((choice) => choice.key === event);
         if (picked !== undefined) props.onPick(picked);
@@ -168,6 +195,9 @@ export function KinWorkPlaceRow(props: {
           icon={props.icon}
           label={props.label}
           detail={detail}
+          {...(held !== null && side?.value === "theirs"
+            ? { description: KIN_WORK_NEW_COPY.sideTheirs }
+            : {})}
           disabled={props.disabled}
         />
       </View>

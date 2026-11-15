@@ -203,6 +203,8 @@ export function useKinWorkItemWatch(
   { environmentId, orgId }: KinWorkTarget,
   key: KinRecordKey,
   heldSeq: number | undefined | null,
+  /** A milestone's tasks: a change to one reads the milestone again. */
+  alsoKeys: ReadonlyArray<KinRecordKey> = [],
 ) {
   const live = Option.getOrNull(
     AsyncResult.value(useAtomValue(kinWorkLiveAtom({ environmentId, orgId }))),
@@ -214,7 +216,10 @@ export function useKinWorkItemWatch(
         appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
     }),
   );
-  const named = live?.changed[key] ?? 0;
+  const named = Math.max(
+    live?.changed[key] ?? 0,
+    ...alsoKeys.map((also) => live?.changed[also] ?? 0),
+  );
   const unnamed = live?.unnamed ?? 0;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the open task from the host again when the host announces a change to it
   useEffect(() => {

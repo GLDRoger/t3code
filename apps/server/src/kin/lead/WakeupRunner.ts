@@ -55,6 +55,7 @@ import {
 } from "./Audience.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import { nonClaudeLeadModel } from "./leadModels.ts";
+import { bootstrapLeadProject } from "./leadProject.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
@@ -972,11 +973,12 @@ const make = Effect.gen(function* () {
             const shared =
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             // A project per lead, since its root is the provider's cwd: the lead's own checkout.
-            const { project } = yield* projects.bootstrap({
-              commandId: CommandId.make(`kin-project:${orgId}:${agentId}`),
-              projectId: ProjectId.make(`kin:${orgId}:${agentId}`),
+            const { project } = yield* bootstrapLeadProject(projects, {
+              orgId,
+              agentId,
               workspaceRoot: pinned.read,
-              title: `Kin · ${record.orgName} · ${record.name}`,
+              orgName: record.orgName,
+              name: record.name,
             });
             // The owner's own turns share one thread; any other, a co-owner's included, runs on
             // its chat's own, so no model context crosses chats. Ended threads can't be

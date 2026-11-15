@@ -2371,6 +2371,10 @@ describe("money answers", () => {
           dueAt: dueOn("2026-11-20"),
           dueAllDay: true,
         });
+        // Quotes add up what is out and what was won; a draft is not counted in either.
+        yield* create("draft", { list: "quotes", title: "Invented draft", amount: inr(9_000) });
+        const quoted = yield* records.totals(orgId, { list: "quotes" });
+        assert.deepStrictEqual([quoted.sent, quoted.accepted], [[inr(70_000)], []]);
         const invoices = [
           ["Invented retainer", inr(118_000), "2026-11-30", "waiting"],
           ["Invented build", inr(50_000), "2026-12-25", "waiting"],

@@ -1,10 +1,19 @@
 import { useAtomValue } from "@effect/atom-react";
-import { KIN_WORK_SHARE } from "@t3tools/client-runtime/kin/kinWork";
+import {
+  KIN_WORK_AUDIENCE,
+  KIN_WORK_SHARE,
+  kinWorkAudience,
+  kinWorkAudienceMove,
+  type KinWorkItemView,
+} from "@t3tools/client-runtime/kin/kinWork";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
+import { View } from "react-native";
 
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
+import { Menu } from "../../components/ui/Menu";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient } from "./state/kinClient";
@@ -57,5 +66,79 @@ export function KinWorkShareRow(
         );
       }}
     />
+  );
+}
+
+/**
+ * A task's one privacy control: who can see it, in plain words, and a menu of the real choices.
+ * The private mark goes through the task's own changes; sharing through `kin.work.share`.
+ */
+export function KinWorkAudienceRow(
+  props: KinWorkTarget & {
+    readonly itemKey: KinRecordKey;
+    readonly view: Pick<KinWorkItemView, "privacy" | "shared" | "project">;
+    readonly disabled: boolean;
+    /** Sets the private mark; null where this viewer can't. */
+    readonly onMark: ((on: boolean) => void) | null;
+  },
+) {
+  const { environmentId, orgId, itemKey, view } = props;
+  const canShare = useAtomValue(kinClient.workShare.permissionAtom(environmentId));
+  const share = useAtomCommand(kinClient.workShare, { reportFailure: false });
+  const [asked, setAsked] = useState<{ readonly to: boolean; readonly from: boolean } | null>(null);
+  const [pending, setPending] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const shared = asked !== null && asked.from === view.shared ? asked.to : view.shared;
+  const audience = kinWorkAudience(
+    { ...view, shared },
+    { mark: props.onMark !== null, share: canShare },
+  );
+  if (props.onMark === null) return null;
+  const description = failed ? KIN_WORK_AUDIENCE.failed : audience.answer;
+  const row = (
+    <ListRowLayout
+      icon={audience.current === "me" ? "lock" : "person.2"}
+      label={KIN_WORK_AUDIENCE.label}
+      description={description}
+      disabled={props.disabled || pending}
+    />
+  );
+  if (audience.choices.length === 0) return row;
+  return (
+    <Menu
+      title={KIN_WORK_AUDIENCE.label}
+      accessibilityRole="button"
+      accessibilityLabel={`${KIN_WORK_AUDIENCE.label}: ${audience.answer}. Change`}
+      actions={audience.choices.map((choice) => ({
+        id: choice.id,
+        title: choice.label,
+        state: choice.id === audience.current ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent: { event } }) => {
+        if (props.disabled || pending) return;
+        const to = audience.choices.find((choice) => choice.id === event)?.id;
+        if (to === undefined) return;
+        const move = kinWorkAudienceMove({ private: view.privacy.private, shared }, to);
+        if (move.private !== null) props.onMark?.(move.private);
+        if (move.shared === null || !canShare) return;
+        const on = move.shared;
+        setAsked({ to: on, from: view.shared });
+        setPending(true);
+        setFailed(false);
+        void share({ environmentId, input: { orgId, keys: [itemKey], shared: on } }).then(
+          (outcome) => {
+            const refused = AsyncResult.isFailure(outcome);
+            setFailed(refused);
+            setPending(false);
+            if (refused) setAsked(null);
+            appAtomRegistry.refresh(
+              kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }),
+            );
+          },
+        );
+      }}
+    >
+      <View pointerEvents="none">{row}</View>
+    </Menu>
   );
 }

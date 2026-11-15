@@ -46,6 +46,27 @@ export const principalText = (who: KinWorkPrincipal) =>
   who._tag === "person" ? `person:${who.personId}` : `agent:${who.agentId}`;
 const sameWho = (a: KinWorkPrincipal, b: KinWorkPrincipal) => principalText(a) === principalText(b);
 
+/** A task's milestone, or a milestone's tasks (open first, then by due), for their sheets. */
+export const milestoneLinks = Effect.fn("KinProjectSpine.milestoneLinks")(function* (
+  row: Pick<RecordRow, "orgId" | "registerId" | "key" | "fieldsJson">,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (row.registerId === "work") {
+    const key = fieldText(parseFields(row.fieldsJson), "milestone");
+    if (key === null) return {};
+    const [found] = yield* sql<{ recordId: string; key: string; title: string }>`SELECT
+        record_id AS "recordId", key, title FROM kin_records
+      WHERE org_id = ${row.orgId} AND register_id = 'milestones' AND key = ${key} ORDER BY record_id`;
+    return found === undefined ? {} : { milestone: ref(found.recordId, found.key, found.title) };
+  }
+  if (row.registerId !== "milestones") return {};
+  const tasks = yield* sql<RecordRow>`${selectRecords(sql)}
+    WHERE r.org_id = ${row.orgId} AND r.register_id = 'work'
+      AND json_extract(r.fields_json, '$.milestone') = ${row.key}
+    ORDER BY r.state IN ('done', 'dropped'), r.due_at IS NULL, r.due_at, r.key LIMIT 100`;
+  return { tasks };
+});
+
 /** Entries `r` every one of `viewers` sees (`viewSees`); everything for the owner (undefined). */
 export const seenBy = (
   sql: SqlClient.SqlClient,

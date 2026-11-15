@@ -2,7 +2,6 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   KIN_DAILY_LIMIT,
   kinDailyLimitChoices,
-  kinDailyLimitUse,
   kinDailyLimitWaiting,
 } from "@t3tools/client-runtime/kin/kinBudget";
 import * as Option from "effect/Option";
@@ -46,21 +45,11 @@ function DailyLimit(props: KinWorkTarget) {
   // Only the owner reads the limit; a teammate's read is refused, so there is nothing to show.
   if (!canSet || AsyncResult.isFailure(result)) return null;
   const { choices, current } = kinDailyLimitChoices(budget);
-  const use = kinDailyLimitUse(budget);
   const waiting = kinDailyLimitWaiting(budget);
   return (
     <SettingsRow
       title={KIN_DAILY_LIMIT.title}
-      description={
-        failed ? (
-          KIN_DAILY_LIMIT.failed
-        ) : (
-          <>
-            {KIN_DAILY_LIMIT.detail}
-            {use === null ? null : <span className="block pt-1">{use}</span>}
-          </>
-        )
-      }
+      description={failed ? KIN_DAILY_LIMIT.failed : KIN_DAILY_LIMIT.detail}
       control={
         <Select
           items={choices.map(({ value, label }) => ({ value, label }))}
