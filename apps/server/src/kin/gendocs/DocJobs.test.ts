@@ -1229,7 +1229,7 @@ describe("recipe documents", () => {
       for (const [what, inputs, given, expected] of cases)
         assert.strictEqual(yield* sensitivity(inputs, given), expected, what);
 
-      // The agent's own words are plain, until its turn has read something sensitive.
+      // The agent's own words are plain, even after its turn read something sensitive (H04).
       const quiet = yield* turn(4, "Write up the plan");
       const report = (title: string) =>
         LeadDocuments.make(scope, {
@@ -1242,8 +1242,8 @@ describe("recipe documents", () => {
       yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
           VALUES (${orgId}, 'wake-4', 0)`;
       const marked = yield* report("Plan after reading");
-      assert.isTrue(marked.sensitive);
-      assert.strictEqual((yield* versionsOf(marked.documents[0]!.key)).doc.sensitive, 1);
+      assert.isUndefined(marked.sensitive);
+      assert.strictEqual((yield* versionsOf(marked.documents[0]!.key)).doc.sensitive, 0);
       // A doc made a PDF lays out the doc's own text, never retyped, and keeps its label (F38).
       const prd = yield* Docs.create(
         orgId,
@@ -1278,7 +1278,7 @@ describe("recipe documents", () => {
         }),
       );
       assert.match(notText.message, /is a file, not text/);
-      // So are a worker's brief and a recipe it writes, labelled as the job is admitted.
+      // A worker's brief is plain too; a money recipe it writes is private by its kind.
       const brief = yield* DocJobs.planJob(
         orgId,
         {
@@ -1299,14 +1299,13 @@ describe("recipe documents", () => {
         },
         "lead-chat",
       );
-      for (const plan of [brief, writing])
+      for (const [plan, labelled] of [
+        [brief, false],
+        [writing, true],
+      ] as const)
         assert.deepStrictEqual(
-          [
-            plan.sensitive,
-            yield* DocJobs.workerJobSensitive(orgId, "wake-4", plan),
-            yield* DocJobs.workerJobSensitive(orgId, "wake-1", plan),
-          ],
-          [false, true, false],
+          [plan.sensitive, yield* DocJobs.workerJobSensitive(orgId, plan)],
+          [false, labelled],
           plan.mode,
         );
       // A recipe's document is never a worker's job any more.

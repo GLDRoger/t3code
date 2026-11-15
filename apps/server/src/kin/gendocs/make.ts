@@ -18,7 +18,6 @@ import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
 import { ownerZone, type RecordRow } from "../work/recordRows.ts";
-import { turnSensitive } from "../work/workerAttempts.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
 import { issuedNumber } from "./numbering.ts";
 import { computeData } from "./compute.ts";
@@ -241,9 +240,6 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
         : { inputs: assembled.inputs, logo: gathered.logo.sha256 },
     ),
   );
-  const fromTurn =
-    request.requester._tag === "agent" &&
-    (yield* turnSensitive(request.orgId, request.requester.wakeupId));
   return {
     entry,
     inputs: assembled.inputs,
@@ -251,7 +247,6 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
     number: recipe.numbered ? gathered.number : null,
     draft: recipe.numbered && gathered.number === null,
     sensitive:
-      fromTurn ||
       source.sensitive ||
       jobSensitive(recipe, assembled.inputs, gathered) ||
       (yield* recipeLabelled(request.orgId, recipe)),
