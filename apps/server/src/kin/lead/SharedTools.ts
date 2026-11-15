@@ -164,6 +164,9 @@ export const SHARED_TOOLS = {
   // Work tasks every person behind the turn may see, shaped as their own screens show them.
   records_query: "view",
   record_get: "view",
+  // A teammate's own contact with a client is theirs to report; the whole client is the owner's.
+  touch_log: "allowed",
+  client_read: "refused",
   record_create: oneAskerCreates,
   record_update: "view",
   // Work facts on tasks every person behind the turn may see; money and system facts are the owner's.

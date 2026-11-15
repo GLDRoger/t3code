@@ -2084,8 +2084,23 @@ describe("KinConnections accounts", () => {
           )
           .pipe(Effect.flip);
         assert.include(across.message, "can't send this now");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+          VALUES (${orgId}, 'clients', 'Clients', 'C', 0), (${orgId}, 'contacts', 'Contacts', 'CT', 0)`;
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at, party_id, fields_json)
+          VALUES (${orgId}, 'rec_client', 'clients', 'C-1', 'Invented Two', 'person', ${ownerId},
+            'person', 'c1', 0, 0, NULL, '{}'),
+            (${orgId}, 'rec_raj', 'contacts', 'CT-1', 'Raj', 'person', ${ownerId}, 'person',
+            'ct1', 0, 0, 'rec_client', '{"email":"Raj@Client2.example"}')`;
         const replied = yield* answer(reply.widgetId, ownerId, true);
         yield* connections.sendAsk(orgId, replied!.askId);
+        yield* connections.sendAsk(orgId, replied!.askId);
+        assert.deepStrictEqual(
+          yield* sql`SELECT party_id AS "partyId", kind, note, person_id AS "personId"
+            FROM kin_client_touches ORDER BY touch_id`,
+          [{ partyId: "rec_client", kind: "email", note: "Re: PO 77", personId: ownerId }],
+        );
         const sentReply = vendor.vendor.sent.at(-1)!;
         assert.strictEqual(sentReply.account, WORK_MAIL);
         assert.strictEqual(

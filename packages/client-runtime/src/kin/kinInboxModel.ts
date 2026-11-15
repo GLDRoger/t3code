@@ -45,6 +45,11 @@ export const emptyKinInbox: KinInboxState = { chats: [], waiting: [] };
 export const kinBadgeCount = (state: KinInboxState) =>
   state.chats.reduce((total, chat) => total + chat.unread, 0) + state.waiting.length;
 
+/** Nothing left in this chat for the viewer: no unread, nothing waiting, or they left it. */
+export const kinChatSettled = (state: KinInboxState, chatId: KinChatId) =>
+  (state.chats.find((chat) => chat.chatId === chatId)?.unread ?? 0) === 0 &&
+  !state.waiting.some((item) => item.chatId === chatId);
+
 export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): KinInboxState {
   switch (event._tag) {
     case "snapshot":

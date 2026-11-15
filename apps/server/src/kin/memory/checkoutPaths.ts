@@ -5,6 +5,7 @@ export const itemFolders = [
   "decisions",
   "people",
   "claims",
+  "relationships",
 ] as const;
 
 // Lowercased: macOS and Windows resolve `claude.md` to `CLAUDE.md`.

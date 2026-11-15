@@ -156,6 +156,7 @@ const seed = Effect.gen(function* () {
     dueAt: B + 2 * DAY,
     partyId: "r-C-1",
   });
+  yield* insert({ id: "W-10", dueAt: B + 5 * DAY, partyId: "r-C-1" });
   yield* insert({ id: "DT-1", list: "dates", category: "renewal", dueAt: B + 40 * DAY });
   yield* insert({
     id: "EXP-1",
@@ -213,6 +214,9 @@ const SENSES: ReadonlyArray<readonly [string, string, number]> = [
   ["budget_near", "b-software", B],
   ["budget_over", "b-travel", B],
   ["worker_failed", "worker-1", B + DAY],
+  // Lumen's last contact is INV-5, issued at B - 30 days; cold at the default 30 days.
+  ["client_cold", "C-1", B],
+  ["client_waiting_on_us", "C-1", B + 5 * DAY + 24 * HOUR],
 ];
 
 describe("KinPulse", () => {

@@ -16,6 +16,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { readStoredFile } from "../gendocs/brand.ts";
 import { formatMoney } from "../work/money.ts";
+import { logTouch } from "../work/touches.ts";
 import { KinGatewayError } from "./McpGateway.ts";
 import {
   addressesIn,
@@ -664,11 +665,36 @@ export const sendGoogle = Effect.fn("KinSending.sendGoogle")(function* (
 });
 
 /**
- * Hook: a mail that carried an invoice, quote or receipt is a contact with that client. Kin has
- * no client contact log yet; when it does, this records the touch.
+ * A sent mail is a contact with each client whose contact it went to: one email touch per client,
+ * by the owner who confirmed it, with the subject as its note. A retry finds the same touch.
  */
-export const sentToClient = (_sent: {
+export const sentToClient = Effect.fn("KinSending.sentToClient")(function* (sent: {
   readonly orgId: KinOrgId;
-  readonly entryRecordId: string;
+  readonly askId: string;
+  readonly agentId: string;
+  readonly personId: string;
   readonly to: ReadonlyArray<string>;
-}) => Effect.void;
+  readonly subject: string;
+  readonly now: number;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const addresses = [...new Set(sent.to.map((one) => one.toLowerCase()))];
+  if (addresses.length === 0) return;
+  const clients = yield* sql<{ partyId: string }>`SELECT DISTINCT c.record_id AS "partyId"
+    FROM kin_records r JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+      AND c.register_id = 'clients'
+    WHERE r.org_id = ${sent.orgId} AND r.register_id = 'contacts'
+      AND lower(json_extract(r.fields_json, '$.email')) IN ${sql.in(addresses)}
+    ORDER BY c.record_id`;
+  for (const { partyId } of clients)
+    yield* logTouch(sent.orgId, {
+      partyId,
+      kind: "email",
+      at: sent.now,
+      note: sent.subject.slice(0, 300),
+      personId: sent.personId,
+      by: { kind: "agent", id: sent.agentId },
+      originKey: `mail:${sent.askId}:${partyId}`,
+      now: sent.now,
+    });
+});

@@ -2220,8 +2220,21 @@ const make = Effect.gen(function* () {
         null,
       );
     const done = yield* finish("sent", null, sent.success);
-    if (prepared._tag === "email" && row.entryRecordId !== null)
-      yield* sentToClient({ orgId, entryRecordId: row.entryRecordId, to: prepared.to });
+    if (prepared._tag === "email")
+      yield* sentToClient({
+        orgId,
+        askId,
+        agentId: row.agentId,
+        personId: row.owner,
+        to: [...prepared.to, ...prepared.cc],
+        subject: prepared.subject,
+        now: yield* Clock.currentTimeMillis,
+      }).pipe(
+        provideSql,
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't note a sent mail on its client", { cause }),
+        ),
+      );
     return done;
   }, settle);
 

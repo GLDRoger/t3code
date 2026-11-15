@@ -216,6 +216,8 @@ export const MemoryItemKind = Schema.Literals([
   "decision",
   "person",
   "claim",
+  // One client's lasting nature and dynamic with us, linked `client:<key>`.
+  "relationship",
 ]);
 export type MemoryItemKind = typeof MemoryItemKind.Type;
 export const MemoryTrust = Schema.Literals(["owner", "member", "external", "agent"]);
