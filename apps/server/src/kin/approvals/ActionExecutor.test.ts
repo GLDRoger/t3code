@@ -1897,16 +1897,25 @@ describe("KinActionExecutor", () => {
       "kin/chat/refreshes.ts",
       "kin/chat/rpcHandlers.ts",
       "kin/cli/lead.ts",
+      "kin/people/rpcHandlers.ts",
     ]);
+    // The team agent is set with the caller's own session, checked as the editor's.
+    assert.notMatch(
+      source("kin/people/rpcHandlers.ts"),
+      /\bLeadProvision\.(?!setTeamAgent\b|ts\b)\w+/,
+    );
     assert.notMatch(
       source("kin/chat/refreshes.ts"),
       /\bLeadProvision\.(?!profiles\b|contacts\b|ts\b)\w+/,
     );
     assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
-    assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), ["kin/rpcHandlers.ts"]);
+    assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), [
+      "kin/people/rpcHandlers.ts",
+      "kin/rpcHandlers.ts",
+    ]);
     assert.notMatch(
       source("kin/chat/rpcHandlers.ts"),
-      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|KinLeadProvisionError\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|teamAgent\b|KinLeadProvisionError\b|ts\b)\w+/,
     );
     // The refresh stream reads only the caller's own lead list to tell them it moved.
     assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
