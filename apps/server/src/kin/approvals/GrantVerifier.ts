@@ -151,7 +151,7 @@ const make = Effect.gen(function* () {
       const action = yield* actions.get({ orgId: person.orgId, actionId });
       if (Option.isSome(action)) {
         // Phase 1 requirements are all the owner role; phase 3 and 5 add kinds here (spec §3).
-        if (!(yield* roles.isOwner(person)))
+        if (!(yield* roles.isOwnerLevel(person)))
           return yield* fail("not_owner", "Only the owner can decide this.");
         return { action: action.value, person };
       }
@@ -213,7 +213,7 @@ const make = Effect.gen(function* () {
     // 4. The signer is the key's person, who holds the owner role now.
     if (
       payload.approver.humanId !== key.humanId ||
-      !(yield* roles.isOwner({ orgId: key.orgId, personId: key.humanId }))
+      !(yield* roles.isOwnerLevel({ orgId: key.orgId, personId: key.humanId }))
     )
       return yield* reject("not_owner");
 
@@ -484,7 +484,7 @@ const make = Effect.gen(function* () {
         const found = yield* actions.get({ orgId: person.orgId, actionId: input.actionId });
         if (Option.isNone(found)) continue;
         const action = found.value;
-        if (yield* roles.isOwner(person)) {
+        if (yield* roles.isOwnerLevel(person)) {
           const leadName = yield* displayName("kin_agents", action.orgId, leadOf(action));
           const after = action.provenance.afterNonOwnerMessage;
           const afterNonOwnerName =

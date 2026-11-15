@@ -8,6 +8,7 @@ import {
   KinPerson,
   KinPersonId,
   KinWakeupId,
+  type KinAgentId,
   type KinOrgId,
   type KinPeopleCreateInviteInput,
   type KinPeopleCreateInviteResult,
@@ -20,6 +21,9 @@ import {
   type KinPeopleRevokeDeviceInput,
   type KinPeopleRemoveAccessInput,
   type KinPeopleSetGithubLoginInput,
+  type KinPeopleSetAccessInput,
+  type KinAccessMeInput,
+  type KinAccessMeResult,
   type AuthSessionId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -36,10 +40,13 @@ import { toPersistenceSqlError, PersistenceSqlError } from "../../persistence/Er
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { abortChatTurns } from "../lead/Audience.ts";
 import { onPersonRemoved } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
+import { accessOf, ownerLevel } from "./KinAccess.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -49,7 +56,11 @@ type Failure = KinChatError | PersistenceSqlError;
 const missing = new KinChatError({ reason: "not_found", message: "Kin record not found." });
 const denied = new KinChatError({
   reason: "not_allowed",
-  message: "This action requires the owner.",
+  message: "This action requires the owner or a co-owner.",
+});
+const ownerOnly = new KinChatError({
+  reason: "not_allowed",
+  message: "Only the owner changes who is a co-owner.",
 });
 const hash = (secret: string) => NodeCrypto.createHash("sha256").update(secret).digest();
 const decodePersonRow = Schema.decodeUnknownSync(KinPerson);
@@ -96,6 +107,15 @@ export class KinPeople extends Context.Service<
       session: AuthenticatedSession,
       input: KinPeopleSetGithubLoginInput,
     ) => Effect.Effect<KinPerson, Failure>;
+    /** The owner alone: makes someone a co-owner or a member; demoting stops their running turns. */
+    readonly setAccess: (
+      session: AuthenticatedSession,
+      input: KinPeopleSetAccessInput,
+    ) => Effect.Effect<KinPerson, Failure>;
+    readonly accessMe: (
+      session: AuthenticatedSession,
+      input: KinAccessMeInput,
+    ) => Effect.Effect<KinAccessMeResult, Failure>;
   }
 >()("t3/kin/people/KinPeople") {}
 
@@ -108,19 +128,33 @@ export const make = Effect.gen(function* () {
   const refresh = yield* KinRefreshObserver;
   const presence = yield* Effect.serviceOption(KinPresence);
   const stop = yield* Effect.serviceOption(KinStop);
-  const owner = Effect.fn("KinPeople.requireOwner")(function* (
+  const chats = yield* Effect.serviceOption(KinChatService);
+  const level = (orgId: KinOrgId, personId: KinPersonId) =>
+    ownerLevel(orgId, personId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+  /** The caller, when owner-level here: the owner or a co-owner runs Team. */
+  const owner = Effect.fn("KinPeople.requireOwnerLevel")(function* (
     session: AuthenticatedSession,
     orgId: KinOrgId,
   ) {
     if (orgId !== identity.owner.orgId) return yield* missing;
-    const people = yield* identity.resolve(session);
-    if (!people.some((p) => p.orgId === orgId && p.personId === identity.owner.personId))
-      return yield* denied;
+    const caller = (yield* identity.resolve(session)).find((p) => p.orgId === orgId);
+    if (caller === undefined || !(yield* level(orgId, caller.personId))) return yield* denied;
+    return caller;
+  });
+  /** A co-owner acts on members and on themself; another owner-level person is the owner's call. */
+  const mayActOn = Effect.fn("KinPeople.mayActOn")(function* (
+    caller: { readonly personId: KinPersonId },
+    orgId: KinOrgId,
+    personId: KinPersonId,
+  ) {
+    if (personId === identity.owner.personId) return yield* denied;
+    if (caller.personId === identity.owner.personId || caller.personId === personId) return;
+    if (yield* level(orgId, personId)) return yield* ownerOnly;
   });
   const person = Effect.fn("KinPeople.person")(function* (orgId: KinOrgId, personId: KinPersonId) {
     const rows =
       yield* sql`SELECT person_id AS "personId", org_id AS "orgId", handle, display_name AS "displayName",
-      github_login AS "githubLogin", created_at AS "createdAt" FROM kin_people
+      github_login AS "githubLogin", access, created_at AS "createdAt" FROM kin_people
       WHERE org_id = ${orgId} AND person_id = ${personId} ORDER BY person_id`.pipe(
         Effect.mapError(toPersistenceSqlError("KinPeople.person")),
       );
@@ -151,7 +185,8 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleCreateInviteInput,
   ) {
-    yield* owner(session, input.orgId);
+    const caller = yield* owner(session, input.orgId);
+    if (input.personId !== undefined) yield* mayActOn(caller, input.orgId, input.personId);
     const now = (yield* DateTime.now).epochMilliseconds;
     const secret = NodeCrypto.randomBytes(32).toString("base64url");
     const inviteId = KinInviteId.make(NodeCrypto.randomUUID());
@@ -256,7 +291,7 @@ export const make = Effect.gen(function* () {
     yield* owner(session, orgId);
     const rows =
       yield* sql`SELECT person_id AS "personId", org_id AS "orgId", handle, display_name AS "displayName",
-      github_login AS "githubLogin", created_at AS "createdAt" FROM kin_people WHERE org_id = ${orgId} ORDER BY handle, person_id`.pipe(
+      github_login AS "githubLogin", access, created_at AS "createdAt" FROM kin_people WHERE org_id = ${orgId} ORDER BY handle, person_id`.pipe(
         Effect.mapError(toPersistenceSqlError("KinPeople.list")),
       );
     const now = DateTime.formatIso(yield* DateTime.now);
@@ -345,7 +380,7 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleRevokeDeviceInput,
   ) {
-    yield* owner(session, input.orgId);
+    yield* mayActOn(yield* owner(session, input.orgId), input.orgId, input.personId);
     const now = (yield* DateTime.now).epochMilliseconds;
     return yield* sql
       .withTransaction(
@@ -375,8 +410,7 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleRemoveAccessInput,
   ) {
-    yield* owner(session, input.orgId);
-    if (input.personId === identity.owner.personId) return yield* denied;
+    yield* mayActOn(yield* owner(session, input.orgId), input.orgId, input.personId);
     const now = (yield* DateTime.now).epochMilliseconds;
     const leftAt = DateTime.formatIso(DateTime.makeUnsafe(now));
     return yield* sql
@@ -466,20 +500,16 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleSetGithubLoginInput,
   ) {
-    const people = yield* identity.resolve(session);
-    if (!people.some((p) => p.orgId === input.orgId)) return yield* missing;
+    const caller = (yield* identity.resolve(session)).find((p) => p.orgId === input.orgId);
+    if (caller === undefined) return yield* missing;
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
           yield* person(input.orgId, input.personId);
-          if (
-            !people.some(
-              (p) =>
-                p.orgId === input.orgId &&
-                (p.personId === input.personId || p.personId === identity.owner.personId),
-            )
-          )
-            return yield* denied;
+          if (caller.personId !== input.personId) {
+            if (!(yield* level(input.orgId, caller.personId))) return yield* denied;
+            yield* mayActOn(caller, input.orgId, input.personId);
+          }
 
           if (input.githubLogin !== null) {
             const clashes =
@@ -503,7 +533,79 @@ export const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(sqlError("KinPeople.setGithubLogin")));
   });
+  const setAccess = Effect.fn("KinPeople.setAccess")(function* (
+    session: AuthenticatedSession,
+    input: KinPeopleSetAccessInput,
+  ) {
+    const caller = yield* owner(session, input.orgId);
+    if (caller.personId !== identity.owner.personId) return yield* ownerOnly;
+    if (input.personId === identity.owner.personId) return yield* ownerOnly;
+    return yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const before = (yield* person(input.orgId, input.personId)).access;
+          if (before === input.access) return yield* person(input.orgId, input.personId);
+          yield* sql`UPDATE kin_people SET access = ${input.access}
+            WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND access <> 'owner'`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.setAccess")),
+          );
+          // A co-owner talks to every agent in their own chat with it, never in the owner's.
+          if (input.access === "co_owner" && Option.isSome(chats)) {
+            const leads = yield* sql<{ agentId: KinAgentId }>`SELECT l.agent_id AS "agentId"
+              FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+              WHERE l.org_id = ${input.orgId} AND a.role = 'lead' AND a.retired_at IS NULL
+              ORDER BY l.agent_id`.pipe(Effect.mapError(toPersistenceSqlError("KinPeople.leads")));
+            for (const lead of leads)
+              yield* chats.value.createDirect(
+                { _tag: "person", orgId: input.orgId, personId: input.personId },
+                { orgId: input.orgId, agentId: lead.agentId },
+              );
+          }
+          // Their turns were built at the owner's level; none may finish at it.
+          const turns: Array<{ agentId: string; wakeupId: string }> = [];
+          if (input.access === "member")
+            for (const member of yield* repo.listMembersByPerson(input)) {
+              if (member.leftAt !== null) continue;
+              turns.push(
+                ...(yield* abortChatTurns({
+                  orgId: input.orgId,
+                  chatId: member.chatId,
+                  personId: input.personId,
+                }).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                  Effect.mapError(toPersistenceSqlError("KinPeople.setAccessTurns")),
+                )),
+              );
+            }
+          if (turns.length > 0 && Option.isSome(stop))
+            yield* sql.afterCommit(
+              stop.value.abortTurns(
+                input.orgId,
+                turns.map((turn) => KinWakeupId.make(turn.wakeupId)),
+              ),
+            );
+          yield* refresh.touch(input.orgId, "people");
+          yield* refresh.touch(input.orgId, "leads");
+          return yield* person(input.orgId, input.personId);
+        }),
+      )
+      .pipe(Effect.mapError(sqlError("KinPeople.setAccess")));
+  });
+  const accessMe = Effect.fn("KinPeople.accessMe")(function* (
+    session: AuthenticatedSession,
+    input: KinAccessMeInput,
+  ) {
+    const caller = (yield* identity.resolve(session)).find((p) => p.orgId === input.orgId);
+    if (caller === undefined) return yield* missing;
+    const access = yield* accessOf(input.orgId, caller.personId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    if (access === undefined) return yield* missing;
+    return { personId: caller.personId, access };
+  });
   return KinPeople.of({
+    setAccess,
+    accessMe,
     listInvites,
     revokeInvite,
     createInvite,

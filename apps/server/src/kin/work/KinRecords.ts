@@ -36,6 +36,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal, withdrawAttempts } from "./workerAttempts.ts";
@@ -569,7 +570,9 @@ const make = Effect.gen(function* () {
   ) {
     const own = writer.actor._tag === "person" && writer.actor.personId === personId;
     const refuse = (error: KinChatError) => (own ? Effect.fail(error) : Effect.void);
-    if (!(yield* LeadAccess.allowed({ orgId, agentId, personId }).pipe(provideSql)))
+    // A co-owner messages every lead and has no daily cap, as the owner does.
+    const level = yield* ownerLevel(orgId, personId).pipe(provideSql);
+    if (!level && !(yield* LeadAccess.allowed({ orgId, agentId, personId }).pipe(provideSql)))
       return yield* refuse(
         new KinChatError({
           reason: "not_found",
@@ -595,7 +598,9 @@ const make = Effect.gen(function* () {
           message: `Open your chat with ${name} once, then give it this again.`,
         }),
       );
-    const used = yield* LeadAccess.recentTurns({ orgId, personId, now }).pipe(provideSql);
+    const used = level
+      ? { turns: 0 }
+      : yield* LeadAccess.recentTurns({ orgId, personId, now }).pipe(provideSql);
     if (used.turns >= dailyTurns)
       return yield* refuse(
         new KinChatError({

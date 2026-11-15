@@ -22,6 +22,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import {
   KinPendingActions,
   KIN_LEVEL_REQUESTER,
@@ -135,8 +136,11 @@ const make = Effect.gen(function* () {
       sql`SELECT 1 FROM kin_leads l
         JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
         JOIN kin_people p ON p.org_id = a.org_id AND p.person_id = a.owner_person_id
+        JOIN kin_people p2 ON p2.org_id = l.org_id AND p2.person_id = ${person.personId}
         WHERE l.org_id = ${lead.orgId} AND l.agent_id = ${lead.agentId}
-          AND a.role = 'lead' AND a.retired_at IS NULL AND a.owner_person_id = ${person.personId}
+          AND a.role = 'lead' AND a.retired_at IS NULL
+          AND (a.owner_person_id = ${person.personId}
+            OR ${sql.literal(ownerLevelSql("l.org_id", "p2.person_id"))})
         ORDER BY l.agent_id`,
     );
     if (rows.length === 0) return yield* notAllowed;

@@ -26,6 +26,9 @@ import {
   PRIVATE_DESTINATION,
   SHARED_ELSEWHERE,
   SHARED_OTHER_CHAT,
+  OTHERS_CHAT,
+  behindAllIn,
+  ownerAlone,
   SHARED_REFUSAL,
   aborted,
   askedIn,
@@ -280,6 +283,15 @@ const make = Effect.gen(function* () {
         ))
       )
         return yield* new KinChatError({ reason: "not_allowed", message: SHARED_OTHER_CHAT });
+      // A co-owner's owner-tier turn reads the chats they are in, never the owner's own.
+      if (
+        !shared &&
+        !(yield* ownerAlone(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))) &&
+        !(yield* behindAllIn(turn, input.chatId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ))
+      )
+        return yield* new KinChatError({ reason: "not_allowed", message: OTHERS_CHAT });
       return yield* chat.read(agent, input);
     },
     Effect.catchIf(

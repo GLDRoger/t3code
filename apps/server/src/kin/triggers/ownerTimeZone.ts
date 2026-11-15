@@ -22,7 +22,7 @@ type TimeZoneError = KinChatError | PersistenceSqlError;
 const notFound = new KinChatError({ reason: "not_found", message: "Kin organization not found." });
 const notAllowed = new KinChatError({
   reason: "not_allowed",
-  message: "Only the organization owner can read or set Kin's time zone.",
+  message: "Only the owner or a co-owner can set Kin's time zone.",
 });
 const invalid = new KinChatError({ reason: "invalid_state", message: "Invalid Kin time zone." });
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });

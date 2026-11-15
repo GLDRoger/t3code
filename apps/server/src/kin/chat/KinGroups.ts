@@ -31,6 +31,7 @@ import * as SqlError from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { freezeMovedCard, onPersonJoined, settleCards, workerChat } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import * as Hub from "./KinChatHub.ts";
 import * as Repository from "./KinChatRepository.ts";
@@ -87,7 +88,7 @@ const decodeMemberId = Schema.decodeEffect(KinMemberId);
 const notFound = new KinChatError({ reason: "not_found", message: "Kin record not found." });
 const ownerOnly = new KinChatError({
   reason: "not_allowed",
-  message: "Only the owner can change a group.",
+  message: "Only the person who made a group can change it.",
 });
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const CHAT_EVENT_TAGS = ["chat.message", "widget.action", "chat.reaction"] as const;
@@ -116,8 +117,14 @@ const make = Effect.gen(function* () {
     <A>(effect: Effect.Effect<A, SqlError.SqlError>) =>
       effect.pipe(Effect.mapError(toPersistenceSqlError(operation)));
 
+  /** The owner or a co-owner: who makes and runs groups. */
   const isOwner = (person: PersonIdentity) =>
-    person.orgId === owner.orgId && person.personId === owner.personId;
+    person.orgId === owner.orgId
+      ? ownerLevel(person.orgId, person.personId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(toPersistenceSqlError("KinGroups.isOwner")),
+        )
+      : Effect.succeed(false);
 
   /** The caller's own membership of a chat they are in; a chat they are not in does not exist. */
   const memberOf = Effect.fn("KinGroups.memberOf")(function* (caller: Viewers, chatId: KinChatId) {
@@ -140,7 +147,7 @@ const make = Effect.gen(function* () {
     chatId: KinChatId,
   ) {
     const found = yield* memberOf(caller, chatId);
-    if (!isOwner(found.person) || found.member.role !== "owner") return yield* ownerOnly;
+    if (!(yield* isOwner(found.person)) || found.member.role !== "owner") return yield* ownerOnly;
     if (found.chat.kind === "direct")
       return yield* new KinChatError({
         reason: "not_allowed",
@@ -300,10 +307,10 @@ const make = Effect.gen(function* () {
       );
       const person = caller.find((entry) => entry.orgId === input.orgId);
       if (person === undefined) return yield* notFound;
-      if (!isOwner(person))
+      if (!(yield* isOwner(person)))
         return yield* new KinChatError({
           reason: "not_allowed",
-          message: "Only the owner can make a group.",
+          message: "Only the owner or a co-owner can make a group.",
         });
       const agentIds = [...new Set(input.agentIds)];
       const personIds = [...new Set(input.personIds)].filter((id) => id !== person.personId);

@@ -14,6 +14,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { ownerLevel, ownerLevelSql } from "../people/KinAccess.ts";
 import { CHAT_ANSWER_TAGS } from "./Audience.ts";
 
 // Approvals import this module, so it must not reach the chat service.
@@ -44,8 +45,8 @@ const OWNER_PLACED_LEVEL: KinLevel = "L2";
 
 /**
  * Whether the lead's owner placed it in `chatId`, from stored rows only: its owner chat (a direct
- * chat whose key binds exactly that person and that lead), or a group the lead is in whose owner
- * is the lead's owner. Only a chat's owner adds members, so the owner put the lead there. A chat
+ * chat whose key binds exactly that person and that lead), a co-owner's own direct chat with it,
+ * or a group the lead is in whose owner is owner-level. Only a chat's owner adds members, so the owner put the lead there. A chat
  * someone else owns keeps the lead's own level, the conservative default.
  */
 const ownerPlacedSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => sql`(EXISTS (
@@ -53,10 +54,14 @@ const ownerPlacedSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => s
       AND d.chat_id = ${chatId} AND d.kind = 'direct'
       AND d.direct_key = a.owner_person_id || ':' || l.agent_id)
   OR EXISTS (
+    SELECT 1 FROM kin_chats d JOIN kin_people q ON q.org_id = d.org_id
+      AND q.access = 'co_owner' AND d.direct_key = q.person_id || ':' || l.agent_id
+    WHERE d.org_id = l.org_id AND d.chat_id = ${chatId} AND d.kind = 'direct')
+  OR EXISTS (
     SELECT 1 FROM kin_chats g
     JOIN kin_chat_members o ON o.org_id = g.org_id AND o.chat_id = g.chat_id
       AND o.principal_kind = 'person' AND o.role = 'owner' AND o.left_at IS NULL
-      AND o.person_id = a.owner_person_id
+      AND ${sql.literal(ownerLevelSql("o.org_id", "o.person_id"))}
     JOIN kin_chat_members lm ON lm.org_id = g.org_id AND lm.chat_id = g.chat_id
       AND lm.principal_kind = 'agent' AND lm.agent_id = l.agent_id AND lm.left_at IS NULL
     WHERE g.org_id = l.org_id AND g.chat_id = ${chatId} AND g.kind <> 'direct'))`;
@@ -149,11 +154,14 @@ export const originLevel = Effect.fn("KinLevels.originLevel")(function* (
     agentId: origin.agentId,
     chatId: origin.chatId,
   }).pipe(Effect.catchTags({ KinLevelRefused: () => Effect.succeed<KinLevel>("L0") }));
-  return origin.personId === undefined ? level : lowest(level, TEAMMATE_LEVEL);
+  if (origin.personId === undefined) return level;
+  if (yield* ownerLevel(orgId, origin.personId).pipe(Effect.orElseSucceed(() => false)))
+    return level;
+  return lowest(level, TEAMMATE_LEVEL);
 });
 
 /**
- * The people, other than the lead's owner, whose messages, card taps or reactions the wake-up
+ * The people, other than owner-level ones, whose messages, card taps or reactions the wake-up
  * answers. A message's author is read from its stored row and a reaction's from the event the
  * server wrote, never from tool input or model text.
  */
@@ -175,9 +183,10 @@ export const askers = Effect.fn("KinLevels.askers")(function* (input: {
     WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
       AND e.wakeup_id = ${input.wakeupId}
       AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
-      AND COALESCE(m.author_person_id,
-        CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)
-        <> a.owner_person_id
+      AND NOT EXISTS (SELECT 1 FROM kin_people q WHERE q.org_id = e.org_id
+        AND q.person_id = COALESCE(m.author_person_id,
+          CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)
+        AND ${sql.literal(ownerLevelSql("q.org_id", "q.person_id"))})
     ORDER BY 1`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.askers")));
   return rows.map((row) => row.personId);
 });
@@ -237,7 +246,13 @@ export const ownerAlone = Effect.fn("KinLevels.ownerAlone")(function* (input: {
   readonly wakeupId: string;
 }) {
   if ((yield* askers(input)).length > 0) return false;
-  return (yield* origins(input)).every((origin) => origin.personId === undefined);
+  for (const origin of yield* origins(input))
+    if (
+      origin.personId !== undefined &&
+      !(yield* ownerLevel(input.orgId, origin.personId).pipe(Effect.orElseSucceed(() => false)))
+    )
+      return false;
+  return true;
 });
 
 /**

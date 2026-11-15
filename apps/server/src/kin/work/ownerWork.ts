@@ -22,6 +22,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { readableFrom } from "../chat/sharing.ts";
@@ -65,7 +66,7 @@ import {
 
 const ownerOnly = new KinChatError({
   reason: "not_allowed",
-  message: "Only the owner can do that in Work.",
+  message: "Only the owner or a co-owner can do that in Work.",
 });
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -78,7 +79,7 @@ export const theOwner = Effect.fn("KinWork.owner")(function* (
   return viewer.person;
 });
 
-/** The caller in this org, and whether they are a teammate rather than its owner. */
+/** The caller in this org, and whether they are a teammate rather than owner-level. */
 const viewerOf = Effect.fn("KinWork.viewer")(function* (
   people: ReadonlyArray<PersonIdentity>,
   orgId: KinOrgId,
@@ -88,7 +89,9 @@ const viewerOf = Effect.fn("KinWork.viewer")(function* (
   if (person === undefined) return yield* ownerOnly;
   return {
     person,
-    teammate: person.orgId !== owner.orgId || person.personId !== owner.personId,
+    teammate:
+      person.orgId !== owner.orgId ||
+      !(yield* ownerLevel(orgId, person.personId).pipe(Effect.mapError(() => ownerOnly))),
   };
 });
 type Viewer = Effect.Success<ReturnType<typeof viewerOf>>;

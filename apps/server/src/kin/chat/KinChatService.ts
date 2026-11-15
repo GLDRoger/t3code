@@ -96,6 +96,7 @@ import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { memberReads } from "./sharing.ts";
 
 type Identity = PersonIdentity | AgentIdentity;
@@ -1700,9 +1701,13 @@ const make = Effect.gen(function* () {
       const agent = yield* requireRecord(repo.getAgent(input));
       if (agent.retiredAt !== null) return yield* notAllowed;
       const own = agent.ownerPersonId === person.personId;
-      // Someone else's lead: only while its owner lets this person message it.
+      // Someone else's lead: a co-owner messages every one, anyone else while its owner allows.
       if (
         !own &&
+        !(yield* ownerLevel(input.orgId, person.personId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),
+        )) &&
         !(yield* LeadAccess.allowed({ ...input, personId: person.personId }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(toPersistenceSqlError("KinChatService.createDirect")),

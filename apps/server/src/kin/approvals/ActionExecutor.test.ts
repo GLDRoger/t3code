@@ -357,7 +357,7 @@ function harness(
     }),
   );
   const roles = Layer.succeed(KinOrgRoles, {
-    isOwner: (ref) =>
+    isOwnerLevel: (ref) =>
       Effect.suspend(() => {
         roleChecks.count += 1;
         return roleChecks.during?.(roleChecks.count) ?? Effect.void;

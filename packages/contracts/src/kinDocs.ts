@@ -1,11 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChartCardState } from "./kinChart.ts";
 import { KinWorkerId } from "./kinLead.ts";
@@ -558,22 +554,22 @@ export const KinDocsRpcs = [
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
-  [KIN_DOCS_WS_METHODS.list]: AuthOrchestrationReadScope,
-  [KIN_DOCS_WS_METHODS.get]: AuthOrchestrationReadScope,
-  [KIN_DOCS_WS_METHODS.history]: AuthOrchestrationReadScope,
-  [KIN_DOCS_WS_METHODS.diff]: AuthOrchestrationReadScope,
+  [KIN_DOCS_WS_METHODS.list]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.get]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.history]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.diff]: AuthKinChatScope,
   // Writes a version, as the entry edits beside it do; it starts no agent work.
-  [KIN_DOCS_WS_METHODS.restore]: AuthOrchestrationOperateScope,
-  [KIN_DOCS_WS_METHODS.subscribe]: AuthOrchestrationReadScope,
-  [KIN_DOCS_WS_METHODS.search]: AuthOrchestrationReadScope,
-  [KIN_DOCS_WS_METHODS.recipes]: AuthOrchestrationReadScope,
+  [KIN_DOCS_WS_METHODS.restore]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.subscribe]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.search]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.recipes]: AuthKinChatScope,
   // Files a version, as restore does; it starts no agent work.
-  [KIN_DOCS_WS_METHODS.render]: AuthOrchestrationOperateScope,
-  [KIN_DOCS_WS_METHODS.undoRecipe]: AuthOrchestrationOperateScope,
+  [KIN_DOCS_WS_METHODS.render]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.undoRecipe]: AuthKinChatScope,
   // Lowers what an agent may show others: the owner's call, as the entry labels beside it are.
-  [KIN_DOCS_WS_METHODS.label]: AuthOrchestrationOperateScope,
-  [KIN_DOCS_WS_METHODS.clearRecipeLabel]: AuthOrchestrationOperateScope,
-  [KIN_DOCS_WS_METHODS.labelRecipe]: AuthOrchestrationOperateScope,
+  [KIN_DOCS_WS_METHODS.label]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.clearRecipeLabel]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.labelRecipe]: AuthKinChatScope,
   // Which recipe makes a list's documents, as undoing a recipe's change is.
-  [KIN_DOCS_WS_METHODS.setDefaultRecipe]: AuthOrchestrationOperateScope,
+  [KIN_DOCS_WS_METHODS.setDefaultRecipe]: AuthKinChatScope,
 } as const;

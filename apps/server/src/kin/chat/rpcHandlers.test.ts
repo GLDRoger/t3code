@@ -758,8 +758,9 @@ it.effect(
           ),
         ),
       );
+      // A member is refused before any handler runs (`KIN_RPC_ACCESS`).
       assert.include(yield* memberClient["kin.budget.set"](input).pipe(Effect.flip), {
-        reason: "not_allowed",
+        _tag: "EnvironmentAuthorizationError",
       });
       const readOnly = yield* RpcTest.makeClient(group).pipe(
         Effect.provide(
@@ -878,10 +879,10 @@ it.effect("lets only the owner stop and resume Kin over RPC; members may read th
       "EnvironmentAuthorizationError",
     );
     assert.include(yield* member["kin.org.resume"](input).pipe(Effect.flip), {
-      reason: "not_allowed",
+      _tag: "EnvironmentAuthorizationError",
     });
     assert.include(yield* member["kin.org.pause"](input).pipe(Effect.flip), {
-      reason: "not_allowed",
+      _tag: "EnvironmentAuthorizationError",
     });
     const readOnly = yield* clientFor(handlers, [AuthOrchestrationReadScope]);
     // Reading the switch is Kin's chat scope now: a session without it sees no Kin at all.
@@ -981,7 +982,7 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
     );
     assert.include(
       yield* member["kin.lead.create"]({ ...input, domain: "finance" }).pipe(Effect.flip),
-      { reason: "not_allowed" },
+      { _tag: "EnvironmentAuthorizationError" },
     );
     const operator = yield* clientFor(handlers, [
       AuthOrchestrationReadScope,

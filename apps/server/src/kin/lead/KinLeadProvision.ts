@@ -37,6 +37,7 @@ import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity, KinIdentityConfig, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { KinStop } from "./KinStop.ts";
@@ -184,16 +185,30 @@ const creatorFor = Effect.fn("KinLeadProvision.creatorFor")(function* (creator: 
 });
 
 /**
- * Who may create a lead. Only the owner, for now; members will create their own, with authority
- * capped at theirs, through this same check.
+ * Who may create a lead: the owner or a co-owner. A co-owner's lead is the company's, owned by the
+ * owner like every other; members will create their own, capped at theirs, through this check.
  */
 const mayCreate = Effect.fn("KinLeadProvision.mayCreate")(function* (person: PersonIdentity) {
   const { owner } = yield* KinIdentity;
-  if (person.orgId === owner.orgId && person.personId === owner.personId) return;
+  if (
+    person.orgId === owner.orgId &&
+    (yield* ownerLevel(person.orgId, person.personId).pipe(Effect.orElseSucceed(() => false)))
+  )
+    return;
   return yield* refuse(
     "not_owner",
-    `Person ${person.personId} isn't the owner of Kin org ${owner.orgId}. Only the owner can create agents.`,
+    `Person ${person.personId} isn't owner-level in Kin org ${owner.orgId}. Only the owner or a co-owner can create agents.`,
   );
+});
+
+/** The org's co-owners, from their stored kind. */
+export const coOwners = Effect.fn("KinLeadProvision.coOwners")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ personId: KinPersonId }>`SELECT person_id AS "personId"
+    FROM kin_people WHERE org_id = ${orgId} AND access = 'co_owner' ORDER BY person_id`.pipe(
+    Effect.mapError(toPersistenceSqlError("KinLeadProvision.coOwners")),
+  );
+  return rows.map((row): PersonIdentity => ({ _tag: "person", orgId, personId: row.personId }));
 });
 
 /** The models a lead gets when none are named: the org's first live lead's. */
@@ -213,6 +228,7 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
   const chats = yield* ChatService.KinChatService;
   const person: PersonIdentity = yield* creatorFor(input.creator);
   yield* mayCreate(person);
+  const { owner } = yield* KinIdentity;
   const { orgId } = person;
   const models = input.models ?? (yield* defaultModels(orgId));
   const notClaude = nonClaudeLeadModel(yield* (yield* ServerSettingsService).getSettings, models);
@@ -225,7 +241,7 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
       // open with BEGIN IMMEDIATE, so this read-then-insert can't race another create.
       const same = (yield* leadsIn(orgId, { liveOnly: true })).find(
         (lead) =>
-          lead.ownerPersonId === person.personId &&
+          lead.ownerPersonId === owner.personId &&
           lead.name === input.name &&
           lead.domain === input.domain,
       );
@@ -238,10 +254,13 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
         agentId,
         displayName: input.name,
         role: "lead",
-        ownerPersonId: person.personId,
+        ownerPersonId: owner.personId,
         createdAt: DateTime.formatIso(now),
       });
-      const chat = yield* chats.createDirect(person, { orgId, agentId });
+      const chat = yield* chats.createDirect(owner, { orgId, agentId });
+      // Every co-owner gets their own chat with it; the owner's stays his.
+      for (const coOwner of yield* coOwners(orgId))
+        yield* chats.createDirect(coOwner, { orgId, agentId });
       // Both were decoded by the caller, so re-encoding them can't fail.
       const modelsJson = yield* encodeModels(models).pipe(Effect.orDie);
       const workerProjects = yield* encodeProjects(projects).pipe(Effect.orDie);
@@ -501,13 +520,33 @@ export const profiles = Effect.fn("KinLeadProvision.profiles")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const { owner } = yield* KinIdentity;
+  // A co-owner sees the company's leads as the owner does, each opening their own chat with it.
+  const coOwner =
+    person.orgId === owner.orgId &&
+    person.personId !== owner.personId &&
+    (yield* ownerLevel(person.orgId, person.personId).pipe(Effect.orElseSucceed(() => false)));
   const includeRetired =
     options.includeRetired === true &&
     person.orgId === owner.orgId &&
-    person.personId === owner.personId;
-  const own = (yield* leadsIn(person.orgId, { liveOnly: !includeRetired })).filter(
-    (lead) => lead.ownerPersonId === person.personId,
-  );
+    (person.personId === owner.personId || coOwner);
+  const chatsOf = coOwner
+    ? new Map(
+        (yield* sql<{ agentId: string; chatId: KinChatId }>`SELECT l.agent_id AS "agentId",
+            c.chat_id AS "chatId" FROM kin_leads l
+          JOIN kin_chats c ON c.org_id = l.org_id AND c.kind = 'direct'
+            AND c.direct_key = ${person.personId} || ':' || l.agent_id
+          WHERE l.org_id = ${person.orgId} ORDER BY l.agent_id`.pipe(
+          Effect.mapError(toPersistenceSqlError("KinLeadProvision.profiles")),
+        )).map((row) => [row.agentId, row.chatId]),
+      )
+    : undefined;
+  const own = (yield* leadsIn(person.orgId, { liveOnly: !includeRetired })).flatMap((lead) => {
+    if (chatsOf === undefined) return lead.ownerPersonId === person.personId ? [lead] : [];
+    const chatId = chatsOf.get(lead.agentId);
+    return lead.ownerPersonId === owner.personId && chatId !== undefined
+      ? [{ ...lead, ownerChatId: chatId }]
+      : [];
+  });
   const leads = [
     ...own.filter((lead) => lead.retiredAt === null),
     ...own.filter((lead) => lead.retiredAt !== null),
@@ -541,8 +580,9 @@ export const update = Effect.fn("KinLeadProvision.update")(function* (input: {
     sql,
     "KinLeadProvision.update",
     Effect.gen(function* () {
+      const { owner } = yield* KinIdentity;
       return yield* profileIn(
-        yield* change(person.orgId, input.agentId, input.fields, person.personId),
+        yield* change(person.orgId, input.agentId, input.fields, owner.personId),
       );
     }),
   );
@@ -581,8 +621,8 @@ const retirable = Effect.fn("KinLeadProvision.retirable")(function* (input: {
   const [lead] = yield* leadsIn(orgId, { liveOnly: false, agentId: input.agentId });
   if (lead === undefined) return yield* missing;
   if (person !== undefined && person.personId !== owner.personId) {
-    if (lead.ownerPersonId !== person.personId) return yield* missing;
     yield* mayCreate(person);
+    if (lead.ownerPersonId !== owner.personId) return yield* missing;
   }
   return { lead, by: person?.personId ?? null };
 });
@@ -728,7 +768,8 @@ const ownedLead = Effect.fn("KinLeadProvision.ownedLead")(function* (input: {
   const missing = refuse("not_found", `Org ${input.orgId} has no agent ${input.agentId}.`);
   if (person.orgId !== input.orgId) return yield* missing;
   const [lead] = yield* leadsIn(person.orgId, { liveOnly: true, agentId: input.agentId });
-  if (lead === undefined || lead.ownerPersonId !== person.personId) return yield* missing;
+  const { owner } = yield* KinIdentity;
+  if (lead === undefined || lead.ownerPersonId !== owner.personId) return yield* missing;
   return { person, lead };
 });
 
@@ -778,7 +819,7 @@ export const allow = Effect.fn("KinLeadProvision.allow")(function* (
         WHERE org_id = ${lead.orgId} AND person_id = ${input.personId} LIMIT 1`.pipe(
         Effect.mapError(toPersistenceSqlError("KinLeadProvision.allow")),
       );
-      if (known.length === 0 || input.personId === person.personId)
+      if (known.length === 0 || input.personId === lead.ownerPersonId)
         return yield* refuse("not_found", `Org ${lead.orgId} has no such person to allow.`);
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       yield* sql`INSERT INTO kin_lead_access
