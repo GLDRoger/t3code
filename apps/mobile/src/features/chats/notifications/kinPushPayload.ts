@@ -3,6 +3,7 @@ import {
   KinPushCategory,
   KinPushData,
   kinDeferralItemIdFromWidgetId,
+  type KinChatId,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -131,6 +132,22 @@ export function kinNotificationRoute(response: unknown): KinNotificationRoute | 
     path: target.path,
     act: action === undefined ? null : deferralAct(data, action, notificationId),
   };
+}
+
+/** Delivered notifications from this host's chats that `settled` says are done, by id. */
+export function kinSettledNotificationIds(
+  presented: ReadonlyArray<unknown>,
+  environmentId: EnvironmentId,
+  settled: (chatId: KinChatId) => boolean,
+): ReadonlyArray<string> {
+  return presented.flatMap((notification) => {
+    const request = field(notification, "request");
+    const identifier = field(request, "identifier");
+    const data = pushData(field(field(request, "content"), "data"));
+    if (typeof identifier !== "string" || data?.chatId === undefined) return [];
+    const target = linkTarget(data);
+    return target?.environmentId === environmentId && settled(data.chatId) ? [identifier] : [];
+  });
 }
 
 export type KinActionDelivery = "drop" | "wait" | "post";
