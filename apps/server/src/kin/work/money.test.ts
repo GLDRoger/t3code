@@ -717,6 +717,40 @@ describe("lists through the tools", () => {
   );
 });
 
+describe("a list proposed again", () => {
+  it.effect("after the owner's yes is the same proposal and card; after a no it is a new one", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const cards = () =>
+        sql`SELECT 1 FROM kin_widgets WHERE type = 'choice' AND state_json LIKE '%Create the list%'`;
+      const asked = yield* turn(1, "Track invoices");
+      const first = yield* LeadMoney.define(scope, { sourceEventId: asked, template: "invoices" });
+      // The owner taps Create it; the tap's turn proposes the same list instead of carrying it out.
+      const yes = yield* tap(2, cardOf(`kin-list:${first.proposal!}`), "yes");
+      const again = yield* LeadMoney.define(scope, { sourceEventId: yes, template: "invoices" });
+      assert.strictEqual(again.proposal, first.proposal);
+      assert.lengthOf(yield* cards(), 1);
+      const made = yield* LeadMoney.define(scope, {
+        sourceEventId: yes,
+        proposal: again.proposal!,
+      });
+      assert.strictEqual(made.status, "defined");
+      // A no stands: asked again later, it is a new question on a new card.
+      const later = yield* turn(3, "Track expenses");
+      const declined = yield* LeadMoney.define(scope, {
+        sourceEventId: later,
+        template: "expenses",
+      });
+      yield* tap(4, cardOf(`kin-list:${declined.proposal!}`), "no");
+      const asks = yield* turn(5, "Actually, do track expenses");
+      const fresh = yield* LeadMoney.define(scope, { sourceEventId: asks, template: "expenses" });
+      assert.notStrictEqual(fresh.proposal, declined.proposal);
+      assert.lengthOf(yield* cards(), 3);
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
 describe("who asked", () => {
   it.effect("is the tapper by the tap's own stored row, never the message a tap event names", () =>
     Effect.gen(function* () {
