@@ -67,7 +67,9 @@ export const SpineInputs = {
   ).annotate({
     description: 'A project\'s value as said ("6 lakh", "$12,000"); for a retainer, per period.',
   }),
-  startsOn: Schema.optional(Schema.NullOr(KinDay)),
+  startsOn: Schema.optional(Schema.NullOr(KinDay)).annotate({
+    description: "When a project or a goal's period starts.",
+  }),
   renewsOn: Schema.optional(Schema.NullOr(KinDay)).annotate({
     description: "A retainer's next renewal day.",
   }),

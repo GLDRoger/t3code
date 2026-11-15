@@ -42,6 +42,16 @@ import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { FileTextIcon, SmartphoneIcon } from "lucide-react";
+import { kinConnectionChange } from "@t3tools/client-runtime/kin/kinConnections";
+import {
+  Menu,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuTrigger,
+} from "../components/ui/menu";
 import { memo, useRef, useState, type ReactNode } from "react";
 
 import { useAssetUrls } from "../assets/assetUrls";
@@ -338,6 +348,9 @@ function KinChoiceCard(props: {
   const post = useWidgetPost(environmentId);
   const actions = useRef<ReturnType<typeof createKinCardActions<KinChoiceCardView, string>>>(null);
   const [pending, setPending] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
+  const [switchProblem, setSwitchProblem] = useState<string | null>(null);
+  const setSendFrom = useAtomCommand(kinClient.connectionSetSendFrom, { reportFailure: false });
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
@@ -371,6 +384,26 @@ function KinChoiceCard(props: {
     );
   };
 
+  const pickFrom = async (choiceId: string) => {
+    if (switching || pending !== null) return;
+    setSwitching(true);
+    setSwitchProblem(null);
+    const failed = await kinConnectionChange(
+      setSendFrom({
+        environmentId,
+        input: {
+          orgId: choice.orgId,
+          widgetId: choice.widgetId,
+          revision: choice.revision,
+          choice: choiceId,
+        },
+      }),
+      "change who it's from",
+    );
+    setSwitching(false);
+    setSwitchProblem(failed);
+  };
+
   const answerText =
     choice.answer !== null
       ? kinChoiceAnswerText(choice.answer, props.viewerPersonId)
@@ -382,7 +415,14 @@ function KinChoiceCard(props: {
     <CardFrame label={kinChoiceAccessibilityLabel(choice, answerText)}>
       <p className="font-medium text-foreground">{choice.question}</p>
       {choice.send !== null ? (
-        <KinSendDetail send={choice.send} />
+        <KinSendDetail
+          send={choice.send}
+          pickFrom={
+            phase === "open" && canAct && answerText === null && choice.send.fromChoices.length > 1
+              ? { busy: switching, problem: switchProblem, pick: (id) => void pickFrom(id) }
+              : null
+          }
+        />
       ) : choice.detail === null ? null : (
         <p className="whitespace-pre-line text-xs text-muted-foreground">{choice.detail}</p>
       )}
@@ -405,7 +445,7 @@ function KinChoiceCard(props: {
                 variant="outline"
                 size="sm-multiline"
                 aria-busy={pending === option.id}
-                disabled={pending !== null}
+                disabled={pending !== null || switching}
                 onClick={() => void press(option.id)}
               >
                 {option.label}
@@ -419,25 +459,92 @@ function KinChoiceCard(props: {
 }
 
 /** Exactly what a send card sends: who, the subject, the whole body and each file. */
-function KinSendDetail(props: { readonly send: NonNullable<KinChoiceCardView["send"]> }) {
-  const { send } = props;
+function KinSendDetail(props: {
+  readonly send: NonNullable<KinChoiceCardView["send"]>;
+  /** Set while the owner may still switch From. */
+  readonly pickFrom: {
+    readonly busy: boolean;
+    readonly problem: string | null;
+    readonly pick: (id: string) => void;
+  } | null;
+}) {
+  const { send, pickFrom } = props;
+  const current = send.fromChoices.find((one) => one.current)?.id ?? "";
+  const accounts = [...new Set(send.fromChoices.map((one) => one.account))];
   return (
     <div className="flex flex-col gap-2">
       <p className="text-xs text-muted-foreground">{send.heading}</p>
+      {send.thread === null ? null : (
+        <div className="flex flex-col gap-0.5 rounded-md border border-border px-3 py-2 text-xs">
+          <p className="font-medium text-foreground">{send.thread.subject}</p>
+          <p className="text-muted-foreground">
+            Replying to {send.thread.replyingTo}
+            {send.thread.date === null ? "" : `, ${send.thread.date}`}
+          </p>
+          {send.thread.lines === "" ? null : (
+            <p className="line-clamp-2 text-foreground">{send.thread.lines}</p>
+          )}
+        </div>
+      )}
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
         {send.lines.map((line) => (
           <div key={line.label} className="contents">
             <dt className="text-muted-foreground">{line.label}</dt>
-            <dd className="break-words text-foreground">{line.value}</dd>
+            <dd className="flex min-w-0 items-start justify-between gap-2">
+              <span className="min-w-0 break-words text-foreground">{line.value}</span>
+              {line.label === "From" && pickFrom !== null ? (
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        aria-busy={pickFrom.busy}
+                        disabled={pickFrom.busy}
+                      />
+                    }
+                  >
+                    {pickFrom.busy ? "Changing…" : "Change"}
+                  </MenuTrigger>
+                  <MenuPopup align="end" side="bottom">
+                    <MenuRadioGroup
+                      value={current}
+                      onValueChange={(value) => pickFrom.pick(String(value))}
+                    >
+                      {accounts.map((account) => (
+                        <MenuGroup key={account}>
+                          {accounts.length > 1 ? <MenuGroupLabel>{account}</MenuGroupLabel> : null}
+                          {send.fromChoices
+                            .filter((one) => one.account === account)
+                            .map((one) => (
+                              <MenuRadioItem key={one.id} value={one.id} closeOnClick>
+                                {one.label}
+                              </MenuRadioItem>
+                            ))}
+                        </MenuGroup>
+                      ))}
+                    </MenuRadioGroup>
+                  </MenuPopup>
+                </Menu>
+              ) : null}
+            </dd>
           </div>
         ))}
       </dl>
+      {pickFrom?.problem == null ? null : (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {pickFrom.problem}
+        </p>
+      )}
       <div
         tabIndex={0}
         aria-label="Message"
         className="max-h-80 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-3 py-2 text-sm text-foreground"
       >
         {send.body}
+        {send.quoted === null ? null : (
+          <span className="mt-3 block text-muted-foreground">{send.quoted}</span>
+        )}
       </div>
       {send.attachments.length === 0 ? null : (
         <ul className="flex flex-col gap-1">

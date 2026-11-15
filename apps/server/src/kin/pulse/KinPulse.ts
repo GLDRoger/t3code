@@ -25,11 +25,13 @@ import * as NodeCrypto from "node:crypto";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
+import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
+import { goalSenses } from "./senses/goals.ts";
 import { moneySenses } from "./senses/money.ts";
 import { iso, type SenseContext, type SensedFact } from "./senses/shared.ts";
 import { systemSenses } from "./senses/system.ts";
@@ -91,6 +93,7 @@ const sense = Effect.fn("KinPulse.sense")(function* (orgId: KinOrgId, at: number
     ...(yield* moneySenses(ctx)),
     ...(yield* systemSenses(ctx)),
     ...(yield* clientSenses(ctx)),
+    ...(yield* goalSenses(ctx)),
   ];
   return facts.toSorted(
     (a, b) =>
@@ -363,9 +366,9 @@ export const layer = Layer.effectDiscard(
       "kin-pulse-outside",
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        // Scheduler maintenance: orgs with a live Google connection; each poll is org-scoped.
+        // Scheduler maintenance: orgs with a live mail connection; each poll is org-scoped.
         const orgs = yield* sql<{ orgId: string }>`SELECT DISTINCT org_id AS "orgId"
-          FROM kin_connections WHERE preset = 'google' AND removed_at IS NULL
+          FROM kin_connections WHERE preset IN ${sql.in(MAIL_PRESETS)} AND removed_at IS NULL
             AND paused_at IS NULL AND state = 'active'
           ORDER BY org_id`.pipe(NodeSqliteClient.readOnly);
         for (const { orgId } of orgs) {

@@ -25,6 +25,7 @@ import { Label } from "../components/ui/label";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
 import {
@@ -220,6 +221,15 @@ function ProjectPage(
           <KinWorkProblem problem={problem} onOpenExisting={props.onOpenProject} />
         )}
       </div>
+      <KinAttentionSection
+        environmentId={environmentId}
+        orgId={orgId}
+        scope={{ type: "project", key: view.key }}
+        names={names}
+        onOpen={(to) => {
+          if (to.type === "record") props.onOpenTask(to.key);
+        }}
+      />
       {view.specChanged.length === 0 ? null : (
         <KinWorkSection title={KIN_PROJECTS.specChanged}>
           <ul className="-mx-2 flex flex-col">

@@ -84,6 +84,19 @@ export const KIN_CONNECTIONS_COPY = {
   clientSecretLabel: "Client secret",
   saveClient: "Save and continue",
   changeClient: "Use a different Google client",
+  ownClient: "This account is in another Google Workspace",
+  ownClientDetail:
+    "If that Workspace keeps its sign-in client to itself, paste its client here. Only this account uses it.",
+  accountTitle: "Account",
+  noteLabel: "What it's for",
+  notePlaceholder: "For example: client work, or personal, never send from here",
+  noteHint: "Your agents read this when they choose which account to send from.",
+  noteNone: "No note yet. Your agents pick by what you've told them.",
+  noteAdd: "Add a note",
+  noteEdit: "Edit note",
+  noteTitle: "What is this account for?",
+  sendsFrom: "Sends from",
+  defaultAddress: "default",
   toolsTitle: "Tools",
   toolsDetail:
     "Off: agents can't use it. Read: agents use it when they need to, in chats only you can see. Ask me: nothing happens until you tap Confirm on a card showing exactly what it will do.",
@@ -337,11 +350,23 @@ export interface KinConnectionDraft {
   readonly key: string;
   readonly org: string;
   readonly secretUrl: string;
+  /** Google: this account's own client, when its Workspace keeps one to itself. */
+  readonly clientId: string;
+  readonly clientSecret: string;
 }
 
 export const kinConnectionDraft = (
   service: KinConnectionService["service"],
-): KinConnectionDraft => ({ service, label: "", url: "", key: "", org: "", secretUrl: "" });
+): KinConnectionDraft => ({
+  service,
+  label: "",
+  url: "",
+  key: "",
+  org: "",
+  secretUrl: "",
+  clientId: "",
+  clientSecret: "",
+});
 
 /** The service's line in the Add sheet's list: Google waits for its one-time setup. */
 export const kinServiceNote = (service: KinConnectionService) =>
@@ -398,7 +423,14 @@ export function kinSignInCheck(
   const service = services.find((entry) => entry.service === draft.service);
   if (service === undefined || service.connect !== "sign_in" || draft.service === "custom")
     return { ok: false, problem: "That service connects with a key." };
-  if (service.needsSetup) return { ok: false, problem: `Set up ${service.label} first.` };
+  const clientId = draft.clientId.trim();
+  const clientSecret = draft.clientSecret.trim();
+  const ownClient = draft.service === "google" && (clientId !== "" || clientSecret !== "");
+  if (ownClient) {
+    if (!/\.apps\.googleusercontent\.com$/.test(clientId))
+      return { ok: false, problem: "The client ID ends in .apps.googleusercontent.com." };
+    if (clientSecret === "") return { ok: false, problem: "Paste the client secret too." };
+  } else if (service.needsSetup) return { ok: false, problem: `Set up ${service.label} first.` };
   const label = draft.label.trim();
   const org = draft.org.trim();
   const secretUrl = draft.secretUrl.trim();
@@ -422,6 +454,7 @@ export function kinSignInCheck(
       ...(secretUrl === "" || !service.fields.includes("secretUrl")
         ? {}
         : { secretUrl: makeSecret(secretUrl) }),
+      ...(ownClient ? { client: { clientId, clientSecret: makeSecret(clientSecret) } } : {}),
     },
   };
 }

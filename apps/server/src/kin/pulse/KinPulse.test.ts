@@ -14,9 +14,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { goalsNow } from "../work/goals.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { buildWeeklySection } from "./weekly.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -52,6 +54,8 @@ interface Entry {
   readonly createdAt?: number;
   readonly partyId?: string;
   readonly title?: string;
+  readonly fields?: string;
+  readonly closedAt?: number;
 }
 
 const PREFIX: Record<string, string> = {
@@ -62,6 +66,7 @@ const PREFIX: Record<string, string> = {
   quotes: "QT",
   dates: "DT",
   expenses: "EXP",
+  goals: "G",
 };
 
 const insert = Effect.fn("test.insert")(function* (entry: Entry) {
@@ -69,14 +74,15 @@ const insert = Effect.fn("test.insert")(function* (entry: Entry) {
   const created = entry.createdAt ?? B - 30 * DAY;
   yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
       owner_id, side, category, party_id, due_at, date_at, amount_minor, currency, repeat_json, confirmed,
-      team_shared, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+      team_shared, created_by_kind, created_by_id, origin_key, created_at, updated_at, fields_json,
+      closed_at)
     VALUES (${orgId}, ${`r-${entry.id}`}, ${entry.list ?? "work"}, ${entry.id},
       ${entry.title ?? `Invented ${entry.id}`}, ${entry.state ?? "open"}, ${entry.ownerKind ?? "agent"},
       ${entry.ownerId ?? chief}, ${entry.side ?? "ours"}, ${entry.category ?? null}, ${entry.partyId ?? null},
       ${entry.dueAt ?? null}, ${entry.dateAt ?? null}, ${entry.amount ?? null},
       ${entry.amount === undefined ? null : "INR"}, ${entry.repeat ?? null},
       ${entry.confirmed ?? 1}, ${entry.teamShared ?? 0}, 'person', ${owner}, ${`origin-${entry.id}`},
-      ${created}, ${created})`;
+      ${created}, ${created}, ${entry.fields ?? "{}"}, ${entry.closedAt ?? null})`;
 });
 
 const change = Effect.fn("test.change")(function* (id: string, at: number, fields = "[]") {
@@ -179,6 +185,31 @@ const seed = Effect.gen(function* () {
     VALUES (${orgId}, 'b-software', 'software', 'INR', 1000_00, 'person', ${owner}, 0),
       (${orgId}, 'b-travel', 'travel', 'INR', 500_00, 'person', ${owner}, 0)`;
 
+  // Goals for November: money in counts only payments not taken back.
+  yield* insert({ id: "INV-6", list: "invoices", state: "done", amount: 1_00_000_00 });
+  yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor, currency,
+      paid_on, origin_key, created_at, created_by_kind, voided_at)
+    VALUES (${orgId}, 'pay-1', 'r-INV-6', 1_00_000_00, 'INR', '2026-11-02', 'pay-1', 0, 'person', NULL),
+      (${orgId}, 'pay-2', 'r-INV-6', 50_000_00, 'INR', '2026-11-02', 'pay-2', 0, 'person', 1)`;
+  const goal = (id: string, fields: object) =>
+    insert({
+      id,
+      list: "goals",
+      ownerKind: "person",
+      ownerId: owner,
+      dueAt: B + 30 * DAY - 1,
+      fields: JSON.stringify({ startsOn: "2026-11-01", ...fields }),
+    });
+  yield* goal("G-1", {
+    measure: "revenue_received",
+    target: { minor: 10_00_000_00, currency: "INR" },
+  });
+  yield* goal("G-2", { measure: "clients_won", target: "4" });
+  yield* goal("G-3", { measure: "tasks_done", target: "20" });
+  yield* goal("G-4", { measure: "manual", target: "10", current: "3", unit: "hires" });
+  yield* insert({ id: "C-2", list: "clients", createdAt: B + DAY });
+  yield* insert({ id: "W-11", state: "done", closedAt: B + 2 * DAY });
+
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
       status, event_ids)
     VALUES ('w-old', ${orgId}, ${finance}, 'thread-fin', 'test', 0, 'completed', '[]')`;
@@ -217,6 +248,8 @@ const SENSES: ReadonlyArray<readonly [string, string, number]> = [
   // Lumen's last contact is INV-5, issued at B - 30 days; cold at the default 30 days.
   ["client_cold", "C-1", B],
   ["client_waiting_on_us", "C-1", B + 5 * DAY + 24 * HOUR],
+  // ₹1L of ₹10L: behind once a straight line would be past ₹1.25L (20 % under it).
+  ["goal_behind", "G-1", B + 3.75 * DAY],
 ];
 
 describe("KinPulse", () => {
@@ -338,6 +371,32 @@ describe("KinPulse", () => {
       const both = (yield* read(at, { _tag: "people", people: [mate, KinPersonId.make("other")] }))
         .facts;
       assert.deepStrictEqual([...new Set(both.map((fact) => fact.subject.key))], ["W-9"]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("goals count their progress from Kin's rows, and money goals only for money", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const at = B + 15 * DAY;
+      const { goals } = yield* goalsNow(orgId, at, { money: true });
+      const by = new Map(goals.map((one) => [one.key, one]));
+      assert.strictEqual(by.get("G-1")!.current, 1_00_000_00);
+      assert.isTrue(by.get("G-1")!.behind);
+      assert.strictEqual(by.get("G-2")!.current, 1);
+      assert.strictEqual(by.get("G-3")!.current, 1);
+      assert.deepInclude(by.get("G-4")!, { current: 3, unit: "hires", target: 10 });
+      const shown = (yield* goalsNow(orgId, at, { money: false })).goals;
+      assert.notInclude(
+        shown.map((one) => one.key),
+        "G-1",
+      );
+      const people = (yield* read(at, { _tag: "people", people: [mate] })).facts;
+      assert.isFalse(people.some((fact) => fact.sense === "goal_behind"));
+
+      // The weekly brief leads with goals, then overdue money from the same rows.
+      const week = yield* buildWeeklySection({ orgId, now: at });
+      assert.match(week.goals[0]!, /^G-1 .*₹1,00,000\.00 of ₹10,00,000\.00.*behind$/);
+      assert.isTrue(week.money.overdue.some((line) => line.startsWith("INV-1")));
     }).pipe(Effect.provide(layer)),
   );
 });

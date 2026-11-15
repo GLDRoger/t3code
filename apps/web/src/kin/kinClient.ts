@@ -44,6 +44,8 @@ import {
   type KinDocsListInput,
   type KinDocsSubscribeInput,
   type KinBudgetGetInput,
+  type KinGoalsInput,
+  type KinPulseListInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
   type KinLeadAccessInput,
@@ -171,6 +173,16 @@ const budgetRead = createKinRpcCommand(connectionAtomRuntime, {
   tag: "kin.budget.get",
 });
 const readBudget = guardedRead(budgetRead);
+const pulseRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:pulse:read",
+  tag: "kin.pulse.read",
+});
+const readPulse = guardedRead(pulseRead);
+const goalsRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:goals:read",
+  tag: "kin.goals.list",
+});
+const readGoals = guardedRead(goalsRead);
 
 const workSummaryRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:work:summary:read",
@@ -514,6 +526,12 @@ export const kinClient = {
     tag: "kin.connections.setSignInClient",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:client` },
   }),
+  /** The owner switches an open send card's From before Confirm. */
+  connectionSetSendFrom: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:setSendFrom",
+    tag: "kin.connections.setSendFrom",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
+  }),
   /** The outside hosts the owner lets visuals load from. Owner only. */
   visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:visual-hosts",
@@ -774,6 +792,34 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
   }),
   /** The owner's daily limit. The host announces no change to it, so a set re-reads it here. */
+  /** What needs attention, handled ones included; read again whenever the host's facts move. */
+  attention: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:pulse",
+    execute: Effect.fn("KinWebClient.attention")(function* (input: KinPulseListInput) {
+      return yield* readPulse(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("pulse"),
+  }),
+  attentionHandle: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:pulse:handle",
+    tag: "kin.pulse.handle",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.factKey },
+  }),
+  /** The company's goals with progress; Work's changes re-read it too (`useKinGoals`). */
+  goals: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:goals",
+    execute: Effect.fn("KinWebClient.goals")(function* (input: KinGoalsInput) {
+      return yield* readGoals(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("pulse"),
+  }),
+  goalSave: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:goals:save",
+    tag: "kin.goals.save",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.key ?? input.clientRequestId },
+  }),
   budget: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:budget",
     execute: Effect.fn("KinWebClient.budget")(function* (input: KinBudgetGetInput) {

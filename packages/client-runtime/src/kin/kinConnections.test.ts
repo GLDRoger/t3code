@@ -165,11 +165,11 @@ describe("kinToolRows", () => {
     expect(kinToolMark(rows[1]!, "off")).toEqual([{ tool: "alpha", mode: "off" }]);
     // A tool that sends is never offered Read, and "suggested" sets it to Ask me.
     const [send] = kinToolRows([
-      tool({ name: "gmail_send", suggestedMode: "ask", alwaysAsk: true }),
+      tool({ name: "mail_send", suggestedMode: "ask", alwaysAsk: true }),
     ]);
     expect(send!.modes).toEqual(["off", "ask"]);
     expect(kinSuggestedModes([send!])).toEqual([
-      { tool: "gmail_send", mode: "ask", digest: send!.digest },
+      { tool: "mail_send", mode: "ask", digest: send!.digest },
     ]);
   });
 

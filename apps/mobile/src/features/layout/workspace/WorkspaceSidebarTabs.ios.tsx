@@ -15,6 +15,7 @@ const NativeSidebarTabBar = requireNativeView<
     showsCompose: boolean;
     compact?: boolean;
     showsLabels?: boolean;
+    badges?: Readonly<Record<string, string>>;
     onSelectionChange: (event: NativeSyntheticEvent<{ tab: string }>) => void;
     onCompose: () => void;
   }
@@ -57,6 +58,8 @@ export function SidebarTabBar<Tab extends string>(props: {
   readonly reserveComposeSpace?: boolean;
   /** Titles under the icons; the workspace's own dock is icon-only. */
   readonly showsLabels?: boolean;
+  /** A short count on a tab, keyed by tab. */
+  readonly badges?: Partial<Readonly<Record<Tab, string>>>;
 }) {
   const nativeTab = props.nativeTab ?? ((tab: Tab) => tab);
   const tabs = props.tabs.map(nativeTab);
@@ -74,6 +77,12 @@ export function SidebarTabBar<Tab extends string>(props: {
       showsCompose={Boolean(props.onNewTask)}
       compact={props.compact}
       showsLabels={props.showsLabels}
+      badges={Object.fromEntries(
+        props.tabs.flatMap((tab) => {
+          const badge = props.badges?.[tab];
+          return badge === undefined ? [] : [[nativeTab(tab), badge]];
+        }),
+      )}
       onCompose={() => props.onNewTask?.()}
       onSelectionChange={({ nativeEvent }) => {
         const tab = props.tabs.find((candidate) => nativeTab(candidate) === nativeEvent.tab);

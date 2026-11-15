@@ -258,6 +258,17 @@ export class KinChatService extends Context.Service<
       readonly widgetId: KinWidgetId;
       readonly outcome: NonNullable<KinSendCard["outcome"]>;
     }) => Effect.Effect<KinWidget, ServiceError>;
+    /**
+     * Server-only: the owner switched an unanswered send card's From. Bound to the revision he
+     * saw, and keeps the card's posted time, so its expiry doesn't move.
+     */
+    readonly setSendCard: (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: KinWidgetId;
+      readonly revision: number;
+      readonly detail: string;
+      readonly send: KinSendCard;
+    }) => Effect.Effect<KinWidget, ServiceError>;
     /** Server-only: a remote card's live fields, which no thread here can refresh. */
     readonly setTaskCardState: (input: {
       readonly orgId: KinOrgId;
@@ -2139,6 +2150,34 @@ const make = Effect.gen(function* () {
         state: { ...card, send: { ...card.send, outcome: input.outcome } },
         expectedRevision: existing.revision,
         updatedAt,
+      });
+      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      return widget;
+    }, transaction),
+    setSendCard: Effect.fn("KinChatService.setSendCard")(function* (input) {
+      const existing = yield* requireRecord(
+        repo.getWidget({ orgId: input.orgId, widgetId: input.widgetId }),
+      );
+      if (existing.type !== "choice") return yield* notFound;
+      const card = yield* decodeChoiceCard(existing.state).pipe(
+        Effect.mapError(() => invalidState),
+      );
+      if (card.send === undefined) return yield* notFound;
+      if (
+        existing.revision !== input.revision ||
+        card.answer !== null ||
+        existing.closedAt !== null
+      )
+        return yield* new KinChatError({
+          reason: "widget_changed",
+          message: "This card changed or was answered. Look at it again.",
+        });
+      const widget = yield* repo.updateWidget({
+        ...existing,
+        audience: "owner",
+        state: { ...card, detail: input.detail, send: input.send },
+        expectedRevision: existing.revision,
+        updatedAt: existing.updatedAt,
       });
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       return widget;

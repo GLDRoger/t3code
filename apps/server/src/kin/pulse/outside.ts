@@ -13,6 +13,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
+import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 
@@ -46,11 +47,13 @@ const linesOf = (
 ): ReadonlyArray<KinPulseOutsideLine> => {
   const connection = cut(label, 120)!;
   switch (activity._tag) {
-    case "google":
+    case "mail":
       return [
         ...activity.mail.map((mail): KinPulseOutsideLine => ({
           source: "mail",
           connection,
+          ...(activity.account === null ? {} : { account: cut(activity.account, 320)! }),
+          ...(mail.receivedBy === null ? {} : { to: cut(mail.receivedBy, 320)! }),
           id: cut(`${mail.threadId}:${mail.date ?? ""}`, 200)!,
           at: cut(mail.date, 60),
           who: cut(mail.from, 300),
@@ -60,6 +63,7 @@ const linesOf = (
         ...activity.calendar.map((event): KinPulseOutsideLine => ({
           source: "calendar",
           connection,
+          ...(activity.account === null ? {} : { account: cut(activity.account, 320)! }),
           id: cut(`${event.eventId}:${event.updated ?? ""}`, 200)!,
           at: cut(event.updated, 60),
           who: null,
@@ -101,7 +105,7 @@ export const fromConnections = (
       const rows = yield* sql<{ connectionId: string; label: string }>`SELECT connection_id AS
         "connectionId", label FROM kin_connections
       WHERE org_id = ${orgId} AND removed_at IS NULL AND paused_at IS NULL AND state = 'active'
-        AND preset IN ('google', 'github')
+        AND preset IN ${sql.in([...MAIL_PRESETS, "github"])}
       ORDER BY created_at, connection_id`;
       const lines: Array<KinPulseOutsideLine> = [];
       const seen: Array<{ connectionId: string; until: number }> = [];
