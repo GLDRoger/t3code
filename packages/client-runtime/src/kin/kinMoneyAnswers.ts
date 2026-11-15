@@ -48,6 +48,16 @@ export const KIN_CASH = {
   estimateNote:
     "An estimate, not a bank figure: it assumes everything recorded went through these accounts.",
   notCounted: "Not counted yet",
+  why: "Why?",
+  hideWhy: "Hide",
+  details: "Details",
+  /** One short line beside the account; the whole sentence sits behind Why. */
+  flag: {
+    apart: "Looks like another account",
+    newer: "Newer statement to confirm",
+    newerOff: "Newer statement doesn't add up",
+    newerUndone: "Newer statement undone",
+  },
   standing: {
     "not yet confirmed": "not yet confirmed",
     "its totals don't check out": "doesn't add up",
@@ -184,6 +194,8 @@ export interface KinCashAccountView {
   /** "On 30 Oct · 16 days old". */
   readonly when: string;
   readonly stale: boolean;
+  /** The most pressing of `notes` in a few words, for the row itself. */
+  readonly flag: string | null;
   /** What the owner should know or do about it, each a sentence. */
   readonly notes: ReadonlyArray<string>;
 }
@@ -226,8 +238,18 @@ export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): K
                 : KIN_CASH.newerUndone(onLabel(newer.on, now)),
           ]),
     ];
+    const flag = one.cannotTellApart
+      ? KIN_CASH.flag.apart
+      : newer === null
+        ? null
+        : newer.standing === "not yet confirmed"
+          ? KIN_CASH.flag.newer
+          : newer.standing === "its totals don't check out"
+            ? KIN_CASH.flag.newerOff
+            : KIN_CASH.flag.newerUndone;
     return {
       id: `${one.label}:${one.on}:${index}`,
+      flag,
       label:
         one.kind === "card" ? `${one.label} · ${KIN_CASH.owedOnCard.toLowerCase()}` : one.label,
       card: one.kind === "card",
@@ -398,6 +420,17 @@ export function kinBudgetsView(
     .sort((a, b) => order[a.status] - order[b.status]);
 }
 
+/** Budgets in a line: what is over or near first, else that all are within their limits. */
+export function kinBudgetsSummary(views: ReadonlyArray<Pick<KinBudgetView, "status">>): string {
+  const over = views.filter((one) => one.status === "over").length;
+  const near = views.filter((one) => one.status === "near").length;
+  if (over + near === 0)
+    return views.length === 1 ? "1 within its limit" : `${views.length} within their limits`;
+  return [over === 0 ? null : `${over} over`, near === 0 ? null : `${near} near the limit`]
+    .filter((part) => part !== null)
+    .join(", ");
+}
+
 export interface KinBudgetDraft {
   readonly category: string | null;
   readonly project: KinRecordKey | null;
@@ -513,6 +546,17 @@ export function kinQuoteRow(record: KinRecord, rates: KinRates | null, now: Date
 }
 
 /** What the owner may do on a quote now: each way in with its way back. */
+/** Open quotes in a line: how many, and how many of them have expired. */
+export function kinQuotesSummary(
+  rows: ReadonlyArray<Pick<KinQuoteRowView, "state">>,
+  total: number | null,
+): string {
+  const open = Math.max(total ?? 0, rows.length);
+  if (open === 0) return KIN_QUOTES.noneOpen.replace(/\.$/, "");
+  const expired = rows.filter((one) => one.state === "expired").length;
+  return `${open} open${expired === 0 ? "" : `, ${expired} expired`}`;
+}
+
 export function kinQuoteActions(state: KinQuoteState, numbered: boolean) {
   return {
     send: state === "draft" && numbered,

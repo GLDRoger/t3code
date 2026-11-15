@@ -144,7 +144,7 @@ export interface KinDateRowView {
   readonly accessibilityLabel: string;
 }
 
-export function kinDateRowView(row: KinDateRow, names: KinWorkNames, now: Date): KinDateRowView {
+function kinDateRowView(row: KinDateRow, names: KinWorkNames, now: Date): KinDateRowView {
   const { record } = row;
   const at = new Date(row.at);
   const day = kinWorkAllDay(row.at, true, names) ?? row.at.slice(0, 10);

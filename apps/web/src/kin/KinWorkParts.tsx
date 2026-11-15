@@ -6,7 +6,15 @@ import type {
 import type { KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KIN_WORK_FORM_COPY } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinRecordKey } from "@t3tools/contracts";
-import { ListFilterIcon, LockIcon, XIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ChevronUpIcon,
+  ListFilterIcon,
+  LockIcon,
+  XIcon,
+} from "lucide-react";
+import { useState } from "react";
 
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
@@ -34,19 +42,60 @@ import {
 } from "../components/ui/menu";
 import { Skeleton } from "../components/ui/skeleton";
 
-/** A titled block of a task, client or project, with an optional action beside the title. */
+/**
+ * A titled block of a task, client or project, with an optional action beside the title. With
+ * `fold` it is one line, its title and summary, that opens to the block; the action shows open.
+ */
 export function KinWorkSection(props: {
   readonly title: string;
   readonly action?: React.ReactNode;
+  /** One line instead; `onOpen` makes the line open a page rather than unfold the block. */
+  readonly fold?: { readonly summary: string | null; readonly onOpen?: () => void };
   readonly children: React.ReactNode;
 }) {
+  const [open, setOpen] = useState(false);
+  if (props.fold === undefined)
+    return (
+      <section className="flex flex-col gap-2">
+        <div className="flex min-h-6 items-center justify-between gap-2">
+          <h3 className="text-xs font-medium text-muted-foreground">{props.title}</h3>
+          {props.action}
+        </div>
+        {props.children}
+      </section>
+    );
   return (
     <section className="flex flex-col gap-2">
-      <div className="flex min-h-6 items-center justify-between gap-2">
-        <h3 className="text-xs font-medium text-muted-foreground">{props.title}</h3>
-        {props.action}
+      <div className="flex min-h-8 items-center justify-between gap-2">
+        <button
+          type="button"
+          aria-expanded={props.fold.onOpen === undefined ? open : undefined}
+          onClick={props.fold.onOpen ?? (() => setOpen(!open))}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+        >
+          <span className="shrink-0 text-sm text-foreground">{props.title}</span>
+          {props.fold.summary === null ? null : (
+            <span className="min-w-0 truncate text-sm text-muted-foreground">
+              {props.fold.summary}
+            </span>
+          )}
+          {props.fold.onOpen !== undefined ? (
+            <ChevronRightIcon
+              aria-hidden
+              className="ms-auto size-4 shrink-0 text-muted-foreground"
+            />
+          ) : open ? (
+            <ChevronUpIcon aria-hidden className="ms-auto size-4 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronDownIcon
+              aria-hidden
+              className="ms-auto size-4 shrink-0 text-muted-foreground"
+            />
+          )}
+        </button>
+        {open ? props.action : null}
       </div>
-      {props.children}
+      {open ? props.children : null}
     </section>
   );
 }

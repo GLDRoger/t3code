@@ -105,6 +105,36 @@ const handledText = (fact: KinPulseFact, names: ReadonlyMap<string, string>, now
     : `${by} has it until ${dayLabel(handled.until, now)}`;
 };
 
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+/** The host words its facts for agents, with ISO days; a person reads "Nov 12" and "November". */
+export function kinPlainDates(text: string): string {
+  return text
+    .replace(/ \((\d{4}-\d{2}-\d{2})\)/g, "")
+    .replace(
+      /\b(\d{4})-(\d{2})-(\d{2})\b/g,
+      (_, _year, month: string, day: string) =>
+        `${MONTHS[Number(month) - 1]?.slice(0, 3) ?? month} ${Number(day)}`,
+    )
+    .replace(
+      /\b(\d{4})-(\d{2})\b/g,
+      (_, _year, month: string) => MONTHS[Number(month) - 1] ?? month,
+    );
+}
+
 function kinAttentionRow(
   fact: KinPulseFact,
   input: {
@@ -125,7 +155,7 @@ function kinAttentionRow(
     id: fact.key,
     factKey: fact.key,
     title: subject.title,
-    detail: fact.consequence,
+    detail: kinPlainDates(fact.consequence),
     about:
       [subject.kind === "record" ? subject.key : null, ...where]
         .filter((part) => part !== null)
@@ -288,6 +318,19 @@ export function kinGoalView(goal: KinGoal, now: Date): KinGoalView {
     pace: clamp(goal.expected / goal.target),
     status: reached ? "reached" : goal.behind ? "behind" : "on_track",
   };
+}
+
+/** Goals in a line: how many are behind, else how many are reached or on track. */
+export function kinGoalsSummary(views: ReadonlyArray<Pick<KinGoalView, "status">>): string {
+  const count = (status: KinGoalView["status"]) =>
+    views.filter((one) => one.status === status).length;
+  return [
+    count("behind") === 0 ? null : `${count("behind")} behind`,
+    count("on_track") === 0 ? null : `${count("on_track")} on track`,
+    count("reached") === 0 ? null : `${count("reached")} reached`,
+  ]
+    .filter((part) => part !== null)
+    .join(", ");
 }
 
 /** A goal as its edit sheet starts: the figures as a person would type them. */

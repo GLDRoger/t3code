@@ -17,6 +17,8 @@ import {
   kinCashView,
   kinOutlookView,
   kinQuoteRow,
+  kinQuotesSummary,
+  kinBudgetsSummary,
   type KinBudgetDraft,
   type KinBudgetView,
   type KinLineDraft,
@@ -129,14 +131,26 @@ function Row(props: {
   );
 }
 
-/** Bank balances of record, what isn't counted yet and why, and the estimate apart from them. */
+/** Bank balances of record, one line each; why a figure is held back sits behind Why. */
 export function KinCashSection(props: Section) {
   const now = new Date(useNowMinuteMs());
   const { state, refresh } = useKinCash(props, true, props.seq);
+  const [why, setWhy] = useState<string | null>(null);
+  const [details, setDetails] = useState(false);
   if (state._tag === "refused" || state._tag === "gone") return null;
   const view = state._tag === "ready" ? kinCashView(state.value, props.rates, now) : null;
+  const detailed = view !== null && (view.currencies.length > 0 || view.notCounted.length > 0);
   return (
-    <KinWorkSection title={KIN_CASH.title}>
+    <KinWorkSection
+      title={KIN_CASH.title}
+      action={
+        detailed ? (
+          <Button size="xs" variant="ghost" onClick={() => setDetails(!details)}>
+            {details ? KIN_CASH.hideWhy : KIN_CASH.details}
+          </Button>
+        ) : undefined
+      }
+    >
       {state._tag === "loading" ? (
         <Loading label={`Loading ${KIN_CASH.title}`} />
       ) : view === null ? (
@@ -151,62 +165,82 @@ export function KinCashSection(props: Section) {
               <li key={one.id}>
                 <Row
                   label={one.label}
-                  note={one.when}
-                  late={one.stale}
+                  note={[one.when, one.flag].filter((part) => part !== null).join(" · ")}
+                  late={one.stale || one.flag !== null}
                   amount={one.amount}
                   estimate={one.estimate}
                 >
-                  {one.notes.map((note) => (
-                    <span key={note} className="text-xs text-warning-foreground">
-                      {note}
+                  {one.notes.length === 0 ? null : why === one.id ? (
+                    <span className="flex flex-col gap-0.5 pt-0.5">
+                      {one.notes.map((note) => (
+                        <span key={note} className="text-xs text-muted-foreground">
+                          {note}
+                        </span>
+                      ))}
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        className="self-start"
+                        onClick={() => setWhy(null)}
+                      >
+                        {KIN_CASH.hideWhy}
+                      </Button>
                     </span>
-                  ))}
+                  ) : (
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      className="self-start"
+                      onClick={() => setWhy(one.id)}
+                    >
+                      {KIN_CASH.why}
+                    </Button>
+                  )}
                 </Row>
               </li>
             ))}
           </ul>
           {view.currencies.map((one) => (
-            <div
-              key={one.currency}
-              className="flex flex-col gap-1 rounded-md bg-muted/40 px-2 py-2 text-sm"
-            >
+            <div key={one.currency} className="flex flex-col gap-1 px-2 text-sm">
               <div className="flex items-baseline justify-between gap-3">
                 <span className="text-xs text-muted-foreground">{one.totalLabel}</span>
                 <span className="flex flex-col items-end tabular-nums">
-                  <span className="text-foreground">{one.total ?? KIN_CASH.withheld}</span>
+                  <span className="font-medium text-foreground">
+                    {one.total ?? KIN_CASH.withheld}
+                  </span>
                   {one.totalEstimate === null ? null : (
                     <span className="text-xs text-muted-foreground">{one.totalEstimate}</span>
                   )}
                 </span>
               </div>
-              <div className="flex flex-wrap items-baseline justify-between gap-x-3 text-xs text-muted-foreground">
-                <span>{one.recordedLabel}</span>
-                <span className="tabular-nums">
-                  {KIN_CASH.in} {one.received} · {KIN_CASH.out} {one.spent}
-                </span>
-              </div>
               {one.estimate === null ? null : (
-                <div className="flex flex-col gap-0.5">
-                  <div className="flex items-baseline justify-between gap-3">
-                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      {KIN_CASH.estimate}
-                      <Badge size="sm" variant="outline">
-                        Estimate
-                      </Badge>
-                    </span>
-                    <span className="flex flex-col items-end text-foreground tabular-nums">
-                      {one.estimate}
-                      {one.estimateAbout === null ? null : (
-                        <span className="text-xs text-muted-foreground">{one.estimateAbout}</span>
-                      )}
-                    </span>
-                  </div>
-                  <span className="text-xs text-muted-foreground">{KIN_CASH.estimateNote}</span>
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    {KIN_CASH.estimate}
+                    <Badge size="sm" variant="outline">
+                      Estimate
+                    </Badge>
+                  </span>
+                  <span className="flex flex-col items-end text-foreground tabular-nums">
+                    {one.estimate}
+                    {one.estimateAbout === null ? null : (
+                      <span className="text-xs text-muted-foreground">{one.estimateAbout}</span>
+                    )}
+                  </span>
                 </div>
               )}
+              {details ? (
+                <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+                  <span>{one.recordedLabel}</span>
+                  <span className="tabular-nums">
+                    {KIN_CASH.in} {one.received} · {KIN_CASH.out} {one.spent}
+                  </span>
+                  {one.estimate === null ? null : <span>{KIN_CASH.estimateNote}</span>}
+                </div>
+              ) : null}
             </div>
           ))}
-          {view.notCounted.length === 0 ? null : (
+          {!details || view.notCounted.length === 0 ? null : (
             <div className="flex flex-col gap-0.5 px-2">
               <span className="text-xs font-medium text-muted-foreground">
                 {KIN_CASH.notCounted}
@@ -231,8 +265,8 @@ function OutlookRows(props: {
   readonly more: number;
   readonly onOpenKey: (key: KinRecordKey) => void;
 }) {
-  if (props.rows.length === 0) return null;
-  const shown = props.all ? props.rows : props.rows.slice(0, PEEK);
+  if (props.rows.length === 0 || !props.all) return null;
+  const shown = props.rows;
   return (
     <div className="flex flex-col">
       <span className="px-2 text-xs text-muted-foreground">{props.title}</span>
@@ -265,11 +299,7 @@ export function KinOutlookSection(
   const [all, setAll] = useState(false);
   if (state._tag === "refused" || state._tag === "gone") return null;
   const view = state._tag === "ready" ? kinOutlookView(state.value, props.rates, now) : null;
-  const longer =
-    view !== null &&
-    (view.incoming.length > PEEK ||
-      view.outgoing.length > PEEK ||
-      view.more.incoming + view.more.outgoing > 0);
+  const longer = view !== null && view.incoming.length + view.outgoing.length > 0;
   return (
     <KinWorkSection
       title={KIN_OUTLOOK.title}
@@ -336,11 +366,11 @@ export function KinOutlookSection(
             more={view.more.outgoing}
             onOpenKey={props.onOpenKey}
           />
-          {[...view.notes, ...view.runway.map((one) => one.text)].map((note) => (
-            <p key={note} className="px-2 text-xs text-muted-foreground">
-              {note}
+          {view.notes.length + view.runway.length === 0 ? null : (
+            <p className="px-2 text-xs text-muted-foreground">
+              {[...view.notes, ...view.runway.map((one) => one.text)].join(" ")}
             </p>
-          ))}
+          )}
         </div>
       )}
     </KinWorkSection>
@@ -374,6 +404,9 @@ function QuotesPeek(
   return (
     <KinWorkSection
       title={KIN_QUOTES.title}
+      fold={{
+        summary: state.loading && rows.length === 0 ? null : kinQuotesSummary(rows, state.total),
+      }}
       action={
         <Button
           size="xs"
@@ -486,11 +519,12 @@ export function KinBudgetsSection(props: Section & { readonly lists: KinListsHan
   const expenses = kinListsOf(props.lists).find((one) => one.list === "expenses") ?? null;
   if (state._tag === "refused" || state._tag === "gone") return null;
   const views = state._tag === "ready" ? kinBudgetsView(state.value, expenses, props.rates) : [];
-  // Budgets are on paid expenses: with no expenses list there is nothing to budget.
-  if (expenses === null && views.length === 0) return null;
+  // Absent with none set: Money's Add sets the first one.
+  if (state._tag === "ready" && views.length === 0) return null;
   return (
     <KinWorkSection
       title={KIN_BUDGETS.title}
+      fold={{ summary: views.length === 0 ? null : kinBudgetsSummary(views) }}
       action={
         <div className="flex items-center gap-1">
           {views.length > PEEK ? (
@@ -536,7 +570,7 @@ export function KinBudgetsSection(props: Section & { readonly lists: KinListsHan
 
 const ANY = "__any__";
 
-function KinBudgetDialog(
+export function KinBudgetDialog(
   props: Section & {
     readonly expenses: KinListDefinition | null;
     readonly budget: KinMoneyBudget | null;

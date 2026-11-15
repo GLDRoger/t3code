@@ -6,11 +6,13 @@ import {
   KIN_OUTLOOK,
   kinBudgetInput,
   kinBudgetRemoval,
+  kinBudgetsSummary,
   kinBudgetsView,
   kinCashView,
   kinLinesInput,
   kinQuoteActions,
   kinQuoteState,
+  kinQuotesSummary,
   kinRunwayText,
 } from "./kinMoneyAnswers.ts";
 
@@ -109,6 +111,17 @@ describe("kinBudgets", () => {
     ]);
   });
 
+  it("says in a line what is over or near, else that all are within their limits", () => {
+    expect(kinBudgetsSummary([{ status: "over" }, { status: "near" }, { status: "ok" }])).toBe(
+      "1 over, 1 near the limit",
+    );
+    expect(kinBudgetsSummary([{ status: "ok" }, { status: "ok" }])).toBe("2 within their limits");
+    expect(kinQuotesSummary([{ state: "sent" }, { state: "expired" }], 4)).toBe(
+      "4 open, 1 expired",
+    );
+    expect(kinQuotesSummary([], 0)).toBe("No open quotes");
+  });
+
   it("needs a target and a limit, and removes by the same target and currency", () => {
     expect(
       kinBudgetInput(orgId, { category: null, project: null, limit: "5k" }, "INR", "r"),
@@ -187,6 +200,10 @@ describe("kinCashView", () => {
     const view = kinCashView(cash, rates, now);
     expect(view.accounts[0]!.notes[0]).toContain("can't tell this apart");
     expect(view.accounts[1]!.notes[0]).toContain("not yet confirmed");
+    expect(view.accounts.map((one) => one.flag).slice(0, 2)).toEqual([
+      "Looks like another account",
+      "Newer statement to confirm",
+    ]);
     expect(view.accounts[1]!.estimate).toBe("about ₹84,000");
     expect(view.currencies.map((one) => [one.currency, one.total, one.estimate])).toEqual([
       ["INR", null, null],

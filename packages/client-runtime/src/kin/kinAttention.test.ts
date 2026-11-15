@@ -15,6 +15,7 @@ import {
   kinAttentionCount,
   kinGoalView,
   kinNeedsYouBeside,
+  kinPlainDates,
   kinSnoozeDays,
 } from "./kinAttention.ts";
 import type { KinNeedsYouRow } from "./kinWorkHome.ts";
@@ -116,6 +117,16 @@ describe("kinAttention", () => {
       attention,
     );
     expect(rest.map((one) => one.id)).toEqual(["task:W-5"]);
+  });
+
+  it("words the host's ISO days as a person reads them", () => {
+    expect(kinPlainDates("₹1,85,000.00 owed, 44 days past due (2026-10-01).")).toBe(
+      "₹1,85,000.00 owed, 44 days past due.",
+    );
+    expect(kinPlainDates("Was due 2026-11-12, 3 days ago.")).toBe("Was due Nov 12, 3 days ago.");
+    expect(kinPlainDates("₹22,610.00 spent of a ₹5,000.00 limit in 2026-11.")).toBe(
+      "₹22,610.00 spent of a ₹5,000.00 limit in November.",
+    );
   });
 
   it("snoozes to tomorrow, the next Monday and a week on", () => {

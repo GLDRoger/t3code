@@ -2,6 +2,7 @@ import {
   KIN_GOALS,
   kinGoalDraft,
   kinGoalView,
+  kinGoalsSummary,
   type KinGoalDraft,
 } from "@t3tools/client-runtime/kin/kinAttention";
 import { KIN_GOAL_MEASURES, type KinGoal, type KinGoalMeasure } from "@t3tools/contracts";
@@ -51,10 +52,7 @@ function GoalBar(props: {
   );
 }
 
-/**
- * The company's goals at the top of Money, each against its line. Absent when there are none and
- * this person can't add one; one "Add goal" when there are none and they can.
- */
+/** The company's goals, one folded line in Money that opens to each against its line. */
 export function KinGoals(
   props: KinWorkTarget & { readonly seq: number | null; readonly goals?: Goals },
 ) {
@@ -73,24 +71,12 @@ export function KinGoals(
         onClose={() => setEditing(null)}
       />
     );
-  if (list.length === 0)
-    return (
-      <>
-        <Button
-          size="sm"
-          variant="outline"
-          className="self-start"
-          onClick={() => setEditing("new")}
-        >
-          <PlusIcon />
-          {KIN_GOALS.add}
-        </Button>
-        {sheet}
-      </>
-    );
+  // Absent with none: Money's Add makes the first one.
+  if (list.length === 0) return null;
   return (
     <KinWorkSection
       title={KIN_GOALS.title}
+      fold={{ summary: kinGoalsSummary(list.map((goal) => kinGoalView(goal, now))) }}
       action={
         goals.canSave ? (
           <Button size="xs" variant="ghost" onClick={() => setEditing("new")}>
@@ -158,7 +144,7 @@ export function KinGoals(
 }
 
 /** Add or change a goal: what it measures, its target and its dates. */
-function KinGoalSheet(props: {
+export function KinGoalSheet(props: {
   readonly goal: KinGoal | null;
   readonly goals: Goals;
   readonly onClose: () => void;
