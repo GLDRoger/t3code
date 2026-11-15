@@ -87,7 +87,17 @@ export interface KinTeammate {
   readonly detail: string;
   /** Their role tags, as one line; empty when none. */
   readonly roles: string;
+  /** "3 open, 1 late": what they hold now; empty when the host doesn't say. */
+  readonly load: string;
 }
+
+/** "3 open, 1 late", "2 open" or "Nothing open". */
+const kinLoadLine = (load: { readonly open: number; readonly late: number }) =>
+  load.open === 0
+    ? "Nothing open"
+    : load.late === 0
+      ? `${load.open} open`
+      : `${load.open} open, ${load.late} late`;
 
 const dayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
 
@@ -121,6 +131,11 @@ export function kinTeamView(
   const roles = new Map(
     (list.profiles ?? []).map((profile) => [profile.personId, kinRoleLine(profile.roleTags)]),
   );
+  const loads = new Map(
+    (list.profiles ?? []).flatMap((profile) =>
+      profile.load === undefined ? [] : [[profile.personId, kinLoadLine(profile.load)] as const],
+    ),
+  );
   for (const person of list.people) {
     const you = person.personId === ownerPersonId;
     const access = person.access ?? "member";
@@ -144,6 +159,7 @@ export function kinTeamView(
       state,
       access,
       roles: roles.get(person.personId) ?? "",
+      load: loads.get(person.personId) ?? "",
       detail:
         state === "you"
           ? "You"
@@ -171,6 +187,7 @@ export function kinTeamView(
       state: "invited",
       access: "member",
       roles: "",
+      load: "",
       detail: `Hasn't joined yet. The link works until ${formatKinInviteDay(invite.expiresAt)}.`,
     });
   }

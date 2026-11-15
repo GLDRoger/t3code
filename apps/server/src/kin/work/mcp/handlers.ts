@@ -61,6 +61,16 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
       return yield* Work.update(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
+  record_assign: McpToolAccess.actsAsCaller(
+    Effect.fn("KinWorkToolkit.assign")(function* (input) {
+      return yield* Work.assign(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  record_hand_back: McpToolAccess.actsAsCaller(
+    Effect.fn("KinWorkToolkit.handBack")(function* (input) {
+      return yield* Work.handBack(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
   list_define: McpToolAccess.actsAsCaller(
     Effect.fn("KinWorkToolkit.define")(function* (input) {
       return yield* Money.define(yield* McpInvocationContext, input);

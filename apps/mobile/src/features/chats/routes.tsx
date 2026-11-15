@@ -38,6 +38,7 @@ import { KinProfileEditScreen, KinProfileScreen } from "./KinProfileScreen";
 import { KinTeammateScreen } from "./KinTeammateScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
 import { KinWorkAssignScreen } from "./KinWorkAssignScreen";
+import { KinWorkHandBackScreen } from "./KinWorkHandBackScreen";
 import {
   KinClientFormScreen,
   KinContactFormScreen,
@@ -157,6 +158,10 @@ export const KIN_SCREENS = {
   KinWorkAssign: createNativeStackScreen({
     screen: KinWorkAssignScreen,
     options: sheetRoute({ detent: 0.75 }),
+  }),
+  KinWorkHandBack: createNativeStackScreen({
+    screen: KinWorkHandBackScreen,
+    options: sheetRoute({ detent: 0.6 }),
   }),
   KinWorkNew: createNativeStackScreen({
     screen: KinWorkNewScreen,

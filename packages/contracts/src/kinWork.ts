@@ -237,6 +237,10 @@ export const KinRecordDetail = Schema.Struct({
   /** The human who gave it to its current owner. The only authority a lead's work on it has. */
   assignedBy: Schema.NullOr(KinWorkPrincipal),
   assignedAt: Schema.NullOr(IsoDateTime),
+  /** The agent that gave it to its current holder, when one did; absent from older hosts. */
+  assignedByAgent: Schema.optional(KinAgentId),
+  /** The one line on why its holder was picked. */
+  reason: Schema.optional(KinText),
   createdBy: KinWorkActor,
   links: Schema.Array(KinRecordLink),
   /** Newest first, at most `KIN_RECORD_CHANGES_CAP`. */
@@ -512,6 +516,19 @@ export const KinWorkShareInput = Schema.Struct({
 export type KinWorkShareInput = typeof KinWorkShareInput.Type;
 export const KinWorkShareResult = Schema.Struct({ records: Schema.Array(KinRecord) });
 export type KinWorkShareResult = typeof KinWorkShareResult.Type;
+
+/**
+ * Whoever holds an open task gives it back to whoever gave it to them, an agent or a person, with
+ * an optional word on why. The agent that gave it is woken to give it to someone else.
+ */
+export const KinWorkHandBackInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  note: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(280))),
+});
+export type KinWorkHandBackInput = typeof KinWorkHandBackInput.Type;
+export const KinWorkHandBackResult = Schema.Struct({ key: KinRecordKey, to: KinWorkPrincipal });
+export type KinWorkHandBackResult = typeof KinWorkHandBackResult.Type;
 
 /** Keep a lead's suggested entry (`confirm`), or decline it, which drops it. */
 export const KinWorkConfirmInput = Schema.Struct({
@@ -1041,6 +1058,7 @@ export const KIN_WORK_WS_METHODS = {
   subscribe: "kin.work.subscribe",
   create: "kin.work.create",
   assign: "kin.work.assign",
+  handBack: "kin.work.handBack",
   update: "kin.work.update",
   confirm: "kin.work.confirm",
   decline: "kin.work.decline",
@@ -1089,6 +1107,11 @@ export const KinWorkRpcs = [
   Rpc.make(KIN_WORK_WS_METHODS.assign, {
     payload: KinWorkAssignInput,
     success: KinRecordDetail,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.handBack, {
+    payload: KinWorkHandBackInput,
+    success: KinWorkHandBackResult,
     error,
   }),
   Rpc.make(KIN_WORK_WS_METHODS.update, {
@@ -1184,6 +1207,7 @@ export const KIN_WORK_RPC_SCOPES = {
   // their daily turns, in their own chat with it (`KinRecords.teammateWake`).
   [KIN_WORK_WS_METHODS.create]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.assign]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.handBack]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.update]: AuthKinChatScope,
   // Keeping a lead's suggestion makes it the owner's word; only he does that, or shares.
   [KIN_WORK_WS_METHODS.confirm]: AuthKinChatScope,
