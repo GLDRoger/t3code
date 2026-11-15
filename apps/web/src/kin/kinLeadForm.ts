@@ -1,3 +1,4 @@
+import type { KinLeadDraft } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import type { EnvironmentId, KinLeadProfile, KinOrgId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
@@ -6,6 +7,8 @@ export interface KinLeadFormTarget {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly lead: KinLeadProfile | null;
+  /** What a new one starts filled in with, such as the Chief of staff for a first agent. */
+  readonly suggested?: KinLeadDraft;
 }
 
 /** One form at a time, opened from the chat list, a lead's profile or the command palette. */
