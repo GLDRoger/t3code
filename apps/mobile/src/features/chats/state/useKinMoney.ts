@@ -12,6 +12,7 @@ import {
   kinIssueNotice,
   kinReceiptNotice,
 } from "@t3tools/client-runtime/kin/kinInvoices";
+import { kinRatesOf } from "@t3tools/client-runtime/kin/kinCurrency";
 import { kinWorkAgent, type KinWorkPlace } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import {
@@ -391,6 +392,14 @@ export function useKinCompanyProfile(target: KinWorkTarget, enabled: boolean) {
   });
   const state = kinWorkReadState(useAtomValue(enabled ? atom : noCompanyAtom));
   return { state, refresh: () => appAtomRegistry.refresh(atom) };
+}
+
+/** The rates estimates use, from the company profile, read again when the owner changes them. */
+export function useKinRates(target: KinWorkTarget, enabled = true) {
+  // A teammate's phone never asks: the host would refuse, and no figure reaches them anyway.
+  const allowed = useAtomValue(kinClient.companyRead.permissionAtom(target.environmentId));
+  const profile = useKinCompanyProfile(target, enabled && allowed);
+  return profile.state._tag === "ready" ? kinRatesOf(profile.state.value) : null;
 }
 
 const noReceiptsAtom: ReturnType<typeof kinClient.receipts> = Atom.make(AsyncResult.initial());

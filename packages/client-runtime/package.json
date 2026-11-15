@@ -563,6 +563,14 @@
       "types": "./src/kin/kinConnections.ts",
       "default": "./src/kin/kinConnections.ts"
     },
+    "./kin/kinCurrency": {
+      "types": "./src/kin/kinCurrency.ts",
+      "default": "./src/kin/kinCurrency.ts"
+    },
+    "./kin/kinSubscriptions": {
+      "types": "./src/kin/kinSubscriptions.ts",
+      "default": "./src/kin/kinSubscriptions.ts"
+    },
     "./kin/kinBudget": {
       "types": "./src/kin/kinBudget.ts",
       "default": "./src/kin/kinBudget.ts"

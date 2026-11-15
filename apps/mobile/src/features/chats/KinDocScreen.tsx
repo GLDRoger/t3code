@@ -10,6 +10,10 @@ import {
 import { kinLinkToOpen } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_DOCS,
+  KIN_DOC_HOMES,
+  KIN_DOC_KIND_LABELS,
+  kinDocKindOf,
+  kinDocUnfiled,
   kinDocChangeLine,
   kinDocChat,
   kinDocExport,
@@ -310,6 +314,9 @@ function KinDocBody(
   const previous = kinDocPrevious(doc.version);
   const privacy = kinDocPrivacy(doc);
   const label = useKinDocLabel(target, doc);
+  const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
+  const fileIt = () => navigation.navigate("KinDocFile", { environmentId, orgId, doc: doc.key });
+  const kind = kinDocKindOf(doc);
   const chats = inbox.state._tag === "ready" ? inbox.state.inbox.value.chats : [];
   const chat = kinDocChat(chats, doc, names.me);
   const first = doc.outline.find((section) => section.id !== "top");
@@ -389,6 +396,7 @@ function KinDocBody(
             navigation.navigate("KinDocHistory", { environmentId, orgId, doc: doc.key }),
         },
         { id: "export", title: KIN_DOCS.export, onPress: () => void share() },
+        ...(canFile ? [{ id: "file", title: KIN_DOC_HOMES.fileTitle, onPress: fileIt }] : []),
         ...(label.action === null
           ? []
           : [{ id: "label", title: label.action.label, onPress: label.ask }]),
@@ -464,8 +472,35 @@ function KinDocBody(
             <Text textRole="footnote" className="text-foreground-muted">
               {line.text}
             </Text>
-            {party === undefined && project === undefined ? null : (
+            {
               <View className="flex-row flex-wrap gap-2">
+                <Chip
+                  size="small"
+                  icon="doc.text"
+                  label={KIN_DOC_KIND_LABELS[kind].one}
+                  accessibilityLabel={`${KIN_DOC_HOMES.kind}: ${KIN_DOC_KIND_LABELS[kind].one}`}
+                  {...(canFile ? { onPress: fileIt } : {})}
+                />
+                {doc.company === true ? (
+                  <Chip
+                    size="small"
+                    icon="folder.fill"
+                    label={KIN_DOC_HOMES.company}
+                    {...(canFile ? { onPress: fileIt } : {})}
+                  />
+                ) : null}
+                {kinDocUnfiled(doc) ? (
+                  <Chip
+                    size="small"
+                    icon="tray.and.arrow.down"
+                    label={
+                      canFile
+                        ? `${KIN_DOC_HOMES.unfiled} · ${KIN_DOC_HOMES.file}`
+                        : KIN_DOC_HOMES.unfiled
+                    }
+                    {...(canFile ? { onPress: fileIt } : {})}
+                  />
+                ) : null}
                 {party === undefined ? null : (
                   <Chip
                     size="small"
@@ -489,7 +524,7 @@ function KinDocBody(
                   />
                 )}
               </View>
-            )}
+            }
             {previous === null ? null : (
               <Pressable
                 accessibilityRole="button"
