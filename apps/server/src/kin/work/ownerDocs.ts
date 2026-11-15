@@ -340,6 +340,7 @@ export const render = Effect.fn("KinDocs.render")(function* (
     recipe: input.recipe,
     entry: input.entry,
     given: input.inputs ?? {},
+    doc: input.doc,
     title: input.title ?? input.recipe,
     requester: { _tag: "owner", personId: person.personId, writer: ownerWriter(person) },
     jobKey: `owner:${person.personId}:${input.clientRequestId}`,

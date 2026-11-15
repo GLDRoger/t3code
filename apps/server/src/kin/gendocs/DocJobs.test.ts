@@ -1018,6 +1018,40 @@ describe("recipe documents", () => {
       const marked = yield* report("Plan after reading");
       assert.isTrue(marked.sensitive);
       assert.strictEqual((yield* versionsOf(marked.documents[0]!.key)).doc.sensitive, 1);
+      // A doc made a PDF lays out the doc's own text, never retyped, and keeps its label (F38).
+      const prd = yield* Docs.create(
+        orgId,
+        { actor: { _tag: "system" }, via: "import" },
+        {},
+        {
+          title: "Invented PRD",
+          body: "# Goals\n\nShip the **beta**.\n",
+          owner: { _tag: "agent", agentId: lead },
+          summary: "Created",
+          sensitive: true,
+          originKey: "test:prd",
+        },
+      );
+      const asPdf = yield* LeadDocuments.make(scope, {
+        title: "Invented PRD",
+        recipe: "report",
+        doc: prd.row.key,
+        sourceEventId: quiet,
+      });
+      assert.deepStrictEqual(
+        [latestData().title, latestData().blocks.map((block: { kind: string }) => block.kind)],
+        ["Invented PRD", ["heading", "paragraph"]],
+      );
+      assert.isTrue(asPdf.sensitive);
+      const notText = yield* Effect.flip(
+        LeadDocuments.make(scope, {
+          title: "Again",
+          recipe: "report",
+          doc: asPdf.documents[0]!.key,
+          sourceEventId: quiet,
+        }),
+      );
+      assert.match(notText.message, /is a file, not text/);
       // So are a worker's brief and a recipe it writes, labelled as the job is admitted.
       const brief = yield* DocJobs.planJob(
         orgId,

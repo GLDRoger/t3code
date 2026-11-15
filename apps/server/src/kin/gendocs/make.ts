@@ -65,6 +65,8 @@ export type MakeRequest = {
   readonly entry: string | undefined;
   /** Only the recipe's inputs that are the requester's; never a figure Kin stores. */
   readonly given: Readonly<Record<string, unknown>>;
+  /** A doc whose own text is the recipe's body, such as a PRD made a PDF with report. */
+  readonly doc?: string | undefined;
   readonly title: string;
   readonly requester: Requester;
   /** Names the job: the same key again returns what it made. */
@@ -125,6 +127,34 @@ type Plan = {
 };
 
 /** The exact inputs from stored rows and the requester's own, and what follows from them. */
+/** The doc's latest text as the body (and its title as the title) of a recipe that lays out Markdown. */
+const fromDoc = Effect.fn("KinDocMaker.fromDoc")(function* (
+  request: MakeRequest,
+  recipe: StoredRecipe,
+) {
+  if (request.doc === undefined) return { given: request.given, sensitive: false };
+  const takes = (name: string) =>
+    recipe.inputs.some((one) => one.name === name && one.from === "agent");
+  if (!takes("body"))
+    return yield* invalid(
+      `The ${recipe.name} recipe doesn't lay out a doc's text; the report recipe does. ${NOTHING}`,
+    );
+  const row = yield* Docs.docRow(request.orgId, { key: request.doc });
+  const latest = yield* Docs.versionOf(request.orgId, row.recordId);
+  if (latest === undefined || latest.bodyKind !== "markdown")
+    return yield* invalid(
+      `${row.key} is a file, not text, so it is already what it is. ${NOTHING}`,
+    );
+  return {
+    given: {
+      ...(takes("title") ? { title: latest.title } : {}),
+      body: latest.body,
+      ...request.given,
+    },
+    sensitive: row.sensitive === 1 || row.inheritedSensitive === 1,
+  };
+});
+
 const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, recipe: StoredRecipe) {
   const records = yield* KinRecords;
   const entry =
@@ -142,8 +172,9 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
     return yield* invalid(
       `The ${recipe.name} recipe is for ${recipe.list} entries, and ${entry.key} isn't one. ${NOTHING}`,
     );
-  const gathered = yield* gatherFacts(request.orgId, recipe, entry, request.given);
-  const assembled = assembleInputs(recipe, request.given, gathered.facts, gathered.currency);
+  const source = yield* fromDoc(request, recipe);
+  const gathered = yield* gatherFacts(request.orgId, recipe, entry, source.given);
+  const assembled = assembleInputs(recipe, source.given, gathered.facts, gathered.currency);
   if ("error" in assembled) return yield* assembled.error;
   // The logo's bytes are part of what was rendered, though the template sees only its path.
   const inputsHash = sha256(
@@ -164,6 +195,7 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
     draft: recipe.numbered && gathered.number === null,
     sensitive:
       fromTurn ||
+      source.sensitive ||
       jobSensitive(recipe, assembled.inputs, gathered) ||
       (yield* recipeLabelled(request.orgId, recipe)),
     docOrigin:
@@ -184,6 +216,8 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
       recipe: request.recipe,
       entry: request.entry ?? null,
       given: request.given,
+      // Only when set, so a request made before docs could be named keeps its fingerprint.
+      ...(request.doc === undefined ? {} : { doc: request.doc }),
       title: request.title,
       preview: request.preview === true,
     }),

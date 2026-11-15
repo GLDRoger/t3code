@@ -141,9 +141,10 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
       recipe: input.recipe!,
       entry,
       given,
+      doc: input.doc,
       title: input.title,
       requester,
-      jobKey: `agent:${lead.wakeupId}:${input.sourceEventId}:${input.recipe}:${entry ?? ""}:${input.title}:${canonical(given)}`,
+      jobKey: `agent:${lead.wakeupId}:${input.sourceEventId}:${input.recipe}:${entry ?? ""}:${input.title}:${canonical(given)}${input.doc === undefined ? "" : `:${input.doc}`}`,
       admit: stillAdmitted(lead, "kin_document", input),
     });
     for (const written of made.written) yield* shown(lead, written, true);

@@ -89,6 +89,10 @@ export const DocumentInput = Schema.Struct({
     description:
       "A quote, such as QT-3, to invoice: with the invoice recipe and no entry, Kin makes a draft invoice for its client with the same lines, then its document.",
   }),
+  doc: Schema.optional(KinRecordKey).annotate({
+    description:
+      "A doc, such as D-4, to make a PDF of with the report recipe: Kin lays out its own text, so never copy it into inputs.",
+  }),
   inputs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)).annotate({
     description:
       "Only the recipe's inputs that come from you, by name, as the owner said them. Kin reads every stored figure and works out every sum itself.",
@@ -210,6 +214,10 @@ export const planJob = Effect.fn("KinDocJobs.plan")(function* (
     return yield* invalid(`A one-off file takes its figures in brief, not inputs. ${NOTHING}`);
   if ((input.references ?? []).length > 0)
     return yield* invalid(`references are for writeRecipe: a recipe copies their look. ${NOTHING}`);
+  if (input.doc !== undefined)
+    return yield* invalid(
+      `A doc is made a PDF with the report recipe: name it in recipe. ${NOTHING}`,
+    );
   if ((input.brief ?? "").trim().length === 0)
     return yield* invalid(`Say in brief what to make, with every figure it shows. ${NOTHING}`);
   const inputsJson = canonical({
