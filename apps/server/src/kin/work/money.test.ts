@@ -2724,24 +2724,28 @@ describe("money answers", () => {
           { _tag: "person" as const, orgId, personId: KinPersonId.make("teammate") },
         ];
         for (const refused of [
-          OwnerMoneyAnswers.cash(teammate, { orgId }),
-          OwnerMoneyAnswers.outlook(teammate, { orgId }),
-          OwnerMoneyAnswers.budgets(teammate, { orgId }),
-          OwnerMoneyAnswers.entryLines(teammate, { orgId, key: launch.key }),
-          OwnerMoneyAnswers.invoiceFromQuote(teammate, {
-            orgId,
-            key: launch.key,
-            clientRequestId: "tap-5",
-          }),
-          OwnerMoneyAnswers.setBudget(teammate, {
-            orgId,
-            category: "travel",
-            project: null,
-            currency: "INR",
-            limitMinor: 100,
-            clientRequestId: "tap-6",
-          }),
-        ] as const)
+          Effect.asVoid(OwnerMoneyAnswers.cash(teammate, { orgId })),
+          Effect.asVoid(OwnerMoneyAnswers.outlook(teammate, { orgId })),
+          Effect.asVoid(OwnerMoneyAnswers.budgets(teammate, { orgId })),
+          Effect.asVoid(OwnerMoneyAnswers.entryLines(teammate, { orgId, key: launch.key })),
+          Effect.asVoid(
+            OwnerMoneyAnswers.invoiceFromQuote(teammate, {
+              orgId,
+              key: launch.key,
+              clientRequestId: "tap-5",
+            }),
+          ),
+          Effect.asVoid(
+            OwnerMoneyAnswers.setBudget(teammate, {
+              orgId,
+              category: "travel",
+              project: null,
+              currency: "INR",
+              limitMinor: 100,
+              clientRequestId: "tap-6",
+            }),
+          ),
+        ])
           assert.include(yield* Effect.flip(refused), { reason: "not_allowed" });
 
         // A routine, or a request another lead passed on, sets no budget: the owner didn't ask.
