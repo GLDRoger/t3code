@@ -357,7 +357,10 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     orgId: KinOrgId,
   ) {
-    yield* owner(session, orgId);
+    if (orgId !== identity.owner.orgId) return yield* missing;
+    const caller = (yield* identity.resolve(session)).find((p) => p.orgId === orgId);
+    if (caller === undefined) return yield* denied;
+    const full = yield* level(orgId, caller.personId);
     const rows =
       yield* sql`SELECT person_id AS "personId", org_id AS "orgId", handle, display_name AS "displayName",
       github_login AS "githubLogin", ${sql.literal(accessSql("kin_people"))} AS access, created_at AS "createdAt" FROM kin_people WHERE org_id = ${orgId} ORDER BY handle, person_id`.pipe(
@@ -373,6 +376,12 @@ export const make = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("KinPeople.joined")),
     );
     const people = rows.map(decodePerson);
+    // A member reads who is on the team, as their profiles already say; access and places stay the owner's.
+    if (!full)
+      return {
+        people: people.map(({ access: _access, ...one }) => ({ ...one, githubLogin: null })),
+        joined: joined.map((row) => row.personId),
+      };
     const places = yield* Effect.forEach(people, (one) => placesFor(orgId, one.personId));
     return { people, joined: joined.map((row) => row.personId), places };
   });

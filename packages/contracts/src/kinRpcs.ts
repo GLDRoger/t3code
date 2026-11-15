@@ -381,7 +381,8 @@ const KIN_RPC_ACCESS = {
   "kin.push.watch": "person",
   "kin.people.listInvites": "owner_level",
   "kin.people.revokeInvite": "owner_level",
-  "kin.people.list": "owner_level",
+  // A member reads names only; the service keeps access and places to owner level.
+  "kin.people.list": "person",
   "kin.people.createInvite": "owner_level",
   "kin.people.listDevices": "owner_level",
   "kin.people.revokeDevice": "owner_level",
