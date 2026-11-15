@@ -862,6 +862,50 @@ describe("bank statements", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "keeps a file's wrong passwords through tries at once, Read again and the same file sent again",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const unlock = (statementId: string, password: string) =>
+          OwnerStatements.unlock(people, {
+            orgId,
+            statementId,
+            password: Redacted.make(password),
+            remember: false,
+          }).pipe(Effect.map((one) => one.status));
+        const first = yield* read(1, "hdfc-account-locked.pdf");
+        // Seven wrong passwords at once: no more than the five tries reach the file.
+        const statuses = yield* Effect.all(
+          Array.from({ length: 7 }, (_, n) => unlock(first.statement, `lake100${n}`)),
+          { concurrency: "unbounded" },
+        );
+        assert.isAtMost(statuses.filter((one) => one === "wrong").length, 4);
+        assert.deepStrictEqual(yield* unlock(first.statement, PASSWORD), "limit");
+        // Read again, or the same file sent again in the chat, starts nothing over.
+        yield* OwnerStatements.reread(people, { orgId, statementId: first.statement });
+        assert.deepStrictEqual(yield* unlock(first.statement, PASSWORD), "limit");
+        const second = yield* read(2, "hdfc-account-locked.pdf");
+        assert.notStrictEqual(second.statement, first.statement);
+        assert.deepStrictEqual(yield* unlock(second.statement, PASSWORD), "limit");
+        // Its card stays open and says when Kin takes another.
+        const cards = yield* sql<{ state: string; closed: number | null }>`SELECT
+            state_json AS state, closed_at AS closed FROM kin_widgets
+          WHERE type = 'statement_password' ORDER BY updated_at DESC, widget_id DESC`;
+        const latest = JSON.parse(cards[0]!.state);
+        assert.deepStrictEqual([latest.status, cards[0]!.closed], ["locked", null]);
+        assert.include(latest.detail, "Too many wrong passwords for this file");
+        // After the wait the card's field takes the right one, which clears the file's tries.
+        yield* TestClock.adjust("16 minutes");
+        assert.deepStrictEqual(yield* unlock(second.statement, PASSWORD), "opened");
+        assert.deepStrictEqual(
+          yield* sql`SELECT budget_key AS key FROM kin_statement_password_budget`,
+          [{ key: `card:st:${first.statement}` }],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("says a scan has no text, then takes the rows the agent read for the same card", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -1182,9 +1226,19 @@ describe("bank statements", () => {
             );
           assert.deepStrictEqual(tries.slice(0, 5), Array(5).fill("needs_password"));
           for (const refused of tries.slice(5)) assert.include(refused, "stopped trying");
+          // The same file sent to the chat again is the same file: its chat tries stay spent.
+          const resent = yield* keep(fixture(name), "pdf");
+          const again = yield* turn(2, { id: resent, name }, "owner_only", `Try ${guesses[0]}`);
+          const refusedAgain = yield* LeadStatements.read(scope, {
+            sourceEventId: again,
+            attachment: name,
+            password: Redacted.make(guesses[0]!),
+          }).pipe(Effect.flip);
+          assert.include(refusedAgain.message, "stopped trying");
           const [stored] = yield* (yield* SqlClient.SqlClient)<{
             statementId: string;
-          }>`SELECT statement_id AS "statementId" FROM kin_bank_statements`;
+          }>`SELECT statement_id AS "statementId" FROM kin_bank_statements
+            WHERE attachment_id = ${id}`;
           // The card says chat tries stopped, and still opens with the right password.
           const card = yield* (yield* SqlClient.SqlClient)<{
             state: string;

@@ -3535,3 +3535,36 @@ it.effect("K078 keeps one baseline per workspace, and reruns cleanly", () =>
     );
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("K087 carries each statement's wrong passwords into its budget, and reruns cleanly", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runKinMigrations();
+    yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Invented Co', '2026-11-12T00:00:00.000Z')`;
+    for (const [id, card, chat] of [
+      ["st_a", 5, 0],
+      ["st_b", 2, 3],
+      ["st_c", 0, 0],
+    ] as const)
+      yield* sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
+          chat_id, agent_id, wakeup_id, status, created_at, password_attempts,
+          chat_password_attempts)
+        VALUES ('org', ${id}, ${`att-${id}`}, 'invented.pdf', 'chat', 'lead', 'wake',
+          'needs_password', 1, ${card}, ${chat})`;
+    yield* sql`DELETE FROM kin_statement_password_budget`;
+    yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 87`;
+    assert.deepStrictEqual(yield* runKinMigrations(), [[87, "ReceiptProposalsPasswordBudget"]]);
+    const budget = sql`SELECT budget_key AS key, remaining, refill_at IS NOT NULL AS "refills"
+      FROM kin_statement_password_budget ORDER BY budget_key`;
+    // One out of tries takes a password again at once, as sending the file again let it before.
+    const carried = [
+      { key: "card:st:st_a", remaining: 0, refills: 1 },
+      { key: "card:st:st_b", remaining: 3, refills: 0 },
+      { key: "chat:st:st_b", remaining: 2, refills: 0 },
+    ];
+    assert.deepStrictEqual(yield* budget, carried);
+    yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 87`;
+    assert.deepStrictEqual(yield* runKinMigrations(), [[87, "ReceiptProposalsPasswordBudget"]]);
+    assert.deepStrictEqual(yield* budget, carried);
+  }).pipe(Effect.provide(layer)),
+);

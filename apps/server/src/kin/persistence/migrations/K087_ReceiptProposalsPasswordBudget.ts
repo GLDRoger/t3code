@@ -30,10 +30,14 @@ export default Effect.gen(function* () {
     refill_at INTEGER,
     PRIMARY KEY (org_id, budget_key)
   )`;
-  yield* sql`INSERT OR IGNORE INTO kin_statement_password_budget (org_id, budget_key, remaining)
-    SELECT org_id, 'card:st:' || statement_id, MAX(0, 5 - password_attempts)
-    FROM kin_bank_statements WHERE password_attempts > 0`;
-  yield* sql`INSERT OR IGNORE INTO kin_statement_password_budget (org_id, budget_key, remaining)
-    SELECT org_id, 'chat:st:' || statement_id, MAX(0, 5 - chat_password_attempts)
-    FROM kin_bank_statements WHERE chat_password_attempts > 0`;
+  // One already out of tries may take passwords again at once, as sending it again did before.
+  for (const [prefix, column] of [
+    ["card:st:", "password_attempts"],
+    ["chat:st:", "chat_password_attempts"],
+  ] as const)
+    yield* sql`INSERT OR IGNORE INTO kin_statement_password_budget
+        (org_id, budget_key, remaining, refill_at)
+      SELECT org_id, ${prefix} || statement_id, MAX(0, 5 - ${sql(column)}),
+        CASE WHEN ${sql(column)} >= 5 THEN CAST(strftime('%s', 'now') AS INTEGER) * 1000 END
+      FROM kin_bank_statements WHERE ${sql(column)} > 0`;
 });

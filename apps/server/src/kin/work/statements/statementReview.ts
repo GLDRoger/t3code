@@ -662,8 +662,7 @@ export const askPassword = Effect.fn("KinStatements.askPassword")(function* (inp
   // Asked again after its card closed, as when the statement is read again: a fresh card below.
   const again = Option.isSome(shown) && shown.value.closedAt !== null;
   const widgetId = again ? `${first}:${yield* Clock.currentTimeMillis}` : current;
-  yield* sql`UPDATE kin_bank_statements SET status = 'needs_password', password_widget_id = ${widgetId},
-      password_attempts = CASE WHEN ${again ? 1 : 0} = 1 THEN 0 ELSE password_attempts END
+  yield* sql`UPDATE kin_bank_statements SET status = 'needs_password', password_widget_id = ${widgetId}
     WHERE org_id = ${input.orgId} AND statement_id = ${input.statementId}`;
   yield* postCard({
     orgId: input.orgId,
