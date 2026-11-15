@@ -363,6 +363,8 @@ export const KinChoiceCardState = Schema.Struct({
   ),
   /** Set on a card that asks to send something out of the company: exactly what goes. */
   send: Schema.optionalKey(KinSendCard),
+  /** Set when a newer card for the same thing closed this one. */
+  replaced: Schema.optionalKey(Schema.Literal(true)),
   // The first answer settles the card.
   answer: Schema.NullOr(
     Schema.Struct({

@@ -5,6 +5,7 @@ import {
   KinCompanyProfileData,
   KinCompanyProfileSetInput,
   type KinOrgId,
+  KinPersonId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -13,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { iso } from "./recordRows.ts";
 
 /**
@@ -191,6 +193,27 @@ export const proposeChange = Effect.fn("KinCompanyProfile.proposeChange")(functi
     ON CONFLICT (org_id, change_id) DO NOTHING`;
 });
 
+/**
+ * A newer change card replaces every older one still unanswered: they can never be confirmed, so
+ * an emptier, older card can't overwrite what the newer one shows. Returns their cards to close.
+ */
+export const replaceOlderChanges = Effect.fn("KinCompanyProfile.replaceOlderChanges")(function* (
+  orgId: KinOrgId,
+  changeId: string,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const older = yield* sql<{ changeId: string; widgetId: string }>`
+    SELECT change_id AS "changeId", widget_id AS "widgetId" FROM kin_profile_changes
+    WHERE org_id = ${orgId} AND change_id != ${changeId} AND widget_id IS NOT NULL
+      AND applied_at IS NULL AND declined_at IS NULL
+    ORDER BY change_id`;
+  if (older.length === 0) return [];
+  yield* sql`UPDATE kin_profile_changes SET declined_at = ${now}
+    WHERE org_id = ${orgId} AND change_id IN ${sql.in(older.map((row) => row.changeId))}`;
+  return older.map((row) => row.widgetId);
+});
+
 export const attachChangeCard = Effect.fn("KinCompanyProfile.attachChangeCard")(function* (
   orgId: KinOrgId,
   changeId: string,
@@ -220,16 +243,15 @@ export const answerChange = Effect.fn("KinCompanyProfile.answerChange")(function
     patch: string;
     baseRev: number;
     done: number;
-    owner: string;
   }>`SELECT c.change_id AS "changeId", c.patch_json AS patch, c.base_rev AS "baseRev",
-      (c.applied_at IS NOT NULL OR c.declined_at IS NOT NULL) AS done, a.owner_person_id AS owner
-    FROM kin_profile_changes c JOIN kin_agents a ON a.org_id = c.org_id AND a.agent_id = c.agent_id
+      (c.applied_at IS NOT NULL OR c.declined_at IS NOT NULL) AS done
+    FROM kin_profile_changes c
     WHERE c.org_id = ${input.orgId} AND c.widget_id = ${input.widgetId}`;
   if (row === undefined) return;
-  if (row.owner !== input.personId)
+  if (!(yield* ownerLevel(input.orgId, KinPersonId.make(input.personId)).pipe(Effect.orDie)))
     return yield* new KinChatError({
       reason: "not_allowed",
-      message: "Only the owner changes the company profile.",
+      message: "Only the owner or a co-owner changes the company profile.",
     });
   if (input.via === "reaction")
     return yield* new KinChatError({
@@ -239,7 +261,7 @@ export const answerChange = Effect.fn("KinCompanyProfile.answerChange")(function
   if (row.done === 1)
     return yield* new KinChatError({
       reason: "widget_changed",
-      message: "This change was already answered.",
+      message: "This change was already answered or replaced by a newer one.",
     });
   if (!input.confirmed) {
     yield* sql`UPDATE kin_profile_changes SET declined_at = ${input.now}

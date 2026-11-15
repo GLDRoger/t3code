@@ -245,7 +245,7 @@ describe("KinRefreshHub", () => {
       // Binding a suggestion as it is shown, in `bindSuggestions`, is part of reading the list.
       kin_memory_labels: ["memory/sensitivity.ts"],
       // The repository writes only the first-start owner, before any client, and test seeds.
-      kin_people: ["people/KinPeople.ts", "chat/KinChatRepository.ts"],
+      kin_people: ["people/KinPeople.ts", "chat/KinChatRepository.ts", "lead/peopleUpdate.ts"],
       kin_people_invites: ["people/KinPeople.ts"],
       kin_session_bindings: ["people/KinPeople.ts"],
       // The runner's thread and the hidden level are never part of a lead's list.

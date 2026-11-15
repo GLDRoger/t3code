@@ -14,6 +14,7 @@ import {
   type KinPersonId,
   type KinPersonPlaces,
   type KinPersonProfile,
+  kinOwnerLevel,
 } from "@t3tools/contracts";
 import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
 import * as Schema from "effect/Schema";
@@ -423,6 +424,12 @@ export function kinAccessChangeCopy(
 /** Whether the viewer may change this teammate's kind: the owner, for anyone but themself. */
 export const kinTeammateKindEditable = (teammate: KinTeammate, viewer: KinPersonAccess) =>
   viewer === "owner" && teammate.personId !== null && teammate.access !== "owner";
+
+/** The owner and co-owners message every agent in their own chats: no per-agent switch applies. */
+export const kinTeammateAgentsLine = (teammate: KinTeammate): string | null =>
+  kinOwnerLevel(teammate.access)
+    ? `${teammate.name} can message every agent, each in their own chat.`
+    : null;
 
 /** One line per lead on a teammate's details; the lead's own details change it. */
 export function kinTeammateLeadLine(allowed: boolean | null): string {

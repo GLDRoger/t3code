@@ -18,7 +18,6 @@ import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import { kinConnectionChange } from "@t3tools/client-runtime/kin/kinConnections";
 import {
-  KIN_CHOICE_EXPIRED_TEXT,
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
   kinChoiceAnswerText,
@@ -343,7 +342,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         </Text>
       ) : phase === "expired" ? (
         <Text textRole="footnote" className="text-foreground-muted">
-          {KIN_CHOICE_EXPIRED_TEXT}
+          {choice.closedText}
         </Text>
       ) : !canAct ? (
         <Text textRole="footnote" className="text-foreground-muted">

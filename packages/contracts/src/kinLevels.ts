@@ -43,7 +43,7 @@ export type KinLevelsSetInput = typeof KinLevelsSetInput.Type;
 export const KinLevelsRaiseResult = Schema.Struct({ actionId: KinActionId });
 export type KinLevelsRaiseResult = typeof KinLevelsRaiseResult.Type;
 
-export const KIN_LEVEL_WS_METHODS = {
+const KIN_LEVEL_WS_METHODS = {
   get: "kin.levels.get",
   lower: "kin.levels.lower",
   raise: "kin.levels.raise",

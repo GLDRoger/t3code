@@ -8,6 +8,7 @@ import {
   type KinReaction,
   type KinReactionEmoji,
   type KinWidget,
+  KinWidgetId,
   KinAgentId,
   KinOrgId,
 } from "@t3tools/contracts";
@@ -74,6 +75,11 @@ export class KinLevelGate extends Context.Service<
       bind?: (widget: KinWidget) => Effect.Effect<void, SqlError.SqlError>,
     ) => Effect.Effect<KinWidget, KinChatError>;
     /** A doc card, gated like a post. */
+    /** Closes the agent's own unanswered choice cards that a newer card replaced. */
+    readonly closeReplaced: (
+      agent: Turn,
+      widgetIds: ReadonlyArray<string>,
+    ) => Effect.Effect<void, KinChatError>;
     readonly showCard: (
       agent: AgentIdentity,
       input: Parameters<KinChatService["Service"]["showCard"]>[1],
@@ -329,6 +335,23 @@ const make = Effect.gen(function* () {
         agent,
         input.chatId,
         bind === undefined ? chat.ask(agent, input) : chat.ask(agent, input).pipe(Effect.tap(bind)),
+      ),
+    ),
+    closeReplaced: Effect.fn("KinLevelGate.closeReplaced")(
+      function* (agent, widgetIds) {
+        for (const widgetId of widgetIds)
+          yield* chat.closeReplaced({ orgId: agent.orgId, widgetId: KinWidgetId.make(widgetId) });
+      },
+      Effect.catchIf(
+        (error) => !isChatError(error),
+        (error) =>
+          Effect.logError("Kin closing a replaced card failed", error).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+              ),
+            ),
+          ),
       ),
     ),
     showCard: Effect.fn("KinLevelGate.showCard")((agent, input) =>

@@ -26,6 +26,7 @@ import * as KinTriggerStore from "./KinTriggerStore.ts";
 import * as KinTriggerScheduler from "./KinTriggerScheduler.ts";
 import * as OwnerCheck from "./ownerCheck.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { unsetOwnerZone } from "../work/recordRows.ts";
 
 const routines = ["morning_brief", "evening_summary", "owner_check"] as const;
 const iso = (now: number) => DateTime.formatIso(DateTime.makeUnsafe(now));
@@ -139,7 +140,7 @@ const make = Effect.gen(function* () {
       row === undefined
         ? {
             orgId,
-            timeZone: "UTC",
+            timeZone: unsetOwnerZone(),
             morningBrief: "08:30",
             eveningSummary: "18:30",
             dream: "03:00",

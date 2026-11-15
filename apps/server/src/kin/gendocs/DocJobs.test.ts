@@ -929,6 +929,10 @@ describe("recipe documents", () => {
       });
       yield* legacy("INV-5", 9);
       // With no owner-only chat to take it, it waits for the next start rather than being dropped.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', ${at}, 'member')`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, left_at)
+        VALUES ('lead-chat-teammate', ${orgId}, 'lead-chat', 'person', 'teammate', 'member', ${at}, ${at})`;
       yield* sql`UPDATE kin_chats SET shared_at = ${at} WHERE chat_id = 'lead-chat'`;
       assert.deepStrictEqual(yield* Amounts.reportIssuedWithoutAmount(orgId), {
         reported: [],

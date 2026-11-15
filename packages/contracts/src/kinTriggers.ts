@@ -210,3 +210,9 @@ export const KinOwnerTimeZoneGetInput = Schema.Struct({ orgId: KinOrgId });
 export type KinOwnerTimeZoneGetInput = typeof KinOwnerTimeZoneGetInput.Type;
 export const KinOwnerTimeZone = Schema.Struct({ orgId: KinOrgId, timeZone: TimeZone });
 export type KinOwnerTimeZone = typeof KinOwnerTimeZone.Type;
+/** The zone Kin uses; `fromHost` while the owner has set none and the host's stands in. */
+export const KinOwnerTimeZoneRead = Schema.Struct({
+  ...KinOwnerTimeZone.fields,
+  fromHost: Schema.optionalKey(Schema.Literal(true)),
+});
+export type KinOwnerTimeZoneRead = typeof KinOwnerTimeZoneRead.Type;

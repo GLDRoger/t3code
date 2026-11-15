@@ -7,7 +7,6 @@ import {
   type KinTaskTone,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
-  KIN_CHOICE_EXPIRED_TEXT,
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
   kinChoiceAnswerText,
@@ -432,7 +431,7 @@ function KinChoiceCard(props: {
       {answerText !== null ? (
         <p className="text-xs font-medium text-muted-foreground">{answerText}</p>
       ) : phase === "expired" ? (
-        <p className="text-xs text-muted-foreground">{KIN_CHOICE_EXPIRED_TEXT}</p>
+        <p className="text-xs text-muted-foreground">{choice.closedText}</p>
       ) : !canAct ? (
         <p className="text-xs text-muted-foreground">{CANT_ACT_TEXT}</p>
       ) : (

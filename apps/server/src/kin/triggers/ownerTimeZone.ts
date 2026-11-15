@@ -1,6 +1,7 @@
 import {
   KinChatError,
-  KinOwnerTimeZone as OwnerTimeZone,
+  KinOwnerTimeZone as OwnerTimeZoneInput,
+  KinOwnerTimeZoneRead as OwnerTimeZone,
   type KinOrgId,
   type KinOwnerTimeZoneGetInput,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
+import { unsetOwnerZone } from "../work/recordRows.ts";
 import type * as Routines from "./routines.ts";
 
 type TimeZoneError = KinChatError | PersistenceSqlError;
@@ -35,6 +37,7 @@ const mapError = (cause: unknown): TimeZoneError =>
       ? cause
       : invalid;
 const decode = Schema.decodeUnknownEffect(OwnerTimeZone);
+const decodeInput = Schema.decodeUnknownEffect(OwnerTimeZoneInput);
 
 /** The owner's zone. Writes go through the lead runtime's routines, which reschedule triggers. */
 export class KinOwnerTimeZone extends Context.Service<
@@ -46,7 +49,7 @@ export class KinOwnerTimeZone extends Context.Service<
     ) => Effect.Effect<OwnerTimeZone, TimeZoneError>;
     readonly set: (
       people: ReadonlyArray<PersonIdentity>,
-      input: OwnerTimeZone,
+      input: OwnerTimeZoneInput,
     ) => Effect.Effect<OwnerTimeZone, TimeZoneError>;
     readonly attach: (
       routines: Routines.KinRoutines["Service"],
@@ -83,7 +86,11 @@ const make = Effect.gen(function* () {
     const [row] = yield* sql<{
       time_zone: string;
     }>`SELECT time_zone FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;
-    return yield* decode({ orgId, timeZone: row?.time_zone ?? "UTC" });
+    return yield* decode(
+      row === undefined
+        ? { orgId, timeZone: unsetOwnerZone(), fromHost: true }
+        : { orgId, timeZone: row.time_zone },
+    );
   });
 
   return KinOwnerTimeZone.of({
@@ -93,7 +100,7 @@ const make = Effect.gen(function* () {
       return yield* read(input.orgId);
     }, Effect.mapError(mapError)),
     set: Effect.fn("KinOwnerTimeZone.set")(function* (people, input) {
-      const { orgId, timeZone } = yield* decode(input);
+      const { orgId, timeZone } = yield* decodeInput(input);
       yield* owner(people, orgId);
       if (attached === undefined) return yield* unavailable;
       yield* attached.setTimeZone(orgId, timeZone).pipe(

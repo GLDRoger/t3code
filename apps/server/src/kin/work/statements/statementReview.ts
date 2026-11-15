@@ -27,6 +27,7 @@ import { resolveAttachmentPathById } from "../../../attachmentStore.ts";
 import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../../config.ts";
 import { KinChatHub } from "../../chat/KinChatHub.ts";
+import { ownerLevel } from "../../people/KinAccess.ts";
 import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { choiceCardState } from "../../widgets/choiceCard.ts";
@@ -702,10 +703,10 @@ export const answerCurrencyCard = Effect.fn("KinStatements.answerCurrency")(func
   const statementId = input.widgetId.slice(CURRENCY_CARD.length).split(":")[0]!;
   const stored = yield* statementRow(input.orgId, statementId);
   if (stored === undefined) return;
-  if ((yield* ownerOf(input.orgId, stored.agentId)) !== input.personId)
+  if (!(yield* ownerLevel(input.orgId, KinPersonId.make(input.personId))))
     return yield* new KinChatError({
       reason: "not_allowed",
-      message: "Only the owner picks a statement's currency.",
+      message: "Only the owner or a co-owner picks a statement's currency.",
     });
   const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
   const choices = review?.statement.currencyChoice;

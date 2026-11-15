@@ -1892,6 +1892,11 @@ describe("KinConnections sending", () => {
           assert.strictEqual(replyAsk.reason, "widget_changed");
           assert.lengthOf(vendor.vendor.sent, 1);
 
+          yield* (yield* SqlClient.SqlClient)`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+              evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+              quiet_hours_json)
+            VALUES (${orgId}, 'UTC', '08:30', '18:30', '03:00', 0, 1, '09:00', '{}')
+            ON CONFLICT (org_id) DO UPDATE SET time_zone = 'UTC'`;
           const event = yield* sendCall("calendar_save_event", {
             title: "Kickoff",
             start: "2026-11-20T15:00:00+05:30",
@@ -1899,7 +1904,7 @@ describe("KinConnections sending", () => {
             invitees: ["ana@client.example"],
           });
           assert.strictEqual(event.note, ASKED);
-          // Its times read plainly in the owner's zone, UTC here with none set.
+          // Its times read plainly in the owner's zone, UTC here.
           assert.include(JSON.stringify(cards.at(-1)), "When: Fri, Nov 20, 9:30 AM to 10:00 AM");
           const booked = yield* answer(cards.at(-1)!.widgetId, ownerId, true);
           yield* connections.sendAsk(orgId, booked!.askId);

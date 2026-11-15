@@ -683,15 +683,21 @@ export const latestSeq = Effect.fn("KinRecords.latestSeq")(function* (orgId: Kin
   return row?.seq ?? 0;
 });
 
-/** The owner's IANA zone, for all-day due dates; UTC when unset. */
+/** The zone Kin uses until the owner sets one: the host's, whose clock check-ins run on. */
+export const unsetOwnerZone = () => {
+  const host = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return validZone(host) ? host : "UTC";
+};
+
+/** The owner's IANA zone, for all-day due dates; the host's until he sets one. */
 export const ownerZone = Effect.fn("KinRecords.ownerZone")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone
     FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`.pipe(
     Effect.orElseSucceed(() => []),
   );
-  const zone = row?.zone ?? "UTC";
-  return validZone(zone) ? zone : "UTC";
+  const zone = row?.zone ?? unsetOwnerZone();
+  return validZone(zone) ? zone : unsetOwnerZone();
 });
 const validZone = (zone: string) => {
   try {

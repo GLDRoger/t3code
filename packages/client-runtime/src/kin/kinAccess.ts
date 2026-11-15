@@ -8,6 +8,7 @@ import {
   type KinRpcAccess,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schedule from "effect/Schedule";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
@@ -27,6 +28,8 @@ function kinAccessAllows(kind: KinPersonAccess | null, access: KinRpcAccess | un
 function makeKinAccess<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
 ) {
+  const refreshes = createKinRefreshTriggers(runtime);
+  const triggers = new Map<string, Atom.Atom<string>>();
   const read = createEnvironmentRpcCommand(runtime, {
     label: "kin:access:read",
     tag: "kin.access.me",
@@ -37,16 +40,35 @@ function makeKinAccess<R, ER>(
       const registry = yield* AtomRegistry.AtomRegistry;
       const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
       const environmentId = supervisor.target.environmentId;
-      const result = yield* Effect.promise(() => read.run(registry, { environmentId, input }));
-      return yield* result._tag === "Success"
-        ? Effect.succeed(result.value)
-        : result._tag === "Failure"
-          ? Effect.failCause(result.cause)
-          : Effect.never;
+      // A failed read would leave a co-owner on a member's dock until the next refresh.
+      return yield* Effect.suspend(() =>
+        Effect.promise(() => read.run(registry, { environmentId, input })),
+      ).pipe(
+        Effect.flatMap((result) =>
+          result._tag === "Success"
+            ? Effect.succeed(result.value)
+            : result._tag === "Failure"
+              ? Effect.failCause(result.cause)
+              : Effect.never,
+        ),
+        Effect.retry({ times: 4, schedule: Schedule.exponential("1 second") }),
+      );
     }),
     staleTimeMs: 30_000,
-    // A kind change moves `leads` for everyone, members included.
-    refreshTrigger: createKinRefreshTriggers(runtime)("leads"),
+    // A kind change moves `leads` and `people` for everyone, members included.
+    refreshTrigger: (target: {
+      readonly environmentId: EnvironmentId;
+      readonly input: KinAccessMeInput;
+    }) => {
+      let trigger = triggers.get(`${target.environmentId}:${target.input.orgId}`);
+      if (trigger === undefined) {
+        const leads = refreshes("leads")(target);
+        const people = refreshes("people")(target);
+        trigger = Atom.make((get) => `${get(leads)}|${get(people)}`);
+        triggers.set(`${target.environmentId}:${target.input.orgId}`, trigger);
+      }
+      return trigger;
+    },
   });
   const accessAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get): KinPersonAccess | null => {

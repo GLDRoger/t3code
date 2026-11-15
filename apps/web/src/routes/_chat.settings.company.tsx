@@ -4,6 +4,7 @@ import { SettingsPageContainer, SettingsSection } from "../components/settings/s
 import { searchableSetting } from "../components/settings/settingsSearch";
 import { KinCompanyProfileSettings } from "../kin/KinCompanyProfile";
 import { KinCheckInsSetting } from "../kin/KinCheckIns";
+import { KinCompanyTimeZoneSetting } from "../kin/KinCompanyTimeZone";
 import { KinDailyLimitSetting } from "../kin/KinDailyLimit";
 
 function SettingsCompanyRoute() {
@@ -12,6 +13,7 @@ function SettingsCompanyRoute() {
       <SettingsSection {...searchableSetting("company-details")} variant="plain">
         <KinCompanyProfileSettings />
       </SettingsSection>
+      <KinCompanyTimeZoneSetting />
       <KinDailyLimitSetting />
       <KinCheckInsSetting />
     </SettingsPageContainer>

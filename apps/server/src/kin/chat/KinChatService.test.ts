@@ -2652,6 +2652,10 @@ describe("KinChatService", () => {
       Effect.gen(function* () {
         const { person } = yield* seed(true);
         const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+            evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+            quiet_hours_json)
+          VALUES (${person.orgId}, 'UTC', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
         const notices = yield* KinKeyNotices;
         const first = KinKeyThumbprint.make("NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
         const second = KinKeyThumbprint.make("aZ3kLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9X");
@@ -2680,6 +2684,13 @@ describe("KinChatService", () => {
         assert.deepStrictEqual(yield* owed, []);
         yield* sql.withTransaction(notices.changed(change(first, "added", 1)));
         // With every chat shared, nobody else may read it: the change commits, owing its push.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', '2026-01-01T00:00:00.000Z', 'member')`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at, left_at)
+          SELECT 'left-' || chat_id, org_id, chat_id, 'person', 'teammate', 'member',
+            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+          FROM kin_chats WHERE org_id = ${person.orgId}`;
         yield* sql`UPDATE kin_chats SET shared_at = 1 WHERE org_id = ${person.orgId}`;
         yield* sql.withTransaction(notices.changed(change(second, "removed", 2)));
         // An identical retry owes nothing more.

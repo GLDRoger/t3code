@@ -28,7 +28,13 @@ import { KinDocRenderer } from "../gendocs/render.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { budgetsAnswer, budgetsView, setBudget } from "./budgets.ts";
-import { attachChangeCard, changeLines, proposeChange, readProfile } from "./companyProfile.ts";
+import {
+  attachChangeCard,
+  changeLines,
+  proposeChange,
+  readProfile,
+  replaceOlderChanges,
+} from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
 import {
   admitted,
@@ -734,6 +740,10 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
           ...(taken === undefined ? {} : { image: taken.shown }),
         },
         (widgetId) => attachChangeCard(lead.orgId, changeId, widgetId),
+      );
+      yield* (yield* KinLevelGate).closeReplaced(
+        lead,
+        yield* replaceOlderChanges(lead.orgId, changeId, yield* Clock.currentTimeMillis),
       );
       proposed = lines;
     }

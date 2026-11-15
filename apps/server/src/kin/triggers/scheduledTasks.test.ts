@@ -21,6 +21,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Chat from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as CheckIns from "../pulse/checkIns.ts";
+import { followOwnerZone, seedCheckIns } from "../pulse/checkInSeeds.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Budget from "../lead/KinBudget.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
@@ -642,6 +643,19 @@ it.effect(
       assert.lengthOf((yield* act("remove")).checkIns, 0);
       yield* drain;
       assert.lengthOf((yield* tasks.list()).tasks, 1);
+      // A default check-in moved here stays put when the owner's zone is followed again.
+      const schedules = yield* KinSchedules.KinSchedules;
+      yield* seedCheckIns(orgId, schedules);
+      const morning = KinMemoryItemId.make("checkin-morning");
+      const seeded = (yield* CheckIns.list(people, orgId)).checkIns.find(
+        (row) => row.scheduleId === morning,
+      )!;
+      yield* CheckIns.save(people, { orgId, ...seeded, at: "08:15" });
+      yield* followOwnerZone(orgId, schedules);
+      const kept = (yield* CheckIns.list(people, orgId)).checkIns.find(
+        (row) => row.scheduleId === morning,
+      );
+      assert.include(kept, { at: "08:15" });
       // Someone who isn't owner-level is refused.
       const teammate = { ...owner, personId: KinPersonId.make("teammate-a") };
       const refused = yield* CheckIns.list([teammate], orgId).pipe(Effect.flip);

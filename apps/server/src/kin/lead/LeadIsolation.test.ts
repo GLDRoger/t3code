@@ -132,6 +132,9 @@ it.effect.each([
         settings: {
           apiKeyHelper: "gateway-token",
           ...(typeof lead.settings === "object" ? lead.settings : {}),
+          // G07: auto-memory's folder, under the host's home, named the account to a teammate.
+          autoMemoryEnabled: false,
+          autoDreamEnabled: false,
           env: { ANTHROPIC_BASE_URL: "https://gateway.test", ENABLE_TOOL_SEARCH: "false" },
         },
         env: {
@@ -140,6 +143,7 @@ it.effect.each([
           ANTHROPIC_BASE_URL: "https://gateway.test",
           CLAUDE_CONFIG_DIR: configDir,
           ENABLE_TOOL_SEARCH: "false",
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
         },
       });
       assert.deepStrictEqual(leadHooks?.PreToolUse?.length, 1);

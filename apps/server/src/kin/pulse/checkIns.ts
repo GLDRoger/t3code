@@ -110,7 +110,8 @@ export const save = Effect.fn("KinCheckIns.save")(function* (
       KinMemoryItemId.make(`checkin-${now.toString(36)}-${person.personId}`),
     existing: existing !== undefined,
     chatId: existing?.chatId ?? KinChatId.make(lead.chatId),
-    sourceEvent: existing?.sourceEvent ?? `kin-settings:check-ins:${input.orgId}`,
+    // Not the seed's: a default moved here stays where it was put (`followOwnerZone`).
+    sourceEvent: `kin-settings:check-ins:${input.orgId}`,
     saidBy: person.personId,
     title: input.title,
     prompt: input.what,

@@ -43,7 +43,7 @@ import {
 } from "../widgets/scheduledTaskCard.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { queueCheckIn } from "../pulse/checkIn.ts";
-import { seedCheckIns } from "../pulse/checkInSeeds.ts";
+import { followOwnerZone, seedCheckIns } from "../pulse/checkInSeeds.ts";
 import { fromConnections, noOutside } from "../pulse/outside.ts";
 import { cardChatFor, firingOrigin } from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
@@ -808,6 +808,16 @@ const make = Effect.gen(function* () {
             ),
             Effect.catch((cause) =>
               Effect.logWarning("Kin default check-ins not written", { orgId, cause }),
+            ),
+          );
+        else
+          yield* followOwnerZone(KinOrgId.make(orgId), schedules).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin default check-ins not moved to the owner's zone", {
+                orgId,
+                cause,
+              }),
             ),
           );
         yield* drain(KinOrgId.make(orgId)).pipe(
