@@ -40,6 +40,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import { CLAUDE_PROVIDER } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
@@ -1339,9 +1340,28 @@ const WAKE_KINDS: Record<KinEvent["_tag"] | "hand-over", WakeCase> = {
 };
 
 const reply = "Phase 2 is about three weeks: booking first, then reports.";
+// Run 4: Claude's summarised reasoning restating the answer, which its adapter shows as an
+// update (`ClaudeAdapterV2.test.ts` makes it from the same blocks). It posted in place of the
+// answer the model wrote after kin_end.
+const narration = (ordinal: number, runId: RunId): OrchestrationV2TurnItem => ({
+  ...text("narration", ordinal, "The Orbit invoice went out to Anita from hello@.", runId),
+  nativeItemRef: {
+    driver: CLAUDE_PROVIDER,
+    nativeId: "msg_finance:thinking:1",
+    strength: "strong",
+  },
+});
 it.effect.each(
   Object.entries(WAKE_KINDS).flatMap(([kind, wake]) =>
-    (["reply then kin_end", "kin_end then reply", "kin_end only"] as const).map((order) => ({
+    (
+      [
+        "reply then kin_end",
+        "kin_end then reply",
+        "kin_end only",
+        "reasoning, kin_end, then reply",
+        "reasoning and kin_end only",
+      ] as const
+    ).map((order) => ({
       kind,
       wake,
       order,
@@ -1362,7 +1382,12 @@ it.effect.each(
           ? [text("a", 1, reply, runId), end]
           : order === "kin_end then reply"
             ? [{ ...end, ordinal: 1 }, text("a", 2, reply, runId)]
-            : [{ ...end, ordinal: 1 }];
+            : order === "reasoning, kin_end, then reply"
+              ? [narration(1, runId), end, text("a", 3, reply, runId)]
+              : order === "reasoning and kin_end only"
+                ? [narration(1, runId), end]
+                : [{ ...end, ordinal: 1 }];
+      const replied = !order.endsWith("only");
       for (const item of fake.items) yield* Queue.offer(fake.live, itemEvent(item));
       yield* complete;
       const said = yield* sql<{ body: string; authorKind: string }>`
@@ -1371,13 +1396,9 @@ it.effect.each(
         AND message_id NOT LIKE 'kin-handoff:%' ORDER BY seq`;
       assert.deepStrictEqual(
         said.map((row) => `${row.authorKind}:${row.body}`),
-        order !== "kin_end only"
-          ? [`agent:${reply}`]
-          : wake.owed
-            ? ["system:Ada didn't reply."]
-            : [],
+        replied ? [`agent:${reply}`] : wake.owed ? ["system:Ada didn't reply."] : [],
       );
-      assert.strictEqual(fake.rescues, order === "kin_end only" && wake.owed ? 1 : 0);
+      assert.strictEqual(fake.rescues, !replied && wake.owed ? 1 : 0);
     }).pipe(Effect.provide(layer)),
 );
 
