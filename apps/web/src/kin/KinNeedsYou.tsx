@@ -1,0 +1,134 @@
+import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
+import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
+import {
+  KIN_NEEDS_YOU_SHOWN,
+  KIN_WORK_HOME,
+  kinNeedsYou,
+  type KinNeedsYouOpen,
+  type KinNeedsYouRow,
+} from "@t3tools/client-runtime/kin/kinWorkHome";
+import type { KinRecordKey } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
+import { BanknoteIcon, CircleAlertIcon, CircleCheckIcon, type LucideIcon } from "lucide-react";
+import { useState } from "react";
+
+import { Button } from "../components/ui/button";
+import { cn } from "../lib/utils";
+import { KinWorkSection } from "./KinWorkParts";
+import { useNowMinuteMs } from "./useKinClock";
+import { useKinInbox } from "./useKinHost";
+import { kinListsOf, useKinLists, useKinMoneySummary } from "./useKinMoney";
+import { useKinMyDueTasks } from "./useKinPlaces";
+import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+
+const ICON: Record<KinNeedsYouRow["kind"], LucideIcon> = {
+  task: CircleCheckIcon,
+  money: BanknoteIcon,
+  waiting: CircleAlertIcon,
+};
+
+/**
+ * The top of Tasks: your late tasks, what clients owe past due, what an agent waits on you for,
+ * then what is yours today. Each row opens the thing itself.
+ */
+export function KinNeedsYou(
+  props: KinWorkTarget & {
+    readonly directory: KinWorkDirectory;
+    /** The host's latest change number; null while what is held may be behind. */
+    readonly seq: number | null;
+    readonly onOpenTask: (key: KinRecordKey) => void;
+    readonly onOpenList: (open: KinListOpen) => void;
+    readonly onOpenMoney: () => void;
+  },
+) {
+  const { environmentId, orgId, seq } = props;
+  const { names } = props.directory;
+  const navigate = useNavigate();
+  const now = new Date(useNowMinuteMs());
+  const mine = useKinMyDueTasks(props, names.me, seq);
+  const money = useKinMoneySummary(props, { enabled: true, seq });
+  const lists = useKinLists(props, { enabled: true, seq });
+  const inbox = useKinInbox();
+  const [expanded, setExpanded] = useState(false);
+  if (mine === null) return null;
+  const ready =
+    inbox.state._tag === "ready" && inbox.state.environmentId === environmentId
+      ? inbox.state
+      : null;
+  const rows = kinNeedsYou({
+    mine,
+    // Where the host keeps money from this viewer, nothing owed shows here either.
+    money: money.state._tag === "ready" ? money.state.value : null,
+    lists: kinListsOf(lists),
+    waiting:
+      ready === null
+        ? []
+        : selectKinInboxView(ready.inbox.value).waiting.filter((item) => item.orgId === orgId),
+    chats: ready?.inbox.value.chats ?? [],
+    agentNames: kinDirectory(inbox.host).agentNames,
+    names,
+    now,
+  });
+  const open = (to: KinNeedsYouOpen) => {
+    if (to.type === "task") props.onOpenTask(to.key);
+    else if (to.type === "list") props.onOpenList(to.open);
+    else if (to.type === "money") props.onOpenMoney();
+    else
+      void navigate({
+        to: "/kin/$environmentId/$orgId/$chatId",
+        params: { environmentId, orgId, chatId: to.chatId },
+      });
+  };
+  const shown = expanded ? rows : rows.slice(0, KIN_NEEDS_YOU_SHOWN);
+  return (
+    <KinWorkSection
+      title={KIN_WORK_HOME.needsYou}
+      action={
+        rows.length <= KIN_NEEDS_YOU_SHOWN ? undefined : (
+          <Button size="xs" variant="ghost" onClick={() => setExpanded(!expanded)}>
+            {expanded ? KIN_WORK_HOME.seeFewer : KIN_WORK_HOME.seeAll(rows.length)}
+          </Button>
+        )
+      }
+    >
+      {rows.length === 0 ? (
+        <p className="px-2 text-sm text-muted-foreground">{KIN_WORK_HOME.nothingNeedsYou}</p>
+      ) : (
+        <ul className="flex flex-col">
+          {shown.map((row) => {
+            const Icon = ICON[row.kind];
+            return (
+              <li key={row.id}>
+                <button
+                  type="button"
+                  onClick={() => open(row.open)}
+                  className="flex w-full items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+                >
+                  <Icon
+                    aria-hidden
+                    className={cn(
+                      "mt-0.5 size-4 shrink-0",
+                      row.late ? "text-destructive-foreground" : "text-muted-foreground",
+                    )}
+                  />
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate text-sm text-foreground">{row.title}</span>
+                    <span
+                      className={cn(
+                        "truncate text-xs",
+                        row.late ? "text-destructive-foreground" : "text-muted-foreground",
+                      )}
+                    >
+                      {row.detail}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </KinWorkSection>
+  );
+}
