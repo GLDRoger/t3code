@@ -1,5 +1,7 @@
 import {
   KIN_RECORDS_PAGE_CAP,
+  KIN_PROJECT_BILLING,
+  isCalendarDay,
   KinChatError,
   KinRecordId,
   type KinBlockedOn,
@@ -21,7 +23,23 @@ import {
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { fieldList, fieldText, listOf, parseFields, sensitiveFields, workListOf } from "./lists.ts";
+import {
+  fieldList,
+  fieldText,
+  isMoney,
+  listOf,
+  parseFields,
+  sensitiveFields,
+  workListOf,
+} from "./lists.ts";
+import {
+  meetingsOf,
+  milestonesOf,
+  moneyOf,
+  peopleOf,
+  principalOfText,
+  projectSpecChanges,
+} from "./projectSpine.ts";
 import {
   actorOf,
   iso,
@@ -55,7 +73,7 @@ const owned = (kind: string, id: string) =>
   principal(kind, id) ?? { _tag: "person" as const, personId: id as never };
 
 /** When an entry last became `waiting`, from its change log; its last change if none says so. */
-const waitingSince = (sql: Sql, alias: string) => sql`COALESCE((
+export const waitingSince = (sql: Sql, alias: string) => sql`COALESCE((
     SELECT MAX(c.at) FROM kin_record_changes c, json_each(c.fields_json) j
     WHERE c.org_id = ${sql(alias)}.org_id AND c.record_id = ${sql(alias)}.record_id
       AND json_extract(j.value, '$.field') = 'state'
@@ -429,10 +447,24 @@ export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
     1,
   );
   const fields = parseFields(row.fieldsJson);
+  const billing = fieldText(fields, "billing");
+  const value = fields.value;
+  const day = (key: string) => {
+    const text = fieldText(fields, key);
+    return text !== null && isCalendarDay(text) ? text : null;
+  };
   return {
     ...counted!.row,
     notes: row.notes,
     repos: [...fieldList(fields, "repos")],
+    billing: KIN_PROJECT_BILLING.find((kind) => kind === billing) ?? null,
+    value: value !== undefined && isMoney(value) ? value : null,
+    startsOn: day("startsOn"),
+    renewsOn: day("renewsOn"),
+    members: fieldList(fields, "members").flatMap((text) => {
+      const who = principalOfText(text);
+      return who === null ? [] : [who];
+    }),
     healthBecause: counted!.because,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
@@ -621,6 +653,7 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
     return [{ url: pull.url, number, record: ref(pull.recordId, pull.key, pull.title) }];
   });
   const week = yield* history(row, { sinceAt: now - WEEK_MS, limit: 20 });
+  const milestones = yield* milestonesOf(orgId, row.recordId, now);
   return {
     project: yield* projectDetail(row, now),
     counts: {
@@ -641,6 +674,11 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
     nextDue: next === undefined ? null : toRecord(next, now),
     pullRequests,
     changedThisWeek: { items: week.items, total: week.total ?? week.items.length },
+    milestones,
+    people: yield* peopleOf(row, now),
+    meetings: yield* meetingsOf(orgId, row.recordId, now),
+    specChanged: yield* projectSpecChanges(orgId, row.recordId),
+    money: yield* moneyOf(orgId, row.recordId),
     seq,
     asOf: iso(now),
   } satisfies KinProjectPage;

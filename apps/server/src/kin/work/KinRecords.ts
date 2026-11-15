@@ -115,6 +115,8 @@ export type Writer = {
   readonly askedBy?: KinPersonId | null;
   /** A teammate from their own app: `teamGuard` decides the write inside its transaction. */
   readonly teammate?: boolean;
+  /** Shared with the team when made: a lead's task made in the company chat. */
+  readonly teamShared?: boolean;
   /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
   readonly view?: {
     readonly people: ReadonlyArray<KinPersonId>;
@@ -341,7 +343,13 @@ const checkInput = (
     if (!isCurrency(input.amount.currency))
       return invalid(`${input.amount.currency} is not a currency code.`);
   }
-  if (input.dateAt !== undefined && input.dateAt !== null && def.builtIn !== null)
+  // A Work meeting's start is its date; due stays what someone owes by when.
+  if (
+    input.dateAt !== undefined &&
+    input.dateAt !== null &&
+    def.builtIn !== null &&
+    def.builtIn !== "work"
+  )
     return invalid(`A ${def.noun} has no date of its own; use due.`);
   if (
     input.repeat !== undefined &&
@@ -758,7 +766,7 @@ const make = Effect.gen(function* () {
       ? new KinChatError({ reason: "invalid_state", message: "A client has no client or project." })
       : list === "contacts" && partyId === null
         ? new KinChatError({ reason: "invalid_state", message: "A contact needs its client." })
-        : list !== "work" && list !== "docs" && projectId !== null
+        : list !== "work" && list !== "docs" && list !== "milestones" && projectId !== null
           ? new KinChatError({
               reason: "invalid_state",
               message: `A ${LISTS[list].noun} has no project.`,
@@ -773,7 +781,7 @@ const make = Effect.gen(function* () {
     partyId: string | null,
     except: string | null,
   ) {
-    if (list === "work" || list === "docs" || !isBuiltIn(list)) return;
+    if (list === "work" || list === "docs" || list === "milestones" || !isBuiltIn(list)) return;
     const [row] = yield* sql<{ key: string; sensitive: number }>`SELECT r.key,
         ${sensitiveNow(sql)} AS sensitive FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state NOT IN ${sql.in(CLOSED)}
@@ -924,7 +932,7 @@ const make = Effect.gen(function* () {
         ${yield* encodeFieldValues(fields)}, ${amount?.minor ?? null}, ${amount?.currency ?? null},
         ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
         ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null},
-        ${input.team === true || writer.teammate === true ? 1 : 0},
+        ${input.team === true || writer.teammate === true || writer.teamShared === true ? 1 : 0},
         ${options.authors === undefined ? author : options.authors.title},
         ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes})`;
     const changes: Array<FieldChange> = [

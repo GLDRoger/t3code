@@ -23,6 +23,8 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/recordRows.ts": 2,
   // One entry's payments, read to check a retry and to void one; a totals query's has-amount filter.
   "work/KinRecords.ts": 3,
+  // The columns each pulse sense selects; every sense that reads money applies the rule itself.
+  "pulse/senses/shared.ts": 1,
   // One settlement's parts, read to check a retry.
   "work/leadMoney.ts": 1,
   // A statement's own rows, and the entries one row may match, each shown with its state.

@@ -1,4 +1,4 @@
-import type { KinAgentId, KinOrgId } from "@t3tools/contracts";
+import { KIN_COMPANY_CHAT_TEAM_ID, type KinAgentId, type KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -43,7 +43,20 @@ const inAskedChat: Condition = Effect.fnUntraced(function* (turn, args) {
  */
 const oneAskerCreates: Condition = Effect.fnUntraced(function* (turn) {
   const behind = yield* turnPeople(turn);
-  return behind?.people.length === 1 && behind.askers.length === 1;
+  return (
+    (behind?.people.length === 1 && behind.askers.length === 1) || (yield* inCompanyChat(turn))
+  );
+});
+
+/** The turn answers in the company chat: what it makes is shared with the whole team. */
+export const inCompanyChat = Effect.fn("KinSharedTools.inCompanyChat")(function* (turn: Turn) {
+  const chat = yield* turnChat(turn);
+  if (chat === undefined) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${turn.orgId}
+    AND chat_id = ${chat.chatId} AND team_id = ${KIN_COMPANY_CHAT_TEAM_ID} AND archived_at IS NULL
+    LIMIT 1`;
+  return rows.length > 0;
 });
 
 /** Every message, tap and reaction the turn answers is the owner's own, by stored author. */
@@ -130,7 +143,10 @@ export const SHARED_TOOLS = {
   kin_delegate: ownerDelegates,
   kin_follow_up: ownerAskedAboutWorkerHere,
   kin_worker_stop: ownerAskedAboutWorkerHere,
-  kin_hand_off: "refused",
+  // Only to an agent in the group asked in (`KinHandoff.passInRoom`).
+  kin_hand_off: "allowed",
+  // Posts only the person's own stored words in their own direct chat; nothing of this turn.
+  kin_take_private: "allowed",
   memory_search: "team_memory",
   memory_read: "team_memory",
   memory_write: "team_memory",
@@ -150,6 +166,9 @@ export const SHARED_TOOLS = {
   record_get: "view",
   record_create: oneAskerCreates,
   record_update: "view",
+  // Work facts on tasks every person behind the turn may see; money and system facts are the owner's.
+  pulse_read: "view",
+  pulse_handle: "refused",
   // Docs are owner-only too until the teammate view; restoring stays the owner's after it.
   doc_create: "refused",
   doc_read: "refused",

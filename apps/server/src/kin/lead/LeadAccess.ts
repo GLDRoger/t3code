@@ -31,7 +31,8 @@ export const teamAgent = Effect.fn("KinLeadAccess.teamAgent")(function* (orgId: 
 });
 
 /**
- * Whether this person may message the lead now: its owner let them, or it is the team agent.
+ * Whether this person may message the lead now: its owner let them, it is the team agent, or
+ * they are both in a group.
  * The owner needs neither.
  */
 export const allowed = Effect.fn("KinLeadAccess.allowed")(function* (pair: Pair) {
@@ -41,7 +42,16 @@ export const allowed = Effect.fn("KinLeadAccess.allowed")(function* (pair: Pair)
       AND a.role = 'lead' AND a.retired_at IS NULL
       AND (a.agent_id = ${teamAgentSql(sql, pair.orgId)} OR EXISTS (
         SELECT 1 FROM kin_lead_access x WHERE x.org_id = a.org_id AND x.agent_id = a.agent_id
-          AND x.person_id = ${pair.personId} AND x.revoked_at IS NULL))
+          AND x.person_id = ${pair.personId} AND x.revoked_at IS NULL)
+        -- The owner put them in a group together, so an answer taken private can go on there.
+        OR EXISTS (SELECT 1 FROM kin_chat_members ma
+          JOIN kin_chats c ON c.org_id = ma.org_id AND c.chat_id = ma.chat_id
+            AND c.kind <> 'direct' AND c.archived_at IS NULL
+          JOIN kin_chat_members mp ON mp.org_id = ma.org_id AND mp.chat_id = ma.chat_id
+            AND mp.principal_kind = 'person' AND mp.person_id = ${pair.personId}
+            AND mp.left_at IS NULL
+          WHERE ma.org_id = a.org_id AND ma.principal_kind = 'agent' AND ma.agent_id = a.agent_id
+            AND ma.left_at IS NULL))
     LIMIT 1`;
   return rows.length > 0;
 });
