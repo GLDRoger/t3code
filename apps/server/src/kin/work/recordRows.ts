@@ -54,6 +54,8 @@ export type RecordRow = {
   readonly dueAt: number | null;
   readonly dueAllDay: number;
   readonly sensitive: number;
+  /** The owner shared it with the team (`teamView.ts`). */
+  readonly teamShared: number;
   readonly confirmed: number;
   readonly notes: string;
   readonly rev: number;
@@ -172,7 +174,8 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.title, r.state,
     r.waiting_on_kind AS "waitingOnKind", r.waiting_on_id AS "waitingOnId",
     r.owner_kind AS "ownerKind", r.owner_id AS "ownerId", r.side, r.category,
-    r.due_at AS "dueAt", r.due_all_day AS "dueAllDay", r.sensitive, r.confirmed, r.notes, r.rev,
+    r.due_at AS "dueAt", r.due_all_day AS "dueAllDay", r.sensitive, r.team_shared AS "teamShared",
+    r.confirmed, r.notes, r.rev,
     r.source_chat_id AS "sourceChatId", r.source_message_id AS "sourceMessageId",
     r.created_by_kind AS "createdByKind", r.created_by_id AS "createdById",
     r.assigned_by_person_id AS "assignedBy", r.assigned_at AS "assignedAt",

@@ -1,9 +1,12 @@
 import {
+  KIN_DOCS_RPC_SCOPES,
+  KIN_FINANCE_RPC_SCOPES,
   KIN_MEMORY_RPC_SCOPES,
   KIN_PEOPLE_RPC_SCOPES,
   KIN_WORK_RPC_SCOPES,
   sessionGrantsScope,
   sessionIsChatOnly,
+  type AuthEnvironmentScope,
   type EnvironmentId,
   type SessionGrantInput,
 } from "@t3tools/contracts";
@@ -143,18 +146,38 @@ export function kinDockTabs(session: SessionGrantInput | null): ReadonlyArray<Ki
   return kinHomeTabs(session).filter(isDockTab);
 }
 
+const grants = (session: SessionGrantInput | null) => (scope: AuthEnvironmentScope) =>
+  session !== null && sessionGrantsScope(session, scope);
+
 /**
  * The tabs of a Kin-only home, in order, from what the session has been allowed: a tab whose page
- * the host would refuse is never offered. A teammate's session gets chats and settings.
+ * the host would refuse is never offered. A teammate's session gets chats, work and settings.
  */
 export function kinHomeTabs(session: SessionGrantInput | null): ReadonlyArray<KinHomeTab> {
-  const allowed = (scope: Parameters<typeof sessionGrantsScope>[1]) =>
-    session !== null && sessionGrantsScope(session, scope);
+  const allowed = grants(session);
   return [
     "chats",
     ...(allowed(KIN_WORK_RPC_SCOPES["kin.work.list"]) ? (["work"] as const) : []),
     ...(allowed(KIN_PEOPLE_RPC_SCOPES["kin.people.listInvites"]) ? (["team"] as const) : []),
     ...(allowed(KIN_MEMORY_RPC_SCOPES["kin.memory.list"]) ? (["memory"] as const) : []),
     "settings",
+  ];
+}
+
+/** One place of the Kin dock. Settings is a button on Chats, not a place. */
+export type KinPlace = "chats" | "tasks" | "money" | "clients" | "docs";
+
+/**
+ * The dock's places, in order, each offered only when the host would answer its list for this
+ * session. A teammate gets the ones their grant reaches; without money access there is no Money.
+ */
+export function kinPlaces(session: SessionGrantInput | null): ReadonlyArray<KinPlace> {
+  const allowed = grants(session);
+  return [
+    "chats",
+    ...(allowed(KIN_WORK_RPC_SCOPES["kin.work.list"]) ? (["tasks"] as const) : []),
+    ...(allowed(KIN_FINANCE_RPC_SCOPES["kin.work.money"]) ? (["money"] as const) : []),
+    ...(allowed(KIN_WORK_RPC_SCOPES["kin.work.parties"]) ? (["clients"] as const) : []),
+    ...(allowed(KIN_DOCS_RPC_SCOPES["kin.docs.list"]) ? (["docs"] as const) : []),
   ];
 }

@@ -5,7 +5,7 @@ import {
   KIN_RECORDS_PAGE_CAP,
   KinChatError,
   type KinAgentId,
-  type KinChatId,
+  KinChatId,
   type KinMessageId,
   type KinMoney,
   type KinRepeatRule,
@@ -35,6 +35,7 @@ import { isSqlError } from "effect/sql/SqlError";
 
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
+import * as LeadAccess from "../lead/LeadAccess.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal, withdrawAttempts } from "./workerAttempts.ts";
@@ -86,6 +87,7 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
+import { teamSees, teamSeq } from "./teamView.ts";
 
 /** Who is writing and how: a lead in its turn, the owner from a client, or Kin from an event. */
 export type Writer = {
@@ -114,6 +116,8 @@ export type Fields = {
   readonly confirmed?: boolean;
   /** Raised by anyone; lowered only by a person, which the owner-only callers make the owner. */
   readonly sensitive?: boolean;
+  /** Shared with the team (`teamView.ts`); only the owner's `share` and a teammate's own create set it. */
+  readonly team?: boolean;
   /** Record ids of a client and a project in this org. */
   readonly partyId?: string | null;
   readonly projectId?: string | null;
@@ -177,6 +181,8 @@ export type QueryInput = {
   readonly limit?: number;
   /** The time `late` is judged at; a later page passes the first page's so offsets hold. */
   readonly at?: number;
+  /** Only what this teammate may see (`teamView.ts`), and the change number of only that. */
+  readonly team?: KinPersonId;
 };
 
 /** An entry the owner closed or took from a lead while it held it open, after that commits. */
@@ -202,6 +208,14 @@ const encodeFields = Schema.encodeEffect(
     ),
   ),
 );
+export type Tick = {
+  readonly seq: number;
+  readonly key?: string;
+  readonly registerId?: string;
+  readonly seenBy?: ReadonlyArray<string>;
+};
+const SeenBy = Schema.fromJsonString(Schema.Array(Schema.String));
+const decodeSeenBy = Schema.decodeUnknownEffect(SeenBy);
 export type GroupBy = "party" | "project" | "side" | "owner" | "state" | "category";
 export type TotalsBy = GroupBy | "month" | "financialYear";
 /** Past this many entries with an amount, totals ask for a narrower filter instead of guessing. */
@@ -403,10 +417,11 @@ export class KinRecords extends Context.Service<
       changeLimit?: number,
     ) => Effect.Effect<Effect.Success<ReturnType<typeof toDetail>>, KinChatError>;
     readonly seq: (orgId: KinOrgId) => Effect.Effect<number, KinChatError>;
-    /** The latest change number now, then again with the entry after every committed change. */
-    readonly changes: (
-      orgId: KinOrgId,
-    ) => Stream.Stream<{ readonly seq: number; readonly key?: string }, KinChatError>;
+    /**
+     * The latest change number now, then again with the entry after every committed change, its
+     * list, and the people besides the owner who may see it after that change (`teamView.ts`).
+     */
+    readonly changes: (orgId: KinOrgId) => Stream.Stream<Tick, KinChatError>;
     /** The lead runtime stops a withdrawn entry's workers; the WS side has no thread services. */
     readonly attachWithdrawals: (
       onWithdrawn: (withdrawal: Withdrawal) => Effect.Effect<void>,
@@ -417,11 +432,8 @@ export class KinRecords extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue;
-  const ticks = yield* PubSub.unbounded<{
-    readonly orgId: KinOrgId;
-    readonly seq: number;
-    readonly key: string;
-  }>();
+  const dailyTurns = yield* LeadAccess.dailyTurns;
+  const ticks = yield* PubSub.unbounded<Tick & { readonly orgId: KinOrgId }>();
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
   let onWithdrawn: ((withdrawal: Withdrawal) => Effect.Effect<void>) | undefined;
 
@@ -479,15 +491,81 @@ const make = Effect.gen(function* () {
         ${writer.chatId ?? null})
       RETURNING seq`;
     const seq = change?.seq ?? 0;
-    yield* sql.afterCommit(PubSub.publish(ticks, { orgId, seq, key: row.key }));
+    // Who may see it is read as this change leaves it, so a notice that it was hidden can't lag.
+    const [after] = yield* sql<{ registerId: string; seenBy: string }>`
+      SELECT r.register_id AS "registerId", (SELECT json_group_array(p.person_id)
+          FROM kin_people p WHERE p.org_id = r.org_id AND ${teamSees(sql, sql`p.person_id`)})
+        AS "seenBy"
+      FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId}`;
+    const seenBy = after === undefined ? [] : yield* decodeSeenBy(after.seenBy);
+    yield* sql.afterCommit(
+      PubSub.publish(ticks, {
+        orgId,
+        seq,
+        key: row.key,
+        ...(after === undefined ? {} : { registerId: after.registerId }),
+        seenBy,
+      }),
+    );
     return seq;
+  });
+
+  /**
+   * Where a teammate's assignment wakes a lead: their direct chat with it, while its owner lets
+   * them message it and they have turns left today, as `ChatWake` admits their messages. Asked
+   * from their own app, a refusal fails the write, so nothing is given away that won't be done.
+   */
+  const teammateWake = Effect.fn("KinRecords.teammateWake")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    agentId: KinAgentId,
+    personId: KinPersonId,
+    now: number,
+  ) {
+    const own = writer.actor._tag === "person" && writer.actor.personId === personId;
+    const refuse = (error: KinChatError) => (own ? Effect.fail(error) : Effect.void);
+    if (!(yield* LeadAccess.allowed({ orgId, agentId, personId }).pipe(provideSql)))
+      return yield* refuse(
+        new KinChatError({
+          reason: "not_found",
+          message: `No agent ${agentId.slice(0, 60)} here to own it.`,
+        }),
+      );
+    const [agent] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_agents
+      WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+    const name = agent?.name ?? "That agent";
+    const [chat] = yield* sql<{ chatId: string; memberId: string }>`
+      SELECT c.chat_id AS "chatId", m.member_id AS "memberId" FROM kin_chats c
+      JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+        AND m.principal_kind = 'person' AND m.person_id = ${personId} AND m.left_at IS NULL
+      JOIN kin_chat_members l ON l.org_id = c.org_id AND l.chat_id = c.chat_id
+        AND l.principal_kind = 'agent' AND l.agent_id = ${agentId} AND l.left_at IS NULL
+      WHERE c.org_id = ${orgId} AND c.kind = 'direct'
+        AND c.direct_key = ${LeadAccess.directKey(personId, agentId)}
+      ORDER BY c.chat_id LIMIT 1`;
+    if (chat === undefined)
+      return yield* refuse(
+        new KinChatError({
+          reason: "not_allowed",
+          message: `Open your chat with ${name} once, then give it this again.`,
+        }),
+      );
+    const used = yield* LeadAccess.recentTurns({ orgId, personId, now }).pipe(provideSql);
+    if (used.turns >= dailyTurns)
+      return yield* refuse(
+        new KinChatError({
+          reason: "not_allowed",
+          message: `${name} has done as much as it can for you today. Give it this again later.`,
+        }),
+      );
+    return { chatId: KinChatId.make(chat.chatId), memberId: chat.memberId };
   });
 
   /**
    * Wakes a lead about an entry someone else changed, with that human as the turn's provenance:
    * given to it (`assigned`, by the stored assigner), or closed or taken back while it held it
-   * open (`withdrawn`, by the person who did). Slice 1 wakes only for the lead's owner; any other
-   * change is recorded and waits.
+   * open (`withdrawn`, by the person who did; only its owner is told). A teammate's assignment
+   * wakes it in their own direct chat with it, as a message from them would (`teammateWake`).
    */
   const wakeLead = Effect.fn("KinRecords.wakeLead")(function* (
     orgId: KinOrgId,
@@ -511,8 +589,14 @@ const make = Effect.gen(function* () {
         AND m.principal_kind = 'person' AND m.person_id = a.owner_person_id AND m.left_at IS NULL
       WHERE l.org_id = ${orgId} AND l.agent_id = ${to.agentId} AND a.retired_at IS NULL
       ORDER BY m.member_id LIMIT 1`;
-    // Only the lead's owner is an assigner this slice wakes for; a teammate's waits for slice 2.
-    if (lead === undefined || lead.ownerPersonId !== assignedBy) return false;
+    if (lead === undefined) return false;
+    const teammate =
+      lead.ownerPersonId === assignedBy
+        ? undefined
+        : reason === "assigned"
+          ? yield* teammateWake(orgId, writer, to.agentId, assignedBy, now)
+          : undefined;
+    if (lead.ownerPersonId !== assignedBy && teammate === undefined) return false;
     const key = `record-${reason}:${row.recordId}:${seq}`;
     return yield* queue
       .enqueue({
@@ -525,12 +609,18 @@ const make = Effect.gen(function* () {
         provenance: {
           _tag: "human",
           personId: assignedBy as KinPersonId,
-          memberId: lead.memberId as never,
+          memberId: (teammate?.memberId ?? lead.memberId) as never,
         },
         recordId: KinRecordId.make(row.recordId),
         key: row.key,
         seq,
         reason,
+        ...(teammate === undefined
+          ? {}
+          : {
+              chatId: teammate.chatId,
+              origin: { agentId: to.agentId, chatId: teammate.chatId, personId: assignedBy },
+            }),
       })
       .pipe(
         Effect.as(true),
@@ -740,7 +830,7 @@ const make = Effect.gen(function* () {
         sensitive, confirmed, notes, rev, source_chat_id, source_message_id, created_by_kind,
         created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
         closed_at, party_id, project_id, repo, fields_json, amount_minor, currency, date_at,
-        date_all_day, repeat_json, request_hash)
+        date_all_day, repeat_json, request_hash, team_shared)
       VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
         ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
         ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
@@ -754,7 +844,8 @@ const make = Effect.gen(function* () {
         ${partyId}, ${projectId}, ${input.repo ?? null},
         ${yield* encodeFieldValues(fields)}, ${amount?.minor ?? null}, ${amount?.currency ?? null},
         ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
-        ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null})`;
+        ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null},
+        ${input.team === true ? 1 : 0})`;
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
@@ -1217,6 +1308,10 @@ const make = Effect.gen(function* () {
           changes.push({ field: "sensitive", from: "true", to: "false" });
           set("sensitive", 0);
         }
+        if (patch.team !== undefined && (patch.team ? 1 : 0) !== row.teamShared) {
+          changes.push({ field: "team", from: shown(row.teamShared === 1), to: shown(patch.team) });
+          set("team_shared", patch.team ? 1 : 0);
+        }
         changes.push(...also);
         // A retry of a change that already landed finds nothing to do: that is success.
         if (sets.length === 0 && also.length === 0) return row;
@@ -1621,6 +1716,7 @@ const make = Effect.gen(function* () {
 
   const filterOf = (orgId: KinOrgId, input: QueryInput, now: number) => {
     const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
+    if (input.team !== undefined) where.push(teamSees(sql, input.team));
     if (input.partyId !== undefined) where.push(sql`r.party_id IS ${input.partyId}`);
     if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);
@@ -1677,7 +1773,8 @@ const make = Effect.gen(function* () {
         const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${filter}
           ORDER BY ${order}
           LIMIT ${limit} OFFSET ${Math.max(input.offset ?? 0, 0)}`;
-        return { rows, total: count?.total ?? 0, seq: yield* latestSeq(orgId).pipe(provideSql) };
+        const seq = input.team === undefined ? latestSeq(orgId) : teamSeq(orgId, input.team);
+        return { rows, total: count?.total ?? 0, seq: yield* seq.pipe(provideSql) };
       }),
     );
   });
@@ -1751,12 +1848,12 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(ticks);
           const now = yield* failed(latestSeq(orgId).pipe(provideSql));
-          const first: { readonly seq: number; readonly key?: string } = { seq: now };
+          const first: Tick = { seq: now };
           return Stream.concat(
             Stream.make(first),
             Stream.fromEffectRepeat(PubSub.take(subscription)).pipe(
               Stream.filter((tick) => tick.orgId === orgId),
-              Stream.map((tick) => ({ seq: tick.seq, key: tick.key })),
+              Stream.map(({ orgId: _orgId, ...tick }): Tick => tick),
             ),
           );
         }),

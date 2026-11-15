@@ -3579,6 +3579,7 @@ it.effect("a teammate's change stops nothing, and the owner's reopen restarts no
       yield* ctx.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
         VALUES ('teammate', ${ctx.orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
       const teammate = { ...ctx.person, personId: KinPersonId.make("teammate") };
+      // The owner's entry is no entry to a teammate.
       assert.include(
         yield* Effect.flip(
           OwnerWork.update([teammate], {
@@ -3588,7 +3589,7 @@ it.effect("a teammate's change stops nothing, and the owner's reopen restarts no
             state: "done",
           }).pipe(Effect.provideContext(ctx.services)),
         ),
-        { reason: "not_allowed" },
+        { reason: "not_found" },
       );
       // Even a change written as a teammate's, past the owner check, is not the lead's owner's.
       yield* records.update(
@@ -4020,7 +4021,7 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
       (yield* runKinMigrations()).map(([id]) => id),
       [
         59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-        82, 83, 84, 85, 86,
+        82, 83, 84, 85, 86, 87,
       ],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);

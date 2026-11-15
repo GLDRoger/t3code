@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import {
   AuthOrchestrationOperateScope,
+  AuthKinChatScope,
   AuthOrchestrationReadScope,
   EnvironmentAuthorizationError,
 } from "./auth.ts";
@@ -478,6 +479,19 @@ export const KinWorkUpdateInput = Schema.Struct({
 });
 export type KinWorkUpdateInput = typeof KinWorkUpdateInput.Type;
 
+/**
+ * The owner shares tasks with the team (`shared: true`) or takes them back. Every task that
+ * existed before teammates could read Work is the owner's alone until he shares it.
+ */
+export const KinWorkShareInput = Schema.Struct({
+  orgId: KinOrgId,
+  keys: Schema.Array(KinRecordKey).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  shared: Schema.Boolean,
+});
+export type KinWorkShareInput = typeof KinWorkShareInput.Type;
+export const KinWorkShareResult = Schema.Struct({ records: Schema.Array(KinRecord) });
+export type KinWorkShareResult = typeof KinWorkShareResult.Type;
+
 /** Keep a lead's suggested entry (`confirm`), or decline it, which drops it. */
 export const KinWorkConfirmInput = Schema.Struct({
   orgId: KinOrgId,
@@ -894,6 +908,7 @@ export const KIN_WORK_WS_METHODS = {
   update: "kin.work.update",
   confirm: "kin.work.confirm",
   decline: "kin.work.decline",
+  share: "kin.work.share",
   parties: "kin.work.parties",
   party: "kin.work.party",
   projects: "kin.work.projects",
@@ -908,7 +923,8 @@ export const KIN_WORK_WS_METHODS = {
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
-// Owner only, on the server; a chat-only session is refused before any handler runs.
+// Tasks reach a teammate's session too, and the server shows them only their view of them
+// (`teamView.ts`); clients, projects, confirming and sharing are the owner's.
 export const KinWorkRpcs = [
   Rpc.make(KIN_WORK_WS_METHODS.summary, {
     payload: KinWorkSummaryInput,
@@ -945,6 +961,11 @@ export const KinWorkRpcs = [
   Rpc.make(KIN_WORK_WS_METHODS.confirm, {
     payload: KinWorkConfirmInput,
     success: KinRecordDetail,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.share, {
+    payload: KinWorkShareInput,
+    success: KinWorkShareResult,
     error,
   }),
   Rpc.make(KIN_WORK_WS_METHODS.decline, {
@@ -1006,17 +1027,20 @@ export const KinWorkRpcs = [
 ] as const;
 
 export const KIN_WORK_RPC_SCOPES = {
-  [KIN_WORK_WS_METHODS.summary]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.list]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.get]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.subscribe]: AuthOrchestrationReadScope,
-  // Giving a lead work starts agent work on the owner's budget, as a message to it does.
-  [KIN_WORK_WS_METHODS.create]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.assign]: AuthOrchestrationOperateScope,
-  // Closing, reopening or declining an entry a lead holds wakes that lead.
-  [KIN_WORK_WS_METHODS.update]: AuthOrchestrationOperateScope,
+  // A teammate's session reaches tasks; the service shows them their view and changes only theirs.
+  [KIN_WORK_WS_METHODS.summary]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.list]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.get]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.subscribe]: AuthKinChatScope,
+  // Giving a lead work wakes it as a message to it does: a teammate's runs as theirs, within
+  // their daily turns, in their own chat with it (`KinRecords.teammateWake`).
+  [KIN_WORK_WS_METHODS.create]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.assign]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.update]: AuthKinChatScope,
+  // Keeping a lead's suggestion makes it the owner's word; only he does that, or shares.
   [KIN_WORK_WS_METHODS.confirm]: AuthOrchestrationOperateScope,
   [KIN_WORK_WS_METHODS.decline]: AuthOrchestrationOperateScope,
+  [KIN_WORK_WS_METHODS.share]: AuthOrchestrationOperateScope,
   [KIN_WORK_WS_METHODS.parties]: AuthOrchestrationReadScope,
   [KIN_WORK_WS_METHODS.party]: AuthOrchestrationReadScope,
   [KIN_WORK_WS_METHODS.projects]: AuthOrchestrationReadScope,
