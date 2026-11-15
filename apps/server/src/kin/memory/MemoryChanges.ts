@@ -34,6 +34,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { readableSources } from "./quoteAccess.ts";
 import type { MemoryItem } from "./MemoryCache.ts";
 import type { MemoryWriter } from "./MemoryWriter.ts";
@@ -188,7 +189,14 @@ const make = Effect.gen(function* () {
   ) {
     const person = people.find((candidate) => candidate.orgId === orgId);
     if (person === undefined) return yield* notFound;
-    if (person.orgId !== owner.orgId || person.personId !== owner.personId) return yield* ownerOnly;
+    if (
+      person.orgId !== owner.orgId ||
+      !(yield* ownerLevel(orgId, person.personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.orElseSucceed(() => false),
+      ))
+    )
+      return yield* ownerOnly;
     if (port === undefined) return yield* unavailable;
     return { person, port };
   });

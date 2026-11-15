@@ -474,59 +474,23 @@ it.effect("denies manual cleanup before the handler without settings permission"
   }).pipe(Effect.scoped),
 );
 
-it("a chat-only grant cannot satisfy any non-chat method's declared permission", () => {
+it("a chat-only grant reaches Kin's methods and nothing else", () => {
+  // Kin's gate (`KIN_RPC_ACCESS`, rpcAccess.test.ts) decides per person which of these they reach.
+  const methods = Object.keys(RPC_REQUIRED_SCOPES);
   expect(
-    Object.entries(RPC_REQUIRED_SCOPES)
-      .filter(([, permission]) => permission === "kin:chat")
-      .map(([method]) => method)
-      .sort(),
-  ).toEqual([
-    "kin.chat.history",
-    "kin.chat.members",
-    "kin.chat.subscribe",
-    // Reaches the chat service, which lets a teammate clear only their own chat with a lead.
-    "kin.chats.clear",
-    "kin.chats.createDirect",
-    "kin.chats.mute",
-    "kin.chats.subscribe",
-    "kin.leads.list",
-    "kin.messages.markRead",
-    "kin.messages.react",
-    "kin.messages.send",
-    // Whether Kin is stopped; the reason in the owner's words reaches only him.
-    "kin.org.get",
-    "kin.orgs.list",
-    "kin.people.list",
-    "kin.people.setGithubLogin",
-    // Bound to the caller's own person and session; pushes only for chats they are in.
-    "kin.push.registerDevice",
-    "kin.push.unregisterDevice",
-    "kin.push.watch",
-    // Revision numbers only, and only for the topics the viewer may read.
-    "kin.refreshes.subscribe",
-    // Read only: setting the zone stays the owner's.
-    "kin.triggers.getTimeZone",
-    "kin.widgets.act",
-    // Tasks: the service shows a teammate only tasks shared with them or theirs, and changes only
-    // their own; a task they give an agent runs as theirs, in their chat with it.
-    "kin.work.assign",
-    "kin.work.create",
-    "kin.work.get",
-    "kin.work.handBack",
-    "kin.work.list",
-    "kin.work.subscribe",
-    "kin.work.summary",
-    "kin.work.update",
-  ]);
-  expect(RPC_REQUIRED_SCOPES["kin.work.share"]).toBe("orchestration:operate");
+    methods.filter(
+      (method) => RPC_REQUIRED_SCOPES[method as keyof typeof RPC_REQUIRED_SCOPES] === "kin:chat",
+    ),
+  ).toEqual(
+    // Only the host CLI's write notice needs the owner's own session.
+    methods.filter((method) => method.startsWith("kin.") && method !== "kin.refreshes.announce"),
+  );
   // Kin schedules live in T3's scheduled tasks: a teammate's session reaches none of them.
   const scheduledTasks = Object.entries(RPC_REQUIRED_SCOPES).filter(([method]) =>
     method.startsWith("scheduledTasks."),
   );
   expect(scheduledTasks.length).toBeGreaterThanOrEqual(5);
   for (const [, permission] of scheduledTasks) expect(permission).not.toBe("kin:chat");
-  expect(RPC_REQUIRED_SCOPES["kin.people.revokeInvite"]).toBe("access:write");
-  expect(RPC_REQUIRED_SCOPES["kin.people.listInvites"]).toBe("access:read");
 });
 it.effect.each(["chat-only", "legacy-owner"] as const)(
   "%s authorizes Kin chat without widening access",
@@ -642,29 +606,6 @@ it.effect("a chat-only session may upload, and ask only for stored attachments",
     expect(yield* allowed([AuthKinChatScope], "assets.persistChatAttachments", undefined)).toBe(
       false,
     );
-  }),
-);
-
-it.effect.each(
-  Object.keys(RPC_REQUIRED_SCOPES).filter((method) => method.startsWith("kin.groups.")),
-)("a teammate's chat-only session can't make or change a group: %s", (method) =>
-  Effect.gen(function* () {
-    expect(
-      Object.keys(RPC_REQUIRED_SCOPES).filter((name) => name.startsWith("kin.groups.")),
-    ).toEqual([
-      "kin.groups.create",
-      "kin.groups.addMember",
-      "kin.groups.removeMember",
-      "kin.groups.setLead",
-      "kin.groups.rename",
-      "kin.groups.delete",
-    ]);
-    expect(
-      yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], method, undefined).pipe(Effect.flip),
-    ).toMatchObject({ _tag: "EnvironmentAuthorizationError" });
-    // The owner's paired client holds the scope; reading who is in a chat stays chat access.
-    yield* RpcAuthorization.authorizeRpc(AuthStandardClientScopes, method, undefined);
-    yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], "kin.chat.members", undefined);
   }),
 );
 

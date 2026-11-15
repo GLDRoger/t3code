@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { KinAudit, type KinAuditAppendInput } from "./Audit.ts";
 
 /** The verifier's rejection trace: the refusal is already decided, so a lost entry is only logged. */
@@ -39,11 +40,14 @@ export const auditLayer = Layer.effect(
   }),
 );
 
-/** Grant check 4's role lookup: never from the grant or the client, only stored identity. */
+/**
+ * Grant check 4's role lookup: never from the grant or the client, only the stored kind. The
+ * owner and a co-owner approve; a co-owner put back to member stops at once, keys and all.
+ */
 export class KinOrgRoles extends Context.Service<
   KinOrgRoles,
   {
-    readonly isOwner: (ref: {
+    readonly isOwnerLevel: (ref: {
       readonly orgId: KinOrgId;
       readonly personId: KinPersonId;
     }) => Effect.Effect<boolean, KinApprovalError>;
@@ -59,17 +63,16 @@ export const orgRolesLayer = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     return KinOrgRoles.of({
-      isOwner: Effect.fn("KinOrgRoles.isOwner")(
+      isOwnerLevel: Effect.fn("KinOrgRoles.isOwnerLevel")(
         function* (ref) {
-          if (ref.personId !== BOOTSTRAP_OWNER) return false;
-          const rows = yield* sql`SELECT 1 FROM kin_people
-            WHERE org_id = ${ref.orgId} AND person_id = ${ref.personId}`;
-          return rows.length > 0;
+          return yield* ownerLevel(ref.orgId, ref.personId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
         },
         Effect.catch((cause) =>
           Effect.logWarning(
-            "KinOrgRoles.isOwner failed",
-            toPersistenceSqlError("KinOrgRoles.isOwner")(cause),
+            "KinOrgRoles.isOwnerLevel failed",
+            toPersistenceSqlError("KinOrgRoles.isOwnerLevel")(cause),
           ).pipe(
             Effect.andThen(
               Effect.fail(

@@ -1,11 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId } from "./kinChat.ts";
 import { KinDay } from "./kinMoney.ts";
@@ -310,14 +306,14 @@ export const KinStatementRpcs = [
 
 export const KIN_STATEMENT_RPC_SCOPES = {
   // Recording payments and expenses is an entry change, like Record payment.
-  [KIN_STATEMENT_WS_METHODS.unlock]: AuthOrchestrationOperateScope,
-  [KIN_STATEMENT_WS_METHODS.forgetPassword]: AuthOrchestrationOperateScope,
-  [KIN_STATEMENT_WS_METHODS.apply]: AuthOrchestrationOperateScope,
-  [KIN_STATEMENT_WS_METHODS.undo]: AuthOrchestrationOperateScope,
-  [KIN_STATEMENT_WS_METHODS.reread]: AuthOrchestrationOperateScope,
-  [KIN_STATEMENT_WS_METHODS.select]: AuthOrchestrationOperateScope,
-  [KIN_STATEMENT_WS_METHODS.forgetAccount]: AuthOrchestrationOperateScope,
+  [KIN_STATEMENT_WS_METHODS.unlock]: AuthKinChatScope,
+  [KIN_STATEMENT_WS_METHODS.forgetPassword]: AuthKinChatScope,
+  [KIN_STATEMENT_WS_METHODS.apply]: AuthKinChatScope,
+  [KIN_STATEMENT_WS_METHODS.undo]: AuthKinChatScope,
+  [KIN_STATEMENT_WS_METHODS.reread]: AuthKinChatScope,
+  [KIN_STATEMENT_WS_METHODS.select]: AuthKinChatScope,
+  [KIN_STATEMENT_WS_METHODS.forgetAccount]: AuthKinChatScope,
   // Statement rows and kept accounts are the owner's money: read as Money is.
-  [KIN_STATEMENT_WS_METHODS.rows]: AuthOrchestrationReadScope,
-  [KIN_STATEMENT_WS_METHODS.passwords]: AuthOrchestrationReadScope,
+  [KIN_STATEMENT_WS_METHODS.rows]: AuthKinChatScope,
+  [KIN_STATEMENT_WS_METHODS.passwords]: AuthKinChatScope,
 } as const;

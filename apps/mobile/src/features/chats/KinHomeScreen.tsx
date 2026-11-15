@@ -24,7 +24,7 @@ import { KinDock, kinDockClearance } from "./components/KinDock";
 import { KinPlace } from "./KinWorkScreen";
 import { KinTabContext } from "./components/KinTab";
 import { kinHomeTabAtom } from "./state/kinHomeTab";
-import { useKinAccessEnded, useKinAppShell } from "./state/kinChatOnly";
+import { useKinAccessEnded, useKinAppShell, useKinOwnerLevel } from "./state/kinChatOnly";
 import { useKinDocsLive } from "./state/useKinDocs";
 import { useKinHost } from "./state/useKinHost";
 import { useKinMoneySummary } from "./state/useKinMoney";
@@ -53,7 +53,7 @@ export function KinHomeScreen() {
 
   if (KIN_ONLY && !catalog.isReady) return <View className="flex-1 bg-screen" />;
   if (KIN_ONLY && catalog.entries.size === 0) return <KinWelcome />;
-  const chatsOnly = kinDockTabs(session, { money: false, clients: false, docs: false });
+  const chatsOnly = kinDockTabs(session, true, { money: false, clients: false, docs: false });
   if (workTarget === null || chatsOnly.length === 1) {
     return <KinHomeTabs tabs={["chats"]} workTarget={null} />;
   }
@@ -69,7 +69,8 @@ function KinHomeWithWork(props: {
   const seq = work._tag === "ready" && !work.stale ? work.live.seq : null;
   const money = useKinMoneySummary(props.workTarget, { enabled: true, seq }).state;
   const docs = useKinDocsLive(props.workTarget);
-  const tabs = kinDockTabs(props.session, {
+  const ownerLevel = useKinOwnerLevel(props.workTarget.environmentId, props.session);
+  const tabs = kinDockTabs(props.session, ownerLevel, {
     money: money._tag === "refused",
     // Only an answer from an older host takes Clients away, never one still on its way.
     clients: work._tag === "ready" && !kinWorkHostClients(work.live.summary),

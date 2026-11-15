@@ -2,8 +2,6 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
 import {
-  AuthAccessReadScope,
-  AuthAccessWriteScope,
   AuthKinChatScope,
   EnvironmentAuthorizationError,
   type AuthEnvironmentScope,
@@ -21,6 +19,7 @@ import {
   KinChatError,
   KinOrgId,
   KinPerson,
+  KinPersonAccess,
   KinPersonId,
   KinRoleTags,
   KinTrimmedText,
@@ -134,6 +133,23 @@ export const KinPeopleSetGithubLoginInput = Schema.Struct({
 });
 export type KinPeopleSetGithubLoginInput = typeof KinPeopleSetGithubLoginInput.Type;
 
+/** The owner makes someone a co-owner or puts them back to member. Nobody else changes a kind. */
+export const KinPeopleSetAccessInput = Schema.Struct({
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  access: Schema.Literals(["co_owner", "member"]),
+});
+export type KinPeopleSetAccessInput = typeof KinPeopleSetAccessInput.Type;
+
+export const KinAccessMeInput = Schema.Struct({ orgId: KinOrgId });
+export type KinAccessMeInput = typeof KinAccessMeInput.Type;
+/** The caller's own kind, which decides their dock and screens. */
+export const KinAccessMeResult = Schema.Struct({
+  personId: KinPersonId,
+  access: KinPersonAccess,
+});
+export type KinAccessMeResult = typeof KinAccessMeResult.Type;
+
 export const KIN_PROFILE_NAME_MAX = 80;
 export const KIN_PROFILE_SKILLS_MAX = 300;
 /** Days are 0 (Sunday) to 6; start and end are local times in the person's time zone. */
@@ -234,6 +250,8 @@ export const KIN_PEOPLE_WS_METHODS = {
   peopleRevokeDevice: "kin.people.revokeDevice",
   peopleRemoveAccess: "kin.people.removeAccess",
   peopleSetGithubLogin: "kin.people.setGithubLogin",
+  peopleSetAccess: "kin.people.setAccess",
+  accessMe: "kin.access.me",
   peopleProfiles: "kin.people.profiles",
   peopleUpdateProfile: "kin.people.updateProfile",
   orgSetTeamAgent: "kin.org.setTeamAgent",
@@ -283,6 +301,16 @@ export const KinPeopleRpcs = [
     success: KinPerson,
     error: KinPeopleError,
   }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleSetAccess, {
+    payload: KinPeopleSetAccessInput,
+    success: KinPerson,
+    error: KinPeopleError,
+  }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.accessMe, {
+    payload: KinAccessMeInput,
+    success: KinAccessMeResult,
+    error: KinPeopleError,
+  }),
   Rpc.make(KIN_PEOPLE_WS_METHODS.peopleProfiles, {
     payload: KinPeopleListInput,
     success: KinPeopleProfilesResult,
@@ -305,17 +333,18 @@ export const KinPeopleRpcs = [
   }),
 ] as const;
 
+// Every Kin method takes a Kin session; who may call it is `KIN_RPC_ACCESS`, from stored kinds.
 export const KIN_PEOPLE_RPC_SCOPES = {
-  [KIN_PEOPLE_WS_METHODS.peopleListInvites]: AuthAccessReadScope,
-  [KIN_PEOPLE_WS_METHODS.peopleRevokeInvite]: AuthAccessWriteScope,
+  [KIN_PEOPLE_WS_METHODS.peopleListInvites]: AuthKinChatScope,
+  [KIN_PEOPLE_WS_METHODS.peopleRevokeInvite]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleList]: AuthKinChatScope,
-  // An invite hands access to someone new, like a pairing link.
-  [KIN_PEOPLE_WS_METHODS.peopleCreateInvite]: AuthAccessWriteScope,
-  [KIN_PEOPLE_WS_METHODS.peopleListDevices]: AuthAccessReadScope,
-  [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice]: AuthAccessWriteScope,
-  [KIN_PEOPLE_WS_METHODS.peopleRemoveAccess]: AuthAccessWriteScope,
-  // A member links their own handle from a chat-only session; the service checks ownership.
+  [KIN_PEOPLE_WS_METHODS.peopleCreateInvite]: AuthKinChatScope,
+  [KIN_PEOPLE_WS_METHODS.peopleListDevices]: AuthKinChatScope,
+  [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice]: AuthKinChatScope,
+  [KIN_PEOPLE_WS_METHODS.peopleRemoveAccess]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin]: AuthKinChatScope,
+  [KIN_PEOPLE_WS_METHODS.peopleSetAccess]: AuthKinChatScope,
+  [KIN_PEOPLE_WS_METHODS.accessMe]: AuthKinChatScope,
   // Everyone in the org reads profiles; the service checks who may edit whose.
   [KIN_PEOPLE_WS_METHODS.peopleProfiles]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleUpdateProfile]: AuthKinChatScope,
