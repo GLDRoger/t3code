@@ -176,7 +176,6 @@ import {
   kinReactionToggle,
   kinViewerMemberId,
 } from "@t3tools/client-runtime/kin/kinReactions";
-import { KinBadgeSync } from "./notifications/KinBadgeSync";
 import { KinChatPushWatch } from "./notifications/KinChatPushWatch";
 
 type KinChatParams = {
@@ -345,10 +344,6 @@ function KinLiveChat(props: {
   return (
     <>
       <KinChatPushWatch environmentId={props.environmentId} chatId={props.chatId} />
-      {/* Only a live inbox: a saved one would put an old count back on the icon. */}
-      <KinBadgeSync
-        inbox={inbox?._tag === "Success" && inbox.value.live ? inbox.value.value : null}
-      />
       <KinChatPage
         environmentId={props.environmentId}
         orgId={props.orgId}
