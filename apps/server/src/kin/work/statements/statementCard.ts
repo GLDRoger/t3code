@@ -54,6 +54,7 @@ const money = (minor: number, currency: string) => formatMoney({ minor, currency
 export const STATEMENT_REVIEW_TEXT =
   "Kin read a bank statement and matched its rows. Review and confirm them on its card.";
 
+export const OPEN_INVOICE_NOTE = "An open invoice: pick it if this money is its payment";
 const target = (candidate: Candidate, option: number, currency: string): KinStatementTarget => ({
   option,
   kind: candidate.kind,
@@ -65,7 +66,11 @@ const target = (candidate: Candidate, option: number, currency: string): KinStat
       ? { note: "Part payment" }
       : candidate.fit === "foreign"
         ? { note: "Same amount in its own currency" }
-        : {}),
+        : candidate.fit === "recorded"
+          ? { note: "Payment already recorded: this links the bank row to it" }
+          : candidate.fit === "open"
+            ? { note: OPEN_INVOICE_NOTE }
+            : {}),
 });
 
 /**
@@ -142,7 +147,12 @@ export const rowsOf = (
 
 /** Binds a confirm to this exact review: each row as read, its entries and how its money fits them. */
 export const reviewHash = (statementId: string, review: Review) => {
-  const fit = (one: Candidate) => [one.recordId, one.fit, one.tdsMinor ?? null];
+  const fit = (one: Candidate) => [
+    one.recordId,
+    one.fit,
+    one.tdsMinor ?? null,
+    ...(one.paymentId === undefined ? [] : [one.paymentId]),
+  ];
   return hash(
     JSON.stringify({
       statementId,

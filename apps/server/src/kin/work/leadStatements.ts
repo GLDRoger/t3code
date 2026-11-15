@@ -1,6 +1,7 @@
 import {
   KinChatError,
   KinDay,
+  KinMessageId,
   type KinOrgId,
   KinStatementPassword,
   TrimmedNonEmptyString,
@@ -12,6 +13,8 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { quote } from "../lead/LeadPrompt.ts";
 import { turnFiles } from "./leadFields.ts";
@@ -84,7 +87,7 @@ export const ReadInput = Schema.Struct({
   }),
   password: Schema.optional(KinStatementPassword).annotate({
     description:
-      "The statement's password, exactly as the owner wrote it in a message in this chat. Kin uses it once to open this file and doesn't store it in its own records; the owner's message still holds it.",
+      "The statement's password, exactly as the owner wrote it in a message in this chat. Kin uses it once to open this file and doesn't store it in its own records; once it opens the file, Kin hides it in the owner's message.",
   }),
   pages: Schema.optional(
     Schema.Array(
@@ -307,6 +310,37 @@ const readingResult = (base: Base, reading: Reading) => ({
 });
 type Base = { readonly statement: string; readonly file: string; readonly sensitive: true };
 
+const HIDDEN = "••••••";
+/** Once a password the owner typed in the chat opened the file, their messages stop showing it. */
+const hideTyped = Effect.fn("KinStatements.hideTyped")(function* (
+  lead: Lead,
+  chatId: string,
+  words: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const repo = yield* KinChatRepository;
+  const hub = yield* KinChatHub;
+  const rows = yield* sql<{ messageId: string; body: string }>`SELECT m.message_id AS "messageId",
+      m.body FROM kin_messages m
+    JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = ${lead.agentId}
+    WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.kind = 'text'
+      AND m.status <> 'deleted' AND m.author_kind = 'human'
+      AND m.author_person_id = a.owner_person_id AND instr(m.body, ${words}) > 0
+    ORDER BY m.seq DESC LIMIT 200`;
+  for (const row of rows) {
+    yield* sql`UPDATE kin_messages SET body = ${row.body.replaceAll(words, HIDDEN)}
+      WHERE org_id = ${lead.orgId} AND chat_id = ${chatId} AND message_id = ${row.messageId}`;
+    const message = yield* repo.getMessage({
+      orgId: lead.orgId,
+      messageId: KinMessageId.make(row.messageId),
+    });
+    if (Option.isSome(message))
+      yield* sql.afterCommit(
+        hub.publish({ type: "message.posted", orgId: lead.orgId, message: message.value }),
+      );
+  }
+});
+
 /** Whether this turn's message was the owner's own: the only one a password may come from. */
 const ownerSaid = Effect.fn("KinStatements.ownerSaid")(function* (lead: Lead, eventId: string) {
   const sql = yield* SqlClient.SqlClient;
@@ -452,8 +486,10 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
     if ((yield* takeTry(lead.orgId, "chat", tried, now)) !== undefined)
       return yield* invalid(CHAT_LIMIT);
     outcome = yield* readWith(bytes, input.password);
-    if (outcome._tag !== "needs_password" && outcome._tag !== "wrong_password")
+    if (outcome._tag !== "needs_password" && outcome._tag !== "wrong_password") {
       yield* clearTries(lead.orgId, tried);
+      yield* hideTyped(lead, chat.chatId, Redacted.value(input.password));
+    }
   }
   if (outcome._tag === "needs_password" || outcome._tag === "wrong_password") {
     const wrong = input.password !== undefined;

@@ -20,6 +20,7 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Cache from "../memory/MemoryCache.ts";
 import * as Queue from "./KinEventQueue.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as Budget from "./KinBudget.ts";
 import { seed, orgId, agentId } from "./WakeupRunner.testkit.ts";
 
@@ -362,10 +363,16 @@ describe("KinBudget", () => {
         });
       assert.isTrue(yield* budget.admitWorker(orgId));
       assert.strictEqual(yield* budget.promptContext(orgId), "no daily limit");
-      yield* budget.set(owner, { orgId, limits: { leadUnits: 100, workerUnits: 100 } });
+      assert.deepStrictEqual(fresh.usual, Budget.USUAL_LIMITS);
+      const touched: Array<string> = [];
+      const watched = Effect.provideService(KinRefreshObserver, {
+        touch: (_org, topic) => Effect.sync(() => void touched.push(topic)),
+      });
+      yield* watched(budget.set(owner, { orgId, limits: { leadUnits: 100, workerUnits: 100 } }));
       assert.isFalse((yield* budget.admit(orgId, "P2")).allowed);
-      yield* budget.set(owner, { orgId, limits: { leadUnits: null, workerUnits: null } });
+      yield* watched(budget.set(owner, { orgId, limits: { leadUnits: null, workerUnits: null } }));
       assert.isTrue((yield* budget.admit(orgId, "P2")).allowed);
+      assert.deepStrictEqual(touched, ["budget", "budget"]);
     }).pipe(Effect.provide(layer)),
   );
   it.effect(
