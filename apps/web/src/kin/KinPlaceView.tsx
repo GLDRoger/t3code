@@ -80,6 +80,7 @@ declare module "@tanstack/react-router" {
   interface HistoryState {
     /** A record opened from its place's list, so the way back is one step back. */
     kinFromList?: boolean;
+    kinTaskPushed?: boolean;
   }
 }
 
@@ -133,14 +134,26 @@ export function KinPlacesRoute() {
         ).toString()
       }
       openKey={search.task ?? null}
-      onOpenKey={(key) =>
+      onOpenKey={(key) => {
+        const pushed = location.state.kinTaskPushed === true;
+        const open = search.task !== undefined;
+        // Closing a task this page opened is the browser's Back, so Back never lands on it again.
+        if (key === null && open && pushed) {
+          router.history.back();
+          return;
+        }
         void navigate({
           to: KIN_PLACE_PATH[place],
           params,
           search: key === null ? kinSearchOf(record) : { ...kinSearchOf(record), task: key },
-          replace: key === null,
-        })
-      }
+          // A task opened from a task takes its spot rather than stacking.
+          replace: key === null || open,
+          state: {
+            kinFromList: location.state.kinFromList === true,
+            kinTaskPushed: key !== null && (!open || pushed),
+          },
+        });
+      }}
     />
   );
 }
