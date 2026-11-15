@@ -100,6 +100,8 @@ export const OUTSIDE_TOOLS = {
   list_define: "allowed",
   payment_record: "allowed",
   money_summary: "allowed",
+  money_query: "allowed",
+  budget_set: "allowed",
   dates_query: "allowed",
   company_profile: "allowed",
   statement_read: "allowed",

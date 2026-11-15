@@ -384,6 +384,28 @@ export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) 
     : null;
 });
 
+/**
+ * Whether the owner asked in person: `eventId` is their own message or card tap in this turn, not
+ * passed on by another lead, and every event in the turn is theirs, so no routine, schedule or
+ * report rides with it.
+ */
+export const ownerAsked = Effect.fn("KinWorkTools.ownerAsked")(function* (
+  lead: Lead,
+  eventId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ tag: string; origin: string | null }>`
+    SELECT tag, json_extract(json, '$.origin') AS origin
+    FROM kin_events WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}
+      AND wakeup_id = ${lead.wakeupId} AND event_id = ${eventId} ORDER BY event_id`;
+  return (
+    row !== undefined &&
+    (row.tag === "chat.message" || row.tag === "widget.action") &&
+    row.origin === null &&
+    (yield* askedBy(lead)) !== null
+  );
+});
+
 export const sourceOf = Effect.fn("KinWorkTools.sourceOf")(function* (lead: Lead, eventId: string) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ tag: string; chatId: string | null; messageId: string | null }>`

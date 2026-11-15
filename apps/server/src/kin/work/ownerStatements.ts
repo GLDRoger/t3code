@@ -234,27 +234,28 @@ export const rereadStatement = Effect.fn("KinStatements.reread")(function* (inpu
   });
   return {
     status: settled._tag === "card" ? ("read" as const) : ("reading" as const),
-    stored,
+    stored: (yield* statementRow(input.orgId, input.statementId)) ?? stored,
     settled,
   };
 });
 
-/** The card the owner read a statement again from, which the lead hears the outcome on. */
+/**
+ * What the lead hears of a read again: on the statement's card, the fresh one when this read made
+ * it, or in its chat when it has none, so the lead is told whichever way it ended.
+ */
 export const rereadTap = (
   done: Effect.Success<ReturnType<typeof rereadStatement>>,
   orgId: KinStatementRereadInput["orgId"],
-) => {
-  const widgetId = done.stored.reviewWidgetId ?? done.stored.passwordWidgetId;
-  return done.settled === undefined || widgetId === null
+) =>
+  done.settled === undefined
     ? undefined
     : {
         orgId,
         statementId: done.stored.statementId,
-        widgetId,
+        widgetId: done.stored.reviewWidgetId ?? done.stored.passwordWidgetId,
         tap: "read_again" as const,
         outcome: settledLine(done.settled),
       };
-};
 
 /** Where a statement stands, in counts only: never its rows, file name or account. */
 export const standingOf = Effect.fn("KinStatements.standing")(function* (

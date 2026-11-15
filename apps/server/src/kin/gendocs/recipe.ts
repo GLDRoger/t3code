@@ -33,6 +33,10 @@ const Declared = Schema.Struct({
   columns: Schema.optional(Schema.Record(Name, ScalarType)),
   /** For `rows.*` and `payments`: the month input whose rows these are. */
   period: Schema.optional(Name),
+  /** For `rows.*`: only entries in these of Kin's own states, which renaming never changes. */
+  states: Schema.optional(
+    Schema.Array(Schema.Literals(["open", "doing", "waiting", "done", "dropped"])),
+  ),
 });
 const FileName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9{][A-Za-z0-9 ._(){}-]{0,99}$/));
 const SheetDecl = Schema.Struct({
@@ -51,6 +55,8 @@ const SheetDecl = Schema.Struct({
       values: Schema.Array(Schema.String).check(Schema.isMaxLength(20)),
     }),
   ),
+  /** A total per value of this field, such as a bank row's direction, instead of one for all. */
+  totalsBy: Schema.optional(Name),
 });
 export type Sheet = typeof SheetDecl.Type;
 /** A computed field or input, or one part of it, such as `tax.total`. */
@@ -92,6 +98,7 @@ export type InputDecl = {
   readonly description: string | undefined;
   readonly columns: Readonly<Record<string, ScalarType>>;
   readonly period: string | undefined;
+  readonly states: ReadonlyArray<string> | undefined;
 };
 export type Recipe = {
   readonly name: string;
@@ -137,6 +144,7 @@ const ROW_COLUMNS = [
   "key",
   "title",
   "state",
+  "stateKey",
   "amount",
   "tax",
   "date",
@@ -144,8 +152,12 @@ const ROW_COLUMNS = [
   "client",
   "category",
   "number",
+  "clientGstin",
+  "placeOfSupply",
+  "taxable",
+  "matched",
 ];
-const PAYMENT_COLUMNS = ["invoice", "client", "amount", "paidOn"];
+const PAYMENT_COLUMNS = ["invoice", "client", "amount", "paidOn", "receipt"];
 /** An entry's live payments; `kind` is advance, tds or received. */
 const ENTRY_PAYMENT_COLUMNS = ["receipt", "amount", "paidOn", "kind"];
 
@@ -159,13 +171,14 @@ export type Source =
   /** The logo's path in the render root, `/brand/logo.<ext>`, or null without one. */
   | { readonly _tag: "logo" }
   | { readonly _tag: "rows"; readonly list: string }
-  | { readonly _tag: "payments" }
+  /** Money received in the month, or with `tds` the tax clients deducted instead. */
+  | { readonly _tag: "payments"; readonly tds: boolean }
   /** `entry.payments`, or `entry.advances`: those received before its date or from an advance. */
   | { readonly _tag: "entryPayments"; readonly advancesOnly: boolean }
   | { readonly _tag: "system"; readonly key: string };
 export const sourceOf = (from: string): Source | undefined => {
   if (from === "agent") return { _tag: "agent" };
-  if (from === "payments") return { _tag: "payments" };
+  if (from === "payments" || from === "tds") return { _tag: "payments", tds: from === "tds" };
   const [head, ...rest] = from.split(".");
   const tail = rest.join(".");
   switch (head) {
@@ -252,6 +265,7 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
       description: declared.description,
       columns: declared.columns ?? {},
       period: declared.period,
+      states: declared.states,
     });
   }
   const kind = front.kind ?? "typst";

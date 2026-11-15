@@ -34,6 +34,7 @@ import { historyFloor } from "../chat/sharing.ts";
 import { SILENT_REPLY } from "../reply/classify.ts";
 import { effectiveAudience, recordAudience, turnAudience, type TurnAudience } from "./Audience.ts";
 import { sectionsOf } from "../work/docBody.ts";
+import { budgetFlags } from "../work/budgets.ts";
 import { moneySection, moneySummary } from "../work/moneyViews.ts";
 import { buildWorkSection, MONEY_RULE, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
 import { buildStartedSection, STARTED_RULE } from "./startedSection.ts";
@@ -966,8 +967,13 @@ export class KinLeadPrompt extends Context.Service<
           input.events.some(
             (event) => event._tag === "routine" && event.routine === "morning_brief",
           )
-            ? yield* moneySummary(orgId, now).pipe(
-                Effect.map((summary) => moneySection(summary, summary.timeZone)),
+            ? yield* Effect.all([moneySummary(orgId, now), budgetFlags(orgId, now)]).pipe(
+                Effect.map(([summary, budgets]) => {
+                  const section = moneySection(summary, summary.timeZone);
+                  return budgets === undefined
+                    ? section
+                    : { ...section, budgetsOverOrNear: budgets };
+                }),
                 Effect.tap((section) =>
                   section === undefined
                     ? Effect.void

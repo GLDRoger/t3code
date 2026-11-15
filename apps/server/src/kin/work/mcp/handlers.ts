@@ -51,6 +51,16 @@ export const handlers = McpToolAccess.toLayer(KinWorkToolkit, {
       return yield* Money.money(yield* McpInvocationContext, input);
     }, Effect.mapError(failure)),
   ),
+  money_query: McpToolAccess.reads(
+    Effect.fn("KinWorkToolkit.moneyQuery")(function* (input) {
+      return yield* Money.moneyQuery(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
+  budget_set: McpToolAccess.actsAsCaller(
+    Effect.fn("KinWorkToolkit.budget")(function* (input) {
+      return yield* Money.budget(yield* McpInvocationContext, input);
+    }, Effect.mapError(failure)),
+  ),
   dates_query: McpToolAccess.reads(
     Effect.fn("KinWorkToolkit.dates")(function* (input) {
       return yield* Money.datesQuery(yield* McpInvocationContext, input);

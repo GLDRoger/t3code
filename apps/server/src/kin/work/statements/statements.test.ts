@@ -59,6 +59,11 @@ import { makeKinWorkHandlers } from "../rpcHandlers.ts";
 import { readStatementFile } from "./statementFiles.ts";
 import { answerCurrencyCard } from "./statementReview.ts";
 import { type RowRead, threePageStatement } from "./statementPdf.testkit.ts";
+import { gatherFacts } from "../../gendocs/facts.ts";
+import { parseRecipe, sourceOf } from "../../gendocs/recipe.ts";
+import { STARTER_FILES } from "../../gendocs/starter.ts";
+import { dayIn } from "../money.ts";
+import { ownerZone } from "../recordRows.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
 
 // An invented company, Lakeview Studio, with invented clients, invoices and statements.
@@ -1116,6 +1121,66 @@ describe("bank statements", () => {
         }).pipe(Effect.provide(layer)),
     );
 
+    it.effect("tells the lead of a read again even when the statement has no card yet", () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const first = inState(yield* read(1, NAME, threePageStatement().bytes), "reading");
+        const before = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets`;
+        const done = yield* OwnerStatements.rereadStatement({
+          orgId,
+          statementId: first.statement,
+        });
+        assert.strictEqual(done.status, "reading");
+        const tap = OwnerStatements.rereadTap(done, orgId)!;
+        assert.isNull(tap.widgetId);
+        const told = yield* sql.withTransaction(tellLead(tap));
+        yield* queueTap(told);
+        assert.deepStrictEqual(
+          [told.message.widgetId, told.message.replyTo, told.message.chatId],
+          [null, null, "lead-chat"],
+        );
+        assert.include((yield* taps).at(-1), 'Tapped "Read again" on statement st_');
+        assert.deepStrictEqual(yield* sql`SELECT COUNT(*) AS n FROM kin_widgets`, before);
+        const [queued] = yield* sql<{ tag: string; agentId: string }>`SELECT tag,
+          agent_id AS "agentId" FROM kin_events WHERE tag = 'widget.action'`;
+        assert.deepStrictEqual(queued, { tag: "widget.action", agentId: lead });
+
+        // Sent in a group a teammate has since joined, the notice goes to the lead's own chat
+        // with the owner, never into the group.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('mate', ${orgId}, 'mate', 'Mate', ${at})`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+          VALUES ('team-chat', ${orgId}, 'team_group', 0, ${at})`;
+        for (const [member, kind, who, role] of [
+          ["team-owner", "person", ownerId, "owner"],
+          ["team-lead", "agent", lead, "member"],
+          ["team-mate", "person", "mate", "member"],
+        ] as const)
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, agent_id, role, joined_at)
+            VALUES (${member}, ${orgId}, 'team-chat', ${kind}, ${kind === "person" ? who : null},
+              ${kind === "agent" ? who : null}, ${role}, ${at})`;
+        yield* sql`UPDATE kin_bank_statements SET chat_id = 'team-chat'
+          WHERE statement_id = ${first.statement}`;
+        yield* TestClock.adjust(1_000);
+        const inGroup = yield* sql.withTransaction(tellLead(tap));
+        assert.strictEqual(inGroup.message.chatId, "lead-chat");
+        const inTeam = (yield* sql`SELECT 1 FROM kin_messages WHERE chat_id = 'team-chat'`).length;
+        assert.strictEqual(inTeam, 0);
+        // When the lead's own chat is read by someone else too, the notice is withheld.
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at)
+          VALUES ('lead-chat-mate', ${orgId}, 'lead-chat', 'person', 'mate', 'member', ${at})`;
+        yield* TestClock.adjust(1_000);
+        const before2 = (yield* sql`SELECT 1 FROM kin_messages`).length;
+        assert.include(yield* Effect.flip(sql.withTransaction(tellLead(tap))), {
+          reason: "not_allowed",
+        });
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_messages`, before2);
+      }).pipe(Effect.provide(layer)),
+    );
+
     it.effect(
       "reads an applied statement again: its 12 rows stay recorded and only 14 are offered",
       () =>
@@ -1143,6 +1208,25 @@ describe("bank statements", () => {
           yield* OwnerStatements.apply(people, confirmOf(chosen));
           assert.include((yield* taps).at(-1), 'Tapped "Confirm" on statement st_');
           assert.include((yield* taps).at(-1), "Every row of this statement is explained.");
+          // The accountant's pack lists each bank row with what the owner confirmed it as.
+          const pack = parseRecipe(STARTER_FILES["recipes/accountant-pack/RECIPE.md"]!);
+          if ("reason" in pack) return assert.fail(pack.reason);
+          const [earliest] = yield* sql<{ at: number }>`SELECT MIN(date_at) AS at FROM kin_records
+            WHERE org_id = ${orgId} AND register_id = 'bank_transactions'`;
+          const month = dayIn(earliest!.at, yield* ownerZone(orgId)).slice(0, 7);
+          const bankInput = pack.inputs.find((one) => one.name === "bank")!;
+          const bankSource = sourceOf(bankInput.from);
+          if (bankSource === undefined || bankSource._tag === "agent") return assert.fail("bank");
+          const gathered = yield* gatherFacts(orgId, pack, undefined, { month });
+          const shown = gathered.facts(bankSource, bankInput, {}) as ReadonlyArray<
+            Record<string, unknown>
+          >;
+          assert.isAbove(shown.length, 0);
+          for (const row of shown) {
+            assert.strictEqual(row.state, "Explained");
+            assert.isString(row.matched);
+          }
+          assert.isTrue(shown.some((row) => row.matched === "transfer between own accounts"));
 
           // From the host, as `kin statement reread` does it: read again, tell the lead, queue it.
           const done = yield* OwnerStatements.rereadStatement({

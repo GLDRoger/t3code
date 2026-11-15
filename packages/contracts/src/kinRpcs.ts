@@ -373,6 +373,8 @@ const KIN_RPC_ACCESS = {
   "kin.workers.network.remove": "owner_level",
   "kin.refreshes.subscribe": "person",
   "kin.people.setOwnerName": "org_owner",
+  // The host CLI's own writes, from the owner's session.
+  "kin.refreshes.announce": "org_owner",
   // Everyone reads profiles; the service decides whose a person may edit.
   "kin.people.profiles": "person",
   "kin.people.updateProfile": "person",
@@ -409,6 +411,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.org.setTeamAgent": "kin-people",
 
   "kin.refreshes.subscribe": "kin-refreshes",
+  "kin.refreshes.announce": "kin-refreshes",
   "kin.budget.get": "kin-budget",
   "kin.budget.set": "kin-budget",
   "kin.org.get": "kin-org",

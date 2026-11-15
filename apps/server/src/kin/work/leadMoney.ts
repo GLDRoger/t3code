@@ -27,10 +27,22 @@ import { takeLogo } from "../gendocs/brand.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
+import { budgetsAnswer, budgetsView, setBudget } from "./budgets.ts";
 import { attachChangeCard, changeLines, proposeChange, readProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
-import { admitted, type Lead, leadTool, retryKey, sourceOf, writerFor } from "./leadWork.ts";
-import { dayIn, formatMoney, parseAmount } from "./money.ts";
+import {
+  admitted,
+  type Lead,
+  leadTool,
+  ownerAsked,
+  Project,
+  refOrNull,
+  retryKey,
+  sourceOf,
+  writerFor,
+} from "./leadWork.ts";
+import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
+import { dayIn, formatMinor, formatMoney, parseAmount } from "./money.ts";
 import { dates, moneySection, moneySummary } from "./moneyViews.ts";
 import { endOfDay, iso, notFound, ownerZone } from "./recordRows.ts";
 import {
@@ -404,6 +416,118 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   };
 });
 export const money = leadTool("KinWorkTools.money", runMoney);
+
+const Month = Schema.String.check(Schema.isPattern(/^\d{4}-(?:0[1-9]|1[0-2])$/));
+export const MoneyQueryInput = Schema.Struct({
+  view: Schema.Literals(["cash", "outlook", "budgets"]).annotate({
+    description:
+      "cash: balances from the bank statements Kin read. outlook: due in and out ahead, and runway. budgets: this month's spending against each limit.",
+  }),
+  days: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(366)),
+  ).annotate({
+    description: "outlook only: one window this many days ahead instead of 30, 60 and 90.",
+  }),
+  month: Schema.optional(Month).annotate({
+    description: "budgets only: another month, such as 2026-10.",
+  }),
+});
+export const MoneyQueryResult = Schema.Struct({
+  asOf: Schema.String,
+  view: Schema.String,
+  answer: Schema.Unknown,
+  sensitive: Schema.Literal(true),
+});
+const runMoneyQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof MoneyQueryInput.Type) {
+  yield* admitted(lead, "money_query", input);
+  const now = yield* Clock.currentTimeMillis;
+  const answer =
+    input.view === "cash"
+      ? cashAnswer(yield* cashPosition(lead.orgId, now))
+      : input.view === "outlook"
+        ? outlookAnswer(yield* outlook(lead.orgId, now, input.days))
+        : budgetsAnswer(yield* budgetsView(lead.orgId, now, input.month));
+  return { asOf: iso(now), view: input.view, answer, sensitive: true as const };
+});
+export const moneyQuery = leadTool("KinWorkTools.moneyQuery", runMoneyQuery);
+
+export const BudgetInput = Schema.Struct({
+  sourceEventId: TrimmedNonEmptyString,
+  category: Schema.optional(Label).annotate({
+    description: "One of the expenses list's categories.",
+  }),
+  project: Schema.optional(Project),
+  limit: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+    description: 'The monthly limit as said: "50k", "₹1,20,000". null removes the budget.',
+  }),
+  currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
+});
+export const BudgetResult = Schema.Struct({
+  status: Schema.Literals(["set", "removed", "none"]),
+  was: Schema.String,
+  now: Schema.String,
+  next: Schema.String,
+  answer: Schema.Unknown,
+  sensitive: Schema.Literal(true),
+});
+const runBudget = Effect.fnUntraced(function* (lead: Lead, input: typeof BudgetInput.Type) {
+  yield* admitted(lead, "budget_set", input);
+  yield* sourceOf(lead, input.sourceEventId);
+  if (!(yield* ownerAsked(lead, input.sourceEventId)))
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message:
+        "A budget is set only from the owner's own message or tap; this turn wasn't one (a routine, schedule, hand-over or report). Nothing changed. Propose it to the owner instead: the budget, the limit and why.",
+    });
+  if (input.category === undefined && input.project === undefined)
+    return yield* invalid("A budget is for a category, a project, or a category in a project.");
+  const expenses = yield* listDef(lead.orgId, "expenses");
+  if (expenses === undefined)
+    return yield* invalid("There is no expenses list yet: track expenses first.");
+  const category =
+    input.category === undefined
+      ? null
+      : expenses.categories.find((one) => one.toLowerCase() === input.category!.toLowerCase());
+  if (category === undefined)
+    return yield* invalid(
+      `Expenses have no category ${input.category!.slice(0, 60)}. They have: ${expenses.categories.join(", ")}.`,
+    );
+  const projectId = (yield* refOrNull(lead, input.project, "projects")) ?? null;
+  const parsed =
+    input.limit === null
+      ? undefined
+      : parseAmount(input.limit, input.currency ?? expenses.currency);
+  if (parsed !== undefined && "error" in parsed) return yield* parsed.error;
+  const now = yield* Clock.currentTimeMillis;
+  const done = yield* setBudget(
+    lead.orgId,
+    {
+      category,
+      projectId,
+      currency: parsed?.money.currency ?? input.currency,
+      limitMinor: parsed?.money.minor ?? null,
+      sourceEventId: input.sourceEventId,
+    },
+    { kind: "agent", id: lead.agentId },
+    now,
+  );
+  const amount = (minor: bigint | null) =>
+    minor === null || done.currency === null ? "none" : formatMinor(minor, done.currency);
+  const was = amount(done.was);
+  const after = amount(parsed === undefined ? null : BigInt(parsed.money.minor));
+  return {
+    status: done.outcome,
+    was,
+    now: after,
+    next:
+      done.outcome === "none"
+        ? "There was no such budget, so nothing was removed. Say so in one line."
+        : `Tell the owner in one line that it was ${was} and is now ${after}.`,
+    answer: budgetsAnswer(yield* budgetsView(lead.orgId, now)),
+    sensitive: true as const,
+  };
+});
+export const budget = leadTool("KinWorkTools.budget", runBudget);
 
 export const DatesInput = Schema.Struct({
   from: KinDay,

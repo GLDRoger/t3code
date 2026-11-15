@@ -6,6 +6,7 @@ import { KinChatError, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -398,10 +399,15 @@ describe("KinImport", () => {
       });
       assert.deepStrictEqual(plan.removes, { clients: 1, projects: 1, entries: 5, payments: 1 });
       assert.notDeepEqual(yield* holdings, before);
+      const work = yield* Stream.toQueue(records.changes(orgId), { capacity: "unbounded" });
+      const heard = yield* Queue.take(work);
       const undone = yield* imports.undo(orgId, ownerId, "oldbooks", {
         apply: true,
         includeChanged: false,
       });
+      // The undo logs no change, so it says so itself, past every change number already heard.
+      const told = yield* Queue.take(work);
+      assert.isTrue(told.key === undefined && told.seq > heard.seq);
       assert.deepStrictEqual({ ...undone, applied: false }, plan);
       assert.deepStrictEqual(
         undone.lists.map((one) => [one.list, one.action]),
@@ -422,7 +428,7 @@ describe("KinImport", () => {
         yield* sql`SELECT action FROM kin_import_runs WHERE batch = 'oldbooks' ORDER BY seq`,
         [{ action: "apply" }, { action: "undo" }, { action: "apply" }],
       );
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
   it.effect("a plain undo keeps what someone changed or uses, and numbering never goes back", () =>

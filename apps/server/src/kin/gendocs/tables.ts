@@ -17,7 +17,7 @@ const isMoney = (value: unknown): value is Money =>
   typeof Reflect.get(value, "minor") === "number" &&
   typeof Reflect.get(value, "currency") === "string";
 /** Paise as an exact decimal string: 11800050 is "118000.50". */
-const decimal = (minor: number) => {
+const decimal = (minor: number | bigint) => {
   const value = BigInt(minor);
   const abs = value < 0n ? -value : value;
   return `${value < 0n ? "-" : ""}${(abs / 100n).toString()}.${(abs % 100n).toString().padStart(2, "0")}`;
@@ -56,18 +56,31 @@ export const sheetCells = (rows: ReadonlyArray<Row>, sheet: Sheet): ReadonlyArra
       ),
     ),
   ].toSorted();
-  const totals = currencies.map((currency) =>
-    sheet.columns.map((column, index): Cell => {
-      if (index === 0) return { text: currencies.length > 1 ? `Total ${currency}` : "Total" };
-      if (!moneyColumns.includes(index)) return { text: "" };
-      const sum = rows.reduce((total, row) => {
-        const value = row[column.field];
-        return counted(row) && isMoney(value) && value.currency === currency
-          ? total + BigInt(value.minor)
-          : total;
-      }, 0n);
-      return { number: decimal(Number(sum)), currency };
-    }),
+  const groupOf = (row: Row) =>
+    sheet.totalsBy === undefined ? "" : String(valueAt(row, sheet.totalsBy) ?? "");
+  const groups = [...new Set(rows.map(groupOf))].toSorted();
+  const totals = (groups.length === 0 ? [""] : groups).flatMap((group) =>
+    currencies.map((currency) =>
+      sheet.columns.map((column, index): Cell => {
+        if (index === 0)
+          return {
+            text: ["Total", group, currencies.length > 1 ? currency : ""]
+              .filter((part) => part !== "")
+              .join(" "),
+          };
+        if (!moneyColumns.includes(index)) return { text: "" };
+        const sum = rows.reduce((total, row) => {
+          const value = row[column.field];
+          return counted(row) &&
+            groupOf(row) === group &&
+            isMoney(value) &&
+            value.currency === currency
+            ? total + BigInt(value.minor)
+            : total;
+        }, 0n);
+        return { number: decimal(sum), currency };
+      }),
+    ),
   );
   return [header, ...body, ...totals];
 };

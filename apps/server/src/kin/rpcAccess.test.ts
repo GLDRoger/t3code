@@ -98,7 +98,7 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         assert.deepStrictEqual(table.owner, methods);
         assert.deepStrictEqual(
           methods.filter((method) => !table.coOwner.includes(method)),
-          ["kin.people.setAccess", "kin.people.setOwnerName"],
+          ["kin.people.setAccess", "kin.people.setOwnerName", "kin.refreshes.announce"],
         );
         assert.deepStrictEqual(table.member, MEMBER);
         // Every method is in the table, so a new one can't slip past the gate unlisted.

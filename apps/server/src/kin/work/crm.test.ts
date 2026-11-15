@@ -669,7 +669,8 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
     // An invoices list as if defined, and an invoice for the payment row.
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
         created_at, definition_json)
-      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)})`;
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)}),
+        (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(PRESETS.expenses)})`;
     yield* LeadWork.create(scope, {
       sourceEventId: "ask-event",
       records: [{ list: "invoices", title: "Invented October retainer", amount: "1 lakh" }],
@@ -709,6 +710,11 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         true,
       ],
       money_summary: [LeadMoney.money(scope, {}), true],
+      money_query: [LeadMoney.moneyQuery(scope, { view: "outlook" }), true],
+      budget_set: [
+        LeadMoney.budget(scope, { sourceEventId: "ask-event", category: "travel", limit: "50k" }),
+        true,
+      ],
       dates_query: [LeadMoney.datesQuery(scope, { from: "1970-01-01", to: "2030-12-31" }), true],
       company_profile: [LeadMoney.profile(scope, {}), true],
     } satisfies Record<

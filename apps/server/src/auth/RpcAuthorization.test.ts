@@ -481,7 +481,10 @@ it("a chat-only grant reaches Kin's methods and nothing else", () => {
     methods.filter(
       (method) => RPC_REQUIRED_SCOPES[method as keyof typeof RPC_REQUIRED_SCOPES] === "kin:chat",
     ),
-  ).toEqual(methods.filter((method) => method.startsWith("kin.")));
+  ).toEqual(
+    // Only the host CLI's write notice needs the owner's own session.
+    methods.filter((method) => method.startsWith("kin.") && method !== "kin.refreshes.announce"),
+  );
   // Kin schedules live in T3's scheduled tasks: a teammate's session reaches none of them.
   const scheduledTasks = Object.entries(RPC_REQUIRED_SCOPES).filter(([method]) =>
     method.startsWith("scheduledTasks."),
