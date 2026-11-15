@@ -14,6 +14,7 @@ import {
   type KinConnectionSetKeyInput,
   type KinConnectionSetReachInput,
   type KinConnectionSetToolModesInput,
+  type KinConnectionUpdateInput,
   type KinConnectionsInput,
   type KinConnectionsView,
   type KinConnectionToolMode,
@@ -72,6 +73,7 @@ export const SHARED_CONNECTIONS =
   "I don't use the company's connected services in chats with other people.";
 export const ASK_LATER = "Approvals for connection writes arrive in a later update.";
 export const OFFERED = "The owner will see a card to connect it.";
+const paused = (label: string) => `The owner paused ${label}. Only the owner can resume it.`;
 
 const fail = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
@@ -148,6 +150,7 @@ export class KinConnections extends Context.Service<
     readonly refreshTools: Owner<KinConnectionRef, KinConnectionDetail>;
     readonly setToolModes: Owner<KinConnectionSetToolModesInput, KinConnectionDetail>;
     readonly acceptToolChanges: Owner<KinConnectionAcceptInput, KinConnectionDetail>;
+    readonly update: Owner<KinConnectionUpdateInput, KinConnectionDetail>;
     readonly setReach: Owner<KinConnectionSetReachInput, KinConnectionDetail>;
     readonly remove: Owner<KinConnectionRef, KinConnectionsView>;
     readonly calls: Owner<KinConnectionCallsInput, KinConnectionCalls>;
@@ -384,6 +387,7 @@ const make = Effect.gen(function* () {
         listedAt: null,
         lastOkAt: null,
         lastError: null,
+        pausedAt: null,
         removedAt: null,
       };
       // Reached before anything is saved: an address or key that doesn't work leaves nothing,
@@ -543,6 +547,20 @@ const make = Effect.gen(function* () {
     }),
   );
 
+  const update = ownerOp("update", (input: KinConnectionUpdateInput) =>
+    Effect.gen(function* () {
+      yield* live(input.orgId, input.connectionId);
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`UPDATE kin_connections SET updated_at = ${now},
+          label = ${input.label ?? sql`label`},
+          paused_at = ${input.paused === undefined ? sql`paused_at` : input.paused ? sql`COALESCE(paused_at, ${now})` : null}
+        WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}
+          AND removed_at IS NULL`;
+      yield* touched(input.orgId);
+      return yield* detail(input.orgId, input.connectionId);
+    }),
+  );
+
   const setReach = ownerOp("setReach", (input: KinConnectionSetReachInput) =>
     Effect.gen(function* () {
       yield* live(input.orgId, input.connectionId);
@@ -577,16 +595,19 @@ const make = Effect.gen(function* () {
       const after =
         input.before === undefined || beforeId === undefined || !/^\d+$/.test(beforeAt ?? "")
           ? sql`1 = 1`
-          : sql`(created_at < ${Number(beforeAt)} OR (created_at = ${Number(beforeAt)} AND call_id < ${beforeId}))`;
-      const rows = yield* sql<KinConnectionCall>`SELECT call_id AS "callId",
-          connection_id AS "connectionId", tool_name AS "toolName", agent_id AS "agentId",
-          wakeup_id AS "wakeupId", mode, args_json AS args, reason, status,
-          refused_reason AS "refusedReason", result_chars AS "resultChars",
-          result_bytes AS "resultBytes", duration_ms AS "durationMs", created_at AS "createdAt"
-        FROM kin_connection_calls WHERE org_id = ${input.orgId}
-          AND ${input.connectionId === undefined ? sql`1 = 1` : sql`connection_id = ${input.connectionId}`}
+          : sql`(c.created_at < ${Number(beforeAt)} OR (c.created_at = ${Number(beforeAt)} AND c.call_id < ${beforeId}))`;
+      const rows = yield* sql<KinConnectionCall>`SELECT c.call_id AS "callId",
+          c.connection_id AS "connectionId", c.tool_name AS "toolName", c.agent_id AS "agentId",
+          a.display_name AS "agentName", c.wakeup_id AS "wakeupId", c.mode, c.args_json AS args,
+          c.reason, c.status, c.refused_reason AS "refusedReason",
+          c.result_chars AS "resultChars", c.result_bytes AS "resultBytes",
+          c.duration_ms AS "durationMs", c.created_at AS "createdAt"
+        FROM kin_connection_calls c
+          LEFT JOIN kin_agents a ON a.agent_id = c.agent_id AND a.org_id = c.org_id
+        WHERE c.org_id = ${input.orgId}
+          AND ${input.connectionId === undefined ? sql`1 = 1` : sql`c.connection_id = ${input.connectionId}`}
           AND ${after}
-        ORDER BY created_at DESC, call_id DESC LIMIT ${limit + 1}`;
+        ORDER BY c.created_at DESC, c.call_id DESC LIMIT ${limit + 1}`;
       const page = rows.slice(0, limit);
       const last = page.at(-1);
       return {
@@ -621,6 +642,7 @@ const make = Effect.gen(function* () {
         ${entry.args === undefined ? null : keptArgs(entry.args)}, ${entry.reason ?? null},
         ${entry.status}, ${entry.refusedReason ?? null}, ${entry.resultChars ?? null},
         ${entry.resultBytes ?? null}, ${entry.durationMs ?? null}, ${now})`;
+    yield* touched(turn.orgId);
   });
   const refuse = (
     turn: Turn,
@@ -674,7 +696,7 @@ const make = Effect.gen(function* () {
               connection: row.connectionId,
               label: row.label,
               service: row.preset ?? `custom (${row.urlHost})`,
-              state: row.state,
+              state: row.pausedAt === null ? row.state : "paused",
               readTools: read.length,
             })),
           ),
@@ -697,6 +719,7 @@ const make = Effect.gen(function* () {
             : "No connection answers to that name. kin_connection_tools with no arguments lists them.",
         );
       let row = found.row;
+      if (row.pausedAt !== null) return { note: paused(row.label) };
       const stale =
         row.listedAt === null ||
         (yield* Clock.currentTimeMillis) - row.listedAt >
@@ -840,6 +863,12 @@ const make = Effect.gen(function* () {
           fail("not_found", "No connection answers to that name. kin_connection_tools lists them."),
         );
       const row = found.row;
+      if (row.pausedAt !== null)
+        return yield* refuse(
+          turn,
+          { ...base, connectionId: row.connectionId },
+          fail("not_allowed", paused(row.label)),
+        );
       const [tool] = (yield* toolsOf(turn.orgId, row.connectionId).pipe(provideSql)).filter(
         (candidate) => candidate.name === input.tool,
       );
@@ -1027,6 +1056,7 @@ const make = Effect.gen(function* () {
     refreshTools,
     setToolModes,
     acceptToolChanges,
+    update,
     setReach,
     remove,
     calls,

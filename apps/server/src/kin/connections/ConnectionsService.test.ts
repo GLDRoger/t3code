@@ -912,6 +912,48 @@ describe("KinConnections", () => {
     ),
   );
 
+  it.effect("renames and pauses a connection, refusing agents until resumed", () =>
+    withFake(BASE, (_fake, touches) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const id = (yield* addPosthog).connection.connectionId;
+        yield* markRead(id, ["query"]);
+        touches.length = 0;
+        const renamed = yield* connections.update(owner, {
+          orgId,
+          connectionId: id,
+          label: "Analytics",
+          paused: true,
+        });
+        assert.strictEqual(renamed.connection.label, "Analytics");
+        assert.isTrue(renamed.connection.paused);
+        assert.deepStrictEqual(touches, ["connections"]);
+        assert.include((yield* call("Analytics", "query").pipe(Effect.flip)).message, "paused");
+        assert.include((yield* connections.tools(scope, { connection: id })).note ?? "", "paused");
+        const resumed = yield* connections.update(owner, {
+          orgId,
+          connectionId: id,
+          paused: false,
+        });
+        assert.isFalse(resumed.connection.paused);
+        assert.strictEqual(resumed.connection.label, "Analytics");
+        assert.include((yield* call(id, "query")).quoted, "pageviews: 42");
+        const log = yield* connections.calls(owner, { orgId, connectionId: id });
+        assert.deepStrictEqual(
+          log.calls.map((entry) => [entry.status, entry.agentName]).toSorted(),
+          [
+            ["ok", "Lead"],
+            ["refused", "Lead"],
+          ],
+        );
+        const refused = yield* connections
+          .update(mate, { orgId, connectionId: id, paused: true })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "not_allowed");
+      }),
+    ),
+  );
+
   it.effect("lists connections and tools for the lead, and offers a card for the rest", () =>
     withFake(BASE, () =>
       Effect.gen(function* () {
