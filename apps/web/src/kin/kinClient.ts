@@ -1043,6 +1043,11 @@ export const kinClient = {
     tag: "kin.docs.label",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
   }),
+  docFile: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:file",
+    tag: "kin.docs.file",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
 };
 
 /** After an agent is retired, restored or renamed: who is retired, and both lists of agents. */

@@ -46,7 +46,7 @@ import { KinMoneyActionNotice } from "./KinInvoice";
 import { KinWorkSection } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
-import { useKinMoneyActions, useKinReceipts } from "./useKinMoney";
+import { useKinMoneyActions, useKinRates, useKinReceipts } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./useKinWork";
 
 const SHOWN = 8;
@@ -214,6 +214,8 @@ function KinAdvanceDialog(
   const [draft, setDraft] = useState<KinAdvanceDraft>(() => kinAdvanceDraft(today));
   const [problem, setProblem] = useState<string | null>(null);
   const [requestId] = useState(randomUUID);
+  // A plain number is in the home currency; a typed symbol or code still names its own.
+  const home = useKinRates(props)?.home ?? "INR";
   const clients =
     Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))))?.clients ?? [];
   const ids = {
@@ -226,7 +228,7 @@ function KinAdvanceDialog(
   };
   const payer = clients.find((one) => one.key === draft.party) ?? null;
   const save = async () => {
-    const checked = kinAdvanceInput(orgId, draft, "INR", requestId);
+    const checked = kinAdvanceInput(orgId, draft, home, requestId);
     if (!checked.ok) return setProblem(checked.problem);
     setProblem(null);
     const { orgId: _orgId, clientRequestId, ...input } = checked.input;

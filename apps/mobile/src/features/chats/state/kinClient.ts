@@ -1076,6 +1076,11 @@ export const kinClient = {
     tag: "kin.docs.label",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
   }),
+  docFile: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:docs:file",
+    tag: "kin.docs.file",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+  }),
   memorySetVisibility: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:memory:set-visibility",
     tag: "kin.memory.setVisibility",
