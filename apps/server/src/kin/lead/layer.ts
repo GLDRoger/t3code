@@ -25,6 +25,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
+import { devMemoryRepository } from "../memory/devMemory.ts";
+import { ServerConfig } from "../../config.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as MemoryLander from "../memory/MemoryLander.ts";
@@ -480,15 +482,35 @@ const production = withServices(
 );
 
 const configured = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
-  containStartup(
-    Layer.unwrap(
-      Effect.gen(function* () {
-        const repositories = yield* MemoryConfig.configuredRepositories;
-        if (repositories.length === 0) return Layer.empty;
-        return entry.pipe(Layer.provide(MemoryConfig.layer(repositories)));
-      }),
+  Layer.merge(
+    containStartup(
+      Layer.unwrap(
+        Effect.gen(function* () {
+          const repositories = yield* MemoryConfig.configuredRepositories;
+          if (repositories.length > 0)
+            return entry.pipe(Layer.provide(MemoryConfig.layer(repositories)));
+          const dev = yield* devMemoryRepository();
+          if (dev === undefined) return Layer.empty;
+          return entry.pipe(Layer.provide(MemoryConfig.layer(dev, { directMainPush: true })));
+        }),
+      ),
     ),
+    unconfigured,
   );
+
+// An installed host with no memory repository runs no agent; each chat with one hears why.
+const unconfigured = containStartup(
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const repositories = yield* MemoryConfig.configuredRepositories;
+      if (repositories.length > 0 || (yield* ServerConfig).devUrl !== undefined) return Layer.empty;
+      yield* Effect.logError(
+        "Kin agents can't run: no memory repository is set (KIN_MEMORY_REPOSITORIES)",
+      );
+      return ChatWake.unconfiguredLayer.pipe(Layer.provide(KinChatRepository.layer));
+    }),
+  ),
+);
 
 export const layerServer = configured(layer);
 export const layerMcp = configured(production);

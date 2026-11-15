@@ -251,8 +251,12 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
   const senses: Array<ClientSense> = [];
   for (const client of clients) {
     const lastAt = last.get(client.partyId) ?? null;
-    // Work we finished for them is contact too: silence counts from whichever came last.
-    const from = Math.max(lastAt ?? client.createdAt, client.lastProjectAt ?? 0);
+    // Work we finished for them is contact too: silence counts from whichever came last, and
+    // from when the client was added only with neither (one added with its history isn't new).
+    const from =
+      lastAt === null && client.lastProjectAt === null
+        ? client.createdAt
+        : Math.max(lastAt ?? 0, client.lastProjectAt ?? 0);
     const days = daysSince(from, now);
     const base = {
       partyId: client.partyId,

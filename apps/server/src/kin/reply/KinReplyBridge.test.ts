@@ -950,6 +950,18 @@ it.effect.each([
     expected: ["Tech has been quiet for a day."],
   },
   { reply: "Tech is on it already.", expected: ["Tech is on it already."] },
+  // A paraphrase of the card is the card again; with it gone, one short line is all that stays.
+  {
+    question: "Mark QT-1 accepted and draft the 30% advance invoice?",
+    reply:
+      "Meera accepted on the thread. Shall I mark QT-1 accepted and draft the 30% advance invoice now? It would be ₹3,18,600 with IGST.",
+    expected: ["Meera accepted on the thread."],
+  },
+  {
+    question: "Mark QT-1 accepted and draft the 30% advance invoice?",
+    reply: "Want me to mark QT-1 as accepted and draft the advance invoice (30%)?",
+    expected: [],
+  },
 ])("a reply doesn't repeat the question its card asks ($reply)", ({ question, reply, expected }) =>
   Effect.gen(function* () {
     const { fake, runId, complete, posted, identity, chats, owner, wakeupId, chatId } =

@@ -217,7 +217,8 @@ const PROMPT_TOOLS = 8;
 
 /**
  * The owner-only prompt's line on what is connected: each live connection's label, account,
- * how many tools agents may read with and up to eight of their names. `undefined` with none.
+ * the tools agents may read with and those that act on the owner's Confirm, up to eight names
+ * each. `undefined` with none.
  */
 export const promptLine = Effect.fn("KinConnectionRows.promptLine")(function* (orgId: KinOrgId) {
   const rows = yield* liveConnections(orgId);
@@ -239,9 +240,17 @@ export const promptLine = Effect.fn("KinConnectionRows.promptLine")(function* (o
           .filter((address) => address !== row.accountLabel);
         // The note is the owner's own words; addresses are Gmail's, as plain JSON strings.
         const who = `${JSON.stringify(row.label)}${account}${aliases.length === 0 ? "" : ` sends as ${aliases.map((one) => JSON.stringify(one)).join(", ")}`}${row.note === null ? "" : `, owner's note ${JSON.stringify(row.note)}`}`;
+        const acts = tools
+          .filter((tool) => callable(tool) && tool.mode === "ask")
+          .map((tool) => tool.name)
+          .filter((name) => TOOL_NAME.test(name));
+        const confirm =
+          acts.length === 0
+            ? ""
+            : `; with the owner's Confirm on a card: ${acts.slice(0, PROMPT_TOOLS).join(", ")}${acts.length > PROMPT_TOOLS ? ", …" : ""}`;
         return row.pausedAt !== null || row.state === "needs_sign_in" || row.state === "error"
           ? `${who} (not reachable now)`
-          : `${who} (read: ${read.length} tools${read.length === 0 ? "" : `: ${shown}${more}`})`;
+          : `${who} (read: ${read.length} tools${read.length === 0 ? "" : `: ${shown}${more}`}${confirm})`;
       }),
     ),
   );

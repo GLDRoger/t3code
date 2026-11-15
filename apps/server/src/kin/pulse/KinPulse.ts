@@ -30,6 +30,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { matchName } from "../work/nameMatch.ts";
 import { viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
 import { goalSenses } from "./senses/goals.ts";
@@ -186,8 +187,10 @@ const withStored = (
   };
 };
 
+/** By key, or by name as typed: any case, a start of it, or a close spelling. */
 const matches = (text: string | undefined, key: string | undefined, wanted: string) =>
-  key?.toLowerCase() === wanted.toLowerCase() || text?.toLowerCase() === wanted.toLowerCase();
+  key?.toLowerCase() === wanted.toLowerCase() ||
+  (text !== undefined && matchName(wanted, [{ name: text }])._tag === "found");
 
 /** Only what this viewer may see; for people, Work facts on tasks every one of them sees. */
 const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (

@@ -66,6 +66,7 @@ import MicrosoftConnections from "./migrations/K142_MicrosoftConnections.ts";
 import PersonPlaces from "./migrations/K143_PersonPlaces.ts";
 import PullRequestCare from "./migrations/K144_PullRequestCare.ts";
 import RetireRoutines from "./migrations/K145_RetireRoutines.ts";
+import SendDecidedBy from "./migrations/K146_SendDecidedBy.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -212,6 +213,7 @@ const loader = Migrator.fromRecord({
   "143_PersonPlaces": PersonPlaces,
   "144_PullRequestCare": PullRequestCare,
   "145_RetireRoutines": RetireRoutines,
+  "146_SendDecidedBy": SendDecidedBy,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

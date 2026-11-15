@@ -642,3 +642,106 @@ export const markQuotesSent = Effect.fn("KinSending.markQuotesSent")(function* (
       { state: "waiting" },
     );
 });
+
+const decodeSentPayload = Schema.decodeUnknownOption(PreparedJson);
+/** Recent sends a lookup reads through; older mail is the mailbox's to search. */
+const SENT_SCAN = 200;
+const decodeSentResult = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      messageId: Schema.optional(Schema.NullOr(Schema.String)),
+      threadId: Schema.optional(Schema.NullOr(Schema.String)),
+    }),
+  ),
+);
+
+/** One mail Kin sent on someone's Confirm, as an agent reads it afterwards. */
+export const SentMailView = Schema.Struct({
+  at: Schema.String,
+  /** The connection it went through, and the signed-in account. */
+  connection: Schema.String,
+  account: Schema.String,
+  from: Schema.String,
+  to: Schema.Array(Schema.String),
+  cc: Schema.Array(Schema.String),
+  subject: Schema.String,
+  /** The provider's thread: mail_reply with it from the same connection answers in it. */
+  threadId: Schema.NullOr(Schema.String),
+  reply: Schema.Boolean,
+  documents: Schema.Array(Schema.String),
+  confirmedBy: Schema.NullOr(Schema.String),
+  draftedBy: Schema.NullOr(Schema.String),
+});
+export type SentMail = typeof SentMailView.Type;
+
+/**
+ * Mail that went out on a Confirm, newest first: all of it, or only mail carrying one of
+ * `recordIds` (an invoice, quote or receipt) or sent or copied to one of `addresses`.
+ */
+export const sentMail = Effect.fn("KinSending.sentMail")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly recordIds?: ReadonlyArray<string> | undefined;
+  readonly addresses?: ReadonlyArray<string> | undefined;
+  readonly limit?: number | undefined;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const ids = new Set(input.recordIds ?? []);
+  const addresses = new Set((input.addresses ?? []).map((one) => one.trim().toLowerCase()));
+  const filtered = input.recordIds !== undefined || input.addresses !== undefined;
+  if (filtered && ids.size === 0 && addresses.size === 0) return [];
+  const rows = yield* sql<{
+    payload: string;
+    result: string | null;
+    doneAt: number;
+    connectionId: string;
+    label: string;
+    accountLabel: string | null;
+    confirmedBy: string | null;
+    draftedBy: string | null;
+  }>`SELECT k.payload_json AS payload, k.result_json AS result, k.done_at AS "doneAt",
+      k.connection_id AS "connectionId", c.label, c.account_label AS "accountLabel",
+      p.display_name AS "confirmedBy", a.display_name AS "draftedBy"
+    FROM kin_connection_asks k
+    JOIN kin_connections c ON c.org_id = k.org_id AND c.connection_id = k.connection_id
+    LEFT JOIN kin_people p ON p.org_id = k.org_id AND p.person_id = k.decided_by
+    LEFT JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
+    WHERE k.org_id = ${input.orgId} AND k.state = 'sent' AND k.done_at IS NOT NULL
+      AND k.tool_name IN ${sql.in([MAIL_TOOL.send, MAIL_TOOL.reply])}
+    ORDER BY k.done_at DESC, k.rowid DESC
+    LIMIT ${SENT_SCAN}`;
+  const sent: Array<SentMail> = [];
+  for (const row of rows) {
+    const prepared = Option.getOrUndefined(decodeSentPayload(row.payload));
+    if (prepared?._tag !== "email") continue;
+    const matches =
+      !filtered ||
+      prepared.attachments.some(
+        (one) =>
+          ids.has(one.recordId) || (one.entryRecordId !== null && ids.has(one.entryRecordId)),
+      ) ||
+      [...prepared.to, ...prepared.cc].some((address) => addresses.has(address.toLowerCase()));
+    if (!matches) continue;
+    const result =
+      row.result === null ? undefined : Option.getOrUndefined(decodeSentResult(row.result));
+    const account = row.accountLabel ?? row.label;
+    sent.push({
+      at: DateTime.formatIso(DateTime.makeUnsafe(row.doneAt)),
+      connection: row.connectionId,
+      account,
+      from: prepared.from?.address ?? account,
+      to: prepared.to,
+      cc: prepared.cc,
+      subject: prepared.subject,
+      threadId: result?.threadId ?? prepared.threadId,
+      reply: prepared.threadId !== null,
+      // The card's label without its amount: "Invoice INV/26-27/004 (INV-26-27-004.pdf)".
+      documents: prepared.attachments.map((one) =>
+        one.label === null ? one.name : `${one.label.split(" · ")[0]} (${one.name})`,
+      ),
+      confirmedBy: row.confirmedBy,
+      draftedBy: row.draftedBy,
+    });
+    if (sent.length >= Math.max(1, Math.min(input.limit ?? 10, 50))) break;
+  }
+  return sent;
+});
