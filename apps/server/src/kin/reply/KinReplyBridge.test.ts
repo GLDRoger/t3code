@@ -908,6 +908,41 @@ it.effect("posts nothing in a chat where the lead is muted", () =>
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect.each([
+  { reply: "Should I take it over?", expected: [] },
+  { reply: "should i take it over", expected: [] },
+  { reply: "Tech owns the API. Should I take it over?", expected: ["Tech owns the API."] },
+  {
+    reply: "Should I take it over?\n\nTech has been quiet for a day.",
+    expected: ["Tech has been quiet for a day."],
+  },
+  { reply: "Tech is on it already.", expected: ["Tech is on it already."] },
+])("a reply doesn't repeat the question its card asks ($reply)", ({ reply, expected }) =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, posted, identity, chats, owner, wakeupId, chatId } =
+      yield* setup({ ask: "The API is stuck" });
+    const lead = Option.getOrThrow(
+      yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+    );
+    yield* chats.ask(lead, {
+      chatId,
+      clientMessageId: "take-over",
+      question: "Should I take it over?",
+      options: [
+        { label: "Yes", kind: "yes" },
+        { label: "No", kind: "no" },
+      ],
+    });
+    fake.items = [text("a", 1, reply, runId)];
+    yield* complete;
+    assert.strictEqual(fake.rescues, 0);
+    assert.deepStrictEqual(
+      (yield* posted).filter((row) => row.intent !== "question").map((row) => row.body),
+      expected,
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("bounds one wake-up to eight messages in a chat, kin_chat_post included", () =>
   Effect.gen(function* () {
     const { fake, runId, complete, posted, identity, chats, owner, wakeupId, chatId } =

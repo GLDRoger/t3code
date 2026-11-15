@@ -244,6 +244,21 @@ const textOf = (
     ? (projection?.messages.find((message) => message.id === item.messageId)?.text ?? item.text)
     : item.text;
 const normalized = (text: string) => text.trim().replace(/\s+/g, " ");
+const comparable = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+/** A reply less the sentences that only repeat a card's question, which the card already asks. */
+const withoutAsked = (text: string, questions: ReadonlyArray<string>) => {
+  const wanted = new Set(questions.map(comparable).filter((one) => one !== ""));
+  if (wanted.size === 0) return text;
+  // Odd entries are the separators, kept so the rest reads as it was written.
+  const parts = text.split(/((?<=[.?!])[ \t]+|\n+)/);
+  let kept = "";
+  let dropped = false;
+  for (let index = 0; index < parts.length; index += 2) {
+    if (wanted.has(comparable(parts[index]!))) dropped = true;
+    else kept += `${kept === "" ? "" : (parts[index - 1] ?? "")}${parts[index]}`;
+  }
+  return dropped ? kept.trim() : text;
+};
 const capBody = (text: string) =>
   text.length <= KIN_MESSAGE_BODY_MAX_LENGTH
     ? text
@@ -371,6 +386,18 @@ const make = Effect.gen(function* () {
     return rows.some((row) => normalized(row.body) === target);
   });
 
+  // The questions on cards this turn posted in the lane: the card asks it, so the reply needn't.
+  const asked = Effect.fn("KinReplyBridge.asked")(function* (wake: Wake) {
+    const rows = yield* sql<{ question: string | null }>`
+      SELECT json_extract(w.state_json, '$.question') AS question FROM kin_widgets w
+      JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+      WHERE w.org_id = ${wake.orgId} AND w.chat_id = ${wake.lane.chatId} AND w.type = 'choice'
+        AND m.author_kind = 'agent' AND m.author_agent_id = ${wake.agentId}
+        AND m.author_thread_id = ${wake.threadId} AND m.created_at >= ${iso(wake.startedAt)}
+      ORDER BY m.seq`;
+    return rows.flatMap((row) => (row.question === null ? [] : [row.question]));
+  });
+
   const deliver = Effect.fn("KinReplyBridge.deliver")(function* (
     wake: Wake,
     clientMessageId: string,
@@ -403,8 +430,11 @@ const make = Effect.gen(function* () {
       segment.drafting
         ? presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, messageId)
         : Effect.void;
-    const text = stripTrailingSilenceMarker(segment.text.trim());
-    if (yield* alreadySaid(wake, text).pipe(Effect.orElseSucceed(() => false))) {
+    const text = withoutAsked(
+      stripTrailingSilenceMarker(segment.text.trim()),
+      yield* asked(wake).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])),
+    );
+    if (text === "" || (yield* alreadySaid(wake, text).pipe(Effect.orElseSucceed(() => false)))) {
       segment.outcome = "posted";
       wake.answered = true;
       wake.replied = true;
