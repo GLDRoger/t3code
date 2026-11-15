@@ -50,7 +50,7 @@ import {
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount } from "./money.ts";
-import { dates, moneySection, moneySummary } from "./moneyViews.ts";
+import { dates, moneySection, moneySummary, stillToInvoice } from "./moneyViews.ts";
 import { endOfDay, iso, notFound, ownerZone } from "./recordRows.ts";
 import {
   attachCard,
@@ -61,6 +61,8 @@ import {
   propose,
   proposalFor,
   stateLabel,
+  isRecipeList,
+  listOrPreset,
   unknownList,
 } from "./registers.ts";
 
@@ -223,6 +225,24 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
       ...(yield* describeDefined(lead, done.id)),
       next: "Created. Say so in one line, without listing the fields again.",
     };
+  }
+  // Only the template named: the preset as it ships, which a recipe already knows.
+  const plainRecipe =
+    input.template !== undefined &&
+    isRecipeList(input.template) &&
+    Object.entries(input).every(
+      ([key, value]) => key === "sourceEventId" || key === "template" || value === undefined,
+    );
+  if (plainRecipe) {
+    const def = yield* listOrPreset(lead.orgId, input.template!, now);
+    if (def !== undefined) {
+      const made: typeof DefineResult.Type = {
+        status: "defined",
+        ...(yield* describeDefined(lead, def.id)),
+        next: "Kin's own list, made as it ships; no card needed. Go on with the quote or invoice.",
+      };
+      return made;
+    }
   }
   const proposal = yield* proposalFor(lead.orgId, input);
   const chat = yield* turnChat(lead);
@@ -409,6 +429,8 @@ export const payment = leadTool("KinWorkTools.payment", runPayment);
 export const MoneyResult = Schema.Struct({
   asOf: Schema.String,
   summary: Schema.optional(Schema.Unknown),
+  /** Per open project: what is agreed but not invoiced yet, beside what is owed on invoices. */
+  stillToInvoice: Schema.optional(Schema.Unknown),
   nothing: Schema.optional(Schema.Literal(true)),
   sensitive: Schema.Literal(true),
 });
@@ -418,9 +440,13 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   const team = yield* viewOf(lead);
   const summary = yield* moneySummary(lead.orgId, now, team?.people);
   const section = moneySection(summary, summary.timeZone);
+  const toInvoice = team === undefined ? yield* stillToInvoice(lead.orgId) : [];
   return {
     asOf: iso(now),
-    ...(section === undefined ? { nothing: true as const } : { summary: section }),
+    ...(section === undefined && toInvoice.length === 0
+      ? { nothing: true as const }
+      : { summary: section }),
+    ...(toInvoice.length === 0 ? {} : { stillToInvoice: toInvoice }),
     sensitive: true as const,
   };
 });

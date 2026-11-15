@@ -120,7 +120,7 @@ export const KinWorkToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("money_summary", {
     ...shared,
-    description: `The company's money as Kin adds it up: owed to us and overdue by client, received and spent this month and last, top spending, and dates due in the next 30 days. Every figure is exact per currency; quote them, never sum them yourself. Read-only, for owner-only answers. ${data}`,
+    description: `The company's money as Kin adds it up: owed to us and overdue by client, what each open project still has to invoice (agreed less invoiced), received and spent this month and last, top spending, and dates due in the next 30 days. Every figure is exact per currency; quote them, never sum them yourself. Read-only, for owner-only answers. ${data}`,
     success: Money.MoneyResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("money_query", {

@@ -9,6 +9,7 @@ import {
   countedEntry,
   countedPayment,
   endOfDay,
+  invoiceDue,
   moneyDay,
   ownerZone,
   repeatOf,
@@ -381,7 +382,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
     currency: string;
     paid: number;
     dueAt: number | null;
-  }>`SELECT r.key, r.title, r.amount_minor AS minor, r.currency, r.due_at AS "dueAt",
+  }>`SELECT r.key, r.title, r.amount_minor AS minor, r.currency, ${invoiceDue(sql)} AS "dueAt",
       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
     FROM kin_records r

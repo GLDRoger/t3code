@@ -571,6 +571,10 @@
       "types": "./src/kin/kinAttention.ts",
       "default": "./src/kin/kinAttention.ts"
     },
+    "./kin/kinCheckIns": {
+      "types": "./src/kin/kinCheckIns.ts",
+      "default": "./src/kin/kinCheckIns.ts"
+    },
     "./kin/kinConnections": {
       "types": "./src/kin/kinConnections.ts",
       "default": "./src/kin/kinConnections.ts"

@@ -122,6 +122,7 @@ const routineRuntime = Layer.mergeAll(
   DeferralFlow.layer,
   ScheduledTasks.layer,
   GithubEvents.consumerLayer.pipe(Layer.provide(pullRequestCare)),
+  PullRequestCare.runtimeLayer.pipe(Layer.provide(pullRequestCare)),
   Watchdogs.runtimeLayer,
   KinPulse.layer,
 ).pipe(
