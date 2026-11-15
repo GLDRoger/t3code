@@ -1,4 +1,5 @@
 import { installKinNotifications } from "./notifications/installKinNotifications";
+import { installKinNotificationSync } from "./notifications/kinNotificationSync";
 import { CommonActions } from "@react-navigation/native";
 
 import { rootNavigationRef, whenRootNavigationReady } from "../../lib/rootNavigation";
@@ -29,6 +30,7 @@ export function installKin(navigate: (href: string) => void): () => void {
       navigated = true;
       navigate(href);
     }),
+    installKinNotificationSync(),
     installKinChatOnlyMemory(),
     installKinShellReset(resetToHome),
     installKinAccessEnded(() => {
