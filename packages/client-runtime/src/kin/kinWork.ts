@@ -761,6 +761,8 @@ const ADDED = {
   clients: "added this client",
   contacts: "added this contact",
   projects: "started this project",
+  invoices: "added this invoice",
+  receipts: "made this receipt",
 } as const;
 
 /**
@@ -807,9 +809,12 @@ export function kinWorkChangeText(
   // A client or a contact has no work to finish: it is closed.
   else if ((state === "done" || state === "dropped") && (list === "clients" || list === "contacts"))
     clauses.push("closed it");
-  else if (state === "done") clauses.push("finished it");
-  else if (state === "dropped") clauses.push("dropped it");
+  else if (state === "done") clauses.push(list === "invoices" ? "marked it paid" : "finished it");
+  else if (state === "dropped")
+    clauses.push(list === "invoices" || list === "receipts" ? "voided it" : "dropped it");
   else if (state === "open") clauses.push("put it back to not started");
+  // An invoice waits on payment from the moment it is issued.
+  else if (state === "waiting" && list === "invoices") clauses.push("issued it");
   else if (state === "waiting" || waitingOn !== null)
     clauses.push(
       waitingOn === null
@@ -1007,7 +1012,12 @@ export function kinWorkItemView(
     history: item.changes.map((change) => ({
       key: String(change.seq),
       when: formatKinTime(new Date(change.at), now),
-      text: kinWorkChangeText(change, names, now),
+      text: kinWorkChangeText(
+        change,
+        names,
+        now,
+        item.list === "invoices" || item.list === "receipts" ? item.list : "work",
+      ),
     })),
     historyNote: item.changes.length >= changesCap ? "Earlier history isn't shown." : null,
     assignLabel: isClosed ? null : "Give to someone else",
@@ -1092,7 +1102,7 @@ export interface KinWorkAssignee {
 export const KIN_WORK_ASSIGN = {
   title: "Give this to",
   leads: "Agents",
-  leadsHint: "An agent starts on it right away and tells you in your chat with it when it's done.",
+  leadsHint: "An agent starts on it right away. Its progress shows here.",
   people: "People",
   /** A re-invited teammate who hasn't opened the new link yet. */
   invited: "Invited, hasn't joined yet",
@@ -1224,7 +1234,7 @@ export const KIN_WORK_NEW_COPY = {
 /** What happens next, said before the owner commits to it. */
 export function kinWorkDraftHint(draft: KinWorkDraft, names: KinWorkNames): string | null {
   return draft.owner?._tag === "agent"
-    ? `${kinWorkName(draft.owner, names)} starts on it right away and tells you in your chat when it's done.`
+    ? `${kinWorkName(draft.owner, names)} starts on it right away. Its progress shows here.`
     : null;
 }
 

@@ -136,7 +136,8 @@ export const KIN_LISTS = {
     payments: "Entries are paid in parts",
     paymentsDetail: "Each entry keeps its payments and what is still owed, as invoices do.",
     archive: "Put this list away",
-    archiveDetail: "It stops taking new entries and leaves this page. Nothing is deleted.",
+    archiveDetail:
+      "It stops taking new entries. Nothing is deleted, and you can bring it back here in its settings.",
     restoreList: "Bring this list back",
     builtIn: "This list is part of Kin and can't be changed here.",
     save: "Save",
