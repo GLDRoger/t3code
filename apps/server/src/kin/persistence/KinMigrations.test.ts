@@ -4026,7 +4026,10 @@ it.effect("K137 makes the reserved owner the owner and everyone else a member, o
         ('ravi', 'org', 'ravi', 'Ravi', '2026-11-12T00:00:00.000Z')`;
     yield* sql`UPDATE kin_people SET access = NULL`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 137`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [[137, "PersonAccess"]]);
+    assert.deepStrictEqual(yield* runKinMigrations(), [
+      [137, "PersonAccess"],
+      [138, "ClientTouches"],
+    ]);
     assert.deepStrictEqual(
       yield* sql`SELECT person_id AS "personId", access FROM kin_people ORDER BY person_id`,
       [
