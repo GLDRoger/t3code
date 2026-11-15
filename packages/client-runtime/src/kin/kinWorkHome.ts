@@ -12,6 +12,7 @@ import type {
 
 import { kinTotalsText } from "./kinLists.ts";
 import { kinInMoney, kinMoneyAgent, kinMoneyView, type KinListOpen } from "./kinMoney.ts";
+import { kinSubscriptionsList } from "./kinSubscriptions.ts";
 import { kinWaitingRowView } from "./kinScreenState.ts";
 import {
   kinWorkName,
@@ -105,9 +106,11 @@ export function kinDocsLine(total: number, rows: ReadonlyArray<KinDocRow>, now: 
     : `${plural(total, "doc")}, ${changed} changed this week`;
 }
 
-/** The lists Docs shows beside the docs: the ones people made that Money doesn't already open. */
-export const kinPlaceLists = (lists: ReadonlyArray<KinListDefinition>) =>
-  lists.filter((def) => !kinInMoney(def));
+/** The lists Docs shows beside the docs: the ones people made that Money doesn't already show. */
+export const kinPlaceLists = (lists: ReadonlyArray<KinListDefinition>) => {
+  const subscriptions = kinSubscriptionsList(lists);
+  return lists.filter((def) => !kinInMoney(def) && def !== subscriptions);
+};
 
 // What needs you
 

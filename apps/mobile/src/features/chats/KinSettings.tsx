@@ -4,7 +4,6 @@ import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   KIN_DAILY_LIMIT,
   kinDailyLimitChoices,
-  kinDailyLimitUse,
   kinDailyLimitWaiting,
 } from "@t3tools/client-runtime/kin/kinBudget";
 import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
@@ -322,7 +321,7 @@ function KinConnection(props: { readonly environment: EnvironmentPresentation })
 
 /**
  * The owner's daily limit as a native menu of plain choices, on this page rather than its own,
- * with today's use and the work held for it.
+ * with the work held for it.
  */
 function KinDailyLimitSection(props: {
   readonly environmentId: EnvironmentId;
@@ -337,13 +336,10 @@ function KinDailyLimitSection(props: {
   const budget = Option.getOrNull(AsyncResult.value(result));
   const { choices, current } = kinDailyLimitChoices(budget);
   const label = choices.find((choice) => choice.value === current)?.label ?? "…";
-  const use = kinDailyLimitUse(budget);
   const waiting = kinDailyLimitWaiting(budget);
   return (
     <>
-      <SettingsSection
-        footer={use === null ? KIN_DAILY_LIMIT.detail : `${KIN_DAILY_LIMIT.detail}\n\n${use}`}
-      >
+      <SettingsSection footer={KIN_DAILY_LIMIT.detail}>
         <Menu
           actions={choices.map((choice) => ({
             id: choice.value,

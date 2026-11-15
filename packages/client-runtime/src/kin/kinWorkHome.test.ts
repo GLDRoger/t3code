@@ -156,7 +156,13 @@ describe("the places", () => {
   it("puts beside the docs only the lists Money doesn't already show", () => {
     const leads = list("leads", { archivedAt: "2026-11-01T00:00:00.000Z" });
     expect(
-      kinPlaceLists([list("invoices"), list("expenses"), list("work", { builtIn: true }), leads]),
+      kinPlaceLists([
+        list("invoices"),
+        list("expenses"),
+        list("subscriptions"),
+        list("work", { builtIn: true }),
+        leads,
+      ]),
     ).toEqual([list("work", { builtIn: true }), leads]);
   });
 });

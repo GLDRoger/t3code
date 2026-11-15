@@ -113,6 +113,48 @@ function KinDocRowButton(props: {
 }
 
 /** A list kept beside the docs, as a row that opens it. */
+/** The company's playbooks as one row until it is opened, so the docs people write lead. */
+function KinPlaybooksRow(props: {
+  readonly count: number;
+  readonly open: boolean;
+  readonly onPress: () => void;
+}) {
+  const line = KIN_DOC_HOMES.playbooksLine(props.count);
+  return (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${KIN_DOC_HOMES.playbooks}. ${line}`}
+        accessibilityState={{ expanded: props.open }}
+        onPress={props.onPress}
+        className="min-h-16 flex-row items-center gap-3 px-5 py-3 active:opacity-60"
+      >
+        <SymbolView
+          name="list.number"
+          size={18}
+          tintColorClassName="accent-icon"
+          type="monochrome"
+        />
+        <View className="min-w-0 flex-1 gap-0.5">
+          <Text textRole="body" numberOfLines={1} className="text-foreground">
+            {KIN_DOC_HOMES.playbooks}
+          </Text>
+          <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+            {line}
+          </Text>
+        </View>
+        <SymbolView
+          name={props.open ? "chevron.up" : "chevron.down"}
+          size={13}
+          tintColorClassName="text-foreground-muted"
+          type="monochrome"
+        />
+      </Pressable>
+      <View className="ml-5 h-px bg-border-subtle" />
+    </>
+  );
+}
+
 function KinListRowButton(props: { readonly row: KinListIndexRow; readonly onPress: () => void }) {
   const { row } = props;
   return (
@@ -210,7 +252,8 @@ type Item =
   | { readonly type: "recent"; readonly id: string; readonly rows: ReadonlyArray<KinDocRow> }
   | { readonly type: "doc"; readonly id: string; readonly row: KinDocRow; readonly bare: boolean }
   | { readonly type: "list"; readonly id: string; readonly row: KinListIndexRow }
-  | { readonly type: "moreLists"; readonly id: string; readonly label: string };
+  | { readonly type: "moreLists"; readonly id: string; readonly label: string }
+  | { readonly type: "playbooks"; readonly id: string; readonly count: number };
 
 const DOCS_ONLY = ["docs"] as const;
 const LISTS_FOLDED = 3;
@@ -261,7 +304,7 @@ function KinRecentStrip(props: {
 /**
  * Docs as a library: the last few changed on top, the lists people keep, then every doc under
  * its home (each client with its projects, then the company's own, then the unfiled). One
- * filter picks a kind or a shelf; Playbooks and Company are a tap away above the list.
+ * filter picks a kind or a shelf; Company is a tap away above the list, the playbooks fold below.
  */
 export function KinDocsList(
   props: KinWorkTarget & {
@@ -280,6 +323,7 @@ export function KinDocsList(
   const { state, list } = useKinDocsList(props, props.stale ? null : (live?.seq ?? null));
   const { state: found, search } = useKinSearch(props, DOCS_ONLY);
   const [allLists, setAllLists] = useState(false);
+  const [playbooksOpen, setPlaybooksOpen] = useState(false);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
   const { filter } = state;
   const lists = useKinLists(props, {
@@ -340,11 +384,25 @@ export function KinDocsList(
             bare: home.kind !== "client",
           })),
         ]);
+  const playbookItems: ReadonlyArray<Item> =
+    refused || !everything || searching || library.playbooks.length === 0
+      ? []
+      : [
+          { type: "playbooks", id: "playbooks", count: library.playbooks.length },
+          ...(playbooksOpen
+            ? library.playbooks.map((row): Item => ({
+                type: "doc",
+                id: row.recordId,
+                row,
+                bare: true,
+              }))
+            : []),
+        ];
   const recent: ReadonlyArray<Item> =
     everything && !searching && !filter.archived && library.recent.length > 0
       ? [{ type: "recent", id: "recent", rows: library.recent }]
       : [];
-  const items = [...recent, ...listItems, ...docItems];
+  const items = [...recent, ...listItems, ...docItems, ...playbookItems];
   // With lists showing, the docs' own loading or failure still needs saying under them.
   const docsPending = listItems.length > 0 && docItems.length === 0;
   const footer = kinDocsFooter(state.records.length, state.total, state.more);
@@ -459,7 +517,7 @@ export function KinDocsList(
           contentContainerStyle={{ paddingBottom: tab === null ? 96 : 32 + tab.bottomClearance }}
           data={items}
           keyExtractor={(item) => item.id}
-          extraData={[state, found, lists.state, allLists, canFile]}
+          extraData={[state, found, lists.state, allLists, playbooksOpen, canFile]}
           estimatedItemSize={72}
           recycleItems
           onEndReached={() => void list.loadMore()}
@@ -478,7 +536,7 @@ export function KinDocsList(
                       <Chip
                         key={shelf.label}
                         label={shelf.label}
-                        icon={shelf.show._tag === "company" ? "folder.fill" : "list.number"}
+                        icon="folder.fill"
                         accessibilityLabel={`Show ${shelf.label}`}
                         onPress={() => show(shelf.show)}
                       />
@@ -585,6 +643,12 @@ export function KinDocsList(
                 onPress={() =>
                   navigation.navigate("KinList", { environmentId, orgId, list: item.row.list })
                 }
+              />
+            ) : item.type === "playbooks" ? (
+              <KinPlaybooksRow
+                count={item.count}
+                open={playbooksOpen}
+                onPress={() => setPlaybooksOpen(!playbooksOpen)}
               />
             ) : item.type === "moreLists" ? (
               <Pressable

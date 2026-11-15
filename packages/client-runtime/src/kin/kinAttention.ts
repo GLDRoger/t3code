@@ -66,6 +66,18 @@ const URGENT = new Set<KinPulseFact["sense"]>([
   "milestone_late",
 ]);
 
+/** A client's own matters; its late or due tasks are Tasks', so the client page doesn't repeat them. */
+const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
+  "client_cold",
+  "client_quiet",
+  "client_waiting_on_us",
+  "theirs_late",
+  "quote_unanswered",
+  "invoice_overdue",
+  "retainer_due",
+  "renewal_due",
+]);
+
 const inScope = (fact: KinPulseFact, scope: KinAttentionScope) => {
   switch (scope.type) {
     case "all":
@@ -73,7 +85,7 @@ const inScope = (fact: KinPulseFact, scope: KinAttentionScope) => {
     case "project":
       return fact.scope.projectKey === scope.key;
     case "client":
-      return fact.scope.clientKey === scope.key;
+      return fact.scope.clientKey === scope.key && CLIENT_MATTERS.has(fact.sense);
     case "money":
       // Goals sit above it on Money with their own bars; Tasks keeps their answers.
       return fact.family === "money";

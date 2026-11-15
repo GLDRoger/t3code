@@ -1,7 +1,7 @@
 import { KinAgentId, KinOrgId, type KinBudget } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinDailyLimitChoices, kinDailyLimitUse, kinDailyLimitWaiting } from "./kinBudget.ts";
+import { kinDailyLimitChoices, kinDailyLimitWaiting } from "./kinBudget.ts";
 
 const budget = (leadUnits: number | null, workerUnits: number | null): KinBudget => ({
   orgId: KinOrgId.make("invented-org"),
@@ -44,13 +44,7 @@ describe("the daily limit", () => {
     });
   });
 
-  it("says the owner's use beside teammates', and what waits for tomorrow", () => {
-    const used = { ...budget(4_000_000, null), ownerUnits: 1_000_000, teammateUnits: 10 };
-    expect(kinDailyLimitUse(used)).toBe("Today: you 25%, teammates under 1% of the limit.");
-    expect(kinDailyLimitUse({ ...budget(null, null), ownerUnits: 1_000_000 })).toBe(
-      "Today: you 50% of a usual day.",
-    );
-    expect(kinDailyLimitUse(budget(null, null))).toBeNull();
+  it("says what waits for tomorrow", () => {
     const waiting: KinBudget = {
       ...budget(1, 1),
       waiting: {

@@ -259,6 +259,8 @@ export const KIN_DOC_HOMES = {
     "File every unfiled doc in Docs: give each its kind, and its client and project or the company.",
   unfiledDetail: "No client, project or company yet.",
   playbooks: "Playbooks",
+  playbooksLine: (count: number) =>
+    count === 1 ? "1 playbook your agents follow" : `${count} playbooks your agents follow`,
   lists: "Lists",
   seeAllLists: "See all lists",
   fewerLists: "Show fewer",
@@ -332,13 +334,18 @@ const RECENT_MAX = 4;
 export function kinDocLibrary(rows: ReadonlyArray<KinDocRow>): {
   readonly recent: ReadonlyArray<KinDocRow>;
   readonly homes: ReadonlyArray<KinDocHome>;
+  /** The company's playbooks, folded into one row until opened; by title. */
+  readonly playbooks: ReadonlyArray<KinDocRow>;
 } {
   const latestFirst = [...rows].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const clients = new Map<string, { title: string; rows: Array<KinDocRow> }>();
   const company: Array<KinDocRow> = [];
   const unfiled: Array<KinDocRow> = [];
+  const playbooks: Array<KinDocRow> = [];
   for (const row of latestFirst) {
-    if (row.company === true) company.push(row);
+    if (kinDocKindOf(row) === "playbook" && row.party === undefined && row.project === undefined)
+      playbooks.push(row);
+    else if (row.company === true) company.push(row);
     else if (row.party !== undefined || row.project !== undefined) {
       const id = row.party?.key ?? NO_PARTY;
       const title = row.party?.title ?? KIN_DOC_HOMES.noClient;
@@ -377,6 +384,7 @@ export function kinDocLibrary(rows: ReadonlyArray<KinDocRow>): {
             },
           ]),
     ],
+    playbooks: [...playbooks].sort((a, b) => a.title.localeCompare(b.title)),
   };
 }
 
@@ -405,14 +413,11 @@ export const kinDocsSameShow = (a: KinDocsShow, b: KinDocsShow) => showKey(a) ==
 export const kinDocsSameFilter = (a: KinDocsFilter, b: KinDocsFilter) =>
   a.archived === b.archived && a.text.trim() === b.text.trim() && kinDocsSameShow(a.show, b.show);
 
-/** The two shelves one tap from the top of Docs. */
+/** The shelf one tap from the top of Docs; the playbooks fold into their own row below. */
 export const KIN_DOC_SHELVES: ReadonlyArray<{
   readonly label: string;
   readonly show: KinDocsShow;
-}> = [
-  { label: KIN_DOC_HOMES.playbooks, show: { _tag: "kind", kind: "playbook" } },
-  { label: KIN_DOC_HOMES.company, show: { _tag: "company" } },
-];
+}> = [{ label: KIN_DOC_HOMES.company, show: { _tag: "company" } }];
 
 /** Every choice the Filter menu offers for what to show, in its order. */
 export const KIN_DOCS_SHOWS: ReadonlyArray<{ readonly label: string; readonly show: KinDocsShow }> =
