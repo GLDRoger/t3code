@@ -144,7 +144,7 @@ describe("Needs you", () => {
   it("puts late work first, then what is owed past due, then the oldest wait, then today", () => {
     expect(kinNeedsYou({ ...input, money }).map((row) => row.id)).toEqual([
       "task:W-1",
-      "money:C-1",
+      "money:overdue",
       "waiting:w-old",
       "waiting:w-new",
       "task:W-2",
@@ -162,7 +162,9 @@ describe("the places", () => {
     expect(kinWorkPlaceParam(undefined)).toBeNull();
   });
   it("leaves out the lists Money already shows, and keeps archived ones reachable", () => {
-    expect(kinListsLine([list("invoices", { builtIn: true })])).toBeNull();
+    expect(
+      kinListsLine([list("invoices"), list("expenses"), list("work", { builtIn: true })]),
+    ).toBeNull();
     expect(kinListsLine([list("leads", { archivedAt: "2026-11-01T00:00:00.000Z" })])).toBe(
       "1 archived list",
     );

@@ -277,17 +277,21 @@ export function KinWorkHome(
                 variant="plain"
                 {...KIN_WORK_HOME.empty}
                 action={
-                  <View className="items-center gap-3">
+                  <View className="gap-3">
                     {newTask === null ? null : (
-                      <Button tone="primary" icon="plus" label="New task" onPress={newTask} />
+                      <View className="flex-row justify-center">
+                        <Button tone="primary" icon="plus" label="New task" onPress={newTask} />
+                      </View>
                     )}
                     {askChief === null ? null : (
-                      <Button
-                        tone={newTask === null ? "primary" : "secondary"}
-                        icon="bubble.left"
-                        label={`Ask ${chief?.name ?? "an agent"}`}
-                        onPress={askChief}
-                      />
+                      <View className="flex-row justify-center">
+                        <Button
+                          tone={newTask === null ? "primary" : "secondary"}
+                          icon="bubble.left"
+                          label={`Ask ${chief?.name ?? "an agent"}`}
+                          onPress={askChief}
+                        />
+                      </View>
                     )}
                   </View>
                 }

@@ -11,7 +11,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { kinListsIndex, kinTotalsText } from "./kinLists.ts";
-import { kinMoneyAgent, kinMoneyView, type KinListOpen } from "./kinMoney.ts";
+import { kinInMoney, kinMoneyAgent, kinMoneyView, type KinListOpen } from "./kinMoney.ts";
 import { kinWaitingRowView } from "./kinScreenState.ts";
 import {
   kinWorkName,
@@ -63,8 +63,8 @@ export const KIN_WORK_HOME = {
   noClient: "No client",
 };
 
-/** How many rows "Needs you" shows before "See all". */
-export const KIN_NEEDS_YOU_SHOWN = 5;
+/** Rows "Needs you" shows before "See all", so the places stay on the first screen. */
+export const KIN_NEEDS_YOU_SHOWN = 4;
 
 /** A `show` in a Work link: the place it opens, or null for the Work page itself. */
 export function kinWorkPlaceParam(
@@ -117,12 +117,17 @@ export function kinDocsLine(total: number, rows: ReadonlyArray<KinDocRow>, now: 
     : `${plural(total, "doc")}, ${changed} changed this week`;
 }
 
-/** The lists people made, which Money doesn't already show. Null when there are none at all. */
+/** The lists Work's Lists place shows: the ones people made that Money doesn't already open. */
+export const kinPlaceLists = (lists: ReadonlyArray<KinListDefinition>) =>
+  lists.filter((def) => !kinInMoney(def));
+
+/** Null when there are no such lists at all, archived ones included. */
 export function kinListsLine(lists: ReadonlyArray<KinListDefinition>): string | null {
-  const index = kinListsIndex(lists);
+  const shown = kinPlaceLists(lists);
+  const index = kinListsIndex(shown);
   if (index.active.length === 0 && index.archived.length === 0) return null;
   if (index.active.length === 0) return plural(index.archived.length, "archived list");
-  const open = lists
+  const open = shown
     .filter((def) => !def.builtIn && def.archivedAt === null)
     .reduce((sum, def) => sum + def.open, 0);
   return `${plural(index.active.length, "list")}, ${open} open`;
@@ -176,24 +181,21 @@ export function kinNeedsYou(input: {
   };
   const late = input.mine.filter((record) => record.late).map(task);
   const today = input.mine.filter((record) => !record.late).map(task);
-  const owed =
-    input.money === null
+  const overdue = input.money === null ? null : kinMoneyView(input.money, input.lists).overdue;
+  // Every overdue invoice is one row, which opens them all; Money splits them by client.
+  const owed: ReadonlyArray<KinNeedsYouRow> =
+    overdue === null || !overdue.late
       ? []
-      : kinMoneyView(input.money, input.lists).clients.flatMap((client): KinNeedsYouRow[] =>
-          client.overdue === null
-            ? []
-            : [
-                {
-                  id: `money:${client.key}`,
-                  kind: "money",
-                  title: client.name,
-                  detail: client.overdue,
-                  late: true,
-                  open:
-                    client.open === null ? { type: "money" } : { type: "list", open: client.open },
-                },
-              ],
-        );
+      : [
+          {
+            id: "money:overdue",
+            kind: "money",
+            title: `${overdue.note ?? "Invoices"} overdue`,
+            detail: overdue.lines.join(" and "),
+            late: true,
+            open: overdue.open === null ? { type: "money" } : { type: "list", open: overdue.open },
+          },
+        ];
   const waiting = [...input.waiting]
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .map((item): KinNeedsYouRow => {

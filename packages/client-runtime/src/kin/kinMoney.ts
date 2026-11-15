@@ -61,6 +61,10 @@ export const KIN_MONEY = {
 const INVOICES = "invoices";
 const EXPENSES = "expenses";
 
+/** The lists Money already opens from its own figures, which Work's Lists leaves out. */
+export const kinInMoney = (def: Pick<KinListDefinition, "list">): boolean =>
+  def.list === INVOICES || def.list === EXPENSES;
+
 /** A list to open, already narrowed to the entries behind a figure. */
 export interface KinListOpen {
   readonly list: KinListId;

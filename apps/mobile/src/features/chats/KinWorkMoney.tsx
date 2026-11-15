@@ -14,6 +14,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinMoney";
 import {
   KIN_WORK_HOME,
+  kinPlaceLists,
   kinWorkAskDraft,
   type KinWorkPlace,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
@@ -492,7 +493,7 @@ export function KinListsArea(props: Shared) {
       </AreaFrame>
     );
   }
-  const index = kinListsIndex(state.value.lists);
+  const index = kinListsIndex(kinPlaceLists(state.value.lists));
   const ask =
     agent === null ? null : (
       <Button
