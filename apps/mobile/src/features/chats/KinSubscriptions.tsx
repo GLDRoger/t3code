@@ -145,7 +145,7 @@ function SubscriptionRow(props: {
           </Text>
           <Text
             textRole="footnote"
-            numberOfLines={1}
+            numberOfLines={2}
             className={cn(
               "font-t3-medium",
               row.cancelled ? "text-danger-foreground" : "text-foreground-muted",
