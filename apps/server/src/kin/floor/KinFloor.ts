@@ -73,6 +73,12 @@ const passedOn = (sql: SqlClient.SqlClient) =>
       AND pm.message_id = json_extract(e.json, '$.messageId')
       AND pm.chat_id = json_extract(e.json, '$.chatId') AND pm.author_kind = 'system'))`);
 const NOTICE_WINDOW_MS = 3_600_000;
+/**
+ * For an event row aliased `alias`: work someone gave the lead, whose report or assignment waits
+ * on its words. The hourly notice limit never refuses those.
+ */
+export const owedNotice = (alias: string) => `(${alias}.tag = 'worker.report'
+  OR (${alias}.tag = 'record.changed' AND json_extract(${alias}.json, '$.reason') = 'assigned'))`;
 const notGranted = new KinChatError({
   reason: "floor_not_granted",
   message: "The floor is not granted.",
@@ -86,7 +92,8 @@ type Scope = { readonly orgId: KinOrgId; readonly chatId: KinChatId };
 export const speakerOrder = (sql: SqlClient.SqlClient) =>
   sql`CASE WHEN a.agent_id = c.lead_agent_id THEN 0 ELSE 1 END,
     CASE a.role WHEN 'lead' THEN 0 ELSE 1 END, m.joined_at, m.rowid`;
-type Authorization = { readonly runId: string | null };
+/** `owed`: a notice post someone waits on, outside the hourly notice limit. */
+type Authorization = { readonly runId: string | null; readonly owed?: boolean };
 export class KinFloor extends Context.Service<
   KinFloor,
   {
@@ -118,14 +125,18 @@ export class KinFloor extends Context.Service<
     ) => Effect.Effect<Authorization, PersistenceSqlError | KinChatError>;
     /**
      * Whether the running wake-up holds only server notices, and requests other leads passed on
-     * (`passed_on`, which it may answer): posts then need no floor grant.
+     * (`passed_on`, which it may answer): posts then need no floor grant. `owed`: one of them
+     * waits on words, a passed-on request, a worker's report or an assigned entry.
      */
     readonly noticeOnly: (
       identity: AgentIdentity,
-    ) => Effect.Effect<false | "notice" | "passed_on", PersistenceSqlError>;
+    ) => Effect.Effect<
+      false | { readonly kind: "notice" | "passed_on"; readonly owed: boolean },
+      PersistenceSqlError
+    >;
     /**
-     * The read-only checks on a notice post: intent, no grant, and the hourly limit. `earlier`
-     * counts notices the server holds outside `kin_floor_notices`.
+     * The read-only checks on a notice post: intent, no grant, and the hourly limit, which an
+     * `owed` post skips. `earlier` counts notices the server holds outside `kin_floor_notices`.
      */
     readonly admitNotice: (
       identity: AgentIdentity,
@@ -135,6 +146,7 @@ export class KinFloor extends Context.Service<
         readonly token?: string | undefined;
         readonly earlier?: number;
         readonly answers?: boolean;
+        readonly owed?: boolean;
       },
     ) => Effect.Effect<void, PersistenceSqlError | KinChatError>;
     readonly recordNotice: (
@@ -243,11 +255,13 @@ const make = Effect.gen(function* () {
         total: number;
         expected: number;
         passedOn: number;
+        owed: number;
       }>`
       SELECT COUNT(e.event_id) AS total, json_array_length(w.event_ids) AS expected,
         COALESCE(SUM(CASE WHEN e.tag IN ${sql.in(NOTICE_TAGS)} THEN 1 ELSE 0 END), 0) AS notices,
         COALESCE(SUM(CASE WHEN e.tag = 'chat.message' AND ${passedOn(sql)} THEN 1 ELSE 0 END), 0)
           AS "passedOn",
+        COALESCE(SUM(CASE WHEN ${sql.literal(owedNotice("e"))} THEN 1 ELSE 0 END), 0) AS owed,
         COALESCE(SUM(CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
           AND NOT (e.tag = 'chat.message' AND ${passedOn(sql)}) THEN 1 ELSE 0 END), 0) AS replies
       FROM kin_wakeups w JOIN kin_events e ON e.org_id = w.org_id AND e.agent_id = w.agent_id
@@ -265,7 +279,10 @@ const make = Effect.gen(function* () {
         wakeup.replies !== 0
       )
         return false;
-      return wakeup.passedOn > 0 ? ("passed_on" as const) : ("notice" as const);
+      return {
+        kind: wakeup.passedOn > 0 ? ("passed_on" as const) : ("notice" as const),
+        owed: wakeup.passedOn > 0 || wakeup.owed > 0,
+      };
     },
     Effect.mapError(toPersistenceSqlError("KinFloor.noticeOnly")),
   );
@@ -279,6 +296,7 @@ const make = Effect.gen(function* () {
         readonly token?: string | undefined;
         readonly earlier?: number;
         readonly answers?: boolean;
+        readonly owed?: boolean;
       },
     ): Effect.fn.Return<void, SqlError | KinChatError> {
       if (
@@ -289,6 +307,7 @@ const make = Effect.gen(function* () {
         input.token !== undefined
       )
         return yield* invalidIntent;
+      if (input.owed === true) return;
       const now = yield* Clock.currentTimeMillis;
       const recent = yield* sql<{ message_id: string }>`SELECT message_id FROM kin_floor_notices
         WHERE org_id = ${identity.orgId} AND chat_id = ${input.chatId} AND agent_id = ${identity.agentId}
@@ -317,9 +336,10 @@ const make = Effect.gen(function* () {
           chatId: chat.chatId,
           intent,
           token,
-          answers: notice === "passed_on",
+          answers: notice.kind === "passed_on",
+          owed: notice.owed,
         });
-        return { runId: null };
+        return { runId: null, owed: notice.owed };
       }
       const now = yield* Clock.currentTimeMillis;
       const runs = yield* sql`

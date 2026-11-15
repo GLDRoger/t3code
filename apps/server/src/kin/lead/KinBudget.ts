@@ -39,7 +39,7 @@ export type Usage = {
   readonly usedTokens?: number | undefined;
 };
 type BudgetError = KinChatError | PersistenceSqlError;
-/** Which limit held a turn back: the owner's for the whole org, or the one for teammates. */
+/** Whose work a limit held back: the owner's own, or a teammate's. */
 export type HeldBy = "org" | "teammates";
 type Admission = {
   readonly allowed: boolean;
@@ -135,10 +135,10 @@ export class KinBudget extends Context.Service<
       asker?: "owner" | "teammate",
     ) => Effect.Effect<Admission, BudgetError>;
     /**
-     * Events a limit held back: whoever asked sees a line in that chat at once, and the owner one
-     * notice a day per limit, with what waits.
+     * Returns events a limit held back to the queue until the reset, and in the same transaction
+     * posts the line whoever asked sees in that chat and the owner's one notice a day per limit.
      */
-    readonly held: (input: {
+    readonly defer: (input: {
       readonly orgId: KinOrgId;
       readonly agentId: KinAgentId;
       readonly wakeupId: KinWakeupId;
@@ -196,19 +196,26 @@ const make = Effect.gen(function* () {
       WHERE c.org_id = ${orgId} AND c.day = ${day}
       GROUP BY w.agent_id ORDER BY "leadUnits" DESC, w.agent_id`;
   });
-  // A turn counts as a teammate's when any event in it was asked by someone besides its owner.
+  // A turn is a teammate's when any event in it was asked by someone besides its lead's owner.
+  const askedByTeammates = Effect.fn("KinBudget.askedByTeammates")(function* (
+    orgId: KinOrgId,
+    wakeupId: KinWakeupId,
+  ) {
+    const rows = yield* sql`SELECT 1 FROM kin_events e
+      JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+      WHERE e.org_id = ${orgId} AND e.wakeup_id = ${wakeupId}
+        AND (json_extract(e.json, '$.origin.personId') IS NOT NULL
+          OR (json_extract(e.json, '$.provenance._tag') = 'human'
+            AND json_extract(e.json, '$.provenance.personId') <> a.owner_person_id))
+      LIMIT 1`;
+    return rows.length > 0;
+  });
   const teammateUnits = Effect.fn("KinBudget.teammateUnits")(function* (
     orgId: KinOrgId,
     day: string,
   ) {
-    const [row] = yield* sql<{ units: number }>`SELECT COALESCE(SUM(c.units), 0) AS units
-      FROM kin_budget_charges c WHERE c.org_id = ${orgId} AND c.day = ${day}
-        AND EXISTS (SELECT 1 FROM kin_events e
-          JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
-          WHERE e.org_id = c.org_id AND e.wakeup_id = c.wakeup_id
-            AND (json_extract(e.json, '$.origin.personId') IS NOT NULL
-              OR (json_extract(e.json, '$.provenance._tag') = 'human'
-                AND json_extract(e.json, '$.provenance.personId') <> a.owner_person_id)))`;
+    const [row] = yield* sql<{ units: number }>`SELECT COALESCE(SUM(units), 0) AS units
+      FROM kin_budget_charges WHERE org_id = ${orgId} AND day = ${day} AND teammate = 1`;
     return row?.units ?? 0;
   });
   const waiting = (orgId: KinOrgId) =>
@@ -218,7 +225,7 @@ const make = Effect.gen(function* () {
     const limits = yield* decodeStoredLimits(stored);
     return { ...limits, teammateUnits: limits.teammateUnits ?? null };
   });
-  // `full` adds what only the owner's view needs: the teammates' spend and what waits.
+  // `full` adds what only the owner's view needs: who spent it, and what waits.
   const snapshot = Effect.fn("KinBudget.snapshot")(function* (
     orgId: KinOrgId,
     day: string,
@@ -229,6 +236,7 @@ const make = Effect.gen(function* () {
       FROM kin_budget b LEFT JOIN kin_budget_limits l ON l.org_id = b.org_id
       WHERE b.org_id = ${orgId} AND b.day = ${day}`;
     if (row === undefined) return yield* notFound;
+    const teammates = yield* teammateUnits(orgId, day);
     return {
       orgId,
       day,
@@ -237,8 +245,13 @@ const make = Effect.gen(function* () {
       limits: yield* limitsOf(row.limits),
       leads: yield* byLead(orgId, day),
       ...(full
-        ? { teammateUnits: yield* teammateUnits(orgId, day), waiting: yield* waiting(orgId) }
+        ? {
+            ownerUnits: Math.max(0, row.leadUnits - teammates),
+            teammateUnits: teammates,
+            waiting: yield* waiting(orgId),
+          }
         : {}),
+      teammates,
     };
   });
   const read = Effect.fn("KinBudget.read")(function* (orgId: KinOrgId, full: boolean) {
@@ -250,13 +263,13 @@ const make = Effect.gen(function* () {
       }),
     );
   }, Effect.mapError(mapError));
-  const get = (orgId: KinOrgId) => read(orgId, true);
-  const share = (budget: Budget) =>
-    budget.limits.leadUnits === null
-      ? 1
-      : budget.limits.leadUnits === 0
-        ? 0
-        : Math.max(0, budget.limits.leadUnits - budget.leadUnits) / budget.limits.leadUnits;
+  const get = (orgId: KinOrgId) =>
+    read(orgId, true).pipe(Effect.map(({ teammates: _teammates, ...budget }) => budget));
+  const left = (limit: number | null, spent: number) =>
+    limit === null ? 1 : limit === 0 ? 0 : Math.max(0, limit - spent) / limit;
+  /** What is left for the owner's own work: teammates' spending never takes from it. */
+  const ownerShare = (budget: { leadUnits: number; teammates: number; limits: KinBudgetLimits }) =>
+    left(budget.limits.leadUnits, Math.max(0, budget.leadUnits - budget.teammates));
   const clock = Effect.fn("KinBudget.clock")(function* (orgId: KinOrgId, at: number) {
     const timeZone = yield* cache.ownerTimeZone(orgId);
     return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone })
@@ -275,7 +288,7 @@ const make = Effect.gen(function* () {
     // Said once: a second hold in the same turn and chat has nothing new to say.
     const said = yield* sql`SELECT 1 FROM kin_messages
       WHERE org_id = ${input.orgId} AND message_id = ${input.messageId}`;
-    if (said.length > 0) return;
+    if (said.length > 0) return true;
     const posted = yield* chat
       .insertMessage({
         orgId: input.orgId,
@@ -301,8 +314,11 @@ const make = Effect.gen(function* () {
         Effect.asSome,
         Effect.catchIf(Chat.isPrivateWriteRefused, () => Effect.succeedNone),
       );
-    if (Option.isSome(posted))
-      yield* hub.publish({ type: "message.posted", orgId: input.orgId, message: posted.value });
+    if (Option.isNone(posted)) return false;
+    yield* sql.afterCommit(
+      hub.publish({ type: "message.posted", orgId: input.orgId, message: posted.value }),
+    );
+    return true;
   });
   /** One line per limit and day, in the chief of staff's chat when there is one. */
   const ownerNotice = Effect.fn("KinBudget.ownerNotice")(function* (
@@ -319,9 +335,9 @@ const make = Effect.gen(function* () {
         : heldBy === "teammates"
           ? "teammates_notified_at"
           : "warned_at";
-    const updated = yield* sql`UPDATE kin_budget SET ${sql(column)} = ${now}
-      WHERE org_id = ${orgId} AND day = ${day} AND ${sql(column)} IS NULL RETURNING org_id`;
-    if (updated.length === 0) return;
+    const [state] = yield* sql<{ sent: number | null }>`SELECT ${sql(column)} AS sent
+      FROM kin_budget WHERE org_id = ${orgId} AND day = ${day}`;
+    if (state?.sent != null) return;
     const at = yield* clock(orgId, nextReset);
     const held = yield* waiting(orgId);
     const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -335,6 +351,9 @@ const make = Effect.gen(function* () {
         return `${row.name} (${parts.join(", ")})`;
       })
       .join(", ");
+    const [stored] = yield* sql<{ limits: string }>`SELECT limits_json AS limits
+      FROM kin_budget_limits WHERE org_id = ${orgId}`;
+    const teammateLimit = (yield* limitsOf(stored?.limits ?? null)).teammateUnits != null;
     const leads = yield* byLead(orgId, day);
     const total = leads.reduce((sum, row) => sum + row.leadUnits, 0);
     const used =
@@ -345,9 +364,11 @@ const make = Effect.gen(function* () {
       heldBy === "warning"
         ? `Your agents have used 80% of today's limit. At the limit only your own messages run, on the cheaper model, until ${at}. You can raise or remove the limit in Settings.`
         : heldBy === "teammates"
-          ? `Today's limit for teammates' requests is used up, so they wait until ${at}${list === "" ? "" : `: ${list}`}. Raise or remove it in Settings to run them now.`
+          ? teammateLimit
+            ? `Today's limit for teammates' requests is used up, so they wait until ${at}${list === "" ? "" : `: ${list}`}. Raise or remove it in Settings to run them now.`
+            : `Teammates' requests have used what's left of today's limit, so they wait until ${at}${list === "" ? "" : `: ${list}`}. Your own messages still run. Raise or remove the limit in Settings to run them now.`
           : `Today's limit for your agents is used up. Your own messages still run, on the cheaper model; ${list === "" ? "other work" : `this waits: ${list}. More`} waits until ${at}.${used} Raise or remove the limit in Settings to run it all now.`;
-    yield* system({
+    const posted = yield* system({
       orgId,
       chatId: KinChatId.make(lead.ownerChatId),
       audience: "owner",
@@ -355,6 +376,10 @@ const make = Effect.gen(function* () {
       body,
       now,
     });
+    // Marked only once its line is stored, in the same transaction.
+    if (posted)
+      yield* sql`UPDATE kin_budget SET ${sql(column)} = ${now}
+        WHERE org_id = ${orgId} AND day = ${day} AND ${sql(column)} IS NULL`;
   });
   const measure = Effect.fn("KinBudget.measure")(function* (
     usage: ReadonlyArray<Usage>,
@@ -421,6 +446,11 @@ const make = Effect.gen(function* () {
           const exists =
             yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId} AND person_id = ${person.personId}`;
           if (exists.length === 0) return yield* notFound;
+          // Amounts and who spent them are the owner's settings, never a teammate's to read.
+          const owner = yield* isOrgOwner(orgId, person.personId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+          if (!owner) return yield* notAllowed;
           return yield* get(orgId);
         }),
       );
@@ -450,7 +480,8 @@ const make = Effect.gen(function* () {
           yield* sql`INSERT INTO kin_budget_limits (org_id, limits_json) VALUES (${input.orgId}, ${json}) ON CONFLICT DO NOTHING RETURNING org_id`;
           yield* sql`UPDATE kin_budget_limits SET limits_json = ${json} WHERE org_id = ${input.orgId}`;
           yield* queue.reconsiderBudget(input.orgId);
-          return yield* snapshot(input.orgId, day, true);
+          const { teammates: _teammates, ...budget } = yield* snapshot(input.orgId, day, true);
+          return budget;
         }),
       );
     }, Effect.mapError(mapError)),
@@ -460,62 +491,83 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* ensure(orgId, day);
           const budget = yield* snapshot(orgId, day);
-          const remaining = share(budget);
           const teammateLimit = budget.limits.teammateUnits;
-          const teammatesOut =
-            asker === "teammate" &&
-            teammateLimit != null &&
-            (yield* teammateUnits(orgId, day)) >= teammateLimit;
-          const withinOrg =
+          // The owner's work spends against the limit less what teammates spent. A teammate's
+          // spends against the teammates' limit when one is set, else what is left of the org's.
+          if (asker === "teammate" && teammateLimit != null) {
+            const allowed = budget.teammates < teammateLimit;
+            return {
+              allowed,
+              cheapOnly: false,
+              nextReset,
+              remaining: left(teammateLimit, budget.teammates),
+              heldBy: allowed ? null : ("teammates" as const),
+            };
+          }
+          const remaining =
+            asker === "owner"
+              ? ownerShare(budget)
+              : left(budget.limits.leadUnits, budget.leadUnits);
+          const allowed =
             priority === "P0" ||
             (priority === "P4"
               ? remaining > 0.3
               : remaining > 0 &&
                 (priority === "P1" || (priority === "P2" ? remaining >= 0.2 : remaining > 0.4)));
-          const allowed = withinOrg && !teammatesOut;
           return {
             allowed,
             cheapOnly: remaining === 0,
             nextReset,
             remaining,
-            heldBy: allowed ? null : teammatesOut ? ("teammates" as const) : ("org" as const),
+            heldBy: allowed ? null : asker === "owner" ? ("org" as const) : ("teammates" as const),
           };
         }),
       );
     }, Effect.mapError(mapError)),
-    held: Effect.fn("KinBudget.held")(function* (input) {
-      if (input.events.length === 0) return;
-      const { now } = yield* period(input.orgId);
-      const [lead] = yield* sql<{ name: string; ownerChatId: string }>`
+    defer: Effect.fn("KinBudget.defer")(
+      function* (input) {
+        if (input.events.length === 0) return;
+        const { now } = yield* period(input.orgId);
+        yield* queue.release({
+          orgId: input.orgId,
+          wakeupId: input.wakeupId,
+          eventIds: input.events.map((event) => event.eventId),
+          notBefore: input.nextReset,
+          countAttempt: false,
+          budgetDeferred: true,
+        });
+        const [lead] = yield* sql<{ name: string; ownerChatId: string }>`
         SELECT name, owner_chat_id AS "ownerChatId" FROM kin_leads
         WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} ORDER BY agent_id`;
-      if (lead !== undefined) {
-        const at = yield* clock(input.orgId, input.nextReset);
-        const why =
-          input.heldBy === "teammates"
-            ? "today's limit for teammates' requests is used up"
-            : "today's limit is used up";
-        // Where each asked: a message's or card's own chat, reported work's, else the lead's own.
-        const chats = new Set(
-          input.events.map((event) =>
-            "chatId" in event && event.chatId !== undefined ? event.chatId : lead.ownerChatId,
-          ),
-        );
-        for (const chatId of chats)
-          yield* system({
-            orgId: input.orgId,
-            chatId: KinChatId.make(chatId),
-            audience: "chat",
-            messageId: `kin-waiting:${input.wakeupId}:${chatId}`,
-            body: `${lead.name} will pick this up at ${at}: ${why}.`,
-            now,
-          });
-      }
-      yield* ownerNotice(input.orgId, input.heldBy);
-    }, Effect.mapError(mapError)),
+        if (lead !== undefined) {
+          const at = yield* clock(input.orgId, input.nextReset);
+          const why =
+            input.heldBy === "teammates"
+              ? "today's limit for teammates' requests is used up"
+              : "today's limit is used up";
+          // Where each asked: a message's or card's own chat, reported work's, else the lead's own.
+          const chats = new Set(
+            input.events.map((event) =>
+              "chatId" in event && event.chatId !== undefined ? event.chatId : lead.ownerChatId,
+            ),
+          );
+          for (const chatId of chats)
+            yield* system({
+              orgId: input.orgId,
+              chatId: KinChatId.make(chatId),
+              audience: "chat",
+              messageId: `kin-waiting:${input.wakeupId}:${chatId}`,
+              body: `${lead.name} will pick this up at ${at}: ${why}.`,
+              now,
+            });
+        }
+        yield* ownerNotice(input.orgId, input.heldBy);
+      },
+      (effect) => sql.withTransaction(effect).pipe(Effect.mapError(mapError)),
+    ),
     notifyOwner: Effect.fn("KinBudget.notifyOwner")(
       (orgId, heldBy) => ownerNotice(orgId, heldBy),
-      Effect.mapError(mapError),
+      (effect) => sql.withTransaction(effect).pipe(Effect.mapError(mapError)),
     ),
     admitWorker: Effect.fn("KinBudget.admitWorker")(function* (orgId) {
       const budget = yield* read(orgId, false);
@@ -525,7 +577,7 @@ const make = Effect.gen(function* () {
       const budget = yield* read(orgId, false);
       return budget.limits.leadUnits === null
         ? "no daily limit"
-        : `${Math.floor(share(budget) * 100)}% of today left`;
+        : `${Math.floor(ownerShare(budget) * 100)}% of today left`;
     }),
     charge: Effect.fn("KinBudget.charge")(function* (input) {
       const units = yield* measure(input.usage, { orgId: input.orgId, wakeupId: input.wakeupId });
@@ -545,12 +597,16 @@ const make = Effect.gen(function* () {
           yield* ensure(input.orgId, day);
           const before = yield* snapshot(input.orgId, day);
           if (!Number.isFinite(before.leadUnits + delta)) return yield* invalid;
-          yield* sql`INSERT INTO kin_budget_charges (org_id, wakeup_id, day, units, tokens_json)
-            VALUES (${input.orgId}, ${input.wakeupId}, ${day}, ${chargedUnits}, ${tokensJson})
-            ON CONFLICT (org_id, wakeup_id) DO UPDATE SET units = excluded.units, tokens_json = excluded.tokens_json`;
+          const teammate = (yield* askedByTeammates(input.orgId, input.wakeupId)) ? 1 : 0;
+          yield* sql`INSERT INTO kin_budget_charges (org_id, wakeup_id, day, units, tokens_json, teammate)
+            VALUES (${input.orgId}, ${input.wakeupId}, ${day}, ${chargedUnits}, ${tokensJson}, ${teammate})
+            ON CONFLICT (org_id, wakeup_id) DO UPDATE SET units = excluded.units,
+              tokens_json = excluded.tokens_json, teammate = excluded.teammate`;
           yield* sql`UPDATE kin_budget SET lead_units = lead_units + ${delta} WHERE org_id = ${input.orgId} AND day = ${day}`;
           const limit = before.limits.leadUnits;
-          if (limit !== null && limit > 0 && before.leadUnits + delta >= WARN_AT * limit)
+          const ownerSpent =
+            Math.max(0, before.leadUnits - before.teammates) + delta * (1 - teammate);
+          if (limit !== null && limit > 0 && teammate === 0 && ownerSpent >= WARN_AT * limit)
             yield* ownerNotice(input.orgId, "warning");
           yield* sql`UPDATE kin_wakeups SET tokens_json = ${tokensJson} WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
           return {

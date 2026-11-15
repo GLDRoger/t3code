@@ -357,17 +357,14 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
     const rows = yield* posted;
     assert.deepStrictEqual(
       rows.map((row) => [row.body, row.authorKind, row.intent]),
-      [
-        ["Yes, CI is green on main.", "agent", "answer"],
-        ["The flaky test passed twice.", "agent", "answer"],
-      ],
+      [["Yes, CI is green on main.\n\nThe flaky test passed twice.", "agent", "answer"]],
     );
     const [run] = yield* sql<{ runId: string; turns: number }>`
       SELECT run_id AS "runId", agent_turns AS turns FROM kin_floor_runs
       WHERE opened_by = ${message!.messageId} ORDER BY run_id`;
     assert.deepStrictEqual(
       rows.map((row) => row.floorRunId),
-      [run!.runId, run!.runId],
+      [run!.runId],
     );
     assert.strictEqual(run!.turns, 1);
     assert.strictEqual(fake.rescues, 0);
@@ -518,6 +515,16 @@ it.effect.each([
       text("b", 3, secondAnswer, runId),
     ],
     expected: ["Done: deferred to Fri 9:00."],
+  },
+  {
+    name: "a long message, a tool, then the answer and kin_end, as one message",
+    items: (runId: RunId) => [
+      text("a", 1, githubAnswer, runId),
+      tool("t1", 2, "mcp__kin__kin_github_prs", runId),
+      text("b", 3, "And #87 has a second approval now.", runId),
+      tool("end", 4, "mcp__kin__kin_end", runId),
+    ],
+    expected: [`${githubAnswer}\n\nAnd #87 has a second approval now.`],
   },
   {
     name: "kin_end with nothing posted, then the reply",
@@ -910,14 +917,18 @@ it.effect("posts nothing in a chat where the lead is muted", () =>
 
 it.effect.each([
   { reply: "Should I take it over?", expected: [] },
-  { reply: "should i take it over", expected: [] },
+  { reply: "should i  take it over", expected: [] },
+  // Digits and inner punctuation are what the sentence says: they are never normalised away.
+  { question: "Cost is $1.00?", reply: "Cost is $100.", expected: ["Cost is $100."] },
+  { question: "Merge PR #87?", reply: "Merge PR #8-7.", expected: ["Merge PR #8-7."] },
+  { question: "Cost is $1.00?", reply: "cost is $1.00", expected: [] },
   { reply: "Tech owns the API. Should I take it over?", expected: ["Tech owns the API."] },
   {
     reply: "Should I take it over?\n\nTech has been quiet for a day.",
     expected: ["Tech has been quiet for a day."],
   },
   { reply: "Tech is on it already.", expected: ["Tech is on it already."] },
-])("a reply doesn't repeat the question its card asks ($reply)", ({ reply, expected }) =>
+])("a reply doesn't repeat the question its card asks ($reply)", ({ question, reply, expected }) =>
   Effect.gen(function* () {
     const { fake, runId, complete, posted, identity, chats, owner, wakeupId, chatId } =
       yield* setup({ ask: "The API is stuck" });
@@ -927,7 +938,7 @@ it.effect.each([
     yield* chats.ask(lead, {
       chatId,
       clientMessageId: "take-over",
-      question: "Should I take it over?",
+      question: question ?? "Should I take it over?",
       options: [
         { label: "Yes", kind: "yes" },
         { label: "No", kind: "no" },
@@ -943,26 +954,54 @@ it.effect.each([
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("bounds one wake-up to eight messages in a chat, kin_chat_post included", () =>
-  Effect.gen(function* () {
-    const { fake, runId, complete, posted, identity, chats, owner, wakeupId, chatId } =
-      yield* setup({ ask: "Tell me everything" });
-    const paragraph = (n: number) => `Part ${n}. ${"Detail ".repeat(40).trim()}`;
-    fake.items = Array.from({ length: 12 }, (_, n) => text(`p${n}`, n + 1, paragraph(n), runId));
-    yield* complete;
-    const rows = yield* posted;
-    assert.lengthOf(rows, 8);
-    assert.strictEqual(rows[6]!.body, paragraph(6));
-    assert.include(rows[7]!.body, "Part 7.");
-    assert.include(rows[7]!.body, "Part 11.");
-    const lead = Option.getOrThrow(
-      yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
-    );
-    const extra = yield* chats
-      .send(lead, { chatId, body: "One more", clientMessageId: "extra", intent: "answer" })
-      .pipe(Effect.flip);
-    assert.include(extra, { reason: "limit" });
-  }).pipe(Effect.provide(layer)),
+it.effect(
+  "keeps a turn's reply to one message however many segments, live, with kin_chat_post bounded",
+  () =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, posted, identity, chats, owner, wakeupId, chatId, services } =
+        yield* setup({ ask: "Tell me everything" });
+      const all = yield* Context.get(services, KinChatHub).subscribeAll;
+      const paragraph = (n: number) => `Part ${n}. ${"Detail ".repeat(40).trim()}`;
+      fake.items = Array.from({ length: 12 }, (_, n) => [
+        text(`p${n}`, 2 * n + 1, paragraph(n), runId),
+        tool(`t${n}`, 2 * n + 2, "mcp__kin__kin_journal", runId),
+      ]).flat();
+      const live = yield* all.pipe(
+        Stream.filter(
+          (event) => event.type === "message.posted" && event.message.author._tag === "agent",
+        ),
+        Stream.take(12),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      for (const item of fake.items) yield* Queue.offer(fake.live, itemEvent(item));
+      const updates = yield* Fiber.join(live);
+      yield* complete;
+      const body = Array.from({ length: 12 }, (_, n) => paragraph(n)).join("\n\n");
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => row.body),
+        [body],
+      );
+      // Each segment reaches clients as the same message, grown, through the live stream.
+      const ids = new Set(
+        updates.map((event) => (event.type === "message.posted" ? event.message.messageId : "")),
+      );
+      assert.strictEqual(ids.size, 1);
+      const last = updates.at(-1);
+      assert.strictEqual(last?.type === "message.posted" ? last.message.body : "", body);
+      const lead = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+      );
+      const send = (n: number) =>
+        chats.send(lead, {
+          chatId,
+          body: `More ${n}`,
+          clientMessageId: `extra-${n}`,
+          intent: "answer",
+        });
+      for (const n of [1, 2, 3, 4, 5, 6, 7]) yield* send(n);
+      assert.include(yield* send(8).pipe(Effect.flip), { reason: "limit" });
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each([
@@ -1296,4 +1335,51 @@ it.effect.each(
       );
       assert.strictEqual(fake.rescues, order === "kin_end only" && wake.owed ? 1 : 0);
     }).pipe(Effect.provide(layer)),
+);
+
+// Review 48: ten notices this hour refused a hand-over or task reply, and it counted as answered.
+it.effect.each(["hand-over", "record.changed", "worker.report", "github"] as const)(
+  "the hourly notice limit holds back only unprompted notices, never an owed reply (%s)",
+  (kind) =>
+    Effect.gen(function* () {
+      const wake = WAKE_KINDS[kind];
+      const { fake, runId, complete, sql, owner, direct } = yield* setup(
+        wake.event === undefined ? {} : { event: wake.event },
+      );
+      for (const n of Array.from({ length: 10 }, (_, index) => index)) {
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${`earlier-${n}`}, ${owner.orgId}, ${direct.chatId}, ${1000 + n}, 'system',
+            'member', 'text', 'Earlier notice', '[]', 'posted', '1970-01-01T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_floor_notices (org_id, message_id, chat_id, agent_id, posted_at)
+          VALUES (${owner.orgId}, ${`earlier-${n}`}, ${direct.chatId}, ${agentId}, 0)`;
+      }
+      fake.items = [text("a", 1, reply, runId), tool("end", 2, "mcp__kin__kin_end", runId)];
+      yield* complete;
+      const said = yield* sql<{ body: string; authorKind: string }>`
+        SELECT body, author_kind AS "authorKind" FROM kin_messages
+        WHERE org_id = ${owner.orgId} AND chat_id = ${direct.chatId} AND author_kind != 'human'
+          AND message_id NOT LIKE 'kin-handoff:%' AND message_id NOT LIKE 'earlier-%' ORDER BY seq`;
+      assert.deepStrictEqual(
+        said.map((row) => `${row.authorKind}:${row.body}`),
+        wake.owed ? [`agent:${reply}`] : [],
+      );
+      assert.strictEqual(fake.rescues, 0);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a reply Kin refused is not an answer: the owner sees that none came", () =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, posted } = yield* setup({ ask: "Is CI green?" });
+    // The message's grant lapsed before the reply landed, so the floor refuses it.
+    yield* TestClock.adjust("6 minutes");
+    fake.items = [text("a", 1, "Yes, CI is green on main.", runId)];
+    yield* complete;
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
+      ["system:Ada didn't reply."],
+    );
+    // The rescue's text would be refused the same way.
+    assert.strictEqual(fake.rescues, 0);
+  }).pipe(Effect.provide(layer)),
 );

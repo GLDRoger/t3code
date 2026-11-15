@@ -717,19 +717,21 @@ describe("WakeupRunner", () => {
       }).pipe(Effect.provide(harness({ failed: true })), provideDeterministicTestRuntime),
   );
   it.effect.each([
-    { failureCode: undefined, said: ["retrying", "retrying", "gave_up"] },
+    { failureCode: undefined, mode: "reply", said: ["retrying", "retrying", "gave_up"] },
     // No retry signs the account in: each try names the fix, and the bridge says it once.
-    { failureCode: "authentication_failed", said: ["signin", "signin", "signin"] },
-  ])(
-    "tells the owner at once why a failed start stopped or retries ($failureCode)",
-    ({ failureCode, said }) =>
+    { failureCode: "authentication_failed", mode: "reply", said: ["signin", "signin", "signin"] },
+    // Review 48: an assigned entry or a worker's report owes words too, though nobody wrote.
+    { failureCode: undefined, mode: "notice", said: ["retrying", "retrying", "gave_up"] },
+  ] as const)(
+    "tells the owner at once why a failed start stopped or retries ($failureCode, $mode)",
+    ({ failureCode, mode, said }) =>
       Effect.gen(function* () {
         const outcomes: Array<string> = [];
         const bridge = Layer.mock(KinReplyBridge)({
           lane: () =>
             Effect.succeedSome({
               chatId: KinChatId.make("owner-chat"),
-              mode: "reply" as const,
+              mode,
               owed: true,
               leadName: "Lead",
             }),

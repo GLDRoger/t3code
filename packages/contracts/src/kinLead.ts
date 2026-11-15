@@ -650,9 +650,10 @@ export type KinEvent = typeof KinEvent.Type;
 
 const KinBudgetUnits = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 /**
- * The owner's daily limits, in budget units; null is no limit, which is the default. Agents'
- * turns spend `leadUnits`, coding workers `workerUnits`, and turns teammates asked for also count
- * against `teammateUnits`.
+ * The owner's daily limits, in budget units; null is no limit, which is the default. Coding
+ * workers spend `workerUnits`. Agents' turns the owner asked for spend `leadUnits` less only what
+ * the owner's own turns used, so teammates never use up the owner's share. Turns a teammate asked
+ * for spend `teammateUnits` when it is set, else what is left of `leadUnits` after every turn.
  */
 export const KinBudgetLimits = Schema.Struct({
   leadUnits: Schema.NullOr(KinBudgetUnits),
@@ -675,7 +676,9 @@ export const KinBudget = Schema.Struct({
   ),
   leadUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   workerUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
-  /** Today's lead units spent on turns a teammate asked for, within `leadUnits`. */
+  /** The owner's view: today's lead units on turns the owner asked for, within `leadUnits`. */
+  ownerUnits: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  /** The owner's view: today's lead units on turns a teammate asked for, within `leadUnits`. */
   teammateUnits: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   limits: KinBudgetLimits,
   /** Work held for a limit, by agent: it runs when the day turns or a limit is raised. */
@@ -693,7 +696,7 @@ export const KinBudget = Schema.Struct({
       ),
     }),
   ),
-  // Today's lead units by lead, largest first; the limit stays one figure for the org.
+  // Today's lead units by lead, largest first.
   leads: Schema.optional(
     Schema.Array(
       Schema.Struct({

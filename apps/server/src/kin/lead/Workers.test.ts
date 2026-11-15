@@ -3188,18 +3188,27 @@ it.effect("a local run that fails without a report tells its lead what ended it"
     Effect.gen(function* () {
       yield* goLocal(ctx, remote);
       const { workerId } = yield* workers.delegate(scope, delegateInput);
+      // Review 48: provider text can carry a token and a private path into the lead's prompt.
+      const token = "ghp_ABCDEFabcdef0123456789ABCDEFabcdef01";
       yield* local.finish(
         localThreadId(workerId),
         "failed",
         undefined,
-        "You've hit your usage limit. Try again at 3pm.",
+        `Usage limit hit with ${token} reading /Users/someone/secret/notes.md. Try again at 3pm.`,
       );
       yield* settled(tracker, ctx.orgId, workerId);
       const [reported] = yield* reports(ctx.sql, ctx.orgId);
       assert.strictEqual(
         reported!.event.report.summary,
-        "Worker ended failed without a report. What Kin saw: You've hit your usage limit. Try again at 3pm.",
+        "Worker ended failed without a report. Failure: unknown, during its run. What Kin saw: Usage limit hit with [redacted] reading [path] Try again at 3pm.",
       );
+      // What the prompt reads: the report event and the worker row.
+      const stored = JSON.stringify([
+        yield* ctx.sql`SELECT json FROM kin_events WHERE org_id = ${ctx.orgId}`,
+        yield* ctx.sql`SELECT report_json FROM kin_workers WHERE org_id = ${ctx.orgId}`,
+      ]);
+      assert.notInclude(stored, token);
+      assert.notInclude(stored, "/Users/someone");
     }),
   ),
 );

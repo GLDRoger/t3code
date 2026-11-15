@@ -308,6 +308,14 @@ describe("KinBudget", () => {
         { reason: "not_allowed" },
       );
       assert.include(yield* budget.set([], input).pipe(Effect.flip), { reason: "not_found" });
+      // A teammate's read is refused at the service too, not trimmed.
+      assert.include(
+        yield* budget
+          .view([{ _tag: "person", orgId, personId: KinPersonId.make("member") }], orgId)
+          .pipe(Effect.flip),
+        { reason: "not_allowed" },
+      );
+      assert.strictEqual((yield* budget.view(owner, orgId)).orgId, orgId);
       for (const bad of [-1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
         assert.include(
           yield* budget
@@ -384,6 +392,12 @@ describe("KinBudget", () => {
           limits: { leadUnits: 1000, workerUnits: 1000, teammateUnits: 50 },
         });
         // A turn Kabir asked for spends from the teammates' limit, and the owner's stays open.
+        const claim = (wakeupId: string, eventId: string) =>
+          Effect.gen(function* () {
+            yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
+              VALUES (${orgId}, ${wakeupId}, ${agentId}, 'cheap', 0, 'running', json_array(${eventId}))`;
+            yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId}, state = 'claimed' WHERE event_id = ${eventId}`;
+          });
         const ask = (id: string) =>
           ({
             _tag: "chat.message",
@@ -415,9 +429,9 @@ describe("KinBudget", () => {
         const next = ask("next");
         yield* queue.enqueue(next);
         const { nextReset } = yield* budget.admit(orgId, "P2", "teammate");
-        yield* sql`UPDATE kin_events SET budget_deferred = 1, not_before = ${nextReset} WHERE event_id = 'next'`;
+        yield* claim("held-wakeup", "next");
         for (const _ of [1, 2])
-          yield* budget.held({
+          yield* budget.defer({
             orgId,
             agentId,
             wakeupId: KinWakeupId.make("held-wakeup"),
@@ -425,6 +439,10 @@ describe("KinBudget", () => {
             heldBy: "teammates",
             nextReset,
           });
+        assert.deepStrictEqual(
+          yield* sql`SELECT state, budget_deferred, not_before FROM kin_events WHERE event_id = 'next'`,
+          [{ state: "queued", budget_deferred: 1, not_before: nextReset }],
+        );
         assert.deepStrictEqual(
           yield* sql`SELECT chat_id AS "chatId", body FROM kin_messages
             WHERE org_id = ${orgId} ORDER BY chat_id, message_id`,
@@ -474,6 +492,130 @@ describe("KinBudget", () => {
           },
         ],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+  it.effect("a teammate's spending never holds or downgrades the owner's own work", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const budget = yield* Budget.KinBudget;
+      const queue = yield* Queue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${orgId}, 'mate', 'Kabir', '1970-01-01T00:00:00.000Z')`;
+      yield* budget.set(owner, { orgId, limits: { leadUnits: 100, workerUnits: 100 } });
+      // Kabir's two turns spend more than the whole limit.
+      for (const id of ["one", "two"]) {
+        yield* queue.enqueue({
+          _tag: "chat.message",
+          orgId,
+          agentId,
+          eventId: KinEventId.make(id),
+          receivedAt: DateTime.makeUnsafe(0),
+          dedupeKey: null,
+          provenance: {
+            _tag: "human",
+            personId: KinPersonId.make("mate"),
+            memberId: KinMemberId.make("group-mate"),
+          },
+          chatId: KinChatId.make("owner-chat"),
+          messageId: KinMessageId.make(`message-${id}`),
+        });
+        const wakeupId = KinWakeupId.make(`mate-${id}`);
+        yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, ${wakeupId}, ${agentId}, 'cheap', 0, 'completed', '[]')`;
+        yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId}, state = 'done' WHERE event_id = ${id}`;
+        yield* budget.charge({ orgId, wakeupId, usage });
+      }
+      for (const priority of ["P0", "P1", "P2", "P3"] as const)
+        assert.include(yield* budget.admit(orgId, priority, "owner"), {
+          allowed: true,
+          cheapOnly: false,
+          remaining: 1,
+        });
+      assert.strictEqual(yield* budget.promptContext(orgId), "100% of today left");
+      assert.include(yield* budget.admit(orgId, "P1", "teammate"), {
+        allowed: false,
+        heldBy: "teammates",
+      });
+      assert.include(yield* budget.get(orgId), {
+        leadUnits: 111,
+        ownerUnits: 0,
+        teammateUnits: 111,
+      });
+      // With their own limit set, teammates spend against it instead.
+      yield* budget.set(owner, {
+        orgId,
+        limits: { leadUnits: 100, workerUnits: 100, teammateUnits: 200 },
+      });
+      assert.isTrue((yield* budget.admit(orgId, "P2", "teammate")).allowed);
+      // The owner's own turn is charged as the owner's: their room shrinks, Kabir's doesn't.
+      const own = KinWakeupId.make("own");
+      yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, ${own}, ${agentId}, 'cheap', 0, 'completed', '[]')`;
+      yield* budget.charge({ orgId, wakeupId: own, usage });
+      assert.include(yield* budget.get(orgId), { ownerUnits: 55.5, teammateUnits: 111 });
+      assert.strictEqual((yield* budget.admit(orgId, "P3", "owner")).remaining, 44.5 / 100);
+    }).pipe(Effect.provide(layer)),
+  );
+  it.effect("a crash between holding work and saying so leaves neither, then says both once", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const budget = yield* Budget.KinBudget;
+      const queue = yield* Queue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      yield* budget.set(owner, { orgId, limits: { leadUnits: 0, workerUnits: 0 } });
+      const event = {
+        _tag: "chat.message",
+        orgId,
+        agentId,
+        eventId: KinEventId.make("asked"),
+        receivedAt: DateTime.makeUnsafe(0),
+        dedupeKey: null,
+        provenance: {
+          _tag: "human",
+          personId: KinPersonId.make("owner"),
+          memberId: KinMemberId.make("owner-member"),
+        },
+        chatId: KinChatId.make("owner-chat"),
+        messageId: KinMessageId.make("message-asked"),
+      } as const;
+      yield* queue.enqueue(event);
+      yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
+        VALUES (${orgId}, 'held', ${agentId}, 'cheap', 0, 'running', json_array('asked'))`;
+      yield* sql`UPDATE kin_events SET wakeup_id = 'held', state = 'claimed' WHERE event_id = 'asked'`;
+      const { nextReset } = yield* budget.admit(orgId, "P3", "owner");
+      const defer = budget.defer({
+        orgId,
+        agentId,
+        wakeupId: KinWakeupId.make("held"),
+        events: [event],
+        heldBy: "org",
+        nextReset,
+      });
+      // The process dies as the owner's notice is written, after the hold and the asker's line.
+      yield* sql`CREATE TRIGGER crash BEFORE INSERT ON kin_messages
+        WHEN NEW.message_id LIKE 'kin-budget%' BEGIN SELECT RAISE(ABORT, 'crash'); END`;
+      yield* defer.pipe(Effect.flip);
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, budget_deferred FROM kin_events WHERE event_id = 'asked'`,
+        [{ state: "claimed", budget_deferred: 0 }],
+      );
+      assert.deepStrictEqual(yield* sql`SELECT message_id FROM kin_messages`, []);
+      assert.deepStrictEqual(yield* sql`SELECT exhausted_notified_at FROM kin_budget`, [
+        { exhausted_notified_at: null },
+      ]);
+      // The claim is still the running wake-up's, so its next pass holds it again, and says so.
+      yield* sql`DROP TRIGGER crash`;
+      yield* defer;
+      yield* defer;
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, budget_deferred FROM kin_events WHERE event_id = 'asked'`,
+        [{ state: "queued", budget_deferred: 1 }],
+      );
+      assert.deepStrictEqual(yield* sql`SELECT message_id FROM kin_messages ORDER BY message_id`, [
+        { message_id: `kin-budget:${orgId}:1970-01-01` },
+        { message_id: "kin-waiting:held:owner-chat" },
+      ]);
+      assert.deepStrictEqual(yield* sql`SELECT exhausted_notified_at FROM kin_budget`, [
+        { exhausted_notified_at: 0 },
+      ]);
     }).pipe(Effect.provide(layer)),
   );
 });

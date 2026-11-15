@@ -169,7 +169,7 @@ const make = Effect.gen(function* () {
     const outcome =
       finished.stranded > 0
         ? "partway"
-        : lane.value.mode !== "reply"
+        : !lane.value.owed
           ? undefined
           : setup !== null
             ? setup
@@ -205,7 +205,7 @@ const make = Effect.gen(function* () {
       const key = `${event.priority}:${asker}`;
       groups.set(key, [...(groups.get(key) ?? []), event]);
     }
-    let cheapOnly = false;
+    const cheap: Array<boolean> = [];
     const held: Array<{
       readonly events: ReadonlyArray<E>;
       readonly heldBy: KinBudget.HeldBy;
@@ -214,15 +214,17 @@ const make = Effect.gen(function* () {
     for (const [key, group] of groups) {
       const [priority, asker] = key.split(":") as ["P0" | "P1" | "P2" | "P3", "owner" | "teammate"];
       const admission = yield* budget.admit(orgId, priority, asker);
-      cheapOnly ||= admission.cheapOnly;
-      if (!admission.allowed)
+      if (admission.allowed) cheap.push(admission.cheapOnly);
+      else
         held.push({
           events: group,
           heldBy: admission.heldBy ?? "org",
           nextReset: admission.nextReset,
         });
     }
-    return { cheapOnly, held };
+    // The strong model runs while any work it takes still has room: a teammate's spending never
+    // moves the owner's own message to the cheaper one.
+    return { cheapOnly: cheap.length > 0 && cheap.every(Boolean), held };
   });
   const memory = yield* Memory.Memory;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
@@ -359,15 +361,7 @@ const make = Effect.gen(function* () {
         let events = yield* queue.steer({ orgId, agentId, wakeupId });
         for (const group of (yield* admitEvents(orgId, agentId, events)).held) {
           const ids = new Set(group.events.map((event) => event.eventId));
-          yield* queue.release({
-            orgId,
-            wakeupId,
-            eventIds: [...ids],
-            notBefore: group.nextReset,
-            countAttempt: false,
-            budgetDeferred: true,
-          });
-          yield* budget.held({ orgId, agentId, wakeupId, ...group });
+          yield* budget.defer({ orgId, agentId, wakeupId, ...group });
           events = events.filter((event) => !ids.has(event.eventId));
         }
         if (events.length === 0) return;
@@ -797,15 +791,7 @@ const make = Effect.gen(function* () {
                     }
                   }
                 const waits = events.filter((event) => deferred.has(event.eventId));
-                yield* queue.release({
-                  orgId,
-                  wakeupId,
-                  eventIds: waits.map((event) => event.eventId),
-                  notBefore: group.nextReset,
-                  countAttempt: false,
-                  budgetDeferred: true,
-                });
-                yield* budget.held({
+                yield* budget.defer({
                   orgId,
                   agentId,
                   wakeupId,
