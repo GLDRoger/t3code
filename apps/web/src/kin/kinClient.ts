@@ -837,7 +837,7 @@ export const kinClient = {
       return yield* readBudget(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: kinRefreshOn("company"),
+    refreshTrigger: kinRefreshOn("budget"),
   }),
   budgetSet: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:budget:set",

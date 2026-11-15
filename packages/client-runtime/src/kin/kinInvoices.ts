@@ -311,7 +311,7 @@ export interface KinReceiptView {
   readonly towards: string | null;
   readonly void: boolean;
   readonly advance: boolean;
-  /** "Set against INV-12", or that an advance isn't set against one yet; null otherwise. */
+  /** "Set against INV/26-27/012" (its key while unnumbered), or that an advance isn't set against one yet; null otherwise. */
   readonly applied: string | null;
   readonly invoice: KinRecordKey | null;
   /** An advance not yet set against an invoice: the owner can. */
@@ -324,6 +324,7 @@ export function kinReceiptView(receipt: KinReceipt, now: Date): KinReceiptView {
   const isVoid = receipt.state === "dropped";
   const unapplied = receipt.advance && receipt.invoice === null && !isVoid;
   const towards = receipt.towards?.trim() || null;
+  const against = receipt.invoiceNumber ?? receipt.invoice;
   return {
     key: receipt.key,
     heading: receipt.number ?? receipt.key,
@@ -331,15 +332,12 @@ export function kinReceiptView(receipt: KinReceipt, now: Date): KinReceiptView {
     when: receipt.receivedOn === null ? null : kinWorkDueLabel(receipt.receivedOn, now),
     from: receipt.receivedFrom?.title ?? null,
     // "Invoice INV-6" says no more than "Set against INV-6" beside it.
-    towards: towards === `Invoice ${receipt.invoice}` ? null : towards,
+    towards:
+      towards === `Invoice ${receipt.invoice}` || towards === `Invoice ${against}` ? null : towards,
     void: isVoid,
     advance: receipt.advance,
     applied:
-      receipt.invoice !== null
-        ? KIN_RECEIPTS.against(receipt.invoice)
-        : unapplied
-          ? KIN_RECEIPTS.unapplied
-          : null,
+      against !== null ? KIN_RECEIPTS.against(against) : unapplied ? KIN_RECEIPTS.unapplied : null,
     invoice: receipt.invoice,
     settable:
       unapplied && receipt.receivedFrom !== null

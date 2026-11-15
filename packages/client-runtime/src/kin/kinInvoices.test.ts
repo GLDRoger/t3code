@@ -232,6 +232,7 @@ describe("receipts", () => {
       mode: null,
       reference: null,
       invoice: null,
+      invoiceNumber: null,
       paymentId: null,
       advance: true,
       document: { key: "D-11", title: "Receipt R/26-27/003" },
@@ -254,6 +255,10 @@ describe("receipts", () => {
     expect(
       kinReceiptView(receipt({ invoice: "INV-8" as never, towards: "Invoice INV-8" }), now).towards,
     ).toBeNull();
+    expect(
+      kinReceiptView(receipt({ invoice: "INV-8" as never, invoiceNumber: "INV/26-27/008" }), now)
+        .applied,
+    ).toBe("Set against INV/26-27/008");
     expect(kinReceiptView(receipt({ state: "dropped" }), now)).toMatchObject({
       void: true,
       settable: null,
