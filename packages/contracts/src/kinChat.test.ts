@@ -297,6 +297,11 @@ const samples = {
   KinGroupRenameInput: [{ chatId: "chat-1", title: "Launch week" }],
   KinGroupDeleteInput: [{ chatId: "chat-1" }],
   KinGroupDone: [{}],
+  KinGroupSetCompanyInput: [
+    { orgId: "org-1", leadAgentId: "agent-1" },
+    { orgId: "org-1", leadAgentId: null },
+  ],
+  KinGroupSetCompanyResult: [{ chat: null }],
   KinChatSubscribeInput: [
     { chatId: "chat-1" },
     { chatId: "chat-1", afterSeq: 0 },

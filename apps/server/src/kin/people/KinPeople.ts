@@ -44,6 +44,7 @@ import { SessionStore } from "../../auth/SessionStore.ts";
 import { sessionUploadOwner } from "../../assets/AttachmentUpload.ts";
 import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { KinGroups } from "../chat/KinGroups.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { toPersistenceSqlError, PersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
@@ -172,6 +173,7 @@ export const make = Effect.gen(function* () {
   const stop = yield* Effect.serviceOption(KinStop);
   const store = yield* Effect.serviceOption(KinAttachmentStore);
   const chats = yield* Effect.serviceOption(KinChatService);
+  const groups = yield* Effect.serviceOption(KinGroups);
   const level = (orgId: KinOrgId, personId: KinPersonId) =>
     ownerLevel(orgId, personId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   /** The caller, when owner-level here: the owner or a co-owner runs Team. */
@@ -327,6 +329,7 @@ export const make = Effect.gen(function* () {
                 { orgId: member.orgId, agentId: teamAgent },
               );
           }
+          if (Option.isSome(groups)) yield* groups.value.joinCompany(member.orgId, personId);
           return {
             orgId: member.orgId,
             person: member,

@@ -15,7 +15,7 @@ import { KinStop } from "../lead/KinStop.ts";
 import { KinOwnerTimeZone } from "../triggers/ownerTimeZone.ts";
 import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
-import { KinGroups } from "./KinGroups.ts";
+import { KinGroups, companyChatOf } from "./KinGroups.ts";
 import { KinVisualHosts } from "./KinVisualHosts.ts";
 
 const rpcs = RpcGroup.make(...KinChatAndBudgetRpcs);
@@ -250,6 +250,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     "kin.groups.rename": (input) => group((groups, people) => groups.rename(people, input)),
     "kin.groups.delete": (input) =>
       group((groups, people) => groups.remove(people, input).pipe(Effect.as({}))),
+    "kin.groups.setCompany": (input) => group((groups, people) => groups.setCompany(people, input)),
     "kin.chat.history": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.history(people, input)),
@@ -339,11 +340,13 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               (entry) => entry.orgId === input.orgId,
             );
             // An org the session's person isn't in has no leads to show them.
-            if (person === undefined) return { leads: [], contacts: [], teamAgentId: null };
+            if (person === undefined)
+              return { leads: [], contacts: [], teamAgentId: null, companyChat: null };
             return yield* Effect.all({
               leads: LeadProvision.profiles(person, { includeRetired: input.includeRetired }),
               contacts: LeadProvision.contacts(person),
               teamAgentId: LeadProvision.teamAgent(person.orgId),
+              companyChat: companyChatOf(person.orgId),
             }).pipe(Effect.provideContext(kin.value.services.value));
           }),
         ),

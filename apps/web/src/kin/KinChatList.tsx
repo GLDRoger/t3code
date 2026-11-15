@@ -3,6 +3,7 @@ import {
   kinChatListRows,
   KIN_TEAMMATE_WELCOME,
   type KinChatListRow,
+  kinRoomLine,
 } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
@@ -195,6 +196,7 @@ export function KinChatList() {
             <KinChatListItem
               key={row.chat.chatId}
               row={row}
+              me={directory.me}
               environmentId={state.environmentId}
               active={row.chat.chatId === openChatId}
               now={now}
@@ -355,6 +357,8 @@ function KinRetiredChatItem(props: {
 /** One chat: who, the last line, when, and whether it is unread, working or waiting on you. */
 function KinChatListItem(props: {
   readonly row: KinChatListRow;
+  /** Who "You" is in the company chat's line of who is there. */
+  readonly me?: ReadonlySet<string>;
   readonly environmentId: EnvironmentId;
   readonly active: boolean;
   readonly now: Date;
@@ -420,9 +424,33 @@ function KinChatListItem(props: {
             ) : null}
             {unread ? <Badge size="sm">{view.unread}</Badge> : null}
           </span>
+          {row.company && props.me !== undefined ? (
+            <KinRoomLine environmentId={props.environmentId} chat={chat} me={props.me} />
+          ) : null}
         </span>
       </Link>
     </li>
+  );
+}
+
+/** Who is in the company chat, kept current by the members read its stream refreshes. */
+function KinRoomLine(props: {
+  readonly environmentId: EnvironmentId;
+  readonly chat: KinChatSummary;
+  readonly me: ReadonlySet<string>;
+}) {
+  const result = useAtomValue(
+    kinClient.chatMembers({
+      environmentId: props.environmentId,
+      input: { chatId: props.chat.chatId },
+    }),
+  );
+  const members = Option.getOrNull(AsyncResult.value(result))?.members;
+  if (members === undefined) return null;
+  return (
+    <span className="truncate text-xs text-sidebar-muted-foreground">
+      {kinRoomLine(members, props.me)}
+    </span>
   );
 }
 

@@ -75,7 +75,7 @@ import { KinInviteDialog, type KinInviteDialogState } from "./KinInviteDialog";
 import { kinClient } from "./kinClient";
 import { kinProfileRequestAtom, kinTeamAddRequestAtom } from "./kinTeamForm";
 import { openKinProfile } from "./KinProfileSheet";
-import { KinTeamAgentRow } from "./KinTeamAgent";
+import { KinCompanyChatRow, KinTeamAgentRow } from "./KinTeamAgent";
 import { useKinHostAt } from "./useKinHost";
 
 interface KinTeamTarget {
@@ -299,6 +299,7 @@ function KinTeamBody(
           </Alert>
         )}
         <KinTeamAgentRow environmentId={environmentId} orgId={orgId} />
+        <KinCompanyChatRow environmentId={environmentId} orgId={orgId} />
         {alone ? (
           <Empty size="compact">
             <EmptyHeader>

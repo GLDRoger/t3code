@@ -1012,11 +1012,13 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       leads: [],
       contacts: [],
       teamAgentId: null,
+      companyChat: null,
     });
     assert.deepStrictEqual(yield* client["kin.leads.list"]({ orgId: KinOrgId.make("foreign") }), {
       leads: [],
       contacts: [],
       teamAgentId: null,
+      companyChat: null,
     });
     const edit = { ...org, agentId: growth.agentId, charter: "Grow paid signups." };
     assert.deepStrictEqual(yield* client["kin.lead.update"](edit), {
@@ -1186,6 +1188,7 @@ it.effect(
         leads: [],
         contacts: [],
         teamAgentId: null,
+        companyChat: null,
       });
       assert.include(yield* priya["kin.chats.createDirect"](lead).pipe(Effect.flip), {
         reason: "not_allowed",
@@ -1218,6 +1221,7 @@ it.effect(
           },
         ],
         teamAgentId: null,
+        companyChat: null,
       });
       assert.strictEqual((yield* priya["kin.chats.createDirect"](lead)).chatId, chat.chatId);
       yield* send(priya, chat.chatId, "hers-1");
@@ -1270,6 +1274,7 @@ it.effect(
         leads: [],
         contacts: [],
         teamAgentId: null,
+        companyChat: null,
       });
       // Allowed again: the same chat.
       yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId });

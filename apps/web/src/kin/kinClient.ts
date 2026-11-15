@@ -608,6 +608,11 @@ export const kinClient = {
     tag: "kin.groups.rename",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
   }),
+  groupSetCompany: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:group:set-company",
+    tag: "kin.groups.setCompany",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+  }),
   groupDelete: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:group:delete",
     tag: "kin.groups.delete",

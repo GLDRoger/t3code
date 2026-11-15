@@ -10,6 +10,7 @@ import {
 import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
 import { KIN_CONNECTIONS_COPY } from "@t3tools/client-runtime/kin/kinConnections";
 import {
+  KIN_COMPANY_CHAT_COPY,
   KIN_PROFILE_COPY,
   KIN_TEAM_AGENT_COPY,
   kinRoleLine,
@@ -217,6 +218,9 @@ export function KinSettings(props: {
               <SettingsSection footer={KIN_TEAM_AGENT_COPY.detail}>
                 <KinTeamAgentRow {...company} />
               </SettingsSection>
+              <SettingsSection footer={KIN_COMPANY_CHAT_COPY.detail}>
+                <KinCompanyChatRow {...company} />
+              </SettingsSection>
               <KinDailyLimitSection {...company} />
               <SettingsSection
                 title="Approvals"
@@ -423,6 +427,55 @@ function KinTeamAgentRow(props: {
         icon="bubble.left.and.bubble.right"
         label={KIN_TEAM_AGENT_COPY.label}
         value={list === null ? "…" : kinTeamAgentLabel(leads, current)}
+        valuePosition="trailing"
+        disabled={!canSet || list === null}
+      />
+    </Menu>
+  );
+}
+
+/** The company chat: Off, or on with the agent that answers when nobody is named. */
+function KinCompanyChatRow(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  const leadsAtom = kinClient.leads({
+    environmentId: props.environmentId,
+    input: { orgId: props.orgId },
+  });
+  const result = useAtomValue(leadsAtom);
+  const refresh = useAtomRefresh(leadsAtom);
+  const canSet = useAtomValue(kinClient.groupSetCompany.permissionAtom(props.environmentId));
+  const set = useAtomCommand(kinClient.groupSetCompany, { reportFailure: false });
+  const list = Option.getOrNull(AsyncResult.value(result));
+  const current = list?.companyChat?.leadAgentId ?? null;
+  const choices = kinTeamAgentChoices(list?.leads ?? []);
+  const label = (agentId: string | null, name: string) =>
+    agentId === null ? name : `On, ${name} answers`;
+  const shown = choices.find((choice) => choice.agentId === current);
+  return (
+    <Menu
+      actions={choices.map((choice) => ({
+        id: choice.agentId ?? "off",
+        title: label(choice.agentId, choice.label),
+        state: choice.agentId === current ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent }) => {
+        const picked = choices.find((choice) => (choice.agentId ?? "off") === nativeEvent.event);
+        if (picked === undefined || picked.agentId === current) return;
+        void set({
+          environmentId: props.environmentId,
+          input: { orgId: props.orgId, leadAgentId: picked.agentId },
+        }).then((outcome) => {
+          if (AsyncResult.isFailure(outcome)) Dialog.alert(KIN_COMPANY_CHAT_COPY.failed);
+          refresh();
+        });
+      }}
+    >
+      <SettingsRow
+        icon="person.2"
+        label={KIN_COMPANY_CHAT_COPY.label}
+        value={list === null ? "…" : shown === undefined ? "Off" : shown.label}
         valuePosition="trailing"
         disabled={!canSet || list === null}
       />

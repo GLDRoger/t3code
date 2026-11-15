@@ -1162,6 +1162,20 @@ it.effect(
       assert.isFalse(
         yield* sharedToolAllowed({ orgId, agentId: lead, wakeupId: "wake" }, "record_create", {}),
       );
+      // In the company chat, everyone on the team reads: what it files is shared with them all.
+      yield* sql`UPDATE kin_chats SET kind = 'team_group', direct_key = NULL, team_id = 'company'
+        WHERE chat_id = 'lead-chat'`;
+      assert.isTrue(
+        yield* sharedToolAllowed({ orgId, agentId: lead, wakeupId: "wake" }, "record_create", {}),
+      );
+      const [made] = (yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented: book the launch room" }],
+      })).records;
+      assert.deepStrictEqual(
+        keysOf(yield* LeadWork.query(scope, {})).toSorted(),
+        [shared.key, made!.key].toSorted(),
+      );
     }).pipe(Effect.provide(layer)),
 );
 
