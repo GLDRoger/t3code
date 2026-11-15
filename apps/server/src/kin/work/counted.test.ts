@@ -23,9 +23,9 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/KinRecords.ts": 3,
   // One settlement's parts, read to check a retry.
   "work/leadMoney.ts": 1,
-  // A statement's own rows, and the entries one row may match, each shown with its state.
+  // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
-  "work/statements/statementReview.ts": 3,
+  "work/statements/statementReview.ts": 4,
 };
 
 const sourcesUnder = (dir: string): ReadonlyArray<string> =>
