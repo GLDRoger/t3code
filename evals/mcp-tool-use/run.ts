@@ -59,6 +59,7 @@ import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
+import { KinPulseToolkit } from "../../apps/server/src/kin/pulse/mcp.ts";
 import { WITHDRAWN_WORK, WORK_RULE } from "../../apps/server/src/kin/work/workPrompt.ts";
 import { OWNER_DECLINED, WAITING_FOR_OWNER } from "../../apps/server/src/kin/lead/workerBrief.ts";
 import { SHARED_TURN_LINE } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
@@ -458,6 +459,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   KinDocsToolkit,
   KinDocumentToolkit,
   KinConnectionsToolkit,
+  KinPulseToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
 const t3InputDecoders = new Map(
@@ -525,6 +527,7 @@ const visibleT3Tools = (options: {
               ...Object.keys(KinStatementToolkit.tools),
               ...Object.keys(KinDocsToolkit.tools),
               ...Object.keys(KinDocumentToolkit.tools),
+              ...Object.keys(KinPulseToolkit.tools),
             ].some((name) => tool.name === `${T3_PREFIX}${name}`))
         : ![
             ...Object.keys(KinChatToolkit.tools),
@@ -532,6 +535,7 @@ const visibleT3Tools = (options: {
             ...Object.keys(KinWorkToolkit.tools),
             ...Object.keys(KinDocsToolkit.tools),
             ...Object.keys(KinDocumentToolkit.tools),
+            ...Object.keys(KinPulseToolkit.tools),
             ...Object.keys(KinApprovalsToolkit.tools),
           ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&

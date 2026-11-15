@@ -73,7 +73,7 @@ const owned = (kind: string, id: string) =>
   principal(kind, id) ?? { _tag: "person" as const, personId: id as never };
 
 /** When an entry last became `waiting`, from its change log; its last change if none says so. */
-const waitingSince = (sql: Sql, alias: string) => sql`COALESCE((
+export const waitingSince = (sql: Sql, alias: string) => sql`COALESCE((
     SELECT MAX(c.at) FROM kin_record_changes c, json_each(c.fields_json) j
     WHERE c.org_id = ${sql(alias)}.org_id AND c.record_id = ${sql(alias)}.record_id
       AND json_extract(j.value, '$.field') = 'state'
