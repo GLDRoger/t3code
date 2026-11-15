@@ -34,6 +34,8 @@ import * as Docs from "./docs.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
+import { playbookIndex, playbookThreshold } from "./playbooks.ts";
+import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
 import { search } from "./search.ts";
 
 // Invented org, people and docs only; nothing here reads a real database or memory.
@@ -1021,4 +1023,136 @@ it.effect(
       yield* reuse(agentWriter(lead), "kin-chat-logo-png", "reuse:lead");
     }).pipe(Effect.provide(Layer.merge(store, layer)));
   },
+);
+
+it.effect(
+  "a playbook's kin block is checked on every write, read by the threshold, and seeded once",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const writer = agentWriter(lead);
+      const block = (lines: string) =>
+        `# Invented chasing\n\nChase politely.\n\n\`\`\`kin\n${lines}\n\`\`\`\n`;
+      const refusal = <A, R>(effect: Effect.Effect<A, KinChatError, R>) =>
+        Effect.flip(effect).pipe(Effect.map((error) => error.message));
+      const chase = () =>
+        playbookThreshold(orgId, "chase_invoice_after_days").pipe(
+          Effect.map(({ value, from }) => [value, from._tag === "playbook" ? from.key : "default"]),
+        );
+
+      assert.deepStrictEqual(yield* chase(), [10, "default"]);
+      assert.include(
+        yield* refusal(
+          newDoc(block("chase_invoice_after_days: 500"), { title: "Too long", kind: "playbook" }),
+        ),
+        "chase invoice after days must be 1 to 120 days; nothing was changed",
+      );
+      assert.include(
+        yield* refusal(newDoc(block("chase_after: 5"), { title: "Unknown", kind: "playbook" })),
+        "chase_after isn't a playbook setting",
+      );
+      const docs = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'docs'`;
+      assert.strictEqual(docs[0]?.count, 0);
+
+      const money = yield* newDoc(block("chase_invoice_after_days: 10"), {
+        title: "Invented chasing money",
+        kind: "playbook",
+        company: true,
+      });
+      const key = money.row.key;
+      const edit = (find: string, replace: string, originKey: string) =>
+        Docs.edit(
+          orgId,
+          writer,
+          {},
+          { key },
+          {
+            operations: [{ op: "replace_phrase", find, replace }],
+            summary: "Chase sooner",
+            originKey,
+          },
+        );
+      yield* edit("after_days: 10", "after_days: 7", "seven");
+      assert.deepStrictEqual(yield* chase(), [7, key]);
+      assert.include(
+        yield* refusal(edit("after_days: 7", "after_days: 0", "zero")),
+        "must be 1 to 120 days",
+      );
+      assert.strictEqual((yield* Docs.versionOf(orgId, money.row.recordId))!.version, 2);
+      assert.deepStrictEqual(yield* chase(), [7, key]);
+
+      // A second playbook can't set the same key; a client's own playbook may, for that client.
+      assert.include(
+        yield* refusal(
+          newDoc(block("chase_invoice_after_days: 3"), { title: "Dup", kind: "playbook" }),
+        ),
+        `already set in ${key}`,
+      );
+      const records = yield* KinRecords.KinRecords;
+      const client = yield* records.create(orgId, writer, {
+        list: "clients",
+        originKey: "client",
+        title: "Invented Lumen",
+        owner: { _tag: "agent", agentId: lead },
+        category: "client",
+      });
+      yield* newDoc(block("chase_invoice_after_days: 20"), {
+        title: "Invented Lumen pays late",
+        kind: "playbook",
+        partyId: client.row.recordId,
+      });
+      assert.strictEqual(
+        (yield* playbookThreshold(orgId, "chase_invoice_after_days", client.row.recordId)).value,
+        20,
+      );
+      assert.include(
+        yield* refusal(
+          newDoc(block("overloaded_load: 3"), {
+            title: "Lumen load",
+            kind: "playbook",
+            partyId: client.row.recordId,
+          }),
+        ),
+        "belongs in a company playbook",
+      );
+
+      // Restoring, or filing a doc as a playbook, checks it the same way.
+      const notes = yield* newDoc(block("chase_invoice_after_days: 4"), { title: "Old notes" });
+      assert.include(
+        yield* refusal(Docs.move(orgId, writer, { key: notes.row.key }, { kind: "playbook" })),
+        `already set in ${key}`,
+      );
+      yield* edit("chase_invoice_after_days: 7", "", "drop");
+      yield* newDoc(block("chase_invoice_after_days: 12"), {
+        title: "Takes over",
+        kind: "playbook",
+      });
+      assert.include(
+        yield* refusal(
+          Docs.restore(orgId, writer, {}, { key }, { version: 2, latest: 3, originKey: "back" }),
+        ),
+        "already set in",
+      );
+      assert.strictEqual((yield* chase())[0], 12);
+
+      // The default set lands once, and an archived seed stays archived.
+      const boss = KinPersonId.make("boss");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${boss}, ${elsewhere}, 'boss', 'Boss', ${at})`;
+      assert.strictEqual(yield* seedPlaybooks(elsewhere, boss), PLAYBOOK_SEEDS.length);
+      const index = yield* playbookIndex(elsewhere);
+      assert.strictEqual(index.length, PLAYBOOK_SEEDS.length);
+      assert.match(index[0]!, /^D-\d+ Taking on a client: Someone new wants work from us/);
+      yield* sql`UPDATE kin_records SET state = 'dropped' WHERE org_id = ${elsewhere}
+        AND title = 'Chasing money'`;
+      assert.strictEqual(yield* seedPlaybooks(elsewhere, boss), 0);
+      assert.strictEqual((yield* playbookIndex(elsewhere)).length, PLAYBOOK_SEEDS.length - 1);
+      assert.strictEqual(
+        (yield* playbookThreshold(elsewhere, "chase_invoice_after_days")).from._tag,
+        "default",
+      );
+      assert.strictEqual((yield* playbookThreshold(elsewhere, "overloaded_load")).value, 8);
+    }).pipe(Effect.provide(layer)),
 );

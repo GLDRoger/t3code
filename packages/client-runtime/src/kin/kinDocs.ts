@@ -678,6 +678,13 @@ export function kinDocRestoreOutcome(
     };
   if (isKinChatError(error) && error.reason === "not_found")
     return { _tag: "refused", moved: false, text: "That version isn't there any more." };
+  // A playbook version whose settings no longer hold says why in words meant for people.
+  if (
+    isKinChatError(error) &&
+    error.reason === "invalid_state" &&
+    !/[a-z]+_[a-z]+/.test(error.message)
+  )
+    return { _tag: "refused", moved: false, text: error.message };
   return {
     _tag: "refused",
     moved: false,
