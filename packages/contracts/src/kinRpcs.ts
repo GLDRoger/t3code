@@ -293,6 +293,7 @@ const KIN_RPC_ACCESS = {
   "kin.memory.setVisibility": "owner_level",
   "kin.memory.confirmSuggestions": "owner_level",
   "kin.memory.forget": "owner_level",
+  "kin.memory.restore": "owner_level",
   "kin.work.summary": "person",
   "kin.work.list": "person",
   "kin.work.get": "person",
