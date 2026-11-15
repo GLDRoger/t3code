@@ -300,6 +300,7 @@ const KIN_RPC_ACCESS = {
   "kin.work.create": "person",
   "kin.work.assign": "person",
   "kin.work.update": "person",
+  "kin.work.handBack": "person",
   "kin.work.confirm": "owner_level",
   "kin.work.share": "owner_level",
   "kin.work.decline": "owner_level",
