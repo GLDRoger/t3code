@@ -677,7 +677,7 @@ describe("bank statements", () => {
       assert.strictEqual(again.card.status, "applied");
       assert.deepStrictEqual(
         yield* sql`SELECT COUNT(*) AS n FROM kin_record_payments WHERE voided_at IS NULL`,
-        [paid],
+        [paid!],
       );
     }).pipe(Effect.provide(layer)),
   );

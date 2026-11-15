@@ -108,7 +108,7 @@ const gate = Layer.unwrap(
         Effect.sync(() => {
           shownCards.push(String(Reflect.get(input.state as object, "key")));
         }).pipe(Effect.as({} as never)),
-      ask: (agent, input) =>
+      ask: (agent, input, bind) =>
         Effect.gen(function* () {
           const messageId = `card-${input.clientMessageId}`;
           const widgetId = `choice:${messageId}`;
@@ -135,6 +135,7 @@ const gate = Layer.unwrap(
             VALUES (${widgetId}, ${agent.orgId}, ${input.chatId}, ${messageId}, 'native', 'choice', 1,
               ${JSON.stringify(state)}, ${JSON.stringify([ownerId])}, ${at})
             ON CONFLICT DO NOTHING`;
+          if (bind !== undefined) yield* bind({ widgetId } as never);
           return { widgetId } as never;
         }).pipe(Effect.orDie),
     }),
@@ -829,6 +830,45 @@ describe("recipe documents", () => {
   );
 });
 
+type ReceiptAsk = Omit<typeof LeadDocuments.ReceiptInput.Type, "sourceEventId">;
+/** The owner's tap on Kin's yes/no card, as the chat service settles a choice. */
+const answerCard = (clientMessageId: string, kind: "yes" | "no") =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const widgetId = `choice:card-${clientMessageId}`;
+    const [card] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+      WHERE widget_id = ${widgetId}`;
+    const state = JSON.parse(card!.state) as {
+      options: Array<{ optionId: string; kind?: string }>;
+    };
+    const option = state.options.find((one) => one.kind === kind)!;
+    const answer = {
+      optionId: option.optionId,
+      personId: ownerId,
+      via: "tap",
+      emoji: null,
+      answeredAt: at,
+    };
+    yield* sql`UPDATE kin_widgets SET state_json = ${JSON.stringify({ ...state, answer })},
+        revision = revision + 1 WHERE widget_id = ${widgetId}`;
+  });
+/**
+ * The agent's receipt as the owner asked for it; one that records money waits for the owner's
+ * Confirm on its card, tapped here, and is made by the agent's call with its proposal.
+ */
+const agentReceipt = (asked: string, input: ReceiptAsk) =>
+  Effect.gen(function* () {
+    const first = yield* LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+    if (first.status === "made") return first;
+    yield* answerCard(`kin-receipt:${first.proposal}`, "yes");
+    const made = yield* LeadDocuments.receipt(scope, {
+      sourceEventId: asked,
+      proposal: first.proposal,
+    });
+    if (made.status !== "made") return assert.fail(`expected a receipt, got ${made.status}`);
+    return made;
+  });
+
 describe("receipts", () => {
   it.effect(
     "stand on money received: an entry an agent made is recorded as received as it is numbered, and TDS gets none",
@@ -838,8 +878,7 @@ describe("receipts", () => {
         const sql = yield* SqlClient.SqlClient;
         const records = yield* KinRecords.KinRecords;
         const agent = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
-        const receipt = (input: Omit<typeof LeadDocuments.ReceiptInput.Type, "sourceEventId">) =>
-          LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+        const receipt = (input: ReceiptAsk) => agentReceipt(asked, input);
         const received = (now = Date.parse("2026-11-12T06:00:00.000Z")) =>
           moneySummary(orgId, now).pipe(Effect.map((summary) => summary.received.thisMonth));
         // Any first receipt makes the list; an advance stands on its own payment from the start.
@@ -939,6 +978,132 @@ describe("receipts", () => {
   );
 
   it.effect(
+    "record money an agent asks for only on the owner's Confirm, and never stand on money taken back",
+    () =>
+      Effect.gen(function* () {
+        const asked = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        const call = (input: ReceiptAsk) =>
+          LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+        const proposed = (input: ReceiptAsk) =>
+          call(input).pipe(
+            Effect.map((result) =>
+              result.status === "proposed" ? result : assert.fail("expected a proposal"),
+            ),
+          );
+        const live = sql<{ minor: number }>`SELECT amount_minor AS minor FROM kin_record_payments
+          WHERE voided_at IS NULL ORDER BY payment_id`;
+        const numbered = sql`SELECT 1 FROM kin_issued_numbers n JOIN kin_records r
+          ON r.record_id = n.record_id WHERE r.register_id = 'receipts'`;
+        const [client] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${orgId} AND register_id = 'clients'`;
+        const ask = {
+          advance: {
+            client: KinRecordKey.make(client!.key),
+            amount: "500",
+            receivedOn: "2026-11-05",
+          },
+          towards: "Website redesign",
+          mode: "upi",
+        };
+        const advance = yield* proposed(ask);
+        // Nothing is recorded or numbered; the owner's card shows who, how much, when and how.
+        assert.lengthOf(yield* live, 0);
+        assert.lengthOf(yield* numbered, 0);
+        const [card] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+          WHERE widget_id = ${`choice:card-kin-receipt:${advance.proposal}`}`;
+        const detail = String(JSON.parse(card!.state).detail);
+        for (const line of [
+          "Client: Invented Acme",
+          "Amount: ₹500.00",
+          "Received on: 2026-11-05",
+          "Mode: upi",
+          "Towards: Website redesign",
+          "Set against: no invoice",
+        ])
+          assert.include(detail, line);
+        // The same ask is the same card; changed, it is another. Unanswered, it makes nothing.
+        assert.strictEqual((yield* proposed(ask)).proposal, advance.proposal);
+        const more = yield* proposed({ ...ask, advance: { ...ask.advance, amount: "5,000" } });
+        assert.notStrictEqual(more.proposal, advance.proposal);
+        const waiting = yield* Effect.flip(call({ proposal: advance.proposal }));
+        assert.match(waiting.message, /hasn't tapped Confirm/);
+        // Cancel ends a proposal.
+        yield* answerCard(`kin-receipt:${more.proposal}`, "no");
+        assert.match((yield* Effect.flip(call({ proposal: more.proposal }))).message, /said no/);
+        // Confirm makes exactly what its card showed, once.
+        yield* answerCard(`kin-receipt:${advance.proposal}`, "yes");
+        const made = yield* call({ proposal: advance.proposal });
+        const again = yield* call({ proposal: advance.proposal });
+        assert.deepStrictEqual(
+          [
+            made.status,
+            again.status === "made" && made.status === "made" && again.receipt === made.receipt,
+          ],
+          ["made", true],
+        );
+        assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
+        // An agent's own receipts entry, standing on no payment, waits for Confirm too.
+        const { row } = yield* records.create(
+          orgId,
+          { actor: { _tag: "agent", agentId: lead }, via: "lead" },
+          {
+            list: "receipts",
+            originKey: "agent:receipt:made-up",
+            title: "Received",
+            owner: { _tag: "agent", agentId: lead },
+            state: "open",
+            amount: { minor: 99_999_900, currency: "INR" },
+            dateAt: Date.parse("2026-11-06T18:29:59.999Z"),
+            dateAllDay: true,
+          },
+        );
+        yield* proposed({ entry: KinRecordKey.make(row.key) });
+        assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("never number a receipt again into money once its payment is taken back", () =>
+    Effect.gen(function* () {
+      const asked = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const system = { actor: { _tag: "system" as const }, via: "import" as const };
+      const call = (input: ReceiptAsk) =>
+        LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+      const live = sql<{ minor: number }>`SELECT amount_minor AS minor FROM kin_record_payments
+        WHERE voided_at IS NULL ORDER BY payment_id`;
+
+      // A payment already recorded on an invoice is the agent's to make a receipt for.
+      const paid = yield* records.pay(orgId, system, "INV-1", {
+        amount: { minor: 20_000, currency: "INR" },
+        paidOn: "2026-11-10",
+        originKey: "paid:taken-back",
+      });
+      const forPaid = yield* call({ payment: paid.paymentId });
+      if (!("receipt" in forPaid)) return assert.fail("expected a receipt");
+      // Taken back, its receipt is void, and no one numbers it again into money received.
+      yield* records.voidPayment(orgId, system, "INV-1", paid.paymentId);
+      const before = (yield* live).length;
+      const byAgent = yield* Effect.flip(call({ entry: KinRecordKey.make(forPaid.receipt) }));
+      const byOwner = yield* Effect.flip(
+        OwnerMoney.makeReceipt(people, {
+          orgId,
+          key: KinRecordKey.make(forPaid.receipt),
+          clientRequestId: "tap-taken-back",
+        }),
+      );
+      for (const refused of [byAgent, byOwner]) assert.match(refused.message, /taken back/);
+      assert.lengthOf(yield* live, before);
+      const listed = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+        (one) => one.key === forPaid.receipt,
+      )!;
+      assert.strictEqual(listed.state, "dropped");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
     "are numbered in their own series once each, keeping a number the old system gave",
     () =>
       Effect.gen(function* () {
@@ -946,8 +1111,7 @@ describe("receipts", () => {
         const sql = yield* SqlClient.SqlClient;
         const records = yield* KinRecords.KinRecords;
         const system = { actor: { _tag: "system" as const }, via: "import" as const };
-        const receipt = (input: Omit<typeof LeadDocuments.ReceiptInput.Type, "sourceEventId">) =>
-          LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+        const receipt = (input: ReceiptAsk) => agentReceipt(asked, input);
         // An advance the old system gave a receipt for, recorded on the invoice by an import,
         // its number in the payment's note as the import writes it.
         const imported = yield* records.pay(orgId, system, "INV-1", {
@@ -1188,8 +1352,7 @@ describe("receipts", () => {
           actor: { _tag: "person" as const, personId: ownerId },
           via: "owner" as const,
         };
-        const receipt = (input: Omit<typeof LeadDocuments.ReceiptInput.Type, "sourceEventId">) =>
-          LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+        const receipt = (input: ReceiptAsk) => agentReceipt(asked, input);
         const invoiceFor = (title: string, amount: string, client?: string) =>
           LeadWork.create(scope, {
             sourceEventId: asked,

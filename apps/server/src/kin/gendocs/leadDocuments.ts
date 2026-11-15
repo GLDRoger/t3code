@@ -6,18 +6,30 @@ import {
   KinTrimmedText,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { turnChat } from "../lead/Audience.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { shown } from "../work/leadDocs.ts";
-import { parseAmount } from "../work/money.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import { askOwner } from "../work/leadMoney.ts";
+import { dayIn, formatMoney, parseAmount } from "../work/money.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { admitted, askedBy, type Lead, leadTool, sourceOf, writerFor } from "../work/leadWork.ts";
 import type { DocumentInput } from "./DocJobs.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
-import { makeReceipt } from "./receipts.ts";
+import {
+  attachReceiptCard,
+  confirmedReceipt,
+  markReceiptMade,
+  proposeReceipt,
+  type ReceiptRequest,
+} from "./receiptProposals.ts";
+import { createsMoney, makeReceipt } from "./receipts.ts";
 import { defaultRecipes } from "./recipeDefaults.ts";
 import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
 import { KinWorkspace } from "./workspace.ts";
@@ -247,6 +259,10 @@ export const undoRecipe = leadTool(
 );
 
 export const ReceiptInput = Schema.Struct({
+  proposal: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(40))).annotate({
+    description:
+      "A receipt proposal this tool returned in an earlier turn, once the owner tapped Confirm on its card: makes exactly that receipt.",
+  }),
   payment: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))).annotate({
     description:
       "The paymentId of a payment recorded on an invoice (payment_record returns it; record_get lists them).",
@@ -273,7 +289,8 @@ export const ReceiptInput = Schema.Struct({
   reference: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
   sourceEventId: TrimmedNonEmptyString,
 });
-export const ReceiptResult = Schema.Struct({
+const ReceiptMade = Schema.Struct({
+  status: Schema.Literal("made"),
   receipt: Schema.String,
   number: Schema.NullOr(Schema.String),
   documents: Schema.Array(
@@ -281,6 +298,48 @@ export const ReceiptResult = Schema.Struct({
   ),
   problems: Schema.Array(Schema.String),
   sensitive: Schema.Literal(true),
+});
+const ReceiptProposed = Schema.Struct({
+  status: Schema.Literal("proposed"),
+  proposal: Schema.String,
+  /** What the owner's card shows, line by line. */
+  shown: Schema.Array(Schema.String),
+  next: Schema.String,
+});
+export const ReceiptResult = Schema.Union([ReceiptMade, ReceiptProposed]);
+
+/** What the owner's card shows for a receipt that records money: who, how much, when, how. */
+const receiptLines = Effect.fn("KinDocuments.receiptLines")(function* (
+  lead: Lead,
+  request: ReceiptRequest,
+) {
+  const records = yield* KinRecords;
+  const zone = yield* ownerZone(lead.orgId);
+  const entry = request.key === undefined ? undefined : yield* records.get(lead.orgId, request.key);
+  const clientKey = request.advance?.client;
+  const client =
+    clientKey !== undefined
+      ? yield* records.get(lead.orgId, clientKey)
+      : entry?.partyId == null
+        ? undefined
+        : yield* records.getById(lead.orgId, entry.partyId);
+  const amount =
+    request.advance?.amount ??
+    (entry?.amountMinor == null || entry.currency === null
+      ? undefined
+      : { minor: entry.amountMinor, currency: entry.currency });
+  const day =
+    request.advance?.receivedOn ?? (entry?.dateAt == null ? undefined : dayIn(entry.dateAt, zone));
+  const towards = request.towards ?? (request.advance === undefined ? undefined : "Advance");
+  return [
+    `Client: ${client === undefined ? "none named" : `${client.title} (${client.key})`}`,
+    `Amount: ${amount === undefined ? "none given" : formatMoney(amount)}`,
+    `Received on: ${day ?? "no day given"}`,
+    `Mode: ${request.mode ?? "not given"}${request.reference === undefined ? "" : `, ref ${request.reference}`}`,
+    ...(entry === undefined ? [] : [`Receipt entry: ${entry.key}`]),
+    ...(towards === undefined ? [] : [`Towards: ${towards}`]),
+    `Set against: ${request.against ?? "no invoice; it stays an advance"}`,
+  ];
 });
 
 /** `kin_receipt`: a numbered receipt and its PDF, shown as a card; asking again returns it. */
@@ -292,30 +351,110 @@ export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof Rec
         "Kin is paused by the owner, so nothing new is made until they resume it.",
       );
     const requester = yield* requesterOf(lead, input.sourceEventId);
-    const amount =
-      input.advance === undefined ? undefined : parseAmount(input.advance.amount, "INR");
-    if (amount !== undefined && "error" in amount) return yield* amount.error;
+    const confirmed =
+      input.proposal === undefined
+        ? undefined
+        : yield* confirmedReceipt({
+            orgId: lead.orgId,
+            agentId: lead.agentId,
+            proposalId: input.proposal,
+          });
+    let request: ReceiptRequest;
+    if (confirmed?._tag === "made") request = { key: confirmed.key };
+    else if (confirmed?._tag === "confirmed") request = confirmed.request;
+    else {
+      const amount =
+        input.advance === undefined ? undefined : parseAmount(input.advance.amount, "INR");
+      if (amount !== undefined && "error" in amount) return yield* amount.error;
+      request = {
+        ...(input.payment === undefined ? {} : { paymentId: input.payment }),
+        ...(input.entry === undefined ? {} : { key: input.entry }),
+        ...(input.advance === undefined || amount === undefined
+          ? {}
+          : {
+              advance: {
+                ...(input.advance.client === undefined ? {} : { client: input.advance.client }),
+                amount: amount.money,
+                receivedOn: input.advance.receivedOn,
+              },
+            }),
+        ...(input.against === undefined ? {} : { against: input.against }),
+        ...(input.towards === undefined ? {} : { towards: input.towards }),
+        ...(input.mode === undefined ? {} : { mode: input.mode }),
+        ...(input.reference === undefined ? {} : { reference: input.reference }),
+      };
+      // Money received no live payment holds yet is the owner's to confirm, never the agent's.
+      if (yield* createsMoney(lead.orgId, request)) {
+        const chat = yield* turnChat(lead);
+        if (chat === undefined) return yield* denied("This turn has no chat to ask the owner in.");
+        const proposal = yield* proposeReceipt({
+          orgId: lead.orgId,
+          agentId: lead.agentId,
+          wakeupId: lead.wakeupId,
+          chatId: chat.chatId,
+          request,
+          now: yield* Clock.currentTimeMillis,
+        });
+        const shown = yield* receiptLines(lead, request);
+        const card = yield* askOwner(
+          lead,
+          {
+            chatId: chat.chatId,
+            clientMessageId: `kin-receipt:${proposal}`,
+            question: "Record this money as received and make its receipt?",
+            detail: shown.join("\n"),
+            yes: "Confirm",
+            no: "Cancel",
+          },
+          (widgetId) => attachReceiptCard({ orgId: lead.orgId, proposalId: proposal, widgetId }),
+        ).pipe(
+          Effect.catchTags({
+            KinChatError: (error) =>
+              Effect.logWarning("Kin couldn't show a receipt card", { reason: error.reason }).pipe(
+                Effect.as(undefined),
+              ),
+          }),
+        );
+        return {
+          status: "proposed" as const,
+          proposal,
+          shown,
+          next:
+            card === undefined
+              ? "Nothing was recorded. Kin couldn't show the owner a card to confirm this money, so ask them to record it themselves in Money."
+              : "Nothing is recorded or numbered yet. Kin showed the owner this money on a card; ask in one short line to check it and tap Confirm. Once they tap Confirm, call kin_receipt with this proposal (and a sourceEventId) in that later turn.",
+        };
+      }
+    }
     const made = yield* makeReceipt({
       orgId: lead.orgId,
       writer: requester.writer,
       requester,
-      paymentId: input.payment,
-      key: input.entry,
+      paymentId: request.paymentId,
+      key: request.key,
       advance:
-        input.advance === undefined || amount === undefined || "error" in amount
+        request.advance === undefined
           ? undefined
           : {
-              client: input.advance.client,
-              amount: amount.money,
-              receivedOn: input.advance.receivedOn,
-              originKey: `receipt:advance:${lead.wakeupId}:${input.sourceEventId}:${canonical(input.advance)}`,
+              client: request.advance.client,
+              amount: request.advance.amount,
+              receivedOn: request.advance.receivedOn,
+              originKey: `receipt:advance:proposal:${input.proposal}`,
             },
-      against: input.against,
-      extras: { towards: input.towards, mode: input.mode, reference: input.reference },
+      against: request.against,
+      extras: { towards: request.towards, mode: request.mode, reference: request.reference },
       admit: stillAdmitted(lead, "kin_receipt", input),
     });
+    if (confirmed?._tag === "confirmed")
+      yield* markReceiptMade({
+        orgId: lead.orgId,
+        proposalId: input.proposal!,
+        key: made.key,
+        now: yield* Clock.currentTimeMillis,
+      });
     for (const written of made.made?.written ?? []) yield* shown(lead, written, true);
     return {
+      status: "made" as const,
       receipt: made.key,
       number: made.number,
       documents: (made.made?.documents ?? []).map((doc) => ({

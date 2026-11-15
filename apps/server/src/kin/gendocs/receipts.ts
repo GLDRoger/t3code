@@ -280,10 +280,43 @@ const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
   return yield* settle(orgId, writer, row.key, noted);
 });
 
+/** What a receipts entry stands on: a live payment, one taken back or gone, or none yet. */
+const standing = Effect.fn("KinReceipts.standing")(function* (orgId: KinOrgId, receipt: RecordRow) {
+  const held = parseFields(receipt.fieldsJson).payment;
+  if (typeof held !== "string") return "none" as const;
+  const sql = yield* SqlClient.SqlClient;
+  const [payment] = yield* sql<{ voidedAt: number | null }>`SELECT voided_at AS "voidedAt"
+    FROM kin_record_payments WHERE org_id = ${orgId} AND payment_id = ${held}`;
+  return payment !== undefined && payment.voidedAt === null ? ("live" as const) : ("gone" as const);
+});
+
 /**
- * A receipts entry standing on money received: its live payment, else its own amount recorded on
- * it as received on its day, which Money counts until the receipt is void or set against an
- * invoice. Refused when it has no amount or day to record.
+ * Whether making this receipt records money received that no live payment holds yet: a new
+ * advance, or an entry standing on nothing. An agent's such receipt waits for the owner's Confirm.
+ */
+export const createsMoney = Effect.fn("KinReceipts.createsMoney")(function* (
+  orgId: KinOrgId,
+  asked: {
+    readonly key?: string | undefined;
+    readonly advance?: unknown;
+    readonly against?: string | undefined;
+  },
+) {
+  if (asked.advance !== undefined) return true;
+  if (asked.key === undefined) return false;
+  const receipt = yield* (yield* KinRecords).get(orgId, asked.key);
+  if (receipt === undefined || receipt.registerId !== RECEIPTS || receipt.state === "dropped")
+    return false;
+  const stands = yield* standing(orgId, receipt);
+  // One taken back is refused as it is made, unless it is set against an invoice again.
+  return stands === "none" || (stands === "gone" && asked.against !== undefined);
+});
+
+/**
+ * A receipts entry standing on money received: its live payment, else, when it never stood on
+ * one, its own amount recorded on it as received on its day, which Money counts until the
+ * receipt is void or set against an invoice. One whose payment was taken back stays taken back:
+ * numbering it again would make that money up. Refused when it has no amount or day to record.
  */
 const backed = Effect.fn("KinReceipts.backed")(function* (
   orgId: KinOrgId,
@@ -297,12 +330,12 @@ const backed = Effect.fn("KinReceipts.backed")(function* (
     return yield* invalid(`${key} isn't a receipt. Nothing changed.`);
   if (receipt.state === "dropped")
     return yield* invalid(`${receipt.key} is void; make a new receipt.`);
-  const held = parseFields(receipt.fieldsJson).payment;
-  if (typeof held === "string") {
-    const [payment] = yield* sql<{ voidedAt: number | null }>`SELECT voided_at AS "voidedAt"
-      FROM kin_record_payments WHERE org_id = ${orgId} AND payment_id = ${held}`;
-    if (payment !== undefined && payment.voidedAt === null) return;
-  }
+  const stands = yield* standing(orgId, receipt);
+  if (stands === "live") return;
+  if (stands === "gone")
+    return yield* invalid(
+      `${receipt.key} stood on a payment that was taken back, so it is void and isn't money received any more. Nothing was made. If the money did come in, record it as a new payment or advance.`,
+    );
   if (
     receipt.amountMinor === null ||
     receipt.amountMinor <= 0 ||
@@ -575,6 +608,7 @@ type ReceiptRow = {
   readonly docTitle: string | null;
   readonly originKey: string;
   readonly invoiceKey: string | null;
+  readonly paymentGone: number;
 };
 
 /** Receipts as a screen shows them, newest first: number, who from, towards, its invoice and PDF. */
@@ -587,7 +621,9 @@ export const listReceipts = Effect.fn("KinReceipts.listReceipts")(function* (
   const rows = yield* sql<ReceiptRow>`SELECT r.key, n.number, r.state, r.date_at AS "dateAt",
       r.amount_minor AS minor, r.currency, r.fields_json AS "fieldsJson", r.party_id AS "partyId",
       p.key AS "partyKey", p.title AS "partyTitle", d.key AS "docKey", d.title AS "docTitle",
-      r.origin_key AS "originKey", i.key AS "invoiceKey"
+      r.origin_key AS "originKey", i.key AS "invoiceKey",
+      CASE WHEN json_extract(r.fields_json, '$.payment') IS NOT NULL
+        AND (pay.payment_id IS NULL OR pay.voided_at IS NOT NULL) THEN 1 ELSE 0 END AS "paymentGone"
     FROM kin_records r
     LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
     LEFT JOIN kin_record_payments pay ON pay.org_id = r.org_id
@@ -611,7 +647,8 @@ export const listReceipts = Effect.fn("KinReceipts.listReceipts")(function* (
     return {
       key: KinRecordKey.make(row.key),
       number: row.number,
-      state: row.state,
+      // One whose payment was taken back is void: it no longer stands on money received.
+      state: row.paymentGone === 1 ? "dropped" : row.state,
       receivedOn: row.dateAt === null ? null : dayIn(row.dateAt, zone),
       amount:
         row.minor === null || row.currency === null
