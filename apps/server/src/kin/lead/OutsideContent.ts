@@ -62,6 +62,8 @@ export const OUTSIDE_TOOLS = {
   kin_chat_read: "allowed",
   kin_leads: "allowed",
   people_read: "allowed",
+  // Outside text could rename someone or move their hours.
+  people_update: "refused",
   kin_end: "allowed",
   // Workers have a shell and the network: outside text could steer either.
   kin_delegate: "refused",

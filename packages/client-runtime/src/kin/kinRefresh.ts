@@ -126,18 +126,20 @@ export function noteKinDirectoryOrgs(
 }
 
 /**
- * The directory's refresh signal: a new session, or a move of the agents in any org it last named,
- * so an agent made on another device has its name here. Orgs being noted move nothing.
+ * A read across the directory's orgs: a new session, or a move of `topic` in any org it last named,
+ * so an agent made or a person renamed on another device has its name here. Orgs being noted move
+ * nothing.
  */
 export function createKinDirectoryTrigger<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  topic: KinRefreshTopic = "leads",
 ) {
   const triggers = createKinRefreshTriggers(runtime);
   return ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
     Atom.make((get) => {
       let moved = 0;
       for (const orgId of get(kinDirectoryOrgsAtom(environmentId)))
-        moved += get(triggers.moves("leads")({ environmentId, input: { orgId } }));
+        moved += get(triggers.moves(topic)({ environmentId, input: { orgId } }));
       return `${get(environmentSessionGenerationAtom(runtime, environmentId))}:${moved}`;
     });
 }

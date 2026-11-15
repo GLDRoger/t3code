@@ -28,8 +28,6 @@ import {
   type KinAccessMeResult,
   type KinPeopleUpdateProfileInput,
   KinPersonProfile,
-  KinRoleTags,
-  KinWorkHours,
   type KinPeopleSetOwnerNameInput,
   type AuthSessionId,
 } from "@t3tools/contracts";
@@ -60,6 +58,7 @@ import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { placesOf } from "../work/teamView.ts";
 import { accessOf, accessSql, ownerLevel } from "./KinAccess.ts";
+import { profileSets } from "./profileFields.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -79,8 +78,6 @@ const hash = (secret: string) => NodeCrypto.createHash("sha256").update(secret).
 const decodePersonRow = Schema.decodeUnknownSync(KinPerson);
 const decodePerson = (row: Record<string, unknown>) => decodePersonRow(row);
 const decodeProfileRow = Schema.decodeUnknownSync(KinPersonProfile);
-const encodeRoleTags = Schema.encodeEffect(Schema.fromJsonString(KinRoleTags));
-const encodeWorkHours = Schema.encodeEffect(Schema.fromJsonString(KinWorkHours));
 const decodeProfile = (row: {
   readonly personId: string;
   readonly displayName: string;
@@ -821,23 +818,12 @@ export const make = Effect.gen(function* () {
           );
           if (before === undefined) return yield* missing;
           const now = (yield* DateTime.now).epochMilliseconds;
-          const roleTags =
-            input.roleTags === undefined
-              ? undefined
-              : yield* encodeRoleTags([...new Set(input.roleTags)]).pipe(Effect.orDie);
-          const workHours =
-            input.workHours == null
-              ? input.workHours
-              : yield* encodeWorkHours(input.workHours).pipe(Effect.orDie);
           const set = [
-            input.displayName === undefined ? null : sql`display_name = ${input.displayName}`,
-            roleTags === undefined ? null : sql`role_tags_json = ${roleTags}`,
-            input.skills === undefined ? null : sql`skills = ${input.skills.trim()}`,
-            input.timeZone === undefined ? null : sql`time_zone = ${input.timeZone}`,
-            workHours === undefined ? null : sql`work_hours_json = ${workHours}`,
-            pictureId === undefined ? null : sql`avatar_attachment_id = ${pictureId}`,
-            sql`profile_updated_at = ${now}`,
-          ].filter((part) => part !== null);
+            ...(yield* profileSets(input, now).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            )),
+            ...(pictureId === undefined ? [] : [sql`avatar_attachment_id = ${pictureId}`]),
+          ];
           yield* sql`UPDATE kin_people SET ${sql.csv(set)}
             WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.updateProfile")),

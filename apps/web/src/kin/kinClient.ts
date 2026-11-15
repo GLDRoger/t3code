@@ -323,8 +323,7 @@ const chatMembers = createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     return yield* readMembers(input);
   }),
   staleTimeMs: 30_000,
-  refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-    environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+  refreshTrigger: createKinDirectoryTrigger(connectionAtomRuntime, "people"),
 });
 
 /** Reads a chat's members again whenever its stream says who is in it, its name or lead changed. */

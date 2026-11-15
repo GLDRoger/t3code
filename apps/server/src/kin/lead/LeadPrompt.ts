@@ -1263,7 +1263,7 @@ const decodeRoleTags = Schema.decodeUnknownOption(Schema.fromJsonString(KinRoleT
 /** The owner's display name until they set one (`KIN_OWNER_DISPLAY_NAME`'s default). */
 const UNSET_OWNER_NAME = "Owner";
 const OWNER_NAME_UNSET =
-  " If the owner tells you their name, save it with memory_write as a fact about the owner and use it from then on.";
+  " If the owner tells you their name, save it with people_update and use it from then on.";
 const PASSED_ON_SPEAKER =
   'Another agent passed this to you; the owner reads your reply. Address the owner as "you".';
 /** An entry the owner gave this lead: the stored assigner is the authority, its text is data. */

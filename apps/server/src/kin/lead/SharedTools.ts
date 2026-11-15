@@ -138,6 +138,8 @@ export const SHARED_TOOLS = {
   kin_leads: "allowed",
   // What everyone in the org sees on profiles; workload only in the owner's own turns.
   people_read: "allowed",
+  // Saved only for the one person who asked, with their own rights.
+  people_update: "allowed",
   // Ends the turn; a shared turn's summary reaches no journal (`LeadMemory.end`).
   kin_end: "allowed",
   kin_delegate: ownerDelegates,
