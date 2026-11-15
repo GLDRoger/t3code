@@ -288,10 +288,7 @@ const restates = (sentence: string, question: ReadonlySet<string>) => {
     words.length >= 3 && words.filter((word) => question.has(word)).length / words.length >= 0.6
   );
 };
-/**
- * A reply less the sentences that repeat or restate a card's question, which the card already
- * asks. Once one did, the card is the reply: what is left is cut to one short line.
- */
+/** A reply less the sentences that repeat or restate a card's question, which the card asks. */
 const withoutAsked = (text: string, questions: ReadonlyArray<string>) => {
   const wanted = new Set(questions.map(comparable).filter((one) => one !== ""));
   if (wanted.size === 0) return text;
@@ -307,8 +304,7 @@ const withoutAsked = (text: string, questions: ReadonlyArray<string>) => {
     else if (sentence.trim() !== "")
       kept.push(`${kept.length === 0 ? "" : (parts[index - 1] ?? "")}${sentence}`);
   }
-  if (!dropped) return text;
-  return (kept[0] ?? "").trim();
+  return dropped ? kept.join("").trim() : text;
 };
 const capBody = (text: string) =>
   text.length <= KIN_MESSAGE_BODY_MAX_LENGTH

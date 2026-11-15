@@ -980,12 +980,16 @@ it.effect.each([
     expected: ["Tech has been quiet for a day."],
   },
   { reply: "Tech is on it already.", expected: ["Tech is on it already."] },
-  // A paraphrase of the card is the card again; with it gone, one short line is all that stays.
+  // A paraphrase of the card is the card again; it goes, and what else the reply says stays.
   {
     question: "Mark QT-1 accepted and draft the 30% advance invoice?",
     reply:
       "Meera accepted on the thread. Shall I mark QT-1 accepted and draft the 30% advance invoice now? It would be ₹3,18,600 with IGST.",
-    expected: ["Meera accepted on the thread."],
+    expected: ["Meera accepted on the thread. It would be ₹3,18,600 with IGST."],
+  },
+  {
+    reply: "Should I take it over?\nTech is out until Thursday.\nThe client wants it Friday.",
+    expected: ["Tech is out until Thursday.\nThe client wants it Friday."],
   },
   {
     question: "Mark QT-1 accepted and draft the 30% advance invoice?",

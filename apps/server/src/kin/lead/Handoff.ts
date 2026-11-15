@@ -35,6 +35,7 @@ import { messageBodyLimit } from "./LeadPrompt.ts";
 import { outsideStamp, stampEvent } from "./OutsideContent.ts";
 import type { KinLevelGate } from "./LevelGate.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import { personMiss, personNamed } from "../people/personNamed.ts";
 import { relayPrefix } from "../reply/promises.ts";
 import { unreadableBy } from "../work/teamView.ts";
 
@@ -410,22 +411,16 @@ const make = Effect.gen(function* () {
     return { person: ask.personName, agent: target.name, continued: true as const };
   }, guarded("KinHandoff.takePrivate"));
 
-  /** One person of the org by full name, handle or first name, when only one answers to it. */
-  const personNamed = Effect.fn("KinHandoff.personNamed")(function* (ctx: Lead, name: string) {
-    const wanted = fold(name);
-    const rows = yield* sql<{ personId: KinPersonId; name: string }>`SELECT
-        person_id AS "personId", display_name AS name FROM kin_people
-      WHERE org_id = ${ctx.orgId} AND (lower(display_name) = ${wanted} OR lower(handle) = ${wanted}
-        OR lower(display_name) LIKE ${`${wanted} %`})
-      ORDER BY lower(display_name) = ${wanted} DESC, person_id LIMIT 3`;
-    const exact = rows.filter((row) => fold(row.name) === wanted);
-    const one = exact.length === 1 ? exact[0] : rows.length === 1 ? rows[0] : undefined;
-    if (one === undefined)
+  const personNamedIn = Effect.fn("KinHandoff.personNamed")(function* (ctx: Lead, name: string) {
+    const found = yield* personNamed(ctx.orgId, name).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    if (found._tag !== "found")
       return yield* new KinChatError({
-        reason: rows.length === 0 ? "not_found" : "invalid_state",
-        message: `${rows.length === 0 ? "No one" : "More than one person"} in the company answers to ${name}; people_read lists who is. Nothing was sent.`,
+        reason: found._tag === "none" ? "not_found" : "invalid_state",
+        message: `${personMiss(name, found)} Nothing was sent.`,
       });
-    return one;
+    return { personId: found.item.id, name: found.item.name };
   });
 
   const relay = Effect.fn("KinHandoff.relay")(function* (
@@ -440,7 +435,7 @@ const make = Effect.gen(function* () {
       AND agent_id = ${ctx.agentId} AND wakeup_id = ${ctx.wakeupId}
       AND event_id = ${input.sourceEventId} LIMIT 1`;
     if (source === undefined) return yield* missing();
-    const to = yield* personNamed(ctx, input.to);
+    const to = yield* personNamedIn(ctx, input.to);
     const [self] = yield* sql<{ name: string; owner: KinPersonId; ownerChatId: KinChatId }>`
       SELECT l.name, a.owner_person_id AS owner, l.owner_chat_id AS "ownerChatId" FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id

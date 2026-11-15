@@ -12,6 +12,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { workingAt } from "../lead/peopleRead.ts";
+import { personMiss, personNamed } from "../people/personNamed.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -96,7 +97,12 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, at } = input;
-  const wanted = input.person.trim().toLowerCase();
+  const named = yield* personNamed(orgId, input.person);
+  if (named._tag !== "found")
+    return yield* new KinChatError({
+      reason: "not_found",
+      message: personMiss(input.person, named),
+    });
   const [person] = yield* sql<{
     personId: string;
     name: string;
@@ -108,14 +114,9 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
       EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = p.org_id
         AND a.agent_id = ${input.agentId} AND a.owner_person_id = p.person_id) AS "isOwner"
     FROM kin_people p
-    WHERE p.org_id = ${orgId} AND (p.person_id = ${input.person}
-      OR lower(p.display_name) = ${wanted} OR lower(p.handle) = ${wanted})
-    ORDER BY p.person_id LIMIT 1`;
-  if (person === undefined)
-    return yield* new KinChatError({
-      reason: "not_found",
-      message: `No one called ${input.person} is in the company. people_read lists who is.`,
-    });
+    WHERE p.org_id = ${orgId} AND p.person_id = ${named.item.id}
+    ORDER BY p.person_id`;
+  if (person === undefined) return yield* refuse("That person just left the company.");
   if (person.isOwner === 1)
     return yield* refuse("That's the owner: tell him in your own chat instead of nudging.");
   const personId = KinPersonId.make(person.personId);

@@ -1,0 +1,73 @@
+import { KinPersonId, type KinOrgId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import { matchName, type NameMatch } from "../work/nameMatch.ts";
+
+export type NamedPerson = {
+  readonly id: KinPersonId;
+  readonly name: string;
+  readonly tags: string;
+};
+
+/**
+ * The person an agent means by what it typed, as clients are found: their id, handle, exact
+ * name, a unique start of their name ("Zoya" for Zoya Sheikh) or a unique close spelling.
+ * Otherwise the several it could be, or the nearest names to offer back.
+ */
+export const personNamed = Effect.fn("KinPeople.personNamed")(function* (
+  orgId: KinOrgId,
+  typed: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ id: string; name: string; handle: string | null; tags: string }>`
+    SELECT person_id AS id, display_name AS name, handle, role_tags_json AS tags
+    FROM kin_people WHERE org_id = ${orgId} ORDER BY person_id`;
+  const people = rows.map((row) => ({ ...row, id: KinPersonId.make(row.id) }));
+  const wanted = typed.trim();
+  const handle = wanted.replace(/^@/, "").toLowerCase();
+  const exact = people.filter(
+    (one) => one.id === wanted || (one.handle !== null && one.handle.toLowerCase() === handle),
+  );
+  const match: NameMatch<NamedPerson> =
+    exact.length === 1 ? { _tag: "found", item: exact[0]! } : matchName(wanted, people);
+  return match._tag === "found"
+    ? ({ _tag: "found", item: pick(match.item) } as const)
+    : match._tag === "ambiguous"
+      ? ({ _tag: "ambiguous", items: match.items.map(pick) } as const)
+      : ({ _tag: "none", nearest: match.nearest.map(pick) } as const);
+});
+
+const pick = (one: NamedPerson): NamedPerson => ({ id: one.id, name: one.name, tags: one.tags });
+
+/** A miss in words for an agent: who it could be, or the nearest names to ask about. */
+export const personMiss = (
+  typed: string,
+  match: Exclude<Effect.Success<ReturnType<typeof personNamed>>, { readonly _tag: "found" }>,
+) => {
+  const shown = typed.trim().slice(0, 60);
+  if (match._tag === "ambiguous")
+    return `${match.items.length} people answer to ${shown}: ${match.items
+      .slice(0, 6)
+      .map((one) => {
+        const tags = tagsOf(one.tags);
+        return `${one.name} (${tags.length === 0 ? "no roles" : tags.join(", ")}) is ${one.id}`;
+      })
+      .join("; ")}. Ask which one is meant, then pass their personId.`;
+  return `No one called ${shown} is in the company.${
+    match.nearest.length === 0
+      ? ""
+      : ` Nearest: ${match.nearest
+          .map((one) => `${one.name} (${one.id})`)
+          .join(", ")}; ask "did you mean …?" if one may be them.`
+  } people_read lists who is.`;
+};
+
+const tagsOf = (json: string): ReadonlyArray<string> => {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((tag) => typeof tag === "string") : [];
+  } catch {
+    return [];
+  }
+};

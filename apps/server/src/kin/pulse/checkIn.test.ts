@@ -269,12 +269,12 @@ describe("pulse check-ins", () => {
           dueAt: MONDAY - 2 * DAY,
         });
         const posted: Array<string> = [];
-        const send = (at: number, factKey: string) =>
+        const send = (at: number, factKey: string, person = "Meera") =>
           nudge({
             orgId,
             agentId: chief,
             at,
-            person: "Meera",
+            person,
             factKey,
             text: "W-8 was due Saturday; the launch waits on it. Still on for today?",
             chatFor: () => Effect.succeed(KinChatId.make("chat-mate")),
@@ -297,6 +297,13 @@ describe("pulse check-ins", () => {
         assert.match(early, /outside their working hours and starts at 2026-11-16T\d\d:\d\d/);
         assert.include(early, "kin_defer");
         assert.include(yield* send(MONDAY + 10 * HOUR, "task_late:nope"), "can't see that fact");
+        // Found as clients are: any case, a start of the name, a close spelling, the handle.
+        for (const typed of ["meera", "Mee", "Meeru", "@mate"])
+          assert.include(yield* send(MONDAY + 10 * HOUR, "task_late:nope", typed), "can't see");
+        assert.include(
+          yield* send(MONDAY + 10 * HOUR, factKey, "Meena Rao"),
+          "No one called Meena Rao",
+        );
         assert.strictEqual(yield* send(MONDAY + 10 * HOUR, factKey), "sent");
         assert.include(yield* send(MONDAY + 15 * HOUR, factKey), "already nudged today");
         assert.include(yield* send(MONDAY + DAY + 10 * HOUR, factKey), "hasn't answered");

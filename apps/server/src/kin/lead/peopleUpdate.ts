@@ -6,6 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
+import { personMiss, personNamed } from "../people/personNamed.ts";
 import { profileSets } from "../people/profileFields.ts";
 import { turnAsker } from "./Audience.ts";
 import type { resolveLead } from "./LeadMemory.ts";
@@ -46,28 +47,23 @@ export const updatePeople = Effect.fn("KinPeopleUpdate.update")(function* (
   const ownerId = owner === undefined ? null : KinPersonId.make(owner.personId);
   const named = (input.person ?? "me").trim();
   const lower = named.toLowerCase();
-  const matches =
+  const target =
     lower === "me" || lower === ""
-      ? [{ personId: asker, name: "" }]
+      ? { personId: asker }
       : lower === "owner" && ownerId !== null
-        ? [{ personId: ownerId, name: "" }]
-        : (yield* sql<{ personId: string; name: string }>`
-            SELECT person_id AS "personId", display_name AS name FROM kin_people
-            WHERE org_id = ${lead.orgId}
-              AND (lower(display_name) = ${lower} OR lower(handle) = ${lower} OR person_id = ${named})
-            ORDER BY person_id`).map((row) => ({
-            ...row,
-            personId: KinPersonId.make(row.personId),
-          }));
-  const [target] = matches;
-  if (target === undefined || matches.length > 1)
-    return yield* new KinChatError({
-      reason: "not_found",
-      message:
-        target === undefined
-          ? `No one called ${named.slice(0, 80)} is in the company. people_read lists who is.`
-          : `Two people are called ${named.slice(0, 80)}: use the personId people_read gives.`,
-    });
+        ? { personId: ownerId }
+        : yield* personNamed(lead.orgId, named).pipe(
+            Effect.flatMap((found) =>
+              found._tag === "found"
+                ? Effect.succeed({ personId: found.item.id })
+                : Effect.fail(
+                    new KinChatError({
+                      reason: found._tag === "none" ? "not_found" : "invalid_state",
+                      message: `${personMiss(named, found)} Nothing was saved.`,
+                    }),
+                  ),
+            ),
+          );
   if (target.personId !== asker) {
     const level = (person: KinPersonId) => ownerLevel(lead.orgId, person);
     if (!(yield* level(asker))) return yield* refused("A teammate changes only their own profile.");
