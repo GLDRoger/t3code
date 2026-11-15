@@ -168,7 +168,7 @@ export const playbookThreshold = Effect.fn("KinPlaybooks.threshold")(function* (
   clientId?: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* livePlaybooks(sql, orgId).pipe(sql.withTransaction);
+  const rows = yield* livePlaybooks(sql, orgId);
   const pick = (party: string | null) => {
     for (const row of rows) {
       if (row.partyId !== party) continue;
