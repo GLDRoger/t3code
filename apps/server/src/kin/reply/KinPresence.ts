@@ -94,7 +94,7 @@ export class KinPresence extends Context.Service<
   }
 >()("t3/kin/reply/KinPresence") {}
 
-type QueueLabel = (typeof PHASE_LABELS)["queued" | "preparing"];
+type QueueLabel = (typeof PHASE_LABELS)["queued" | "preparing" | "held"];
 
 const same = (a: Presence | undefined, b: Presence) =>
   a !== undefined &&

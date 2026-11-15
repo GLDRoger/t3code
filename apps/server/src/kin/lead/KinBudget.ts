@@ -91,6 +91,32 @@ const mapError = (cause: unknown): BudgetError =>
       ? cause
       : invalid;
 
+/** What waits on the daily limit, by agent: everything the owner's view or a lead may name. */
+export const heldWork = Effect.fn("KinBudget.waiting")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    agentId: KinAgentId;
+    name: string;
+    requests: number;
+    tasks: number;
+    other: number;
+    until: number | null;
+  }>`SELECT e.agent_id AS "agentId", COALESCE(l.name, e.agent_id) AS name,
+      SUM(CASE WHEN e.tag IN ${sql.in(CHAT_TAGS)} THEN 1 ELSE 0 END) AS requests,
+      SUM(CASE WHEN e.tag = 'record.changed' THEN 1 ELSE 0 END) AS tasks,
+      SUM(CASE WHEN e.tag NOT IN ${sql.in([...CHAT_TAGS, "record.changed"])} THEN 1 ELSE 0 END)
+        AS other,
+      MAX(e.not_before) AS until
+    FROM kin_events e LEFT JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+    WHERE e.org_id = ${orgId} AND e.state = 'queued' AND e.budget_deferred = 1
+    GROUP BY e.agent_id ORDER BY name, e.agent_id`;
+  const until = Math.max(0, ...rows.map((row) => row.until ?? 0));
+  return {
+    until: until === 0 ? null : DateTime.formatIso(DateTime.makeUnsafe(until)),
+    agents: rows.map(({ until: _until, ...row }) => row),
+  };
+});
+
 export class KinBudget extends Context.Service<
   KinBudget,
   {
@@ -185,29 +211,8 @@ const make = Effect.gen(function* () {
                 AND json_extract(e.json, '$.provenance.personId') <> a.owner_person_id)))`;
     return row?.units ?? 0;
   });
-  const waiting = Effect.fn("KinBudget.waiting")(function* (orgId: KinOrgId) {
-    const rows = yield* sql<{
-      agentId: KinAgentId;
-      name: string;
-      requests: number;
-      tasks: number;
-      other: number;
-      until: number | null;
-    }>`SELECT e.agent_id AS "agentId", COALESCE(l.name, e.agent_id) AS name,
-        SUM(CASE WHEN e.tag IN ${sql.in(CHAT_TAGS)} THEN 1 ELSE 0 END) AS requests,
-        SUM(CASE WHEN e.tag = 'record.changed' THEN 1 ELSE 0 END) AS tasks,
-        SUM(CASE WHEN e.tag NOT IN ${sql.in([...CHAT_TAGS, "record.changed"])} THEN 1 ELSE 0 END)
-          AS other,
-        MAX(e.not_before) AS until
-      FROM kin_events e LEFT JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
-      WHERE e.org_id = ${orgId} AND e.state = 'queued' AND e.budget_deferred = 1
-      GROUP BY e.agent_id ORDER BY name, e.agent_id`;
-    const until = Math.max(0, ...rows.map((row) => row.until ?? 0));
-    return {
-      until: until === 0 ? null : DateTime.formatIso(DateTime.makeUnsafe(until)),
-      agents: rows.map(({ until: _until, ...row }) => row),
-    };
-  });
+  const waiting = (orgId: KinOrgId) =>
+    heldWork(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const limitsOf = Effect.fn("KinBudget.limitsOf")(function* (stored: string | null) {
     if (stored === null) return defaults;
     const limits = yield* decodeStoredLimits(stored);
