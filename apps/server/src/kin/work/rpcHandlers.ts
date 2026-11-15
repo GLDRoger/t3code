@@ -92,6 +92,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.decline": Effect.fn("KinWork.rpc.decline")(function* (input) {
         return yield* call((people) => Work.decline(people, input));
       }),
+      "kin.work.share": Effect.fn("KinWork.rpc.share")(function* (input) {
+        return yield* call((people) => Work.share(people, input));
+      }),
       "kin.work.parties": Effect.fn("KinWork.rpc.parties")(function* (input) {
         return yield* call((people) => Clients.parties(people, input));
       }),

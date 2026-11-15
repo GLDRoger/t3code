@@ -285,7 +285,11 @@ export const subscribe = (
       const records = yield* KinRecords;
       return records.changes(input.orgId).pipe(
         Stream.filter((tick) => tick.key === undefined || tick.key.startsWith(DOC_KEY)),
-        Stream.map((tick) => ({ _tag: "changed" as const, ...tick })),
+        Stream.map((tick) => ({
+          _tag: "changed" as const,
+          seq: tick.seq,
+          ...(tick.key === undefined ? {} : { key: tick.key }),
+        })),
       );
     }),
   );

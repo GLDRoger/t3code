@@ -11,8 +11,17 @@ import * as SqlClient from "effect/sql/SqlClient";
  */
 export type TurnAudience = "owner_only" | "shared";
 
-/** Events that answer in the chat they name: a worker report names the chat its work was asked in. */
-export const CHAT_ANSWER_TAGS = ["chat.message", "widget.action", "chat.reaction", "worker.report"];
+/**
+ * Events that answer in the chat they name: a worker report names the chat its work was asked in,
+ * and a teammate's task their direct chat with the lead.
+ */
+export const CHAT_ANSWER_TAGS = [
+  "chat.message",
+  "widget.action",
+  "chat.reaction",
+  "worker.report",
+  "record.changed",
+];
 
 /**
  * `owner_only` when only the owner can read the reply: every chat it answers or was asked from was
@@ -77,7 +86,10 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
         if (event.provenance === "human" && event.provenancePersonId !== lead.owner)
           return "shared" as const;
         chats.add(event.chatId);
-      } else if (event.tag === "worker.report" && event.chatId !== null) {
+      } else if (
+        (event.tag === "worker.report" || event.tag === "record.changed") &&
+        event.chatId !== null
+      ) {
         // A report answers in the chat its worker was asked for in, read by everyone there.
         answersChat = true;
         chats.add(event.chatId);

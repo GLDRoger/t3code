@@ -1908,6 +1908,12 @@ describe("KinActionExecutor", () => {
       source("kin/chat/rpcHandlers.ts"),
       /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|KinLeadProvisionError\b|ts\b)\w+/,
     );
+    // The refresh stream reads only the caller's own lead list to tell them it moved.
+    assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
+    assert.notMatch(
+      source("kin/chat/refreshes.ts"),
+      /\bLeadProvision\.(?!profiles\b|contacts\b|ts\b)\w+/,
+    );
     assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
     const served = new Set<string>();
     const pending = ["server.ts"];

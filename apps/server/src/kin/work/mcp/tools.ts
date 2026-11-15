@@ -92,13 +92,13 @@ export const KinWorkToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("money_query", {
     ...shared,
-    description: `The owner's money questions, answered by Kin from its records. view cash: each account's closing balance from the latest bank statement Kin read, its day, whether it is stale, and payments and paid expenses recorded since; with no statement the balance is unknown. view outlook: what is due in (issued invoices; overdue ones listed, not counted) and out (open amounts we owe and entries set to repeat) over 30, 60 and 90 days or days, and runway in months from the last three complete months, with its inputs. view budgets: each monthly budget's limit, spent, and over or near. Every figure is exact per currency: quote them, never add, convert or estimate. Where Kin says a figure is unknown, say so. Read-only, for owner-only answers.`,
+    description: `The owner's money questions, answered by Kin from its records. view cash: each account's closing balance from the latest statement the owner confirmed, its day and whether it is stale, any newer read not yet confirmed beside it, and per currency what was recorded since (account not known) with a labelled estimate where Kin can make one; with no confirmed statement the balance is unknown. view outlook: what is due in (issued invoices; overdue ones listed, not counted) and out (open amounts we owe and entries set to repeat) over 30, 60 and 90 days or days, and runway in months from the last three complete months, with its inputs. view budgets: each monthly budget's limit, spent, and over or near. Every figure is exact per currency: quote them, never add, convert or estimate. Where Kin says a figure is unknown, say so. Read-only, for owner-only answers.`,
     parameters: Money.MoneyQueryInput,
     success: Money.MoneyQueryResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("budget_set", {
     ...shared,
-    description: `Set the owner's monthly spending limit for an expense category, a project, or a category in a project, as they said it ("50k for travel"). limit null removes it. Set one only when the owner asked for it or agreed to your proposal in this conversation. Pass this turn's sourceEventId. Returns every budget with this month's spending. Reply in one line.`,
+    description: `Set the owner's monthly spending limit for an expense category, a project, or a category in a project, as they said it ("50k for travel"). limit null removes it. Only in a turn the owner started with their own message or tap; in any other turn propose it to them instead. Pass this turn's sourceEventId. Returns the old and new limit and every budget with this month's spending. Reply in one line with the old and new limit.`,
     parameters: Money.BudgetInput,
     success: Money.BudgetResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
