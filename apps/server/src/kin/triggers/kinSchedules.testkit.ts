@@ -1,8 +1,10 @@
 import * as Crypto from "@effect/platform-node/NodeCrypto";
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { Project, ThreadId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { OrchestratorCommandRejectedError } from "../../orchestration-v2/Orchestrator.ts";
@@ -10,9 +12,11 @@ import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ManagedPolicy from "../../policy/ManagedPolicy.ts";
 import * as ManagedProjectFolders from "../../project/ManagedProjectFolders.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
+import { leadProjectId } from "../lead/leadProject.ts";
 import * as KinSchedules from "./kinSchedules.ts";
 import * as KinTriggerSink from "./KinTriggerSink.ts";
 import { projection } from "./webhooks.testkit.ts";
@@ -45,8 +49,34 @@ export const recordingSchedules = (saves: KinSchedules.SaveInput[], cancels: str
     ),
   );
 
-/** The lead's own project, as WakeupRunner names it. */
-const leadProjectId = (orgId: string, agentId: string) => ProjectId.make(`kin:${orgId}:${agentId}`);
+const decodeProject = Schema.decodeSync(Project);
+const project = (id: string, title: string, workspaceRoot: string) =>
+  decodeProject({
+    id,
+    title,
+    workspaceRoot,
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: "2026-11-01T00:00:00.000Z",
+    updatedAt: "2026-11-01T00:00:00.000Z",
+    deletedAt: null,
+  });
+/** Projects by id, as T3's service keeps them; `made` holds the ids that exist. */
+const knownProjects = (made: Set<string>) =>
+  Layer.mock(ProjectService.ProjectService)({
+    getById: (projectId) =>
+      Effect.succeed(
+        made.has(projectId) ? Option.some(project(projectId, "Kin", "/memory")) : Option.none(),
+      ),
+    bootstrap: (input) =>
+      Effect.sync(() => {
+        made.add(input.projectId);
+        return {
+          created: true,
+          project: project(input.projectId, input.title, input.workspaceRoot),
+        };
+      }),
+  });
 
 /** An archived thread in the lead's project, standing in for its scheduled-runs inbox. */
 const leadInbox = (orgId: string, agentId: string) => {
@@ -70,14 +100,25 @@ export const nativeScheduler = (
   agentId: string,
   recorded: { launches: ThreadLaunchService.ThreadLaunchInput[]; sends: string[] },
   workers: Map<string, Effect.Effect<void>>,
+  /** The projects that exist; a launch into any other fails as T3's does. */
+  projects = new Set<string>([leadProjectId(orgId, agentId)]),
 ) => {
   const inbox = leadInbox(orgId, agentId);
   const inner = Layer.mock(ThreadLaunchService.ThreadLaunchService)({
     launch: (input) =>
-      Effect.sync(() => {
-        recorded.launches.push(input);
-        return { threadId: inbox.thread.id, projection: inbox, resumed: false };
-      }),
+      projects.has(input.projectId)
+        ? Effect.sync(() => {
+            recorded.launches.push(input);
+            return { threadId: inbox.thread.id, projection: inbox, resumed: false };
+          })
+        : Effect.fail(
+            new ThreadLaunchService.ThreadLaunchError({
+              operation: "resolve-project",
+              commandId: input.commandId,
+              projectId: input.projectId,
+              cause: "Project not found.",
+            }),
+          ),
   });
   const management = Layer.mock(ThreadManagementService.ThreadManagementService)({
     getThreadProjection: () => Effect.succeed(inbox),
@@ -119,5 +160,5 @@ export const nativeScheduler = (
       ),
     ),
   );
-  return Layer.mergeAll(service, inner, management);
+  return Layer.mergeAll(service, inner, management, knownProjects(projects));
 };

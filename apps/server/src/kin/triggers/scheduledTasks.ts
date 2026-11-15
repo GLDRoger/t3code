@@ -26,11 +26,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
+import { bootstrapLeadProject, leadProjectId } from "../lead/leadProject.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -300,6 +302,7 @@ const make = Effect.gen(function* () {
   const cards = yield* LeadDelivery.makeCardWriter;
   const schedules = yield* KinSchedules.KinSchedules;
   const eventQueue = yield* KinEventQueue.KinEventQueue;
+  const projects = yield* ProjectService.ProjectService;
   const withQueue = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.provideService(KinEventQueue.KinEventQueue, eventQueue),
@@ -790,6 +793,54 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  /**
+   * A lead's project is made at its first wake-up; its check-ins launch into it, so it is made here
+   * first, for a new lead or one from before this. A failure waits a while; a wake-up also makes it.
+   */
+  const projectReady = new Set<string>();
+  const projectFailedAt = new Map<string, number>();
+  const ensureLeadProjects = Effect.fn("KinScheduledTasks.ensureLeadProjects")(function* (
+    orgId: KinOrgId,
+  ) {
+    const leads = yield* sql<{ agentId: string; name: string; orgName: string }>`SELECT
+        l.agent_id AS "agentId", l.name, o.name AS "orgName"
+      FROM kin_leads l
+      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
+      JOIN kin_orgs o ON o.org_id = l.org_id
+      WHERE l.org_id = ${orgId} ORDER BY l.agent_id`;
+    const now = yield* Clock.currentTimeMillis;
+    for (const lead of leads) {
+      const key = `${orgId}:${lead.agentId}`;
+      if (projectReady.has(key) || now - (projectFailedAt.get(key) ?? -Infinity) < 10 * 60_000)
+        continue;
+      const agentId = KinAgentId.make(lead.agentId);
+      yield* projects.getById(leadProjectId(orgId, agentId)).pipe(
+        Effect.flatMap((found) =>
+          Option.isSome(found)
+            ? Effect.void
+            : memory.prepareWakeup(orgId, undefined, { lead: agentId }).pipe(
+                Effect.flatMap((pinned) =>
+                  bootstrapLeadProject(projects, {
+                    orgId,
+                    agentId,
+                    workspaceRoot: pinned.read,
+                    orgName: lead.orgName,
+                    name: lead.name,
+                  }),
+                ),
+              ),
+        ),
+        Effect.matchEffect({
+          onSuccess: () => Effect.sync(() => projectReady.add(key)),
+          onFailure: (cause) =>
+            Effect.sync(() => projectFailedAt.set(key, now)).pipe(
+              Effect.andThen(Effect.logWarning("Kin lead project not made", { key, cause })),
+            ),
+        }),
+      );
+    }
+  });
+
   const seeded = new Set<string>();
   yield* ticks.register(
     "kin-scheduled-tasks",
@@ -798,6 +849,11 @@ const make = Effect.gen(function* () {
         orgId: string;
       }>`SELECT org_id AS "orgId" FROM kin_orgs ORDER BY org_id`;
       for (const { orgId } of orgs) {
+        yield* ensureLeadProjects(KinOrgId.make(orgId)).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin lead projects scan failed", { orgId, cause }),
+          ),
+        );
         if (!seeded.has(orgId))
           yield* seedCheckIns(KinOrgId.make(orgId), schedules).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),

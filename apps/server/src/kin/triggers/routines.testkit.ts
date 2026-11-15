@@ -1,4 +1,5 @@
 import { KinOrgId, KinMemoryItemId, MemoryItemHead } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -85,6 +86,12 @@ export function fixture<E = never>(
               ));
           return Layer.mock(Memory.Memory)({
             query: (orgId, input) => outsideTransaction("query", query(orgId, input)),
+            prepareWakeup: (orgId, _wakeupId, view) =>
+              Effect.succeed({
+                head: "head",
+                indexAsOf: DateTime.makeUnsafe(0),
+                read: `/memory/${orgId}/memory-read-${view?.lead ?? "shared"}`,
+              }),
             readItemQuietly: (orgId, id) => {
               const head = items.find((item) => item.orgId === orgId && item.id === id);
               return outsideTransaction(

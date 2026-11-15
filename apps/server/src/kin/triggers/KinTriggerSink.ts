@@ -19,6 +19,7 @@ import { OrchestratorCommandRejectedError } from "../../orchestration-v2/Orchest
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import { PersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { leadProjectId } from "../lead/leadProject.ts";
 import { configuredGithubMemoryRepo } from "../memory/MemoryConfig.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
@@ -214,7 +215,7 @@ const make = Effect.gen(function* () {
       task.threadId !== null ||
       (task.threadMode ?? "new_thread") !== "new_thread" ||
       task.projectId !== input.projectId ||
-      task.projectId !== `kin:${schedule.orgId}:${schedule.agentId}` ||
+      task.projectId !== leadProjectId(schedule.orgId, schedule.agentId) ||
       !["fixed_time", "interval", "once"].includes(task.scheduleType ?? "")
     )
       return yield* refuse(taskId, "not_kin_shape");

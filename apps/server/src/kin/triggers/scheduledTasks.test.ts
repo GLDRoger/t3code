@@ -60,20 +60,31 @@ const identity = Layer.mock(KinIdentity)({
 });
 
 /** Kin's consumer over the real native scheduler; `recorded` holds what would be bare threads. */
-const harness = () => {
+const harness = (projects?: Set<string>) => {
   const recorded = {
     launches: [] as ThreadLaunchService.ThreadLaunchInput[],
     sends: [] as string[],
   };
   const workers = new Map<string, Effect.Effect<void>>();
+  const kinTicks = new Map<string, Effect.Effect<void>>();
   const layer = ScheduledTasks.layer.pipe(
     Layer.provideMerge(TriggerService.layer),
     Layer.provideMerge(LeadDelivery.layer),
     Layer.provideMerge(Budget.layer.pipe(Layer.provide(MemoryCache.layer))),
-    Layer.provideMerge(nativeScheduler(orgId, "lead-a", recorded, workers)),
-    Layer.provideMerge(fixture([task])),
+    Layer.provideMerge(nativeScheduler(orgId, "lead-a", recorded, workers, projects)),
+    Layer.provideMerge(
+      fixture([task], {
+        register: Effect.fn("test.registerTick")(function* <E, R>(
+          name: string,
+          work: Effect.Effect<void, E, R>,
+        ) {
+          const context = yield* Effect.context<R>();
+          kinTicks.set(name, work.pipe(Effect.provideContext(context), Effect.orDie));
+        }),
+      }),
+    ),
   );
-  return { recorded, workers, layer };
+  return { recorded, workers, kinTicks, layer };
 };
 const layer = harness().layer;
 
@@ -660,6 +671,37 @@ it.effect(
       const teammate = { ...owner, personId: KinPersonId.make("teammate-a") };
       const refused = yield* CheckIns.list([teammate], orgId).pipe(Effect.flip);
       assert.equal(refused._tag, "KinChatError");
+    }).pipe(Effect.provide(Layer.merge(layer, identity)));
+  },
+);
+
+it.effect(
+  "a lead that has never woken gets its default check-ins, and Settings can add one",
+  () => {
+    const projects = new Set<string>();
+    const { layer, kinTicks } = harness(projects);
+    return Effect.gen(function* () {
+      yield* setup();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_leads SET models_json = ${MODELS} WHERE org_id = ${orgId}`;
+      yield* kinTicks.get("kin-scheduled-tasks")!;
+      assert.isTrue(projects.has(`kin:${orgId}:lead-a`));
+      const people = [owner];
+      const listed = yield* CheckIns.list(people, orgId);
+      assert.deepStrictEqual(listed.checkIns.map((row) => row.title).toSorted(), [
+        "Afternoon check-in",
+        "Morning check-in",
+        "Weekly brief",
+      ]);
+      const added = yield* CheckIns.save(people, {
+        orgId,
+        agentId: KinAgentId.make("lead-a"),
+        title: "Evening check-in",
+        what: "Look over the day.",
+        at: "18:00",
+        days: [1, 2, 3, 4, 5],
+      });
+      assert.lengthOf(added.checkIns, 4);
     }).pipe(Effect.provide(Layer.merge(layer, identity)));
   },
 );
