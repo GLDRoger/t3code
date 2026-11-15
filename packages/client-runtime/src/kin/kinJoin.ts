@@ -132,15 +132,29 @@ export function kinAccessEnded(
 
 export type KinHomeTab = "chats" | "work" | "team" | "memory" | "settings";
 
-/** The tabs a Kin home's dock draws. Team and Memory are pages of Settings, not tabs. */
-export type KinDockTab = Extract<KinHomeTab, "chats" | "work" | "settings">;
+/** The places a Kin home's dock draws. Settings is a button on Chats, Team and Memory its pages. */
+export type KinDockTab = "chats" | "tasks" | "money" | "clients" | "docs";
 
-const isDockTab = (tab: KinHomeTab): tab is KinDockTab =>
-  tab === "chats" || tab === "work" || tab === "settings";
+/** Places the host has answered it won't show this viewer, which a grant can't tell apart. */
+export interface KinDockRefused {
+  readonly money: boolean;
+  readonly clients: boolean;
+  readonly docs: boolean;
+}
 
-/** Chats, Work and Settings for a session the host lets read Work; Chats and Settings otherwise. */
-export function kinDockTabs(session: SessionGrantInput | null): ReadonlyArray<KinDockTab> {
-  return kinHomeTabs(session).filter(isDockTab);
+/** Chats, then each place of Work a session may read and the host hasn't refused; Chats alone otherwise. */
+export function kinDockTabs(
+  session: SessionGrantInput | null,
+  refused: KinDockRefused,
+): ReadonlyArray<KinDockTab> {
+  if (!kinHomeTabs(session).includes("work")) return ["chats"];
+  return [
+    "chats",
+    "tasks",
+    ...(refused.money ? [] : (["money"] as const)),
+    ...(refused.clients ? [] : (["clients"] as const)),
+    ...(refused.docs ? [] : (["docs"] as const)),
+  ];
 }
 
 /**
