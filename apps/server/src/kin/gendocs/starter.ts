@@ -38,10 +38,11 @@ RECIPE.md starts with front matter between --- lines:
     advance's receipt), tds (tax the client deducted) or received; entry.advances is only the
     advances;
   - rows.<list> (a table, with period: naming a month input): that list's entries dated in the
-    month, with columns from key, title, state, amount, tax, date, due, client,
-    category, number and field_<field>;
+    month, with columns from key, title, state, amount, tax, taxable (amount less tax), date,
+    due, client, clientGstin, placeOfSupply, category, number, matched (what a bank row was
+    confirmed as) and field_<field>;
   - payments (a table, with period:): payments received in the month, with columns invoice,
-    client, amount, paidOn;
+    client, amount, paidOn, receipt; tds the same, for tax clients deducted;
   - system.number, system.draft, system.today.
 - computed (typst): fields Kin works out, in order, each one function: times [amount, factor],
   percent [amount, rate] (round: half-up, half-even, down or up), sum [amounts or table.column],
@@ -50,7 +51,8 @@ RECIPE.md starts with front matter between --- lines:
   date [day, format], gst { taxable, total, recordedTax, rate, supplierGstin, supplierPlace,
   clientGstin, clientPlace, exportUnderLut } and markdown text.
 - sheets and workbook (table): each sheet's name, the table input it shows, its CSV file name,
-  its columns (header and field) and the states left out of totals.
+  its columns (header and field), the states left out of totals, and totalsBy, a field to
+  total per value of.
 - outputs: the file names it makes, {month} for an input's value.
 
 The body is notes for the agent.
@@ -507,7 +509,7 @@ the owner may change is at the top of template.typ.
   "recipes/accountant-pack/RECIPE.md": String.raw`---
 name: accountant-pack
 title: Accountant's monthly pack
-description: One month's invoices, payments received and expenses as a workbook and a CSV per sheet, with exact totals per currency, for the accountant.
+description: One month's sales register, receipts, TDS deducted, expenses and bank transactions as a workbook and a CSV per sheet, with exact totals per currency, for the accountant.
 kind: table
 sensitive: true
 inputs:
@@ -516,10 +518,15 @@ inputs:
     type: table
     from: rows.invoices
     period: month
-    columns: { key: text, number: text, date: date, client: text, state: text, tax: money, amount: money }
+    columns: { key: text, number: text, date: date, client: text, clientGstin: text, placeOfSupply: text, state: text, taxable: money, tax: money, amount: money }
   payments:
     type: table
     from: payments
+    period: month
+    columns: { invoice: text, receipt: text, client: text, amount: money, paidOn: date }
+  tds:
+    type: table
+    from: tds
     period: month
     columns: { invoice: text, client: text, amount: money, paidOn: date }
   expenses:
@@ -527,47 +534,86 @@ inputs:
     from: rows.expenses
     period: month
     columns: { key: text, title: text, date: date, category: text, field_vendor: text, tax: money, amount: money }
+  bank:
+    type: table
+    from: rows.bank_transactions
+    period: month
+    columns: { key: text, title: text, date: date, state: text, field_direction: text, field_reference: text, field_account: text, matched: text, amount: money }
 workbook: "accounts-{month}.xlsx"
 sheets:
-  - name: Invoices
+  - name: Sales register
     input: invoices
-    file: "invoices-{month}.csv"
+    file: "sales-register-{month}.csv"
     columns:
       - { header: "Invoice no.", field: number }
-      - { header: Entry, field: key }
       - { header: Date, field: date }
       - { header: Client, field: client }
-      - { header: Status, field: state }
-      - { header: Tax, field: tax }
-      - { header: "Amount incl. tax", field: amount }
+      - { header: "Client GSTIN", field: clientGstin }
+      - { header: "Place of supply", field: placeOfSupply }
+      - { header: "Taxable value", field: taxable }
+      - { header: "Tax as recorded", field: tax }
+      - { header: "Total", field: amount }
       - { header: Currency, field: amount.currency }
+      - { header: Status, field: state }
+      - { header: Entry, field: key }
     leaveOutOfTotals: { field: state, values: [Void, Draft] }
-  - name: Payments received
+  - name: Receipts
     input: payments
-    file: "payments-{month}.csv"
+    file: "receipts-{month}.csv"
     columns:
       - { header: "Received on", field: paidOn }
+      - { header: Receipt, field: receipt }
       - { header: Invoice, field: invoice }
       - { header: Client, field: client }
       - { header: Amount, field: amount }
+      - { header: Currency, field: amount.currency }
+  - name: TDS deducted
+    input: tds
+    file: "tds-{month}.csv"
+    columns:
+      - { header: "Recorded on", field: paidOn }
+      - { header: Invoice, field: invoice }
+      - { header: Client, field: client }
+      - { header: "TDS deducted", field: amount }
       - { header: Currency, field: amount.currency }
   - name: Expenses
     input: expenses
     file: "expenses-{month}.csv"
     columns:
+      - { header: Category, field: category }
       - { header: Date, field: date }
       - { header: Entry, field: key }
       - { header: What, field: title }
       - { header: Vendor, field: field_vendor }
-      - { header: Category, field: category }
       - { header: "Tax paid", field: tax }
       - { header: Amount, field: amount }
       - { header: Currency, field: amount.currency }
-outputs: ["accounts-{month}.xlsx", "invoices-{month}.csv", "payments-{month}.csv", "expenses-{month}.csv"]
+    totalsBy: category
+  - name: Bank transactions
+    input: bank
+    file: "bank-{month}.csv"
+    columns:
+      - { header: Date, field: date }
+      - { header: Entry, field: key }
+      - { header: Narration, field: title }
+      - { header: Direction, field: field_direction }
+      - { header: Reference, field: field_reference }
+      - { header: Account, field: field_account }
+      - { header: Amount, field: amount }
+      - { header: Currency, field: amount.currency }
+      - { header: Status, field: state }
+      - { header: "Matched to", field: matched }
+    totalsBy: field_direction
+outputs: ["accounts-{month}.xlsx", "sales-register-{month}.csv", "receipts-{month}.csv", "tds-{month}.csv", "expenses-{month}.csv", "bank-{month}.csv"]
 ---
 
 The month's pack for the accountant. Kin writes the rows as they are stored and adds the totals
-in exact amounts, one per currency, leaving Void and Draft invoices out of them.
+in exact amounts, one per currency, leaving Void and Draft invoices out of them. Expenses total
+per category and bank rows per direction. A bank row still Unexplained has nothing in Matched to.
+
+Tax is the invoice's tax as recorded, one figure: Kin holds no CGST, SGST or IGST split, so the
+pack has none. Taxable value is the total less that tax, blank when no tax was recorded. TDS is
+tax a client deducted: it settles the invoice but is no money received, so Receipts leave it out.
 
 When the owner wants other columns, change a sheet's columns here (each a header and a field the
 input has; add the field to the input's columns too) and nothing else.
@@ -575,13 +621,20 @@ input has; add the field to the input's columns too) and nothing else.
   "recipes/accountant-pack/sample.json": String.raw`{
   "month": "2026-10",
   "invoices": [
-    { "key": "INV-1", "number": "INV/26-27/001", "date": "2026-10-03", "client": "Example Client Pvt Ltd", "state": "Paid", "tax": { "minor": 1800000, "currency": "INR" }, "amount": { "minor": 11800000, "currency": "INR" } }
+    { "key": "INV-1", "number": "INV/26-27/001", "date": "2026-10-03", "client": "Example Client Pvt Ltd", "clientGstin": "29BBBBB2222B1Z5", "placeOfSupply": "Karnataka", "state": "Paid", "taxable": { "minor": 10000000, "currency": "INR" }, "tax": { "minor": 1800000, "currency": "INR" }, "amount": { "minor": 11800000, "currency": "INR" } }
   ],
   "payments": [
-    { "invoice": "INV/26-27/001", "client": "Example Client Pvt Ltd", "amount": { "minor": 11800000, "currency": "INR" }, "paidOn": "2026-10-20" }
+    { "invoice": "INV/26-27/001", "receipt": "RCT/26-27/001", "client": "Example Client Pvt Ltd", "amount": { "minor": 11600000, "currency": "INR" }, "paidOn": "2026-10-20" }
+  ],
+  "tds": [
+    { "invoice": "INV/26-27/001", "client": "Example Client Pvt Ltd", "amount": { "minor": 200000, "currency": "INR" }, "paidOn": "2026-10-20" }
   ],
   "expenses": [
-    { "key": "EXP-1", "title": "Hosting", "date": "2026-10-05", "category": "Software", "field_vendor": "Sample Cloud", "tax": null, "amount": { "minor": 450000, "currency": "INR" } }
+    { "key": "EXP-1", "title": "Hosting", "date": "2026-10-05", "category": "software", "field_vendor": "Sample Cloud", "tax": null, "amount": { "minor": 450000, "currency": "INR" } }
+  ],
+  "bank": [
+    { "key": "BNK-1", "title": "NEFT EXAMPLE CLIENT", "date": "2026-10-20", "state": "Explained", "field_direction": "credit", "field_reference": "N000000001", "field_account": "0000", "matched": "payment on INV-1", "amount": { "minor": 11600000, "currency": "INR" } },
+    { "key": "BNK-2", "title": "CARD SAMPLE CLOUD", "date": "2026-10-05", "state": "Unexplained", "field_direction": "debit", "field_reference": null, "field_account": "0000", "matched": null, "amount": { "minor": 450000, "currency": "INR" } }
   ]
 }
 `,

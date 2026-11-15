@@ -58,6 +58,11 @@ import { defineList, PRESETS } from "../registers.ts";
 import { makeKinWorkHandlers } from "../rpcHandlers.ts";
 import { readStatementFile } from "./statementFiles.ts";
 import { type RowRead, threePageStatement } from "./statementPdf.testkit.ts";
+import { gatherFacts } from "../../gendocs/facts.ts";
+import { parseRecipe, sourceOf } from "../../gendocs/recipe.ts";
+import { STARTER_FILES } from "../../gendocs/starter.ts";
+import { dayIn } from "../money.ts";
+import { ownerZone } from "../recordRows.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
 
 // An invented company, Lakeview Studio, with invented clients, invoices and statements.
@@ -958,6 +963,25 @@ describe("bank statements", () => {
           yield* OwnerStatements.apply(people, confirmOf(chosen));
           assert.include((yield* taps).at(-1), 'Tapped "Confirm" on statement st_');
           assert.include((yield* taps).at(-1), "Every row of this statement is explained.");
+          // The accountant's pack lists each bank row with what the owner confirmed it as.
+          const pack = parseRecipe(STARTER_FILES["recipes/accountant-pack/RECIPE.md"]!);
+          if ("reason" in pack) return assert.fail(pack.reason);
+          const [earliest] = yield* sql<{ at: number }>`SELECT MIN(date_at) AS at FROM kin_records
+            WHERE org_id = ${orgId} AND register_id = 'bank_transactions'`;
+          const month = dayIn(earliest!.at, yield* ownerZone(orgId)).slice(0, 7);
+          const bankInput = pack.inputs.find((one) => one.name === "bank")!;
+          const bankSource = sourceOf(bankInput.from);
+          if (bankSource === undefined || bankSource._tag === "agent") return assert.fail("bank");
+          const gathered = yield* gatherFacts(orgId, pack, undefined, { month });
+          const shown = gathered.facts(bankSource, bankInput, {}) as ReadonlyArray<
+            Record<string, unknown>
+          >;
+          assert.isAbove(shown.length, 0);
+          for (const row of shown) {
+            assert.strictEqual(row.state, "Explained");
+            assert.isString(row.matched);
+          }
+          assert.isTrue(shown.some((row) => row.matched === "transfer between own accounts"));
 
           // From the host, as `kin statement reread` does it: read again, tell the lead, queue it.
           const done = yield* OwnerStatements.rereadStatement({

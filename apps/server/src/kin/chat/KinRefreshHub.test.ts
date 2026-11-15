@@ -169,6 +169,7 @@ describe("KinRefreshHub", () => {
       kin_lead_access: ["lead/KinLeadProvision.ts", "people/KinPeople.ts"],
       kin_trigger_settings: ["triggers/routines.ts"],
       kin_visual_hosts: ["chat/KinVisualHosts.ts"],
+      kin_money_budgets: ["work/budgets.ts"],
     };
     const write = new RegExp(
       `(?:INSERT INTO|UPDATE|DELETE FROM)\\s+(${Object.keys(writers).join("|")})\\b`,

@@ -600,18 +600,28 @@ describe("recipe documents", () => {
         pack.documents.map((one) => one.title),
         [
           "November pack · accounts-2026-11.xlsx",
-          "November pack · invoices-2026-11.csv",
-          "November pack · payments-2026-11.csv",
+          "November pack · sales-register-2026-11.csv",
+          "November pack · receipts-2026-11.csv",
+          "November pack · tds-2026-11.csv",
           "November pack · expenses-2026-11.csv",
+          "November pack · bank-2026-11.csv",
         ],
       );
-      const csv = (yield* versionsOf(pack.documents[1]!.key)).doc;
-      const file = Docs.toVersion((yield* Docs.versionOf(orgId, csv.recordId))!).file!;
       const config = yield* ServerConfig;
-      const text = yield* (yield* FileSystem.FileSystem).readFileString(
-        `${config.attachmentsDir}/${file.attachmentId}.csv`,
+      const csvOf = (key: string) =>
+        Effect.gen(function* () {
+          const doc = (yield* versionsOf(key)).doc;
+          const file = Docs.toVersion((yield* Docs.versionOf(orgId, doc.recordId))!).file!;
+          return yield* (yield* FileSystem.FileSystem).readFileString(
+            `${config.attachmentsDir}/${file.attachmentId}.csv`,
+          );
+        });
+      const text = yield* csvOf(pack.documents[1]!.key);
+      // Place of supply is the client's; with no tax recorded, taxable value and tax stay blank.
+      assert.match(
+        text,
+        /^INV\/26-27\/001,\d{4}-\d{2}-\d{2},Invented Acme,,Maharashtra,,,1000\.01,INR,Issued,INV-1\r$/m,
       );
-      assert.match(text, /INV\/26-27\/001,INV-1,/);
       // A title that starts with its own number, as an import writes one, shows the number once.
       yield* (yield* KinRecords.KinRecords).update(
         orgId,
@@ -641,6 +651,30 @@ describe("recipe documents", () => {
           latestData().balance.text,
         ],
         [["tds", "received"], "₹0.00"],
+      );
+      yield* records.update(orgId, system, "INV-1", {
+        fields: { tax: { minor: 152_54, currency: "INR" } },
+      });
+      yield* records.update(orgId, system, "C-1", { fields: { gstin: "27AAAAA1111A1Z5" } });
+      // The month's pack shows the TDS on its own sheet and only the money received as receipts.
+      const settled = yield* LeadDocuments.make(scope, {
+        title: "November pack settled",
+        recipe: "accountant-pack",
+        inputs: { month: "2026-11" },
+        sourceEventId: "event-3",
+      });
+      const [receipts, tds] = [
+        yield* csvOf(settled.documents[2]!.key),
+        yield* csvOf(settled.documents[3]!.key),
+      ];
+      assert.include(receipts, ",900.01,INR");
+      assert.notInclude(receipts, ",100.00,INR");
+      assert.include(tds, "2026-11-12,INV/26-27/001,");
+      assert.include(tds, ",100.00,INR");
+      // Taxable value is the total less the tax as recorded, to the paisa.
+      assert.include(
+        yield* csvOf(settled.documents[1]!.key),
+        ",Invented Acme,27AAAAA1111A1Z5,Maharashtra,847.47,152.54,1000.01,INR,Paid,INV-1\r\n",
       );
     }).pipe(Effect.provide(layer)),
   );

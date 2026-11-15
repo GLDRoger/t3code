@@ -56,18 +56,31 @@ export const sheetCells = (rows: ReadonlyArray<Row>, sheet: Sheet): ReadonlyArra
       ),
     ),
   ].toSorted();
-  const totals = currencies.map((currency) =>
-    sheet.columns.map((column, index): Cell => {
-      if (index === 0) return { text: currencies.length > 1 ? `Total ${currency}` : "Total" };
-      if (!moneyColumns.includes(index)) return { text: "" };
-      const sum = rows.reduce((total, row) => {
-        const value = row[column.field];
-        return counted(row) && isMoney(value) && value.currency === currency
-          ? total + BigInt(value.minor)
-          : total;
-      }, 0n);
-      return { number: decimal(Number(sum)), currency };
-    }),
+  const groupOf = (row: Row) =>
+    sheet.totalsBy === undefined ? "" : String(valueAt(row, sheet.totalsBy) ?? "");
+  const groups = [...new Set(rows.map(groupOf))].toSorted();
+  const totals = (groups.length === 0 ? [""] : groups).flatMap((group) =>
+    currencies.map((currency) =>
+      sheet.columns.map((column, index): Cell => {
+        if (index === 0)
+          return {
+            text: ["Total", group, currencies.length > 1 ? currency : ""]
+              .filter((part) => part !== "")
+              .join(" "),
+          };
+        if (!moneyColumns.includes(index)) return { text: "" };
+        const sum = rows.reduce((total, row) => {
+          const value = row[column.field];
+          return counted(row) &&
+            groupOf(row) === group &&
+            isMoney(value) &&
+            value.currency === currency
+            ? total + BigInt(value.minor)
+            : total;
+        }, 0n);
+        return { number: decimal(Number(sum)), currency };
+      }),
+    ),
   );
   return [header, ...body, ...totals];
 };

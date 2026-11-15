@@ -177,9 +177,11 @@ it.layer(layerOf())("KinDocRenderer", (it) => {
         rendered._tag === "made" ? rendered.files.map((file) => file.name) : reason(rendered),
         [
           "accounts-2026-10.xlsx",
-          "invoices-2026-10.csv",
-          "payments-2026-10.csv",
+          "sales-register-2026-10.csv",
+          "receipts-2026-10.csv",
+          "tds-2026-10.csv",
           "expenses-2026-10.csv",
+          "bank-2026-10.csv",
         ],
       );
     }),

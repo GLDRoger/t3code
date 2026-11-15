@@ -43,6 +43,8 @@ const SheetDecl = Schema.Struct({
       values: Schema.Array(Schema.String).check(Schema.isMaxLength(20)),
     }),
   ),
+  /** A total per value of this field, such as a bank row's direction, instead of one for all. */
+  totalsBy: Schema.optional(Name),
 });
 export type Sheet = typeof SheetDecl.Type;
 const FrontMatter = Schema.Struct({
@@ -112,8 +114,12 @@ const ROW_COLUMNS = [
   "client",
   "category",
   "number",
+  "clientGstin",
+  "placeOfSupply",
+  "taxable",
+  "matched",
 ];
-const PAYMENT_COLUMNS = ["invoice", "client", "amount", "paidOn"];
+const PAYMENT_COLUMNS = ["invoice", "client", "amount", "paidOn", "receipt"];
 /** An entry's live payments; `kind` is advance, tds or received. */
 const ENTRY_PAYMENT_COLUMNS = ["receipt", "amount", "paidOn", "kind"];
 
@@ -127,13 +133,14 @@ export type Source =
   /** The logo's path in the render root, `/brand/logo.<ext>`, or null without one. */
   | { readonly _tag: "logo" }
   | { readonly _tag: "rows"; readonly list: string }
-  | { readonly _tag: "payments" }
+  /** Money received in the month, or with `tds` the tax clients deducted instead. */
+  | { readonly _tag: "payments"; readonly tds: boolean }
   /** `entry.payments`, or `entry.advances`: those received before its date or from an advance. */
   | { readonly _tag: "entryPayments"; readonly advancesOnly: boolean }
   | { readonly _tag: "system"; readonly key: string };
 export const sourceOf = (from: string): Source | undefined => {
   if (from === "agent") return { _tag: "agent" };
-  if (from === "payments") return { _tag: "payments" };
+  if (from === "payments" || from === "tds") return { _tag: "payments", tds: from === "tds" };
   const [head, ...rest] = from.split(".");
   const tail = rest.join(".");
   switch (head) {

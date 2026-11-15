@@ -405,7 +405,7 @@ it.effect(
       yield* turn("mate", "shared");
       const shared = { orgId, agentId: lead, wakeupId: "wake" };
       // Slice 5's list and money tools too: none of them is shared-safe yet.
-      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 9);
+      assert.lengthOf(Object.keys(KinWorkToolkit.tools), 11);
       for (const tool of Object.keys(KinWorkToolkit.tools))
         assert.isFalse(yield* sharedToolAllowed(shared, tool, {}), tool);
       assert.include(
