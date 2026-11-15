@@ -14,12 +14,23 @@ import {
   type KinSearchHitView,
   type KinSearchState,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
+import {
+  KIN_LISTS,
+  kinListsIndex,
+  type KinListIndexRow,
+} from "@t3tools/client-runtime/kin/kinLists";
+import {
+  KIN_WORK_HOME,
+  kinPlaceLists,
+  kinWorkAskDraft,
+} from "@t3tools/client-runtime/kin/kinWorkHome";
+import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinDocRow, KinRecordKey } from "@t3tools/contracts";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
+import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -29,9 +40,10 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { kinTabBar, useKinTab } from "./components/KinTab";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { useKinDocsList, useKinDocsLive, useKinDocsUnder, useKinSearch } from "./state/useKinDocs";
-import { useKinAskAgent } from "./state/useKinMoney";
+import { useKinAskAgent, useKinLists } from "./state/useKinMoney";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
 
@@ -79,6 +91,37 @@ function KinDocRowButton(props: {
         ) : null}
       </Pressable>
       <View className={cn("h-px bg-border-subtle", props.inset ? "ml-4" : "ml-5")} />
+    </>
+  );
+}
+
+/** A list kept beside the docs, as a row that opens it. */
+function KinListRowButton(props: { readonly row: KinListIndexRow; readonly onPress: () => void }) {
+  const { row } = props;
+  return (
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${KIN_LISTS.title}: ${row.name}. ${row.line}`}
+        onPress={props.onPress}
+        className="min-h-16 flex-row items-center gap-3 px-5 py-3 active:opacity-60"
+      >
+        <SymbolView
+          name="list.bullet"
+          size={18}
+          tintColorClassName="accent-icon"
+          type="monochrome"
+        />
+        <View className="min-w-0 flex-1 gap-0.5">
+          <Text textRole="body" numberOfLines={1} className="text-foreground">
+            {row.name}
+          </Text>
+          <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+            {row.line}
+          </Text>
+        </View>
+      </Pressable>
+      <View className="ml-5 h-px bg-border-subtle" />
     </>
   );
 }
@@ -147,18 +190,26 @@ export function KinSearchHits(props: {
 
 type Item =
   | { readonly type: "group"; readonly id: string; readonly title: string }
-  | { readonly type: "doc"; readonly id: string; readonly row: KinDocRow };
+  | { readonly type: "doc"; readonly id: string; readonly row: KinDocRow }
+  | { readonly type: "list"; readonly id: string; readonly row: KinListIndexRow };
 
 const DOCS_ONLY = ["docs"] as const;
 
-/** Every doc under its client, project or keeper, with a search over what they say. */
+type Kind = "all" | "docs" | "lists";
+
+/**
+ * Every doc under its client, project or keeper, with a search over what they say, and above
+ * them the lists people keep that Money doesn't: a list is a doc with columns.
+ */
 export function KinDocsList(
   props: KinWorkTarget & {
+    readonly live: KinWorkLive;
     readonly directory: KinWorkDirectory;
     readonly stale: boolean;
   },
 ) {
   const navigation = useNavigation();
+  const tab = useKinTab();
   const agent = useKinAskAgent(props, "docs");
   const { environmentId, orgId } = props;
   const { names } = props.directory;
@@ -167,24 +218,50 @@ export function KinDocsList(
   const { state, list } = useKinDocsList(props, props.stale ? null : (live?.seq ?? null));
   const { state: found, search } = useKinSearch(props, DOCS_ONLY);
   const [by, setBy] = useState<KinDocGrouping>("client");
+  const [kind, setKind] = useState<Kind>("all");
+  const { filter } = state;
+  const lists = useKinLists(props, {
+    enabled: true,
+    archived: filter.archived,
+    seq: props.stale ? null : props.live.seq,
+  });
   const refresh = () => {
     refreshKinWorkLive(props);
     list.refresh();
+    lists.refresh();
   };
-  const { filter } = state;
   const searching = found.text.trim() !== "";
-  const passages = searching && (found.hits?.length ?? 0) > 0;
-  const items: ReadonlyArray<Item> = refused
-    ? []
-    : kinDocGroups(state.records, by, names).flatMap((group): ReadonlyArray<Item> => [
-        {
-          type: "group",
-          id: `group:${group.id}`,
-          title: `${group.title} · ${group.rows.length}`,
-        },
-        ...group.rows.map((row): Item => ({ type: "doc", id: row.recordId, row })),
-      ]);
-  const footer = kinDocsFooter(state.records.length, state.total, state.more);
+  const passages = searching && kind !== "lists" && (found.hits?.length ?? 0) > 0;
+  const index = kinListsIndex(
+    lists.state._tag === "ready" ? kinPlaceLists(lists.state.value.lists) : [],
+  );
+  const words = filter.text.trim().toLowerCase();
+  const listRows = (filter.archived ? index.archived : index.active).filter(
+    (row) => words === "" || row.name.toLowerCase().includes(words),
+  );
+  const listItems: ReadonlyArray<Item> =
+    kind === "docs" || listRows.length === 0
+      ? []
+      : [
+          { type: "group", id: "group:lists", title: `${KIN_LISTS.title} · ${listRows.length}` },
+          ...listRows.map((row): Item => ({ type: "list", id: `list:${row.list}`, row })),
+        ];
+  const docItems: ReadonlyArray<Item> =
+    refused || kind === "lists"
+      ? []
+      : kinDocGroups(state.records, by, names).flatMap((group): ReadonlyArray<Item> => [
+          {
+            type: "group",
+            id: `group:${group.id}`,
+            title: `${group.title} · ${group.rows.length}`,
+          },
+          ...group.rows.map((row): Item => ({ type: "doc", id: row.recordId, row })),
+        ]);
+  const items = [...listItems, ...docItems];
+  // With lists showing, the docs' own loading or failure still needs saying under them.
+  const docsPending = listItems.length > 0 && kind !== "lists" && docItems.length === 0;
+  const footer =
+    kind === "lists" ? null : kinDocsFooter(state.records.length, state.total, state.more);
   const open = (doc: KinRecordKey, section?: string) =>
     navigation.navigate("KinDoc", {
       environmentId,
@@ -197,7 +274,6 @@ export function KinDocsList(
       <AppBar
         title={KIN_WORK_HOME.places.docs}
         refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
-        onBack={() => navigation.goBack()}
         {...(agent === null
           ? {}
           : {
@@ -206,6 +282,11 @@ export function KinDocsList(
                   accessibilityLabel: `Ask ${agent.name}`,
                   icon: "bubble.left",
                   onPress: () => agent.ask(kinWorkAskDraft("docs")),
+                },
+                {
+                  accessibilityLabel: KIN_LISTS.ask,
+                  icon: "plus",
+                  onPress: () => agent.ask(KIN_LISTS.askMessage),
                 },
               ],
             })}
@@ -218,8 +299,25 @@ export function KinDocsList(
                   icon: "line.3.horizontal.decrease.circle",
                   items: [
                     {
-                      id: "which",
+                      id: "kind",
                       title: KIN_WORK_HOME.show,
+                      inline: true,
+                      items: (
+                        [
+                          ["all", KIN_DOCS.docsAndLists],
+                          ["docs", KIN_DOCS.title],
+                          ["lists", KIN_LISTS.title],
+                        ] as const
+                      ).map(([id, title]) => ({
+                        id: `kind:${id}`,
+                        title,
+                        selected: kind === id,
+                        onPress: () => setKind(id),
+                      })),
+                    },
+                    {
+                      id: "which",
+                      title: KIN_DOCS.which,
                       inline: true,
                       items: [
                         {
@@ -257,16 +355,19 @@ export function KinDocsList(
                 },
               ],
             })}
-        search={{
-          value: found.text,
-          onChangeText: (text) => {
-            search.setText(text);
-            list.setFilter({ ...filter, text });
+        {...kinTabBar(tab, {
+          onBack: () => navigation.goBack(),
+          search: {
+            value: found.text,
+            onChangeText: (text) => {
+              search.setText(text);
+              list.setFilter({ ...filter, text });
+            },
+            placeholder: KIN_DOCS.searchWithLists,
+            closeAccessibilityLabel: "Close search",
+            clearAccessibilityLabel: "Clear search",
           },
-          placeholder: KIN_DOCS.search,
-          closeAccessibilityLabel: "Close search",
-          clearAccessibilityLabel: "Clear search",
-        }}
+        })}
       />
       <ScreenContent surface="screen">
         <LegendList<Item>
@@ -275,11 +376,11 @@ export function KinDocsList(
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
-          // The search field floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: 96 }}
+          // The search field, or the dock, floats over the foot of the list.
+          contentContainerStyle={{ paddingBottom: tab === null ? 96 : 32 + tab.bottomClearance }}
           data={items}
           keyExtractor={(item) => item.id}
-          extraData={[state, by, found]}
+          extraData={[state, by, found, kind, lists.state]}
           estimatedItemSize={72}
           recycleItems
           onEndReached={() => void list.loadMore()}
@@ -299,7 +400,24 @@ export function KinDocsList(
           }
           ListEmptyComponent={
             <View className="pt-4">
-              {refused ? (
+              {kind === "lists" ? (
+                <EmptyState
+                  variant="plain"
+                  {...(words === "" ? KIN_LISTS.none : KIN_DOCS.noMatch)}
+                  {...(agent === null || words !== ""
+                    ? {}
+                    : {
+                        action: (
+                          <Button
+                            tone="primary"
+                            icon="bubble.left"
+                            label={KIN_LISTS.ask}
+                            onPress={() => agent.ask(KIN_LISTS.askMessage)}
+                          />
+                        ),
+                      })}
+                />
+              ) : refused ? (
                 <EmptyState variant="plain" {...KIN_DOCS.unavailable} />
               ) : state.loading ? (
                 <KinWorkLoading label={KIN_DOCS.loading} />
@@ -322,6 +440,17 @@ export function KinDocsList(
           }
           ListFooterComponent={
             <>
+              {!docsPending ? null : state.loading ? (
+                <KinWorkLoading label={KIN_DOCS.loading} />
+              ) : state.failed !== null ? (
+                <View className="px-4 pt-4">
+                  <Notice
+                    tone="danger"
+                    message={KIN_DOCS.loadFailed}
+                    action={{ label: "Try again", onPress: list.refresh }}
+                  />
+                </View>
+              ) : null}
               {footer === null ? null : (
                 <View className="items-start gap-2 px-5 py-4">
                   <Text textRole="footnote" className="text-foreground-muted">
@@ -359,7 +488,14 @@ export function KinDocsList(
             </>
           }
           renderItem={({ item }) =>
-            item.type === "group" ? (
+            item.type === "list" ? (
+              <KinListRowButton
+                row={item.row}
+                onPress={() =>
+                  navigation.navigate("KinList", { environmentId, orgId, list: item.row.list })
+                }
+              />
+            ) : item.type === "group" ? (
               <View className="px-5 pb-1 pt-4">
                 <Text
                   textRole="footnote"

@@ -169,7 +169,6 @@ describe("resolveKinHost", () => {
   });
 
   it.each([
-    ["switched off", { phase: "available", error: null }],
     ["unreachable after a failed attempt", { phase: "reconnecting", error: "timed out" }],
     ["failing", { phase: "error", error: "refused" }],
     ["unsupported", { phase: "unsupported", error: "too old" }],
@@ -190,6 +189,16 @@ describe("resolveKinHost", () => {
     expect(kinStandInLine(host, (id) => names.get(id) ?? null)?.message).toBe(
       "Showing Studio Mac. Office Mac can't be reached.",
     );
+  });
+
+  it("stands in quietly for a saved host switched off on this device", () => {
+    const host = resolve(
+      { [b]: ready },
+      { savedHostId: c, phases: { [c]: { phase: "available", error: null } } },
+    );
+    expect(host).toMatchObject({ environmentId: b, connected: true, standInFor: c });
+    expect(kinHostIdToSave(host)).toBeNull();
+    expect(kinStandInLine(host, () => "Studio Mac")).toBeNull();
   });
 
   it("waits on an earlier host's probe before letting a later one stand in", () => {

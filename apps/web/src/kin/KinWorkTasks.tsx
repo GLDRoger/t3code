@@ -2,7 +2,6 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_WORK_LOAD_FAILED,
   KIN_WORK_NEW,
-  KIN_WORK_NEW_COPY,
   KIN_WORK_SEARCH_PLACEHOLDER,
   KIN_WORK_STALE,
   kinWorkHostEdits,
@@ -12,6 +11,7 @@ import {
   kinWorkRow,
   kinWorkShown,
   type KinWorkFilter,
+  type KinWorkNames,
   type KinWorkOverview,
   type KinWorkRef,
   type KinWorkRowView,
@@ -28,9 +28,15 @@ import {
   createKinWorkList,
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
-import { KIN_CLIENTS, KIN_PROJECTS } from "@t3tools/client-runtime/kin/kinWorkClients";
+import {
+  KIN_WORK_HOME,
+  kinWorkBesideNeedsYou,
+  kinWorkFilterCleared,
+  kinWorkFilterLabel,
+  kinWorkOwnerSelected,
+} from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import type { KinRecordKey } from "@t3tools/contracts";
+import type { KinRecord, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -41,21 +47,13 @@ import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import {
-  Select,
-  SelectItem,
-  SelectPopup,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select";
-import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { KinAvatar } from "./KinAvatar";
-import { KinWorkNotice, KinWorkRowSkeletons } from "./KinWorkParts";
+import { KinFilter, KinWorkNotice, KinWorkRowSkeletons, type KinFilterGroup } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinMyDueTasks } from "./useKinPlaces";
 import {
   kinWorkLiveAtom,
   type KinWorkChangesHandle,
@@ -84,6 +82,8 @@ export function KinWorkTaskList(
     /** On a project's page the list is only that project's, under the project's own summary. */
     readonly within?: "project";
     readonly header?: React.ReactNode;
+    /** What needs you, over the whole company's open tasks; those tasks then leave the list. */
+    readonly renderNeedsYou?: (mine: ReadonlyArray<KinRecord> | null) => React.ReactNode;
   },
 ) {
   const { environmentId, orgId, live } = props;
@@ -131,14 +131,33 @@ export function KinWorkTaskList(
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
   );
-  const rows = records.map((record) => kinWorkRow(record, names, now, filter));
+  const showsNeedsYou =
+    props.renderNeedsYou !== undefined &&
+    props.within === undefined &&
+    kinWorkFilterLabel(filter, names) === null &&
+    filter.text.trim() === "";
+  const mine = useKinMyDueTasks(
+    props,
+    showsNeedsYou ? names.me : null,
+    props.stale ? null : live.seq,
+  );
+  const rows = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null).map((record) =>
+    kinWorkRow(record, names, now, filter),
+  );
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = records.find((held) => held.key === key);
     if (record !== undefined) void changes.run(record, action, names);
   };
   const notice = kinWorkListNotice(changed, props.openKey);
   const nothing = kinWorkNothing(filter, names);
-  const footer = kinWorkListFooter(filter, rows.length, listState.total, listState.more, hostEdits);
+  // Needs you shows the rest, so the count says how many are loaded in all.
+  const footer = kinWorkListFooter(
+    filter,
+    records.length,
+    listState.total,
+    listState.more,
+    hostEdits,
+  );
   return (
     <LegendList<KinWorkRowView>
       data={rows}
@@ -150,6 +169,7 @@ export function KinWorkTaskList(
       ListHeaderComponent={
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
           {props.header}
+          {showsNeedsYou ? props.renderNeedsYou?.(mine) : null}
           {props.stale || listState.stale ? (
             <p role="status" className="text-xs text-muted-foreground">
               {KIN_WORK_STALE}
@@ -158,6 +178,7 @@ export function KinWorkTaskList(
           <KinWorkFilters
             overview={overview}
             filter={filter}
+            names={names}
             choices={props.within === undefined ? props.choices : null}
             everyone={props.within === undefined}
             onChange={(next) => list.setFilter(next)}
@@ -177,37 +198,42 @@ export function KinWorkTaskList(
         </div>
       }
       ListEmptyComponent={
-        <div className="mx-auto w-full max-w-3xl px-4">
-          {listState.loading ? (
-            <div role="status" aria-label="Loading tasks">
-              <KinWorkRowSkeletons />
-            </div>
-          ) : listState.failed !== null ? (
-            <div className="flex flex-col items-start gap-3 py-4">
-              <Alert variant="error">
-                <AlertDescription>{KIN_WORK_LOAD_FAILED}. Check your connection.</AlertDescription>
-              </Alert>
-              <Button size="sm" variant="outline" onClick={list.refresh}>
-                Retry
-              </Button>
-            </div>
-          ) : (
-            <KinWorkNotice
-              title={nothing.title}
-              detail={nothing.detail}
-              {...(nothing.offerNew && props.onAdd !== null
-                ? {
-                    action: (
-                      <Button onClick={props.onAdd}>
-                        <PlusIcon />
-                        {KIN_WORK_NEW}
-                      </Button>
-                    ),
-                  }
-                : {})}
-            />
-          )}
-        </div>
+        // Every open task is already under Needs you.
+        records.length > 0 ? null : (
+          <div className="mx-auto w-full max-w-3xl px-4">
+            {listState.loading ? (
+              <div role="status" aria-label="Loading tasks">
+                <KinWorkRowSkeletons />
+              </div>
+            ) : listState.failed !== null ? (
+              <div className="flex flex-col items-start gap-3 py-4">
+                <Alert variant="error">
+                  <AlertDescription>
+                    {KIN_WORK_LOAD_FAILED}. Check your connection.
+                  </AlertDescription>
+                </Alert>
+                <Button size="sm" variant="outline" onClick={list.refresh}>
+                  Retry
+                </Button>
+              </div>
+            ) : (
+              <KinWorkNotice
+                title={nothing.title}
+                detail={nothing.detail}
+                {...(nothing.offerNew && props.onAdd !== null
+                  ? {
+                      action: (
+                        <Button onClick={props.onAdd}>
+                          <PlusIcon />
+                          {KIN_WORK_NEW}
+                        </Button>
+                      ),
+                    }
+                  : {})}
+              />
+            )}
+          </div>
+        )
       }
       ListFooterComponent={
         footer === null ? null : (
@@ -232,6 +258,7 @@ export function KinWorkTaskList(
           <KinWorkRow
             row={row}
             saving={changed.pending[row.key] !== undefined}
+            selected={row.key === props.openKey}
             onOpen={() => props.onOpen(row.key)}
             onAct={canChange ? (action) => act(row.key, action) : null}
           />
@@ -250,135 +277,106 @@ export function KinWorkTaskList(
 
 const EVERYONE = "all";
 
-/** Narrows the list to one client or one project, from the ones there are. */
-function ScopeSelect(props: {
-  readonly label: string;
-  readonly everything: string;
-  readonly choices: ReadonlyArray<KinWorkRef>;
-  readonly value: KinWorkRef | null;
-  readonly onChange: (value: KinWorkRef | null) => void;
-}) {
-  // One it is already narrowed to stays pickable after it closes or passes the first hundred.
-  const choices =
-    props.value === null || props.choices.some((choice) => choice.key === props.value?.key)
-      ? props.choices
-      : [props.value, ...props.choices];
-  return (
-    <Select
-      value={props.value?.key ?? EVERYONE}
-      onValueChange={(value) =>
-        props.onChange(choices.find((choice) => choice.key === value) ?? null)
-      }
-    >
-      <SelectTrigger className="w-full min-w-0 sm:w-44" aria-label={props.label}>
-        <SelectValue>{props.value?.title ?? props.everything}</SelectValue>
-      </SelectTrigger>
-      <SelectPopup alignItemWithTrigger={false}>
-        <SelectItem value={EVERYONE}>{props.everything}</SelectItem>
-        {choices.map((choice) => (
-          <SelectItem key={choice.key} value={choice.key}>
-            {choice.title}
-          </SelectItem>
-        ))}
-      </SelectPopup>
-    </Select>
-  );
-}
-
-/** The overview and the filters in one: every count narrows the list to what it counts. */
+/** Search, and the one Filter holding what to show, who has it, and which client or project. */
 function KinWorkFilters(props: {
   readonly overview: KinWorkOverview;
   readonly filter: KinWorkFilter;
+  readonly names: KinWorkNames;
   readonly choices: KinWorkChoices | null;
-  /** Whether to show who has what across all of Work, which a project's own list doesn't. */
+  /** Whether to narrow by who has what across all of Work, which a project's own list doesn't. */
   readonly everyone: boolean;
   readonly onChange: (filter: KinWorkFilter) => void;
 }) {
   const { overview, filter, choices } = props;
-  const narrowing =
-    choices !== null &&
-    (choices.clients.length > 0 ||
-      choices.projects.length > 0 ||
-      filter.party !== null ||
-      filter.project !== null);
+  // One it is already narrowed to stays pickable after it closes or passes the first hundred.
+  const withHeld = (held: ReadonlyArray<KinWorkRef>, value: KinWorkRef | null) =>
+    value === null || held.some((choice) => choice.key === value.key) ? held : [value, ...held];
+  const clients = choices === null ? [] : withHeld(choices.clients, filter.party);
+  const projects = choices === null ? [] : withHeld(choices.projects, filter.project);
+  const owners = props.everyone ? overview.owners : [];
+  const scope = (
+    label: string,
+    everything: string,
+    held: ReadonlyArray<KinWorkRef>,
+    value: KinWorkRef | null,
+    set: (value: KinWorkRef | null) => KinWorkFilter,
+  ): KinFilterGroup => ({
+    label,
+    long: true,
+    value: value?.key ?? EVERYONE,
+    options: [
+      { value: EVERYONE, label: everything },
+      ...held.map((choice) => ({ value: choice.key, label: choice.title })),
+    ],
+    onChange: (key) => props.onChange(set(held.find((choice) => choice.key === key) ?? null)),
+  });
   return (
-    <>
-      <div className="-mx-1 overflow-x-auto px-1 py-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <ToggleGroup
-          variant="pill"
-          size="sm"
-          aria-label="Show"
-          value={[filter.view]}
-          onValueChange={(value) => {
-            const view = overview.chips.find((chip) => chip.id === value[0]);
-            if (view !== undefined) props.onChange({ ...filter, view: view.id });
-          }}
-        >
-          {overview.chips.map((chip) => (
-            <Toggle key={chip.id} value={chip.id} aria-label={chip.accessibilityLabel}>
-              {chip.label}
-              {chip.count === null ? null : (
-                <span className="text-muted-foreground tabular-nums">{chip.count}</span>
-              )}
-            </Toggle>
-          ))}
-        </ToggleGroup>
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <div className="min-w-0 flex-1">
+        <Input
+          type="search"
+          aria-label={KIN_WORK_SEARCH_PLACEHOLDER}
+          placeholder={KIN_WORK_SEARCH_PLACEHOLDER}
+          value={filter.text}
+          onChange={(event) => props.onChange({ ...filter, text: event.currentTarget.value })}
+        />
       </div>
-      {overview.owners.length === 0 || !props.everyone ? null : (
-        <ul aria-label="People and agents" className="grid gap-1 sm:grid-cols-2">
-          {overview.owners.map((owner) => (
-            <li key={owner.key}>
-              <button
-                type="button"
-                aria-pressed={owner.selected}
-                aria-label={`${owner.name}. ${owner.line}`}
-                onClick={() =>
-                  props.onChange({ ...filter, owner: owner.selected ? null : owner.owner })
-                }
-                className="flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-pressed:bg-accent"
-              >
-                <KinAvatar avatar={owner.avatar} size="sm" />
-                <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                  {owner.name}
-                </span>
-                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                  {owner.line}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <div className="min-w-0 flex-1">
-          <Input
-            type="search"
-            aria-label={KIN_WORK_SEARCH_PLACEHOLDER}
-            placeholder={KIN_WORK_SEARCH_PLACEHOLDER}
-            value={filter.text}
-            onChange={(event) => props.onChange({ ...filter, text: event.currentTarget.value })}
-          />
-        </div>
-        {narrowing ? (
-          <div className="grid grid-cols-2 gap-2 sm:flex">
-            <ScopeSelect
-              label={KIN_WORK_NEW_COPY.clientLabel}
-              everything={KIN_CLIENTS.all}
-              choices={choices.clients}
-              value={filter.party}
-              onChange={(party) => props.onChange({ ...filter, party })}
-            />
-            <ScopeSelect
-              label={KIN_WORK_NEW_COPY.projectLabel}
-              everything={KIN_PROJECTS.all}
-              choices={choices.projects}
-              value={filter.project}
-              onChange={(project) => props.onChange({ ...filter, project })}
-            />
-          </div>
-        ) : null}
-      </div>
-    </>
+      <KinFilter
+        chip={kinWorkFilterLabel(filter, props.names)}
+        onClear={() => props.onChange(kinWorkFilterCleared(filter))}
+        groups={[
+          {
+            label: KIN_WORK_HOME.show,
+            value: filter.view,
+            options: overview.chips.map((chip) => ({
+              value: chip.id,
+              label: chip.label,
+              detail: chip.count === null ? null : String(chip.count),
+            })),
+            onChange: (id) => {
+              const view = overview.chips.find((chip) => chip.id === id);
+              if (view !== undefined) props.onChange({ ...filter, view: view.id });
+            },
+          },
+          {
+            label: KIN_WORK_HOME.owner,
+            long: true,
+            value:
+              owners.find((owner) => kinWorkOwnerSelected(filter, owner.owner))?.key ?? EVERYONE,
+            options: [
+              { value: EVERYONE, label: KIN_WORK_HOME.everyone },
+              ...owners.map((owner) => ({
+                value: owner.key,
+                label: owner.name,
+                detail: owner.line,
+              })),
+            ],
+            onChange: (key) =>
+              props.onChange({
+                ...filter,
+                owner: owners.find((owner) => owner.key === key)?.owner ?? null,
+              }),
+          },
+          scope(
+            KIN_WORK_HOME.byClient,
+            KIN_WORK_HOME.allClients,
+            clients,
+            filter.party,
+            (party) => ({
+              ...filter,
+              party,
+            }),
+          ),
+          scope(
+            KIN_WORK_HOME.byProject,
+            KIN_WORK_HOME.allProjects,
+            projects,
+            filter.project,
+            (project) => ({ ...filter, project }),
+          ),
+        ]}
+      />
+    </div>
   );
 }
 
@@ -415,6 +413,8 @@ const TICK_LABEL = { done: KIN_WORK_COPY.done, reopen: KIN_WORK_COPY.reopen } as
 export function KinWorkRow(props: {
   readonly row: KinWorkRowView;
   readonly saving: boolean;
+  /** The task open over the list. */
+  readonly selected?: boolean;
   readonly onOpen: () => void;
   /** Null where this browser or this host can't change a task. */
   readonly onAct: ((action: KinWorkAction) => void) | null;
@@ -444,8 +444,9 @@ export function KinWorkRow(props: {
       <button
         type="button"
         aria-label={row.accessibilityLabel}
+        aria-current={props.selected === true ? true : undefined}
         onClick={props.onOpen}
-        className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+        className="flex min-w-0 flex-1 items-start gap-3 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset aria-[current=true]:bg-accent"
       >
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>

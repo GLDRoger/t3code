@@ -19,13 +19,16 @@ import {
   kinListFooter,
   kinListGroupings,
   kinListHeader,
-  kinListNarrowings,
+  kinListFilterCleared,
+  kinListFilterLabel,
   kinListNothing,
   kinListRow,
   type KinListColumn,
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
+import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
   EnvironmentId,
@@ -40,13 +43,13 @@ import { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
+import type { AppBarMenu } from "../../components/ui/AppBar.types";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
-import { Menu } from "../../components/ui/Menu";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
@@ -184,57 +187,6 @@ function KinListGate(
   );
 }
 
-const GROUP = "group:";
-const PICK = "pick:";
-const ANY = "any";
-const NONE = "none";
-
-/** A chip that narrows the list to one of a few things, to none of them, or not at all. */
-function NarrowMenu(props: {
-  readonly title: string;
-  readonly any: string;
-  readonly none: string;
-  readonly choices: ReadonlyArray<{ readonly value: string; readonly label: string }>;
-  /** A choice's value, `NONE`, or `ANY`. */
-  readonly current: string;
-  readonly onPick: (value: string) => void;
-}) {
-  const shown =
-    props.current === ANY
-      ? props.title
-      : props.current === NONE
-        ? props.none
-        : (props.choices.find((choice) => choice.value === props.current)?.label ?? props.title);
-  return (
-    <Menu
-      title={props.title}
-      accessibilityRole="button"
-      accessibilityLabel={`${props.title}: ${props.current === ANY ? props.any : shown}. Change`}
-      actions={[
-        { id: ANY, title: props.any, state: props.current === ANY ? "on" : "off" },
-        ...props.choices.map((choice) => ({
-          id: `${PICK}${choice.value}`,
-          title: choice.label,
-          state: choice.value === props.current ? ("on" as const) : ("off" as const),
-        })),
-        { id: NONE, title: props.none, state: props.current === NONE ? "on" : "off" },
-      ]}
-      onPressAction={({ nativeEvent: { event } }) =>
-        props.onPick(event.startsWith(PICK) ? event.slice(PICK.length) : event)
-      }
-    >
-      <View pointerEvents="none">
-        <Chip
-          size="small"
-          label={shown}
-          selected={props.current !== ANY}
-          trailingIcon="chevron.down"
-        />
-      </View>
-    </Menu>
-  );
-}
-
 const TABLE_ROW = "h-14 justify-center border-b border-border-subtle px-3";
 
 /**
@@ -325,6 +277,121 @@ function KinListTable(props: {
   );
 }
 
+/** A list's one filter, like Tasks': its state, category and client, how it splits, and the table. */
+function kinListFilterMenu(props: {
+  readonly def: KinListDefinition;
+  readonly filter: KinListFilter;
+  readonly clients: ReadonlyArray<KinWorkRef>;
+  readonly groupings: ReadonlyArray<KinListFilter["groupBy"]>;
+  readonly table: boolean;
+  readonly onTable: (table: boolean) => void;
+  readonly onChange: (filter: KinListFilter) => void;
+}): AppBarMenu {
+  const { def, filter, onChange } = props;
+  return {
+    title: KIN_WORK_HOME.filter,
+    icon: "line.3.horizontal.decrease.circle",
+    items: [
+      {
+        id: "show",
+        title: KIN_WORK_HOME.show,
+        inline: true,
+        items: kinListChips(def, filter).map((chip) => ({
+          id: `show:${chip.id}`,
+          title: chip.label,
+          selected: chip.selected,
+          onPress: () => onChange(chip.filter),
+        })),
+      },
+      ...(def.categories.length === 0
+        ? []
+        : [
+            {
+              id: "category",
+              title: KIN_LISTS.entry.category,
+              items: [
+                {
+                  id: "category:any",
+                  title: KIN_LISTS.anyCategory,
+                  selected: filter.category === null && !filter.noCategory,
+                  onPress: () => onChange({ ...filter, category: null, noCategory: false }),
+                },
+                ...def.categories.map((category) => ({
+                  id: `category:${category}`,
+                  title: kinCategoryLabel(category, def),
+                  selected: filter.category === category,
+                  onPress: () => onChange({ ...filter, category, noCategory: false }),
+                })),
+                {
+                  id: "category:none",
+                  title: KIN_LISTS.noCategory,
+                  selected: filter.noCategory,
+                  onPress: () => onChange({ ...filter, category: null, noCategory: true }),
+                },
+              ],
+            },
+          ]),
+      {
+        id: "client",
+        title: KIN_LISTS.clientFilter,
+        items: [
+          {
+            id: "client:any",
+            title: KIN_LISTS.anyClient,
+            selected: filter.party === null && !filter.noParty,
+            onPress: () => onChange({ ...filter, party: null, noParty: false }),
+          },
+          ...props.clients.map((client) => ({
+            id: `client:${client.key}`,
+            title: client.title,
+            selected: filter.party?.key === client.key,
+            onPress: () => onChange({ ...filter, party: client, noParty: false }),
+          })),
+          {
+            id: "client:none",
+            title: KIN_LISTS.noClient,
+            selected: filter.noParty,
+            onPress: () => onChange({ ...filter, party: null, noParty: true }),
+          },
+        ],
+      },
+      ...(props.groupings.length <= 1
+        ? []
+        : [
+            {
+              id: "group",
+              title: KIN_LISTS.groupBy,
+              items: props.groupings.map((groupBy) => ({
+                id: `group:${groupBy}`,
+                title: groupBy === "none" ? "No grouping" : KIN_LISTS.group[groupBy],
+                selected: groupBy === filter.groupBy,
+                onPress: () => onChange({ ...filter, groupBy }),
+              })),
+            },
+          ]),
+      {
+        id: "view",
+        title: KIN_LISTS.view,
+        inline: true,
+        items: [
+          {
+            id: "view:rows",
+            title: KIN_LISTS.rows,
+            selected: !props.table,
+            onPress: () => props.onTable(false),
+          },
+          {
+            id: "view:table",
+            title: KIN_LISTS.table,
+            selected: props.table,
+            onPress: () => props.onTable(true),
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function KinListEntries(
   props: KinWorkTarget & {
     readonly def: KinListDefinition;
@@ -357,11 +424,7 @@ function KinListEntries(
   const rows = state.records.map((record) =>
     kinListRow(record, def, context, { party: filter.party?.key ?? null }),
   );
-  const narrowings = kinListNarrowings(filter, def).filter(
-    // The category and client chips already say what they are narrowed to.
-    (narrowing) =>
-      !(narrowing.id === "category" && def.categories.length > 0) && narrowing.id !== "party",
-  );
+  const narrowed = kinListFilterLabel(def, filter);
   const { clients } = useKinWorkChoices(props, true);
   const [table, setTable] = useState(false);
   const columns = kinListColumns(def, state.records);
@@ -380,6 +443,21 @@ function KinListEntries(
         title={def.name}
         onBack={() => navigation.goBack()}
         refresh={{ accessibilityLabel: "Refresh", onPress: retry }}
+        menus={[
+          kinListFilterMenu({
+            def,
+            filter,
+            // A client arrived at from elsewhere stays named though it isn't a choice.
+            clients:
+              filter.party === null || clients.some((held) => held.key === filter.party?.key)
+                ? clients
+                : [...clients, filter.party],
+            groupings,
+            table,
+            onTable: setTable,
+            onChange: entries.setFilter,
+          }),
+        ]}
         {...(canEdit && !def.builtIn
           ? {
               actions: [
@@ -427,116 +505,17 @@ function KinListEntries(
                   <KinWorkStaleNotice environmentId={environmentId} onRetry={retry} />
                 </View>
               ) : null}
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={{ paddingHorizontal: 16, gap: 8 }}
-              >
-                {kinListChips(def, filter).map((chip) => (
+              {narrowed === null ? null : (
+                <View className="flex-row px-4">
                   <Chip
-                    key={chip.id}
-                    label={chip.label}
-                    selected={chip.selected}
-                    onPress={() => entries.setFilter(chip.filter)}
+                    label={narrowed}
+                    selected
+                    trailingIcon="xmark"
+                    accessibilityLabel={`Showing ${narrowed}. ${KIN_WORK_HOME.clearFilter}`}
+                    onPress={() => entries.setFilter(kinListFilterCleared(filter))}
                   />
-                ))}
-              </ScrollView>
-              {
-                <View className="flex-row flex-wrap gap-2 px-4">
-                  <Chip
-                    size="small"
-                    icon="square.split.2x1"
-                    label={KIN_LISTS.table}
-                    accessibilityLabel={`${KIN_LISTS.table}. ${table ? "On" : "Off"}`}
-                    selected={table}
-                    onPress={() => setTable(!table)}
-                  />
-                  {def.categories.length === 0 ? null : (
-                    <NarrowMenu
-                      title={KIN_LISTS.entry.category}
-                      any={KIN_LISTS.anyCategory}
-                      none={KIN_LISTS.noCategory}
-                      choices={def.categories.map((category) => ({
-                        value: category,
-                        label: kinCategoryLabel(category, def),
-                      }))}
-                      current={filter.noCategory ? NONE : (filter.category ?? ANY)}
-                      onPick={(value) =>
-                        entries.setFilter({
-                          ...filter,
-                          noCategory: value === NONE,
-                          category: value === NONE || value === ANY ? null : value,
-                        })
-                      }
-                    />
-                  )}
-                  <NarrowMenu
-                    title={KIN_LISTS.clientFilter}
-                    any={KIN_LISTS.anyClient}
-                    none={KIN_LISTS.noClient}
-                    choices={[
-                      ...clients,
-                      // A client arrived at from elsewhere stays named though it isn't a choice.
-                      ...(filter.party === null ||
-                      clients.some((held) => held.key === filter.party?.key)
-                        ? []
-                        : [filter.party]),
-                    ].map((held) => ({ value: held.key, label: held.title }))}
-                    current={filter.noParty ? NONE : (filter.party?.key ?? ANY)}
-                    onPick={(value) =>
-                      entries.setFilter({
-                        ...filter,
-                        noParty: value === NONE,
-                        party:
-                          value === NONE || value === ANY
-                            ? null
-                            : (clients.find((held) => held.key === value) ?? filter.party),
-                      })
-                    }
-                  />
-                  {groupings.length <= 1 ? null : (
-                    <Menu
-                      title={KIN_LISTS.groupBy}
-                      accessibilityRole="button"
-                      accessibilityLabel={`${KIN_LISTS.groupBy}: ${KIN_LISTS.group[filter.groupBy]}. Change`}
-                      actions={groupings.map((groupBy) => ({
-                        id: `${GROUP}${groupBy}`,
-                        title: groupBy === "none" ? "No grouping" : KIN_LISTS.group[groupBy],
-                        state: groupBy === filter.groupBy ? ("on" as const) : ("off" as const),
-                      }))}
-                      onPressAction={({ nativeEvent: { event } }) => {
-                        const groupBy = groupings.find((held) => `${GROUP}${held}` === event);
-                        if (groupBy !== undefined) entries.setFilter({ ...filter, groupBy });
-                      }}
-                    >
-                      <View pointerEvents="none">
-                        <Chip
-                          size="small"
-                          label={
-                            filter.groupBy === "none"
-                              ? KIN_LISTS.groupBy
-                              : `By ${KIN_LISTS.group[filter.groupBy].toLowerCase()}`
-                          }
-                          selected={filter.groupBy !== "none"}
-                          trailingIcon="chevron.down"
-                        />
-                      </View>
-                    </Menu>
-                  )}
-                  {narrowings.map((narrowing) => (
-                    <Chip
-                      key={narrowing.id}
-                      size="small"
-                      label={narrowing.label}
-                      accessibilityLabel={`${narrowing.label}. Clear`}
-                      selected
-                      trailingIcon="xmark"
-                      onPress={() => entries.setFilter(narrowing.cleared)}
-                    />
-                  ))}
                 </View>
-              }
+              )}
               {state.loading || state.failed !== null ? null : (
                 <View className="flex-row flex-wrap items-end gap-x-6 gap-y-2 px-5">
                   {header.figures.map((figure, index) => (

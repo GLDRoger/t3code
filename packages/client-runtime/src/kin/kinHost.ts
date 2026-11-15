@@ -65,6 +65,8 @@ export interface KinHostCandidate {
   readonly connected: boolean;
   /** Down for more than a blip: switched off, failing, or unsupported. See `kinHostCandidate`. */
   readonly down?: boolean;
+  /** Switched off on this device by the person, which is not the same as unreachable. */
+  readonly off?: boolean;
 }
 
 /**
@@ -79,6 +81,7 @@ export function kinHostCandidate(
   return {
     environmentId,
     connected: phase === "connected",
+    off: phase === "available",
     down:
       phase === "available" ||
       phase === "offline" ||
@@ -104,6 +107,8 @@ export type KinHost =
        * when it returns.
        */
       readonly standInFor?: EnvironmentId;
+      /** The saved host was switched off here, so standing in needs no warning. */
+      readonly usualOff?: true;
     };
 
 /** A route's host; `unpaired` when this device's catalog doesn't hold the route's environment. */
@@ -149,6 +154,7 @@ export function resolveKinHost(input: {
           connected: true,
           probe: input.probe(live.environmentId),
           standInFor: saved.environmentId,
+          ...(saved.off === true ? { usualOff: true as const } : {}),
         };
       }
       return {
@@ -232,7 +238,8 @@ export function kinStandInLine(
   host: KinHost,
   labelOf: (environmentId: EnvironmentId) => string | null,
 ): { readonly message: string; readonly usual: EnvironmentId } | null {
-  if (host._tag !== "host" || host.standInFor === undefined) return null;
+  // Switched off here on purpose: the person knows, and nothing is wrong.
+  if (host._tag !== "host" || host.standInFor === undefined || host.usualOff) return null;
   const shown = labelOf(host.environmentId) ?? "another computer";
   const named = labelOf(host.standInFor);
   // Two machines can share a name; then only "usual" tells them apart.

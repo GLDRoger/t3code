@@ -18,6 +18,7 @@ import {
   kinRetiredWhen,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { useAtomValue } from "@effect/atom-react";
+import { KIN_CHIEF_OF_STAFF } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import type {
   EnvironmentId,
   KinAgentId,
@@ -29,7 +30,7 @@ import type {
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { Link, useMatchRoute, useParams } from "@tanstack/react-router";
-import { BellOffIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+import { BellOffIcon, ChevronDownIcon, ChevronRightIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -44,9 +45,10 @@ import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { ApproveOnPhone } from "./KinCards";
 import { KinMemoryEntry } from "./KinMemoryView";
+import { KinPlaceEntries } from "./KinPlaceEntries";
 import { KinTeamEntry } from "./KinTeamView";
-import { KinWorkEntry } from "./KinWorkView";
-import { kinNewLeadTarget } from "./KinNewLeadButton";
+import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
+import type { KinLeadFormTarget } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";
 import { KinStandInLine } from "./KinStandInLine";
 import { useKinInbox } from "./useKinHost";
@@ -83,7 +85,6 @@ export function KinChatList() {
   const matchRoute = useMatchRoute();
   const memoryOpen = matchRoute({ to: "/kin/$environmentId/$orgId/memory" }) !== false;
   const teamOpen = matchRoute({ to: "/kin/$environmentId/$orgId/team" }) !== false;
-  const workOpen = matchRoute({ to: "/kin/$environmentId/$orgId/work" }) !== false;
   if (state._tag === "loading") {
     return (
       <div className="flex flex-col gap-1" role="status" aria-label="Loading chats">
@@ -151,10 +152,9 @@ export function KinChatList() {
       />
       {mine === null ? null : (
         <>
-          <KinWorkEntry
+          <KinPlaceEntries
             environmentId={mine.environmentId}
             orgId={mine.orgId}
-            active={workOpen}
             onOpen={closeSidebar}
           />
           <KinMemoryEntry
@@ -172,12 +172,16 @@ export function KinChatList() {
         </>
       )}
       {rows.length === 0 ? (
-        <Empty size="compact">
-          <EmptyHeader>
-            <EmptyTitle>No chats yet</EmptyTitle>
-            <EmptyDescription>Chats with your agents show up here.</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        mine === null ? (
+          <Empty size="compact">
+            <EmptyHeader>
+              <EmptyTitle>No chats yet</EmptyTitle>
+              <EmptyDescription>Chats with your agents show up here.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <KinFirstAgent target={mine} />
+        )
       ) : (
         <ul className="flex flex-col gap-0.5">
           {liveRows.map((row) => (
@@ -476,5 +480,31 @@ function KinWaiting(props: {
         </ul>
       ) : null}
     </div>
+  );
+}
+
+/** An empty company starts with its first agent; the Chief of staff is offered filled in. */
+function KinFirstAgent(props: { readonly target: KinLeadFormTarget }) {
+  const canAddLead = useAtomValue(kinClient.leadCreate.permissionAtom(props.target.environmentId));
+  return (
+    <Empty size="compact">
+      <EmptyHeader>
+        <EmptyTitle>{canAddLead ? "Create your first agent" : "No chats yet"}</EmptyTitle>
+        <EmptyDescription>
+          {canAddLead
+            ? "Start with a Chief of staff: your front door for everything. You chat with it like a colleague, and it passes work to the agents you add later."
+            : "Chats with your agents show up here."}
+        </EmptyDescription>
+      </EmptyHeader>
+      {canAddLead ? (
+        <Button
+          size="sm"
+          onClick={() => openKinLeadForm({ ...props.target, suggested: KIN_CHIEF_OF_STAFF })}
+        >
+          <SparklesIcon />
+          Create Chief of staff
+        </Button>
+      ) : null}
+    </Empty>
   );
 }

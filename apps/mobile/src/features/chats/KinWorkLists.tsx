@@ -27,6 +27,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { cn } from "../../lib/cn";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
+import { kinTabBar, useKinTab } from "./components/KinTab";
 import { KinWorkLoading, KinWorkPrivateMark, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import { useKinAskAgent } from "./state/useKinMoney";
@@ -71,6 +72,8 @@ export function KinWorkNamedRow(props: {
   readonly onPress: () => void;
   /** Inside a rounded section the divider keeps to the section's edges. */
   readonly inset?: boolean;
+  /** A project drawn under its client in the clients list. */
+  readonly nested?: boolean;
 }) {
   const { row } = props;
   return (
@@ -81,7 +84,7 @@ export function KinWorkNamedRow(props: {
         onPress={props.onPress}
         className={cn(
           "min-h-16 flex-row items-start gap-3 py-3 active:opacity-60",
-          props.inset ? "px-4" : "px-5",
+          props.inset ? "px-4" : props.nested ? "pl-10 pr-5" : "px-5",
         )}
       >
         <View className="min-w-0 flex-1 gap-0.5">
@@ -108,7 +111,12 @@ export function KinWorkNamedRow(props: {
           </Text>
         ) : null}
       </Pressable>
-      <View className={cn("h-px bg-border-subtle", props.inset ? "ml-4" : "ml-5")} />
+      <View
+        className={cn(
+          "h-px bg-border-subtle",
+          props.inset ? "ml-4" : props.nested ? "ml-10" : "ml-5",
+        )}
+      />
     </>
   );
 }
@@ -151,9 +159,15 @@ function NamedList(props: {
   readonly loadFailed: string;
   readonly extra: unknown;
   readonly onOpen: (key: KinRecordKey) => void;
+  /** The rows drawn under a row, such as a client's open projects, and where one opens. */
+  readonly under?: {
+    readonly rows: (key: KinRecordKey) => ReadonlyArray<NamedRow>;
+    readonly onOpen: (key: KinRecordKey) => void;
+  };
 }) {
   const navigation = useNavigation();
-  const { state, list, add, nothing, rows } = props;
+  const tab = useKinTab();
+  const { state, list, add, nothing, rows, under } = props;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
@@ -166,14 +180,16 @@ function NamedList(props: {
             : [{ accessibilityLabel: add.label, icon: "plus" as const, onPress: add.onPress }]),
         ]}
         menus={[props.menu]}
-        onBack={() => navigation.goBack()}
-        search={{
-          value: props.search.text,
-          onChangeText: props.onSearch,
-          placeholder: props.search.placeholder,
-          closeAccessibilityLabel: "Close search",
-          clearAccessibilityLabel: "Clear search",
-        }}
+        {...kinTabBar(tab, {
+          onBack: () => navigation.goBack(),
+          search: {
+            value: props.search.text,
+            onChangeText: props.onSearch,
+            placeholder: props.search.placeholder,
+            closeAccessibilityLabel: "Close search",
+            clearAccessibilityLabel: "Clear search",
+          },
+        })}
       />
       <ScreenContent surface="screen">
         <LegendList<NamedRow>
@@ -182,8 +198,8 @@ function NamedList(props: {
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
-          // The search field floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: 96 }}
+          // The search field, or the dock, floats over the foot of the list.
+          contentContainerStyle={{ paddingBottom: tab === null ? 96 : 32 + tab.bottomClearance }}
           data={rows}
           keyExtractor={(row) => row.key}
           extraData={props.extra}
@@ -244,7 +260,17 @@ function NamedList(props: {
             </>
           }
           renderItem={({ item: row }) => (
-            <KinWorkNamedRow row={row} onPress={() => props.onOpen(row.key)} />
+            <>
+              <KinWorkNamedRow row={row} onPress={() => props.onOpen(row.key)} />
+              {under?.rows(row.key).map((child) => (
+                <KinWorkNamedRow
+                  key={child.key}
+                  nested
+                  row={child}
+                  onPress={() => under.onOpen(child.key)}
+                />
+              ))}
+            </>
           )}
         />
       </ScreenContent>
@@ -327,10 +353,12 @@ function ClientsView(props: ViewProps & { readonly closed: boolean }) {
   const seq = props.stale ? null : props.live.seq;
   const { state, list } = useKinClientsList(props, seq, props.closed);
   const { filter } = state;
-  // Open projects with no client still belong under Clients, after the clients themselves.
+  // Open projects sit under their client, and those with no client after the clients.
   const choices = useKinChoicesLive(props, !props.closed, seq);
-  const noClient =
-    filter.text.trim() === "" ? (choices?.projects ?? []).filter((row) => row.party === null) : [];
+  const projects = choices?.projects ?? [];
+  const noClient = filter.text.trim() === "" ? projects.filter((row) => row.party === null) : [];
+  const openProject = (project: KinRecordKey) =>
+    navigation.navigate("KinProject", { environmentId, orgId, project });
   return (
     <NamedList
       environmentId={environmentId}
@@ -348,7 +376,14 @@ function ClientsView(props: ViewProps & { readonly closed: boolean }) {
           list.refresh();
         },
       }}
-      extra={[state, noClient]}
+      extra={[state, projects]}
+      under={{
+        rows: (client) =>
+          projects
+            .filter((row) => row.party?.key === client)
+            .map((row) => kinProjectRow(row, props.directory.names, now)),
+        onOpen: openProject,
+      }}
       search={{ text: filter.text, placeholder: KIN_CLIENTS.search }}
       onSearch={(text) => list.setFilter({ ...filter, text })}
       after={
@@ -367,9 +402,7 @@ function ClientsView(props: ViewProps & { readonly closed: boolean }) {
               <KinWorkNamedRow
                 key={row.key}
                 row={kinProjectRow(row, props.directory.names, now)}
-                onPress={() =>
-                  navigation.navigate("KinProject", { environmentId, orgId, project: row.key })
-                }
+                onPress={() => openProject(row.key)}
               />
             ))}
           </View>

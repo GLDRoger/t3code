@@ -9,15 +9,14 @@ import {
   type KinMoneySummary,
   type KinRecord,
   type KinWaitingItem,
-  type KinWorkSummary,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { KIN_WORK_DEFAULT_FILTER, type KinWorkNames } from "./kinWork.ts";
 import {
-  kinListsLine,
+  kinPlaceLists,
   kinNeedsYou,
-  kinWorkEmpty,
+  kinWorkBesideNeedsYou,
   kinWorkFilterLabel,
   kinWorkPlaceParam,
 } from "./kinWorkHome.ts";
@@ -115,19 +114,6 @@ const waiting = (id: string, createdAt: string): KinWaitingItem => ({
   resolvedAt: null,
   resolution: null,
 });
-const summary = (patch: Partial<KinWorkSummary> = {}): KinWorkSummary => ({
-  open: 0,
-  doing: 0,
-  waiting: 0,
-  late: 0,
-  dueThisWeek: 0,
-  closed: 0,
-  owners: [],
-  seq: 1,
-  asOf: now.toISOString(),
-  ...patch,
-});
-
 describe("Needs you", () => {
   const input = {
     mine: [task("W-2"), task("W-1", { late: true, dueAt: "2026-11-12T18:00:00.000Z" })],
@@ -153,38 +139,25 @@ describe("Needs you", () => {
   it("shows a viewer kept from money nothing about money", () => {
     expect(kinNeedsYou({ ...input, money: null }).some((row) => row.kind === "money")).toBe(false);
   });
+  it("leaves the tasks it shows out of the list below, and only while it shows", () => {
+    const open = [task("W-1"), task("W-2"), task("W-3")];
+    expect(kinWorkBesideNeedsYou(open, input.mine).map((row) => row.key)).toEqual(["W-3"]);
+    expect(kinWorkBesideNeedsYou(open, null)).toEqual(open);
+  });
 });
 
 describe("the places", () => {
   it("opens old Work links where their things now live", () => {
     expect(kinWorkPlaceParam("projects")).toEqual({ place: "clients", projects: true });
     expect(kinWorkPlaceParam("money")).toEqual({ place: "money", projects: false });
-    expect(kinWorkPlaceParam(undefined)).toBeNull();
+    expect(kinWorkPlaceParam("lists")).toEqual({ place: "docs", projects: false });
+    expect(kinWorkPlaceParam(undefined)).toEqual({ place: "tasks", projects: false });
   });
-  it("leaves out the lists Money already shows, and keeps archived ones reachable", () => {
+  it("puts beside the docs only the lists Money doesn't already show", () => {
+    const leads = list("leads", { archivedAt: "2026-11-01T00:00:00.000Z" });
     expect(
-      kinListsLine([list("invoices"), list("expenses"), list("work", { builtIn: true })]),
-    ).toBeNull();
-    expect(kinListsLine([list("leads", { archivedAt: "2026-11-01T00:00:00.000Z" })])).toBe(
-      "1 archived list",
-    );
-    expect(kinListsLine([list("leads", { open: 3 }), list("hiring", { open: 1 })])).toBe(
-      "2 lists, 4 open",
-    );
-  });
-  it("is empty only when every place it can read is, and not while one is still loading", () => {
-    const nothing = {
-      summary: summary(),
-      clients: 0,
-      docs: 0,
-      moneyEmpty: true,
-      lists: 0,
-      needsYou: 0,
-    };
-    expect(kinWorkEmpty(nothing)).toBe(true);
-    expect(kinWorkEmpty({ ...nothing, moneyEmpty: null, clients: null })).toBe(true);
-    expect(kinWorkEmpty({ ...nothing, docs: undefined })).toBe(false);
-    expect(kinWorkEmpty({ ...nothing, summary: summary({ closed: 2 }) })).toBe(false);
+      kinPlaceLists([list("invoices"), list("expenses"), list("work", { builtIn: true }), leads]),
+    ).toEqual([list("work", { builtIn: true }), leads]);
   });
 });
 

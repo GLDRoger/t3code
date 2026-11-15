@@ -1,7 +1,7 @@
-import { useKinTab } from "./components/KinTab";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { KIN_SEARCH } from "@t3tools/client-runtime/kin/kinDocs";
 import {
   KIN_WORK_LOAD_FAILED,
   KIN_WORK_NEW,
@@ -32,11 +32,16 @@ import {
 import { KIN_CLIENTS_OLDER_HOST } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_HOME,
+  kinClientsLine,
+  kinDocsLine,
+  kinMoneyLine,
   kinWorkAskDraft,
+  kinWorkBesideNeedsYou,
   kinWorkFilterCleared,
   kinWorkFilterLabel,
   kinWorkOwnerSelected,
   kinWorkPlaceParam,
+  type KinWorkPlace,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
 import {
   KIN_WORK_LIST_INITIAL,
@@ -53,25 +58,32 @@ import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
+import type { AppBarMenuItem } from "../../components/ui/AppBar.types";
+import type { AppSymbolName } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
-import { KinListBanner } from "./components/KinListBanner";
-import type { AppBarMenuItem } from "../../components/ui/AppBar.types";
-import { KinWorkStaleNotice, KinWorkTaskRow } from "./components/KinWorkPieces";
-import { KinDocsList } from "./KinDocsList";
-import { KinWorkHome } from "./KinWorkHome";
+import { KinDocsList, KinSearchHits } from "./KinDocsList";
+import { KinNeedsYou } from "./KinNeedsYou";
 import { KinClientsList } from "./KinWorkLists";
-import { KinListsArea, KinMoneyArea } from "./KinWorkMoney";
+import { KinMoneyArea } from "./KinWorkMoney";
+import { KinListBanner } from "./components/KinListBanner";
+import { kinTabBar, useKinTab } from "./components/KinTab";
+import { KinWorkStaleNotice, KinWorkTaskRow } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
-import { useKinAskAgent } from "./state/useKinMoney";
+import { useKinOpenPlace } from "./state/kinHomeTab";
+import { useKinOpenHit, useKinWorkLink } from "./state/kinWorkLink";
+import { useKinSearch } from "./state/useKinDocs";
+import { useKinAskAgent, useKinMoneySummary } from "./state/useKinMoney";
 import {
   kinWorkLiveAtom,
   refreshKinWorkLive,
@@ -83,12 +95,15 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { useKinWorkLink } from "./state/kinWorkLink";
+import { useKinClientCounts, useKinDocsRecent, useKinMyDueTasks } from "./state/useKinWorkHome";
+
+/** What the Tasks search finds besides tasks, which the list itself already narrows to. */
+const ELSEWHERE = ["clients", "contacts", "projects", "docs"] as const;
 
 export type KinWorkParams = {
   readonly environmentId: string;
   readonly orgId: string;
-  /** The place that opens: `tasks`, `clients`, `projects`, `docs`, `money` or `lists`; Work itself otherwise. */
+  /** The place that opens: `tasks`, `clients`, `projects`, `docs` or `money`; Tasks otherwise. */
   readonly show?: string;
   /** The client the tasks start narrowed to, or a new task starts under. */
   readonly party?: string;
@@ -109,17 +124,80 @@ export function kinWorkRefParam(key: string | undefined, title: string | undefin
   return held === null ? null : { key: held, title: title ?? held };
 }
 
-/** The way in from the chat list, for the owner only. Its second line says what needs a look. */
+/**
+ * The ways in from the chat list over coding threads, where there is no dock: one row per place,
+ * each saying what is in it. A place the host keeps from this viewer has no row.
+ */
 export function KinWorkEntry(target: KinWorkTarget) {
-  const navigation = useNavigation();
   const state = useKinWork(target);
   // A teammate, or a host that couldn't be read: no way in rather than a dead one.
   if (state._tag === "refused" || state._tag === "failed") return null;
+  return <KinPlaceEntries {...target} live={state._tag === "ready" ? state.live : null} />;
+}
+
+function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | null }) {
+  const open = useKinOpenPlace(props);
+  const seq = props.live?.seq ?? null;
+  const summary = props.live?.summary ?? null;
+  const hostClients = kinWorkHostClients(summary);
+  const money = useKinMoneySummary(props, { enabled: true, seq }).state;
+  const docs = useKinDocsRecent(props);
+  const counts = useKinClientCounts(props, hostClients, seq);
+  const now = new Date(useNowMinuteMs());
   return (
-    <KinWorkEntryRow
-      summary={kinWorkEntrySummary(state._tag === "ready" ? state.live.summary : null)}
-      onPress={() => navigation.navigate("KinWork", target)}
-    />
+    <>
+      <KinWorkEntryRow summary={kinWorkEntrySummary(summary)} onPress={() => open("tasks")} />
+      {money._tag === "refused" || money._tag === "failed" ? null : (
+        <KinPlaceEntryRow
+          place="money"
+          summary={money._tag === "ready" ? kinMoneyLine(money.value) : null}
+          onPress={() => open("money")}
+        />
+      )}
+      {!hostClients ? null : (
+        <KinPlaceEntryRow
+          place="clients"
+          summary={counts === null ? null : kinClientsLine(counts.clients, counts.projects)}
+          onPress={() => open("clients")}
+        />
+      )}
+      {docs.refused ? null : (
+        <KinPlaceEntryRow
+          place="docs"
+          summary={docs.docs === null ? null : kinDocsLine(docs.docs.total, docs.docs.docs, now)}
+          onPress={() => open("docs")}
+        />
+      )}
+    </>
+  );
+}
+
+export const KIN_PLACE_SYMBOL = {
+  tasks: "checkmark.circle",
+  money: "banknote",
+  clients: "person.2",
+  docs: "doc.text",
+} as const satisfies Record<KinWorkPlace, AppSymbolName>;
+
+function KinPlaceEntryRow(props: {
+  readonly place: KinWorkPlace;
+  readonly summary: string | null;
+  readonly onPress: () => void;
+}) {
+  const title = KIN_WORK_HOME.places[props.place];
+  const summary = props.summary ?? "…";
+  return (
+    <>
+      <KinListBanner
+        title={title}
+        summary={summary}
+        symbol={KIN_PLACE_SYMBOL[props.place]}
+        accessibilityLabel={`${title}. ${summary}`}
+        accessibilityHint={`Opens ${title}`}
+        onPress={props.onPress}
+      />
+      <View className="ml-5 h-px bg-border-subtle" />
+    </>
   );
 }
 
@@ -128,10 +206,10 @@ export function KinWorkEntryRow(props: { readonly summary: string; readonly onPr
   return (
     <>
       <KinListBanner
-        title={KIN_WORK_TITLE}
+        title={KIN_WORK_HOME.places.tasks}
         summary={props.summary}
-        symbol="checkmark.circle"
-        accessibilityLabel={`${KIN_WORK_TITLE}. ${props.summary}`}
+        symbol={KIN_PLACE_SYMBOL.tasks}
+        accessibilityLabel={`${KIN_WORK_HOME.places.tasks}. ${props.summary}`}
         accessibilityHint="Opens what is open and who has it"
         onPress={props.onPress}
       />
@@ -140,13 +218,13 @@ export function KinWorkEntryRow(props: { readonly summary: string; readonly onPr
   );
 }
 
-/** Everything someone owes someone: what is open, who has it, and the way to hand it on. */
+/** A place of Work as a page, from a link or over coding threads. */
 export function KinWorkScreen({ route }: StaticScreenProps<KinWorkParams>) {
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
   const orgId = Option.getOrNull(decodeOrgId(route.params.orgId));
   if (environmentId === null || orgId === null) {
     return (
-      <KinWorkMessage>
+      <KinWorkMessage title={KIN_WORK_TITLE}>
         <EmptyState
           variant="plain"
           title="This link doesn't open anything"
@@ -155,17 +233,11 @@ export function KinWorkScreen({ route }: StaticScreenProps<KinWorkParams>) {
       </KinWorkMessage>
     );
   }
-  // Narrowed to a client or project, tasks open even on a link from before places.
-  const place =
-    kinWorkPlaceParam(route.params.show) ??
-    (route.params.party === undefined && route.params.project === undefined
-      ? null
-      : { place: "tasks" as const, projects: false });
   return (
-    <KinWorkStates
+    <KinPlace
       environmentId={environmentId}
       orgId={orgId}
-      place={place}
+      place={kinWorkPlaceParam(route.params.show)}
       party={kinWorkRefParam(route.params.party, route.params.partyName)}
       project={kinWorkRefParam(route.params.project, route.params.projectName)}
     />
@@ -173,12 +245,12 @@ export function KinWorkScreen({ route }: StaticScreenProps<KinWorkParams>) {
 }
 
 /** Every state that isn't the list, inside the scroll view that clears the floating bar. */
-function KinWorkMessage(props: { readonly children: React.ReactNode }) {
+function KinWorkMessage(props: { readonly title: string; readonly children: React.ReactNode }) {
   const navigation = useNavigation();
   const tab = useKinTab();
   return (
     <View collapsable={false} className="flex-1 bg-screen">
-      <AppBar title={KIN_WORK_TITLE} {...(tab ? {} : { onBack: () => navigation.goBack() })} />
+      <AppBar title={props.title} {...(tab ? {} : { onBack: () => navigation.goBack() })} />
       <ScreenContent surface="screen">
         <ScreenScrollView
           className="flex-1"
@@ -196,55 +268,46 @@ function KinWorkMessage(props: { readonly children: React.ReactNode }) {
   );
 }
 
-/** Work as a tab of the Kin home, inside a `KinTabContext`: the Work page, with no way back. */
-export function KinWorkTab(props: KinWorkTarget) {
-  return <KinWorkStates {...props} place={null} party={null} project={null} />;
-}
-
-function KinWorkStates(
+/** One place of Work: a tab of the Kin home inside a `KinTabContext`, or a pushed page. */
+export function KinPlace(
   props: KinWorkTarget & {
-    /** Null is the Work page itself; a place is pushed above it. */
     readonly place: ReturnType<typeof kinWorkPlaceParam>;
     readonly party: KinWorkRef | null;
     readonly project: KinWorkRef | null;
   },
 ) {
-  const navigation = useNavigation();
   const target = { environmentId: props.environmentId, orgId: props.orgId };
   const state = useKinWork(target);
   const ready = state._tag === "ready";
   const hostClients = kinWorkHostClients(ready ? state.live.summary : null);
   const directory = useKinWorkDirectory(target, ready);
-  const choices = useKinWorkChoices(target, ready && hostClients && props.place?.place === "tasks");
   const { place } = props;
+  const choices = useKinWorkChoices(target, ready && hostClients && place.place === "tasks");
+  const title = KIN_WORK_HOME.places[place.place];
   if (state._tag === "ready") {
     const shared = { ...target, live: state.live, stale: state.stale, directory };
-    if (place === null) return <KinWorkHome {...shared} />;
     // An older server has tasks only, and a link to anything else says why.
     if (place.place !== "tasks" && !hostClients) {
       return (
-        <KinWorkMessage>
+        <KinWorkMessage title={title}>
           <EmptyState variant="plain" {...KIN_CLIENTS_OLDER_HOST} />
         </KinWorkMessage>
       );
     }
-    if (place.place === "docs")
-      return <KinDocsList {...target} directory={directory} stale={state.stale} />;
+    if (place.place === "docs") return <KinDocsList {...shared} />;
     if (place.place === "clients") return <KinClientsList {...shared} projects={place.projects} />;
     if (place.place === "money") return <KinMoneyArea {...shared} />;
-    if (place.place === "lists") return <KinListsArea {...shared} />;
     return (
       <KinWorkTaskList
         {...shared}
-        title={KIN_WORK_HOME.places.tasks}
-        onBack={() => navigation.goBack()}
+        title={title}
         choices={hostClients ? choices : null}
         initial={{ ...KIN_WORK_DEFAULT_FILTER, party: props.party, project: props.project }}
       />
     );
   }
   return (
-    <KinWorkMessage>
+    <KinWorkMessage title={title}>
       {state._tag === "refused" ? (
         <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
       ) : state._tag === "offline" ? (
@@ -267,7 +330,7 @@ function KinWorkStates(
           className="items-center py-12"
           accessible
           accessibilityRole="progressbar"
-          accessibilityLabel="Loading Work"
+          accessibilityLabel={`Loading ${title}`}
         >
           <AppActivityIndicator />
         </View>
@@ -283,7 +346,8 @@ export function KinWorkTaskList(
     readonly stale: boolean;
     readonly directory: KinWorkDirectory;
     readonly title: string;
-    readonly onBack: () => void;
+    /** A project's page goes back to where it was opened from; a tab has no Back. */
+    readonly onBack?: () => void;
     /** What the list can be narrowed to; null on an older server, or inside a project. */
     readonly choices: KinWorkChoices | null;
     readonly initial: KinWorkFilter;
@@ -295,7 +359,9 @@ export function KinWorkTaskList(
   },
 ) {
   const navigation = useNavigation();
+  const tab = useKinTab();
   const openRecord = useKinWorkLink();
+  const openHit = useKinOpenHit(props);
   const { environmentId, orgId, live } = props;
   const { names } = props.directory;
   const canAdd = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
@@ -347,7 +413,6 @@ export function KinWorkTaskList(
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
   );
-  const rows = records.map((record) => kinWorkRow(record, names, now, filter));
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = records.find((held) => held.key === key);
     if (record !== undefined) void changes.run(record, action, names);
@@ -358,8 +423,26 @@ export function KinWorkTaskList(
     props.within === undefined ? filter : { ...filter, party: null, project: null },
     names,
   );
+  // The whole company's open tasks, unsearched, start with what needs you.
+  const showsNeedsYou =
+    props.within === undefined && narrowed === null && filter.text.trim() === "";
+  const mine = useKinMyDueTasks(
+    props,
+    showsNeedsYou ? names.me : null,
+    props.stale ? null : live.seq,
+  );
+  const rows = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null).map((record) =>
+    kinWorkRow(record, names, now, filter),
+  );
   const nothing = kinWorkNothing(filter, names);
-  const footer = kinWorkListFooter(filter, rows.length, listState.total, listState.more, hostEdits);
+  // Needs you shows the rest, so the count says how many are loaded in all.
+  const footer = kinWorkListFooter(
+    filter,
+    records.length,
+    listState.total,
+    listState.more,
+    hostEdits,
+  );
   const add = canAdd
     ? () =>
         navigation.navigate("KinWorkNew", {
@@ -374,6 +457,10 @@ export function KinWorkTaskList(
         })
     : null;
   const { within } = props;
+  // The whole company's tasks also find clients, projects and docs, and say what needs you.
+  const everywhere = within === undefined;
+  const { state: found, search } = useKinSearch(props, ELSEWHERE);
+  const searching = everywhere && filter.text.trim() !== "";
   const filterMenu = kinWorkFilterMenu({
     overview,
     filter,
@@ -405,14 +492,19 @@ export function KinWorkTaskList(
           ...(within?.bar.actions ?? []),
         ]}
         menus={[filterMenu, ...(within?.bar.menus ?? [])]}
-        onBack={props.onBack}
-        search={{
-          value: filter.text,
-          onChangeText: (text) => list.setFilter({ ...filter, text }),
-          placeholder: KIN_WORK_SEARCH_PLACEHOLDER,
-          closeAccessibilityLabel: "Close search",
-          clearAccessibilityLabel: "Clear search",
-        }}
+        {...kinTabBar(tab, {
+          onBack: props.onBack ?? (() => navigation.goBack()),
+          search: {
+            value: filter.text,
+            onChangeText: (text) => {
+              list.setFilter({ ...filter, text });
+              if (everywhere) search.setText(text);
+            },
+            placeholder: KIN_WORK_SEARCH_PLACEHOLDER,
+            closeAccessibilityLabel: "Close search",
+            clearAccessibilityLabel: "Clear search",
+          },
+        })}
       />
       <ScreenContent surface="screen">
         {/* Hundreds of tasks stay cheap: only the rows in view mount. */}
@@ -422,11 +514,11 @@ export function KinWorkTaskList(
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
-          // The search field floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: 96 }}
+          // The search field, or the dock, floats over the foot of the list.
+          contentContainerStyle={{ paddingBottom: tab === null ? 96 : 32 + tab.bottomClearance }}
           data={rows}
           keyExtractor={(row) => row.key}
-          extraData={[listState, changed]}
+          extraData={[listState, changed, found]}
           estimatedItemSize={68}
           recycleItems
           onEndReached={() => void list.loadMore()}
@@ -434,6 +526,14 @@ export function KinWorkTaskList(
           ListHeaderComponent={
             <View className="gap-3 pt-2">
               {within?.header}
+              {showsNeedsYou ? (
+                <KinNeedsYou
+                  {...props}
+                  names={names}
+                  mine={mine}
+                  hideWhenNone={records.length === 0 && !listState.loading}
+                />
+              ) : null}
               {props.stale || listState.stale ? (
                 <View className="px-4">
                   <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
@@ -481,51 +581,70 @@ export function KinWorkTaskList(
             </View>
           }
           ListEmptyComponent={
-            <View className="px-4 pt-4">
-              {listState.loading ? (
-                <View
-                  className="items-center py-12"
-                  accessible
-                  accessibilityRole="progressbar"
-                  accessibilityLabel="Loading tasks"
-                >
-                  <AppActivityIndicator />
-                </View>
-              ) : listState.failed !== null ? (
-                <EmptyState
-                  variant="plain"
-                  title={KIN_WORK_LOAD_FAILED}
-                  detail="Check your connection to the server and try again."
-                  action={<Button tone="secondary" label="Try again" onPress={list.refresh} />}
-                />
-              ) : (
-                <EmptyState
-                  variant="plain"
-                  title={nothing.title}
-                  detail={nothing.detail}
-                  {...(nothing.offerNew && add !== null
-                    ? { action: <Button tone="primary" label={KIN_WORK_NEW} onPress={add} /> }
-                    : {})}
-                />
-              )}
-            </View>
-          }
-          ListFooterComponent={
-            footer === null ? null : (
-              <View className="items-start gap-2 px-5 py-4">
-                <Text textRole="footnote" className="text-foreground-muted">
-                  {listState.moreFailed ? "Couldn't load more." : footer}
-                </Text>
-                <Button
-                  tone="secondary"
-                  size="compact"
-                  label={listState.moreFailed ? "Try again" : "Show more"}
-                  loading={listState.loadingMore}
-                  disabled={listState.loadingMore}
-                  onPress={() => void list.loadMore()}
-                />
+            // Every open task is already under Needs you.
+            records.length > 0 ? null : (
+              <View className="px-4 pt-4">
+                {listState.loading ? (
+                  <View
+                    className="items-center py-12"
+                    accessible
+                    accessibilityRole="progressbar"
+                    accessibilityLabel="Loading tasks"
+                  >
+                    <AppActivityIndicator />
+                  </View>
+                ) : listState.failed !== null ? (
+                  <EmptyState
+                    variant="plain"
+                    title={KIN_WORK_LOAD_FAILED}
+                    detail="Check your connection to the server and try again."
+                    action={<Button tone="secondary" label="Try again" onPress={list.refresh} />}
+                  />
+                ) : (
+                  <EmptyState
+                    variant="plain"
+                    title={nothing.title}
+                    detail={nothing.detail}
+                    {...(nothing.offerNew && add !== null
+                      ? { action: <Button tone="primary" label={KIN_WORK_NEW} onPress={add} /> }
+                      : {})}
+                  />
+                )}
               </View>
             )
+          }
+          ListFooterComponent={
+            <>
+              {footer === null ? null : (
+                <View className="items-start gap-2 px-5 py-4">
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {listState.moreFailed ? "Couldn't load more." : footer}
+                  </Text>
+                  <Button
+                    tone="secondary"
+                    size="compact"
+                    label={listState.moreFailed ? "Try again" : "Show more"}
+                    loading={listState.loadingMore}
+                    disabled={listState.loadingMore}
+                    onPress={() => void list.loadMore()}
+                  />
+                </View>
+              )}
+              {searching ? (
+                <View className="gap-2 pt-4">
+                  <View className="px-4">
+                    <ListSection title={KIN_WORK_HOME.elsewhere}>
+                      <ListToggleRow
+                        label={KIN_SEARCH.includeClosed}
+                        value={found.closed}
+                        onValueChange={search.setClosed}
+                      />
+                    </ListSection>
+                  </View>
+                  <KinSearchHits state={found} onRetry={search.retry} onOpen={openHit} />
+                </View>
+              ) : null}
+            </>
           }
           renderItem={({ item: row }) => (
             <KinWorkTaskRow

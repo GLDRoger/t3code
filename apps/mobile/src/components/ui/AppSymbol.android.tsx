@@ -30,6 +30,7 @@ import IconBox from "@tabler/icons-react-native/IconBox";
 import IconBrain from "@tabler/icons-react-native/IconBrain";
 import IconCamera from "@tabler/icons-react-native/IconCamera";
 import IconCar from "@tabler/icons-react-native/IconCar";
+import IconCash from "@tabler/icons-react-native/IconCash";
 import IconChartBar from "@tabler/icons-react-native/IconChartBar";
 import IconCheck from "@tabler/icons-react-native/IconCheck";
 import IconCloud from "@tabler/icons-react-native/IconCloud";
@@ -89,6 +90,7 @@ import IconLetterSpacing from "@tabler/icons-react-native/IconLetterSpacing";
 import IconMicrophone from "@tabler/icons-react-native/IconMicrophone";
 import IconLink from "@tabler/icons-react-native/IconLink";
 import IconMail from "@tabler/icons-react-native/IconMail";
+import IconList from "@tabler/icons-react-native/IconList";
 import IconListNumbers from "@tabler/icons-react-native/IconListNumbers";
 import IconMenu2 from "@tabler/icons-react-native/IconMenu2";
 import IconMessageCircleQuestion from "@tabler/icons-react-native/IconMessageCircleQuestion";
@@ -181,6 +183,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "cable.connector": IconPlug,
   camera: IconCamera,
   car: IconCar,
+  banknote: IconCash,
   "chart.bar.xaxis": IconChartBar,
   checkmark: IconCheck,
   "checkmark.circle": IconCircleCheck,
@@ -232,6 +235,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   lock: IconLock,
   envelope: IconMail,
   phone: IconPhone,
+  "list.bullet": IconList,
   "list.number": IconListNumbers,
   "line.3.horizontal": IconMenu2,
   "line.3.horizontal.decrease": IconFilter,

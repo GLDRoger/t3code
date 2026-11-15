@@ -66,7 +66,11 @@ import {
 import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "@t3tools/client-runtime/kin/kinDocsStream";
 import { KIN_WORK_LABEL, kinWorkLiveStream } from "@t3tools/client-runtime/kin/kinWorkStream";
-import { createKinRefreshTriggers } from "@t3tools/client-runtime/kin/kinRefresh";
+import {
+  createKinDirectoryTrigger,
+  createKinRefreshTriggers,
+  noteKinDirectoryOrgs,
+} from "@t3tools/client-runtime/kin/kinRefresh";
 
 export type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 
@@ -362,6 +366,8 @@ const refreshLeads = (environmentId: EnvironmentId, orgId: KinOrgId) => {
 
 /** Being let message a lead, or losing that, changes what `kin.leads.list` answers. */
 const rereadLeadsOnChange = onKinDirectChatsChange((environmentId, orgIds) => {
+  // A new direct chat may be with an agent the directory hasn't named yet.
+  appAtomRegistry.refresh(kinClient.orgs({ environmentId, input: {} }));
   for (const orgId of orgIds) refreshLeads(environmentId, orgId);
 });
 
@@ -373,6 +379,11 @@ export const kinClient = {
       const environmentId = yield* currentEnvironmentId;
       const result = yield* retryKinProbe(readOrgs(input), () => knownKinHosts.has(environmentId));
       markKinHostKnown(environmentId);
+      noteKinDirectoryOrgs(
+        appAtomRegistry,
+        environmentId,
+        result.orgs.map((org) => org.orgId),
+      );
       yield* syncKinCacheIdentity(environmentId, result.me[0]?.personId ?? null);
       yield* withKinCache(orgsCache.save(environmentId, ORGS_CACHE_KEY, result));
       appAtomRegistry.refresh(kinCachedOrgsAtom(environmentId));
@@ -384,8 +395,9 @@ export const kinClient = {
       return result;
     }),
     staleTimeMs: 60_000,
-    // A failed probe reruns when the next session comes up, not only after the stale time.
-    refreshTrigger: sessionGeneration,
+    // A failed probe reruns when the next session comes up, not only after the stale time; agent
+    // names come from here, so it is read again when an org's agents change too.
+    refreshTrigger: createKinDirectoryTrigger(connectionAtomRuntime),
   }),
   /** Chat list plus Waiting on you. Reconnecting replaces it with the host's fresh snapshot. */
   inbox: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {

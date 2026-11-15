@@ -416,6 +416,10 @@ class T3WorkspaceNavigationView(
     "threads" -> "Chats"
     "pullRequests" -> "Pulls"
     "usage" -> "Usage"
+    "tasks" -> "Tasks"
+    "money" -> "Money"
+    "clients" -> "Clients"
+    "docs" -> "Docs"
     else -> "Settings"
   }
 
@@ -428,6 +432,10 @@ class T3WorkspaceNavigationView(
       "threads" -> R.drawable.t3_chats
       "pullRequests" -> R.drawable.t3_pull_requests
       "usage" -> R.drawable.t3_usage
+      "tasks" -> R.drawable.t3_tasks
+      "money" -> R.drawable.t3_money
+      "clients" -> R.drawable.t3_clients
+      "docs" -> R.drawable.t3_docs
       else -> R.drawable.t3_settings
     }
   )

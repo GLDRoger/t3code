@@ -268,7 +268,7 @@ function KinDocCard(props: {
           size="xs"
           variant="outline"
           render={
-            <Link to="/kin/$environmentId/$orgId/work" params={params} search={{ doc: doc.key }} />
+            <Link to="/kin/$environmentId/$orgId/docs" params={params} search={{ doc: doc.key }} />
           }
         >
           Open
@@ -279,7 +279,7 @@ function KinDocCard(props: {
             variant="ghost"
             render={
               <Link
-                to="/kin/$environmentId/$orgId/work"
+                to="/kin/$environmentId/$orgId/docs"
                 params={params}
                 search={{ doc: doc.key, changes: doc.version, from: doc.previousVersion }}
               />

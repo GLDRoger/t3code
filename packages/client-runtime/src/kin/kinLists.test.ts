@@ -19,6 +19,8 @@ import {
   kinListEntryView,
   kinListFilterParam,
   kinListHeader,
+  kinListFilterCleared,
+  kinListFilterLabel,
   kinListNarrowings,
   kinMoneyDraft,
   kinParseMoney,
@@ -389,6 +391,13 @@ describe("a list by its definition", () => {
     const none = header.groups[1]!.narrowed!;
     expect(kinListQuery(orgId, def.list, none)).toMatchObject({ listCategory: null });
     expect(kinListNarrowings(none, def)[0]).toMatchObject({ label: "No category" });
+    // The Filter's one chip names every narrowing, and clearing it keeps search and the split.
+    expect(kinListFilterLabel(def, byCategory)).toBeNull();
+    expect(kinListFilterLabel(def, { ...none, noParty: true })).toBe("No category · No client");
+    expect(kinListFilterCleared({ ...none, text: "rent" })).toEqual({
+      ...byCategory,
+      text: "rent",
+    });
     expect(kinListQuery(orgId, def.list, { ...byCategory, noParty: true })).toMatchObject({
       party: null,
     });

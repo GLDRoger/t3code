@@ -131,10 +131,11 @@ export const KIN_SCREENS = {
     linking: "kin/:environmentId/:orgId/docs/:doc",
     options: pageRoute({ title: "Doc" }),
   }),
+  // A sheet on the doc, so the changes close back to it.
   KinDocChanges: createNativeStackScreen({
     screen: KinDocChangesScreen,
     linking: "kin/:environmentId/:orgId/docs/:doc/changes",
-    options: pageRoute({ title: "Changes" }),
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinDocHistory: createNativeStackScreen({
     screen: KinDocHistoryScreen,

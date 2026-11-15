@@ -49,6 +49,7 @@ import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { Menu } from "../../components/ui/Menu";
+import { Chip } from "../../components/ui/Chip";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
@@ -74,6 +75,7 @@ import { KinDocFileRows } from "./KinInvoice";
 import { kinClient } from "./state/kinClient";
 import { useKinDocLabel } from "./state/useKinDocLabel";
 import { useKinDoc } from "./state/useKinDocs";
+import { useKinWorkLink } from "./state/kinWorkLink";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
@@ -272,7 +274,9 @@ function KinDocBody(
   },
 ) {
   const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const { environmentId, orgId, doc } = props;
+  const { party, project } = doc;
   const target = { environmentId, orgId };
   const { names } = useKinWorkDirectory(target, true);
   const inbox = useKinInbox();
@@ -460,6 +464,32 @@ function KinDocBody(
             <Text textRole="footnote" className="text-foreground-muted">
               {line.text}
             </Text>
+            {party === undefined && project === undefined ? null : (
+              <View className="flex-row flex-wrap gap-2">
+                {party === undefined ? null : (
+                  <Chip
+                    size="small"
+                    icon="person.2"
+                    label={party.title}
+                    accessibilityLabel={`Open ${party.title}`}
+                    onPress={() =>
+                      openRecord("KinClient", { environmentId, orgId, party: party.key })
+                    }
+                  />
+                )}
+                {project === undefined ? null : (
+                  <Chip
+                    size="small"
+                    icon="folder"
+                    label={project.title}
+                    accessibilityLabel={`Open ${project.title}`}
+                    onPress={() =>
+                      openRecord("KinProject", { environmentId, orgId, project: project.key })
+                    }
+                  />
+                )}
+              </View>
+            )}
             {previous === null ? null : (
               <Pressable
                 accessibilityRole="button"

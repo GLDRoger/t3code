@@ -1,14 +1,24 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, usePreventRemove, type StaticScreenProps } from "@react-navigation/native";
-import { EnvironmentId, KinAgentId, KinOrgId, type KinLeadProfile } from "@t3tools/contracts";
 import {
+  EnvironmentId,
+  KinAgentId,
+  KinOrgId,
+  type KinLeadProfile,
+  type ModelSelection,
+} from "@t3tools/contracts";
+import {
+  KIN_AGENT_DRIVER,
+  KIN_CHIEF_OF_STAFF,
   KIN_LEAD_CHARTER_MAX,
+  KIN_LEAD_MODELS,
   KIN_LEAD_NAME_MAX,
   kinLeadChanges,
   KIN_LEAD_INTRO_MAX,
   kinLeadDraftCheck,
   kinLeadDraftOf,
   kinLeadSaveProblem,
+  kinLeadStartingModels,
   type KinLeadDraft,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -16,7 +26,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { useRef, useState, type ComponentProps, type ReactNode } from "react";
-import { TextInput, View } from "react-native";
+import { Pressable, TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
@@ -24,9 +34,13 @@ import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
+import { SymbolView } from "../../components/ui/AppSymbol";
 import { ListSection } from "../../components/ui/ListSection";
+import { Menu } from "../../components/ui/Menu";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
+import { buildModelOptions, type ModelOption } from "../../lib/modelOptions";
+import { useEnvironmentServerConfig } from "../../state/entities";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient, refreshKinAgents } from "./state/kinClient";
 
@@ -35,6 +49,8 @@ export type KinLeadFormParams = {
   readonly orgId: string;
   /** The lead to edit; unset makes a new one. */
   readonly agentId?: string;
+  /** `chief`: a new one starts filled in as the Chief of staff, the company's front door. */
+  readonly suggest?: string;
 };
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -68,7 +84,12 @@ export function KinLeadFormScreen({ route }: StaticScreenProps<KinLeadFormParams
     );
   }
   return agentId === null ? (
-    <LeadForm environmentId={environmentId} orgId={orgId} lead={null} />
+    <LeadForm
+      environmentId={environmentId}
+      orgId={orgId}
+      lead={null}
+      suggested={route.params.suggest === "chief" ? KIN_CHIEF_OF_STAFF : NEW_LEAD}
+    />
   ) : (
     <EditLead environmentId={environmentId} orgId={orgId} agentId={agentId} />
   );
@@ -134,11 +155,14 @@ function LeadForm(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly lead: KinLeadProfile | null;
+  readonly suggested?: KinLeadDraft;
 }) {
   const navigation = useNavigation();
   const { environmentId, orgId, lead } = props;
   const creating = lead === null;
-  const [initial] = useState<KinLeadDraft>(() => (lead === null ? NEW_LEAD : kinLeadDraftOf(lead)));
+  const [initial] = useState<KinLeadDraft>(() =>
+    lead === null ? (props.suggested ?? NEW_LEAD) : kinLeadDraftOf(lead),
+  );
   const [draft, setDraft] = useState(initial);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<{
@@ -152,6 +176,25 @@ function LeadForm(props: {
   const allowed = useAtomValue(
     (creating ? kinClient.leadCreate : kinClient.leadUpdate).permissionAtom(environmentId),
   );
+  // The org's first agent picks the models; the host gives every later one the same.
+  const leads = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
+  const [noModels, setNoModels] = useState(false);
+  const firstAgent =
+    creating &&
+    (noModels ||
+      (AsyncResult.isSuccess(leads) &&
+        leads.value.leads.every((held) => held.retired !== undefined)));
+  const config = useEnvironmentServerConfig(environmentId);
+  const modelOptions = buildModelOptions(config, null, undefined, null).filter(
+    (option) =>
+      option.providerDriver === KIN_AGENT_DRIVER && !option.isUnavailable && !option.isHidden,
+  );
+  const [pickedModels, setPickedModels] = useState<{
+    readonly strong: ModelSelection;
+    readonly cheap: ModelSelection;
+  } | null>(null);
+  const models =
+    pickedModels ?? kinLeadStartingModels(modelOptions.map((option) => option.selection));
   const dirty =
     draft.name !== initial.name ||
     draft.area !== initial.area ||
@@ -225,17 +268,23 @@ function LeadForm(props: {
     setSaving(true);
     const result = await create({
       environmentId,
-      input: { orgId, name, domain, charter, ...(intro === "" ? undefined : { intro }) },
+      input: {
+        orgId,
+        name,
+        domain,
+        charter,
+        ...(intro === "" ? undefined : { intro }),
+        ...(firstAgent && models !== null ? { models } : undefined),
+      },
     });
     setSaving(false);
     if (!AsyncResult.isSuccess(result)) {
-      setProblem({
-        field: null,
-        text: kinLeadSaveProblem(
-          AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null,
-          true,
-        ),
-      });
+      const cause = AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null;
+      // Another device retired the last agent meanwhile: the models are this form's to choose.
+      if (typeof cause === "object" && cause !== null && "reason" in cause) {
+        if (cause.reason === "no_models") setNoModels(true);
+      }
+      setProblem({ field: null, text: kinLeadSaveProblem(cause, true) });
       return;
     }
     saved.current = true;
@@ -257,7 +306,7 @@ function LeadForm(props: {
         label: creating ? "Create" : "Save",
         onPress: () => void save(),
         loading: saving,
-        disabled: !allowed || saving || (!creating && !dirty),
+        disabled: !allowed || saving || (!creating && !dirty) || (firstAgent && models === null),
       }}
     >
       {problem?.field === null ? <ErrorBanner message={problem.text} /> : null}
@@ -276,7 +325,7 @@ function LeadForm(props: {
             placeholder="Growth lead"
             maxLength={KIN_LEAD_NAME_MAX}
             editable={allowed && !saving}
-            autoFocus={creating}
+            autoFocus={creating && initial.name === ""}
             autoCapitalize="words"
             onChange={(name) => set({ name })}
           />
@@ -320,6 +369,35 @@ function LeadForm(props: {
           }
         />
       </View>
+      {firstAgent ? (
+        <View className="gap-2">
+          <ListSection title={KIN_LEAD_MODELS.title}>
+            {models === null ? null : (
+              <>
+                <ModelRow
+                  label={KIN_LEAD_MODELS.strong}
+                  value={models.strong}
+                  options={modelOptions}
+                  disabled={!allowed || saving}
+                  onPick={(strong) => setPickedModels({ ...models, strong })}
+                />
+                <ModelRow
+                  label={KIN_LEAD_MODELS.cheap}
+                  value={models.cheap}
+                  options={modelOptions}
+                  disabled={!allowed || saving}
+                  borderTop
+                  onPick={(cheap) => setPickedModels({ ...models, cheap })}
+                />
+              </>
+            )}
+          </ListSection>
+          <Note
+            problem={models === null ? KIN_LEAD_MODELS.none : null}
+            hint={KIN_LEAD_MODELS.hint}
+          />
+        </View>
+      ) : null}
       <View className="gap-2">
         <ListSection title="What teammates see">
           <TextInput
@@ -391,5 +469,55 @@ function Field(props: {
         className="min-h-8 font-sans text-base text-foreground"
       />
     </View>
+  );
+}
+
+/** One of the first agent's models: a row that opens the server's Claude models as a menu. */
+function ModelRow(props: {
+  readonly label: string;
+  readonly value: ModelSelection;
+  readonly options: ReadonlyArray<ModelOption>;
+  readonly disabled: boolean;
+  readonly borderTop?: boolean;
+  readonly onPick: (selection: ModelSelection) => void;
+}) {
+  const same = (option: ModelOption) =>
+    option.selection.instanceId === props.value.instanceId &&
+    option.selection.model === props.value.model;
+  const current = props.options.find(same);
+  // Two Claude accounts list the same models; the account then tells them apart.
+  const accounts = new Set(props.options.map((option) => option.providerKey)).size > 1;
+  const name = (option: ModelOption) =>
+    accounts ? `${option.label} · ${option.providerLabel}` : option.label;
+  return (
+    <Menu
+      accessible
+      accessibilityRole="button"
+      accessibilityLabel={`${props.label}: ${current === undefined ? props.value.model : name(current)}`}
+      actions={props.options.map((option) => ({
+        id: option.key,
+        title: name(option),
+        state: same(option) ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent }) => {
+        const picked = props.options.find((option) => option.key === nativeEvent.event);
+        if (picked !== undefined) props.onPick(picked.selection);
+      }}
+    >
+      <Pressable
+        disabled={props.disabled}
+        className={
+          props.borderTop
+            ? "flex-row items-center gap-3 border-t border-border-subtle px-4 py-3"
+            : "flex-row items-center gap-3 px-4 py-3"
+        }
+      >
+        <Text className="min-w-0 flex-1 text-base text-foreground">{props.label}</Text>
+        <Text className="shrink text-right text-base text-foreground-muted" numberOfLines={1}>
+          {current === undefined ? props.value.model : name(current)}
+        </Text>
+        <SymbolView name="chevron.down" size={13} tintColorClassName="accent-icon-muted" />
+      </Pressable>
+    </Menu>
   );
 }
