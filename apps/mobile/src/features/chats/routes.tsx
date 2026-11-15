@@ -7,6 +7,7 @@ import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
 import { KinCompanyScreen } from "./KinCompanyScreen";
+import { KinDocFileScreen } from "./KinDocFileScreen";
 import { KinDocScreen } from "./KinDocScreen";
 import { KinDocChangesScreen, KinDocHistoryScreen, KinSearchScreen } from "./KinDocVersionScreens";
 import { KinGroupFormScreen } from "./KinGroupFormScreen";
@@ -17,6 +18,8 @@ import { KinEntryEditScreen } from "./KinListEntryEdit";
 import { KinDatesScreen, KinListScreen } from "./KinListScreen";
 import { KinLeadScreen } from "./KinLeadScreen";
 import { KinMemoryScreen } from "./KinMemoryScreen";
+import { KinRatesScreen } from "./KinMoneyEstimate";
+import { KinSubscriptionsScreen } from "./KinSubscriptions";
 import { KinProjectScreen } from "./KinProjectScreen";
 import { KinSettingsScreen } from "./KinSettings";
 import { KinInviteScreen } from "./KinInviteScreen";
@@ -103,6 +106,16 @@ export const KIN_SCREENS = {
     screen: KinListSettingsScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
+  KinSubscriptions: createNativeStackScreen({
+    screen: KinSubscriptionsScreen,
+    linking: "kin/:environmentId/:orgId/subscriptions",
+    options: pageRoute({ title: "Subscriptions" }),
+  }),
+  // A full sheet, so the keyboard never covers the rate being typed.
+  KinRates: createNativeStackScreen({
+    screen: KinRatesScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
   KinCompany: createNativeStackScreen({
     screen: KinCompanyScreen,
     linking: "kin/:environmentId/:orgId/company",
@@ -135,6 +148,10 @@ export const KIN_SCREENS = {
   KinDocChanges: createNativeStackScreen({
     screen: KinDocChangesScreen,
     linking: "kin/:environmentId/:orgId/docs/:doc/changes",
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinDocFile: createNativeStackScreen({
+    screen: KinDocFileScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinDocHistory: createNativeStackScreen({
