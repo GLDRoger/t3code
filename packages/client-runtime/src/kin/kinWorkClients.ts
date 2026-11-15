@@ -41,12 +41,12 @@ export const KIN_CLIENTS = {
   search: "Search clients",
   add: "New client",
   loadFailed: "Couldn't load your clients",
-  weOwe: "We owe them",
-  theyOwe: "They owe us",
-  addWeOwe: "Add what we owe",
-  addTheyOwe: "Add what they owe",
-  nothingOwed: "Nothing owed to them right now.",
-  nothingOwing: "They owe nothing right now.",
+  weOwe: "To do for them",
+  theyOwe: "Waiting on them",
+  addWeOwe: "Add a task for them",
+  addTheyOwe: "Add something we're waiting on",
+  nothingOwed: "Nothing to do for them right now.",
+  nothingOwing: "Nothing waiting on them right now.",
   contacts: "Contacts",
   addContact: "Add contact",
   noContacts: "No one yet. Add who you deal with there.",
@@ -67,6 +67,9 @@ export const KIN_CLIENTS = {
   touchKind: "How",
   touchSave: "Log it",
   touchRemove: "Remove",
+  touchRemoveTitle: "Remove this logged contact?",
+  details: "Details",
+  detailsSummary: "Address, tax, terms and notes",
   touchFailed: "Couldn't log that. Check your connection and try again.",
   history: "History",
   noHistory: "Nothing has happened yet.",
@@ -242,12 +245,12 @@ export function kinClientsQuery(
 
 type Owed = Pick<KinPartyRow, "weOwe" | "theyOwe" | "late" | "overdue">;
 
-/** "We owe 2 (1 late) · They owe 1 (1 overdue)", or "Nothing open". */
+/** "2 to do (1 late) · Waiting on 1 (1 overdue)", or "Nothing open". */
 function kinOwedLine(owed: Owed): string {
   const parts = [
-    owed.weOwe > 0 ? `We owe ${owed.weOwe}${owed.late > 0 ? ` (${owed.late} late)` : ""}` : null,
+    owed.weOwe > 0 ? `${owed.weOwe} to do${owed.late > 0 ? ` (${owed.late} late)` : ""}` : null,
     owed.theyOwe > 0
-      ? `They owe ${owed.theyOwe}${owed.overdue > 0 ? ` (${owed.overdue} overdue)` : ""}`
+      ? `Waiting on ${owed.theyOwe}${owed.overdue > 0 ? ` (${owed.overdue} overdue)` : ""}`
       : null,
   ].filter((part) => part !== null);
   return parts.length === 0 ? "Nothing open" : parts.join(" · ");
@@ -256,7 +259,7 @@ function kinOwedLine(owed: Owed): string {
 export interface KinClientRowView {
   readonly key: KinRecordKey;
   readonly name: string;
-  /** "Vendor · We owe 2 (1 late) · They owe 1". */
+  /** "Vendor · 2 to do (1 late) · Waiting on 1". */
   readonly line: string;
   /** "Next: Monthly report, Fri 14 Nov"; null with nothing owed to them. */
   readonly next: string | null;

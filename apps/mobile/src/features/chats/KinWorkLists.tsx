@@ -381,7 +381,8 @@ function ClientsView(props: ViewProps & { readonly closed: boolean }) {
         rows: (client) =>
           projects
             .filter((row) => row.party?.key === client)
-            .map((row) => kinProjectRow(row, props.directory.names, now)),
+            // Under its client, the row needn't name it again.
+            .map((row) => kinProjectRow(row, props.directory.names, now, row.party ?? undefined)),
         onOpen: openProject,
       }}
       search={{ text: filter.text, placeholder: KIN_CLIENTS.search }}

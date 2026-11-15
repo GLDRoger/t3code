@@ -34,7 +34,7 @@ import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinDocRow, KinRecordKey } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
-import { Pressable, ScrollView, View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -215,7 +215,7 @@ type Item =
 const DOCS_ONLY = ["docs"] as const;
 const LISTS_FOLDED = 3;
 
-/** The last few docs changed, as a strip of cards to scroll sideways. */
+/** The last few docs changed, as two rows of cards; nothing scrolls sideways. */
 function KinRecentStrip(props: {
   readonly rows: ReadonlyArray<KinDocRow>;
   readonly names: KinWorkDirectory["names"];
@@ -233,11 +233,7 @@ function KinRecentStrip(props: {
           {KIN_DOC_HOMES.recent}
         </Text>
       </View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerClassName="gap-3 px-4"
-      >
+      <View className="flex-row flex-wrap gap-3 px-4">
         {props.rows.map((doc) => {
           const row = kinDocRow(doc, props.names, props.now);
           return (
@@ -246,7 +242,7 @@ function KinRecentStrip(props: {
               accessibilityRole="button"
               accessibilityLabel={row.accessibilityLabel}
               onPress={() => props.onOpen(doc.key)}
-              className="w-44 gap-1 rounded-2xl bg-grouped-card px-3.5 py-3 active:opacity-60"
+              className="min-w-0 grow basis-[45%] gap-1 rounded-2xl bg-grouped-card px-3.5 py-3 active:opacity-60"
             >
               <Text textRole="body" numberOfLines={2} className="font-t3-medium text-foreground">
                 {row.title}
@@ -257,7 +253,7 @@ function KinRecentStrip(props: {
             </Pressable>
           );
         })}
-      </ScrollView>
+      </View>
     </View>
   );
 }

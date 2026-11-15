@@ -46,7 +46,8 @@ export function KinAttentionItem(
   const asker = useKinAskAbout(props)(row.agentId);
   const ripple = useResolveClassNames("bg-subtle-strong");
   const busy = handler.busy === row.factKey;
-  const description = row.about === null ? row.detail : `${row.about} · ${row.detail}`;
+  const description =
+    row.about === null ? row.detail : `${row.detail.replace(/\.$/, "")} · ${row.about}`;
   const layout = (
     <ListRowLayout
       icon={"exclamationmark.circle"}

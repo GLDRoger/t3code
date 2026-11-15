@@ -503,17 +503,19 @@ export function kinWorkRow(
   const day = kinWorkClosed(record.state) ? null : kinWorkDueText(record, names, now);
   const due = day === null ? null : `Due ${day}`;
   const ownerRetired = kinWorkRetired(record.owner, names);
+  // What a narrow row keeps when it cuts the end off: when it is due and where it stands first,
+  // its key last. "Not started" is what the empty circle already says.
   const parts = [
-    record.key,
-    about,
-    ownerRetired ? `${owner} (retired)` : owner,
+    due,
+    record.state === "open" && !record.working ? null : status,
     record.side === "theirs" && !kinWorkClosed(record.state) && within?.sided !== true
       ? "They owe this"
       : null,
-    status,
-    due,
+    about,
+    ownerRetired ? `${owner} (retired)` : owner,
     record.pullRequest === null ? null : `PR #${record.pullRequest.number}`,
     record.confirmed || kinWorkClosed(record.state) ? null : "Suggested",
+    record.key,
   ].filter((part) => part !== null);
   return {
     key: record.key,
@@ -535,7 +537,7 @@ export function kinWorkRow(
     ownerRetired,
     about,
     line: parts.join(" · "),
-    accessibilityLabel: [record.title, ...parts.slice(1), record.late ? "Late" : null]
+    accessibilityLabel: [record.title, ...parts.slice(0, -1), record.late ? "Late" : null]
       .filter((part) => part !== null)
       .join(". "),
   };
