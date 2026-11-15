@@ -64,6 +64,7 @@ import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { RETIRED_WORKER_REASON, retiredWorkerKey } from "./Retirement.ts";
 import { WorkerTracker } from "./WorkerTracker.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
+import { ownerLevelPeople } from "../people/KinAccess.ts";
 
 /** How long one wake-up may run before it is interrupted. */
 const WAKEUP_DEADLINE_MS = 900_000;
@@ -202,9 +203,13 @@ const make = Effect.gen(function* () {
   >(orgId: KinOrgId, agentId: KinAgentId, events: ReadonlyArray<E>) {
     const [agent] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner
       FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`;
+    const ownerLevel = new Set(
+      yield* ownerLevelPeople(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+    );
+    if (agent !== undefined) ownerLevel.add(agent.owner);
     const groups = new Map<string, Array<E>>();
     for (const event of events) {
-      const asker = KinBudget.askedByTeammate(event, agent?.owner ?? "") ? "teammate" : "owner";
+      const asker = KinBudget.askedByTeammate(event, ownerLevel) ? "teammate" : "owner";
       const key = `${event.priority}:${asker}`;
       groups.set(key, [...(groups.get(key) ?? []), event]);
     }

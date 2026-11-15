@@ -18,6 +18,7 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { ownerZone, type RecordRow } from "./recordRows.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 
 /** What a turn did to one person's task: gave it to them, took it from them, or gave it back. */
 export type AssignNotice = {
@@ -114,6 +115,7 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
     }
     const mayMessage =
       agent.owner === person ||
+      (yield* ownerLevel(turn.orgId, person)) ||
       (yield* LeadAccess.allowed({ orgId: turn.orgId, agentId: turn.agentId, personId: person }));
     const via = mayMessage ? turn.agentId : teamAgent;
     if (via === null) continue;

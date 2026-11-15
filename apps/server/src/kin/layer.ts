@@ -42,7 +42,7 @@ import { FetchHttpClient } from "effect/http";
 import * as GithubWebhooks from "./triggers/githubWebhooks.ts";
 import * as Connections from "./connections/ConnectionsService.ts";
 import * as ConnectionSecrets from "./connections/ConnectionSecrets.ts";
-import * as EgressGuard from "./connections/EgressGuard.ts";
+import * as DevFakeMail from "./connections/DevFakeMail.ts";
 import * as McpGateway from "./connections/McpGateway.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
@@ -59,6 +59,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Effect.logWarning("Kin default playbooks not written", Cause.pretty(cause)),
         ),
       );
+      yield* DevFakeMail.connectFakeAccounts(owner).pipe(Effect.provide(services));
       const hub = yield* KinChatHub;
       const scope = yield* Effect.scope;
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
@@ -114,7 +115,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         Connections.layer.pipe(
           Layer.provide(ConnectionSecrets.layer),
           Layer.provide(McpGateway.layer),
-          Layer.provide(EgressGuard.layer),
+          Layer.provide(DevFakeMail.egress),
         ),
       ).pipe(Layer.provideMerge(KinChat.layer)),
     ),

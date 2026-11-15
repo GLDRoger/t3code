@@ -31,6 +31,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Queue from "./KinEventQueue.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 import { isOrgOwner } from "./orgState.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 
 type Priority = "P0" | "P1" | "P2" | "P3" | "P4";
 export type Usage = {
@@ -50,9 +51,11 @@ type Admission = {
   readonly heldBy: HeldBy | null;
 };
 /** Who a turn's event was asked by: a teammate's request never spends as the owner's. */
-export const askedByTeammate = (event: KinEvent, ownerPersonId: string) =>
-  ("origin" in event && event.origin?.personId !== undefined) ||
-  (event.provenance._tag === "human" && event.provenance.personId !== ownerPersonId);
+export const askedByTeammate = (event: KinEvent, ownerLevel: ReadonlySet<string>) =>
+  ("origin" in event &&
+    event.origin?.personId !== undefined &&
+    !ownerLevel.has(event.origin.personId)) ||
+  (event.provenance._tag === "human" && !ownerLevel.has(event.provenance.personId));
 type Charge = {
   readonly orgId: KinOrgId;
   readonly wakeupId: KinWakeupId;
@@ -198,14 +201,16 @@ const make = Effect.gen(function* () {
       WHERE c.org_id = ${orgId} AND c.day = ${day}
       GROUP BY w.agent_id ORDER BY "leadUnits" DESC, w.agent_id`;
   });
-  // A turn is a teammate's when any event in it was asked by someone besides its lead's owner.
+  // A turn is a teammate's when any event in it was asked by someone below the owner's level.
   const askedByTeammates = (orgId: KinOrgId, wakeupId: KinWakeupId) =>
     sql`EXISTS (SELECT 1 FROM kin_events e
       JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
       WHERE e.org_id = ${orgId} AND e.wakeup_id = ${wakeupId}
-        AND (json_extract(e.json, '$.origin.personId') IS NOT NULL
+        AND ((json_extract(e.json, '$.origin.personId') IS NOT NULL
+            AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.origin.personId')"))})
           OR (json_extract(e.json, '$.provenance._tag') = 'human'
-            AND json_extract(e.json, '$.provenance.personId') <> a.owner_person_id)))`;
+            AND json_extract(e.json, '$.provenance.personId') <> a.owner_person_id
+            AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance.personId')"))})))`;
   const waiting = (orgId: KinOrgId) =>
     heldWork(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const limitsOf = Effect.fn("KinBudget.limitsOf")(function* (stored: string | null) {

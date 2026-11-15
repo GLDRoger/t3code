@@ -6,7 +6,7 @@ import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { type ChoiceAnswerHandler, KinChatService } from "../chat/KinChatService.ts";
-import { KinConnections } from "../connections/ConnectionsService.ts";
+import { KinConnections, type StaleAsk } from "../connections/ConnectionsService.ts";
 import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
 import { answerReviewCard } from "../github/PullRequestCare.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
@@ -94,10 +94,8 @@ const sendAsked = Effect.fn("KinCardAnswers.send")(function* (
         }),
       ),
     );
-  if (asked._tag === "stale") {
-    yield* outcome("failed", asked.reason);
-    if (asked.fresh === undefined) return;
-    const fresh = yield* connections.freshAsk(input.orgId, asked.fresh, input.now);
+  const again = Effect.fnUntraced(function* (stale: StaleAsk) {
+    const fresh = yield* connections.freshAsk(input.orgId, stale, input.now);
     const card = yield* chat.ask(fresh.agent, {
       chatId: fresh.chatId,
       clientMessageId: `kin-connection-ask:${fresh.askId}`,
@@ -110,11 +108,16 @@ const sendAsked = Effect.fn("KinCardAnswers.send")(function* (
       send: fresh.card.send,
     });
     yield* fresh.bind(card.widgetId);
+  });
+  if (asked._tag === "stale") {
+    yield* outcome("failed", asked.reason);
+    if (asked.fresh !== undefined) yield* again(asked.fresh);
     return;
   }
   yield* outcome("sending", null);
   const done = yield* connections.sendAsk(input.orgId, asked.askId);
   yield* outcome(done.state, done.reason);
+  if (done.fresh !== undefined) yield* again(done.fresh);
 });
 
 /** Runs once the tap committed, on its own; a failure is logged, and asking again makes it. */
