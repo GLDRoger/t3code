@@ -50,6 +50,7 @@ import {
   KinGithubWebhookStatus,
   KinOwnerTimeZone,
   KinOwnerTimeZoneGetInput,
+  KinOwnerTimeZoneRead,
 } from "./kinTriggers.ts";
 import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 
@@ -147,16 +148,16 @@ export const KinGithubWebhookRpcs = [
   }),
 ] as const;
 // The zone routines, deferrals, notices and due times use: any member reads it, the owner sets it.
-// Unset reads as UTC.
+// Unset reads as the host's zone, marked `fromHost`.
 const KinTimeZoneRpcs = [
   Rpc.make("kin.triggers.getTimeZone", {
     payload: KinOwnerTimeZoneGetInput,
-    success: KinOwnerTimeZone,
+    success: KinOwnerTimeZoneRead,
     error: KinError,
   }),
   Rpc.make("kin.triggers.setTimeZone", {
     payload: KinOwnerTimeZone,
-    success: KinOwnerTimeZone,
+    success: KinOwnerTimeZoneRead,
     error: KinError,
   }),
 ] as const;

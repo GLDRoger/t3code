@@ -99,12 +99,16 @@ const leadOptions = (
           settings: {
             ...confinement.auth,
             ...settings,
+            // Its folder is named after the host's account: a lead never sees it (G07).
+            autoMemoryEnabled: false,
+            autoDreamEnabled: false,
             env: { ...confinement.auth.env, ...settings?.env, ENABLE_TOOL_SEARCH: "false" },
           },
         }),
     env: {
       ...sessionEnvironment(env ?? confinement.environment),
       ENABLE_TOOL_SEARCH: "false",
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     },
   };
 };

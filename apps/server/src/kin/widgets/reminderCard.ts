@@ -2,22 +2,19 @@ import {
   KIN_REMINDER_CARD_ACTIONS,
   KinChatError,
   KinReminderCard,
-  KinTrigger,
   type KinReminderCardAction,
-  type KinOrgId,
   type KinWidget,
   kinReminderWidgetId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { DeferralSnapshot, deferralTriggerId } from "../triggers/deferrals.ts";
+import { ownerZone } from "../work/recordRows.ts";
 
 const decodeCard = Schema.decodeUnknownEffect(KinReminderCard);
-const decodeZone = Schema.decodeUnknownOption(KinTrigger.fields.timeZone);
 const decodeSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(DeferralSnapshot));
 const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(DeferralSnapshot));
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
@@ -25,14 +22,6 @@ const invalid = (message: string) => new KinChatError({ reason: "invalid_state",
 
 const isReminderAction = (actionId: string): actionId is KinReminderCardAction =>
   KIN_REMINDER_CARD_ACTIONS.some((action) => action === actionId);
-
-/** The owner's zone, for "tomorrow 9:00"; UTC before trigger settings exist. */
-const ownerZone = Effect.fn("KinReminderCard.ownerZone")(function* (orgId: KinOrgId) {
-  const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ timeZone: string }>`SELECT time_zone AS "timeZone"
-    FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;
-  return Option.getOrElse(decodeZone(row?.timeZone), () => "UTC");
-});
 
 /** Owner-local 9:00 on the day after `now`. */
 function tomorrowAtNine(now: number, timeZone: string): number {

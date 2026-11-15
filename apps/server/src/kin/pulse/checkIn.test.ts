@@ -8,6 +8,7 @@ import {
   type KinPulseOutsideLine,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -15,7 +16,8 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { looseOffsetMs, queueCheckIn } from "./checkIn.ts";
-import { onHostClock } from "./checkInSeeds.ts";
+import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { followOwnerZone, onHostClock } from "./checkInSeeds.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { nudge } from "./nudge.ts";
 import { type OutsideRead, type OutsideSource, poll } from "./outside.ts";
@@ -303,4 +305,68 @@ describe("pulse check-ins", () => {
       days: [0],
     });
   });
+  // G08: check-ins seeded while the zone was unset stayed on that clock after it was set.
+  it.effect("default check-ins follow the owner's zone once set; one he moved stays put", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* TestClock.setTime(MONDAY);
+      const host = KinSchedules.hostTimeZone();
+      const weekdays = [1, 2, 3, 4, 5];
+      const seededAt = (zone: string) => onHostClock("09:30", weekdays, zone, host, MONDAY);
+      // A loose check-in's native task starts its window five minutes early.
+      const fiveBefore = (at: string) => {
+        const minutes = Math.max(0, Number(at.slice(0, 2)) * 60 + Number(at.slice(3)) - 5);
+        return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+      };
+      for (const [slug, source, at] of [
+        ["morning", `kin-seed:check-ins:${orgId}`, seededAt("Pacific/Honolulu")],
+        ["afternoon", "chat-event", seededAt("Pacific/Honolulu")],
+      ] as const) {
+        const taskId = KinSchedules.scheduleTaskId(orgId, `checkin-${slug}`);
+        yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+            project_id, workspace_strategy_json, model_selection_json, runtime_mode,
+            interaction_mode, created_by, creation_source, created_at, updated_at,
+            last_run_status, run_count)
+          VALUES (${taskId}, ${slug}, 'Check in', 1, ${JSON.stringify({
+            type: "fixed_time",
+            timeOfDay: fiveBefore(at.at),
+            weekdays: at.days,
+          })}, 'project', '{}', '{}', 'approval-required', 'plan', 'system', 'server', ${stamp},
+            ${stamp}, 'never', 0)`;
+        yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+            source_event, said_by, audience, content_sha256, inbox_thread_id, created_at,
+            updated_at, loose_at, check_in)
+          VALUES (${taskId}, ${orgId}, ${`checkin-${slug}`}, ${chief}, ${`chat-${chief}`},
+            ${source}, ${owner}, 'owner_only', 'hash', 'inbox', 0, 0, ${at.at}, 1)`;
+      }
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+          evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+          quiet_hours_json)
+        VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
+      const saved: Array<KinSchedules.SaveInput> = [];
+      const schedules = KinSchedules.KinSchedules.of({
+        save: (input) => Effect.sync(() => void saved.push(input)),
+        cancel: () => Effect.void,
+        applyTaps: () => Effect.void,
+      });
+      yield* followOwnerZone(orgId, schedules);
+      assert.deepStrictEqual(
+        saved.map(({ scheduleId, every, existing, around }) => ({
+          scheduleId,
+          every,
+          existing,
+          around,
+        })),
+        [
+          {
+            scheduleId: KinMemoryItemId.make("checkin-morning"),
+            every: onHostClock("09:30", weekdays, "Asia/Kolkata", host, MONDAY),
+            existing: true,
+            around: true,
+          },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
 });

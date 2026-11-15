@@ -2,12 +2,9 @@ import {
   KinApprovalError,
   KinChatId,
   KinMessageId,
-  KinTrigger,
   type KinPendingAction,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -18,6 +15,7 @@ import {
   type KinKeyChange,
 } from "../approvals/ExecutionNotices.ts";
 import { CHIEF_OF_STAFF_DOMAIN } from "../lead/orgLeads.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { KinChatService } from "./KinChatService.ts";
 import { chatShared } from "./sharing.ts";
 
@@ -142,7 +140,6 @@ export const layer = Layer.effect(
 );
 
 const PLATFORM: Record<string, string> = { ios: "iOS", android: "Android" };
-const decodeZone = Schema.decodeUnknownOption(KinTrigger.fields.timeZone);
 
 /**
  * A phone's reported name, safe inside a quoted notice and a push: letters, digits, spaces,
@@ -211,11 +208,9 @@ export const keyNoticesLayer = Layer.effect(
     return KinKeyNotices.of({
       changed: Effect.fn("KinKeyNotices.changed")(
         function* (input) {
-          const [zone] = yield* sql<{ timeZone: string }>`SELECT time_zone AS "timeZone"
-            FROM kin_trigger_settings WHERE org_id = ${input.orgId} ORDER BY org_id`;
           const body = keyNoticeBody(
             input,
-            Option.getOrElse(decodeZone(zone?.timeZone), () => "UTC"),
+            yield* ownerZone(input.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           );
           const messageId = KinMessageId.make(`kin-key-${input.change}:${input.thumbprint}`);
           const chatId = yield* ownerChat(input);

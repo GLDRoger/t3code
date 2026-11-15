@@ -10,6 +10,7 @@ import {
   type KinMessage,
   type KinMessageRef,
   KinMessageId,
+  KinRoleTags,
   type KinWakeupId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -27,7 +28,7 @@ import { buildTeamIndex } from "../memory/buildIndex.ts";
 import { reaches, reaching, shareable, storedLabels } from "../memory/sensitivity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { PRIVATE_DOC, sensitiveDocs } from "../chat/privateDocs.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { accessSql, ownerLevel } from "../people/KinAccess.ts";
 import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
 import { historyFloor } from "../chat/sharing.ts";
 
@@ -674,23 +675,46 @@ export class KinLeadPrompt extends Context.Service<
           else if (event.provenance._tag === "agent") passedOn = true;
         }
         if (asked.size === 0) return passedOn ? PASSED_ON_SPEAKER : undefined;
-        const people = new Map(
-          (yield* chat.listPeople({ orgId: events[0]!.orgId })).map((row) => [
-            row.personId as string,
-            Array.from(row.displayName.trim()).slice(0, 80).join(""),
-          ]),
-        );
+        const rows = yield* sql<{
+          personId: string;
+          name: string;
+          access: string;
+          tags: string | null;
+          zone: string | null;
+        }>`SELECT p.person_id AS "personId", p.display_name AS name,
+            ${sql.literal(accessSql("p"))} AS access, p.role_tags_json AS tags, p.time_zone AS zone
+          FROM kin_people p WHERE p.org_id = ${events[0]!.orgId} ORDER BY p.person_id`;
+        const people = new Map(rows.map((row) => [row.personId, row]));
+        const nameOf = (personId: string | undefined) =>
+          Array.from((people.get(personId ?? "")?.name ?? "").trim())
+            .slice(0, 80)
+            .join("");
+        const ownerName = nameOf(ownerPersonId);
+        const ownerUnnamed = ownerName === "" || ownerName === UNSET_OWNER_NAME;
         const named = [...asked].toSorted().map((personId) => {
-          const name = people.get(personId) ?? "";
-          if (personId !== ownerPersonId) return `${encoded(name || "a teammate")} (a teammate)`;
-          return name === "" || name === UNSET_OWNER_NAME
-            ? "the owner, whose name Kin doesn't know yet"
-            : `the owner, ${encoded(name)}`;
+          if (personId === ownerPersonId)
+            return ownerUnnamed
+              ? "the owner, whose name Kin doesn't know yet"
+              : `the owner, ${encoded(ownerName)}`;
+          const row = people.get(personId);
+          const role = Option.getOrUndefined(decodeRoleTags(row?.tags ?? "[]")) ?? [];
+          const about = [
+            row?.access === "co_owner" ? "a co-owner" : "a teammate",
+            ...(role.length === 0 ? [] : [`role ${encoded(role.join(", "))}`]),
+            ...(row?.zone === null || row?.zone === undefined
+              ? []
+              : [`their times are in ${encoded(row.zone)}`]),
+          ].join("; ");
+          return `${encoded(nameOf(personId) || "a teammate")} (${about})`;
         });
-        const ownerUnnamed = named.some((line) => line.includes("doesn't know yet"));
-        return `You are talking with ${named.join(" and ")}. Address them as "you", never by name in the third person.${
-          ownerUnnamed ? OWNER_NAME_UNSET : ""
-        }`;
+        const owner = asked.has(ownerPersonId ?? "")
+          ? ""
+          : ownerUnnamed
+            ? " Kin doesn't know the owner's name yet: say \"the owner\"."
+            : ` The owner is ${encoded(ownerName)}.`;
+        return `You are talking with ${named.join(" and ")}. Address them as "you", never by name in the third person.${owner}${
+          ownerUnnamed && owner === "" ? OWNER_NAME_UNSET : ""
+        } Name people only as Kin names them here, never from a file path, account or machine name.`;
       });
       const build = Effect.fn("KinLeadPrompt.build")(function* (input: KinLeadPromptInput) {
         const { orgId, agentId, memoryHead } = input;
@@ -1235,6 +1259,7 @@ export class KinLeadPrompt extends Context.Service<
 }
 
 const fallbackLeadName = "Agent";
+const decodeRoleTags = Schema.decodeUnknownOption(Schema.fromJsonString(KinRoleTags));
 /** The owner's display name until they set one (`KIN_OWNER_DISPLAY_NAME`'s default). */
 const UNSET_OWNER_NAME = "Owner";
 const OWNER_NAME_UNSET =
