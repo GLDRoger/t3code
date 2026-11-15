@@ -349,13 +349,6 @@ function KinClientBody(
             label: KIN_CLIENTS.addTheyOwe,
             side: "theirs",
           })}
-      <KinPlaceLists
-        environmentId={environmentId}
-        orgId={orgId}
-        place={{ party: { key: view.key, title: view.name } }}
-        seq={props.stale ? null : page.seq}
-        directory={directory}
-      />
       <ListSection title={KIN_CLIENTS.projects}>
         {view.projects.length === 0 ? (
           <ListRowLayout label={KIN_CLIENTS.noProjects} disabled />
@@ -413,6 +406,13 @@ function KinClientBody(
           />
         ) : null}
       </ListSection>
+      <KinPlaceLists
+        environmentId={environmentId}
+        orgId={orgId}
+        place={{ party: { key: view.key, title: view.name } }}
+        seq={props.stale ? null : page.seq}
+        directory={directory}
+      />
       {unopened === null ? null : <Notice message={unopened} onDismiss={() => setUnopened(null)} />}
       <KinDocsUnder {...target} names={names} under={{ party: props.clientKey }} />
       <View className="gap-2">

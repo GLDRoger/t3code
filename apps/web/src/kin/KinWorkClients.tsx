@@ -617,15 +617,6 @@ function ClientPage(
               KIN_CLIENTS.nothingOwing,
               addTask("theirs", KIN_CLIENTS.addTheyOwe),
             )}
-        <KinWorkPlaceLists
-          environmentId={environmentId}
-          orgId={orgId}
-          place={{ party: { key: view.key, title: view.name } }}
-          seq={props.stale ? null : page.seq}
-          directory={props.directory}
-          onOpenList={props.onOpenList}
-          onOpenKey={props.onOpenTask}
-        />
         <KinWorkSection
           title={KIN_CLIENTS.projects}
           action={
@@ -687,6 +678,15 @@ function ClientPage(
             </>
           )}
         </KinWorkSection>
+        <KinWorkPlaceLists
+          environmentId={environmentId}
+          orgId={orgId}
+          place={{ party: { key: view.key, title: view.name } }}
+          seq={props.stale ? null : page.seq}
+          directory={props.directory}
+          onOpenList={props.onOpenList}
+          onOpenKey={props.onOpenTask}
+        />
         <KinDocsUnder
           environmentId={props.environmentId}
           orgId={props.orgId}
