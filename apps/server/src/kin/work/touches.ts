@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
+import { playbookThreshold } from "./playbooks.ts";
 import { iso } from "./recordRows.ts";
 
 /**
@@ -20,10 +21,7 @@ import { iso } from "./recordRows.ts";
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** No logged contact and no open project for this long: gone cold. */
-const COLD_DAYS = 45;
-/** During an open project, this long without contact is quiet. */
-const QUIET_DAYS = 10;
+const HOUR_MS = 60 * 60 * 1000;
 
 type Sql = SqlClient.SqlClient;
 type TouchSql = {
@@ -197,21 +195,19 @@ export type ClientSense = {
   readonly days: number;
   /** What makes this one episode: a new contact starts another. */
   readonly episode: string;
+  /** Hours the oldest thing we owe them is past due. */
   readonly late?: number;
 };
 
 /**
- * The client senses, for the pulse: cold after `COLD_DAYS` without contact and no open project,
- * quiet after `QUIET_DAYS` during one, waiting on us while something we owe them is late. Days
- * count from the client's creation when there has never been contact.
+ * The client senses, for the pulse, on each client's playbook values: cold after
+ * `client_cold_after_days` without contact and no open project, quiet after `client_checkin_days`
+ * during one, waiting on us once something we owe them is `reply_owed_hours` past due. Days count
+ * from the client's creation when there has never been contact.
  */
 export const clientSenses = Effect.fn("KinTouches.senses")(function* (
   orgId: KinOrgId,
   now: number,
-  thresholds: { readonly coldDays: number; readonly quietDays: number } = {
-    coldDays: COLD_DAYS,
-    quietDays: QUIET_DAYS,
-  },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const clients = yield* sql<{
@@ -220,14 +216,14 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
     title: string;
     createdAt: number;
     openProjects: number;
-    late: number;
+    dueAt: number | null;
   }>`SELECT c.record_id AS "partyId", c.key, c.title, c.created_at AS "createdAt",
       (SELECT COUNT(*) FROM kin_records p WHERE p.org_id = c.org_id
         AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'open')
         AS "openProjects",
-      (SELECT COUNT(*) FROM kin_records w WHERE w.org_id = c.org_id AND w.register_id = 'work'
-        AND w.party_id = c.record_id AND w.side = 'ours'
-        AND w.state IN ('open', 'doing', 'waiting') AND w.due_at < ${now}) AS late
+      (SELECT MIN(w.due_at) FROM kin_records w WHERE w.org_id = c.org_id
+        AND w.register_id = 'work' AND w.party_id = c.record_id AND w.side = 'ours'
+        AND w.state IN ('open', 'doing', 'waiting') AND w.due_at < ${now}) AS "dueAt"
     FROM kin_records c
     WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.state = 'open'
       AND COALESCE(c.category, 'client') = 'client'
@@ -237,7 +233,8 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
     clients.map((client) => client.partyId),
     now,
   );
-  return clients.flatMap((client): ReadonlyArray<ClientSense> => {
+  const senses: Array<ClientSense> = [];
+  for (const client of clients) {
     const lastAt = last.get(client.partyId) ?? null;
     const days = daysSince(lastAt ?? client.createdAt, now);
     const base = {
@@ -248,20 +245,21 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
       days,
       episode: `${client.key}:${lastAt ?? "never"}`,
     };
-    const senses: Array<ClientSense> = [];
-    if (client.openProjects > 0 && days >= thresholds.quietDays)
+    const limit = (key: "client_checkin_days" | "client_cold_after_days" | "reply_owed_hours") =>
+      playbookThreshold(orgId, key, client.partyId).pipe(Effect.map((one) => one.value));
+    if (client.openProjects > 0 && days >= (yield* limit("client_checkin_days")))
       senses.push({ ...base, sense: "client_quiet" });
-    if (client.openProjects === 0 && days >= thresholds.coldDays)
+    if (client.openProjects === 0 && days >= (yield* limit("client_cold_after_days")))
       senses.push({ ...base, sense: "client_cold" });
-    if (client.late > 0)
+    if (client.dueAt !== null && now - client.dueAt >= (yield* limit("reply_owed_hours")) * HOUR_MS)
       senses.push({
         ...base,
         sense: "client_waiting_on_us",
-        late: client.late,
-        episode: `${client.key}:late`,
+        late: Math.floor((now - client.dueAt) / HOUR_MS),
+        episode: `${client.key}:late:${client.dueAt}`,
       });
-    return senses;
-  });
+  }
+  return senses;
 });
 
 /**

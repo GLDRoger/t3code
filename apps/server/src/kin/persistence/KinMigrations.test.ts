@@ -514,6 +514,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
           { name: "idx_kin_chats_org_chat" },
+          { name: "idx_kin_client_touches_party" },
           { name: "idx_kin_connection_calls_connection" },
           { name: "idx_kin_connection_calls_wakeup" },
           { name: "idx_kin_doc_versions_file" },
@@ -1330,7 +1331,7 @@ describe("Kin migrations", () => {
           [133, "MoneyBudgets"],
           [134, "ClientTouches"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-60), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-61), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -2162,7 +2163,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 133");
+      assert.include(String(exit), "below the latest applied migration 134");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

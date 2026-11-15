@@ -1006,8 +1006,8 @@ it.effect(
           Effect.flatMap((now) => Touches.clientSenses(orgId, now)),
           Effect.map((all) => all.filter((one) => one.key === key).map((one) => one.sense)),
         );
-      // Its project is open: quiet after ten days with nothing logged, not on the ninth.
-      yield* TestClock.adjust(9 * DAY);
+      // Its project is open: quiet after the playbook's 14 days with nothing logged, not on day 13.
+      yield* TestClock.adjust(13 * DAY);
       assert.notInclude(yield* senses("C-1"), "client_quiet");
       yield* TestClock.adjust(DAY);
       assert.include(yield* senses("C-1"), "client_quiet");
@@ -1067,9 +1067,9 @@ it.effect(
         "payment",
       ]);
 
-      // With no open project, cold at 45 days: one episode per last contact.
+      // With no open project, cold at the playbook's 30 days: one episode per last contact.
       yield* sql`UPDATE kin_records SET state = 'done' WHERE register_id = 'projects'`;
-      yield* TestClock.adjust(44 * DAY);
+      yield* TestClock.adjust(29 * DAY);
       assert.notInclude(yield* senses("C-1"), "client_cold");
       yield* TestClock.adjust(DAY);
       const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
