@@ -739,7 +739,12 @@ export const KIN_WORK_SHARE = {
   failed: "Couldn't change who sees this. Try again.",
 };
 
-const CATEGORY_LABEL = { task: null, issue: "Issue", obligation: "Commitment" } as const;
+const CATEGORY_LABEL = {
+  task: null,
+  issue: "Issue",
+  obligation: "Commitment",
+  meeting: "Meeting",
+} as const;
 
 export const kinWorkActorName = (actor: KinWorkActor, names: KinWorkNames) =>
   actor._tag === "system" ? "Kin" : kinWorkName(actor, names);
@@ -757,6 +762,9 @@ const principalFromText = (text: string | null): KinWorkPrincipal | null => {
       ? ({ _tag: "agent", agentId: id } as KinWorkPrincipal)
       : null;
 };
+
+/** "today", "yesterday" or "15 Nov" for an ISO time, on this device's calendar. */
+export const kinWorkDayOfTime = (iso: string, now: Date) => dayFromText(iso, now, null);
 
 /** A due time from the history, as the day it is where the owner is, like the due date itself. */
 const dayFromText = (text: string | null, now: Date, zone: string | null) => {

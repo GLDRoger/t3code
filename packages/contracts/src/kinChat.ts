@@ -100,6 +100,7 @@ export const KinChat = Schema.Struct({
   chatId: KinChatId,
   kind: KinChatKind,
   title: Schema.NullOr(KinTrimmedText),
+  // `KIN_COMPANY_CHAT_TEAM_ID` on the company chat while it is on.
   teamId: Schema.NullOr(TrimmedNonEmptyString),
   lastSeq: NonNegativeInt,
   lastMessageAt: Schema.NullOr(IsoDateTime),
@@ -282,6 +283,38 @@ export const KIN_CHOICE_CARD_ACTION = "choose";
  * `updatedAt`): the same day-long window after which Kin stops waking a lead for old messages.
  */
 export const KIN_CHOICE_CARD_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * What an "Ask me" call to a connection would send, in full, as the owner's Confirm will send
+ * it. `outcome` is set by the server after the tap: sending, then sent or failed with a reason.
+ */
+export const KinSendCard = Schema.Struct({
+  service: KinTrimmedText.check(Schema.isMaxLength(80)),
+  action: Schema.Literals(["email", "reply", "event", "call"]),
+  /** The signed-in account it goes from, when known. */
+  from: Schema.NullOr(KinText.check(Schema.isMaxLength(320))),
+  to: Schema.Array(KinText.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+  cc: Schema.Array(KinText.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+  /** The subject, or an event's title, or the tool for a plain call. */
+  subject: KinText.check(Schema.isMaxLength(400)),
+  /** The whole body, an event's time and notes, or a call's arguments. */
+  body: KinText.check(Schema.isMaxLength(24_000)),
+  attachments: Schema.Array(
+    Schema.Struct({
+      name: KinTrimmedText.check(Schema.isMaxLength(200)),
+      /** "Invoice INV/26-27/004 · ₹1,18,000.00", read by the server from the record. */
+      label: Schema.NullOr(KinText.check(Schema.isMaxLength(200))),
+      bytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    }),
+  ).check(Schema.isMaxLength(10)),
+  outcome: Schema.NullOr(
+    Schema.Struct({
+      state: Schema.Literals(["sending", "sent", "failed"]),
+      reason: Schema.NullOr(KinText.check(Schema.isMaxLength(500))),
+      at: IsoDateTime,
+    }),
+  ),
+});
+export type KinSendCard = typeof KinSendCard.Type;
 export const KinChoiceCardState = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
   detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
@@ -293,6 +326,8 @@ export const KinChoiceCardState = Schema.Struct({
       mimeType: KinTrimmedText.check(Schema.isMaxLength(100)),
     }),
   ),
+  /** Set on a card that asks to send something out of the company: exactly what goes. */
+  send: Schema.optionalKey(KinSendCard),
   // The first answer settles the card.
   answer: Schema.NullOr(
     Schema.Struct({
@@ -534,6 +569,16 @@ export type KinGroupRenameInput = typeof KinGroupRenameInput.Type;
 export const KinGroupDeleteInput = Schema.Struct({ chatId: KinChatId });
 export type KinGroupDeleteInput = typeof KinGroupDeleteInput.Type;
 export const KinGroupDone = Schema.Struct({});
+/** `KinChat.teamId` of the company chat while it is on: the one group everyone on the team is in. */
+export const KIN_COMPANY_CHAT_TEAM_ID = "company";
+/** Turns the company chat on with this agent answering by default, or off with null. Owner only. */
+export const KinGroupSetCompanyInput = Schema.Struct({
+  orgId: KinOrgId,
+  leadAgentId: Schema.NullOr(KinAgentId),
+});
+export type KinGroupSetCompanyInput = typeof KinGroupSetCompanyInput.Type;
+export const KinGroupSetCompanyResult = Schema.Struct({ chat: Schema.NullOr(KinChat) });
+export type KinGroupSetCompanyResult = typeof KinGroupSetCompanyResult.Type;
 export const KinChatSubscribeInput = Schema.Struct({
   chatId: KinChatId,
   afterSeq: Schema.optional(NonNegativeInt),
@@ -782,6 +827,11 @@ export const KinGroupRpcs = [
   Rpc.make("kin.groups.delete", {
     payload: KinGroupDeleteInput,
     success: KinGroupDone,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.setCompany", {
+    payload: KinGroupSetCompanyInput,
+    success: KinGroupSetCompanyResult,
     error: KinGroupError,
   }),
 ] as const;

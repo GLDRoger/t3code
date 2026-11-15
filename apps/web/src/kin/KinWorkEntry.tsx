@@ -76,6 +76,7 @@ import {
   KinQuoteActions,
   KinInvoiceDocuments,
   KinInvoiceFigures,
+  KinInvoiceSent,
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
@@ -605,6 +606,7 @@ export function KinListEntry(
             <>
               <KinInvoiceCurrency {...props} item={item} rates={rates} settled={invoice.settled} />
               <KinInvoiceFigures invoice={invoice} />
+              <KinInvoiceSent invoice={invoice} />
             </>
           ) : entry.balance === null ? null : (
             <dl className="grid grid-cols-2 gap-x-6 text-sm">

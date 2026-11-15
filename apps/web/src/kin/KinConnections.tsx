@@ -8,9 +8,11 @@ import {
   kinConnectionChange,
   kinConnectionDraft,
   kinConnectionStatus,
+  kinServiceNote,
   kinSuggestedModes,
   kinToolRows,
-  kinToolSwitch,
+  kinToolMark,
+  kinToolModeLabel,
   type KinConnectionDraft,
   type KinConnectionTone,
   type KinToolRow,
@@ -21,6 +23,7 @@ import {
   type KinConnection,
   type KinConnectionId,
   type KinConnectionService,
+  type KinConnectionToolMode,
   type KinOrgId,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -61,11 +64,13 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { Switch } from "../components/ui/switch";
+import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
+import { GoogleSetup, openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
 import { useKinHost } from "./useKinHost";
 import { useNowMinuteMs } from "./useKinClock";
 
@@ -108,10 +113,18 @@ function ConnectionsList(props: Target) {
   const [open, setOpen] = useState<KinConnectionId | null>(null);
   const add = useAtomCommand(kinClient.connectionAdd, { reportFailure: false });
   const remove = useAtomCommand(kinClient.connectionRemove, { reportFailure: false });
+  const signInStart = useAtomCommand(kinClient.connectionSignInStart, { reportFailure: false });
+  const signInFinish = useAtomCommand(kinClient.connectionSignInFinish, { reportFailure: false });
+  const setSignInClient = useAtomCommand(kinClient.connectionSetSignInClient, {
+    reportFailure: false,
+  });
   const actions = createKinConnectionActions({
     orgId,
     add: (input) => add({ environmentId, input }),
     remove: (input) => remove({ environmentId, input }),
+    signInStart: (input) => signInStart({ environmentId, input }),
+    signInFinish: (input) => signInFinish({ environmentId, input }),
+    setSignInClient: (input) => setSignInClient({ environmentId, input }),
     refresh: reload,
   });
   const connections = view?.connections ?? [];
@@ -123,6 +136,8 @@ function ConnectionsList(props: Target) {
         environmentId={environmentId}
         orgId={orgId}
         connection={openConnection}
+        actions={actions}
+        signInAddress={view?.signInAddress ?? ""}
         onRemove={async () => {
           const outcome = await actions.remove(openConnection.connectionId);
           if (outcome.ok) setOpen(null);
@@ -194,6 +209,7 @@ function ConnectionsList(props: Target) {
       {adding && view !== null ? (
         <AddDialog
           services={view.services}
+          signInAddress={view.signInAddress}
           actions={actions}
           onClose={() => setAdding(false)}
           onAdded={(id) => {
@@ -206,8 +222,11 @@ function ConnectionsList(props: Target) {
   );
 }
 
+type Waiting = { readonly host: string; readonly url: string; readonly opened: boolean };
+
 function AddDialog(props: {
   readonly services: ReadonlyArray<KinConnectionService>;
+  readonly signInAddress: string;
   readonly actions: ReturnType<typeof createKinConnectionActions>;
   readonly onClose: () => void;
   readonly onAdded: (id: KinConnectionId) => void;
@@ -217,14 +236,41 @@ function AddDialog(props: {
   const [draft, setDraft] = useState<KinConnectionDraft>(() => kinConnectionDraft(first));
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const ids = { service: useId(), name: useId(), url: useId(), key: useId() };
+  const [waiting, setWaiting] = useState<Waiting | null>(null);
+  const [changingClient, setChangingClient] = useState(false);
+  const ids = {
+    service: useId(),
+    name: useId(),
+    url: useId(),
+    key: useId(),
+    org: useId(),
+    secretUrl: useId(),
+  };
   const service = services.find((entry) => entry.service === draft.service);
   const custom = draft.service === "custom";
+  const signIn = service?.connect === "sign_in";
+  const setup = signIn && (service?.needsSetup === true || changingClient);
 
   const submit = async () => {
-    if (busy) return;
+    if (busy || setup) return;
     setBusy(true);
     setProblem(null);
+    if (signIn) {
+      const popup = openSignInWindow();
+      const started = await props.actions.signInNew(draft, props.services, "web");
+      setBusy(false);
+      if (!started.ok) {
+        popup?.close();
+        return setProblem(started.problem);
+      }
+      if (popup !== null) popup.location.href = started.value.authorizationUrl;
+      setWaiting({
+        host: started.value.host,
+        url: started.value.authorizationUrl,
+        opened: popup !== null,
+      });
+      return;
+    }
     const outcome = await props.actions.add(draft, props.services);
     setBusy(false);
     if (outcome.ok) props.onAdded(outcome.value);
@@ -261,6 +307,8 @@ function AddDialog(props: {
                     const picked = services.find((entry) => entry.service === value);
                     if (picked === undefined || !picked.available) return;
                     setProblem(null);
+                    setWaiting(null);
+                    setChangingClient(false);
                     setDraft({ ...kinConnectionDraft(picked.service), key: draft.key });
                   }}
                 >
@@ -274,7 +322,9 @@ function AddDialog(props: {
                         value={entry.service}
                         disabled={!entry.available}
                       >
-                        {entry.available ? entry.label : `${entry.label} · ${COPY.soon}`}
+                        {kinServiceNote(entry) === undefined
+                          ? entry.label
+                          : `${entry.label} · ${kinServiceNote(entry)}`}
                       </SelectItem>
                     ))}
                   </SelectPopup>
@@ -282,6 +332,13 @@ function AddDialog(props: {
                 {service?.setup == null ? null : (
                   <p className="text-xs text-muted-foreground">{service.setup}</p>
                 )}
+                {signIn && !setup && waiting === null && service !== undefined ? (
+                  <p className="text-xs text-muted-foreground">
+                    {COPY.signInOpens(
+                      service.service === "google" ? "accounts.google.com" : service.label,
+                    )}
+                  </p>
+                ) : null}
               </div>
               {custom ? (
                 <div className="flex flex-col gap-1.5">
@@ -308,21 +365,88 @@ function AddDialog(props: {
                   onChange={(event) => setDraft({ ...draft, label: event.target.value })}
                 />
               </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={ids.key}>{COPY.keyLabel}</Label>
-                <Input
-                  id={ids.key}
-                  type="password"
-                  value={draft.key}
-                  placeholder={COPY.keyPlaceholder}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(event) => setDraft({ ...draft, key: event.target.value })}
+              {signIn ? null : (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={ids.key}>{COPY.keyLabel}</Label>
+                  <Input
+                    id={ids.key}
+                    type="password"
+                    value={draft.key}
+                    placeholder={COPY.keyPlaceholder}
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) => setDraft({ ...draft, key: event.target.value })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {custom ? `${COPY.keyOptional} ${COPY.keyHint}` : COPY.keyHint}
+                  </p>
+                </div>
+              )}
+              {service?.fields.includes("org") === true ? (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={ids.org}>{COPY.orgLabel}</Label>
+                  <Input
+                    id={ids.org}
+                    value={draft.org}
+                    placeholder={COPY.orgPlaceholder}
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    onChange={(event) => setDraft({ ...draft, org: event.target.value })}
+                  />
+                </div>
+              ) : null}
+              {service?.fields.includes("secretUrl") === true ? (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={ids.secretUrl}>{COPY.secretUrlLabel}</Label>
+                  <Input
+                    id={ids.secretUrl}
+                    type="password"
+                    value={draft.secretUrl}
+                    placeholder={COPY.secretUrlPlaceholder}
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) => setDraft({ ...draft, secretUrl: event.target.value })}
+                  />
+                  <p className="text-xs text-muted-foreground">{COPY.secretUrlHint}</p>
+                </div>
+              ) : null}
+              {setup ? (
+                <GoogleSetup
+                  signInAddress={props.signInAddress}
+                  disabled={busy}
+                  onSave={async (clientId, clientSecret) => {
+                    const saved = await props.actions.setGoogleClient(clientId, clientSecret);
+                    if (!saved.ok) return saved.problem;
+                    setChangingClient(false);
+                    return null;
+                  }}
                 />
-                <p className="text-xs text-muted-foreground">
-                  {custom ? `${COPY.keyOptional} ${COPY.keyHint}` : COPY.keyHint}
-                </p>
-              </div>
+              ) : signIn && service?.service === "google" ? (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  className="self-start"
+                  onClick={() => setChangingClient(true)}
+                >
+                  {COPY.changeClient}
+                </Button>
+              ) : null}
+              {waiting === null ? null : (
+                <SignInWaiting
+                  host={waiting.host}
+                  authorizationUrl={waiting.url}
+                  signInAddress={props.signInAddress}
+                  opened={waiting.opened}
+                  onFinish={async (response) => {
+                    const done = await props.actions.signInFinish(response);
+                    if (!done.ok) return done.problem;
+                    props.onAdded(done.value);
+                    return null;
+                  }}
+                />
+              )}
               {problem === null ? null : (
                 <Alert variant="error">
                   <AlertDescription>{problem}</AlertDescription>
@@ -334,9 +458,11 @@ function AddDialog(props: {
             <Button type="button" variant="outline" disabled={busy} onClick={props.onClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={busy} aria-busy={busy}>
-              {busy ? COPY.connecting : COPY.connect}
-            </Button>
+            {setup || waiting !== null ? null : (
+              <Button type="submit" disabled={busy} aria-busy={busy}>
+                {busy ? COPY.connecting : signIn ? COPY.signIn : COPY.connect}
+              </Button>
+            )}
           </DialogFooter>
         </form>
       </DialogPopup>
@@ -350,10 +476,13 @@ function ConnectionRecord(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly connection: KinConnection;
+  readonly actions: ReturnType<typeof createKinConnectionActions>;
+  readonly signInAddress: string;
   readonly onRemove: () => Promise<string | null>;
   readonly onClose: () => void;
 }) {
   const { environmentId, orgId } = props;
+  const [waiting, setWaiting] = useState<Waiting | null>(null);
   const ref = { orgId, connectionId: props.connection.connectionId };
   const detailAtom = kinClient.connection({ environmentId, input: ref });
   const detail = Option.getOrNull(AsyncResult.value(useAtomValue(detailAtom)));
@@ -395,9 +524,24 @@ function ConnectionRecord(props: {
     reload();
     setProblem(failed);
   };
-  const switchTool = (row: KinToolRow, on: boolean) =>
+  const signInAgain = async () => {
+    setProblem(null);
+    const popup = openSignInWindow();
+    const started = await props.actions.signInAgain(connection.connectionId, "web");
+    if (!started.ok) {
+      popup?.close();
+      return setProblem(started.problem);
+    }
+    if (popup !== null) popup.location.href = started.value.authorizationUrl;
+    setWaiting({
+      host: started.value.host,
+      url: started.value.authorizationUrl,
+      opened: popup !== null,
+    });
+  };
+  const markTool = (row: KinToolRow, mode: KinConnectionToolMode) =>
     run(`tool:${row.name}`, "change that tool", () =>
-      setModes({ environmentId, input: { ...ref, modes: kinToolSwitch(row, on) } }),
+      setModes({ environmentId, input: { ...ref, modes: kinToolMark(row, mode) } }),
     );
 
   return (
@@ -412,7 +556,11 @@ function ConnectionRecord(props: {
             <h2 className="text-base font-semibold text-foreground">{connection.label}</h2>
             <Badge variant={TONE_BADGE[status.tone]}>{status.label}</Badge>
           </div>
-          <p className="text-xs text-muted-foreground">{connection.urlHost}</p>
+          <p className="text-xs text-muted-foreground">
+            {connection.accountLabel === null
+              ? connection.urlHost
+              : `${connection.accountLabel} · ${connection.urlHost}`}
+          </p>
         </div>
         {status.tone === "error" || status.tone === "attention" || connection.paused ? (
           <Alert
@@ -427,6 +575,33 @@ function ConnectionRecord(props: {
           <Alert variant="error">
             <AlertDescription role="alert">{problem}</AlertDescription>
           </Alert>
+        )}
+        {connection.auth === "oauth" &&
+        (connection.state === "needs_sign_in" || connection.needsSignInToSend === true) &&
+        waiting === null ? (
+          <Button
+            size="sm"
+            className="self-start"
+            disabled={busy !== null}
+            onClick={() => void signInAgain()}
+          >
+            {COPY.signInAgain}
+          </Button>
+        ) : null}
+        {waiting === null ? null : (
+          <SignInWaiting
+            host={waiting.host}
+            authorizationUrl={waiting.url}
+            signInAddress={props.signInAddress}
+            opened={waiting.opened}
+            onFinish={async (response) => {
+              const done = await props.actions.signInFinish(response);
+              if (!done.ok) return done.problem;
+              setWaiting(null);
+              reload();
+              return null;
+            }}
+          />
         )}
 
         <Section
@@ -491,7 +666,7 @@ function ConnectionRecord(props: {
                   key={row.name}
                   row={row}
                   disabled={busy !== null}
-                  onSwitch={(on) => void switchTool(row, on)}
+                  onMark={(mode) => void markTool(row, mode)}
                   onAccept={() =>
                     void run(`accept:${row.name}`, "allow the new version", () =>
                       accept({
@@ -569,6 +744,16 @@ function ConnectionRecord(props: {
                 {COPY.replaceKey}
               </Button>
             ) : null}
+            {connection.auth === "oauth" && connection.state !== "needs_sign_in" ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy !== null || waiting !== null}
+                onClick={() => void signInAgain()}
+              >
+                {COPY.signInAgain}
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant="outline"
@@ -635,7 +820,7 @@ function ConnectionRecord(props: {
 function ToolItem(props: {
   readonly row: KinToolRow;
   readonly disabled: boolean;
-  readonly onSwitch: (on: boolean) => void;
+  readonly onMark: (mode: KinConnectionToolMode) => void;
   readonly onAccept: () => void;
 }) {
   const { row } = props;
@@ -651,17 +836,28 @@ function ToolItem(props: {
             <p className="line-clamp-3 text-xs text-muted-foreground">{row.description}</p>
           )}
           <div className="flex flex-wrap gap-1">
+            {row.alwaysAsk ? <Badge variant="outline">{COPY.alwaysAsk}</Badge> : null}
             {row.openWeb ? <Badge variant="outline">{COPY.openWeb}</Badge> : null}
             {row.state === "changed" ? <Badge variant="warning">{COPY.changedTitle}</Badge> : null}
           </div>
         </div>
-        <Switch
+        <ToggleGroup
           id={id}
-          aria-label={`${row.title}: ${row.on ? "Read" : "Off"}`}
-          checked={row.on}
+          aria-label={`${row.title}: ${kinToolModeLabel(row.mode)}`}
+          className="shrink-0"
+          value={[row.mode]}
           disabled={props.disabled}
-          onCheckedChange={props.onSwitch}
-        />
+          onValueChange={(next) => {
+            const mode = row.modes.find((one) => one === next[0]);
+            if (mode !== undefined && mode !== row.mode) props.onMark(mode);
+          }}
+        >
+          {row.modes.map((mode) => (
+            <Toggle key={mode} value={mode}>
+              {kinToolModeLabel(mode)}
+            </Toggle>
+          ))}
+        </ToggleGroup>
       </div>
       {row.change === null ? null : (
         <div className="flex flex-col gap-2 rounded-md bg-muted/40 p-3 text-xs">

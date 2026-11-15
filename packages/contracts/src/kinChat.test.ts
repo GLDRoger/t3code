@@ -142,6 +142,17 @@ const choiceOptions = [
 ];
 const choice = { question: "Ship today?", detail: null, options: choiceOptions, answer: null };
 const send = { chatId: "chat-1", clientMessageId: "client-1", body: "Hello" };
+const sendCard = {
+  service: "Gmail",
+  action: "email",
+  from: "owner@invented.example",
+  to: ["ana@client.example"],
+  cc: [],
+  subject: "Invoice",
+  body: "Attached.",
+  attachments: [{ name: "INV-1.pdf", label: "Invoice INV-1", bytes: 1200 }],
+  outcome: null,
+};
 
 type SchemaName = {
   [K in keyof typeof Kin]: (typeof Kin)[K] extends Schema.Top ? K : never;
@@ -172,8 +183,13 @@ const samples = {
   KinReactionEmoji: Kin.KinReactionEmoji.literals,
   KinReaction: [reaction, { ...reaction, emoji: "❤️", removedAt: at }],
   KinChoiceOption: [...choiceOptions, { optionId: "later", label: "Later" }],
+  KinSendCard: [
+    sendCard,
+    { ...sendCard, outcome: { state: "failed", reason: "Google refused.", at } },
+  ],
   KinChoiceCardState: [
     choice,
+    { ...choice, send: sendCard },
     {
       ...choice,
       detail: "Two PRs are open.",
@@ -296,6 +312,11 @@ const samples = {
   KinGroupRenameInput: [{ chatId: "chat-1", title: "Launch week" }],
   KinGroupDeleteInput: [{ chatId: "chat-1" }],
   KinGroupDone: [{}],
+  KinGroupSetCompanyInput: [
+    { orgId: "org-1", leadAgentId: "agent-1" },
+    { orgId: "org-1", leadAgentId: null },
+  ],
+  KinGroupSetCompanyResult: [{ chat: null }],
   KinChatSubscribeInput: [
     { chatId: "chat-1" },
     { chatId: "chat-1", afterSeq: 0 },

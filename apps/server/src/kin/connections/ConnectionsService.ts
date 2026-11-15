@@ -1,7 +1,9 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- random ids for rows and secret names.
 import * as NodeCrypto from "node:crypto";
 import {
+  KinAgentId,
   KinChatError,
+  KinChatId,
   KinConnectionId,
   type KinConnectionAcceptInput,
   type KinConnectionAddInput,
@@ -10,8 +12,13 @@ import {
   type KinConnectionCallsInput,
   type KinConnectionCallStatus,
   type KinConnectionDetail,
+  type KinConnectionPreset,
   type KinConnectionRef,
   type KinConnectionSetKeyInput,
+  type KinConnectionSetSignInClientInput,
+  type KinConnectionSignInFinishInput,
+  type KinConnectionSignInStart,
+  type KinConnectionSignInStartInput,
   type KinConnectionSetReachInput,
   type KinConnectionSetToolModesInput,
   type KinConnectionUpdateInput,
@@ -19,26 +26,36 @@ import {
   type KinConnectionsView,
   type KinConnectionToolMode,
   type KinOrgId,
+  KinPersonId,
+  KinWakeupId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { McpSchema } from "effect/ai";
 import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
+import * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 
+import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
-import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { type AgentIdentity, KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { effectiveAudience } from "../lead/Audience.ts";
+import { effectiveAudience, turnChat } from "../lead/Audience.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { markOutside, outsideRead, OUTSIDE_REFUSAL } from "../lead/OutsideContent.ts";
 import { sensitiveShown } from "../work/workerAttempts.ts";
@@ -53,27 +70,69 @@ import {
   toolsOf,
   toolView,
   type ConnectionRow,
+  type ToolRow,
 } from "./ConnectionRows.ts";
-import { KinConnectionSecrets, type ConnectionKey } from "./ConnectionSecrets.ts";
+import {
+  KinConnectionSecrets,
+  type ConnectionKey,
+  type SignInSecret,
+} from "./ConnectionSecrets.ts";
 import { urlRefusal } from "./EgressGuard.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
 import { KinGatewayError, KinMcpGateway, type GatewayTarget } from "./McpGateway.ts";
 import { credentialForms } from "./Inbound.ts";
+import {
+  callGoogle,
+  canSend,
+  GOOGLE_AUTH_EXTRA,
+  GOOGLE_SCOPES,
+  GOOGLE_SEND_TOOL_NAMES,
+  GOOGLE_SEND_TOOLS,
+  GOOGLE_SERVER,
+  GOOGLE_TOOLS,
+  googleAccount,
+  googleActivity,
+} from "./Google.ts";
+import * as OAuth from "./OAuth.ts";
 import { instructionsDigest, pinDigest, reconcile, suggestedMode } from "./Pinning.ts";
 import {
   CUSTOM_REACH,
   DEFAULT_KEY_HEADER,
+  DEFAULT_SIGN_IN_ADDRESS,
   KEY_PRESETS,
   keyHeaderValue,
+  OWNER_CLIENT_PRESETS,
   SERVICES,
+  SIGN_IN_PRESETS,
 } from "./presets.ts";
 import { resultText } from "./ResultText.ts";
+import {
+  attachmentOf,
+  attachmentsCurrent,
+  MAX_CARD_ARGS,
+  prepareGoogle,
+  type Prepared,
+  PreparedJson,
+  sendCard,
+  sendGoogle,
+  sentToClient,
+} from "./Sending.ts";
 
 export const SHARED_CONNECTIONS =
   "I don't use the company's connected services in chats with other people.";
-export const ASK_LATER = "Approvals for connection writes arrive in a later update.";
+export const ALWAYS_ASK =
+  "This tool sends something out of the company: it can be Off or Ask me, never Read.";
+export const ASKED =
+  "Nothing was sent. The owner sees a card with exactly this; their tap on Confirm sends it. Tell them in one short line to check the card. A typed yes doesn't send it.";
 export const OFFERED = "The owner will see a card to connect it.";
 const paused = (label: string) => `The owner paused ${label}. Only the owner can resume it.`;
+const signedOut = (label: string) =>
+  `${label}'s sign-in expired. The owner can sign in again in Settings.`;
+const SIGN_IN_TTL = Duration.minutes(10);
+/** How long before an access token's expiry Kin refreshes it. */
+const REFRESH_EARLY = Duration.minutes(1);
+// The return page reads only this prefix of `state` to pick where to hand the result back.
+const RETURN_PREFIX = { web: "w", app: "a", "app-dev": "d", "app-preview": "p" } as const;
 
 const fail = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
@@ -99,6 +158,8 @@ const settle = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 const decodeTool = Schema.decodeUnknownEffect(Schema.fromJsonString(McpSchema.Tool));
 const Json = Schema.fromJsonString(Schema.Unknown);
 const toJson = Schema.encodeSync(Json);
+const encodePrepared = Schema.encodeSync(PreparedJson);
+const decodePrepared = Schema.decodeOption(PreparedJson);
 const fromJson = Schema.decodeOption(Json);
 /** A stored definition: Kin wrote it, so it parses; a bad row reads as empty. */
 const stored = (json: string): unknown => Option.getOrUndefined(fromJson(json));
@@ -130,13 +191,92 @@ export const KinConnectionCallInput = Schema.Struct({
   arguments: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   reason: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
 });
-export const KinConnectionCallResult = Schema.Struct({ quoted: Schema.String });
+export const KinConnectionCallResult = Schema.Struct({
+  quoted: Schema.optional(Schema.String),
+  note: Schema.optional(Schema.String),
+});
 export const KinConnectionOfferInput = Schema.Struct({
   service: Schema.String.check(Schema.isMaxLength(80)),
 });
 export const KinConnectionOfferResult = Schema.Struct({ note: Schema.String });
 
 type People = ReadonlyArray<PersonIdentity>;
+
+/**
+ * What changed at a connection since the last time it was marked seen, as metadata. Subjects,
+ * names and summaries are the service's text: whoever shows them to a model quotes them.
+ */
+export type KinConnectionActivity =
+  | {
+      readonly _tag: "google";
+      readonly connectionId: KinConnectionId;
+      readonly since: number;
+      readonly until: number;
+      readonly mail: ReadonlyArray<{
+        readonly threadId: string;
+        readonly subject: string;
+        readonly from: string | null;
+        readonly date: string | null;
+        readonly unread: boolean;
+      }>;
+      readonly calendar: ReadonlyArray<{
+        readonly eventId: string;
+        readonly summary: string | null;
+        readonly start: string | null;
+        readonly status: string | null;
+        readonly updated: string | null;
+      }>;
+    }
+  | {
+      readonly _tag: "github";
+      readonly connectionId: KinConnectionId;
+      readonly since: number;
+      readonly until: number;
+      readonly deliveries: ReadonlyArray<{
+        readonly fireId: string;
+        readonly repo: string | null;
+        readonly deliveryId: string | null;
+        readonly receivedAt: number;
+      }>;
+    }
+  | { readonly _tag: "unsupported"; readonly connectionId: KinConnectionId };
+type AskRow = {
+  readonly askId: string;
+  readonly connectionId: string;
+  readonly toolName: string;
+  readonly pinDigest: string;
+  readonly payload: string;
+  readonly agentId: string;
+  readonly chatId: string;
+  readonly state: string;
+  readonly entryRecordId: string | null;
+  readonly owner: string;
+  readonly threadId: string;
+};
+/** A confirmed mail whose file changed since its card: what a fresh card is made from. */
+export type StaleAsk = {
+  readonly prepared: Extract<Prepared, { readonly _tag: "email" }>;
+  readonly row: AskRow;
+  readonly label: string;
+  readonly account: string | null;
+};
+export type AskAnswer =
+  | { readonly _tag: "declined" | "send"; readonly askId: string }
+  | {
+      readonly _tag: "stale";
+      readonly askId: string;
+      readonly reason: string;
+      readonly fresh: StaleAsk | undefined;
+    };
+export type FreshAsk = {
+  readonly askId: string;
+  readonly chatId: KinChatId;
+  readonly agent: AgentIdentity;
+  readonly card: ReturnType<typeof sendCard>;
+  readonly bind: (widgetId: string) => Effect.Effect<void, SqlError.SqlError>;
+};
+export type AskOutcome = { readonly state: "sent" | "failed"; readonly reason: string | null };
+
 type Owner<I, A> = (people: People, input: I) => Effect.Effect<A, KinChatError>;
 type Lead<I, A> = (scope: McpInvocationScope, input: I) => Effect.Effect<A, KinChatError>;
 
@@ -154,11 +294,84 @@ export class KinConnections extends Context.Service<
     readonly setReach: Owner<KinConnectionSetReachInput, KinConnectionDetail>;
     readonly remove: Owner<KinConnectionRef, KinConnectionsView>;
     readonly calls: Owner<KinConnectionCallsInput, KinConnectionCalls>;
+    readonly signInStart: Owner<KinConnectionSignInStartInput, KinConnectionSignInStart>;
+    readonly signInFinish: Owner<KinConnectionSignInFinishInput, KinConnectionDetail>;
+    readonly setSignInClient: Owner<KinConnectionSetSignInClientInput, KinConnectionsView>;
+    /**
+     * Server use only (a pulse, never an agent tool): what is new at a connection since it was
+     * last marked seen, from the service's own API or, for GitHub, the webhooks Kin recorded.
+     */
+    readonly activity: (
+      orgId: KinOrgId,
+      connectionId: string,
+    ) => Effect.Effect<KinConnectionActivity, KinChatError>;
+    /** Moves the cursor forward to `until` of an `activity` answer once it was handled. */
+    readonly activitySeen: (
+      orgId: KinOrgId,
+      connectionId: string,
+      until: number,
+    ) => Effect.Effect<void, KinChatError>;
     readonly tools: Lead<typeof KinConnectionToolsInput.Type, typeof KinConnectionToolsResult.Type>;
     readonly call: Lead<typeof KinConnectionCallInput.Type, typeof KinConnectionCallResult.Type>;
     readonly offer: Lead<typeof KinConnectionOfferInput.Type, typeof KinConnectionOfferResult.Type>;
+    /** The owner's tap on an ask card, run in the tap's own transaction. */
+    readonly answerAsk: (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: string;
+      readonly personId: string;
+      readonly confirmed: boolean;
+      readonly via: "tap" | "reaction";
+      readonly now: number;
+    }) => Effect.Effect<AskAnswer | undefined, KinChatError, SqlClient.SqlClient>;
+    readonly freshAsk: (
+      orgId: KinOrgId,
+      stale: StaleAsk,
+      now: number,
+    ) => Effect.Effect<FreshAsk, KinChatError>;
+    /** After the tap commits: sends a confirmed ask, once. */
+    readonly sendAsk: (orgId: KinOrgId, askId: string) => Effect.Effect<AskOutcome, KinChatError>;
   }
 >()("t3/kin/connections/ConnectionsService/KinConnections") {}
+
+const newConnectionId = () =>
+  KinConnectionId.make(`conn_${NodeCrypto.randomBytes(12).toString("hex")}`);
+
+/** The stored sign-in with new tokens; a refresh that rotates nothing keeps the old ones. */
+const withTokens = (secret: SignInSecret, tokens: OAuth.Tokens): SignInSecret => {
+  const { refreshToken, expiresAt: _expired, scope, ...rest } = secret;
+  const kept = tokens.refreshToken ?? refreshToken;
+  const granted = tokens.scope ?? scope;
+  return {
+    ...rest,
+    accessToken: tokens.accessToken,
+    ...(kept === undefined ? {} : { refreshToken: kept }),
+    ...(tokens.expiresAt === undefined ? {} : { expiresAt: tokens.expiresAt }),
+    ...(granted === undefined ? {} : { scope: granted }),
+  };
+};
+
+type PendingSignIn = {
+  readonly orgId: KinOrgId;
+  readonly expiresAt: number;
+  readonly verifier: string;
+  readonly plan: OAuth.SignInPlan;
+  readonly client: OAuth.Client;
+  readonly target:
+    | {
+        readonly _tag: "new";
+        readonly service: KinConnectionPreset;
+        readonly label: string | undefined;
+        readonly url: string | null;
+        readonly secretUrl: string | undefined;
+      }
+    | { readonly _tag: "again"; readonly connectionId: KinConnectionId };
+};
+
+/** Kin's own Google tools that send are never marked Read. */
+const alwaysAsk = (row: Pick<ConnectionRow, "kind">, tool: string) =>
+  row.kind === "builtin" && GOOGLE_SEND_TOOL_NAMES.has(tool);
+const usable = (tool: Parameters<typeof callable>[0]) =>
+  callable(tool) && (tool.mode === "read" || tool.mode === "ask");
 
 const firstLine = (text: string | null) => (text ?? "").split("\n")[0]!.trim().slice(0, 200);
 /** The arguments as sent, cut at `argsBytes` of UTF-8 on a character boundary. */
@@ -179,6 +392,12 @@ const make = Effect.gen(function* () {
   const refresh = yield* KinRefreshObserver;
   const secrets = yield* KinConnectionSecrets;
   const gateway = yield* KinMcpGateway;
+  const levelGate = yield* KinLevelGate;
+  const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
+  const http = yield* HttpClient.HttpClient;
+  const signInAddress = yield* Config.String("KIN_SIGN_IN_ADDRESS").pipe(
+    Config.withDefault(DEFAULT_SIGN_IN_ADDRESS),
+  );
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
 
   const owner = Effect.fn("KinConnections.owner")(function* (people: People, orgId: KinOrgId) {
@@ -202,22 +421,57 @@ const make = Effect.gen(function* () {
   ) {
     const row = yield* live(orgId, connectionId);
     const tools = yield* toolsOf(orgId, connectionId).pipe(provideSql);
-    return { connection: connectionView(row, tools), tools: tools.map(toolView) };
+    return {
+      connection: yield* withSendState(row, connectionView(row, tools)),
+      tools: tools.map((tool) =>
+        alwaysAsk(row, tool.name) ? { ...toolView(tool), alwaysAsk: true } : toolView(tool),
+      ),
+    };
+  });
+  /** A Google sign-in from before Kin sent anything shows "Sign in again to allow sending". */
+  const withSendState = Effect.fnUntraced(function* (
+    row: ConnectionRow,
+    view: ReturnType<typeof connectionView>,
+  ) {
+    if (row.kind !== "builtin" || row.auth !== "oauth") return view;
+    const stored = yield* secrets
+      .getSignIn(row.connectionId)
+      .pipe(Effect.orElseSucceed(Option.none));
+    return Option.isNone(stored) || canSend(Redacted.value(stored.value).scope)
+      ? view
+      : { ...view, needsSignInToSend: true };
   });
   const view = Effect.fn("KinConnections.view")(function* (orgId: KinOrgId) {
     const rows = yield* liveConnections(orgId).pipe(provideSql);
     const connections = yield* Effect.forEach(rows, (row) =>
       toolsOf(orgId, row.connectionId).pipe(
         provideSql,
-        Effect.map((tools) => connectionView(row, tools)),
+        Effect.flatMap((tools) => withSendState(row, connectionView(row, tools))),
       ),
     );
-    return { orgId, connections, services: SERVICES } satisfies KinConnectionsView;
+    return {
+      orgId,
+      connections,
+      services: yield* servicesFor(),
+      signInAddress,
+    } satisfies KinConnectionsView;
+  });
+  /** Google waits on the owner's own client: until it is saved, it shows "Needs setup". */
+  const servicesFor = Effect.fn("KinConnections.services")(function* () {
+    const missing = new Set<string>();
+    for (const service of OWNER_CLIENT_PRESETS) {
+      const saved = yield* secrets.getClient(service).pipe(Effect.orElseSucceed(Option.none));
+      if (Option.isNone(saved)) missing.add(service);
+    }
+    return SERVICES.map((entry) =>
+      missing.has(entry.service) ? { ...entry, needsSetup: true } : entry,
+    );
   });
 
   /** Review is due when a tool or the instructions changed since the owner accepted them. */
   const restate = (orgId: KinOrgId, connectionId: string, now: number) => sql`
     UPDATE kin_connections SET updated_at = ${now}, state = CASE
+        WHEN state = 'needs_sign_in' THEN 'needs_sign_in'
         WHEN last_error IS NOT NULL THEN 'error'
         WHEN instructions_digest IS NOT instructions_accepted_digest OR EXISTS (
           SELECT 1 FROM kin_connection_tools t WHERE t.org_id = kin_connections.org_id
@@ -242,7 +496,85 @@ const make = Effect.gen(function* () {
     Effect.uninterruptible,
   );
 
-  const target = Effect.fn("KinConnections.target")(function* (row: ConnectionRow) {
+  const needsSignIn = Effect.fn("KinConnections.needsSignIn")(
+    function* (orgId: KinOrgId, connectionId: string) {
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`UPDATE kin_connections SET state = 'needs_sign_in', updated_at = ${now}
+        WHERE org_id = ${orgId} AND connection_id = ${connectionId} AND removed_at IS NULL`;
+      yield* touched(orgId);
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't mark a sign-in expired", { cause }),
+    ),
+  );
+  const expired = (orgId: KinOrgId, row: ConnectionRow) =>
+    needsSignIn(orgId, row.connectionId).pipe(
+      Effect.andThen(Effect.fail(fail("unavailable", signedOut(row.label)))),
+    );
+
+  const refreshing = yield* Semaphore.make(1);
+  /** The sign-in with a current access token: refreshed shortly before expiry, one at a time. */
+  const signInOf = Effect.fn("KinConnections.signInOf")(function* (
+    orgId: KinOrgId,
+    row: ConnectionRow,
+    force: boolean,
+  ) {
+    const stored = yield* secrets.getSignIn(row.connectionId);
+    if (Option.isNone(stored)) return yield* expired(orgId, row);
+    const seen = Redacted.value(stored.value);
+    const now = yield* Clock.currentTimeMillis;
+    const due =
+      force ||
+      (seen.expiresAt !== undefined && seen.expiresAt - now < Duration.toMillis(REFRESH_EARLY));
+    if (!due) return seen;
+    return yield* refreshing.withPermits(1)(
+      Effect.gen(function* () {
+        const again = yield* secrets.getSignIn(row.connectionId);
+        if (Option.isNone(again)) return yield* expired(orgId, row);
+        const secret = Redacted.value(again.value);
+        // Another call refreshed it while this one waited: a rotated refresh token is used once.
+        if (secret.accessToken !== seen.accessToken) return secret;
+        if (secret.refreshToken === undefined) return yield* expired(orgId, row);
+        const tokens = yield* OAuth.refresh(http, {
+          server: { tokenEndpoint: secret.tokenEndpoint, basicOnly: secret.basicOnly },
+          client: { clientId: secret.clientId, clientSecret: secret.clientSecret },
+          refreshToken: secret.refreshToken,
+          resource: secret.resource,
+          now: yield* Clock.currentTimeMillis,
+        }).pipe(Effect.catchTags({ SignInExpired: () => expired(orgId, row) }));
+        const next = withTokens(secret, tokens);
+        yield* secrets.setSignIn(row.connectionId, Redacted.make(next));
+        yield* gateway.invalidate(row.connectionId);
+        return next;
+      }),
+    );
+  });
+
+  const target = Effect.fn("KinConnections.target")(function* (
+    orgId: KinOrgId,
+    row: ConnectionRow,
+    force = false,
+  ) {
+    if (row.auth === "oauth") {
+      const secret = yield* signInOf(orgId, row, force);
+      const url = row.url ?? secret.secretUrl;
+      if (url === undefined) return yield* fail("unavailable", "This connection has no address.");
+      const value = `Bearer ${secret.accessToken}`;
+      return {
+        connectionId: row.connectionId,
+        url,
+        protocolVersion: row.protocolVersion,
+        headers: Redacted.make({ authorization: value }),
+        credentials: Redacted.make(
+          credentialForms([
+            secret.accessToken,
+            value,
+            ...(secret.refreshToken === undefined ? [] : [secret.refreshToken]),
+            ...(secret.secretUrl === undefined ? [] : [secret.secretUrl]),
+          ]),
+        ),
+      } satisfies GatewayTarget;
+    }
     if (row.url === null) return yield* fail("unavailable", "This connection has no address.");
     if (row.auth !== "key")
       return {
@@ -269,15 +601,99 @@ const make = Effect.gen(function* () {
     } satisfies GatewayTarget;
   });
 
+  const refusedKey = (error: unknown) => isGatewayError(error) && error.reason === "key_refused";
+  /** A refused token gets one forced refresh; refused again, the owner signs in again. */
+  const withSignIn = <A, E>(
+    orgId: KinOrgId,
+    row: ConnectionRow,
+    use: (force: boolean) => Effect.Effect<A, E>,
+  ): Effect.Effect<A, E> =>
+    use(false).pipe(
+      Effect.catchIf(
+        (error) => row.auth === "oauth" && refusedKey(error),
+        () =>
+          use(true).pipe(
+            Effect.tapError((error) =>
+              refusedKey(error) ? needsSignIn(orgId, row.connectionId) : Effect.void,
+            ),
+          ),
+      ),
+    );
+  const listFor = Effect.fnUntraced(function* (orgId: KinOrgId, row: ConnectionRow) {
+    if (row.kind === "builtin")
+      return {
+        protocolVersion: null,
+        instructions: undefined,
+        tools: [...GOOGLE_TOOLS, ...GOOGLE_SEND_TOOLS],
+      };
+    return yield* withSignIn(orgId, row, (force) =>
+      target(orgId, row, force).pipe(Effect.flatMap((to) => gateway.listTools(to))),
+    );
+  });
+  const googleToken = (orgId: KinOrgId, row: ConnectionRow, force: boolean) =>
+    signInOf(orgId, row, force).pipe(Effect.map((secret) => secret.accessToken));
+  const callFor = Effect.fnUntraced(function* (
+    orgId: KinOrgId,
+    row: ConnectionRow,
+    tool: McpSchema.Tool,
+    args: Readonly<Record<string, unknown>>,
+  ) {
+    if (row.kind === "builtin")
+      return yield* withSignIn(orgId, row, (force) =>
+        Effect.all([googleToken(orgId, row, force), Clock.currentTimeMillis]).pipe(
+          Effect.flatMap(([token, now]) => callGoogle(http, token, tool.name, args, now)),
+        ),
+      );
+    return yield* withSignIn(orgId, row, (force) =>
+      target(orgId, row, force).pipe(Effect.flatMap((to) => gateway.callTool(to, tool, args))),
+    );
+  });
+  const accountOf = Effect.fnUntraced(function* (
+    row: Pick<ConnectionRow, "kind">,
+    accessToken: string,
+  ) {
+    if (row.kind !== "builtin") return null;
+    return yield* googleAccount(http, accessToken).pipe(Effect.orElseSucceed(() => null));
+  });
+
+  /** A new connection's row and its tools as listed, in one transaction. */
+  const insertConnection = (
+    orgId: KinOrgId,
+    row: ConnectionRow,
+    listed: Effect.Success<ReturnType<typeof listFor>>,
+    signIn: { readonly issuer: string; readonly resource: string | undefined } | undefined,
+  ) =>
+    sql.withTransaction(
+      Effect.gen(function* () {
+        const now = row.createdAt;
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+            url_host, auth, auth_header, reach, state, account_label, issuer, resource,
+            protocol_version, instructions_text, instructions_digest, instructions_accepted_text,
+            instructions_accepted_digest, created_at, updated_at, listed_at, last_ok_at)
+          VALUES (${orgId}, ${row.connectionId}, ${row.preset}, ${row.label}, ${row.kind},
+            ${row.url}, ${row.urlHost}, ${row.auth}, ${row.authHeader}, ${row.reach}, 'active',
+            ${row.accountLabel}, ${signIn?.issuer ?? null}, ${signIn?.resource ?? null},
+            ${listed.protocolVersion}, ${listed.instructions ?? null},
+            ${instructionsDigest(listed.instructions)}, ${listed.instructions ?? null},
+            ${instructionsDigest(listed.instructions)}, ${now}, ${now}, ${now}, ${now})
+          ON CONFLICT (org_id, connection_id) DO NOTHING`;
+        for (const tool of listed.tools)
+          yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
+              definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
+            VALUES (${orgId}, ${row.connectionId}, ${tool.name}, ${toJson(tool.definition)},
+              ${pinDigest(tool.definition)}, 'off', ${suggestedMode(tool.definition)},
+              ${tool.openWorld ? 1 : 0}, ${now})
+            ON CONFLICT (org_id, connection_id, tool_name) DO NOTHING`;
+        yield* touched(orgId);
+      }),
+    );
+
   /** Lists the tools again and pins what changed. A failed listing marks the connection. */
   const relist = Effect.fn("KinConnections.relist")(function* (
     orgId: KinOrgId,
     row: ConnectionRow,
   ) {
-    const listed = yield* target(row).pipe(
-      Effect.flatMap((to) => gateway.listTools(to)),
-      Effect.result,
-    );
+    const listed = yield* listFor(orgId, row).pipe(Effect.result);
     const now = yield* Clock.currentTimeMillis;
     if (listed._tag === "Failure") {
       const message = isGatewayError(listed.failure)
@@ -347,7 +763,7 @@ const make = Effect.gen(function* () {
       if (input.service !== "custom" && KEY_PRESETS[input.service] === undefined)
         return yield* fail(
           "invalid_state",
-          `Signing in to ${SERVICES.find((entry) => entry.service === input.service)?.label ?? input.service} arrives in a later update.`,
+          `${SERVICES.find((entry) => entry.service === input.service)?.label ?? input.service} connects by signing in.`,
         );
       const preset = input.service === "custom" ? undefined : KEY_PRESETS[input.service];
       const url = preset?.url ?? input.url;
@@ -361,9 +777,7 @@ const make = Effect.gen(function* () {
         preset !== undefined ? DEFAULT_KEY_HEADER : (input.header ?? DEFAULT_KEY_HEADER);
       if (auth === "key" && input.key === undefined)
         return yield* fail("invalid_state", "Paste the key to connect.");
-      const connectionId = KinConnectionId.make(
-        `conn_${NodeCrypto.randomBytes(12).toString("hex")}`,
-      );
+      const connectionId = newConnectionId();
       const now = yield* Clock.currentTimeMillis;
       const row: ConnectionRow = {
         connectionId,
@@ -398,29 +812,8 @@ const make = Effect.gen(function* () {
             connectionId,
             Redacted.make<ConnectionKey>({ header, key: Redacted.value(input.key!) }),
           );
-        const listed = yield* target(row).pipe(Effect.flatMap((to) => gateway.listTools(to)));
-        yield* sql.withTransaction(
-          Effect.gen(function* () {
-            yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
-                url_host, auth, auth_header, reach, state, protocol_version, instructions_text,
-                instructions_digest, instructions_accepted_text, instructions_accepted_digest,
-                created_at, updated_at, listed_at, last_ok_at)
-              VALUES (${input.orgId}, ${connectionId}, ${row.preset}, ${row.label}, 'remote',
-                ${url}, ${row.urlHost}, ${auth}, ${row.authHeader}, ${row.reach}, 'active',
-                ${listed.protocolVersion}, ${listed.instructions ?? null},
-                ${instructionsDigest(listed.instructions)}, ${listed.instructions ?? null},
-                ${instructionsDigest(listed.instructions)}, ${now}, ${now}, ${now}, ${now})
-              ON CONFLICT (org_id, connection_id) DO NOTHING`;
-            for (const tool of listed.tools)
-              yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
-                  definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
-                VALUES (${input.orgId}, ${connectionId}, ${tool.name}, ${toJson(tool.definition)},
-                  ${pinDigest(tool.definition)}, 'off', ${suggestedMode(tool.definition)},
-                  ${tool.openWorld ? 1 : 0}, ${now})
-                ON CONFLICT (org_id, connection_id, tool_name) DO NOTHING`;
-            yield* touched(input.orgId);
-          }),
-        );
+        const listed = yield* listFor(input.orgId, row);
+        yield* insertConnection(input.orgId, row, listed, undefined);
       });
       yield* saved.pipe(
         Effect.onExit((exit) =>
@@ -458,11 +851,11 @@ const make = Effect.gen(function* () {
 
   const setToolModes = ownerOp("setToolModes", (input: KinConnectionSetToolModesInput) =>
     Effect.gen(function* () {
-      if (input.modes.some((entry) => entry.mode === "ask"))
-        return yield* fail("invalid_state", ASK_LATER);
       const refused = yield* sql.withTransaction(
         Effect.gen(function* () {
-          yield* live(input.orgId, input.connectionId);
+          const row = yield* live(input.orgId, input.connectionId);
+          if (input.modes.some((entry) => entry.mode === "read" && alwaysAsk(row, entry.tool)))
+            return yield* fail("invalid_state", ALWAYS_ASK);
           const tools = new Map(
             (yield* toolsOf(input.orgId, input.connectionId).pipe(provideSql)).map((tool) => [
               tool.name,
@@ -581,6 +974,8 @@ const make = Effect.gen(function* () {
       yield* sql`UPDATE kin_connections SET removed_at = ${now}, updated_at = ${now}
         WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}
           AND removed_at IS NULL`;
+      yield* sql`DELETE FROM kin_connection_cursors
+        WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}`;
       yield* touched(input.orgId);
       yield* gateway.invalidate(input.connectionId);
       yield* secrets.remove(input.connectionId);
@@ -616,6 +1011,296 @@ const make = Effect.gen(function* () {
       } satisfies KinConnectionCalls;
     }),
   );
+
+  // Pending sign-ins live only here: the PKCE verifier never leaves memory, and a restart
+  // drops every unfinished sign-in.
+  const pending = new Map<string, PendingSignIn>();
+
+  const signInStart = ownerOp("signInStart", (input: KinConnectionSignInStartInput) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      for (const [state, entry] of pending) if (entry.expiresAt <= now) pending.delete(state);
+      const again =
+        input.connectionId === undefined ? undefined : yield* live(input.orgId, input.connectionId);
+      if (again !== undefined && again.auth !== "oauth")
+        return yield* fail("invalid_state", "This connection uses a key, not a sign-in.");
+      const service = again === undefined ? input.service : (again.preset ?? undefined);
+      const preset = service === undefined ? undefined : SIGN_IN_PRESETS[service];
+      if (service === undefined || preset === undefined)
+        return yield* fail("invalid_state", "Pick a service that connects by signing in.");
+      let plan: OAuth.SignInPlan;
+      let client: OAuth.Client;
+      let url: string | null = null;
+      let secretUrl: string | undefined;
+      if (preset.kind === "builtin") {
+        const owned = yield* secrets.getClient(service);
+        if (Option.isNone(owned))
+          return yield* fail(
+            "invalid_state",
+            `${preset.label} needs setting up first. Follow the steps in Settings, then sign in.`,
+          );
+        plan = { server: GOOGLE_SERVER, resource: undefined, scope: GOOGLE_SCOPES };
+        client = Redacted.value(owned.value);
+      } else {
+        const stored =
+          again === undefined
+            ? undefined
+            : Option.getOrUndefined(yield* secrets.getSignIn(again.connectionId));
+        if (again !== undefined) {
+          url = again.url;
+          secretUrl = stored === undefined ? undefined : Redacted.value(stored).secretUrl;
+        } else if (preset.url !== null)
+          url = input.org === undefined ? preset.url : `${preset.url}/${input.org}`;
+        else
+          secretUrl =
+            input.secretUrl === undefined ? undefined : Redacted.value(input.secretUrl).trim();
+        const address = url ?? secretUrl;
+        if (address === undefined || !URL.canParse(address))
+          return yield* fail("invalid_state", `Paste the server address ${preset.label} gave you.`);
+        const refused = urlRefusal(new URL(address));
+        if (refused !== undefined) return yield* fail("invalid_state", refused);
+        plan = yield* OAuth.discover(http, address);
+        const previous = stored === undefined ? undefined : Redacted.value(stored);
+        client =
+          previous !== undefined && previous.issuer === plan.server.issuer
+            ? { clientId: previous.clientId, clientSecret: previous.clientSecret }
+            : yield* OAuth.register(http, plan.server, signInAddress);
+      }
+      const state = `${RETURN_PREFIX[input.returnTo]}.${OAuth.randomToken()}`;
+      const verifier = OAuth.randomToken();
+      const expiresAt = now + Duration.toMillis(SIGN_IN_TTL);
+      pending.set(state, {
+        orgId: input.orgId,
+        expiresAt,
+        verifier,
+        plan,
+        client,
+        target:
+          again === undefined
+            ? { _tag: "new", service, label: input.label, url, secretUrl }
+            : { _tag: "again", connectionId: again.connectionId },
+      });
+      const authorizationUrl = OAuth.authorizationUrl({
+        plan,
+        client,
+        redirectUri: signInAddress,
+        state,
+        verifier,
+        ...(preset.kind === "builtin" ? { extra: GOOGLE_AUTH_EXTRA } : {}),
+      });
+      return {
+        signInId: state,
+        authorizationUrl,
+        host: new URL(authorizationUrl).host,
+        expiresAt,
+      } satisfies KinConnectionSignInStart;
+    }),
+  );
+
+  const signInFinish = ownerOp("signInFinish", (input: KinConnectionSignInFinishInput) =>
+    Effect.gen(function* () {
+      const result = OAuth.redirectResult(input.response);
+      const entry = result.state === undefined ? undefined : pending.get(result.state);
+      const now = yield* Clock.currentTimeMillis;
+      if (entry === undefined || entry.orgId !== input.orgId || entry.expiresAt <= now)
+        return yield* fail("invalid_state", "This sign-in is no longer open. Start it again.");
+      // One use: a replayed or second answer finds nothing.
+      pending.delete(result.state!);
+      if (result.error !== undefined)
+        return yield* fail(
+          "invalid_state",
+          result.error === "access_denied"
+            ? "The sign-in was cancelled at the service."
+            : `The service didn't finish the sign-in (${result.error.replace(/[^\w-]/g, "").slice(0, 40)}).`,
+        );
+      const issuer = entry.plan.server.issuer;
+      if (
+        result.code === undefined ||
+        (result.iss !== undefined && result.iss !== issuer) ||
+        (result.iss === undefined && entry.plan.server.issParameter)
+      )
+        return yield* fail(
+          "invalid_state",
+          "That answer didn't come from the sign-in Kin opened. Start it again.",
+        );
+      const tokens = yield* OAuth.exchange(http, {
+        server: entry.plan.server,
+        client: entry.client,
+        code: result.code,
+        verifier: entry.verifier,
+        redirectUri: signInAddress,
+        resource: entry.plan.resource,
+        now,
+      }).pipe(
+        Effect.catchTags({
+          SignInExpired: () =>
+            Effect.fail(
+              fail("invalid_state", "The service didn't accept this sign-in. Start it again."),
+            ),
+        }),
+      );
+      const target = entry.target;
+      const secretUrl = target._tag === "new" ? target.secretUrl : undefined;
+      const stored =
+        target._tag === "again"
+          ? Option.getOrUndefined(yield* secrets.getSignIn(target.connectionId))
+          : undefined;
+      const keptUrl =
+        secretUrl ?? (stored === undefined ? undefined : Redacted.value(stored).secretUrl);
+      const secret = withTokens(
+        {
+          accessToken: tokens.accessToken,
+          issuer,
+          tokenEndpoint: entry.plan.server.tokenEndpoint,
+          basicOnly: entry.plan.server.basicOnly,
+          clientId: entry.client.clientId,
+          ...(entry.client.clientSecret === undefined
+            ? {}
+            : { clientSecret: entry.client.clientSecret }),
+          ...(entry.plan.resource === undefined ? {} : { resource: entry.plan.resource }),
+          ...(keptUrl === undefined ? {} : { secretUrl: keptUrl }),
+        },
+        tokens,
+      );
+      if (target._tag === "again") {
+        const row = yield* live(input.orgId, target.connectionId);
+        yield* secrets.setSignIn(row.connectionId, Redacted.make(secret));
+        yield* gateway.invalidate(row.connectionId);
+        const account = yield* accountOf(row, tokens.accessToken);
+        yield* sql`UPDATE kin_connections SET state = 'active', last_error = NULL,
+            account_label = COALESCE(${account}, account_label), issuer = ${issuer},
+            resource = ${entry.plan.resource ?? null}, updated_at = ${now}
+          WHERE org_id = ${input.orgId} AND connection_id = ${row.connectionId}
+            AND removed_at IS NULL`;
+        yield* touched(input.orgId);
+        yield* relist(input.orgId, { ...row, state: "active" }).pipe(Effect.ignore);
+        return yield* detail(input.orgId, row.connectionId);
+      }
+      const preset = SIGN_IN_PRESETS[target.service]!;
+      const connectionId = newConnectionId();
+      const base: ConnectionRow = {
+        connectionId,
+        preset: target.service,
+        label: target.label ?? preset.label,
+        kind: preset.kind,
+        url: target.url,
+        urlHost:
+          target.url !== null
+            ? new URL(target.url).host
+            : target.secretUrl !== undefined
+              ? new URL(target.secretUrl).host
+              : preset.host,
+        auth: "oauth",
+        authHeader: null,
+        reach: "closed",
+        state: "active",
+        accountLabel: null,
+        protocolVersion: null,
+        instructionsText: null,
+        instructionsDigest: null,
+        instructionsAcceptedText: null,
+        instructionsAcceptedDigest: null,
+        createdAt: now,
+        updatedAt: now,
+        listedAt: null,
+        lastOkAt: null,
+        lastError: null,
+        pausedAt: null,
+        removedAt: null,
+      };
+      const saved = Effect.gen(function* () {
+        yield* secrets.setSignIn(connectionId, Redacted.make(secret));
+        const listed = yield* listFor(input.orgId, base);
+        const row = { ...base, accountLabel: yield* accountOf(base, tokens.accessToken) };
+        yield* insertConnection(input.orgId, row, listed, {
+          issuer,
+          resource: entry.plan.resource,
+        });
+      });
+      yield* saved.pipe(
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit) ? Effect.void : forget(input.orgId, connectionId),
+        ),
+      );
+      return yield* detail(input.orgId, connectionId);
+    }),
+  );
+
+  const setSignInClient = ownerOp("setSignInClient", (input: KinConnectionSetSignInClientInput) =>
+    Effect.gen(function* () {
+      const client = input.client;
+      if (client !== null && !/^[\w.-]+\.apps\.googleusercontent\.com$/.test(client.clientId))
+        return yield* fail(
+          "invalid_state",
+          "That isn't a Google client ID. It ends in .apps.googleusercontent.com.",
+        );
+      yield* secrets.setClient(
+        input.service,
+        client === null
+          ? Option.none()
+          : Option.some(
+              Redacted.make({
+                clientId: client.clientId,
+                clientSecret: Redacted.value(client.clientSecret).trim(),
+              }),
+            ),
+      );
+      yield* touched(input.orgId);
+      return yield* view(input.orgId);
+    }),
+  );
+
+  const activity = Effect.fn("KinConnections.activity")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+  ) {
+    const row = yield* live(orgId, connectionId);
+    const [cursor] = yield* sql<{ checkedUntil: number }>`SELECT checked_until AS "checkedUntil"
+        FROM kin_connection_cursors WHERE org_id = ${orgId} AND connection_id = ${connectionId}
+        ORDER BY connection_id`;
+    const since = cursor?.checkedUntil ?? row.createdAt;
+    const until = yield* Clock.currentTimeMillis;
+    if (row.kind === "builtin" && row.preset === "google") {
+      const found = yield* withSignIn(orgId, row, (force) =>
+        signInOf(orgId, row, force).pipe(
+          Effect.flatMap((secret) => googleActivity(http, secret.accessToken, since)),
+        ),
+      );
+      return { _tag: "google", connectionId: row.connectionId, since, until, ...found } as const;
+    }
+    if (row.preset === "github") {
+      // Deliveries the GitHub webhooks recorded for the org; the connection adds no source.
+      const deliveries = yield* sql<{
+        fireId: string;
+        repo: string | null;
+        deliveryId: string | null;
+        receivedAt: number;
+      }>`SELECT i.fire_id AS "fireId", s.repo AS repo,
+            json_extract(i.payload_json, '$.payload.deliveryId') AS "deliveryId",
+            i.received_at AS "receivedAt"
+          FROM kin_trigger_inbox i
+            LEFT JOIN kin_webhook_sources s ON s.org_id = i.org_id
+              AND s.source_id = json_extract(i.payload_json, '$.payload.sourceId')
+          WHERE i.org_id = ${orgId} AND i.received_at > ${since} AND i.received_at <= ${until}
+            AND json_extract(i.payload_json, '$.payload.kind') = 'github'
+          ORDER BY i.received_at, i.fire_id LIMIT 200`;
+      return { _tag: "github", connectionId: row.connectionId, since, until, deliveries } as const;
+    }
+    return { _tag: "unsupported", connectionId: row.connectionId } as const;
+  }, settle);
+
+  const activitySeen = Effect.fn("KinConnections.activitySeen")(function* (
+    orgId: KinOrgId,
+    connectionId: string,
+    until: number,
+  ) {
+    yield* live(orgId, connectionId);
+    const now = yield* Clock.currentTimeMillis;
+    yield* sql`INSERT INTO kin_connection_cursors (org_id, connection_id, checked_until, updated_at)
+        VALUES (${orgId}, ${connectionId}, ${until}, ${now})
+        ON CONFLICT (org_id, connection_id) DO UPDATE SET
+          checked_until = MAX(checked_until, excluded.checked_until), updated_at = excluded.updated_at`;
+  }, settle);
 
   type Turn = Effect.Success<ReturnType<typeof resolveLead>>;
   const record = Effect.fn("KinConnections.record")(function* (
@@ -733,7 +1418,7 @@ const make = Effect.gen(function* () {
         row = (yield* connectionById(turn.orgId, row.connectionId).pipe(provideSql)) ?? row;
       }
       const all = yield* toolsOf(turn.orgId, row.connectionId).pipe(provideSql);
-      const read = all.filter((tool) => callable(tool) && tool.mode === "read");
+      const read = all.filter(usable);
       // Instructions, names, descriptions and schemas are the server's words: the turn is
       // outside-read before any of them reaches it, even a listing with nothing to read.
       const connectionId = row.connectionId;
@@ -753,7 +1438,7 @@ const make = Effect.gen(function* () {
           const description = Predicate.hasProperty(definition, "description")
             ? definition.description
             : undefined;
-          return `${tool.name}${typeof title === "string" ? ` (${title})` : ""}: ${firstLine(typeof description === "string" ? description : null)}`;
+          return `${tool.name}${typeof title === "string" ? ` (${title})` : ""}${tool.mode === "ask" ? " [asks the owner to confirm each call]" : ""}: ${firstLine(typeof description === "string" ? description : null)}`;
         });
         yield* mark;
         return {
@@ -772,14 +1457,12 @@ const make = Effect.gen(function* () {
       );
       if (tool === undefined)
         return yield* fail("not_found", `${row.label} has no tool named ${input.tool}.`);
-      if (!callable(tool) || tool.mode !== "read")
+      if (!usable(tool))
         return {
           note:
             tool.mode === "off"
               ? `${tool.name} is off. Only the owner can turn it on.`
-              : tool.mode === "ask"
-                ? ASK_LATER
-                : `${tool.name} changed and waits for the owner's review.`,
+              : `${tool.name} changed and waits for the owner's review.`,
         };
       const definition = stored(tool.acceptedJson ?? tool.definitionJson);
       yield* mark;
@@ -793,6 +1476,7 @@ const make = Effect.gen(function* () {
           inputSchema: Predicate.hasProperty(definition, "inputSchema")
             ? definition.inputSchema
             : null,
+          ...(tool.mode === "ask" ? { asks: "Each call waits for the owner's Confirm." } : {}),
         }),
       };
     }),
@@ -869,6 +1553,12 @@ const make = Effect.gen(function* () {
           { ...base, connectionId: row.connectionId },
           fail("not_allowed", paused(row.label)),
         );
+      if (row.state === "needs_sign_in")
+        return yield* refuse(
+          turn,
+          { ...base, connectionId: row.connectionId },
+          fail("unavailable", signedOut(row.label)),
+        );
       const [tool] = (yield* toolsOf(turn.orgId, row.connectionId).pipe(provideSql)).filter(
         (candidate) => candidate.name === input.tool,
       );
@@ -885,7 +1575,6 @@ const make = Effect.gen(function* () {
           entry,
           fail("not_allowed", `${tool.name} is off. Only the owner can turn it on.`),
         );
-      if (tool.mode === "ask") return yield* refuse(turn, entry, fail("not_allowed", ASK_LATER));
       if (!callable(tool))
         return yield* refuse(
           turn,
@@ -901,16 +1590,15 @@ const make = Effect.gen(function* () {
         (row.reach === "open" || tool.openWorld === 1)
       )
         return yield* refuse(turn, entry, fail("not_allowed", OUTSIDE_REFUSAL));
+      if (tool.mode === "ask" || alwaysAsk(row, tool.name))
+        return yield* askFor(turn, row, tool, args, entry);
       const definition = yield* decodeTool(tool.acceptedJson ?? tool.definitionJson).pipe(
         Effect.mapError(() => fail("unavailable", `Kin couldn't read ${tool.name}'s definition.`)),
       );
       const allowance = yield* reserve(turn);
       if (allowance._tag === "refused") return yield* refuse(turn, entry, allowance.error);
       const started = yield* Clock.currentTimeMillis;
-      const result = yield* target(row).pipe(
-        Effect.flatMap((to) => gateway.callTool(to, definition, args)),
-        Effect.result,
-      );
+      const result = yield* callFor(turn.orgId, row, definition, args).pipe(Effect.result);
       const durationMs = (yield* Clock.currentTimeMillis) - started;
       if (result._tag === "Failure") {
         yield* sql.withTransaction(
@@ -951,6 +1639,296 @@ const make = Effect.gen(function* () {
       return { quoted: text.quoted };
     }),
   );
+
+  /**
+   * An "Ask me" call runs nothing: what it would send is fixed, stored and shown whole on a card
+   * in the owner's chat. Only the owner's tap on that card sends it (`answerAsk`, `sendAsk`).
+   */
+  const askFor = Effect.fn("KinConnections.askFor")(function* (
+    turn: Turn,
+    row: ConnectionRow,
+    tool: ToolRow,
+    args: Readonly<Record<string, unknown>>,
+    entry: Omit<Parameters<typeof record>[1], "status">,
+  ) {
+    if (row.kind === "builtin") {
+      const stored = yield* secrets.getSignIn(row.connectionId);
+      if (Option.isSome(stored) && !canSend(Redacted.value(stored.value).scope))
+        return yield* refuse(
+          turn,
+          entry,
+          fail(
+            "unavailable",
+            `${row.label} was signed in before Kin could send. The owner can sign in again in Settings to allow sending.`,
+          ),
+        );
+    }
+    const prepared: Prepared =
+      row.kind === "builtin"
+        ? yield* prepareGoogle({
+            http,
+            token: googleToken(turn.orgId, row, false),
+            orgId: turn.orgId,
+            account: row.accountLabel,
+            tool: tool.name,
+            args,
+          }).pipe(
+            provideSql,
+            Effect.catch((error) =>
+              refuse(
+                turn,
+                entry,
+                isChatError(error) ? error : fail("invalid_state", error.message),
+              ),
+            ),
+          )
+        : { _tag: "call", args };
+    if (prepared._tag === "call" && toJson(args).length > MAX_CARD_ARGS)
+      return yield* refuse(
+        turn,
+        entry,
+        fail("invalid_state", "These arguments are too long to show the owner on a card."),
+      );
+    const chat = yield* turnChat(turn).pipe(provideSql);
+    if (chat === undefined)
+      return yield* refuse(turn, entry, fail("not_allowed", "This turn has no chat to ask in."));
+    const card = sendCard({
+      service: row.label,
+      account: row.accountLabel,
+      tool: tool.name,
+      prepared,
+    });
+    const payload = encodePrepared(prepared);
+    const askId = `ask_${NodeCrypto.createHash("sha256")
+      .update(
+        [turn.orgId, turn.agentId, turn.wakeupId, row.connectionId, tool.name, payload].join("\n"),
+      )
+      .digest("hex")
+      .slice(0, 24)}`;
+    const entryRecordId =
+      prepared._tag === "email"
+        ? (prepared.attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null)
+        : null;
+    const now = yield* Clock.currentTimeMillis;
+    yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+        pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at)
+      VALUES (${turn.orgId}, ${askId}, ${row.connectionId}, ${tool.name}, ${tool.pinDigest},
+        ${payload}, ${turn.agentId}, ${turn.wakeupId}, ${chat.chatId}, ${entryRecordId}, ${now})
+      ON CONFLICT (org_id, ask_id) DO NOTHING`;
+    yield* levelGate.ask(
+      { ...turn, wakeupId: KinWakeupId.make(turn.wakeupId) },
+      {
+        chatId: KinChatId.make(chat.chatId),
+        clientMessageId: `kin-connection-ask:${askId}`,
+        question: card.question,
+        detail: card.detail,
+        options: [
+          { label: "Confirm", kind: "yes" },
+          { label: "Cancel", kind: "no" },
+        ],
+        send: card.send,
+      },
+      (widget) =>
+        sql`UPDATE kin_connection_asks SET widget_id = ${widget.widgetId}
+          WHERE org_id = ${turn.orgId} AND ask_id = ${askId} AND widget_id IS NULL`.pipe(
+          Effect.asVoid,
+        ),
+    );
+    yield* record(turn, { ...entry, status: "awaiting_approval" });
+    return { note: ASKED };
+  });
+
+  const askRow = (sql: SqlClient.SqlClient, orgId: KinOrgId) => sql`SELECT k.ask_id AS "askId",
+      k.connection_id AS "connectionId", k.tool_name AS "toolName", k.pin_digest AS "pinDigest",
+      k.payload_json AS payload, k.agent_id AS "agentId", k.chat_id AS "chatId", k.state,
+      k.entry_record_id AS "entryRecordId", a.owner_person_id AS owner, l.thread_id AS "threadId"
+    FROM kin_connection_asks k
+    JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
+    JOIN kin_leads l ON l.org_id = k.org_id AND l.agent_id = k.agent_id
+    WHERE k.org_id = ${orgId}`;
+
+  /**
+   * The owner's answer on an ask card, in the tap's transaction. Confirm moves it to sending
+   * only while the tool and every attached file are still what the card showed; otherwise it
+   * is stale and nothing is sent. Any other card is not this one's business.
+   */
+  const answerAsk = Effect.fn("KinConnections.answerAsk")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: string;
+      readonly personId: string;
+      readonly confirmed: boolean;
+      readonly via: "tap" | "reaction";
+      readonly now: number;
+    }) {
+      const tx = yield* SqlClient.SqlClient;
+      const [row] =
+        yield* tx<AskRow>`${askRow(tx, input.orgId)} AND k.widget_id = ${input.widgetId}`;
+      if (row === undefined) return undefined;
+      if (row.owner !== input.personId)
+        return yield* fail("not_allowed", "Only the owner confirms what Kin sends.");
+      if (input.via === "reaction")
+        return yield* fail("not_allowed", "Tap Confirm or Cancel on the card to answer it.");
+      if (row.state !== "open")
+        return yield* new KinChatError({
+          reason: "widget_changed",
+          message: "This was already answered.",
+        });
+      const decide = (state: string, reason: string | null) =>
+        tx`UPDATE kin_connection_asks SET state = ${state}, reason = ${reason},
+          decided_at = ${input.now}
+        WHERE org_id = ${input.orgId} AND ask_id = ${row.askId} AND state = 'open'`;
+      if (!input.confirmed) {
+        yield* decide("declined", null);
+        return { _tag: "declined" as const, askId: row.askId };
+      }
+      const prepared = Option.getOrUndefined(decodePrepared(row.payload));
+      const connection = yield* connectionById(input.orgId, row.connectionId);
+      const [tool] = (yield* toolsOf(input.orgId, row.connectionId)).filter(
+        (candidate) => candidate.name === row.toolName,
+      );
+      const reason =
+        prepared === undefined
+          ? "Kin can no longer read what this card was for, so nothing was sent."
+          : connection === undefined || connection.pausedAt !== null
+            ? "The connection is removed or paused, so nothing was sent."
+            : tool === undefined ||
+                !callable(tool) ||
+                tool.mode !== "ask" ||
+                tool.pinDigest !== row.pinDigest
+              ? `${row.toolName} changed or was switched off since this card was made, so nothing was sent.`
+              : (yield* attachmentsCurrent(input.orgId, prepared))
+                ? null
+                : "The attached document changed since this card was made, so nothing was sent. A fresh card is below.";
+      if (reason !== null) {
+        yield* decide("stale", reason);
+        return {
+          _tag: "stale" as const,
+          askId: row.askId,
+          reason,
+          fresh:
+            prepared?._tag === "email" && reason.endsWith("A fresh card is below.")
+              ? {
+                  prepared,
+                  row,
+                  label: connection?.label ?? "Gmail",
+                  account: connection?.accountLabel ?? null,
+                }
+              : undefined,
+        };
+      }
+      yield* decide("sending", null);
+      return { _tag: "send" as const, askId: row.askId };
+    },
+    Effect.mapError((error) => (isChatError(error) ? error : unavailable)),
+  );
+
+  /** The fresh card for a stale ask: the same mail with each file as it is now. */
+  const freshAsk = Effect.fn("KinConnections.freshAsk")(function* (
+    orgId: KinOrgId,
+    stale: StaleAsk,
+    now: number,
+  ) {
+    const attachments = yield* Effect.forEach(stale.prepared.attachments, (one) =>
+      attachmentOf(orgId, one.key).pipe(provideSql),
+    );
+    const prepared = { ...stale.prepared, attachments };
+    const payload = encodePrepared(prepared);
+    const askId = `ask_${NodeCrypto.createHash("sha256")
+      .update([orgId, stale.row.askId, payload].join("\n"))
+      .digest("hex")
+      .slice(0, 24)}`;
+    yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+        pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at)
+      SELECT org_id, ${askId}, connection_id, tool_name, pin_digest, ${payload}, agent_id,
+        wakeup_id, chat_id, ${attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null},
+        ${now}
+      FROM kin_connection_asks WHERE org_id = ${orgId} AND ask_id = ${stale.row.askId}
+      ON CONFLICT (org_id, ask_id) DO NOTHING`;
+    const card = sendCard({
+      service: stale.label,
+      account: stale.account,
+      tool: stale.row.toolName,
+      prepared,
+    });
+    return {
+      askId,
+      chatId: KinChatId.make(stale.row.chatId),
+      agent: {
+        _tag: "agent" as const,
+        orgId,
+        agentId: KinAgentId.make(stale.row.agentId),
+        ownerPersonId: KinPersonId.make(stale.row.owner),
+        threadId: ThreadId.make(stale.row.threadId),
+      },
+      card,
+      bind: (widgetId: string) =>
+        sql`UPDATE kin_connection_asks SET widget_id = ${widgetId}
+          WHERE org_id = ${orgId} AND ask_id = ${askId} AND widget_id IS NULL`.pipe(Effect.asVoid),
+    };
+  }, settle);
+
+  /**
+   * Sends what a confirmed ask holds, once: only an ask the owner's tap moved to sending. The
+   * outcome is kept on the ask and returned for its card.
+   */
+  const sendAsk = Effect.fn("KinConnections.sendAsk")(function* (orgId: KinOrgId, askId: string) {
+    const [row] = yield* sql<AskRow>`${askRow(sql, orgId)} AND k.ask_id = ${askId}`;
+    if (row === undefined || row.state !== "sending")
+      return { state: "failed" as const, reason: "This was not confirmed, so nothing was sent." };
+    const finish = Effect.fnUntraced(function* (
+      state: "sent" | "failed",
+      reason: string | null,
+      result: unknown,
+    ) {
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`UPDATE kin_connection_asks SET state = ${state}, reason = ${reason},
+          result_json = ${result === null ? null : toJson(result)}, done_at = ${now}
+        WHERE org_id = ${orgId} AND ask_id = ${askId} AND state = 'sending'`;
+      yield* touched(orgId);
+      return { state, reason } satisfies AskOutcome;
+    });
+    const connection = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
+    const prepared = Option.getOrUndefined(decodePrepared(row.payload));
+    if (connection === undefined || prepared === undefined)
+      return yield* finish("failed", "The connection is gone, so nothing was sent.", null);
+    const sent = yield* (
+      prepared._tag === "call"
+        ? Effect.gen(function* () {
+            const [tool] = (yield* toolsOf(orgId, row.connectionId).pipe(provideSql)).filter(
+              (candidate) => candidate.name === row.toolName,
+            );
+            if (tool === undefined)
+              return yield* fail("unavailable", `${row.toolName} is gone, so nothing was sent.`);
+            const definition = yield* decodeTool(tool.acceptedJson ?? tool.definitionJson).pipe(
+              Effect.mapError(() => fail("unavailable", `Kin couldn't read ${tool.name}.`)),
+            );
+            const result = yield* callFor(orgId, connection, definition, prepared.args);
+            if (result.isError === true)
+              return yield* fail("unavailable", `${connection.label} answered with an error.`);
+            return { messageId: null, threadId: null, eventId: null };
+          })
+        : withSignIn(orgId, connection, (force) =>
+            googleToken(orgId, connection, force).pipe(
+              Effect.flatMap((token) =>
+                sendGoogle(http, token, prepared).pipe(provideSql, Effect.provide(files)),
+              ),
+            ),
+          )
+    ).pipe(Effect.result);
+    if (sent._tag === "Failure")
+      return yield* finish(
+        "failed",
+        isChatError(sent.failure) || isGatewayError(sent.failure)
+          ? sent.failure.message
+          : "Kin couldn't send it.",
+        null,
+      );
+    const done = yield* finish("sent", null, sent.success);
+    if (prepared._tag === "email" && row.entryRecordId !== null)
+      yield* sentToClient({ orgId, entryRecordId: row.entryRecordId, to: prepared.to });
+    return done;
+  }, settle);
 
   const offer = leadOp("offer", (scope, input: typeof KinConnectionOfferInput.Type) =>
     Effect.gen(function* () {
@@ -1060,9 +2038,17 @@ const make = Effect.gen(function* () {
     setReach,
     remove,
     calls,
+    signInStart,
+    signInFinish,
+    setSignInClient,
+    activity,
+    activitySeen,
     tools,
     call,
     offer,
+    answerAsk,
+    freshAsk,
+    sendAsk,
   });
 });
 

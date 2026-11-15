@@ -235,6 +235,7 @@ export const KIN_RPC_SCOPES = {
   "kin.groups.setLead": AuthSettingsWriteScope,
   "kin.groups.rename": AuthSettingsWriteScope,
   "kin.groups.delete": AuthSettingsWriteScope,
+  "kin.groups.setCompany": AuthSettingsWriteScope,
   "kin.triggers.getTimeZone": AuthKinChatScope,
   "kin.triggers.setTimeZone": AuthSettingsWriteScope,
   "kin.webhooks.github.setup": AuthSettingsWriteScope,
@@ -287,6 +288,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.groups.setLead": "kin-chat",
   "kin.groups.rename": "kin-chat",
   "kin.groups.delete": "kin-chat",
+  "kin.groups.setCompany": "kin-chat",
   "kin.chat.subscribe": "kin-chat",
   "kin.chat.history": "kin-chat",
   "kin.messages.send": "kin-chat",
@@ -405,4 +407,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.connections.setReach": "kin-connections",
   "kin.connections.remove": "kin-connections",
   "kin.connections.calls": "kin-connections",
+  "kin.connections.signInStart": "kin-connections",
+  "kin.connections.signInFinish": "kin-connections",
+  "kin.connections.setSignInClient": "kin-connections",
 } as const;

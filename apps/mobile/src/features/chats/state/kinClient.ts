@@ -607,6 +607,11 @@ export const kinClient = {
     tag: "kin.groups.rename",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.chatId },
   }),
+  groupSetCompany: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:group:set-company",
+    tag: "kin.groups.setCompany",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+  }),
   groupDelete: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "kin:group:delete",
     tag: "kin.groups.delete",
@@ -713,6 +718,20 @@ export const kinClient = {
     label: "kin:connection:remove",
     tag: "kin.connections.remove",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionSignInStart: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:signInStart",
+    tag: "kin.connections.signInStart",
+  }),
+  connectionSignInFinish: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:signInFinish",
+    tag: "kin.connections.signInFinish",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:signIn` },
+  }),
+  connectionSetSignInClient: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:setSignInClient",
+    tag: "kin.connections.setSignInClient",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:client` },
   }),
   /** The outside hosts the owner lets visuals load from. Owner only. */
   visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {

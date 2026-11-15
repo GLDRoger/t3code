@@ -191,6 +191,20 @@ export function KinInvoiceActions(
 }
 
 /** Balance due and what came in; a void invoice says so instead of owing. */
+/** Where the invoice was sent from Kin, newest first. */
+export function KinInvoiceSent(props: { readonly invoice: KinInvoiceView }) {
+  if (props.invoice.sent.length === 0) return null;
+  return (
+    <View className="gap-0.5">
+      {props.invoice.sent.map((line) => (
+        <Text key={line} textRole="footnote" className="text-foreground-muted">
+          {line}
+        </Text>
+      ))}
+    </View>
+  );
+}
+
 export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
   const { invoice } = props;
   if (invoice.void)

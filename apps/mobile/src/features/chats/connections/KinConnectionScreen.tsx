@@ -2,18 +2,18 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CONNECTIONS_COPY as COPY,
-  createKinConnectionActions,
   kinAcceptAll,
   kinCallRow,
   kinConnectionChange,
   kinConnectionStatus,
   kinSuggestedModes,
   kinToolRows,
-  kinToolSwitch,
+  kinToolMark,
+  kinToolModeLabel,
   type KinToolRow,
 } from "@t3tools/client-runtime/kin/kinConnections";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
-import type { KinConnectionId } from "@t3tools/contracts";
+import type { KinConnectionId, KinConnectionToolMode } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -29,11 +29,13 @@ import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { ListSection } from "../../../components/ui/ListSection";
 import { ListToggleRow } from "../../../components/ui/ListToggleRow";
 import { Notice } from "../../../components/ui/Notice";
+import { SegmentedControl } from "../../../components/ui/SegmentedControl";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../../lib/clock";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
+import { kinSignInInApp, kinSignInReturn, useKinConnectionActions } from "./kinConnectionSignIn";
 import {
   decodeConnectionId,
   decodeConnectionsTarget,
@@ -76,14 +78,7 @@ function ConnectionRecord(props: {
   const refresh = useAtomCommand(kinClient.connectionRefresh, { reportFailure: false });
   const update = useAtomCommand(kinClient.connectionUpdate, { reportFailure: false });
   const setReach = useAtomCommand(kinClient.connectionSetReach, { reportFailure: false });
-  const add = useAtomCommand(kinClient.connectionAdd, { reportFailure: false });
-  const remove = useAtomCommand(kinClient.connectionRemove, { reportFailure: false });
-  const actions = createKinConnectionActions({
-    orgId,
-    add: (input) => add({ environmentId, input }),
-    remove: (input) => remove({ environmentId, input }),
-    refresh: reload,
-  });
+  const actions = useKinConnectionActions(environmentId, orgId, reload);
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -126,10 +121,24 @@ function ConnectionRecord(props: {
   const rows = kinToolRows(detail.tools);
   const suggested = kinSuggestedModes(rows);
   const changed = rows.filter((row) => row.state === "changed");
-  const switchTool = (row: KinToolRow, on: boolean) =>
+  const markTool = (row: KinToolRow, mode: KinConnectionToolMode) => {
+    if (busy !== null || mode === row.mode) return;
     void run(`tool:${row.name}`, "change that tool", () =>
-      setModes({ environmentId, input: { ...ref, modes: kinToolSwitch(row, on) } }),
+      setModes({ environmentId, input: { ...ref, modes: kinToolMark(row, mode) } }),
     );
+  };
+  const signInAgain = async () => {
+    if (busy !== null) return;
+    setBusy("signIn");
+    setProblem(null);
+    const started = await actions.signInAgain(props.connectionId, kinSignInReturn());
+    const response = started.ok ? await kinSignInInApp(started.value.authorizationUrl) : null;
+    const done = response === null ? null : await actions.signInFinish(response);
+    setBusy(null);
+    reload();
+    if (!started.ok) setProblem(started.problem);
+    else if (done !== null && !done.ok) setProblem(done.problem);
+  };
   const confirmRemove = () =>
     Dialog.alert(COPY.removeTitle(connection.label), COPY.removeDetail, [
       { text: "Cancel", style: "cancel" },
@@ -197,13 +206,22 @@ function ConnectionRecord(props: {
             ) : (
               rows.map((row) => (
                 <View key={row.name}>
-                  <ListToggleRow
-                    label={row.title}
-                    description={toolLine(row)}
-                    value={row.on}
-                    disabled={busy !== null}
-                    onValueChange={(on) => switchTool(row, on)}
-                  />
+                  <View className="gap-1 bg-grouped-card pb-3">
+                    <ListRowLayout label={row.title} description={toolLine(row)} />
+                    <View className="px-4">
+                      <SegmentedControl
+                        options={row.modes.map((mode) => ({
+                          value: mode,
+                          label: kinToolModeLabel(mode),
+                          accessibilityLabel: `${row.title}: ${kinToolModeLabel(mode)}`,
+                        }))}
+                        selected={row.mode}
+                        onSelect={(mode) => markTool(row, mode)}
+                        size="compact"
+                        variant="card"
+                      />
+                    </View>
+                  </View>
                   {row.change === null ? null : (
                     <>
                       <View className="gap-2 bg-grouped-card px-4 pb-3">
@@ -301,6 +319,14 @@ function ConnectionRecord(props: {
                 navigation.navigate("KinConnectionEdit", { ...props.params, edit: "rename" })
               }
             />
+            {connection.auth === "oauth" ? (
+              <ListActionRow
+                label={COPY.signInAgain}
+                loading={busy === "signIn"}
+                disabled={busy !== null}
+                onPress={() => void signInAgain()}
+              />
+            ) : null}
             {connection.auth === "key" ? (
               <ListActionRow
                 label={COPY.replaceKey}
@@ -335,6 +361,7 @@ function ConnectionRecord(props: {
 const toolLine = (row: KinToolRow) =>
   [
     row.state === "changed" ? COPY.changedTitle : null,
+    row.alwaysAsk ? COPY.alwaysAsk : null,
     row.change === null ? row.description : null,
     row.openWeb ? COPY.openWeb : null,
   ]
