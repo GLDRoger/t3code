@@ -36,7 +36,7 @@ import { listDef } from "../registers.ts";
 import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
 import type { FileOutcome } from "./statementFiles.ts";
 import { readIsolated } from "./statementReader.ts";
-import { matchRows, type RowMatch } from "./statementMatch.ts";
+import { matchRows, type RowMatch, SALARIES } from "./statementMatch.ts";
 import {
   defaultSelection,
   type Held,
@@ -213,6 +213,27 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
       AND r.amount_minor IS NOT NULL
       AND COALESCE(r.date_at, r.due_at, r.created_at) >= ${Date.parse(`${earliest}T00:00:00Z`) - 60 * 86_400_000}
     ORDER BY r.key`;
+  // Recorded on an invoice and not yet any statement's row: a bank row may be that money arriving.
+  const payments = yield* sql<{
+    paymentId: string;
+    recordId: string;
+    key: string;
+    title: string;
+    currency: string;
+    amountMinor: number;
+    paidOn: string;
+    note: string;
+    client: string | null;
+  }>`SELECT p.payment_id AS "paymentId", r.record_id AS "recordId", r.key, r.title, p.currency,
+      p.amount_minor AS "amountMinor", p.paid_on AS "paidOn", p.note, c.title AS client
+    FROM kin_record_payments p
+    JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
+    WHERE p.org_id = ${orgId} AND r.register_id = 'invoices' AND p.voided_at IS NULL
+      AND p.withheld = 0 AND p.paid_on >= ${dayIn(Date.parse(`${earliest}T00:00:00Z`) - 15 * 86_400_000, "UTC")}
+      AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e
+        WHERE e.org_id = p.org_id AND e.payment_id = p.payment_id)
+    ORDER BY p.paid_on, p.payment_id`;
   const vendors = yield* sql<{ vendor: string | null; category: string | null }>`
     SELECT json_extract(fields_json, '$.vendor') AS vendor, category FROM kin_records
     WHERE org_id = ${orgId} AND register_id = 'expenses' AND state = 'done'
@@ -242,6 +263,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         number: fieldText(fields, "number"),
       };
     }),
+    payments,
     expenses: expenseRows
       .filter((row) => row.linked === 0)
       .map((row) => ({
@@ -494,20 +516,20 @@ export const expenseCategories = Effect.fn("KinStatements.expenseCategories")(fu
   orgId: KinOrgId,
 ) {
   const def = yield* listDef(orgId, "expenses");
-  return (
-    def?.categories ?? [
-      "travel",
-      "software",
-      "hardware",
-      "office",
-      "meals",
-      "contractors",
-      "rent",
-      "fees",
-      "taxes",
-      "other",
-    ]
-  );
+  const listed = def?.categories ?? [
+    "travel",
+    "software",
+    "hardware",
+    "office",
+    "meals",
+    "contractors",
+    "rent",
+    "fees",
+    "taxes",
+    "other",
+  ];
+  // Confirm adds it to the list the first time a salary is recorded.
+  return listed.includes(SALARIES) ? listed : [...listed, SALARIES];
 });
 
 const decodeSelection = Schema.decodeUnknownOption(Schema.fromJsonString(KinStatementSelection));

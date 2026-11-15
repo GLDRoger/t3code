@@ -52,6 +52,8 @@ import { sharedToolAllowed } from "../../lead/SharedTools.ts";
 import * as KinPersistence from "../../persistence/KinPersistence.ts";
 import * as KinRecords from "../KinRecords.ts";
 import * as LeadStatements from "../leadStatements.ts";
+import * as LeadWork from "../leadWork.ts";
+import { OPEN_INVOICE_NOTE } from "./statementCard.ts";
 import { moneySummary } from "../moneyViews.ts";
 import * as OwnerStatements from "../ownerStatements.ts";
 import { defineList, PRESETS } from "../registers.ts";
@@ -317,14 +319,18 @@ const confirmOf = (card: KinStatementReviewCard) => ({
 const confirmAll = (card: KinStatementReviewCard) =>
   choose(card, [
     { _tag: "tickAll", ticked: true },
-    ...card.choose.map((one) => ({ _tag: "pick" as const, row: one.row, option: 0 })),
+    ...card.choose
+      .filter((one) => one.options[0]?.note !== OPEN_INVOICE_NOTE)
+      .map((one) => ({ _tag: "pick" as const, row: one.row, option: 0 })),
     { _tag: "suggestions" },
   ]).pipe(Effect.map(confirmOf));
 /** Everything the card proposes, each pick an entry no other row took. */
 const confirmEach = (card: KinStatementReviewCard) => {
   const taken = new Set(card.matched.map((one) => one.target.key));
   const picks = card.choose.flatMap((one) => {
-    const option = one.options.find((target) => !taken.has(target.key));
+    const option = one.options.find(
+      (target) => !taken.has(target.key) && target.note !== OPEN_INVOICE_NOTE,
+    );
     if (option === undefined) return [];
     taken.add(option.key);
     return [{ _tag: "pick" as const, row: one.row, option: option.option }];
@@ -563,6 +569,69 @@ describe("bank statements", () => {
       assert.strictEqual(again.card.status, "applied");
       assert.strictEqual((yield* records.get(orgId, keys.exact))!.state, "done");
     }).pipe(Effect.provide(layer)),
+  );
+
+  // F28: a credit whose money was already recorded by hand is that payment, not a second one.
+  it.effect("matches a credit to the payment already on its invoice, and undo leaves it", () =>
+    Effect.gen(function* () {
+      const keys = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      yield* records.pay(orgId, owner, keys.exact, {
+        amount: { minor: 11_800_000, currency: "INR" },
+        paidOn: "2026-10-02",
+        note: "UTR N275260001234567",
+        originKey: "by-hand",
+      });
+      const result = yield* read(1, "hdfc-account.pdf");
+      const { card } = yield* reviewCardOf(result.statement);
+      const row = card.matched.find((one) => one.target.key === keys.exact);
+      assert.include(row?.target.note, "already recorded");
+      yield* OwnerStatements.apply(people, yield* confirmAll(card));
+      const payments = () =>
+        sql<{ voided: number | null }>`SELECT voided_at AS voided FROM kin_record_payments p
+          JOIN kin_records r ON r.record_id = p.record_id WHERE r.key = ${keys.exact}`;
+      assert.deepStrictEqual(yield* payments(), [{ voided: null }]);
+      yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
+      assert.deepStrictEqual(yield* payments(), [{ voided: null }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  // F35: a lead can't call a bank row explained when nothing records its money.
+  it.effect(
+    "keeps a bank row unexplained until its money is recorded or it is said to be a transfer",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const result = yield* read(1, "hdfc-account.pdf");
+        const { card } = yield* reviewCardOf(result.statement);
+        const later = yield* choose(
+          card,
+          card.unmatched.map((one) => ({
+            _tag: "action" as const,
+            row: one.row,
+            action: "later" as const,
+          })),
+        );
+        yield* OwnerStatements.apply(people, confirmOf(later));
+        const [open] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE state = 'open' AND register_id = 'bank_transactions' ORDER BY key LIMIT 1`;
+        const event = yield* turn(2);
+        const refused = yield* LeadWork.update(scope, {
+          sourceEventId: event,
+          key: open!.key,
+          state: "done",
+        }).pipe(Effect.flip);
+        assert.isTrue(isChatError(refused) && refused.reason === "invalid_state");
+        const said = yield* LeadWork.update(scope, {
+          sourceEventId: event,
+          key: open!.key,
+          state: "done",
+          category: "transfer",
+        });
+        assert.strictEqual(said.state, "done");
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("adds nothing twice: the same statement sent again, then an overlapping one", () =>
@@ -1320,14 +1389,19 @@ describe("bank statements", () => {
             }),
           );
           assert.strictEqual(result.rows, 20);
-          // Not remembered for the account, and in no table but the owner's own message.
+          // Not remembered for the account, and in no table: F31, the owner's message hides it once used.
           assert.deepStrictEqual(
             (yield* OwnerStatements.passwords(people, { orgId })).accounts,
             [],
           );
+          assert.include(
+            (yield* sql<{ body: string }>`SELECT body FROM kin_messages WHERE kind = 'text'
+              AND author_kind = 'human' ORDER BY seq`).map((one) => one.body),
+            "It's lake0000, or else ••••••",
+          );
           const tables = yield* sql<{ name: string }>`SELECT name FROM sqlite_master
           WHERE type = 'table' ORDER BY name`;
-          for (const { name: table } of tables.filter((one) => one.name !== "kin_messages"))
+          for (const { name: table } of tables)
             assert.notInclude(
               JSON.stringify(yield* sql.unsafe(`SELECT * FROM "${table}"`)),
               PASSWORD,
@@ -2135,9 +2209,18 @@ describe("bank statement safety", () => {
       assert.deepStrictEqual(
         [
           ...card.matched.map((one) => one.target.key),
-          ...card.choose.flatMap((one) => one.options.map((o) => o.key)),
+          ...card.choose.flatMap((one) =>
+            one.options.filter((o) => o.note !== OPEN_INVOICE_NOTE).map((o) => o.key),
+          ),
         ],
         [rent.key],
+      );
+      // F28: money in that nothing matched may still be picked as an open invoice's payment.
+      assert.deepStrictEqual(
+        card.choose
+          .find((one) => one.text.startsWith("NEFT CR-SOMEONE NEW"))
+          ?.options.map((o) => o.note),
+        [OPEN_INVOICE_NOTE, OPEN_INVOICE_NOTE],
       );
     }).pipe(Effect.provide(layer)),
   );

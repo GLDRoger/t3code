@@ -32,6 +32,18 @@ export type ExpenseCandidate = {
   readonly vendor: string | null;
   readonly repeats: boolean;
 };
+/** A payment already recorded on an invoice, by hand or from another statement, with no bank row. */
+export type PaymentCandidate = {
+  readonly paymentId: string;
+  readonly recordId: string;
+  readonly key: string;
+  readonly title: string;
+  readonly currency: string;
+  readonly amountMinor: number;
+  readonly paidOn: string;
+  readonly note: string;
+  readonly client: string | null;
+};
 /** A past expense, to name a new one the way the owner named the last. */
 export type KnownVendor = { readonly vendor: string; readonly category: string | null };
 
@@ -40,9 +52,12 @@ export type Candidate = {
   readonly recordId: string;
   readonly key: string;
   readonly title: string;
-  readonly fit: "exact" | "tds" | "part" | "foreign";
+  /** `recorded`: the row is a payment already on the invoice, `paymentId`; nothing new is paid. */
+  /** `open`: an open invoice offered for money nothing matched, only for the owner to pick. */
+  readonly fit: "exact" | "tds" | "part" | "foreign" | "recorded" | "open";
   /** The TDS a client deducted, when `fit` is tds. */
   readonly tdsMinor?: number;
+  readonly paymentId?: string;
   readonly score: number;
   readonly why: ReadonlyArray<string>;
 };
@@ -116,7 +131,10 @@ const invoiceCandidate = (
   invoice: InvoiceCandidate,
   currency: string,
 ): Candidate | undefined => {
-  if (invoice.currency !== currency) return undefined;
+  // Money for an invoice in another currency is proved only by that amount in the narration.
+  const foreign = invoice.currency !== currency;
+  if (foreign && row.foreign?.currency !== invoice.currency) return undefined;
+  const received = foreign ? row.foreign!.amountMinor : row.amountMinor;
   if (invoice.issued !== null && daysBetween(invoice.issued, row.date) < 0) return undefined;
   const balance = invoice.amountMinor - invoice.paidMinor;
   if (balance <= 0) return undefined;
@@ -124,7 +142,13 @@ const invoiceCandidate = (
   let score = 0;
   let fit: Candidate["fit"] | undefined;
   let tdsMinor: number | undefined;
-  if (row.amountMinor === balance) {
+  if (foreign && received === balance) {
+    fit = "foreign";
+    score += 50;
+    why.push(`same ${invoice.currency} amount`);
+  } else if (foreign) {
+    // A part or a TDS cut in another currency is the owner's to say.
+  } else if (row.amountMinor === balance) {
     fit = "exact";
     score += 50;
     why.push("same amount");
@@ -164,7 +188,7 @@ const invoiceCandidate = (
     score += Math.round(30 * named);
     why.push("client named");
   }
-  if (fit === undefined && row.amountMinor < balance && (numbered || named >= 0.5)) {
+  if (fit === undefined && !foreign && row.amountMinor < balance && (numbered || named >= 0.5)) {
     fit = "part";
     score += 10;
     why.push("part of what is owed");
@@ -177,6 +201,45 @@ const invoiceCandidate = (
     title: invoice.title,
     fit,
     ...(tdsMinor === undefined ? {} : { tdsMinor }),
+    score,
+    why,
+  };
+};
+
+const paymentCandidate = (
+  row: StatementRow,
+  payment: PaymentCandidate,
+  currency: string,
+): Candidate | undefined => {
+  if (payment.currency !== currency || payment.amountMinor !== row.amountMinor) return undefined;
+  const gap = daysBetween(payment.paidOn, row.date);
+  if (gap < -10 || gap > 10) return undefined;
+  const why = ["already recorded", "same amount"];
+  let score = 40;
+  if (
+    row.reference !== null &&
+    squashed(row.reference).length >= 6 &&
+    squashed(payment.note).includes(squashed(row.reference))
+  ) {
+    score += 40;
+    why.push("same reference");
+  }
+  const named = payment.client === null ? 0 : nameIn(payment.client, row.description);
+  if (named >= 0.5) {
+    score += Math.round(20 * named);
+    why.push("client named");
+  }
+  if (Math.abs(gap) <= 3) {
+    score += 10;
+    why.push("same days");
+  }
+  return {
+    kind: "invoice",
+    recordId: payment.recordId,
+    key: payment.key,
+    title: payment.title,
+    fit: "recorded",
+    paymentId: payment.paymentId,
     score,
     why,
   };
@@ -235,7 +298,8 @@ const CHARGES =
   /chgs|charges|\bfees?\b|annual fee|gst on|sms chg|min(imum)? bal|cash handling|commission|penalty/i;
 const TAX =
   /\bcbdt\b|\btds\b|\bgst ?(pmt|payment|challan)|\bgstn\b|advance tax|challan|income tax|\bitns\b/i;
-const PAYROLL = /salary|\bsal\b|payroll|drawings?|reimburse/i;
+const SALARY = /salary|salaries|\bsal\b|payroll|wages|stipend/i;
+const DRAWINGS = /drawings?|reimburse/i;
 const INTEREST = /\bint\.?\s?(pd|paid|cr)\b|interest|cashback|refund|reversal|\brev\b/i;
 const CATEGORIES: ReadonlyArray<readonly [RegExp, string]> = [
   [
@@ -253,6 +317,19 @@ const CATEGORIES: ReadonlyArray<readonly [RegExp, string]> = [
 ];
 
 /** Who a narration paid, from the way banks write UPI, card, NEFT and ACH lines. */
+export const SALARIES = "salaries";
+const CHANNEL =
+  /^(?:upi|pos|neft|imps|rtgs|nach|ach|ecs|atm|inb|ib|mb|bil|billpay|dr|cr|p2m|p2a|to|by|trf|transfer|purchase|txn|salary|sal)\b[\s\-/:.]*/i;
+/** A payee's name without the bank's words before it: channel, direction and reference numbers. */
+const payee = (text: string) => {
+  let rest = text.trim();
+  for (let left = 8; left > 0; left -= 1) {
+    const next = rest.replace(CHANNEL, "").replace(/^[\d\s\-/:.]+(?=\D)/, "");
+    if (next === rest) break;
+    rest = next;
+  }
+  return rest;
+};
 export const vendorOf = (narration: string): string | undefined => {
   const said = narration.replace(/\s+/g, " ").trim();
   const parts = (text: string) =>
@@ -271,7 +348,7 @@ export const vendorOf = (narration: string): string | undefined => {
   else if (/^ACH\s?D?[-\s]/i.test(said)) found = said.replace(/^ACH\s?D?[-\s]+/i, "").split("-")[0];
   else if (/^POS\b/i.test(said)) found = said.replace(/^POS\s+\S*\d{4}\S*\s+/i, "");
   else found = said;
-  const cleaned = (found ?? "")
+  const cleaned = payee(found ?? "")
     .replace(/\b(USD|EUR|GBP|SGD|AED|AUD|CAD)\s?[\d,.]+/gi, "")
     .replace(/\*.*$/, "")
     .replace(/\.(com|in|io|co)\b.*$/i, "")
@@ -323,8 +400,15 @@ export const suggest = (
       category: "fees",
       why: "Bank charges",
     };
-  if (PAYROLL.test(text)) return { action: "ignore", why: "Salary, drawings or a reimbursement" };
+  if (DRAWINGS.test(text)) return { action: "ignore", why: "Drawings or a reimbursement" };
   const guessed = vendorOf(text);
+  if (SALARY.test(text))
+    return {
+      action: "expense",
+      ...(guessed === undefined ? {} : { vendor: guessed }),
+      category: SALARIES,
+      why: "A salary",
+    };
   const known = input.known
     .map((one) => ({ one, fit: nameIn(one.vendor, text) }))
     .filter((one) => one.fit >= 0.5)
@@ -339,12 +423,48 @@ export const suggest = (
   };
 };
 
+/**
+ * Money in that nothing matched and that isn't a transfer, interest or a refund: the open
+ * invoices it could pay, for the owner to choose. Never proposed, so never ticked.
+ */
+const openInvoices = (
+  row: StatementRow,
+  input: Parameters<typeof suggest>[1] & {
+    readonly currency: string;
+    readonly invoices: ReadonlyArray<InvoiceCandidate>;
+  },
+): ReadonlyArray<Candidate> => {
+  if (row.direction !== "credit" || suggest(row, input).action !== "later") return [];
+  return input.invoices
+    .filter(
+      (invoice) =>
+        invoice.currency === input.currency &&
+        (invoice.issued === null || daysBetween(invoice.issued, row.date) >= 0) &&
+        invoice.amountMinor - invoice.paidMinor >= row.amountMinor,
+    )
+    .map((invoice): Candidate => {
+      const named = invoice.client === null ? 0 : nameIn(invoice.client, row.description);
+      return {
+        kind: "invoice",
+        recordId: invoice.recordId,
+        key: invoice.key,
+        title: invoice.title,
+        fit: "open",
+        score: Math.round(20 * named),
+        why: ["an open invoice"],
+      };
+    })
+    .toSorted((left, right) => right.score - left.score || left.key.localeCompare(right.key))
+    .slice(0, 5);
+};
+
 /** Each row's candidates, best first, and whether one is clear enough to propose on its own. */
 export const matchRows = (
   rows: ReadonlyArray<StatementRow>,
   input: {
     readonly currency: string;
     readonly invoices: ReadonlyArray<InvoiceCandidate>;
+    readonly payments?: ReadonlyArray<PaymentCandidate>;
     readonly expenses: ReadonlyArray<ExpenseCandidate>;
     readonly ownAccounts: ReadonlyArray<string>;
     readonly known: ReadonlyArray<KnownVendor>;
@@ -355,13 +475,21 @@ export const matchRows = (
   const results = rows.map((row) => {
     const candidates = (
       row.direction === "credit"
-        ? input.invoices.map((invoice) => invoiceCandidate(row, invoice, input.currency))
+        ? [
+            ...input.invoices.map((invoice) => invoiceCandidate(row, invoice, input.currency)),
+            ...(input.payments ?? []).map((payment) =>
+              paymentCandidate(row, payment, input.currency),
+            ),
+          ]
         : input.expenses.map((expense) => expenseCandidate(row, expense, input.currency))
     )
       .filter((one): one is Candidate => one !== undefined && one.score >= PROPOSED)
       .toSorted((left, right) => right.score - left.score || left.key.localeCompare(right.key))
       .slice(0, 5);
-    return { row, candidates };
+    return {
+      row,
+      candidates: candidates.length > 0 ? candidates : openInvoices(row, input),
+    };
   });
   // One entry answers one row: the clearest claim keeps it, and the others see it as taken.
   const order = results

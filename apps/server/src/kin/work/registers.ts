@@ -109,6 +109,7 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
       "rent",
       "fees",
       "taxes",
+      "salaries",
       "other",
     ],
     fields: [
