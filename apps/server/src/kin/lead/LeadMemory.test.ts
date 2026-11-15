@@ -368,6 +368,7 @@ it.live(
           "kin_follow_up",
           "kin_worker_stop",
           "kin_leads",
+          "people_read",
           "kin_hand_off",
           "kin_ask",
           "kin_chart",

@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { KinChatError, KinPeopleRpcs } from "@t3tools/contracts";
+import { KinChatError, KinPeopleRpcs, type KinAgentId, type KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -8,6 +8,8 @@ import { KinServer } from "../KinServer.ts";
 import * as People from "./KinPeople.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
 import { KinPeople } from "./KinPeople.ts";
+import * as LeadProvision from "../lead/KinLeadProvision.ts";
+import { toLeadError } from "../chat/rpcHandlers.ts";
 
 const group = RpcGroup.make(...KinPeopleRpcs);
 const isKinError = Schema.is(KinChatError);
@@ -32,6 +34,19 @@ export const makeKinPeopleHandlers = Effect.fn("makeKinPeopleHandlers")(function
       Effect.flatMap(body),
       Effect.mapError((e) => (isKinError(e) ? e : unavailable)),
     );
+  const setTeamAgent = Effect.fn("kin.org.setTeamAgent")(
+    function* (input: { readonly orgId: KinOrgId; readonly agentId: KinAgentId | null }) {
+      const services = Option.flatMap(kin, (k) => k.services);
+      if (Option.isNone(services)) return yield* unavailable;
+      return yield* LeadProvision.setTeamAgent({
+        editor: { _tag: "session", session },
+        ...input,
+      }).pipe(Effect.provideContext(services.value));
+    },
+    Effect.mapError(toLeadError),
+    Effect.tapError((e) => (isKinError(e) ? Effect.void : Effect.logWarning("Kin RPC failed.", e))),
+    Effect.mapError((e) => (isKinError(e) ? e : unavailable)),
+  );
   return group.of({
     "kin.people.listInvites": (input) => run((p) => p.listInvites(session, input.orgId)),
     "kin.people.revokeInvite": (input) => run((p) => p.revokeInvite(session, input)),
@@ -41,5 +56,8 @@ export const makeKinPeopleHandlers = Effect.fn("makeKinPeopleHandlers")(function
     "kin.people.revokeDevice": (input) => run((p) => p.revokeDevice(session, input)),
     "kin.people.removeAccess": (input) => run((p) => p.removeAccess(session, input)),
     "kin.people.setGithubLogin": (input) => run((p) => p.setGithubLogin(session, input)),
+    "kin.people.profiles": (input) => run((p) => p.profiles(session, input.orgId)),
+    "kin.people.updateProfile": (input) => run((p) => p.updateProfile(session, input)),
+    "kin.org.setTeamAgent": setTeamAgent,
   });
 });

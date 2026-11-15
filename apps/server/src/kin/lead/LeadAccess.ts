@@ -16,12 +16,40 @@ type Pair = {
 /** Each person has one direct chat per lead, found by this key. */
 export const directKey = (personId: KinPersonId, agentId: KinAgentId) => `${personId}:${agentId}`;
 
-/** Whether the lead's owner lets this person message it now. The owner needs no row. */
+/** The org's team agent while it is a live lead: everyone in the org may message it. */
+export const teamAgentSql = (sql: SqlClient.SqlClient, orgId: KinOrgId) => sql`(
+    SELECT o.agent_id FROM kin_team_agents o
+    JOIN kin_agents t ON t.org_id = o.org_id AND t.agent_id = o.agent_id
+      AND t.role = 'lead' AND t.retired_at IS NULL
+    WHERE o.org_id = ${orgId})`;
+
+export const teamAgent = Effect.fn("KinLeadAccess.teamAgent")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ agentId: KinAgentId | null }>`
+    SELECT ${teamAgentSql(sql, orgId)} AS "agentId"`;
+  return row?.agentId ?? null;
+});
+
+/**
+ * Whether this person may message the lead now: its owner let them, or it is the team agent.
+ * The owner needs neither.
+ */
 export const allowed = Effect.fn("KinLeadAccess.allowed")(function* (pair: Pair) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql`SELECT 1 FROM kin_lead_access x
-    JOIN kin_agents a ON a.org_id = x.org_id AND a.agent_id = x.agent_id
+  const rows = yield* sql`SELECT 1 FROM kin_agents a
+    WHERE a.org_id = ${pair.orgId} AND a.agent_id = ${pair.agentId}
       AND a.role = 'lead' AND a.retired_at IS NULL
+      AND (a.agent_id = ${teamAgentSql(sql, pair.orgId)} OR EXISTS (
+        SELECT 1 FROM kin_lead_access x WHERE x.org_id = a.org_id AND x.agent_id = a.agent_id
+          AND x.person_id = ${pair.personId} AND x.revoked_at IS NULL))
+    LIMIT 1`;
+  return rows.length > 0;
+});
+
+/** Whether the person's own row lets them message the lead, whatever the team agent is. */
+export const granted = Effect.fn("KinLeadAccess.granted")(function* (pair: Pair) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_lead_access x
     WHERE x.org_id = ${pair.orgId} AND x.agent_id = ${pair.agentId}
       AND x.person_id = ${pair.personId} AND x.revoked_at IS NULL
     LIMIT 1`;

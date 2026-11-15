@@ -105,6 +105,11 @@ it.effect(
       assert.strictEqual(yield* level(dm), "L2");
       assert.strictEqual(yield* level(group), "L0");
       assert.strictEqual(yield* level(KinChatId.make("dm-teammate")), "L0");
+      // As the team agent, it talks with every teammate in their DM, as an allowed lead does.
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, ${lead.agentId}, 'owner-org', 0)`;
+      assert.strictEqual(yield* level(KinChatId.make("dm-teammate")), "L1");
+      yield* sql`DELETE FROM kin_team_agents`;
       // A group the lead's owner owns, with the lead in it, works at L2 too; one someone else
       // owns, or one the lead has left, keeps the lead's own level.
       for (const [chat, owner] of [
