@@ -35,6 +35,7 @@ export type ConnectionRow = {
   readonly listedAt: number | null;
   readonly lastOkAt: number | null;
   readonly lastError: string | null;
+  readonly pausedAt: number | null;
   readonly removedAt: number | null;
 };
 
@@ -68,7 +69,7 @@ const connectionColumns = (sql: SqlClient.SqlClient) => sql`connection_id AS "co
   instructions_accepted_text AS "instructionsAcceptedText",
   instructions_accepted_digest AS "instructionsAcceptedDigest", created_at AS "createdAt",
   updated_at AS "updatedAt", listed_at AS "listedAt", last_ok_at AS "lastOkAt",
-  last_error AS "lastError", removed_at AS "removedAt"`;
+  last_error AS "lastError", paused_at AS "pausedAt", removed_at AS "removedAt"`;
 
 const toolColumns = (sql: SqlClient.SqlClient) => sql`connection_id AS "connectionId",
   tool_name AS name, definition_json AS "definitionJson", accepted_json AS "acceptedJson",
@@ -164,6 +165,7 @@ export const connectionView = (
   auth: row.auth,
   reach: row.reach,
   state: row.state,
+  paused: row.pausedAt !== null,
   accountLabel: row.accountLabel,
   protocolVersion: row.protocolVersion,
   instructions: row.instructionsText,
@@ -197,7 +199,7 @@ export const promptLine = Effect.fn("KinConnectionRows.promptLine")(function* (o
         const shown = names.slice(0, PROMPT_TOOLS).join(", ");
         const more = names.length > PROMPT_TOOLS ? ", …" : "";
         const who = `${JSON.stringify(row.label)}${row.accountLabel === null ? "" : ` ${JSON.stringify(row.accountLabel)}`}`;
-        return row.state === "needs_sign_in" || row.state === "error"
+        return row.pausedAt !== null || row.state === "needs_sign_in" || row.state === "error"
           ? `${who} (not reachable now)`
           : `${who} (read: ${read.length} tools${read.length === 0 ? "" : `: ${shown}${more}`})`;
       }),

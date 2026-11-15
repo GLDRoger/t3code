@@ -1008,10 +1008,15 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       (yield* operator["kin.leads.list"](org).pipe(Effect.flip))._tag,
       "EnvironmentAuthorizationError",
     );
-    assert.deepStrictEqual(yield* member["kin.leads.list"](org), { leads: [], contacts: [] });
+    assert.deepStrictEqual(yield* member["kin.leads.list"](org), {
+      leads: [],
+      contacts: [],
+      teamAgentId: null,
+    });
     assert.deepStrictEqual(yield* client["kin.leads.list"]({ orgId: KinOrgId.make("foreign") }), {
       leads: [],
       contacts: [],
+      teamAgentId: null,
     });
     const edit = { ...org, agentId: growth.agentId, charter: "Grow paid signups." };
     assert.deepStrictEqual(yield* client["kin.lead.update"](edit), {
@@ -1177,7 +1182,11 @@ it.effect(
         unauthorized,
       );
       // Nothing is hers until the owner says so.
-      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), { leads: [], contacts: [] });
+      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
+        leads: [],
+        contacts: [],
+        teamAgentId: null,
+      });
       assert.include(yield* priya["kin.chats.createDirect"](lead).pipe(Effect.flip), {
         reason: "not_allowed",
       });
@@ -1208,6 +1217,7 @@ it.effect(
             ownerName: "Owner",
           },
         ],
+        teamAgentId: null,
       });
       assert.strictEqual((yield* priya["kin.chats.createDirect"](lead)).chatId, chat.chatId);
       yield* send(priya, chat.chatId, "hers-1");
@@ -1256,7 +1266,11 @@ it.effect(
         reason: "not_allowed",
       });
       assert.lengthOf((yield* page(priya, chat.chatId)).messages, 1);
-      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), { leads: [], contacts: [] });
+      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
+        leads: [],
+        contacts: [],
+        teamAgentId: null,
+      });
       // Allowed again: the same chat.
       yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId });
       yield* send(priya, chat.chatId, "hers-3");

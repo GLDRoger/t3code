@@ -75,6 +75,8 @@ import { KinInviteDialog, type KinInviteDialogState } from "./KinInviteDialog";
 import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
 import { kinProfileRequestAtom, kinTeamAddRequestAtom } from "./kinTeamForm";
+import { openKinProfile } from "./KinProfileSheet";
+import { KinTeamAgentRow } from "./KinTeamAgent";
 import { useKinHostAt } from "./useKinHost";
 
 interface KinTeamTarget {
@@ -85,6 +87,7 @@ interface KinTeamTarget {
 const teamAtoms = ({ environmentId, orgId }: KinTeamTarget) => ({
   peopleAtom: kinClient.people({ environmentId, input: { orgId } }),
   invitesAtom: kinClient.invites({ environmentId, input: { orgId } }),
+  profilesAtom: kinClient.profiles({ environmentId, input: { orgId } }),
 });
 
 async function refreshKinTeam(target: KinTeamTarget) {
@@ -100,9 +103,10 @@ async function refreshKinTeam(target: KinTeamTarget) {
 /** The people and unopened links, once both have been read; what was last read stays up. */
 function useKinTeam(target: KinTeamTarget) {
   const { environmentId, orgId } = target;
-  const { peopleAtom, invitesAtom } = teamAtoms(target);
+  const { peopleAtom, invitesAtom, profilesAtom } = teamAtoms(target);
   const people = useAtomValue(peopleAtom);
   const invites = useAtomValue(invitesAtom);
+  const profiles = Option.getOrNull(AsyncResult.value(useAtomValue(profilesAtom)))?.profiles;
   const host = useKinHostAt(environmentId);
   const { personId } = kinFeedViewer(
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
@@ -114,7 +118,12 @@ function useKinTeam(target: KinTeamTarget) {
   const list: KinTeamList | null =
     heldPeople === null || heldInvites === null
       ? null
-      : { people: heldPeople.people, joined: heldPeople.joined, invites: heldInvites.invites };
+      : {
+          people: heldPeople.people,
+          joined: heldPeople.joined,
+          invites: heldInvites.invites,
+          profiles,
+        };
   return {
     list,
     failed: list === null && (AsyncResult.isFailure(people) || AsyncResult.isFailure(invites)),
@@ -290,6 +299,7 @@ function KinTeamBody(
             <AlertDescription>{edits.problem}</AlertDescription>
           </Alert>
         )}
+        <KinTeamAgentRow environmentId={environmentId} orgId={orgId} />
         {alone ? (
           <Empty size="compact">
             <EmptyHeader>
@@ -307,7 +317,15 @@ function KinTeamBody(
           <ul className="flex flex-col">
             {rows.map((row) => (
               <li key={row.key} className="border-b border-border/60 last:border-b-0">
-                <KinTeamRow row={row} onOpen={() => setOpenKey(row.key)} />
+                <KinTeamRow
+                  row={row}
+                  onOpen={() => {
+                    // Your own row is your profile; there is no access of yours to manage here.
+                    if (row.state === "you" && row.personId !== null)
+                      openKinProfile({ environmentId, orgId, personId: row.personId });
+                    else setOpenKey(row.key);
+                  }}
+                />
               </li>
             ))}
           </ul>
@@ -348,11 +366,13 @@ function KinTeamRow(props: { readonly row: KinTeammate; readonly onOpen: () => v
       <KinAvatar avatar={row.avatar} />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="truncate text-sm font-medium text-foreground">{row.name}</span>
+        {row.roles === "" ? null : (
+          <span className="truncate text-xs text-foreground/80">{row.roles}</span>
+        )}
         <span className="text-xs text-muted-foreground">{row.detail}</span>
       </span>
     </>
   );
-  if (row.state === "you") return <div className="flex items-center gap-3 px-2 py-3">{text}</div>;
   return (
     <button
       type="button"
@@ -426,6 +446,25 @@ function KinTeammateSheet(props: {
           </div>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
+          {teammate.personId === null ? null : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="self-start"
+              onClick={() => {
+                const personId = teammate.personId;
+                if (personId === null) return;
+                props.onClose();
+                openKinProfile({
+                  environmentId: props.environmentId,
+                  orgId: props.orgId,
+                  personId,
+                });
+              }}
+            >
+              Profile
+            </Button>
+          )}
           {kinTeammateKindEditable(teammate, props.viewer) ? (
             <Section title="What they can do">
               <RadioGroup

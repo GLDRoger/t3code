@@ -563,6 +563,10 @@
       "types": "./src/kin/kinAgentRetire.ts",
       "default": "./src/kin/kinAgentRetire.ts"
     },
+    "./kin/kinConnections": {
+      "types": "./src/kin/kinConnections.ts",
+      "default": "./src/kin/kinConnections.ts"
+    },
     "./kin/kinBudget": {
       "types": "./src/kin/kinBudget.ts",
       "default": "./src/kin/kinBudget.ts"
@@ -590,6 +594,10 @@
     "./kin/kinTeam": {
       "types": "./src/kin/kinTeam.ts",
       "default": "./src/kin/kinTeam.ts"
+    },
+    "./kin/kinProfiles": {
+      "types": "./src/kin/kinProfiles.ts",
+      "default": "./src/kin/kinProfiles.ts"
     },
     "./kin/kinListSwitch": {
       "types": "./src/kin/kinListSwitch.ts",

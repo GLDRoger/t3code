@@ -27,8 +27,8 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
 /**
  * The revisions this viewer may see, by their kind at each change, so making someone a co-owner
  * or a member again moves what they hear at once. Owner-level people read every topic. A member
- * reads only the time zone and their own lead list, which moves only when what that list shows
- * them (or their own kind) changed, so a change to something they can't read never reaches them.
+ * reads only the time zone, people's profiles and their own lead list, which moves only when what
+ * it shows them (or their own kind) changed, so a change they can't read never reaches them.
  */
 export const subscribeRefreshes = (
   people: ReadonlyArray<PersonIdentity>,
@@ -69,7 +69,8 @@ export const subscribeRefreshes = (
               shown = next;
             }
             heard = now;
-            return { timeZone: now.timeZone, leads } satisfies KinRefreshes;
+            // Everyone's profile is readable by the whole org.
+            return { timeZone: now.timeZone, people: now.people, leads } satisfies KinRefreshes;
           }),
         ),
         Stream.changesWith(same),

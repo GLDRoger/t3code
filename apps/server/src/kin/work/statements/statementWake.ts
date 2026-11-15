@@ -18,6 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatHub } from "../../chat/KinChatHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { KinFloor } from "../../floor/KinFloor.ts";
+import { ownerOnlyChat } from "../../lead/Audience.ts";
 import { wakeEvent } from "../../lead/ChatWake.ts";
 import { KinEventQueue } from "../../lead/KinEventQueue.ts";
 import { formatMoney } from "../money.ts";
@@ -116,7 +117,26 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
       AND m.principal_kind = 'person' AND m.person_id = a.owner_person_id AND m.left_at IS NULL
     WHERE s.org_id = ${input.orgId} AND s.statement_id = ${input.statementId}`;
   if (owner === undefined) return yield* invalid("The owner isn't in the statement's chat.");
-  const chatId = KinChatId.make(widget.value.chatId);
+  // A chat shared since the card was posted gets none of the statement: the owner's own chat
+  // with the lead does, and says why.
+  const shared = !(yield* ownerOnlyChat(
+    { orgId: input.orgId, agentId: KinAgentId.make(owner.agentId) },
+    widget.value.chatId,
+  ));
+  const [direct] = shared
+    ? yield* sql<{ chatId: string; memberId: string }>`SELECT l.owner_chat_id AS "chatId",
+          m.member_id AS "memberId"
+        FROM kin_leads l JOIN kin_chat_members m ON m.org_id = l.org_id
+          AND m.chat_id = l.owner_chat_id AND m.principal_kind = 'person'
+          AND m.person_id = ${owner.personId} AND m.left_at IS NULL
+        WHERE l.org_id = ${input.orgId} AND l.agent_id = ${owner.agentId}
+          AND l.owner_chat_id <> ${widget.value.chatId}`
+    : [];
+  if (shared && direct === undefined)
+    return yield* invalid(
+      "The statement's chat is shared now, and its lead has no chat with you alone.",
+    );
+  const chatId = KinChatId.make(direct?.chatId ?? widget.value.chatId);
   const chat = yield* repo.getChat({ orgId: input.orgId, chatId });
   if (Option.isNone(chat)) return yield* invalid("The statement's chat is gone.");
   const now = yield* Clock.currentTimeMillis;
@@ -124,7 +144,7 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
     widgetId: input.widgetId,
     revision: widget.value.revision,
     actionId: input.tap,
-    text: `Tapped "${LABELS[input.tap]}" on statement ${input.statementId}${aboutOf(owner)}. ${input.outcome}`.slice(
+    text: `${direct === undefined ? "" : "The chat this statement was sent in is shared now, so this is here instead. "}Tapped "${LABELS[input.tap]}" on statement ${input.statementId}${aboutOf(owner)}. ${input.outcome}`.slice(
       0,
       3_000,
     ),
@@ -137,14 +157,14 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
     author: {
       _tag: "human",
       personId: KinPersonId.make(owner.personId),
-      memberId: KinMemberId.make(owner.memberId),
+      memberId: KinMemberId.make(direct?.memberId ?? owner.memberId),
     },
     kind: "widget_action",
     body,
     intent: null,
     mentions: [],
-    replyTo: widget.value.messageId,
-    widgetId: widget.value.widgetId,
+    replyTo: direct === undefined ? widget.value.messageId : null,
+    widgetId: direct === undefined ? widget.value.widgetId : null,
     floorRunId: null,
     status: "posted",
     sentBy: null,

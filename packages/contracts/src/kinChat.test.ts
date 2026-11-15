@@ -191,6 +191,8 @@ const samples = {
   KinDraft: [draft],
   KinOrg: [org],
   KinPersonAccess: ["owner", "co_owner", "member"],
+  KinRoleTag: ["tech", "front-end", "q4"],
+  KinRoleTags: [[], ["tech", "sales"]],
   KinPerson: [person, { ...person, githubLogin: "owner" }, { ...person, access: "co_owner" }],
   KinAgent: [agent],
   KinChat: [chat],

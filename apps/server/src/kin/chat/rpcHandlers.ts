@@ -42,7 +42,7 @@ const leadReasons = {
   conflict: "conflict",
   last_agent: "invalid_state",
 } as const satisfies Record<LeadProvision.KinLeadProvisionError["reason"], KinChatError["reason"]>;
-const toLeadError = (error: unknown) =>
+export const toLeadError = (error: unknown) =>
   leadRefusal(error)
     ? new KinChatError({ reason: leadReasons[error.reason], message: error.message })
     : error;
@@ -339,10 +339,11 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               (entry) => entry.orgId === input.orgId,
             );
             // An org the session's person isn't in has no leads to show them.
-            if (person === undefined) return { leads: [], contacts: [] };
+            if (person === undefined) return { leads: [], contacts: [], teamAgentId: null };
             return yield* Effect.all({
               leads: LeadProvision.profiles(person, { includeRetired: input.includeRetired }),
               contacts: LeadProvision.contacts(person),
+              teamAgentId: LeadProvision.teamAgent(person.orgId),
             }).pipe(Effect.provideContext(kin.value.services.value));
           }),
         ),

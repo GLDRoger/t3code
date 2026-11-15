@@ -50,6 +50,9 @@ import {
   type KinOrgId,
   type KinPartyPageInput,
   type KinVisualHostsInput,
+  type KinConnectionCallsInput,
+  type KinConnectionRef,
+  type KinConnectionsInput,
   type KinProjectPageInput,
   type KinWorkGetInput,
   type KinWorkSubscribeInput,
@@ -118,6 +121,22 @@ const visualHostsRead = createKinRpcCommand(connectionAtomRuntime, {
 });
 const readVisualHosts = guardedRead(visualHostsRead);
 
+const connectionsRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:connections:read",
+  tag: "kin.connections.list",
+});
+const readConnections = guardedRead(connectionsRead);
+const connectionRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:connection:read",
+  tag: "kin.connections.get",
+});
+const readConnection = guardedRead(connectionRead);
+const connectionCallsRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:connection-calls:read",
+  tag: "kin.connections.calls",
+});
+const readConnectionCalls = guardedRead(connectionCallsRead);
+
 const membersRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:chat-members:read",
   tag: KIN_CHAT_WS_METHODS.chatMembers,
@@ -133,6 +152,11 @@ const invitesRead = createKinRpcCommand(connectionAtomRuntime, {
   tag: KIN_PEOPLE_WS_METHODS.peopleListInvites,
 });
 const readInvites = guardedRead(invitesRead);
+const profilesRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:profiles:read",
+  tag: KIN_PEOPLE_WS_METHODS.peopleProfiles,
+});
+const readProfiles = guardedRead(profilesRead);
 
 const memoryRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:memory:read",
@@ -391,6 +415,72 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("leads"),
   }),
+  /** The owner's connections to outside services, live on the host's `connections` topic. */
+  connections: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:connections",
+    execute: Effect.fn("KinWebClient.connections")(function* (input: KinConnectionsInput) {
+      return yield* readConnections(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("connections"),
+  }),
+  connection: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:connection",
+    execute: Effect.fn("KinWebClient.connection")(function* (input: KinConnectionRef) {
+      return yield* readConnection(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("connections"),
+  }),
+  connectionCalls: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:connection-calls",
+    execute: Effect.fn("KinWebClient.connectionCalls")(function* (input: KinConnectionCallsInput) {
+      return yield* readConnectionCalls(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("connections"),
+  }),
+  /** Adds a connection; the key travels once, redacted, and is never sent back. */
+  connectionAdd: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:add",
+    tag: "kin.connections.add",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:add` },
+  }),
+  connectionSetKey: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:setKey",
+    tag: "kin.connections.setKey",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionRefresh: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:refreshTools",
+    tag: "kin.connections.refreshTools",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionSetToolModes: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:setToolModes",
+    tag: "kin.connections.setToolModes",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionAccept: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:acceptToolChanges",
+    tag: "kin.connections.acceptToolChanges",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionUpdate: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:update",
+    tag: "kin.connections.update",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionSetReach: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:setReach",
+    tag: "kin.connections.setReach",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
+  connectionRemove: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:connection:remove",
+    tag: "kin.connections.remove",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.connectionId },
+  }),
   /** The outside hosts the owner lets visuals load from. Owner only. */
   visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:visual-hosts",
@@ -429,6 +519,25 @@ export const kinClient = {
     }),
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("people"),
+  }),
+  /** Everyone's profile; any person of the org reads them. */
+  profiles: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:profiles",
+    execute: Effect.fn("KinWebClient.profiles")(function* (input: KinPeopleListInput) {
+      return yield* readProfiles(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("people"),
+  }),
+  profileUpdate: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:profile:update",
+    tag: KIN_PEOPLE_WS_METHODS.peopleUpdateProfile,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
+  }),
+  teamAgentSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:team-agent:set",
+    tag: KIN_PEOPLE_WS_METHODS.orgSetTeamAgent,
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
   }),
   /** The invite links nobody has opened yet. The owner's Team page reads them. */
   invites: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {

@@ -1,22 +1,18 @@
 import { KinOrgId, KinStatementRpcs } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import { Command, Flag, GlobalFlag } from "effect/cli";
-import { FetchHttpClient } from "effect/http";
 import { RpcGroup } from "effect/rpc";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { authLocationFlags, resolveCliAuthConfig } from "../../cli/config.ts";
 import * as ServerConfig from "../../config.ts";
 import { readPersistedServerRuntimeState } from "../../serverRuntimeState.ts";
-import * as EnvironmentAuth from "../auth/EnvironmentAuthRuntime.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 import { standingOf } from "../work/ownerStatements.ts";
-import { openRemote } from "./openRemote.ts";
+import { openRemote, remoteLayer } from "./openRemote.ts";
 
 class KinStatementCliError extends Schema.TaggedError<KinStatementCliError>()(
   "KinStatementCliError",
@@ -82,18 +78,7 @@ const rereadCommand = Command.make("reread", {
             orgId: flags.org,
             statementId: flags.statement,
           });
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(
-            Layer.merge(
-              EnvironmentAuth.layerRuntime.pipe(
-                Layer.provide(ServerConfig.layer(config)),
-                Layer.provide(Layer.succeed(References.MinimumLogLevel, "Warn")),
-              ),
-              FetchHttpClient.layer,
-            ),
-          ),
-        );
+        }).pipe(Effect.scoped, Effect.provide(remoteLayer(config)));
         yield* Console.log(
           result.status === "needs_password"
             ? "Locked, and no password is kept for its account: Kin posted a password card in its chat. When the owner opens it there, the lead is told."

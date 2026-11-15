@@ -7,6 +7,12 @@ import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
 import { KinCompanyScreen } from "./KinCompanyScreen";
+import {
+  KinConnectionAddScreen,
+  KinConnectionEditScreen,
+} from "./connections/KinConnectionFormScreens";
+import { KinConnectionScreen } from "./connections/KinConnectionScreen";
+import { KinConnectionsScreen } from "./connections/KinConnectionsScreen";
 import { KinDocScreen } from "./KinDocScreen";
 import { KinDocChangesScreen, KinDocHistoryScreen, KinSearchScreen } from "./KinDocVersionScreens";
 import { KinGroupFormScreen } from "./KinGroupFormScreen";
@@ -23,6 +29,7 @@ import { KinInviteScreen } from "./KinInviteScreen";
 import { KinMakeDocumentScreen, KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
 import { KinJoinScreen } from "./KinJoinScreen";
 import { KinTeamScreen } from "./KinTeamScreen";
+import { KinProfileEditScreen, KinProfileScreen } from "./KinProfileScreen";
 import { KinTeammateScreen } from "./KinTeammateScreen";
 import { KinWaitingScreen } from "./KinWaitingScreen";
 import { KinWorkAssignScreen } from "./KinWorkAssignScreen";
@@ -108,6 +115,25 @@ export const KIN_SCREENS = {
     linking: "kin/:environmentId/:orgId/company",
     options: pageRoute({ title: "Company details" }),
   }),
+  KinConnections: createNativeStackScreen({
+    screen: KinConnectionsScreen,
+    linking: "kin/:environmentId/:orgId/connections",
+    options: pageRoute({ title: "Connections" }),
+  }),
+  KinConnection: createNativeStackScreen({
+    screen: KinConnectionScreen,
+    linking: "kin/:environmentId/:orgId/connections/:connectionId",
+    options: pageRoute({ title: "Connection" }),
+  }),
+  // Full sheets, so the keyboard never covers the key being pasted.
+  KinConnectionAdd: createNativeStackScreen({
+    screen: KinConnectionAddScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinConnectionEdit: createNativeStackScreen({
+    screen: KinConnectionEditScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
   KinWorkAssign: createNativeStackScreen({
     screen: KinWorkAssignScreen,
     options: sheetRoute({ detent: 0.75 }),
@@ -167,6 +193,16 @@ export const KIN_SCREENS = {
   KinTeammate: createNativeStackScreen({
     screen: KinTeammateScreen,
     options: sheetRoute({ detent: 0.75 }),
+  }),
+  KinProfile: createNativeStackScreen({
+    screen: KinProfileScreen,
+    linking: "kin/:environmentId/:orgId/people/:personId",
+    options: sheetRoute({ detent: 0.75 }),
+  }),
+  // A full sheet, so the keyboard never covers the field being typed in.
+  KinProfileEdit: createNativeStackScreen({
+    screen: KinProfileEditScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   // A full sheet, so the keyboard never covers the name being typed.
   KinInvite: createNativeStackScreen({

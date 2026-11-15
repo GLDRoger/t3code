@@ -100,8 +100,8 @@ const seed = Effect.gen(function* () {
   yield* TestClock.setTime(NOW);
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Kin', ${timestamp})`;
-  yield* sql`INSERT INTO kin_people VALUES ('owner', ${orgId}, 'owner', 'Owner', 'owner-gh', ${timestamp}, NULL)`;
-  yield* sql`INSERT INTO kin_people VALUES ('alice', ${orgId}, 'alice', 'Alice', 'Alice-GH', ${timestamp}, NULL)`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login, created_at) VALUES ('owner', ${orgId}, 'owner', 'Owner', 'owner-gh', ${timestamp})`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login, created_at) VALUES ('alice', ${orgId}, 'alice', 'Alice', 'Alice-GH', ${timestamp})`;
   yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at) VALUES ('lead', ${orgId}, 'Lead', 'lead', 'owner', ${timestamp}, NULL)`;
   for (const chat of ["chat", "team"])
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)

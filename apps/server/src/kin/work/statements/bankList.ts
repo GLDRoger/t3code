@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { mentionsMoney } from "../../memory/sensitivity.ts";
 import { type FieldValue, parseFields } from "../lists.ts";
-import { dayIn } from "../money.ts";
+import { dayIn, DEFAULT_CURRENCY } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import {
   defineList,
@@ -168,11 +168,26 @@ export const accountLabel = (statement: Pick<Statement, "bank" | "account" | "ki
     : `${statement.bank ?? (statement.kind === "card" ? "Card" : "Account")} ••${statement.account}`;
 
 /**
+ * The account a row's identity names: its keyed id and currency, so only the same account's rows
+ * are one; an unidentified account's only within its own statement. A statement first read before
+ * identities keeps its last four digits, so its rows stay the rows it saved.
+ */
+const identityOf = (statement: Statement, statementId: string) =>
+  statement.accountId === undefined
+    ? (statement.account ?? "")
+    : `${statement.accountId ?? `st:${statementId}`}|${statement.currency}`;
+
+/**
  * A row's identity: the same row from any statement of the account has the same one, however a
  * reader spaced its narration or printed its reference. `legacy` is the key rows saved before
  * references dropped their leading zeros have.
  */
-export const rowFingerprints = (statement: Statement, legacy = false): ReadonlyArray<string> => {
+export const rowFingerprints = (
+  statement: Statement,
+  statementId: string,
+  legacy = false,
+): ReadonlyArray<string> => {
+  const account = identityOf(statement, statementId);
   const seen = new Map<string, number>();
   return statement.rows.map((row) => {
     const narration = `d:${squash(row.description).slice(0, 60)}`;
@@ -183,9 +198,7 @@ export const rowFingerprints = (statement: Statement, legacy = false): ReadonlyA
       : referenceKey(row.reference ?? "") === ""
         ? narration
         : `r:${referenceKey(row.reference ?? "")}`;
-    const base = [statement.account ?? "", row.date, row.amountMinor, row.direction, said].join(
-      "|",
-    );
+    const base = [account, row.date, row.amountMinor, row.direction, said].join("|");
     const position = seen.get(base) ?? 0;
     seen.set(base, position + 1);
     return NodeCrypto.createHash("sha256").update(`${base}|${position}`).digest("hex").slice(0, 32);
@@ -235,22 +248,26 @@ export type KnownRow = {
 
 /**
  * Rows of this statement already in the list: by their own key when Kin saved them, else by what
- * an entry says (day, amount, direction, account, reference or narration), one entry per row.
+ * an entry says (day, amount, currency, direction, account, reference or narration), one entry
+ * per row. Found that way for an unidentified account, or as a row Kin saved under another
+ * identity, it is only a possible duplicate, for the owner to judge.
  */
 export const knownRows = Effect.fn("KinBankList.known")(function* (
   orgId: KinOrgId,
   def: ListDef | undefined,
   statement: Statement,
+  statementId: string,
 ) {
   const known = new Map<number, KnownRow>();
-  if (def === undefined || statement.rows.length === 0) return known;
+  const possible = new Map<number, KnownRow>();
+  if (def === undefined || statement.rows.length === 0) return { known, possible };
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
   const keyed = new Map(
-    [...rowFingerprints(statement, true), ...rowFingerprints(statement)].map((one, at) => [
-      originKeyOf(one),
-      at % statement.rows.length,
-    ]),
+    [
+      ...rowFingerprints(statement, statementId, true),
+      ...rowFingerprints(statement, statementId),
+    ].map((one, at) => [originKeyOf(one), at % statement.rows.length]),
   );
   const origins = [...keyed.keys()];
   for (let at = 0; at < origins.length; at += 500) {
@@ -276,11 +293,12 @@ export const knownRows = Effect.fn("KinBankList.known")(function* (
     title: string;
     notes: string;
     amountMinor: number | null;
+    currency: string | null;
     dateAt: number | null;
     fieldsJson: string;
     originKey: string;
   }>`SELECT record_id AS "recordId", key, state, title, notes, amount_minor AS "amountMinor",
-      date_at AS "dateAt", fields_json AS "fieldsJson", origin_key AS "originKey"
+      currency, date_at AS "dateAt", fields_json AS "fieldsJson", origin_key AS "originKey"
     FROM kin_records WHERE org_id = ${orgId} AND register_id = ${def.id}
       AND date_at >= ${from} AND date_at <= ${to}
     ORDER BY date_at, key`;
@@ -291,6 +309,7 @@ export const knownRows = Effect.fn("KinBankList.known")(function* (
       if (
         claimed.has(other.recordId) ||
         other.amountMinor !== row.amountMinor ||
+        (other.currency ?? DEFAULT_CURRENCY) !== statement.currency ||
         other.dateAt === null
       )
         return false;
@@ -314,7 +333,15 @@ export const knownRows = Effect.fn("KinBankList.known")(function* (
     });
     if (match === undefined) continue;
     claimed.add(match.recordId);
-    known.set(index, { recordId: match.recordId, key: match.key, state: match.state });
+    // Kin's own row with another identity may be another account's that ends the same way.
+    const sure =
+      statement.accountId === undefined ||
+      (statement.accountId !== null && !match.originKey.startsWith("bank:"));
+    (sure ? known : possible).set(index, {
+      recordId: match.recordId,
+      key: match.key,
+      state: match.state,
+    });
   }
-  return known;
+  return { known, possible };
 });

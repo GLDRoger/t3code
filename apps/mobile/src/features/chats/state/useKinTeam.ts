@@ -26,6 +26,7 @@ import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { kinClient } from "./kinClient";
 import { useKinHostAt } from "./useKinHost";
+import { useKinProfiles } from "./useKinProfiles";
 
 export interface KinTeamTarget {
   readonly environmentId: EnvironmentId;
@@ -94,6 +95,7 @@ export function useKinTeam(target: KinTeamTarget) {
   const people = useAtomValue(allowed ? peopleAtom : noPeopleAtom);
   const invites = useAtomValue(allowed ? invitesAtom : noInvitesAtom);
   const edits = useAtomValue(teamEdits(`${environmentId}:${orgId}`));
+  const profiles = useKinProfiles(environmentId, orgId).held?.profiles;
   const host = useKinHostAt(environmentId);
   const { personId } = kinFeedViewer(
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
@@ -106,7 +108,12 @@ export function useKinTeam(target: KinTeamTarget) {
   const list: KinTeamList | null =
     heldPeople === null || heldInvites === null
       ? null
-      : { people: heldPeople.people, joined: heldPeople.joined, invites: heldInvites.invites };
+      : {
+          people: heldPeople.people,
+          joined: heldPeople.joined,
+          invites: heldInvites.invites,
+          profiles,
+        };
   return {
     allowed,
     list,

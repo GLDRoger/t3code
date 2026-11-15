@@ -26,10 +26,14 @@ import {
   settleOutcome,
   submitPages,
 } from "./statements/statementReading.ts";
+import { clearTries, spentUntil, takeTry } from "./statements/passwordBudget.ts";
+import type { FileOutcome } from "./statements/statementFiles.ts";
 import {
   askPassword,
+  attachmentBytes,
   buildReview,
   notePasswordCard,
+  readWith,
   reviewOf,
   saveRead,
   statementIdFor,
@@ -47,8 +51,6 @@ const fileSaid = (name: string) => quote("statement file name (untrusted)", name
 /** A reference as the summary shows an account: its last four characters. */
 const masked = (reference: string) => (reference.length <= 4 ? "••" : `••${reference.slice(-4)}`);
 const Amount = TrimmedNonEmptyString.check(Schema.isMaxLength(40));
-/** Wrong passwords a lead may pass from the owner's chat for one file; the card counts its own. */
-const CHAT_TRIES = 5;
 
 const Row = Schema.Struct({
   date: KinDay,
@@ -67,6 +69,10 @@ export const ReadInput = Schema.Struct({
   account: Schema.optional(Schema.String.check(Schema.isPattern(/^\d{4}$/))).annotate({
     description:
       "Its account's or card's last four digits, only when the owner wrote them in this chat and the statement doesn't show them.",
+  }),
+  currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))).annotate({
+    description:
+      "With pages: the code of the currency the statement's amounts are in, such as USD, as its pages print it. Kin takes it only when the statement's own text names it.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description:
@@ -339,7 +345,7 @@ const ownerWrote = Effect.fn("KinStatements.ownerWrote")(function* (
 });
 
 const CHAT_LIMIT =
-  "Kin stopped trying passwords from the chat for this file after 5 that didn't open it. Nothing was opened; say in one line that the owner can type it on the statement's password card.";
+  "Kin stopped trying passwords from the chat for this file for now, after 5 that didn't open it. Nothing was opened; say in one line that the owner can type it on the statement's password card.";
 
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
   yield* admitted(lead, "statement_read", input);
@@ -389,6 +395,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
       account: input.account,
       bank: input.bank,
       kind: input.kind,
+      currency: input.currency,
     });
     if (done._tag === "more") return readingResult(base, done.reading);
     if (done._tag === "check")
@@ -436,17 +443,30 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
       );
     return describe(statementId, file.name, matched, false);
   }
-  if (input.password !== undefined && stored.chatPasswordAttempts >= CHAT_TRIES)
-    return yield* invalid(CHAT_LIMIT);
-  const outcome = yield* readStored(lead.orgId, file.id, input.password);
+  let outcome: FileOutcome;
+  if (input.password === undefined) outcome = yield* readStored(lead.orgId, file.id);
+  else {
+    const bytes = yield* attachmentBytes(file.id);
+    const tried = { statementId, chatId: chat.chatId, bytes };
+    // Taken before the file is opened, so passwords at once can't all get through.
+    if ((yield* takeTry(lead.orgId, "chat", tried, now)) !== undefined)
+      return yield* invalid(CHAT_LIMIT);
+    outcome = yield* readWith(bytes, input.password);
+    if (outcome._tag !== "needs_password" && outcome._tag !== "wrong_password")
+      yield* clearTries(lead.orgId, tried);
+  }
   if (outcome._tag === "needs_password" || outcome._tag === "wrong_password") {
     const wrong = input.password !== undefined;
-    const tries = stored.chatPasswordAttempts + 1;
+    const spent = wrong
+      ? yield* spentUntil(
+          lead.orgId,
+          "chat",
+          { statementId, chatId: chat.chatId, bytes: yield* attachmentBytes(file.id) },
+          now,
+        )
+      : undefined;
     yield* sql.withTransaction(
       Effect.gen(function* () {
-        if (wrong)
-          yield* sql`UPDATE kin_bank_statements SET chat_password_attempts = ${tries}
-            WHERE org_id = ${lead.orgId} AND statement_id = ${statementId}`;
         const widgetId = yield* askPassword({
           orgId: lead.orgId,
           statementId,
@@ -454,11 +474,11 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
           chatId: chat.chatId,
           fileName: file.name,
         });
-        if (wrong && tries >= CHAT_TRIES)
+        if (spent !== undefined)
           yield* notePasswordCard(
             lead.orgId,
             widgetId,
-            "Kin stopped trying passwords from the chat for this file. Type it here; it still opens.",
+            "Kin stopped trying passwords from the chat for this file for now. Type it here; it still opens.",
           );
       }),
     );
@@ -578,7 +598,7 @@ const runRows = Effect.fnUntraced(function* (lead: Lead, input: typeof RowsInput
   const saved = new Map<number, { key: string; state: string }>();
   if (def !== undefined && page.length > 0) {
     const sql = yield* SqlClient.SqlClient;
-    const fingerprints = rowFingerprints(statement);
+    const fingerprints = rowFingerprints(statement, input.statement);
     const keys = page.map((row) => originKeyOf(fingerprints[row.index]!));
     const found = yield* sql<{ key: string; state: string; originKey: string }>`SELECT key, state,
         origin_key AS "originKey" FROM kin_records

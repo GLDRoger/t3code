@@ -140,6 +140,12 @@ export const KinPersonAccess = Schema.Literals(KIN_PERSON_ACCESS);
 export type KinPersonAccess = typeof KinPersonAccess.Type;
 export const kinOwnerLevel = (access: KinPersonAccess | undefined) =>
   access === "owner" || access === "co_owner";
+
+/** A word for what someone does, such as tech, design or sales: a short lowercase slug. */
+export const KinRoleTag = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,23}$/));
+export const KIN_ROLE_TAGS_MAX = 6;
+export const KinRoleTags = Schema.Array(KinRoleTag).check(Schema.isMaxLength(KIN_ROLE_TAGS_MAX));
+export type KinRoleTags = typeof KinRoleTags.Type;
 export const KinPerson = Schema.Struct({
   personId: KinPersonId,
   orgId: KinOrgId,

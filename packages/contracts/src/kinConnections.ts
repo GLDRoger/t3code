@@ -56,6 +56,8 @@ export const KinConnection = Schema.Struct({
   auth: Schema.Literals(["none", "key", "oauth"]),
   reach: KinConnectionReach,
   state: KinConnectionState,
+  /** The owner paused it: agents can't reach it, and nothing else about it changes. */
+  paused: Schema.Boolean,
   accountLabel: Schema.NullOr(Schema.String),
   protocolVersion: Schema.NullOr(Schema.String),
   /** The server's instructions as last listed, and as the owner last accepted them. */
@@ -118,6 +120,8 @@ export const KinConnectionCall = Schema.Struct({
   /** The tool, or for an offer the service the agent asked to connect. */
   toolName: Schema.String,
   agentId: Schema.String,
+  /** The agent's name as the org knows it; null for an agent no longer on record. */
+  agentName: Schema.NullOr(Schema.String),
   wakeupId: Schema.String,
   mode: Schema.NullOr(KinConnectionToolMode),
   /** The arguments as sent, cut at 8 KB. */
@@ -209,6 +213,15 @@ export const KinConnectionAcceptInput = Schema.Struct({
 });
 export type KinConnectionAcceptInput = typeof KinConnectionAcceptInput.Type;
 
+/** Renames or pauses a connection; a field left out stays as it is. */
+export const KinConnectionUpdateInput = Schema.Struct({
+  orgId: KinOrgId,
+  connectionId: KinConnectionId,
+  label: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+  paused: Schema.optional(Schema.Boolean),
+});
+export type KinConnectionUpdateInput = typeof KinConnectionUpdateInput.Type;
+
 export const KinConnectionSetReachInput = Schema.Struct({
   orgId: KinOrgId,
   connectionId: KinConnectionId,
@@ -267,6 +280,11 @@ export const KinConnectionRpcs = [
     success: KinConnectionDetail,
     error: KinError,
   }),
+  Rpc.make("kin.connections.update", {
+    payload: KinConnectionUpdateInput,
+    success: KinConnectionDetail,
+    error: KinError,
+  }),
   Rpc.make("kin.connections.setReach", {
     payload: KinConnectionSetReachInput,
     success: KinConnectionDetail,
@@ -293,6 +311,7 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.refreshTools": AuthKinChatScope,
   "kin.connections.setToolModes": AuthKinChatScope,
   "kin.connections.acceptToolChanges": AuthKinChatScope,
+  "kin.connections.update": AuthKinChatScope,
   "kin.connections.setReach": AuthKinChatScope,
   "kin.connections.remove": AuthKinChatScope,
   "kin.connections.calls": AuthKinChatScope,

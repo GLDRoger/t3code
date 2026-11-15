@@ -55,6 +55,9 @@ const StatementOut = Schema.Struct({
   kind: Schema.Literals(["account", "card"]),
   bank: Schema.NullOr(Short),
   account: Schema.NullOr(Short),
+  accountNumber: Schema.optionalKey(
+    Schema.NullOr(Schema.String.check(Schema.isPattern(/^\d{8,30}$/))),
+  ),
   currency: Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/)),
   from: Schema.NullOr(Day),
   to: Schema.NullOr(Day),
@@ -78,6 +81,9 @@ const StatementOut = Schema.Struct({
     status: Schema.Literals(["adds_up", "off", "unchecked"]),
     line: Schema.String.check(Schema.isMaxLength(1_000)),
   }),
+  currencyChoice: Schema.optionalKey(
+    Schema.Array(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))).check(Schema.isMaxLength(20)),
+  ),
 });
 const Reason = Schema.String.check(Schema.isMaxLength(1_000));
 // 300 pages of a dense statement's text is a few megabytes; a page past this is not a statement's.
@@ -87,7 +93,13 @@ const Pages = Schema.Array(
     dated: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   }),
 ).check(Schema.isMaxLength(300));
-const { rows: _rows, check: _check, currency: _currency, ...factFields } = StatementOut.fields;
+const {
+  rows: _rows,
+  check: _check,
+  currency: _currency,
+  currencyChoice: _choice,
+  ...factFields
+} = StatementOut.fields;
 const Outcome = Schema.Union([
   Schema.TaggedStruct("read", {
     statement: StatementOut,

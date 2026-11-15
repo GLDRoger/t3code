@@ -24,6 +24,10 @@ import {
   type KinPeopleSetAccessInput,
   type KinAccessMeInput,
   type KinAccessMeResult,
+  type KinPeopleUpdateProfileInput,
+  KinPersonProfile,
+  KinRoleTags,
+  KinWorkHours,
   type KinPeopleSetOwnerNameInput,
   type AuthSessionId,
 } from "@t3tools/contracts";
@@ -37,11 +41,14 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { SessionStore } from "../../auth/SessionStore.ts";
+import { sessionUploadOwner } from "../../assets/AttachmentUpload.ts";
+import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import * as LeadAccess from "../lead/LeadAccess.ts";
 import { toPersistenceSqlError, PersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
-import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { abortChatTurns } from "../lead/Audience.ts";
 import { onPersonRemoved } from "../lead/ChatSharing.ts";
@@ -66,6 +73,24 @@ const ownerOnly = new KinChatError({
 const hash = (secret: string) => NodeCrypto.createHash("sha256").update(secret).digest();
 const decodePersonRow = Schema.decodeUnknownSync(KinPerson);
 const decodePerson = (row: Record<string, unknown>) => decodePersonRow(row);
+const decodeProfileRow = Schema.decodeUnknownSync(KinPersonProfile);
+const encodeRoleTags = Schema.encodeEffect(Schema.fromJsonString(KinRoleTags));
+const encodeWorkHours = Schema.encodeEffect(Schema.fromJsonString(KinWorkHours));
+const decodeProfile = (row: {
+  readonly personId: string;
+  readonly displayName: string;
+  readonly handle: string;
+  readonly pictureId: string | null;
+  readonly roleTags: string;
+  readonly skills: string;
+  readonly timeZone: string | null;
+  readonly workHours: string | null;
+}) =>
+  decodeProfileRow({
+    ...row,
+    roleTags: JSON.parse(row.roleTags),
+    workHours: row.workHours === null ? null : JSON.parse(row.workHours),
+  });
 
 export class KinPeople extends Context.Service<
   KinPeople,
@@ -117,6 +142,17 @@ export class KinPeople extends Context.Service<
       session: AuthenticatedSession,
       input: KinAccessMeInput,
     ) => Effect.Effect<KinAccessMeResult, Failure>;
+    readonly profiles: (
+      session: AuthenticatedSession,
+      orgId: KinOrgId,
+    ) => Effect.Effect<
+      { profiles: ReadonlyArray<KinPersonProfile>; ownerPersonId: KinPersonId },
+      Failure
+    >;
+    readonly updateProfile: (
+      session: AuthenticatedSession,
+      input: KinPeopleUpdateProfileInput,
+    ) => Effect.Effect<KinPersonProfile, Failure>;
     /** The owner's own name: what agents call them and teammates see. */
     readonly setOwnerName: (
       session: AuthenticatedSession,
@@ -134,6 +170,7 @@ export const make = Effect.gen(function* () {
   const refresh = yield* KinRefreshObserver;
   const presence = yield* Effect.serviceOption(KinPresence);
   const stop = yield* Effect.serviceOption(KinStop);
+  const store = yield* Effect.serviceOption(KinAttachmentStore);
   const chats = yield* Effect.serviceOption(KinChatService);
   const level = (orgId: KinOrgId, personId: KinPersonId) =>
     ownerLevel(orgId, personId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
@@ -279,6 +316,17 @@ export const make = Effect.gen(function* () {
             Effect.mapError(toPersistenceSqlError("KinPeople.bind")),
           );
           yield* refresh.touch(identity.owner.orgId, "people");
+          if (Option.isSome(chats)) {
+            const teamAgent = yield* LeadAccess.teamAgent(member.orgId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.mapError(toPersistenceSqlError("KinPeople.teamAgent")),
+            );
+            if (teamAgent !== null)
+              yield* chats.value.createDirect(
+                { _tag: "person", orgId: member.orgId, personId },
+                { orgId: member.orgId, agentId: teamAgent },
+              );
+          }
           return {
             orgId: member.orgId,
             person: member,
@@ -609,6 +657,110 @@ export const make = Effect.gen(function* () {
     if (access === undefined) return yield* missing;
     return { personId: caller.personId, access };
   });
+  const profileRows = (orgId: KinOrgId, personId?: KinPersonId) =>
+    sql<Parameters<typeof decodeProfile>[0]>`SELECT person_id AS "personId",
+        display_name AS "displayName", handle, avatar_attachment_id AS "pictureId",
+        role_tags_json AS "roleTags", skills, time_zone AS "timeZone", work_hours_json AS "workHours"
+      FROM kin_people WHERE org_id = ${orgId}
+        ${personId === undefined ? sql`` : sql`AND person_id = ${personId}`}
+      ORDER BY display_name, person_id`.pipe(
+      Effect.map((rows) => rows.map(decodeProfile)),
+      Effect.mapError(toPersistenceSqlError("KinPeople.profiles")),
+    );
+  /** Everyone in the org, as they describe themselves. Any person of the org reads it. */
+  const profiles = Effect.fn("KinPeople.profiles")(function* (
+    session: AuthenticatedSession,
+    orgId: KinOrgId,
+  ) {
+    const people = yield* identity.resolve(session);
+    if (!people.some((p) => p.orgId === orgId)) return yield* missing;
+    return { profiles: yield* profileRows(orgId), ownerPersonId: identity.owner.personId };
+  });
+  /**
+   * A person changes their own profile; the owner changes anyone's, a co-owner a member's. A new
+   * picture is claimed from the caller's uploads before the write, and the old one is removed
+   * after it commits.
+   */
+  const updateProfile = Effect.fn("KinPeople.updateProfile")(function* (
+    session: AuthenticatedSession,
+    input: KinPeopleUpdateProfileInput,
+  ) {
+    const people = yield* identity.resolve(session);
+    const caller = people.find((p) => p.orgId === input.orgId);
+    if (caller === undefined) return yield* missing;
+    // Anyone edits their own; owner-level people edit whoever they may act on.
+    if (caller.personId !== input.personId)
+      yield* mayActOn(yield* owner(session, input.orgId), input.orgId, input.personId);
+    const picture = input.picture;
+    if (picture != null && picture.type !== "image")
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: "A picture is an image.",
+      });
+    const claimed =
+      picture == null
+        ? undefined
+        : Option.isNone(store)
+          ? yield* new KinChatError({ reason: "unavailable", message: "Pictures can't be saved." })
+          : yield* store.value.claim([picture], sessionUploadOwner(session));
+    const pictureId =
+      picture === undefined ? undefined : picture === null ? null : claimed?.attachments[0]?.id;
+    if (picture != null && pictureId === undefined)
+      return yield* new KinChatError({
+        reason: "invalid_state",
+        message: "The picture didn't upload.",
+      });
+    const written = yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const [before] = yield* sql<{ pictureId: string | null }>`
+            SELECT avatar_attachment_id AS "pictureId" FROM kin_people
+            WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.updateProfile")),
+          );
+          if (before === undefined) return yield* missing;
+          const now = (yield* DateTime.now).epochMilliseconds;
+          const roleTags =
+            input.roleTags === undefined
+              ? undefined
+              : yield* encodeRoleTags([...new Set(input.roleTags)]).pipe(Effect.orDie);
+          const workHours =
+            input.workHours == null
+              ? input.workHours
+              : yield* encodeWorkHours(input.workHours).pipe(Effect.orDie);
+          const set = [
+            input.displayName === undefined ? null : sql`display_name = ${input.displayName}`,
+            roleTags === undefined ? null : sql`role_tags_json = ${roleTags}`,
+            input.skills === undefined ? null : sql`skills = ${input.skills.trim()}`,
+            input.timeZone === undefined ? null : sql`time_zone = ${input.timeZone}`,
+            workHours === undefined ? null : sql`work_hours_json = ${workHours}`,
+            pictureId === undefined ? null : sql`avatar_attachment_id = ${pictureId}`,
+            sql`profile_updated_at = ${now}`,
+          ].filter((part) => part !== null);
+          yield* sql`UPDATE kin_people SET ${sql.csv(set)}
+            WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.updateProfile")),
+          );
+          yield* refresh.touch(input.orgId, "people");
+          const [profile] = yield* profileRows(input.orgId, input.personId);
+          if (profile === undefined) return yield* missing;
+          return { profile, replaced: pictureId === undefined ? null : before.pictureId };
+        }),
+      )
+      .pipe(
+        Effect.mapError(sqlError("KinPeople.updateProfile")),
+        Effect.tapError(() =>
+          claimed === undefined || Option.isNone(store)
+            ? Effect.void
+            : store.value.release(claimed),
+        ),
+      );
+    if (written.replaced !== null && written.replaced !== pictureId && Option.isSome(store))
+      yield* store.value.remove([written.replaced]);
+    if (claimed !== undefined && Option.isSome(store) && picture != null)
+      yield* store.value.discardPending([picture]);
+    return written.profile;
+  });
   const setOwnerName = Effect.fn("KinPeople.setOwnerName")(function* (
     session: AuthenticatedSession,
     input: KinPeopleSetOwnerNameInput,
@@ -635,6 +787,8 @@ export const make = Effect.gen(function* () {
   return KinPeople.of({
     setAccess,
     accessMe,
+    profiles,
+    updateProfile,
     listInvites,
     revokeInvite,
     createInvite,
