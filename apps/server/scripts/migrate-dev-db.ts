@@ -207,6 +207,7 @@ const UNCOPIED_TABLES: ReadonlyArray<string> = [
   "kin_connections",
   "kin_connection_tools",
   "kin_connection_calls",
+  "kin_connection_cursors",
 ];
 
 const PROVIDER_SESSIONS_TABLE = "orchestration_v2_projection_provider_sessions";

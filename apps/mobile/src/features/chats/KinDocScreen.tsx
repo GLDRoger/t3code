@@ -19,6 +19,7 @@ import {
   kinDocExport,
   kinDocHasContents,
   kinDocOutline,
+  kinDocPdfInput,
   kinDocPieceKey,
   kinDocPieces,
   kinDocPrevious,
@@ -40,6 +41,7 @@ import {
 } from "@t3tools/contracts";
 import * as Linking from "expo-linking";
 import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 import { Fragment, useRef, useState, type ComponentRef, type ReactNode } from "react";
 import { File, Paths } from "expo-file-system";
@@ -59,6 +61,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useContentTopInset } from "../../components/ui/useBarInset";
 import { useNowMinuteMs } from "../../lib/clock";
+import { uuidv4 } from "../../lib/uuid";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { shareFileFromSource } from "../../lib/shareFileFromSource";
 import {
@@ -288,6 +291,9 @@ function KinDocBody(
   const styles = useMarkdownPreviewStyles();
   const openLink = useOpenPullRequest();
   const restore = useKinDocRestore(target, doc.key);
+  const canRender = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
+  const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
+  const [making, setMaking] = useState(false);
   const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
   // On iOS the page scrolls under the bar, so a section's top sits that far down the screen.
   const bar = useContentTopInset();
@@ -354,6 +360,16 @@ function KinDocBody(
       "kin-doc",
     );
   };
+  const exportPdf = async () => {
+    const input = kinDocPdfInput(orgId, doc, uuidv4());
+    if (input === null || making) return;
+    setMaking(true);
+    const result = await render({ environmentId, input });
+    setMaking(false);
+    const made = AsyncResult.isSuccess(result) ? result.value.documents[0] : undefined;
+    if (made === undefined) return Alert.alert(KIN_DOCS.exportPdfFailed);
+    openRecord("KinDoc", { environmentId, orgId, doc: made.key });
+  };
   const jump = (id: string) => {
     const y = id === "top" ? 0 : offsets.current.get(id);
     if (y !== undefined) scroll.current?.scrollTo({ y: y - bar, animated: true });
@@ -396,6 +412,15 @@ function KinDocBody(
             navigation.navigate("KinDocHistory", { environmentId, orgId, doc: doc.key }),
         },
         { id: "export", title: KIN_DOCS.export, onPress: () => void share() },
+        ...(canRender && kinDocPdfInput(orgId, doc, "pdf") !== null
+          ? [
+              {
+                id: "pdf",
+                title: making ? KIN_DOCS.exportingPdf : KIN_DOCS.exportPdf,
+                onPress: () => void exportPdf(),
+              },
+            ]
+          : []),
         ...(canFile ? [{ id: "file", title: KIN_DOC_HOMES.fileTitle, onPress: fileIt }] : []),
         ...(label.action === null
           ? []

@@ -1,3 +1,4 @@
+import { KIN_CHOICE_CARD_ACTION } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -28,4 +29,9 @@ export function kinTapText(body: string): string {
   if (text !== "") return text;
   const action = tap.actionId?.replace(/_/g, " ").trim() ?? "";
   return action === "" ? KIN_TAP_FALLBACK_TEXT : action.charAt(0).toUpperCase() + action.slice(1);
+}
+
+/** A choice card's answer: the card itself says "You chose…", so the tap needs no bubble. */
+export function kinTapAnswersChoice(body: string): boolean {
+  return Option.getOrNull(decodeTap(body))?.actionId === KIN_CHOICE_CARD_ACTION;
 }
