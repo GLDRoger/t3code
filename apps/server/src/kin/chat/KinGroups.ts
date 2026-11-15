@@ -111,6 +111,19 @@ const CHAT_EVENT_TAGS = ["chat.message", "widget.action", "chat.reaction"] as co
 const COMPANY_OFF = `${KIN_COMPANY_CHAT_TEAM_ID}:off`;
 const COMPANY_TITLE = "Company chat";
 
+/** The company chat while it is on, and who answers there by default. */
+export const companyChatOf = Effect.fn("KinGroups.companyChatOf")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ chatId: KinChatId; leadAgentId: KinAgentId | null }>`
+    SELECT chat_id AS "chatId", lead_agent_id AS "leadAgentId" FROM kin_chats
+    WHERE org_id = ${orgId} AND kind = 'team_group' AND archived_at IS NULL
+      AND team_id = ${KIN_COMPANY_CHAT_TEAM_ID}
+    ORDER BY created_at DESC LIMIT 1`.pipe(
+    Effect.mapError(toPersistenceSqlError("KinGroups.companyChatOf")),
+  );
+  return row ?? null;
+});
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Repository.KinChatRepository;

@@ -538,7 +538,10 @@ it.effect(
         // at his view and is never the owner's alone.
         const mates = yield* privateTurn("mate", chief);
         assert.include(mates.message, { body: "What are we charging Lumen?" });
-        assert.deepStrictEqual(mates.message.author, { ...mates.message.author, personId: "mate" });
+        assert.strictEqual(
+          mates.message.author._tag === "human" ? mates.message.author.personId : null,
+          "mate",
+        );
         assert.strictEqual(mates.audience, "shared");
         assert.deepStrictEqual(mates.people, ["mate"]);
         const copies = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId}

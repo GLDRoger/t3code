@@ -1,5 +1,6 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
+  KIN_COMPANY_CHAT_COPY,
   KIN_TEAM_AGENT_COPY,
   kinTeamAgentChoices,
   kinTeamAgentLabel,
@@ -7,7 +8,7 @@ import {
 import { KinAgentId, type EnvironmentId, type KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { ChevronDownIcon, SparklesIcon } from "lucide-react";
+import { ChevronDownIcon, SparklesIcon, UsersIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "../components/ui/button";
@@ -78,6 +79,72 @@ export function KinTeamAgentRow(props: {
         </Menu>
       </div>
       <p className="ps-7 text-xs text-muted-foreground">{KIN_TEAM_AGENT_COPY.detail}</p>
+      {problem === null ? null : (
+        <p role="alert" className="ps-7 text-xs text-destructive-foreground">
+          {problem}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** The company chat: off, or on with the agent that answers when nobody is named. Owner only. */
+export function KinCompanyChatRow(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  const { environmentId, orgId } = props;
+  const leadsAtom = kinClient.leads({ environmentId, input: { orgId } });
+  const result = useAtomValue(leadsAtom);
+  const refresh = useAtomRefresh(leadsAtom);
+  const set = useAtomCommand(kinClient.groupSetCompany, { reportFailure: false });
+  const [pending, setPending] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const held = Option.getOrNull(AsyncResult.value(result));
+  if (held === null) return null;
+  const choices = kinTeamAgentChoices(held.leads).map((choice) => ({
+    ...choice,
+    label: choice.agentId === null ? choice.label : `On, ${choice.label} answers`,
+  }));
+  const current = held.companyChat?.leadAgentId ?? null;
+  const shown = pending ?? current ?? OFF;
+  const label = choices.find((choice) => (choice.agentId ?? OFF) === shown)?.label ?? "";
+  const pick = async (value: string) => {
+    if (value === (current ?? OFF)) return;
+    setPending(value);
+    setProblem(null);
+    const outcome = await set({
+      environmentId,
+      input: { orgId, leadAgentId: value === OFF ? null : KinAgentId.make(value) },
+    });
+    refresh();
+    setPending(null);
+    if (!AsyncResult.isSuccess(outcome)) setProblem(KIN_COMPANY_CHAT_COPY.failed);
+  };
+  return (
+    <section className="flex flex-col gap-1.5 rounded-lg border border-border/60 p-3">
+      <div className="flex items-center gap-3">
+        <UsersIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
+          {KIN_COMPANY_CHAT_COPY.label}
+        </span>
+        <Menu>
+          <MenuTrigger render={<Button size="sm" variant="outline" aria-busy={pending !== null} />}>
+            {label}
+            <ChevronDownIcon aria-hidden />
+          </MenuTrigger>
+          <MenuPopup align="end" side="bottom">
+            <MenuRadioGroup value={shown} onValueChange={(value) => void pick(String(value))}>
+              {choices.map((choice) => (
+                <MenuRadioItem key={choice.agentId ?? OFF} value={choice.agentId ?? OFF}>
+                  <span className="truncate">{choice.label}</span>
+                </MenuRadioItem>
+              ))}
+            </MenuRadioGroup>
+          </MenuPopup>
+        </Menu>
+      </div>
+      <p className="ps-7 text-xs text-muted-foreground">{KIN_COMPANY_CHAT_COPY.detail}</p>
       {problem === null ? null : (
         <p role="alert" className="ps-7 text-xs text-destructive-foreground">
           {problem}
