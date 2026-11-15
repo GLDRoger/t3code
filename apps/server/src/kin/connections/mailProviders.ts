@@ -1,9 +1,11 @@
 import { googleMail } from "./Google.ts";
 import type { MailProvider } from "./MailProvider.ts";
+import { microsoftMail } from "./Microsoft.ts";
 
 /** Every mail provider, by connection preset. A new one is a MailProvider added here. */
 const MAIL_PROVIDERS: Readonly<Record<string, MailProvider>> = {
   [googleMail.preset]: googleMail,
+  [microsoftMail.preset]: microsoftMail,
 };
 export const MAIL_PRESETS: ReadonlyArray<string> = Object.keys(MAIL_PROVIDERS);
 

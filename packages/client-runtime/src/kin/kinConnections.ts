@@ -73,17 +73,12 @@ export const KIN_CONNECTIONS_COPY = {
   secretUrlPlaceholder: "https://…zohomcp.com/mcp/…",
   secretUrlHint:
     "This address works like a password. It goes to your Kin's computer and is never shown again.",
-  googleSetupTitle: "Set up Google once",
-  googleSetupDetail:
-    "Google needs a sign-in client from your company's Google Cloud. It takes about ten minutes, on a computer, and you do it once.",
   redirectLabel: "Return address",
   copy: "Copy",
   copied: "Copied",
   clientIdLabel: "Client ID",
-  clientIdPlaceholder: "…apps.googleusercontent.com",
   clientSecretLabel: "Client secret",
   saveClient: "Save and continue",
-  changeClient: "Use a different Google client",
   ownClient: "This account is in another Google Workspace",
   ownClientDetail:
     "If that Workspace keeps its sign-in client to itself, paste its client here. Only this account uses it.",
@@ -378,36 +373,105 @@ export const kinServiceNote = (service: KinConnectionService) =>
         ? KIN_CONNECTIONS_COPY.signIn
         : undefined;
 
-/** The one-time Google setup, step by step; `address` is the exact return address to paste. */
-export const kinGoogleSetupSteps = (address: string): ReadonlyArray<string> => [
-  "In Google Cloud console (console.cloud.google.com), signed in to the company account, create a project named Kin.",
-  "In APIs & Services → Library, turn on the Gmail API and the Google Calendar API.",
-  "In Google Auth Platform → Branding, fill in the app name, and under Audience choose Internal.",
-  `In Clients → Create client, choose Web application, and under Authorized redirect URIs add exactly ${address}`,
-  "Copy the client ID and client secret Google shows, and paste them below.",
-];
+/** A service the owner signs in to through an app he set up there once. */
+export type KinOwnerClientService = KinConnectionSetSignInClientInput["service"];
+export const kinIsOwnerClientService = (service: string): service is KinOwnerClientService =>
+  service === "google" || service === "microsoft";
+
+/** One step of a one-time setup; `address` steps end with the return address to paste. */
+export type KinSetupStep = { readonly text: string; readonly address: boolean };
+
+/**
+ * The one-time setup at Google or Microsoft: the steps, the exact return address, and what to
+ * paste back. Microsoft's needs no secret: Kin signs in as an app that keeps none.
+ */
+export const KIN_OWNER_CLIENT_SETUP: Readonly<
+  Record<
+    KinOwnerClientService,
+    {
+      readonly title: string;
+      readonly detail: string;
+      readonly steps: ReadonlyArray<KinSetupStep>;
+      readonly clientIdLabel: string;
+      readonly clientIdPlaceholder: string;
+      readonly clientId: RegExp;
+      readonly notClientId: string;
+      readonly secret: "required" | "optional";
+      readonly secretLabel: string;
+      readonly host: string;
+      readonly changeClient: string;
+    }
+  >
+> = {
+  google: {
+    title: "Set up Google once",
+    detail:
+      "Google needs a sign-in client from your company's Google Cloud. It takes about ten minutes, on a computer, and you do it once.",
+    steps: [
+      "In Google Cloud console (console.cloud.google.com), signed in to the company account, create a project named Kin.",
+      "In APIs & Services → Library, turn on the Gmail API and the Google Calendar API.",
+      "In Google Auth Platform → Branding, fill in the app name, and under Audience choose Internal.",
+      "In Clients → Create client, choose Web application, and under Authorized redirect URIs add exactly this address:",
+      "Copy the client ID and client secret Google shows, and paste them below.",
+    ].map((text, index) => ({ text, address: index === 3 })),
+    clientIdLabel: "Client ID",
+    clientIdPlaceholder: "…apps.googleusercontent.com",
+    clientId: /\.apps\.googleusercontent\.com$/,
+    notClientId: "The client ID ends in .apps.googleusercontent.com.",
+    secret: "required",
+    secretLabel: "Client secret",
+    host: "accounts.google.com",
+    changeClient: "Use a different Google client",
+  },
+  microsoft: {
+    title: "Set up Microsoft once",
+    detail:
+      "Microsoft needs Kin registered as an app. It takes about ten minutes, on a computer, and you do it once; every work, school or outlook.com account then signs in with it. If your organization asks an admin to approve new apps, the admin approves Kin the first time.",
+    steps: [
+      "On a computer, open entra.microsoft.com, sign in with your work account, and go to App registrations → New registration.",
+      "Name it Kin. Under Supported account types, choose Accounts in any organizational directory and personal Microsoft accounts.",
+      "Under Redirect URI, choose Public client/native (mobile & desktop) and paste exactly this address, then Register:",
+      "Open Authentication, turn on Allow public client flows, and save.",
+      "On Overview, copy the Application (client) ID and paste it below. No secret is needed.",
+    ].map((text, index) => ({ text, address: index === 2 })),
+    clientIdLabel: "Application (client) ID",
+    clientIdPlaceholder: "00000000-0000-0000-0000-000000000000",
+    clientId: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    notClientId: "The application ID looks like 00000000-0000-0000-0000-000000000000.",
+    secret: "optional",
+    secretLabel: "Client secret, only if you made one",
+    host: "login.microsoftonline.com",
+    changeClient: "Use a different Microsoft app",
+  },
+};
 
 const makeSecret = Schema.decodeSync(KinConnectionKey);
 
-/** The Google client the owner pasted, checked before it goes to the host. */
+/** The client the owner pasted for a service, checked before it goes to the host. */
 export function kinSignInClientCheck(
   orgId: KinOrgId,
+  service: KinOwnerClientService,
   clientId: string,
   clientSecret: string,
 ):
   | { readonly ok: true; readonly input: KinConnectionSetSignInClientInput }
   | { readonly ok: false; readonly problem: string } {
+  const setup = KIN_OWNER_CLIENT_SETUP[service];
   const id = clientId.trim();
   const secret = clientSecret.trim();
-  if (id === "" || secret === "")
+  if (id === "") return { ok: false, problem: `Paste the ${setup.clientIdLabel}.` };
+  if (secret === "" && setup.secret === "required")
     return { ok: false, problem: "Paste both the client ID and the client secret." };
-  if (!/\.apps\.googleusercontent\.com$/.test(id))
-    return { ok: false, problem: "The client ID ends in .apps.googleusercontent.com." };
+  if (!setup.clientId.test(id)) return { ok: false, problem: setup.notClientId };
   if (id.length > 512 || secret.length > 4096)
-    return { ok: false, problem: "That's too long to be a Google client." };
+    return { ok: false, problem: "That's too long to be a sign-in client." };
   return {
     ok: true,
-    input: { orgId, service: "google", client: { clientId: id, clientSecret: makeSecret(secret) } },
+    input: {
+      orgId,
+      service,
+      client: { clientId: id, ...(secret === "" ? {} : { clientSecret: makeSecret(secret) }) },
+    },
   };
 }
 
@@ -590,8 +654,12 @@ export function createKinConnectionActions(options: {
       options.refresh();
       return outcome.ok ? { ok: true, value: outcome.value.connection.connectionId } : outcome;
     },
-    setGoogleClient: async (clientId: string, clientSecret: string): Promise<Outcome<null>> => {
-      const checked = kinSignInClientCheck(orgId, clientId, clientSecret);
+    setOwnerClient: async (
+      service: KinOwnerClientService,
+      clientId: string,
+      clientSecret: string,
+    ): Promise<Outcome<null>> => {
+      const checked = kinSignInClientCheck(orgId, service, clientId, clientSecret);
       if (!checked.ok) return checked;
       const outcome = await settle(options.setSignInClient(checked.input), "save the client");
       options.refresh();
