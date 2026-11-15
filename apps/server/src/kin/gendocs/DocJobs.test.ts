@@ -54,6 +54,7 @@ import { assembleInputs, needsEntry, parseRecipe } from "./recipe.ts";
 import { copyReferences } from "./references.ts";
 import * as Render from "./render.ts";
 import { STARTER_FILES } from "./starter.ts";
+import { sheetCells } from "./tables.ts";
 import { KinToolchain } from "./toolchain.ts";
 import * as Workspace from "./workspace.ts";
 
@@ -604,6 +605,7 @@ describe("recipe documents", () => {
           "November pack · receipts-2026-11.csv",
           "November pack · tds-2026-11.csv",
           "November pack · expenses-2026-11.csv",
+          "November pack · unpaid-expenses-2026-11.csv",
           "November pack · bank-2026-11.csv",
         ],
       );
@@ -863,6 +865,89 @@ describe("recipe documents", () => {
   );
 });
 
+describe("the accountant's pack", () => {
+  it.effect("totals what Money totals for the month: paid apart from unpaid, void in neither", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const asked = yield* turn(4, "Track expenses");
+      const proposed = yield* LeadMoney.define(scope, {
+        sourceEventId: asked,
+        template: "expenses",
+      });
+      const work = yield* turn(5, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: work, proposal: proposed.proposal! });
+      const records = yield* KinRecords.KinRecords;
+      const system = { actor: { _tag: "system" as const }, via: "import" as const };
+      const owner = { _tag: "person" as const, personId: ownerId };
+      const day = (iso: string) => Date.parse(`${iso}T12:00:00.000Z`);
+      for (const [key, state, category, minor, dateAt] of [
+        ["taxi", "done", "travel", 100_00, day("2026-11-03")],
+        ["hosting", "done", "software", 50_50, day("2026-11-04")],
+        ["rent", "open", "rent", 400_00, day("2026-11-05")],
+        ["void", "dropped", "travel", 999_00, day("2026-11-06")],
+        ["october", "done", "travel", 7_00, day("2026-10-30")],
+        ["undated", "done", "software", 1_25, undefined],
+      ] as const)
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: `Invented ${key}`,
+          owner,
+          state,
+          category,
+          amount: { minor, currency: "INR" },
+          ...(dateAt === undefined ? {} : { dateAt }),
+          originKey: key,
+        });
+      // Money in on a live invoice counts; on one since voided it doesn't.
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [
+          { list: "invoices", title: "Invented void", client: "Invented Acme", amount: "70" },
+        ],
+      });
+      for (const [key, minor] of [
+        ["INV-1", 300_00],
+        ["INV-2", 70_00],
+      ] as const)
+        yield* records.pay(orgId, system, key, {
+          amount: { minor, currency: "INR" },
+          paidOn: "2026-11-07",
+          originKey: `pay:${key}`,
+        });
+      yield* records.update(orgId, system, "INV-2", { state: "dropped" });
+
+      const recipe = parseRecipe(STARTER_FILES["recipes/accountant-pack/RECIPE.md"]!);
+      if ("reason" in recipe) return assert.fail(recipe.reason);
+      const given = { month: "2026-11" };
+      const gathered = yield* gatherFacts(orgId, recipe, undefined, given);
+      const assembled = assembleInputs(recipe, given, gathered.facts, gathered.currency);
+      if ("error" in assembled) return assert.fail(assembled.error.message);
+      const totals = (sheet: string) => {
+        const decl = recipe.sheets.find((one) => one.name === sheet)!;
+        const rows = assembled.inputs[decl.input];
+        const at = decl.columns.findIndex((one) => one.field === "amount");
+        return sheetCells(Array.isArray(rows) ? (rows as never) : [], decl)
+          .filter((row) => "text" in row[0]! && row[0].text.startsWith("Total"))
+          .map((row) => [
+            (row[0] as { text: string }).text,
+            (row[at] as { number: string }).number,
+          ]);
+      };
+      const money = yield* moneySummary(orgId, Date.parse("2026-11-12T06:00:00.000Z"));
+      assert.deepStrictEqual(money.spent.thisMonth.total, [{ minor: 151_75, currency: "INR" }]);
+      assert.deepStrictEqual(totals("Expenses"), [
+        ["Total software", "51.75"],
+        ["Total travel", "100.00"],
+      ]);
+      assert.deepStrictEqual(totals("Unpaid expenses"), [["Total", "400.00"]]);
+      assert.deepStrictEqual(money.received.thisMonth, [{ minor: 300_00, currency: "INR" }]);
+      assert.deepStrictEqual(totals("Receipts"), [["Total", "300.00"]]);
+      // The voided invoice is listed in the sales register and left out of its total.
+      assert.deepStrictEqual(totals("Sales register"), [["Total", "0.00"]]);
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
 describe("receipts", () => {
   it.effect(
     "stand on money received: an entry an agent made is recorded as received as it is numbered, and TDS gets none",
@@ -952,7 +1037,7 @@ describe("receipts", () => {
         });
         const withheld = yield* receipt({ payment: tds.paymentId }).pipe(Effect.flip);
         assert.match(withheld.message, /TDS the client deducted, not money received/);
-        // Nor does a month's payments table list it as received.
+        // Nor does a month's payments table list it as received; the advance it does, as Money does.
         yield* records.pay(orgId, agent, "INV-1", {
           amount: { minor: 20_000, currency: "INR" },
           paidOn: "2026-11-10",
@@ -967,7 +1052,10 @@ describe("receipts", () => {
         if ("error" in table) return assert.fail(table.error.message);
         assert.deepStrictEqual(
           (table.inputs.a as ReadonlyArray<{ amount: unknown }>).map((one) => one.amount),
-          [{ minor: 20_000, currency: "INR" }],
+          [
+            { minor: 50_000, currency: "INR" },
+            { minor: 20_000, currency: "INR" },
+          ],
         );
       }).pipe(Effect.provide(layer)),
   );

@@ -31,6 +31,7 @@ import {
   admitted,
   type Lead,
   leadTool,
+  ownerAsked,
   Project,
   refOrNull,
   retryKey,
@@ -38,7 +39,7 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
-import { dayIn, formatMoney, parseAmount } from "./money.ts";
+import { dayIn, formatMinor, formatMoney, parseAmount } from "./money.ts";
 import { dates, moneySection, moneySummary } from "./moneyViews.ts";
 import { endOfDay, iso, notFound, ownerZone } from "./recordRows.ts";
 import {
@@ -406,13 +407,22 @@ export const BudgetInput = Schema.Struct({
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
 });
 export const BudgetResult = Schema.Struct({
-  status: Schema.Literals(["set", "removed"]),
+  status: Schema.Literals(["set", "removed", "none"]),
+  was: Schema.String,
+  now: Schema.String,
+  next: Schema.String,
   answer: Schema.Unknown,
   sensitive: Schema.Literal(true),
 });
 const runBudget = Effect.fnUntraced(function* (lead: Lead, input: typeof BudgetInput.Type) {
   yield* admitted(lead, "budget_set", input);
   yield* sourceOf(lead, input.sourceEventId);
+  if (!(yield* ownerAsked(lead, input.sourceEventId)))
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message:
+        "A budget is set only from the owner's own message or tap; this turn wasn't one (a routine, schedule, hand-over or report). Nothing changed. Propose it to the owner instead: the budget, the limit and why.",
+    });
   if (input.category === undefined && input.project === undefined)
     return yield* invalid("A budget is for a category, a project, or a category in a project.");
   const expenses = yield* listDef(lead.orgId, "expenses");
@@ -427,22 +437,37 @@ const runBudget = Effect.fnUntraced(function* (lead: Lead, input: typeof BudgetI
       `Expenses have no category ${input.category!.slice(0, 60)}. They have: ${expenses.categories.join(", ")}.`,
     );
   const projectId = (yield* refOrNull(lead, input.project, "projects")) ?? null;
-  const currency = input.currency ?? expenses.currency;
-  const parsed = input.limit === null ? undefined : parseAmount(input.limit, currency);
+  const parsed =
+    input.limit === null
+      ? undefined
+      : parseAmount(input.limit, input.currency ?? expenses.currency);
   if (parsed !== undefined && "error" in parsed) return yield* parsed.error;
-  const target = { category, projectId, currency: parsed?.money.currency ?? currency };
   const now = yield* Clock.currentTimeMillis;
-  yield* setBudget(
+  const done = yield* setBudget(
     lead.orgId,
-    target,
-    parsed?.money.minor ?? null,
+    {
+      category,
+      projectId,
+      currency: parsed?.money.currency ?? input.currency,
+      limitMinor: parsed?.money.minor ?? null,
+      sourceEventId: input.sourceEventId,
+    },
     { kind: "agent", id: lead.agentId },
     now,
   );
-  const view = budgetsAnswer(yield* budgetsView(lead.orgId, now));
+  const amount = (minor: bigint | null) =>
+    minor === null || done.currency === null ? "none" : formatMinor(minor, done.currency);
+  const was = amount(done.was);
+  const after = amount(parsed === undefined ? null : BigInt(parsed.money.minor));
   return {
-    status: parsed === undefined ? ("removed" as const) : ("set" as const),
-    answer: view,
+    status: done.outcome,
+    was,
+    now: after,
+    next:
+      done.outcome === "none"
+        ? "There was no such budget, so nothing was removed. Say so in one line."
+        : `Tell the owner in one line that it was ${was} and is now ${after}.`,
+    answer: budgetsAnswer(yield* budgetsView(lead.orgId, now)),
     sensitive: true as const,
   };
 });

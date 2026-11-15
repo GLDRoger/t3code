@@ -17,7 +17,7 @@ const isMoney = (value: unknown): value is Money =>
   typeof Reflect.get(value, "minor") === "number" &&
   typeof Reflect.get(value, "currency") === "string";
 /** Paise as an exact decimal string: 11800050 is "118000.50". */
-const decimal = (minor: number) => {
+const decimal = (minor: number | bigint) => {
   const value = BigInt(minor);
   const abs = value < 0n ? -value : value;
   return `${value < 0n ? "-" : ""}${(abs / 100n).toString()}.${(abs % 100n).toString().padStart(2, "0")}`;
@@ -78,7 +78,7 @@ export const sheetCells = (rows: ReadonlyArray<Row>, sheet: Sheet): ReadonlyArra
             ? total + BigInt(value.minor)
             : total;
         }, 0n);
-        return { number: decimal(Number(sum)), currency };
+        return { number: decimal(sum), currency };
       }),
     ),
   );

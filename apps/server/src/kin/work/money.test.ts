@@ -32,7 +32,7 @@ import { answerChange } from "./companyProfile.ts";
 import * as KinRecords from "./KinRecords.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
-import { addUp, financialYearOf, parseAmount } from "./money.ts";
+import { addUp, financialYearOf, formatMinor, parseAmount } from "./money.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { moneySection } from "./moneyViews.ts";
@@ -330,6 +330,34 @@ describe("amounts", () => {
         { minor: 1, currency: "INR" },
       ]),
     );
+  });
+
+  it("formats totals past a float's exact range digit for digit, signed", () => {
+    const past = BigInt(Number.MAX_SAFE_INTEGER) * 10n + 7n;
+    assert.strictEqual(formatMinor(past, "INR"), "₹90,07,19,92,54,74,099.17");
+    assert.strictEqual(formatMinor(-past, "USD"), "-$900,719,925,474,099.17");
+    assert.strictEqual(formatMinor(-5n, "INR"), "-₹0.05");
+    const view = {
+      month: "2026-11",
+      budgets: [
+        {
+          budgetId: "bg",
+          category: "travel",
+          projectId: null,
+          projectKey: null,
+          projectTitle: null,
+          currency: "INR",
+          limitMinor: 100,
+          spent: past,
+          expenses: 2,
+          status: "over" as const,
+        },
+      ],
+    };
+    assert.deepInclude(budgetsAnswer(view).budgets[0], {
+      spent: "₹90,07,19,92,54,74,099.17",
+      over: "₹90,07,19,92,54,74,098.17",
+    });
   });
 
   it("puts 31 March and 1 April in different financial years", () => {
@@ -1823,6 +1851,7 @@ describe("money answers", () => {
   /** Midday UTC: the same calendar day in India. */
   const on = (day: string) => Date.parse(`${day}T12:00:00.000Z`);
   const dueOn = (day: string) => endOfDay(day, "Asia/Kolkata");
+  /** A read statement; confirmed unless said otherwise, adding up unless `check` says not. */
   const statement = (
     id: string,
     input: {
@@ -1830,7 +1859,12 @@ describe("money answers", () => {
       readonly currency: string;
       readonly to: string;
       readonly closing: number;
+      readonly from?: string;
+      readonly opening?: number;
+      readonly bank?: string;
       readonly status?: string;
+      readonly standing?: "confirmed" | "unconfirmed" | "undone";
+      readonly check?: "adds_up" | "off";
     },
   ) =>
     Effect.gen(function* () {
@@ -1838,54 +1872,113 @@ describe("money answers", () => {
       const review = {
         statement: {
           kind: "account",
-          bank: null,
+          bank: input.bank ?? null,
           account: input.account,
           currency: input.currency,
-          from: null,
+          from: input.from ?? null,
           to: input.to,
-          openingMinor: null,
+          openingMinor: input.opening ?? null,
           closingMinor: input.closing,
           rows: [],
-          check: { status: "adds_up", line: "" },
+          check: { status: input.check ?? "adds_up", line: "" },
         },
         format: "csv",
         source: "file",
         known: [],
         matches: [],
       };
+      const standing = input.standing ?? "confirmed";
+      const readAt = Date.parse(`${input.to}T00:00:00Z`);
       yield* sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
-          chat_id, agent_id, wakeup_id, status, review_json, created_at, read_at)
+          chat_id, agent_id, wakeup_id, status, review_json, created_at, read_at, applied_at,
+          undone_at)
         VALUES (${orgId}, ${id}, ${`att-${id}`}, 'invented.csv', 'lead-chat', ${lead}, 'wake-0',
-          ${input.status ?? "read"}, ${JSON.stringify(review)}, 0, ${Date.parse(`${input.to}T00:00:00Z`)})`;
+          ${input.status ?? "read"}, ${JSON.stringify(review)}, 0, ${readAt},
+          ${standing === "confirmed" ? readAt : null}, ${standing === "undone" ? readAt : null})`;
     });
 
   it.effect(
-    "give cash per account and currency from the latest statement, stale when old, unknown with none",
+    "give cash only from confirmed statements, one account per proven chain, unknown with none",
     () =>
       Effect.gen(function* () {
         yield* seed;
+        const sql = yield* SqlClient.SqlClient;
         const now = yield* Clock.currentTimeMillis;
         assert.deepStrictEqual(cashAnswer(yield* cashPosition(orgId, now)).known, false);
         yield* defined(1, { template: "invoices" });
         yield* defined(3, { template: "expenses" });
         const records = yield* KinRecords.KinRecords;
-        yield* statement("st_old", {
+        // Read but never confirmed: no balance of record, though Kin says what it read.
+        yield* statement("st_unconfirmed", {
+          bank: "HDFC Bank",
           account: "1234",
           currency: "INR",
-          to: "2026-10-08",
+          from: "2026-10-01",
+          to: "2026-10-31",
+          opening: 300_000_00,
+          closing: 400_000_00,
+          standing: "unconfirmed",
+        });
+        const unconfirmed = cashAnswer(yield* cashPosition(orgId, now));
+        assert.isFalse(unconfirmed.known);
+        assert.deepStrictEqual(unconfirmed.notOfRecord, [
+          {
+            account: "HDFC Bank Account ••1234",
+            closingBalance: "₹4,00,000.00",
+            on: "2026-10-31",
+            standing: "not yet confirmed",
+          },
+        ]);
+        yield* sql`DELETE FROM kin_bank_statements`;
+        // October, then November opening on October's closing: one account, its latest balance.
+        yield* statement("st_oct", {
+          bank: "HDFC Bank",
+          account: "1234",
+          currency: "INR",
+          from: "2026-10-01",
+          to: "2026-10-31",
+          opening: 300_000_00,
           closing: 400_000_00,
         });
-        yield* statement("st_new", {
+        yield* statement("st_nov", {
+          bank: "HDFC Bank",
           account: "1234",
           currency: "INR",
+          from: "2026-11-01",
           to: "2026-11-08",
+          opening: 400_000_00,
           closing: 500_000_00,
+        });
+        // A newer read of it the owner hasn't confirmed sits beside it, never in a figure.
+        yield* statement("st_nov_read", {
+          bank: "HDFC Bank",
+          account: "1234",
+          currency: "INR",
+          from: "2026-11-01",
+          to: "2026-11-10",
+          opening: 400_000_00,
+          closing: 900_000_00,
+          standing: "unconfirmed",
         });
         yield* statement("st_usd", {
           account: "9876",
           currency: "USD",
           to: "2026-10-01",
           closing: 2_000_00,
+        });
+        yield* statement("st_off", {
+          account: "7777",
+          currency: "INR",
+          to: "2026-11-09",
+          closing: 1,
+          check: "off",
+        });
+        yield* statement("st_undone", {
+          account: "8888",
+          currency: "INR",
+          to: "2026-11-09",
+          closing: 2,
+          standing: "undone",
         });
         yield* statement("st_scan", {
           account: "5555",
@@ -1926,13 +2019,15 @@ describe("money answers", () => {
         if (!answer.known) return assert.fail(answer.note);
         assert.deepStrictEqual(answer.accounts, [
           {
-            account: "Account ••1234",
+            account: "HDFC Bank Account ••1234",
             closingBalance: "₹5,00,000.00",
             on: "2026-11-08",
             daysOld: 4,
-            recordedInSince: "₹20,000.00",
-            recordedOutSince: "₹5,000.00",
-            estimateNow: "₹5,15,000.00",
+            newerRead: {
+              closingBalance: "₹9,00,000.00",
+              on: "2026-11-10",
+              standing: "not yet confirmed",
+            },
           },
           {
             account: "Account ••9876",
@@ -1940,18 +2035,67 @@ describe("money answers", () => {
             on: "2026-10-01",
             daysOld: 42,
             stale: "No statement covers the 42 days since 2026-10-01.",
-            recordedInSince: "$0.00",
-            recordedOutSince: "$0.00",
-            estimateNow: "$2,000.00",
           },
         ]);
-        // Records start this month: no runway, and it says why.
+        assert.deepStrictEqual(
+          answer.notOfRecord?.map((one) => [one.account, one.standing]),
+          [
+            ["Account ••7777", "its totals don't check out"],
+            ["Account ••8888", "its confirm was undone"],
+          ],
+        );
+        const [rupees, dollars] = answer.byCurrency;
+        assert.deepStrictEqual(rupees, {
+          currency: "INR",
+          accounts: 1,
+          totalOfTheseAccounts: "₹5,00,000.00",
+          recordedSince: {
+            since: "2026-11-08",
+            account: "not known",
+            in: "₹20,000.00",
+            out: "₹5,000.00",
+          },
+          estimate: {
+            now: "₹5,15,000.00",
+            label: "An estimate, not a bank figure.",
+            assumes:
+              "Every payment and paid expense recorded since 2026-11-08 moved through the account above, and the company has no other INR account.",
+          },
+        });
+        assert.deepStrictEqual(dollars?.estimate?.now, "$2,000.00");
+
+        // A second HDFC ••1234 balance Kin can't link to the first is listed apart, and INR has no
+        // total, estimate or runway.
+        yield* statement("st_twin", {
+          bank: "HDFC Bank",
+          account: "1234",
+          currency: "INR",
+          from: "2026-10-01",
+          to: "2026-10-31",
+          opening: 10_000_00,
+          closing: 70_000_00,
+        });
+        const twins = cashAnswer(yield* cashPosition(orgId, now));
+        if (!twins.known) return assert.fail(twins.note);
+        assert.deepStrictEqual(
+          twins.accounts.map((one) => [one.account, one.closingBalance, one.cannotTellApart]),
+          [
+            ["HDFC Bank Account ••1234", "₹70,000.00", true],
+            ["HDFC Bank Account ••1234", "₹5,00,000.00", true],
+            ["Account ••9876", "$2,000.00", undefined],
+          ],
+        );
+        const [withheld] = twins.byCurrency;
+        assert.deepStrictEqual(
+          [withheld?.totalOfTheseAccounts, withheld?.estimate],
+          [undefined, undefined],
+        );
+        assert.include(withheld?.totalWithheld ?? "", "can't tell");
         const [runway] = outlookAnswer(yield* outlook(orgId, now)).runway;
         assert.deepStrictEqual(
           [runway?.currency, runway?.runwayMonths, runway?.cash],
-          ["INR", null, "₹5,00,000.00"],
+          ["INR", null, undefined],
         );
-        assert.include(runway && "why" in runway ? runway.why : "", "not three complete months");
       }).pipe(Effect.provide(layer)),
   );
 
@@ -2034,6 +2178,50 @@ describe("money answers", () => {
           closing: 500_000_00,
         });
 
+        // Older than August, but none of it is cash history: TDS, a void invoice's payment, and
+        // dollars, which say nothing of rupees.
+        const { row: voided } = yield* create("void-july", {
+          list: "invoices",
+          title: "Invented voided July work",
+          amount: inr(10_000),
+        });
+        const { row: settled } = yield* create("tds-july", {
+          list: "invoices",
+          title: "Invented July work",
+          amount: inr(1_000),
+        });
+        for (const [key, originKey, withheld] of [
+          [settled.key, "tds-july", true],
+          [voided.key, "void-july", false],
+        ] as const)
+          yield* records.pay(orgId, system, key, {
+            amount: inr(1_000),
+            paidOn: "2026-07-15",
+            originKey,
+            withheld,
+          });
+        yield* records.update(orgId, system, voided.key, { state: "dropped" });
+        yield* create("usd-july", {
+          list: "expenses",
+          title: "Invented export fee",
+          state: "done",
+          amount: { minor: 10_00, currency: "USD" },
+          dateAt: on("2026-07-01"),
+        });
+        // History from 10 August is no three complete months, so no runway yet.
+        const partial = outlookAnswer(yield* outlook(orgId, yield* Clock.currentTimeMillis));
+        assert.deepStrictEqual(
+          partial.runway.map((one) => [one.currency, one.runwayMonths]),
+          [["INR", null]],
+        );
+        assert.include(
+          partial.runway[0] && "why" in partial.runway[0] ? partial.runway[0].why : "",
+          "start 2026-08-10: not three complete months",
+        );
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_records SET date_at = ${on("2026-08-01")}
+          WHERE origin_key = '2026-08-10'`;
+
         const asked = yield* turn(
           5,
           "What's coming in and going out, and how long does cash last?",
@@ -2102,6 +2290,37 @@ describe("money answers", () => {
         assert.deepStrictEqual(
           week.windows.map((one) => [one.days, one.expectedIn, one.expectedOut]),
           [[7, "none", "₹1,00,000.00"]],
+        );
+        // A daily charge set up two years ago still counts every day ahead: the past is skipped.
+        yield* create("coffee", {
+          list: "expenses",
+          title: "Invented coffee",
+          state: "open",
+          amount: inr(10),
+          dueAt: dueOn("2024-11-01"),
+          dueAllDay: true,
+          repeat: { every: "days", days: 1 },
+        });
+        const daily = (yield* LeadMoney.moneyQuery(scope, { view: "outlook", days: 7 }))
+          .answer as ReturnType<typeof outlookAnswer>;
+        assert.deepStrictEqual(
+          [
+            daily.goingOut.filter((one) => one.title === "Invented coffee").map((one) => one.on),
+            daily.incomplete,
+          ],
+          [
+            [
+              "2026-11-12",
+              "2026-11-13",
+              "2026-11-14",
+              "2026-11-15",
+              "2026-11-16",
+              "2026-11-17",
+              "2026-11-18",
+              "2026-11-19",
+            ],
+            undefined,
+          ],
         );
       }).pipe(Effect.provide(layer)),
   );
@@ -2200,17 +2419,99 @@ describe("money answers", () => {
           (december.answer as ReturnType<typeof budgetsAnswer>).budgets[1]?.spent,
           "₹3,000.00",
         );
-        // The way out: a budget the owner drops is gone.
-        const removed = yield* LeadMoney.budget(scope, {
+        // A retry of the same message repeats its outcome; another value under it is refused.
+        const retried = yield* LeadMoney.budget(scope, {
           sourceEventId: asked,
+          category: "travel",
+          limit: "10k",
+        });
+        assert.deepStrictEqual([retried.status, retried.now], ["set", "₹10,000.00"]);
+        assert.include(
+          yield* LeadMoney.budget(scope, {
+            sourceEventId: asked,
+            category: "travel",
+            limit: "20k",
+          }).pipe(Effect.flip),
+          { reason: "not_allowed" },
+        );
+        // The way out: a budget the owner drops is gone, and says what it was.
+        const drop = yield* turn(5, "Drop the travel budget");
+        const removed = yield* LeadMoney.budget(scope, {
+          sourceEventId: drop,
           category: "travel",
           limit: null,
         });
         assert.deepStrictEqual(
-          [removed.status, (removed.answer as ReturnType<typeof budgetsAnswer>).budgets.length],
-          ["removed", 2],
+          [
+            removed.status,
+            removed.was,
+            (removed.answer as ReturnType<typeof budgetsAnswer>).budgets.length,
+          ],
+          ["removed", "₹10,000.00", 2],
+        );
+        // A budget only in dollars is removed without naming its currency; with two, Kin asks.
+        const dollars = yield* turn(6, "Meals $50 and software $100 too");
+        for (const [category, limit] of [
+          ["meals", "$50"],
+          ["software", "$100"],
+        ] as const)
+          yield* LeadMoney.budget(scope, { sourceEventId: dollars, category, limit });
+        const meals = yield* turn(7, "Remove the meals and software budgets");
+        const gone = yield* LeadMoney.budget(scope, {
+          sourceEventId: meals,
+          category: "meals",
+          limit: null,
+        });
+        assert.deepStrictEqual([gone.status, gone.was], ["removed", "$50.00"]);
+        assert.include(
+          (yield* LeadMoney.budget(scope, {
+            sourceEventId: meals,
+            category: "software",
+            limit: null,
+          }).pipe(Effect.flip)).message,
+          "INR and USD",
+        );
+        const none = yield* LeadMoney.budget(scope, {
+          sourceEventId: meals,
+          category: "travel",
+          limit: null,
+        });
+        assert.deepStrictEqual([none.status, none.was], ["none", "none"]);
+        assert.deepStrictEqual(
+          (yield* budgetsView(orgId, now)).budgets.map((one) => [one.category, one.currency]),
+          [
+            ["software", "INR"],
+            ["software", "USD"],
+            [null, "INR"],
+          ],
         );
         assert.deepStrictEqual((yield* budgetsView(otherOrg, now)).budgets, []);
+
+        // A routine, or a request another lead passed on, sets no budget: the owner didn't ask.
+        for (const [n, tag, json] of [
+          [8, "routine", { routine: "morning_brief" }],
+          [
+            9,
+            "chat.message",
+            {
+              chatId: "lead-chat",
+              messageId: "msg-9",
+              origin: { agentId: "other", chatId: "lead-chat" },
+            },
+          ],
+        ] as const) {
+          const eventId = yield* turn(n, "Set travel to 1k");
+          yield* sql`UPDATE kin_events SET tag = ${tag},
+              json = json_patch(json, ${JSON.stringify({ _tag: tag, ...json })})
+            WHERE event_id = ${eventId}`;
+          const refusal = yield* LeadMoney.budget(scope, {
+            sourceEventId: eventId,
+            category: "travel",
+            limit: "1k",
+          }).pipe(Effect.flip);
+          assert.include(refusal, { reason: "not_allowed" });
+          assert.include(refusal.message, "Propose it to the owner", tag);
+        }
 
         // A turn someone besides the owner reads gets no money figure and sets no budget.
         const shared = yield* turn(4, "How much cash do we have?");

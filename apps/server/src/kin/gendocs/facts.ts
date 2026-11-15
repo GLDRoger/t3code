@@ -10,6 +10,7 @@ import { type FieldValues, parseFields } from "../work/lists.ts";
 import { dayIn } from "../work/money.ts";
 import {
   fromImport,
+  moneyDay,
   notedReceiptNumbers,
   ownerZone,
   type RecordRow,
@@ -149,24 +150,26 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     if (source._tag === "payments") {
       sensitiveTables.add(input.name);
       const rows = yield* sql<{
-        invoice: string;
+        invoice: string | null;
         client: string | null;
         minor: number;
         currency: string;
         paidOn: string;
         receipt: string | null;
-      }>`SELECT COALESCE(n.number, r.key) AS invoice, p2.title AS client, p.amount_minor AS minor,
-          p.currency, p.paid_on AS "paidOn",
+      }>`SELECT CASE WHEN r.register_id = 'invoices' THEN COALESCE(n.number, r.key) END AS invoice,
+          p2.title AS client, p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn",
+          CASE WHEN r.register_id = 'receipts' THEN COALESCE(n.number, r.key) ELSE
           (SELECT COALESCE(rn.number, rc.key) FROM kin_records rc
             LEFT JOIN kin_issued_numbers rn ON rn.org_id = rc.org_id AND rn.record_id = rc.record_id
             WHERE rc.org_id = p.org_id AND rc.register_id = 'receipts' AND rc.state <> 'dropped'
               AND json_extract(rc.fields_json, '$.payment') = p.payment_id
-            ORDER BY rc.created_at DESC, rc.record_id DESC LIMIT 1) AS receipt
+            ORDER BY rc.created_at DESC, rc.record_id DESC LIMIT 1) END AS receipt
         FROM kin_record_payments p
         JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
         LEFT JOIN kin_records p2 ON p2.org_id = r.org_id AND p2.record_id = r.party_id
         LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
-        WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND r.register_id = 'invoices'
+        WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND r.state <> 'dropped'
+          AND r.register_id IN ('invoices', 'receipts')
           AND p.withheld = ${source.tds ? 1 : 0} AND substr(p.paid_on, 1, 7) = ${month}
         ORDER BY p.paid_on, p.payment_id LIMIT ${MAX_ROWS}`;
       tables.set(
@@ -218,15 +221,16 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       number: string | null;
       sensitive: number;
     }>`SELECT r.record_id AS "recordId", r.key, r.title, r.state, r.amount_minor AS minor,
-        r.currency, r.date_at AS "dateAt", r.due_at AS "dueAt", r.category,
+        r.currency, ${moneyDay(sql)} AS "dateAt", r.due_at AS "dueAt", r.category,
         r.fields_json AS "fieldsJson", p.title AS client, p.fields_json AS "clientFields",
         n.number, ${sensitiveNow(sql)} AS sensitive
       FROM kin_records r
       LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.party_id
       LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
-      WHERE r.org_id = ${orgId} AND r.register_id = ${list.id} AND r.date_at IS NOT NULL
-        AND r.date_at >= ${start} AND r.date_at < ${end}
-      ORDER BY r.date_at, r.key LIMIT ${MAX_ROWS * 2}`;
+      WHERE r.org_id = ${orgId} AND r.register_id = ${list.id}
+        AND ${moneyDay(sql)} >= ${start} AND ${moneyDay(sql)} < ${end}
+        ${input.states === undefined ? sql`` : sql`AND r.state IN ${sql.in([...input.states])}`}
+      ORDER BY "dateAt", r.key LIMIT ${MAX_ROWS * 2}`;
     const inMonth = rows
       .filter((row) => dayIn(row.dateAt, zone).startsWith(month))
       .slice(0, MAX_ROWS);
@@ -258,6 +262,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
           key: row.key,
           title: row.title,
           state: stateLabel(list, row.state),
+          stateKey: row.state,
           amount,
           tax,
           date: dayIn(row.dateAt, zone),

@@ -3,10 +3,10 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { addUp, dayIn, formatMoney, monthOf, shiftMonth } from "./money.ts";
+import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth } from "./money.ts";
 import { dates } from "./moneyViews.ts";
 import { endOfDay, moneyDay, ownerZone, repeatOf, startOfDay } from "./recordRows.ts";
-import { nextDates } from "./repeat.ts";
+import { nextDates, repeatsBetween } from "./repeat.ts";
 import { findBankList } from "./statements/bankList.ts";
 import { reviewOf } from "./statements/statementReview.ts";
 import type { Statement } from "./statements/statementTable.ts";
@@ -29,11 +29,6 @@ const shift = (day: string, days: number) =>
 const daysBetween = (from: string, to: string) =>
   Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY_MS);
 
-/** A signed exact amount, `-₹1,200.00` below zero. */
-const signedMoney = (minor: bigint, currency: string) =>
-  minor < 0n
-    ? `-${formatMoney({ minor: Number(-minor), currency })}`
-    : formatMoney({ minor: Number(minor), currency });
 const shown = (totals: ReadonlyArray<KinMoney>) =>
   totals.length === 0 ? "none" : totals.map(formatMoney).join(" + ");
 
@@ -59,7 +54,8 @@ const closingOf = (statement: Statement) => {
 /** Only a statement's four digits name its account: the rest of what it says is the bank's text. */
 const accountLabel = (statement: Statement) => {
   const digits = /^\d{4}$/.test(statement.account ?? "") ? ` ••${statement.account}` : "";
-  return `${statement.kind === "card" ? "Card" : "Account"}${digits}`;
+  const label = `${statement.kind === "card" ? "Card" : "Account"}${digits}`;
+  return statement.bank === null ? label : `${statement.bank} ${label}`;
 };
 
 /** Money in (payments on invoices and receipts, never TDS) and spent (paid expenses), by day. */
@@ -93,10 +89,44 @@ const recordedMoney = Effect.fn("KinMoneyAnswers.recorded")(function* (
   };
 });
 
+type Read = {
+  readonly statementId: string;
+  /** Everything Kin stores of an account: kind, bank, last four digits, and currency. */
+  readonly identity: string;
+  readonly label: string;
+  readonly kind: Statement["kind"];
+  readonly currency: string;
+  readonly from: string | null;
+  readonly opening: number | null;
+  readonly minor: number;
+  readonly on: string;
+  readonly check: Statement["check"]["status"];
+  /** Why it isn't a balance of record, or `undefined` when it is one. */
+  readonly standing:
+    | "not yet confirmed"
+    | "its totals don't check out"
+    | "its confirm was undone"
+    | undefined;
+};
+
 /**
- * Per account and currency, the latest closing balance a read statement states and its day, and
- * what Kin recorded coming in and going out since. A balance is never made up: an account Kin has
- * no statement for isn't listed, and with none at all `known` is false.
+ * Whether `newer` continues `older`'s account: the same statement read twice, or one that opens on
+ * the other's closing balance and starts once it ends. Digits alone never prove it.
+ */
+const continues = (older: Read, newer: Read) =>
+  (newer.from === older.from &&
+    newer.on === older.on &&
+    newer.opening === older.opening &&
+    newer.minor === older.minor) ||
+  (newer.opening !== null &&
+    newer.opening === older.minor &&
+    newer.from !== null &&
+    newer.from >= older.on);
+
+/**
+ * Per account, the latest closing balance of a statement the owner confirmed (not undone, check
+ * not off); newer reads beside it, never counted. Same-identity statements no chain links are
+ * listed apart with no total. Records carry no account, so movements are per currency.
  */
 export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
   orgId: KinOrgId,
@@ -105,98 +135,202 @@ export const cashPosition = Effect.fn("KinMoneyAnswers.cash")(function* (
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
   const today = dayIn(now, zone);
-  const stored = yield* sql<{ statementId: string; reviewJson: string }>`
-    SELECT statement_id AS "statementId", review_json AS "reviewJson" FROM kin_bank_statements
+  const stored = yield* sql<{
+    statementId: string;
+    reviewJson: string;
+    appliedAt: number | null;
+    undoneAt: number | null;
+  }>`SELECT statement_id AS "statementId", review_json AS "reviewJson", applied_at AS "appliedAt",
+      undone_at AS "undoneAt"
+    FROM kin_bank_statements
     WHERE org_id = ${orgId} AND status = 'read' AND review_json IS NOT NULL
     ORDER BY read_at, statement_id`;
-  const latest = new Map<
-    string,
-    {
-      readonly label: string;
-      readonly kind: Statement["kind"];
-      readonly currency: string;
-      readonly minor: number;
-      readonly on: string;
-      readonly check: Statement["check"]["status"];
-    }
-  >();
-  for (const row of stored) {
+  const reads = stored.flatMap((row): ReadonlyArray<Read> => {
     const statement = reviewOf(row.reviewJson)?.statement;
     const closing = statement === undefined ? undefined : closingOf(statement);
-    if (statement === undefined || closing === undefined) continue;
-    const label = accountLabel(statement);
-    const key = `${statement.kind}|${statement.bank ?? ""}|${label}|${statement.currency}`;
-    const held = latest.get(key);
-    if (held !== undefined && held.on > closing.on) continue;
-    latest.set(key, {
-      label: statement.bank === null ? label : `${statement.bank} ${label}`,
-      kind: statement.kind,
-      currency: statement.currency,
-      minor: closing.minor,
-      on: closing.on,
-      check: statement.check.status,
-    });
+    if (statement === undefined || closing === undefined) return [];
+    return [
+      {
+        statementId: row.statementId,
+        identity: [
+          statement.kind,
+          (statement.bank ?? "").toLowerCase(),
+          statement.account ?? "",
+          statement.currency,
+        ].join("\u0000"),
+        label: accountLabel(statement),
+        kind: statement.kind,
+        currency: statement.currency,
+        from: statement.from,
+        opening: statement.openingMinor,
+        minor: closing.minor,
+        on: closing.on,
+        check: statement.check.status,
+        standing:
+          row.appliedAt === null || row.undoneAt !== null
+            ? row.undoneAt === null
+              ? "not yet confirmed"
+              : "its confirm was undone"
+            : statement.check.status === "off"
+              ? "its totals don't check out"
+              : undefined,
+      },
+    ];
+  });
+  const byDay = (a: Read, b: Read) => (a.on === b.on ? 0 : a.on < b.on ? -1 : 1);
+  const chains: Array<Array<Read>> = [];
+  for (const read of reads.filter((one) => one.standing === undefined).toSorted(byDay)) {
+    const chain = chains.find(
+      (one) => one[0]!.identity === read.identity && continues(one.at(-1)!, read),
+    );
+    if (chain === undefined) chains.push([read]);
+    else chain.push(read);
   }
-  const balances = [...latest.values()].toSorted((a, b) =>
-    a.currency === b.currency ? (a.label < b.label ? -1 : 1) : a.currency < b.currency ? -1 : 1,
+  const heads = chains.map((chain) => chain.at(-1)!);
+  const twins = (head: Read) => heads.filter((one) => one.identity === head.identity).length > 1;
+  // The newest read not of record per identity, unless a balance of record is as new.
+  const pending = new Map<string, Read>();
+  for (const read of reads.filter((one) => one.standing !== undefined).toSorted(byDay)) {
+    const recordOn = heads.filter((one) => one.identity === read.identity).map((one) => one.on);
+    if (recordOn.every((on) => on < read.on)) pending.set(read.identity, read);
+  }
+  const accounts = heads
+    .map((head) => {
+      const ageDays = Math.max(daysBetween(head.on, today), 0);
+      const newer = twins(head) ? undefined : pending.get(head.identity);
+      return {
+        ...head,
+        ageDays,
+        stale: ageDays > STALE_DAYS,
+        cannotTellApart: twins(head),
+        newerRead: newer,
+      };
+    })
+    .toSorted(
+      (a, b) =>
+        (a.currency === b.currency ? 0 : a.currency < b.currency ? -1 : 1) ||
+        (a.label === b.label ? 0 : a.label < b.label ? -1 : 1) ||
+        byDay(a, b),
+    );
+  const shownBeside = new Set(
+    accounts.flatMap((one) => (one.newerRead === undefined ? [] : [one.newerRead])),
   );
-  const earliest = balances.reduce<string | null>(
-    (first, one) => (first === null || one.on < first ? one.on : first),
-    null,
-  );
+  const notOfRecord = [...pending.values()]
+    .filter((one) => !shownBeside.has(one))
+    .toSorted((a, b) => (a.label === b.label ? byDay(a, b) : a.label < b.label ? -1 : 1));
+
+  const held = accounts.filter((one) => one.kind === "account");
+  const currencies = [...new Set(held.map((one) => one.currency))].toSorted();
+  const earliest = held.map((one) => one.on).toSorted()[0];
   const recorded =
-    earliest === null ? { received: [], spent: [] } : yield* recordedMoney(orgId, earliest, zone);
-  const accountsIn = (currency: string) =>
-    balances.filter((one) => one.kind === "account" && one.currency === currency).length;
-  const rows = balances.map((one) => {
+    earliest === undefined
+      ? { received: [], spent: [] }
+      : yield* recordedMoney(orgId, earliest, zone);
+  const byCurrency = currencies.map((currency) => {
+    const these = held.filter((one) => one.currency === currency);
+    const since = these.map((one) => one.on).toSorted()[0]!;
     const after = (entry: { readonly day: string; readonly currency: string }) =>
-      entry.currency === one.currency && entry.day > one.on;
+      entry.currency === currency && entry.day > since;
     const received = recorded.received.filter(after).reduce((sum, e) => sum + BigInt(e.minor), 0n);
     const spent = recorded.spent.filter(after).reduce((sum, e) => sum + BigInt(e.minor), 0n);
-    const ageDays = Math.max(daysBetween(one.on, today), 0);
+    const withheld = these.some((one) => one.cannotTellApart);
+    const total = these.reduce((sum, one) => sum + BigInt(one.minor), 0n);
     return {
-      ...one,
-      ageDays,
-      stale: ageDays > STALE_DAYS,
+      currency,
+      accounts: these.length,
+      total: withheld ? null : total,
+      since,
+      oldest: since,
+      sameDay: these.every((one) => one.on === since),
+      stale: these.some((one) => one.stale),
       receivedSince: received,
       spentSince: spent,
-      // Kin's records aren't tied to an account, so they move a balance only when it is the one.
-      estimate:
-        one.kind === "account" && accountsIn(one.currency) === 1
-          ? BigInt(one.minor) + received - spent
-          : null,
     };
   });
-  return { asOf: now, today, timeZone: zone, known: rows.length > 0, rows };
+  return {
+    asOf: now,
+    today,
+    timeZone: zone,
+    known: accounts.length > 0,
+    accounts,
+    notOfRecord,
+    byCurrency,
+  };
 });
 export type CashPosition = Effect.Success<ReturnType<typeof cashPosition>>;
 
+const notRecordLine = (one: Read) => ({
+  account: one.label,
+  closingBalance: formatMinor(BigInt(one.minor), one.currency),
+  on: one.on,
+  standing: one.standing!,
+});
+
 /** The cash position as an agent quotes it: every figure formatted by code. */
 export const cashAnswer = (cash: CashPosition) => {
+  const notOfRecord =
+    cash.notOfRecord.length === 0 ? {} : { notOfRecord: cash.notOfRecord.map(notRecordLine) };
   if (!cash.known)
     return {
       known: false as const,
-      note: "Kin has no bank statement with a balance, so the cash balance is unknown. The owner can send one in this chat.",
+      note: "Kin has no balance of record: no bank statement the owner confirmed gives one, so the cash balance is unknown. The owner can send one in this chat and confirm it on its card.",
+      ...notOfRecord,
     };
-  const line = (one: CashPosition["rows"][number]) => ({
+  const line = (one: CashPosition["accounts"][number]) => ({
     account: one.label,
-    closingBalance: signedMoney(BigInt(one.minor), one.currency),
+    closingBalance: formatMinor(BigInt(one.minor), one.currency),
     on: one.on,
     daysOld: one.ageDays,
     ...(one.stale ? { stale: `No statement covers the ${one.ageDays} days since ${one.on}.` } : {}),
     ...(one.check === "adds_up" ? {} : { statementCheck: one.check }),
-    recordedInSince: signedMoney(one.receivedSince, one.currency),
-    recordedOutSince: signedMoney(one.spentSince, one.currency),
-    ...(one.estimate === null ? {} : { estimateNow: signedMoney(one.estimate, one.currency) }),
+    ...(one.cannotTellApart ? { cannotTellApart: true as const } : {}),
+    ...(one.newerRead === undefined
+      ? {}
+      : {
+          newerRead: {
+            closingBalance: formatMinor(BigInt(one.newerRead.minor), one.newerRead.currency),
+            on: one.newerRead.on,
+            standing: one.newerRead.standing!,
+          },
+        }),
   });
-  const cards = cash.rows.filter((one) => one.kind === "card");
+  const cards = cash.accounts.filter((one) => one.kind === "card");
   return {
     known: true as const,
     today: cash.today,
-    accounts: cash.rows.filter((one) => one.kind === "account").map(line),
+    accounts: cash.accounts.filter((one) => one.kind === "account").map(line),
     ...(cards.length === 0 ? {} : { cardsOwed: cards.map(line) }),
+    ...notOfRecord,
+    byCurrency: cash.byCurrency.map((one) => {
+      const estimate =
+        one.total !== null && one.sameDay ? one.total + one.receivedSince - one.spentSince : null;
+      return {
+        currency: one.currency,
+        accounts: one.accounts,
+        ...(one.total === null
+          ? {
+              totalWithheld: `Kin can't tell apart balances with the same bank and last four digits, so ${one.currency} has no total. A statement that opens on another's closing balance links them.`,
+            }
+          : { totalOfTheseAccounts: formatMinor(one.total, one.currency) }),
+        recordedSince: {
+          since: one.since,
+          account: "not known" as const,
+          in: formatMinor(one.receivedSince, one.currency),
+          out: formatMinor(one.spentSince, one.currency),
+        },
+        ...(estimate === null
+          ? {}
+          : {
+              estimate: {
+                now: formatMinor(estimate, one.currency),
+                label: "An estimate, not a bank figure.",
+                assumes: `Every payment and paid expense recorded since ${one.since} moved through ${one.accounts === 1 ? "the account" : "the accounts"} above, and the company has no other ${one.currency} account.`,
+              },
+            }),
+      };
+    }),
     basis:
-      "closingBalance is the bank's own figure on that day. recordedInSince and recordedOutSince are payments and paid expenses recorded in Kin after it, in that currency, from any account; estimateNow adds them to the balance only where it is the one account in that currency.",
+      "closingBalance is the bank's own figure on that day, from a statement the owner confirmed. A read not confirmed, undone, or whose totals don't check out is never a balance. Kin's payments and expenses carry no account, so recordedSince is per currency and estimate only adds them up under the assumption it states. These are the accounts Kin has statements for, not necessarily all the company's.",
   };
 };
 
@@ -318,19 +452,29 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
       AND NOT EXISTS (SELECT 1 FROM kin_records n WHERE n.org_id = r.org_id
         AND n.origin_key = 'repeat:' || r.record_id)
     ORDER BY r.key`;
+  const incomplete: Array<string> = [];
   for (const head of heads) {
     const repeat = repeatOf(head.repeatJson);
     if (repeat === undefined) continue;
-    const current = {
+    const start = {
       dueAt: head.dueAt,
       dueAllDay: head.dueAllDay === 1,
       dateAt: head.dateAt,
       dateAllDay: head.dateAllDay === 1,
     };
+    const startAt = start.dueAt ?? start.dateAt;
+    // Repeats already past are skipped in one step, so the cap only counts the ones ahead.
+    const skipped = startAt === null ? 0 : repeatsBetween(repeat.rule, startAt, now);
+    const current =
+      skipped === 0 ? start : { ...start, ...nextDates(repeat, start, zone, skipped) };
+    let ended = false;
     for (let step = 0; step < REPEATS_PER_ENTRY; step += 1) {
       const next = nextDates(repeat, current, zone);
       const at = next.dueAt ?? next.dateAt;
-      if (at === null || at > last) break;
+      if (at === null || at > last) {
+        ended = true;
+        break;
+      }
       Object.assign(current, next);
       if (at < now) continue;
       outgoing.push({
@@ -342,6 +486,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
         kind: "repeat",
       });
     }
+    if (!ended) incomplete.push(head.key);
   }
   outgoing.sort((a, b) => a.at - b.at || (a.key < b.key ? -1 : 1));
   const dueOut = outgoing.filter((one) => one.at >= now);
@@ -389,15 +534,17 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
     dueOut,
     overdueOut,
     datesWithoutAmount: undated.rows,
+    incomplete,
     runway: yield* runway(orgId, now, zone, today),
   };
 });
 export type Outlook = Effect.Success<ReturnType<typeof outlook>>;
 
 /**
- * Runway per currency: the cash Kin knows divided by the average monthly net outflow of the last
- * three complete months in the owner's zone. No number without a known balance, without records
- * reaching back to the first of those months, or when the months netted money in.
+ * Runway per currency: the cash of record divided by the average monthly net outflow of the last
+ * three complete months in the owner's zone. No number without a total balance of record, unless
+ * that currency's eligible history (counted as cash is: no TDS, no void invoices) starts by the
+ * first day of those months, or when the months netted money in.
  */
 const runway = Effect.fn("KinMoneyAnswers.runway")(function* (
   orgId: KinOrgId,
@@ -411,20 +558,26 @@ const runway = Effect.fn("KinMoneyAnswers.runway")(function* (
   const first = `${months[0]!}-01`;
   const recorded = yield* recordedMoney(orgId, first, zone);
   const inWindow = (one: { readonly day: string }) => one.day < `${thisMonth}-01`;
-  const [paidFirst] = yield* sql<{ day: string | null }>`SELECT MIN(p.paid_on) AS day
+  const paidFirst = yield* sql<{ currency: string; day: string }>`SELECT p.currency,
+      MIN(p.paid_on) AS day
     FROM kin_record_payments p JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
-    WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND r.register_id IN ('invoices', 'receipts')`;
-  const [spentFirst] = yield* sql<{ at: number | null }>`SELECT MIN(${moneyDay(sql)}) AS at
+    WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND p.withheld = 0
+      AND r.state <> 'dropped' AND r.register_id IN ('invoices', 'receipts')
+    GROUP BY p.currency ORDER BY p.currency`;
+  const spentFirst = yield* sql<{ currency: string; at: number }>`SELECT r.currency,
+      MIN(${moneyDay(sql)}) AS at
     FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'
-      AND r.state = 'done' AND r.amount_minor IS NOT NULL`;
-  const since = [paidFirst?.day ?? null, spentFirst?.at == null ? null : dayIn(spentFirst.at, zone)]
-    .filter((one) => one !== null)
-    .toSorted()[0];
+      AND r.state = 'done' AND r.amount_minor IS NOT NULL
+    GROUP BY r.currency ORDER BY r.currency`;
+  const sinceOf = (currency: string) =>
+    [
+      ...paidFirst.filter((one) => one.currency === currency).map((one) => one.day),
+      ...spentFirst.filter((one) => one.currency === currency).map((one) => dayIn(one.at, zone)),
+    ].toSorted()[0];
   const cash = yield* cashPosition(orgId, now);
-  const accounts = cash.rows.filter((one) => one.kind === "account");
   const currencies = [
     ...new Set([
-      ...accounts.map((one) => one.currency),
+      ...cash.byCurrency.map((one) => one.currency),
       ...recorded.received.filter(inWindow).map((one) => one.currency),
       ...recorded.spent.filter(inWindow).map((one) => one.currency),
     ]),
@@ -443,17 +596,13 @@ const runway = Effect.fn("KinMoneyAnswers.runway")(function* (
       return { month, received, spent, net: received - spent };
     });
     const averageNet = perMonth.reduce((sum, one) => sum + one.net, 0n) / 3n;
-    const held = accounts.filter((one) => one.currency === currency);
+    const held = cash.byCurrency.find((one) => one.currency === currency);
     const balance =
-      held.length === 0
+      held === undefined || held.total === null
         ? null
-        : {
-            minor: held.reduce((sum, one) => sum + BigInt(one.minor), 0n),
-            oldest: held.map((one) => one.on).toSorted()[0]!,
-            stale: held.some((one) => one.stale),
-            accounts: held.length,
-          };
-    const enough = since !== undefined && monthOf(since) <= months[0]!;
+        : { minor: held.total, oldest: held.oldest, stale: held.stale, accounts: held.accounts };
+    const since = sinceOf(currency);
+    const enough = since !== undefined && since <= first;
     const months10 =
       balance === null || !enough || averageNet >= 0n
         ? null
@@ -465,6 +614,7 @@ const runway = Effect.fn("KinMoneyAnswers.runway")(function* (
       months: perMonth,
       averageNet,
       balance,
+      withheld: held !== undefined && held.total === null,
       enoughHistory: enough,
       historySince: since ?? null,
       runwayTenths: months10,
@@ -493,7 +643,7 @@ export const outlookAnswer = (view: Outlook) => ({
     net:
       one.net.length === 0
         ? "none"
-        : one.net.map((n) => signedMoney(n.minor, n.currency)).join(" + "),
+        : one.net.map((n) => formatMinor(n.minor, n.currency)).join(" + "),
   })),
   comingIn: itemsShown(view.incoming, view.timeZone),
   ...(view.incoming.length > ITEMS_SHOWN
@@ -512,6 +662,11 @@ export const outlookAnswer = (view: Outlook) => ({
   ...(view.overdueOut.length === 0
     ? {}
     : { pastDueCountedAsGoingOut: itemsShown(view.overdueOut, view.timeZone) }),
+  ...(view.incomplete.length === 0
+    ? {}
+    : {
+        incomplete: `Expected out is short: ${view.incomplete.join(", ")} repeat${view.incomplete.length === 1 ? "s" : ""} more often than Kin projects ahead (${REPEATS_PER_ENTRY} dates each), so later dates aren't counted.`,
+      }),
   ...(view.datesWithoutAmount.length === 0
     ? {}
     : {
@@ -525,15 +680,15 @@ export const outlookAnswer = (view: Outlook) => ({
     currency: one.currency,
     lastThreeMonths: one.months.map((month) => ({
       month: month.month,
-      in: signedMoney(month.received, one.currency),
-      out: signedMoney(month.spent, one.currency),
-      net: signedMoney(month.net, one.currency),
+      in: formatMinor(month.received, one.currency),
+      out: formatMinor(month.spent, one.currency),
+      net: formatMinor(month.net, one.currency),
     })),
-    averageMonthlyNet: signedMoney(one.averageNet, one.currency),
+    averageMonthlyNet: formatMinor(one.averageNet, one.currency),
     ...(one.balance === null
       ? {}
       : {
-          cash: signedMoney(one.balance.minor, one.currency),
+          cash: formatMinor(one.balance.minor, one.currency),
           cashAsOf: one.balance.oldest,
           ...(one.balance.stale ? { cashStale: true as const } : {}),
         }),
@@ -542,9 +697,11 @@ export const outlookAnswer = (view: Outlook) => ({
           runwayMonths: null,
           why:
             one.balance === null
-              ? "No bank statement gives a balance in this currency."
+              ? one.withheld
+                ? "Kin can't tell this currency's accounts apart, so it has no total cash to divide."
+                : "No confirmed bank statement gives a balance in this currency."
               : !one.enoughHistory
-                ? `Kin's records start ${one.historySince ?? "nowhere"}: not three complete months yet.`
+                ? `Kin's records in ${one.currency} start ${one.historySince ?? "nowhere"}: not three complete months from ${one.months[0]!.month}-01 yet.`
                 : "These months brought in at least what went out, so cash isn't running down.",
         }
       : {

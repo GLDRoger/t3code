@@ -38,7 +38,8 @@ RECIPE.md starts with front matter between --- lines:
     advance's receipt), tds (tax the client deducted) or received; entry.advances is only the
     advances;
   - rows.<list> (a table, with period: naming a month input): that list's entries dated in the
-    month, with columns from key, title, state, amount, tax, taxable (amount less tax), date,
+    month (states: narrows it to Kin's own states open, doing, waiting, done, dropped), with
+    columns from key, title, state, stateKey (that own state), amount, tax, taxable, date,
     due, client, clientGstin, placeOfSupply, category, number, matched (what a bank row was
     confirmed as) and field_<field>;
   - payments (a table, with period:): payments received in the month, with columns invoice,
@@ -518,7 +519,7 @@ inputs:
     type: table
     from: rows.invoices
     period: month
-    columns: { key: text, number: text, date: date, client: text, clientGstin: text, placeOfSupply: text, state: text, taxable: money, tax: money, amount: money }
+    columns: { key: text, number: text, date: date, client: text, clientGstin: text, placeOfSupply: text, state: text, stateKey: text, taxable: money, tax: money, amount: money }
   payments:
     type: table
     from: payments
@@ -533,12 +534,19 @@ inputs:
     type: table
     from: rows.expenses
     period: month
+    states: [done]
     columns: { key: text, title: text, date: date, category: text, field_vendor: text, tax: money, amount: money }
+  unpaidExpenses:
+    type: table
+    from: rows.expenses
+    period: month
+    states: [open, doing, waiting]
+    columns: { key: text, title: text, date: date, category: text, state: text, field_vendor: text, amount: money }
   bank:
     type: table
     from: rows.bank_transactions
     period: month
-    columns: { key: text, title: text, date: date, state: text, field_direction: text, field_reference: text, field_account: text, matched: text, amount: money }
+    columns: { key: text, title: text, date: date, state: text, stateKey: text, field_direction: text, field_reference: text, field_account: text, matched: text, amount: money }
 workbook: "accounts-{month}.xlsx"
 sheets:
   - name: Sales register
@@ -556,7 +564,7 @@ sheets:
       - { header: Currency, field: amount.currency }
       - { header: Status, field: state }
       - { header: Entry, field: key }
-    leaveOutOfTotals: { field: state, values: [Void, Draft] }
+    leaveOutOfTotals: { field: stateKey, values: [dropped, open] }
   - name: Receipts
     input: payments
     file: "receipts-{month}.csv"
@@ -589,6 +597,18 @@ sheets:
       - { header: Amount, field: amount }
       - { header: Currency, field: amount.currency }
     totalsBy: category
+  - name: Unpaid expenses
+    input: unpaidExpenses
+    file: "unpaid-expenses-{month}.csv"
+    columns:
+      - { header: Category, field: category }
+      - { header: Date, field: date }
+      - { header: Entry, field: key }
+      - { header: What, field: title }
+      - { header: Vendor, field: field_vendor }
+      - { header: Status, field: state }
+      - { header: Amount, field: amount }
+      - { header: Currency, field: amount.currency }
   - name: Bank transactions
     input: bank
     file: "bank-{month}.csv"
@@ -603,13 +623,16 @@ sheets:
       - { header: Currency, field: amount.currency }
       - { header: Status, field: state }
       - { header: "Matched to", field: matched }
+    leaveOutOfTotals: { field: stateKey, values: [dropped] }
     totalsBy: field_direction
-outputs: ["accounts-{month}.xlsx", "sales-register-{month}.csv", "receipts-{month}.csv", "tds-{month}.csv", "expenses-{month}.csv", "bank-{month}.csv"]
+outputs: ["accounts-{month}.xlsx", "sales-register-{month}.csv", "receipts-{month}.csv", "tds-{month}.csv", "expenses-{month}.csv", "unpaid-expenses-{month}.csv", "bank-{month}.csv"]
 ---
 
 The month's pack for the accountant. Kin writes the rows as they are stored and adds the totals
-in exact amounts, one per currency, leaving Void and Draft invoices out of them. Expenses total
-per category and bank rows per direction. A bank row still Unexplained has nothing in Matched to.
+in exact amounts, one per currency, leaving void and draft invoices and void bank rows out of
+them. Expenses are the paid ones, as Money counts them, totalled per category; unpaid ones are on
+their own sheet with their state and one subtotal; void ones are in neither. Bank rows total per
+direction. A bank row still Unexplained has nothing in Matched to.
 
 Tax is the invoice's tax as recorded, one figure: Kin holds no CGST, SGST or IGST split, so the
 pack has none. Taxable value is the total less that tax, blank when no tax was recorded. TDS is
@@ -621,7 +644,7 @@ input has; add the field to the input's columns too) and nothing else.
   "recipes/accountant-pack/sample.json": String.raw`{
   "month": "2026-10",
   "invoices": [
-    { "key": "INV-1", "number": "INV/26-27/001", "date": "2026-10-03", "client": "Example Client Pvt Ltd", "clientGstin": "29BBBBB2222B1Z5", "placeOfSupply": "Karnataka", "state": "Paid", "taxable": { "minor": 10000000, "currency": "INR" }, "tax": { "minor": 1800000, "currency": "INR" }, "amount": { "minor": 11800000, "currency": "INR" } }
+    { "key": "INV-1", "number": "INV/26-27/001", "date": "2026-10-03", "client": "Example Client Pvt Ltd", "clientGstin": "29BBBBB2222B1Z5", "placeOfSupply": "Karnataka", "state": "Paid", "stateKey": "done", "taxable": { "minor": 10000000, "currency": "INR" }, "tax": { "minor": 1800000, "currency": "INR" }, "amount": { "minor": 11800000, "currency": "INR" } }
   ],
   "payments": [
     { "invoice": "INV/26-27/001", "receipt": "RCT/26-27/001", "client": "Example Client Pvt Ltd", "amount": { "minor": 11600000, "currency": "INR" }, "paidOn": "2026-10-20" }
@@ -632,9 +655,12 @@ input has; add the field to the input's columns too) and nothing else.
   "expenses": [
     { "key": "EXP-1", "title": "Hosting", "date": "2026-10-05", "category": "software", "field_vendor": "Sample Cloud", "tax": null, "amount": { "minor": 450000, "currency": "INR" } }
   ],
+  "unpaidExpenses": [
+    { "key": "EXP-2", "title": "Office rent", "date": "2026-10-28", "category": "rent", "state": "To pay", "field_vendor": "Sample Estates", "amount": { "minor": 2000000, "currency": "INR" } }
+  ],
   "bank": [
-    { "key": "BNK-1", "title": "NEFT EXAMPLE CLIENT", "date": "2026-10-20", "state": "Explained", "field_direction": "credit", "field_reference": "N000000001", "field_account": "0000", "matched": "payment on INV-1", "amount": { "minor": 11600000, "currency": "INR" } },
-    { "key": "BNK-2", "title": "CARD SAMPLE CLOUD", "date": "2026-10-05", "state": "Unexplained", "field_direction": "debit", "field_reference": null, "field_account": "0000", "matched": null, "amount": { "minor": 450000, "currency": "INR" } }
+    { "key": "BNK-1", "title": "NEFT EXAMPLE CLIENT", "date": "2026-10-20", "state": "Explained", "stateKey": "done", "field_direction": "credit", "field_reference": "N000000001", "field_account": "0000", "matched": "payment on INV-1", "amount": { "minor": 11600000, "currency": "INR" } },
+    { "key": "BNK-2", "title": "CARD SAMPLE CLOUD", "date": "2026-10-05", "state": "Unexplained", "stateKey": "open", "field_direction": "debit", "field_reference": null, "field_account": "0000", "matched": null, "amount": { "minor": 450000, "currency": "INR" } }
   ]
 }
 `,

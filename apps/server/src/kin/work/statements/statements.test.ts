@@ -960,6 +960,39 @@ describe("bank statements", () => {
         const [queued] = yield* sql<{ tag: string; agentId: string }>`SELECT tag,
           agent_id AS "agentId" FROM kin_events WHERE tag = 'widget.action'`;
         assert.deepStrictEqual(queued, { tag: "widget.action", agentId: lead });
+
+        // Sent in a group a teammate has since joined, the notice goes to the lead's own chat
+        // with the owner, never into the group.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('mate', ${orgId}, 'mate', 'Mate', ${at})`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+          VALUES ('team-chat', ${orgId}, 'team_group', 0, ${at})`;
+        for (const [member, kind, who, role] of [
+          ["team-owner", "person", ownerId, "owner"],
+          ["team-lead", "agent", lead, "member"],
+          ["team-mate", "person", "mate", "member"],
+        ] as const)
+          yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+              person_id, agent_id, role, joined_at)
+            VALUES (${member}, ${orgId}, 'team-chat', ${kind}, ${kind === "person" ? who : null},
+              ${kind === "agent" ? who : null}, ${role}, ${at})`;
+        yield* sql`UPDATE kin_bank_statements SET chat_id = 'team-chat'
+          WHERE statement_id = ${first.statement}`;
+        yield* TestClock.adjust(1_000);
+        const inGroup = yield* sql.withTransaction(tellLead(tap));
+        assert.strictEqual(inGroup.message.chatId, "lead-chat");
+        const inTeam = (yield* sql`SELECT 1 FROM kin_messages WHERE chat_id = 'team-chat'`).length;
+        assert.strictEqual(inTeam, 0);
+        // When the lead's own chat is read by someone else too, the notice is withheld.
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at)
+          VALUES ('lead-chat-mate', ${orgId}, 'lead-chat', 'person', 'mate', 'member', ${at})`;
+        yield* TestClock.adjust(1_000);
+        const before2 = (yield* sql`SELECT 1 FROM kin_messages`).length;
+        assert.include(yield* Effect.flip(sql.withTransaction(tellLead(tap))), {
+          reason: "not_allowed",
+        });
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_messages`, before2);
       }).pipe(Effect.provide(layer)),
     );
 

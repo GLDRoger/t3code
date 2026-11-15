@@ -1,11 +1,11 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
-import type { KinMoney, KinOrgId } from "@t3tools/contracts";
+import { KinChatError, type KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { dayIn, formatMoney, monthOf, shiftMonth } from "./money.ts";
+import { dayIn, formatMinor, monthOf, shiftMonth } from "./money.ts";
 import { moneyDay, ownerZone, startOfDay } from "./recordRows.ts";
 
 /**
@@ -21,40 +21,95 @@ export type BudgetTarget = {
   readonly projectId: string | null;
   readonly currency: string;
 };
+const digest = (text: string) =>
+  NodeCrypto.createHash("sha256").update(text).digest("hex").slice(0, 24);
+const targetOf = (target: Omit<BudgetTarget, "currency">) =>
+  `${target.category?.toLowerCase() ?? ""}\u0000${target.projectId ?? ""}`;
 const budgetIdOf = (target: BudgetTarget) =>
-  `bg_${NodeCrypto.createHash("sha256")
-    .update(
-      `${target.category?.toLowerCase() ?? ""}\u0000${target.projectId ?? ""}\u0000${target.currency}`,
-    )
-    .digest("hex")
-    .slice(0, 24)}`;
+  `bg_${digest(`${targetOf(target)}\u0000${target.currency}`)}`;
 
-/** Sets a limit, replacing the one for the same target; `null` removes it. */
+const refused = (message: string) => new KinChatError({ reason: "not_allowed", message });
+
+/**
+ * Sets a limit, replacing the one for the same target; `null` removes it. A removal with no
+ * currency takes the target's one budget, and asks when it has several. One source event sets a
+ * target once: its retry repeats the outcome, and a different value under it is refused.
+ */
 export const setBudget = Effect.fn("KinBudgets.set")(function* (
   orgId: KinOrgId,
-  target: BudgetTarget,
-  limitMinor: number | null,
+  input: Omit<BudgetTarget, "currency"> & {
+    readonly currency: string | undefined;
+    readonly limitMinor: number | null;
+    readonly sourceEventId: string;
+  },
   by: { readonly kind: "agent" | "person"; readonly id: string },
   now: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const budgetId = budgetIdOf(target);
-  yield* sql.withTransaction(
+  const targetKey = `${targetOf(input)}\u0000${input.currency ?? ""}`;
+  return yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (limitMinor === null)
-        yield* sql`DELETE FROM kin_money_budgets WHERE org_id = ${orgId} AND budget_id = ${budgetId}`;
-      else
+      const [receipt] = yield* sql<{
+        limitMinor: number | null;
+        wasMinor: number | null;
+        currency: string | null;
+        outcome: "set" | "removed" | "none";
+      }>`SELECT limit_minor AS "limitMinor", was_minor AS "wasMinor", currency, outcome
+        FROM kin_money_budget_receipts WHERE org_id = ${orgId}
+          AND source_event_id = ${input.sourceEventId} AND target_key = ${targetKey}`;
+      if (receipt !== undefined) {
+        if (receipt.limitMinor !== input.limitMinor)
+          return yield* refused(
+            "This message already set that budget to another value. Nothing changed; ask the owner which they meant.",
+          );
+        return {
+          outcome: receipt.outcome,
+          currency: receipt.currency,
+          was: receipt.wasMinor === null ? null : BigInt(receipt.wasMinor),
+        };
+      }
+      const held = yield* sql<{ budgetId: string; currency: string; limitMinor: number }>`
+        SELECT budget_id AS "budgetId", currency, limit_minor AS "limitMinor"
+        FROM kin_money_budgets WHERE org_id = ${orgId}
+          AND COALESCE(lower(category), '') = ${input.category?.toLowerCase() ?? ""}
+          AND COALESCE(project_id, '') = ${input.projectId ?? ""}
+        ORDER BY currency`;
+      const currency =
+        input.currency ?? (input.limitMinor === null ? held[0]?.currency : undefined);
+      if (input.currency === undefined && input.limitMinor === null && held.length > 1)
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: `There is a budget for this in ${held.map((one) => one.currency).join(" and ")}. Say which currency to remove; nothing changed.`,
+        });
+      const existing = held.find((one) => one.currency === currency);
+      let outcome: "set" | "removed" | "none" = "none";
+      if (currency !== undefined && input.limitMinor !== null) {
         yield* sql`INSERT INTO kin_money_budgets (org_id, budget_id, category, project_id, currency,
             limit_minor, set_by_kind, set_by_id, set_at)
-          VALUES (${orgId}, ${budgetId}, ${target.category}, ${target.projectId}, ${target.currency},
-            ${limitMinor}, ${by.kind}, ${by.id}, ${now})
+          VALUES (${orgId}, ${budgetIdOf({ ...input, currency })}, ${input.category},
+            ${input.projectId}, ${currency}, ${input.limitMinor}, ${by.kind}, ${by.id}, ${now})
           ON CONFLICT (org_id, budget_id) DO UPDATE SET limit_minor = excluded.limit_minor,
             category = excluded.category, set_by_kind = excluded.set_by_kind,
             set_by_id = excluded.set_by_id, set_at = excluded.set_at`;
-      yield* (yield* KinRefreshObserver).touch(orgId, "moneyBudgets");
+        outcome = "set";
+      } else if (existing !== undefined) {
+        yield* sql`DELETE FROM kin_money_budgets
+          WHERE org_id = ${orgId} AND budget_id = ${existing.budgetId}`;
+        outcome = "removed";
+      }
+      yield* sql`INSERT INTO kin_money_budget_receipts (org_id, source_event_id, target_key,
+          budget_id, currency, limit_minor, was_minor, outcome, at)
+        VALUES (${orgId}, ${input.sourceEventId}, ${targetKey}, ${existing?.budgetId ?? null},
+          ${currency ?? null}, ${input.limitMinor}, ${existing?.limitMinor ?? null}, ${outcome},
+          ${now})`;
+      if (outcome !== "none") yield* (yield* KinRefreshObserver).touch(orgId, "moneyBudgets");
+      return {
+        outcome,
+        currency: currency ?? null,
+        was: existing === undefined ? null : BigInt(existing.limitMinor),
+      };
     }),
   );
-  return budgetId;
 });
 
 export type BudgetStatus = "over" | "near" | "ok";
@@ -121,8 +176,6 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
 });
 export type BudgetsView = Effect.Success<ReturnType<typeof budgetsView>>;
 
-const money = (minor: bigint, currency: string): KinMoney => ({ minor: Number(minor), currency });
-
 /** The budgets as an agent quotes them: every figure formatted by code. */
 export const budgetsAnswer = (view: BudgetsView) => ({
   month: view.month,
@@ -139,11 +192,11 @@ export const budgetsAnswer = (view: BudgetsView) => ({
       ]
         .filter((part) => part !== undefined)
         .join(" in "),
-      limit: formatMoney(money(BigInt(one.limitMinor), one.currency)),
-      spent: formatMoney(money(one.spent, one.currency)),
+      limit: formatMinor(BigInt(one.limitMinor), one.currency),
+      spent: formatMinor(one.spent, one.currency),
       ...(left >= 0n
-        ? { left: formatMoney(money(left, one.currency)) }
-        : { over: formatMoney(money(-left, one.currency)) }),
+        ? { left: formatMinor(left, one.currency) }
+        : { over: formatMinor(-left, one.currency) }),
       expenses: one.expenses,
       status: one.status,
     };

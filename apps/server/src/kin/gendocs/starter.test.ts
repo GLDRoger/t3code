@@ -360,6 +360,7 @@ it("ships four recipes that parse, read only what Kin supplies, and make their s
       "receipts-2026-10.csv",
       "tds-2026-10.csv",
       "expenses-2026-10.csv",
+      "unpaid-expenses-2026-10.csv",
       "bank-2026-10.csv",
     ],
   );

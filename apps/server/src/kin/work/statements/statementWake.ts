@@ -86,7 +86,8 @@ const aboutOf = (stored: {
 
 /**
  * Posts the owner's tap on a statement card, opening the chat's floor so the lead may answer. A
- * statement with no card yet (`widgetId` null) gets the tap in its chat, answering no card.
+ * statement with no card yet (`widgetId` null) gets the tap in its lead's own chat with the owner,
+ * written for the owner alone, so it never lands where a teammate reads.
  */
 export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
   readonly orgId: KinOrgId;
@@ -108,21 +109,27 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
   const card = widget === undefined ? undefined : Option.getOrUndefined(widget);
   const [owner] = yield* sql<{
     personId: string;
-    memberId: string;
     agentId: string;
-    chatId: string;
+    ownerChatId: string | null;
     account: string | null;
     reviewJson: string | null;
     pagesJson: string | null;
-  }>`SELECT a.owner_person_id AS "personId", m.member_id AS "memberId", s.agent_id AS "agentId",
-      s.chat_id AS "chatId", s.account, s.review_json AS "reviewJson", s.pages_json AS "pagesJson"
+  }>`SELECT a.owner_person_id AS "personId", s.agent_id AS "agentId",
+      l.owner_chat_id AS "ownerChatId", s.account, s.review_json AS "reviewJson",
+      s.pages_json AS "pagesJson"
     FROM kin_bank_statements s
     JOIN kin_agents a ON a.org_id = s.org_id AND a.agent_id = s.agent_id
-    JOIN kin_chat_members m ON m.org_id = s.org_id AND m.chat_id = s.chat_id
-      AND m.principal_kind = 'person' AND m.person_id = a.owner_person_id AND m.left_at IS NULL
+    LEFT JOIN kin_leads l ON l.org_id = s.org_id AND l.agent_id = s.agent_id
     WHERE s.org_id = ${input.orgId} AND s.statement_id = ${input.statementId}`;
-  if (owner === undefined) return yield* invalid("The owner isn't in the statement's chat.");
-  const chatId = KinChatId.make(card?.chatId ?? owner.chatId);
+  if (owner === undefined) return yield* invalid("The statement is gone.");
+  const target = card?.chatId ?? owner.ownerChatId;
+  if (target === null) return yield* invalid("The statement's lead has no chat with the owner.");
+  const chatId = KinChatId.make(target);
+  const [member] = yield* sql<{ memberId: string }>`SELECT member_id AS "memberId"
+    FROM kin_chat_members WHERE org_id = ${input.orgId} AND chat_id = ${chatId}
+      AND principal_kind = 'person' AND person_id = ${owner.personId} AND left_at IS NULL
+    ORDER BY member_id`;
+  if (member === undefined) return yield* invalid("The owner isn't in that chat.");
   const chat = yield* repo.getChat({ orgId: input.orgId, chatId });
   if (Option.isNone(chat)) return yield* invalid("The statement's chat is gone.");
   const now = yield* Clock.currentTimeMillis;
@@ -136,13 +143,13 @@ export const tellLead = Effect.fn("KinStatements.tellLead")(function* (input: {
   });
   const message = yield* repo.insertMessage({
     orgId: input.orgId,
-    audience: "chat",
+    audience: card === undefined ? "owner" : "chat",
     chatId,
     messageId: KinMessageId.make(`kin-statement-tap:${input.statementId}:${input.tap}:${now}`),
     author: {
       _tag: "human",
       personId: KinPersonId.make(owner.personId),
-      memberId: KinMemberId.make(owner.memberId),
+      memberId: KinMemberId.make(member.memberId),
     },
     kind: "widget_action",
     body,

@@ -25,6 +25,10 @@ const Declared = Schema.Struct({
   columns: Schema.optional(Schema.Record(Name, ScalarType)),
   /** For `rows.*` and `payments`: the month input whose rows these are. */
   period: Schema.optional(Name),
+  /** For `rows.*`: only entries in these of Kin's own states, which renaming never changes. */
+  states: Schema.optional(
+    Schema.Array(Schema.Literals(["open", "doing", "waiting", "done", "dropped"])),
+  ),
 });
 const FileName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9{][A-Za-z0-9 ._(){}-]{0,99}$/));
 const SheetDecl = Schema.Struct({
@@ -74,6 +78,7 @@ export type InputDecl = {
   readonly description: string | undefined;
   readonly columns: Readonly<Record<string, ScalarType>>;
   readonly period: string | undefined;
+  readonly states: ReadonlyArray<string> | undefined;
 };
 export type Recipe = {
   readonly name: string;
@@ -107,6 +112,7 @@ const ROW_COLUMNS = [
   "key",
   "title",
   "state",
+  "stateKey",
   "amount",
   "tax",
   "date",
@@ -227,6 +233,7 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
       description: declared.description,
       columns: declared.columns ?? {},
       period: declared.period,
+      states: declared.states,
     });
   }
   const kind = front.kind ?? "typst";
