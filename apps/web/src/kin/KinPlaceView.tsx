@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { KIN_DATES } from "@t3tools/client-runtime/kin/kinDates";
-import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
-import { KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_LISTS, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_MONEY, type KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import {
   KIN_WORK_DEFAULT_FILTER,
@@ -45,7 +44,6 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { KinDocPage } from "./KinDocPage";
 import { KinDocsList } from "./KinDocsList";
 import { KinNeedsYou } from "./KinNeedsYou";
-import { KinSubscriptionsPage } from "./KinSubscriptions";
 import { KinSearchDialog } from "./KinSearchDialog";
 import { KinWorkClientPage, KinWorkClientsList } from "./KinWorkClients";
 import { KinWorkDates } from "./KinWorkDates";
@@ -253,11 +251,7 @@ function KinPlaceView({
       <WorkspaceBreadcrumb ariaLabel={title}>
         <WorkspaceBreadcrumbItem current>
           <h1 className="truncate">
-            {record !== null && !wide && "dates" in record
-              ? KIN_DATES.title
-              : record !== null && !wide && "subscriptions" in record
-                ? KIN_SUBSCRIPTIONS.title
-                : title}
+            {record !== null && !wide && "dates" in record ? KIN_DATES.title : title}
           </h1>
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
@@ -311,7 +305,6 @@ function KinPlaceView({
           onOpenList={openList}
           onOpenKey={setOpenKey}
           onDates={() => open({ dates: true })}
-          onSubscriptions={() => open({ subscriptions: true })}
           onOpenDoc={openDoc}
         />
       );
@@ -324,7 +317,7 @@ function KinPlaceView({
           onOpen={openDoc}
           lists={lists.state._tag === "ready" ? kinListsOf(lists) : null}
           onOpenList={(list) => openList({ list, filter: KIN_LIST_DEFAULT_FILTER })}
-          onAsk={agent === null ? null : agent.ask}
+          onAskList={agent === null ? null : () => agent.ask(KIN_LISTS.askMessage)}
           selected={
             record === null
               ? null
@@ -411,16 +404,6 @@ function KinPlaceView({
           inPane={wide}
           onGo={open}
           linkTo={(section) => docLink(shown.doc, section)}
-        />
-      );
-    if ("subscriptions" in shown)
-      return (
-        <KinSubscriptionsPage
-          {...props}
-          live={state.live}
-          stale={state.stale}
-          directory={directory}
-          onOpenKey={setOpenKey}
         />
       );
     if ("dates" in shown)

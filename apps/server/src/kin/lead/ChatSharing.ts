@@ -1,14 +1,21 @@
-import { KinMessageId, KinWidgetId, type KinAgentId, type KinOrgId } from "@t3tools/contracts";
+import {
+  KinMessageId,
+  KinWidgetId,
+  ThreadId,
+  type KinAgentId,
+  type KinOrgId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { historyFloor, joinRaisedFloor } from "../chat/sharing.ts";
-import { abortPrivateTurns } from "./Audience.ts";
+import { abortChatTurns } from "./Audience.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 
 /** Chat events that answer a person's message, tap or reaction in its chat. */
@@ -18,9 +25,26 @@ const CHAT_EVENT_TAGS = ["chat.message", "widget.action", "chat.reaction"] as co
 const movedCardTitle = (lead: string) => `Moved to your private chat with ${lead}`;
 
 /**
- * In every join's transaction, after `recordJoin`: aborts private turns, and all there once the
- * floor rose (`historyFloor`); expires waiting events below it; moves private work, and all work
- * there once the floor rose, with its waiting reports, to the owner chat. Returns what runs after commit.
+ * Ends the lead threads of chats matching `where`, in the caller's transaction, so no turn after it
+ * resumes a model context from before. Returns them for `KinIdentity.endAgentThread` after commit.
+ */
+const endChatThreads = Effect.fnUntraced(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  where: Statement.Fragment,
+) {
+  const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+  const rows = yield* sql<{ threadId: string }>`UPDATE kin_agent_threads SET ended_at = ${at}
+    WHERE org_id = ${orgId} AND ended_at IS NULL AND chat_id IS NOT NULL AND ${where}
+    RETURNING thread_id AS "threadId"`;
+  return rows.map((row) => ThreadId.make(row.threadId));
+});
+
+/**
+ * In every join's transaction, after `recordJoin`: aborts the running turns there and ends the
+ * chat's lead threads; expires waiting events below the history floor; moves private work, and
+ * all work there once the floor rose, with its waiting reports, to the owner chat. Returns what
+ * runs after commit.
  */
 export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(function* (input: {
   readonly orgId: KinOrgId;
@@ -29,10 +53,11 @@ export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(functio
 }) {
   const sql = yield* SqlClient.SqlClient;
   const floorRaised = yield* joinRaisedFloor(sql, input);
-  const turns = yield* abortPrivateTurns({ ...input, floorRaised });
+  const turns = yield* abortChatTurns(input);
+  const threads = yield* endChatThreads(sql, input.orgId, sql`chat_id = ${input.chatId}`);
   const [chat] = yield* sql<{ floor: number | null }>`
     SELECT ${historyFloor(sql, input.orgId, input.chatId)} AS floor`;
-  if (chat === undefined || chat.floor === null) return { turns, expired: [], moved: [] };
+  if (chat === undefined || chat.floor === null) return { turns, threads, expired: [], moved: [] };
   // Waiting, or held by a turn this join aborted: no fresh turn answers them where others read.
   const pending = sql`(e.state = 'queued' OR (e.state = 'claimed' AND EXISTS (SELECT 1
     FROM kin_wakeups w WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
@@ -57,14 +82,13 @@ export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(functio
       AND EXISTS (SELECT 1 FROM kin_workers k WHERE k.org_id = e.org_id
         AND k.worker_id = json_extract(e.json, '$.workerId')
         AND (k.context = 'private' OR k.moved_at IS NOT NULL))`;
-  return { turns, expired, moved };
+  return { turns, threads, expired, moved };
 });
 
 /**
  * In the transaction that removes `personId` from the org: every event that is theirs (their
- * message, tap or reaction, work done for them, or anything in their own chat with a lead) stops.
- * Running turns holding one are aborted, as a join aborts them, and the events expire rather than
- * requeue. Returns the turns the caller stops after commit and the leads whose queue changed.
+ * message, tap or reaction, work done for them, anything in their direct chats) expires, turns
+ * holding one abort, and those chats' lead threads end. Returns what the caller runs after commit.
  */
 export const onPersonRemoved = Effect.fn("KinChatSharing.onPersonRemoved")(function* (input: {
   readonly orgId: KinOrgId;
@@ -97,7 +121,15 @@ export const onPersonRemoved = Effect.fn("KinChatSharing.onPersonRemoved")(funct
       OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w
         WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
     RETURNING agent_id AS "agentId"`;
-  return { turns, expired };
+  const threads = yield* endChatThreads(
+    sql,
+    input.orgId,
+    sql`chat_id IN (SELECT c.chat_id FROM kin_chats c JOIN kin_chat_members cm
+      ON cm.org_id = c.org_id AND cm.chat_id = c.chat_id
+      WHERE c.org_id = ${input.orgId} AND c.kind = 'direct' AND cm.principal_kind = 'person'
+        AND cm.person_id = ${input.personId})`,
+  );
+  return { turns, threads, expired };
 });
 
 /**

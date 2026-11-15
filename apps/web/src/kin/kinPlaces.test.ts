@@ -39,7 +39,6 @@ describe("place addresses", () => {
       { project: party },
       { list: KinListId.make("renewals") },
       { dates: true },
-      { subscriptions: true },
       { doc: party, version: 2, section: "s", changes: { to: 3, from: 1 }, history: true },
     ] as const;
     for (const record of records)

@@ -60,6 +60,7 @@ import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { WITHDRAWN_WORK, WORK_RULE } from "../../apps/server/src/kin/work/workPrompt.ts";
 import { OWNER_DECLINED, WAITING_FOR_OWNER } from "../../apps/server/src/kin/lead/workerBrief.ts";
+import { SHARED_TURN_LINE } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
@@ -1078,10 +1079,11 @@ export const buildMessages = (sample: Sample) => {
     }
     if (turn.text) push(turn.role, text(turn.text));
   }
-  // A lead case writes `{{WORK_RULE}}`, `{{WITHDRAWN_WORK}}` and the publish lines where Kin puts
-  // them, so it tests the current text.
+  // A lead case writes `{{WORK_RULE}}`, `{{WITHDRAWN_WORK}}`, `{{SHARED_TURN}}` and the publish
+  // lines where Kin puts them, so it tests the current text.
   const casePrompt = testCase.prompt
     .replaceAll("{{WORK_RULE}}", WORK_RULE)
+    .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
     .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
     .replaceAll("{{WAITING_FOR_OWNER}}", JSON.stringify(WAITING_FOR_OWNER).slice(1, -1))
     .replaceAll("{{OWNER_DECLINED}}", JSON.stringify(OWNER_DECLINED).slice(1, -1));

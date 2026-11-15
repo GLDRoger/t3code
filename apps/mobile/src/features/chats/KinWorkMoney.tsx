@@ -14,14 +14,6 @@ import {
 import { KIN_WORK_HOME, kinWorkAskDraft } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { useAtomValue } from "@effect/atom-react";
-import {
-  KIN_CURRENCY,
-  kinEstimatesByLine,
-  kinMissingRates,
-  kinRateLine,
-  kinTotalsEstimate,
-  type KinEstimate,
-} from "@t3tools/client-runtime/kin/kinCurrency";
 import { Pressable, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -32,8 +24,6 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { KinReceiptsSection } from "./KinInvoice";
-import { KinEstimateText, KinSetRateLink } from "./KinMoneyEstimate";
-import { KinSubscriptionsSection } from "./KinSubscriptions";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { cn } from "../../lib/cn";
@@ -41,13 +31,7 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { useKinTab } from "./components/KinTab";
 import { KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
-import {
-  kinListsOf,
-  useKinAskAgent,
-  useKinLists,
-  useKinMoneySummary,
-  useKinRates,
-} from "./state/useKinMoney";
+import { kinListsOf, useKinAskAgent, useKinLists, useKinMoneySummary } from "./state/useKinMoney";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinChart } from "./widgets/KinChart";
 
@@ -158,8 +142,6 @@ function AreaFrame(props: {
 function Figure(props: {
   readonly figure: KinMoneyFigure;
   readonly onOpen: (open: KinListOpen) => void;
-  /** Each foreign line's "about ₹x", by line. */
-  readonly estimates?: ReadonlyMap<string, KinEstimate>;
 }) {
   const { figure } = props;
   const { open } = figure;
@@ -177,26 +159,19 @@ function Figure(props: {
       <Text textRole="footnote" className="text-foreground-muted">
         {figure.label}
       </Text>
-      {figure.lines.map((line) => {
-        const estimate = props.estimates?.get(line);
-        return (
-          <View key={line}>
-            <Text
-              textRole="title"
-              selectable
-              className={cn(
-                "font-t3-bold tabular-nums",
-                figure.late ? "text-danger-foreground" : "text-foreground",
-              )}
-            >
-              {line}
-            </Text>
-            {estimate === undefined ? null : (
-              <KinEstimateText text={estimate.text} basis={estimate.basis} />
-            )}
-          </View>
-        );
-      })}
+      {figure.lines.map((line) => (
+        <Text
+          key={line}
+          textRole="title"
+          selectable
+          className={cn(
+            "font-t3-bold tabular-nums",
+            figure.late ? "text-danger-foreground" : "text-foreground",
+          )}
+        >
+          {line}
+        </Text>
+      ))}
       {figure.note === null ? null : (
         <Text textRole="footnote" className="text-foreground-muted">
           {figure.note}
@@ -212,7 +187,6 @@ function AmountRow(props: {
   readonly note?: string | null;
   readonly late?: boolean;
   readonly amounts: ReadonlyArray<string>;
-  readonly estimates?: ReadonlyMap<string, KinEstimate>;
   readonly onOpen: (() => void) | null;
 }) {
   const { onOpen } = props;
@@ -241,21 +215,11 @@ function AmountRow(props: {
         )}
       </View>
       <View className="items-end">
-        {props.amounts.map((amount) => {
-          const estimate = props.estimates?.get(amount);
-          return (
-            <View key={amount} className="items-end">
-              <Text textRole="body" className="tabular-nums text-foreground">
-                {amount}
-              </Text>
-              {estimate === undefined ? null : (
-                <Text textRole="footnote" className="tabular-nums text-foreground-muted">
-                  {estimate.text}
-                </Text>
-              )}
-            </View>
-          );
-        })}
+        {props.amounts.map((amount) => (
+          <Text key={amount} textRole="body" className="tabular-nums text-foreground">
+            {amount}
+          </Text>
+        ))}
       </View>
     </Pressable>
   );
@@ -322,7 +286,6 @@ export function KinMoneyArea(props: Shared) {
   const money = useKinMoneySummary(target, { enabled: true, seq });
   const lists = useKinLists(target, { enabled: true, seq });
   const agent = useKinAskAgent(target);
-  const rates = useKinRates(target);
   const openList = useKinOpenList(target);
   const now = new Date(useNowMinuteMs());
   const { names } = props.directory;
@@ -378,48 +341,14 @@ export function KinMoneyArea(props: Shared) {
     );
   }
   const upcoming = summary.upcoming.map((row) => kinDateRowView(row, names, now));
-  // Every exact figure stays in its own currency; beside a foreign one, "about ₹x" when a rate is set.
-  const estimates = kinEstimatesByLine(
-    [
-      ...summary.owed.total,
-      ...summary.owed.overdue,
-      ...summary.received.thisMonth,
-      ...summary.received.lastMonth,
-      ...summary.spent.thisMonth.total,
-      ...summary.receivedThisFinancialYear,
-      ...summary.spentThisFinancialYear,
-      ...summary.owed.byClient.flatMap((client) => client.owed),
-    ],
-    rates,
-  );
-  const owedAll = kinTotalsEstimate(summary.owed.total, rates);
-  const missing = kinMissingRates(
-    [
-      ...summary.owed.total,
-      ...summary.spentThisFinancialYear,
-      ...summary.receivedThisFinancialYear,
-    ],
-    rates,
-  );
   const openEntry = (task: string) => navigation.navigate("KinWorkItem", { ...target, task });
   return (
     <AreaFrame {...frame}>
       <View className="gap-4">
         <View className="flex-row gap-4 px-2">
-          <Figure figure={view.owed} onOpen={openList} estimates={estimates} />
-          <Figure figure={view.overdue} onOpen={openList} estimates={estimates} />
+          <Figure figure={view.owed} onOpen={openList} />
+          <Figure figure={view.overdue} onOpen={openList} />
         </View>
-        {owedAll?.all == null && missing.length === 0 ? null : (
-          <View className="gap-1 px-2">
-            {owedAll?.all == null ? null : (
-              <KinEstimateText
-                text={`${owedAll.all} owed (estimate)`}
-                basis={owedAll.basis.map((line) => `At ${line}.`)}
-              />
-            )}
-            <KinSetRateLink {...target} currencies={missing} />
-          </View>
-        )}
         <ListSection title={KIN_MONEY.byClient}>
           {view.clients.length === 0 ? (
             <Text textRole="body" className="px-4 py-3 text-foreground-muted">
@@ -435,7 +364,6 @@ export function KinMoneyArea(props: Shared) {
                   note={client.overdue ?? client.invoices}
                   late={client.overdue !== null}
                   amounts={client.owed}
-                  estimates={estimates}
                   onOpen={open === null ? null : () => openList(open)}
                 />
               );
@@ -448,8 +376,8 @@ export function KinMoneyArea(props: Shared) {
           <Heading>{view.monthLabel}</Heading>
         </View>
         <View className="flex-row gap-4 px-2">
-          <Figure figure={view.received} onOpen={openList} estimates={estimates} />
-          <Figure figure={view.spent} onOpen={openList} estimates={estimates} />
+          <Figure figure={view.received} onOpen={openList} />
+          <Figure figure={view.spent} onOpen={openList} />
         </View>
         {view.tdsDeducted === null ? null : (
           <View className="flex-row gap-4 px-2">
@@ -472,20 +400,13 @@ export function KinMoneyArea(props: Shared) {
           </ListSection>
         )}
       </View>
-      <KinSubscriptionsSection
-        {...target}
-        lists={kinListsOf(lists)}
-        directory={props.directory}
-        seq={seq}
-        rates={rates}
-      />
       <View className="gap-4">
         <View className="px-2">
           <Heading>{view.yearLabel}</Heading>
         </View>
         <View className="flex-row gap-4 px-2">
-          <Figure figure={view.yearReceived} onOpen={openList} estimates={estimates} />
-          <Figure figure={view.yearSpent} onOpen={openList} estimates={estimates} />
+          <Figure figure={view.yearReceived} onOpen={openList} />
+          <Figure figure={view.yearSpent} onOpen={openList} />
         </View>
         {view.yearTdsDeducted === null ? null : (
           <View className="flex-row gap-4 px-2">
@@ -539,21 +460,6 @@ export function KinMoneyArea(props: Shared) {
         <ListActionRow
           label={KIN_MONEY.allDates}
           onPress={() => navigation.navigate("KinDates", target)}
-        />
-      </ListSection>
-      <ListSection title={KIN_CURRENCY.rates} footer={KIN_CURRENCY.ratesDetail}>
-        <ListActionRow
-          label={
-            rates === null || rates.rates.length === 0
-              ? KIN_CURRENCY.setRate
-              : rates.rates.map((rate) => kinRateLine(rate, rates.home)).join("\n")
-          }
-          onPress={() =>
-            navigation.navigate("KinRates", {
-              environmentId: String(target.environmentId),
-              orgId: String(target.orgId),
-            })
-          }
         />
       </ListSection>
     </AreaFrame>

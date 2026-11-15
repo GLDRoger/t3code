@@ -87,9 +87,7 @@ import {
   useKinListContext,
   useKinLists,
   useKinMoneyActions,
-  useKinRates,
 } from "./state/useKinMoney";
-import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import {
   kinWorkChoicesAtom,
   useKinWorkDirectory,
@@ -244,7 +242,6 @@ export function KinListEntryBody(
   const entry = kinListEntryView(item, def, context);
   const invoice = kinIsInvoice(item) ? kinInvoiceView(item, def, props.now) : null;
   const money = useKinMoneyActions(props);
-  const rates = useKinRates(props, invoice !== null);
   const changes = useKinEntryChanges(props, item.key);
   const agent = useKinAskAgent(props);
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
@@ -339,16 +336,7 @@ export function KinListEntryBody(
           ) : null}
         </View>
         {invoice !== null ? (
-          <>
-            <KinInvoiceCurrency
-              environmentId={environmentId}
-              orgId={orgId}
-              item={item}
-              rates={rates}
-              settled={invoice.settled}
-            />
-            <KinInvoiceFigures invoice={invoice} />
-          </>
+          <KinInvoiceFigures invoice={invoice} />
         ) : entry.balance === null ? null : (
           <View className="flex-row gap-6">
             <View className="gap-0.5">

@@ -48,7 +48,7 @@ const writes =
 export const KinDocsToolkit = Toolkit.make(
   Tool.make("doc_create", {
     ...shared,
-    description: `Write a new doc: a plan, brief, runbook, statement of work, meeting notes or research, in markdown with ## headings so it can be edited by section. File every doc you make: kind says what it is, and its home is a client and project, or company true for the company's own (playbooks, policies). If you can't tell whose it is, ask in your reply and file it with doc_move once you know. links (keys of entries or docs) tie it to related work; owner is who keeps it current (default you). ${shows} Returns its key and outline. ${writes} ${marked}`,
+    description: `Write a new doc: a plan, brief, runbook, statement of work, meeting notes or research, in markdown with ## headings so it can be edited by section. client, project and links (keys of entries or docs) file it where people look; owner is who keeps it current (default you). ${shows} Returns its key and outline. ${writes} ${marked}`,
     parameters: Docs.CreateInput,
     success: Docs.WriteResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -72,7 +72,7 @@ export const KinDocsToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("doc_move", {
     ...shared,
-    description: `File a doc under another client or project (null clears) or as the company's own (company true), change its kind, give it to another owner, mark it sensitive, or archive it (archived false brings it back). Rename with doc_edit retitle. ${writes}`,
+    description: `File a doc under another client or project (null clears), give it to another owner, mark it sensitive, or archive it (archived false brings it back). Rename with doc_edit retitle. ${writes}`,
     parameters: Docs.MoveInput,
     success: Docs.MoveResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
