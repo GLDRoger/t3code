@@ -6,6 +6,9 @@ import {
   type KinDocDetail,
   type KinDocDiff,
   type KinDocEmbed,
+  type KinDocFileInput,
+  KIN_DOC_KINDS,
+  type KinDocKind,
   type KinDocRow,
   type KinDocSection,
   type KinDocVersion,
@@ -26,13 +29,7 @@ import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
-import {
-  isKinChatError,
-  kinWorkName,
-  kinWorkPrincipalKey,
-  kinWorkRefused,
-  type KinWorkNames,
-} from "./kinWork.ts";
+import { isKinChatError, kinWorkName, kinWorkRefused, type KinWorkNames } from "./kinWork.ts";
 
 export const KIN_DOCS = {
   title: "Docs",
@@ -221,31 +218,83 @@ export const kinDocPrevious = (version: Pick<KinDocVersion, "version">): number 
 
 // The list
 
+/** What each kind reads as, on a row and in the filter. */
+export const KIN_DOC_KIND_LABELS: Record<
+  KinDocKind,
+  { readonly one: string; readonly many: string }
+> = {
+  prd: { one: "PRD", many: "PRDs" },
+  proposal: { one: "Proposal", many: "Proposals" },
+  quote: { one: "Quote", many: "Quotes" },
+  spec: { one: "Spec", many: "Specs" },
+  notes: { one: "Notes", many: "Notes" },
+  report: { one: "Report", many: "Reports" },
+  playbook: { one: "Playbook", many: "Playbooks" },
+  policy: { one: "Policy", many: "Policies" },
+  other: { one: "Other", many: "Other docs" },
+};
+
+export const KIN_DOC_HOMES = {
+  recent: "Recent",
+  company: "Company",
+  unfiled: "Unfiled",
+  noClient: "No client",
+  files: "Made files",
+  file: "File",
+  fileTitle: "File this doc",
+  kind: "Kind",
+  home: "Home",
+  fileAll: "Ask to file these",
+  fileAllMessage:
+    "File every unfiled doc in Docs: give each its kind, and its client and project or the company.",
+  unfiledDetail: "No client, project or company yet.",
+  playbooks: "Playbooks",
+  lists: "Lists",
+  seeAllLists: "See all lists",
+  fewerLists: "Show fewer",
+  filesDetail: "Invoices, receipts and exports also show on the record they were made for.",
+} as const;
+
 export interface KinDocRowView {
   readonly key: string;
   readonly title: string;
   readonly line: string;
-  /** "Acme · Website relaunch", or null when it is linked to neither. */
+  /** "Proposal", or null for one nobody gave a kind. */
+  readonly kind: string | null;
+  /** "Acme · Website relaunch", "Company", or null when it has no home. */
   readonly under: string | null;
+  readonly unfiled: boolean;
   readonly private: boolean;
   readonly archived: boolean;
   readonly accessibilityLabel: string;
 }
 
+export const kinDocKindOf = (row: Pick<KinDocRow, "kind">): KinDocKind => row.kind ?? "other";
+export const kinDocUnfiled = (row: Pick<KinDocRow, "party" | "project" | "company">) =>
+  row.party === undefined && row.project === undefined && row.company !== true;
+
 export function kinDocRow(row: KinDocRow, names: KinWorkNames, now: Date): KinDocRowView {
   const { text } = kinDocChangeLine(changeOf(row.latest), names, now);
-  const under = [row.party?.title, row.project?.title].filter(Boolean).join(" · ");
+  const under =
+    row.company === true
+      ? KIN_DOC_HOMES.company
+      : [row.party?.title, row.project?.title].filter(Boolean).join(" · ");
   const isPrivate = row.sensitive || row.sensitiveInherited === true;
+  const kind = kinDocKindOf(row);
+  const kindLabel = kind === "other" ? null : KIN_DOC_KIND_LABELS[kind].one;
   return {
     key: row.key,
     title: row.title,
-    line: text,
+    line: kindLabel === null ? text : `${kindLabel} · ${text}`,
+    kind: kindLabel,
     under: under === "" ? null : under,
+    unfiled: kinDocUnfiled(row),
     private: isPrivate,
     archived: row.archived,
     accessibilityLabel: [
       row.title,
-      under === "" ? null : under,
+      kindLabel,
+      under === "" ? KIN_DOC_HOMES.unfiled : under,
       text,
       isPrivate ? "Private" : null,
       row.archived ? "Archived" : null,
@@ -255,73 +304,180 @@ export function kinDocRow(row: KinDocRow, names: KinWorkNames, now: Date): KinDo
   };
 }
 
-export type KinDocGrouping = "client" | "project" | "agent";
-
-export const KIN_DOC_GROUPINGS: ReadonlyArray<{
-  readonly id: KinDocGrouping;
-  readonly label: string;
-}> = [
-  { id: "client", label: "Client" },
-  { id: "project", label: "Project" },
-  { id: "agent", label: "Agent" },
-];
-
-export interface KinDocGroup {
+export interface KinDocHome {
   readonly id: string;
+  readonly kind: "client" | "company" | "unfiled";
   readonly title: string;
   readonly rows: ReadonlyArray<KinDocRow>;
 }
 
-const NONE = "\u0000none";
-const NO_GROUP: Record<KinDocGrouping, string> = {
-  client: "No client",
-  project: "No project",
-  agent: "Nobody",
-};
+const NO_PARTY = "\u0000project";
+const RECENT_MAX = 4;
 
 /**
- * The docs under their clients, projects or keepers. Groups run by name with the unlinked ones
- * last; inside a group the host's order stands, which is latest change first.
+ * Docs by home: each client with its projects' docs, most recently changed client first, then
+ * the company's own, then the unfiled. Inside each, latest change first. `recent` is the last
+ * few changed, shown above them once there are enough docs for them to be worth a strip.
  */
-export function kinDocGroups(
-  rows: ReadonlyArray<KinDocRow>,
-  by: KinDocGrouping,
-  names: KinWorkNames,
-): ReadonlyArray<KinDocGroup> {
-  const groups = new Map<string, { title: string; rows: Array<KinDocRow> }>();
-  for (const row of rows) {
-    const ref = by === "client" ? row.party : by === "project" ? row.project : undefined;
-    const id = by === "agent" ? kinWorkPrincipalKey(row.owner) : (ref?.key ?? NONE);
-    const title =
-      by === "agent" ? kinWorkName(row.owner, names, "You") : (ref?.title ?? NO_GROUP[by]);
-    const held = groups.get(id);
-    if (held === undefined) groups.set(id, { title, rows: [row] });
-    else held.rows.push(row);
+export function kinDocLibrary(rows: ReadonlyArray<KinDocRow>): {
+  readonly recent: ReadonlyArray<KinDocRow>;
+  readonly homes: ReadonlyArray<KinDocHome>;
+} {
+  const latestFirst = [...rows].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const clients = new Map<string, { title: string; rows: Array<KinDocRow> }>();
+  const company: Array<KinDocRow> = [];
+  const unfiled: Array<KinDocRow> = [];
+  for (const row of latestFirst) {
+    if (row.company === true) company.push(row);
+    else if (row.party !== undefined || row.project !== undefined) {
+      const id = row.party?.key ?? NO_PARTY;
+      const title = row.party?.title ?? KIN_DOC_HOMES.noClient;
+      const held = clients.get(id);
+      if (held === undefined) clients.set(id, { title, rows: [row] });
+      else held.rows.push(row);
+    } else unfiled.push(row);
   }
-  return [...groups.entries()]
-    .map(([id, group]) => ({ id, ...group }))
-    .sort((a, b) => (a.id === NONE ? 1 : b.id === NONE ? -1 : a.title.localeCompare(b.title)));
+  return {
+    recent: rows.length > RECENT_MAX + 2 ? latestFirst.slice(0, RECENT_MAX) : [],
+    homes: [
+      ...[...clients.entries()].map(([id, held]) => ({
+        id: `client:${id}`,
+        kind: "client" as const,
+        title: held.title,
+        rows: held.rows,
+      })),
+      ...(company.length === 0
+        ? []
+        : [
+            {
+              id: "company",
+              kind: "company" as const,
+              title: KIN_DOC_HOMES.company,
+              rows: company,
+            },
+          ]),
+      ...(unfiled.length === 0
+        ? []
+        : [
+            {
+              id: "unfiled",
+              kind: "unfiled" as const,
+              title: KIN_DOC_HOMES.unfiled,
+              rows: unfiled,
+            },
+          ]),
+    ],
+  };
 }
+
+/** What Docs shows: everything, one kind, a shelf, the unfiled, or the files made from recipes. */
+export type KinDocsShow =
+  | { readonly _tag: "all" }
+  | { readonly _tag: "kind"; readonly kind: KinDocKind }
+  | { readonly _tag: "company" }
+  | { readonly _tag: "unfiled" }
+  | { readonly _tag: "files" };
 
 export interface KinDocsFilter {
   readonly archived: boolean;
   /** Words in a title or the latest text, matched by the host across every doc. */
   readonly text: string;
+  readonly show: KinDocsShow;
 }
-export const KIN_DOCS_DEFAULT_FILTER: KinDocsFilter = { archived: false, text: "" };
+export const KIN_DOCS_ALL: KinDocsShow = { _tag: "all" };
+export const KIN_DOCS_DEFAULT_FILTER: KinDocsFilter = {
+  archived: false,
+  text: "",
+  show: KIN_DOCS_ALL,
+};
+const showKey = (show: KinDocsShow) => (show._tag === "kind" ? `kind:${show.kind}` : show._tag);
+export const kinDocsSameShow = (a: KinDocsShow, b: KinDocsShow) => showKey(a) === showKey(b);
 export const kinDocsSameFilter = (a: KinDocsFilter, b: KinDocsFilter) =>
-  a.archived === b.archived && a.text.trim() === b.text.trim();
+  a.archived === b.archived && a.text.trim() === b.text.trim() && kinDocsSameShow(a.show, b.show);
+
+/** The two shelves one tap from the top of Docs. */
+export const KIN_DOC_SHELVES: ReadonlyArray<{
+  readonly label: string;
+  readonly show: KinDocsShow;
+}> = [
+  { label: KIN_DOC_HOMES.playbooks, show: { _tag: "kind", kind: "playbook" } },
+  { label: KIN_DOC_HOMES.company, show: { _tag: "company" } },
+];
+
+/** Every choice the Filter menu offers for what to show, in its order. */
+export const KIN_DOCS_SHOWS: ReadonlyArray<{ readonly label: string; readonly show: KinDocsShow }> =
+  [
+    { label: "All docs", show: KIN_DOCS_ALL },
+    { label: KIN_DOC_HOMES.company, show: { _tag: "company" } },
+    { label: KIN_DOC_HOMES.unfiled, show: { _tag: "unfiled" } },
+    ...KIN_DOC_KINDS.map((kind) => ({
+      label: KIN_DOC_KIND_LABELS[kind].many,
+      show: { _tag: "kind" as const, kind },
+    })),
+    { label: KIN_DOC_HOMES.files, show: { _tag: "files" } },
+  ];
+
+const showLabel = (show: KinDocsShow) =>
+  KIN_DOCS_SHOWS.find((one) => kinDocsSameShow(one.show, show))?.label ?? null;
+
+/** The one removable chip: what the filter narrows to, or null when it shows everything current. */
+export function kinDocsChip(filter: KinDocsFilter): string | null {
+  const shown = filter.show._tag === "all" ? null : showLabel(filter.show);
+  const parts = [shown, filter.archived ? KIN_DOCS.archived : null].filter(Boolean);
+  return parts.length === 0 ? null : parts.join(" · ");
+}
 
 /** One page of the Docs list as the host is asked for it. */
 export const kinDocsQuery = (orgId: KinOrgId, filter: KinDocsFilter) => ({
   orgId,
   archived: filter.archived,
   ...(filter.text.trim() === "" ? {} : { text: filter.text.trim() }),
+  // Files made from recipes live on their record; they show here only when asked for.
+  files: filter.show._tag === "files",
+  ...(filter.show._tag === "kind" ? { kind: filter.show.kind } : {}),
+  ...(filter.show._tag === "company" || filter.show._tag === "unfiled"
+    ? { home: filter.show._tag }
+    : {}),
 });
 
 export function kinDocsFooter(shown: number, total: number | null, more: boolean): string | null {
   if (!more || total === null) return null;
   return `Showing ${shown} of ${plural(total, "doc")}`;
+}
+
+/** What the File sheet starts from, and what it sends. */
+export interface KinDocFileDraft {
+  readonly kind: KinDocKind;
+  /** `company`, `none`, or a client's key. */
+  readonly home: string;
+  readonly project: string | null;
+}
+export const kinDocFileDraft = (
+  row: Pick<KinDocRow, "kind" | "company" | "party" | "project">,
+): KinDocFileDraft => ({
+  kind: kinDocKindOf(row),
+  home: row.company === true ? "company" : (row.party?.key ?? "none"),
+  project: row.project?.key ?? null,
+});
+export function kinDocFileInput(
+  orgId: KinOrgId,
+  row: Pick<KinDocRow, "key" | "rev">,
+  draft: KinDocFileDraft,
+): KinDocFileInput {
+  const company = draft.home === "company";
+  return {
+    orgId,
+    key: row.key,
+    rev: row.rev,
+    kind: draft.kind,
+    company,
+    ...(company
+      ? {}
+      : {
+          party: draft.home === "none" ? null : (draft.home as KinDocFileInput["key"]),
+          project: draft.project as KinDocFileInput["key"] | null,
+        }),
+  };
 }
 
 // The reader
