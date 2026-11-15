@@ -115,12 +115,13 @@ const MAX_CAUSE_CHARS = 300;
 const failureCause = (
   projection: Pick<OrchestrationV2ThreadProjection, "turnItems">,
   runId: string,
+  lastError: string | null,
 ) => {
   const item = projection.turnItems.findLast(
     (candidate) =>
       candidate.type === "error" && candidate.status === "failed" && candidate.runId === runId,
   );
-  const message = item?.type === "error" ? item.failure.message.trim() : "";
+  const message = (item?.type === "error" ? item.failure.message : (lastError ?? "")).trim();
   return message === ""
     ? ""
     : ` What Kin saw: ${Array.from(message).slice(0, MAX_CAUSE_CHARS).join("")}`;
@@ -1124,12 +1125,21 @@ const make = Effect.gen(function* () {
     const reply = projection.messages
       .findLast((message) => message.role === "assistant" && message.runId === run.id)
       ?.text.slice(-MAX_REPLY_CHARS);
+    const parsed = reply === undefined ? undefined : parseReport(reply);
+    // A run that died before its first turn item, such as one whose provider never started,
+    // leaves its cause only on the thread.
+    const lastError =
+      parsed !== undefined
+        ? null
+        : ((yield* orchestrator
+            .getThreadShell(worker.threadId)
+            .pipe(Effect.orElseSucceed(() => null)))?.lastError ?? null);
     const report = withBlockedHosts(
-      (reply === undefined ? undefined : parseReport(reply)) ??
+      parsed ??
         blocked(
           worker,
           here,
-          `Worker ended ${status} without a report.${failureCause(projection, run.id)}`,
+          `Worker ended ${status} without a report.${failureCause(projection, run.id, lastError)}`,
         ),
       yield* takeBlocked(stateDir, worker.workerId).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
