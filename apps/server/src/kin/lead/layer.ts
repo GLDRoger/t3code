@@ -69,6 +69,7 @@ import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Handoff from "./Handoff.ts";
 import * as Workers from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
+import * as PullRequestCare from "../github/PullRequestCare.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as WorkerPublish from "./workerPublish.ts";
@@ -96,11 +97,31 @@ export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
   );
 }
 
+// PR care (reviews, links, closing issues); without the Kin App it answers that GitHub isn't connected.
+const pullRequestCare = Layer.unwrap(
+  Effect.gen(function* () {
+    if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID"))))
+      return PullRequestCare.notConnectedLayer;
+    return PullRequestCare.layer.pipe(
+      Layer.provide(Layer.mergeAll(GithubReaders.appLayer, GithubEvents.repoScopeLayer)),
+      Layer.catchCause((cause) =>
+        PullRequestCare.notConnectedLayer.pipe(
+          Layer.tap(() =>
+            Effect.logWarning(
+              "Kin PR care is off: the Kin GitHub App is unavailable",
+              Cause.pretty(cause),
+            ),
+          ),
+        ),
+      ),
+    );
+  }),
+);
 const routineRuntime = Layer.mergeAll(
   Routines.layer,
   DeferralFlow.layer,
   ScheduledTasks.layer,
-  GithubEvents.consumerLayer,
+  GithubEvents.consumerLayer.pipe(Layer.provide(pullRequestCare)),
   Watchdogs.runtimeLayer,
   KinPulse.layer,
 ).pipe(
@@ -372,6 +393,7 @@ const workers = Workers.layer.pipe(
   Layer.provideMerge(WorkerEnvironment.layer),
   // The repositories the owner connected are part of where the owner's own work may start.
   Layer.provide(GithubEvents.repoScopeLayer),
+  Layer.provide(pullRequestCare),
 );
 const tracker = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -452,6 +474,7 @@ const production = withServices(
     Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),
     Layer.provide(repoReads),
+    Layer.provide(pullRequestCare),
   ),
 );
 

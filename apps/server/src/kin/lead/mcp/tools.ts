@@ -16,6 +16,7 @@ import { KIN_VISUAL_PAGE_GUIDE, KIN_VISUAL_TOOL_NAME } from "@t3tools/shared/kin
 
 import { KinIdentity } from "../../chat/KinIdentity.ts";
 import * as RepoReads from "../../github/KinRepoReads.ts";
+import * as PullRequestCare from "../../github/PullRequestCare.ts";
 import { MEMORY_RULE } from "../../memory/keeping.ts";
 import * as ChartCard from "../../widgets/chartCard.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
@@ -52,6 +53,16 @@ const github = {
   ...shared,
   dependencies: [...shared.dependencies, KinIdentity, SqlClient.SqlClient, RepoReads.KinRepoReads],
 };
+const prCare = {
+  ...shared,
+  dependencies: [
+    ...shared.dependencies,
+    KinIdentity,
+    KinLevelGate,
+    SqlClient.SqlClient,
+    PullRequestCare.KinPullRequestCare,
+  ],
+};
 const handoff = { ...shared, dependencies: [...shared.dependencies, Handoff.KinHandoff] };
 const GitHubData = Schema.Struct({ quoted: Schema.String });
 const githubData =
@@ -60,7 +71,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_delegate", {
     ...workers,
     description:
-      "Start a worker for one build, review or research task in a project or repository on this host, named in plain words in project (a name such as t3code, or owner/name). Brief it with one goal, the facts it needs, and member text in quoted. model defaults to strong. For review, set reviewOf to the author workerId and pick a model with a different instance and model; the reviewer gets only your goal and the author's reported PR or commit. Returns workerId and threadLink. Where workers run on this server itself, only build tasks start, and only from your direct chat with the owner. Don't wait: its report arrives as a later event. If it is refused, nothing started: don't retry, do what you still can yourself, and say in one line what you couldn't. Identical retries return the same worker.",
+      "Start a worker for one build, review or research task in a project or repository on this host, named in plain words in project (a name such as t3code, or owner/name). Brief it with one goal, the facts it needs, and member text in quoted. model defaults to strong. For review of a worker's work, set reviewOf to the author workerId and pick a model with a different instance and model; the reviewer gets only your goal and the author's reported PR or commit. For any open PR in the project's repo, anyone's, set pullRequest: review checks it out at its head with its diff and reports findings; build pushes fixes to the PR's own branch. Returns workerId and threadLink. Where workers run on this server itself, build work starts from your direct chat with the owner, and PR reviews and fixes also from an owner-only check-in. Don't wait: its report arrives as a later event. If it is refused, nothing started: don't retry, do what you still can yourself, and say in one line what you couldn't. Identical retries return the same worker.",
     parameters: Workers.DelegateInput,
     success: Workers.DelegateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -209,6 +220,20 @@ export const KinLeadToolkit = Toolkit.make(
     description: `List a repo's recent GitHub Actions runs, up to ${RepoReads.RUNS_CAP}, optionally for one branch: name, branch, status, conclusion, URL and time. ${githubData}`,
     parameters: RepoReads.RunsInput,
     success: GitHubData,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_github_review", {
+    ...prCare,
+    description:
+      "Post a review on a pull request in a connected repo: body (findings, plainly), event COMMENT (default) or REQUEST_CHANGES, and optional line comments (path and line on the PR's new side). Never approves. On the company's private repos it posts at once. On a public repo or one the company doesn't own it is a proposal: the owner sees it on a card and taps Post it, which wakes you; then call again with the proposal it returned to post exactly that. Returns status posted, proposed, waiting or declined.",
+    parameters: PullRequestCare.ReviewInput,
+    success: PullRequestCare.ReviewResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_github_link", {
+    ...prCare,
+    description:
+      "Link a GitHub issue or pull request (its URL, in a connected repo) to a Work entry by key. A task made from an issue gets its issue this way; a teammate's PR linked to a task closes it when the PR merges, and the merge closes the task's linked issues too. A closed issue closes its tasks.",
+    parameters: PullRequestCare.LinkInput,
+    success: PullRequestCare.LinkResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_end", {
     ...shared,

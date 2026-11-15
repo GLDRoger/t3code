@@ -192,6 +192,8 @@ const WorkerRow = Schema.Struct({
   kind: Schema.String,
   pullRequestUrl: Schema.NullOr(Schema.String),
   pullRequestNumber: Schema.NullOr(Schema.Number),
+  targetPr: Schema.NullOr(Schema.Number),
+  targetBranch: Schema.NullOr(Schema.String),
 });
 type WorkerRow = typeof WorkerRow.Type & {
   /** Set once its chat was shared after private work began: `chatId` is then the owner chat. */
@@ -199,6 +201,15 @@ type WorkerRow = typeof WorkerRow.Type & {
   readonly audience: WriteAudience;
 };
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
+const onto = (worker: typeof WorkerRow.Type) => {
+  const target = ontoOf(worker);
+  return target === undefined ? {} : { onto: target };
+};
+/** A fix worker's PR, whose own branch its commits are pushed to. */
+const ontoOf = (worker: typeof WorkerRow.Type): Publish.PullRequestTarget | undefined =>
+  worker.targetPr === null || worker.targetBranch === null
+    ? undefined
+    : { number: worker.targetPr, branch: worker.targetBranch };
 const isChatError = Schema.is(KinChatError);
 const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 const STOP_FAILED = "The worker could not be stopped. Retry or tell the owner.";
@@ -334,7 +345,8 @@ const make = Effect.gen(function* () {
       repository_key AS "repositoryKey", project_id AS "projectId",
       remote_project_id AS "remoteProjectId", title,
       model_json AS model, kind, pull_request_url AS "pullRequestUrl",
-      pull_request_number AS "pullRequestNumber"
+      pull_request_number AS "pullRequestNumber", target_pr AS "targetPr",
+      target_branch AS "targetBranch"
       FROM kin_workers WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
     if (raw === undefined) return undefined;
     const worker = yield* decodeWorker(raw);
@@ -629,6 +641,7 @@ const make = Effect.gen(function* () {
   const reconcileWrite = Effect.fn("WorkerTracker.reconcileWrite")(function* (
     key: Attempts.Attempt,
     repositoryKey: string | null,
+    onto: Publish.PullRequestTarget | undefined,
   ) {
     const row = yield* inSql(Attempts.attemptOf(key));
     if (row === undefined || row.intent === null) return;
@@ -639,7 +652,11 @@ const make = Effect.gen(function* () {
           ? yield* new Publish.KinWorkerPublishRefused({
               reason: "this host has no Kin GitHub App to check GitHub with",
             })
-          : yield* publisher.value.inspect({ workerId: key.workerId, repositoryKey });
+          : yield* publisher.value.inspect({
+              workerId: key.workerId,
+              repositoryKey,
+              ...(onto === undefined ? {} : { onto }),
+            });
     yield* inSql(sql.withTransaction(Attempts.recordFound(key, found)));
   });
 
@@ -736,7 +753,9 @@ const make = Effect.gen(function* () {
         Effect.mapError(() => fail("Kin couldn't record what it wrote")),
       );
     // A write an earlier process began and never heard back from is checked before any other.
-    const earlier = yield* reconcileWrite(key, worker.repositoryKey).pipe(Effect.result);
+    const earlier = yield* reconcileWrite(key, worker.repositoryKey, ontoOf(worker)).pipe(
+      Effect.result,
+    );
     if (earlier._tag === "Failure")
       return refused("Kin couldn't reach GitHub to check what an earlier publish left");
     const pull = yield* publisher.value
@@ -745,6 +764,7 @@ const make = Effect.gen(function* () {
         repositoryKey: worker.repositoryKey,
         worktreePath,
         ...(local === undefined ? {} : { local }),
+        ...onto(worker),
         title,
         progress: { review, begin, done },
       })
@@ -760,7 +780,9 @@ const make = Effect.gen(function* () {
       reason: pull.failure.reason,
     });
     // A write whose answer was lost may have landed: GitHub says, not the failure.
-    yield* reconcileWrite(key, worker.repositoryKey).pipe(Effect.ignoreCause({ log: true }));
+    yield* reconcileWrite(key, worker.repositoryKey, ontoOf(worker)).pipe(
+      Effect.ignoreCause({ log: true }),
+    );
     const row = yield* inSql(Attempts.attemptOf(key));
     if (row?.pullRequestUrl != null && row.pullRequestNumber !== null)
       return { url: row.pullRequestUrl, number: row.pullRequestNumber };
@@ -1370,7 +1392,9 @@ const make = Effect.gen(function* () {
     const what = stop.stopLabel ?? `"${worker.title ?? "Worker"}"`;
     const branch = Publish.publishBranch(key.workerId);
     const id = `${key.workerId}:${key.startedAt}`;
-    const checked = yield* reconcileWrite(key, worker.repositoryKey).pipe(Effect.result);
+    const checked = yield* reconcileWrite(key, worker.repositoryKey, ontoOf(worker)).pipe(
+      Effect.result,
+    );
     if (checked._tag === "Failure") {
       yield* noticeOnce(worker, key, "unchecked_at", {
         messageId: `kin-stop-unchecked:${id}`,

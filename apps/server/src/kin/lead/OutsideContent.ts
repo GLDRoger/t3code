@@ -84,6 +84,9 @@ export const OUTSIDE_TOOLS = {
   kin_github_prs: "allowed",
   kin_github_pr: "allowed",
   kin_github_runs: "allowed",
+  // Posts on its own only to the company's private repos; anywhere else on the owner's Confirm.
+  kin_github_review: "allowed",
+  kin_github_link: "allowed",
   // The owner reads and signs the exact payload.
   request_action: "allowed",
   records_query: "allowed",

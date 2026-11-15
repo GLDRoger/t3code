@@ -206,41 +206,64 @@ export const workerEnded = Effect.fn("KinWorkEntries.workerEnded")(function* (in
 });
 
 /**
- * A merged pull request closes every entry linked to it, directly or through the worker that
- * opened it, with the merge as evidence. No lead turn is involved.
+ * A merged PR or a closed issue closes every entry linked to it, directly or through a worker on
+ * it, with the event as evidence. No lead turn is involved. A merge also names the GitHub issues
+ * linked to those entries, for Kin to close.
  */
-export const pullRequestMerged = Effect.fn("KinWorkEntries.pullRequestMerged")(function* (input: {
+export const githubClosed = Effect.fn("KinWorkEntries.githubClosed")(function* (input: {
   readonly orgId: KinOrgId;
   readonly repo: string;
   readonly number: number;
+  readonly item: "pull_request" | "issue";
 }) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
-  const url = `https://github.com/${input.repo}/pull/${input.number}`;
+  const pull = input.item === "pull_request";
+  const url = `https://github.com/${input.repo}/${pull ? "pull" : "issues"}/${input.number}`;
   const rows = yield* sql<{ recordId: string; key: string; state: string }>`
     SELECT DISTINCT r.record_id AS "recordId", r.key, r.state FROM kin_records r
     WHERE r.org_id = ${input.orgId} AND (
       EXISTS (SELECT 1 FROM kin_record_links l WHERE l.org_id = r.org_id
-        AND l.record_id = r.record_id AND l.kind = 'pull_request' AND lower(l.target) = lower(${url}))
-      OR EXISTS (SELECT 1 FROM kin_record_links l JOIN kin_workers k
+        AND l.record_id = r.record_id AND l.kind = ${pull ? "pull_request" : "url"}
+        AND lower(l.target) = lower(${url}))
+      OR (${pull ? 1 : 0} = 1 AND EXISTS (SELECT 1 FROM kin_record_links l JOIN kin_workers k
           ON k.org_id = l.org_id AND k.worker_id = l.target
         WHERE l.org_id = r.org_id AND l.record_id = r.record_id AND l.kind = 'worker'
           AND lower(k.repository_key) = lower(${`github.com/${input.repo}`})
-          AND k.pull_request_number = ${input.number}))
+          AND (k.pull_request_number = ${input.number} OR k.target_pr = ${input.number}))))
     ORDER BY r.record_id`;
   const writer = byWorker("github");
   for (const row of rows) {
     yield* records.link(input.orgId, writer, row.recordId, {
-      kind: "pull_request",
+      kind: pull ? "pull_request" : "url",
       target: url,
       relation: "evidence",
-      label: `PR #${input.number} merged`,
+      label: pull ? `PR #${input.number} merged` : `Issue #${input.number} closed`,
     });
     if (row.state !== "done" && row.state !== "dropped")
       yield* records.update(input.orgId, writer, row.key, { state: "done" });
   }
-  return rows.length;
+  const issues: Array<{ readonly repo: string; readonly number: number }> = [];
+  if (pull && rows.length > 0)
+    for (const link of yield* sql<{
+      target: string;
+    }>`SELECT DISTINCT l.target FROM kin_record_links l
+      WHERE l.org_id = ${input.orgId} AND l.kind = 'url'
+        AND l.record_id IN ${sql.in(rows.map((row) => row.recordId))}
+      ORDER BY l.target`) {
+      const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\/([1-9][0-9]*)$/i.exec(
+        link.target,
+      );
+      if (match !== null) issues.push({ repo: match[1]!, number: Number(match[2]) });
+    }
+  return { entries: rows.length, issues };
 });
+
+export const pullRequestMerged = (input: {
+  readonly orgId: KinOrgId;
+  readonly repo: string;
+  readonly number: number;
+}) => githubClosed({ ...input, item: "pull_request" }).pipe(Effect.map((closed) => closed.entries));
 
 const chatOf = (event: KinEvent): KinChatId | undefined =>
   "chatId" in event && typeof event.chatId === "string" ? event.chatId : undefined;

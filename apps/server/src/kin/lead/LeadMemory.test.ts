@@ -53,6 +53,7 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { recordingSchedules } from "../triggers/kinSchedules.testkit.ts";
 import { KinWorkers } from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
+import * as PullRequestCare from "../github/PullRequestCare.ts";
 import * as Registry from "./KinLeadRegistry.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
 import { handlers } from "./mcp/handlers.ts";
@@ -85,6 +86,7 @@ const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers)
   Layer.provide(Layer.mock(KinWorkers)({})),
   Layer.provide(Layer.mock(KinHandoff)({})),
   Layer.provide(KinRepoReads.notConnectedLayer),
+  Layer.provide(PullRequestCare.notConnectedLayer),
   Layer.provide(
     Layer.mock(Threads.ThreadManagementService)({
       getThreadShell: (id) => Effect.succeed({ ...liveThreadShell(id), providerInstanceId }),
@@ -387,6 +389,8 @@ it.live(
           "kin_github_prs",
           "kin_github_pr",
           "kin_github_runs",
+          "kin_github_review",
+          "kin_github_link",
           "kin_end",
         ]);
         for (const thread of [

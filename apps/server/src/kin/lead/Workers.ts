@@ -101,6 +101,10 @@ export const DelegateInput = Schema.Struct({
   model: Schema.optional(WorkerModel),
   memoryItemIds: Schema.optional(Schema.Array(KinMemoryItemId).check(Schema.isMaxLength(20))),
   reviewOf: Schema.optional(KinWorkerId),
+  pullRequest: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))).annotate({
+    description:
+      "An open PR's number in project's repository, anyone's: review checks it out at the PR's head; build pushes fixes to the PR's own branch.",
+  }),
   entry: Schema.optional(KinRecordKey).annotate({
     description:
       "The Work entry this works on, such as W-12. Without one, Kin tracks the worker as a new entry of yours.",
@@ -680,6 +684,10 @@ const make = Effect.gen(function* () {
           return yield* denied(SHARED_REFUSAL);
         const config = yield* leadConfig(ctx);
         const event = yield* sourceEvent(ctx, input.sourceEventId);
+        if (input.pullRequest !== undefined)
+          return yield* denied(
+            "Work on a pull request runs on this host's own workers, not in a linked worker environment.",
+          );
         if ((input.kind === "review") !== (input.reviewOf !== undefined))
           return yield* denied("Review workers need reviewOf, and only review workers take it.");
         const author =
