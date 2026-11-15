@@ -9,6 +9,7 @@ import {
   type KinChatId,
   type KinEvent,
   KinMemoryItemId,
+  type KinMessageId,
   type KinOrgId,
   type KinPersonId,
   ProviderInstanceId,
@@ -23,13 +24,15 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import type { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import { deferralOrigin } from "../triggers/deferralOrigin.ts";
-import { SHARED_REFUSAL, recordAudience, turnAudience } from "./Audience.ts";
+import { SHARED_REFUSAL, recordAudience, turnAudience, turnPeople } from "./Audience.ts";
+import { wakeEvent } from "./ChatWake.ts";
 import * as Handoff from "./Handoff.ts";
 import * as KinLevels from "./KinLevels.ts";
 
@@ -331,7 +334,7 @@ it.effect(
           clientMessageId: "group-ask",
         });
         yield* ctx.claim("group-event", chief, { chatId: "team", messageId: inGroup.messageId });
-        assert.include((yield* pass("group-event")).message, "your own chat with them");
+        assert.include((yield* pass("group-event")).message, "No other agent is in this group");
 
         // Not a person's message, another wake-up's event, an unknown event.
         yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
@@ -441,4 +444,166 @@ it.effect("kin_leads tells charters only to a wake-up the owner alone set off", 
       });
     }),
   ),
+);
+
+/** A group of the owner, a teammate, the Chief of staff and the Tech lead; who asked what there. */
+const room = Effect.fn("HandoffTest.room")(function* (ctx: Effect.Success<typeof setup>) {
+  const { sql, orgId, owner } = ctx;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+    VALUES ('mate', ${orgId}, 'mate', 'Arjun', ${at})`;
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at, team_id)
+    VALUES ('company', ${orgId}, 'team_group', 'Company chat', 0, ${at}, 'company')`;
+  const member = (id: string, principal: "person" | "agent", who: string) =>
+    sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+      VALUES (${id}, ${orgId}, 'company', ${principal}, ${principal === "person" ? who : null},
+        ${principal === "agent" ? who : null}, ${id === "room-owner" ? "owner" : "member"}, ${at})`;
+  yield* member("room-owner", "person", owner.personId);
+  yield* member("room-mate", "person", "mate");
+  yield* member("room-chief", "agent", chief);
+  yield* member("room-tech", "agent", tech);
+  const mate = { _tag: "person" as const, orgId, personId: "mate" as KinPersonId };
+  /** `who` asks in the group, and the Chief of staff's running turn has it. */
+  const ask = Effect.fn("HandoffTest.ask")(function* (
+    eventId: string,
+    who: typeof mate | typeof owner,
+    body: string,
+  ) {
+    const sent = yield* ctx.chats.send(who, {
+      chatId: "company" as KinChatId,
+      body,
+      clientMessageId: eventId,
+    });
+    yield* ctx.claim(eventId, chief, {
+      chatId: "company",
+      messageId: sent.messageId,
+      provenance: sent.author,
+    });
+    return sent;
+  });
+  /** The turn the person's words wake in their direct chat with `agentId`, as its runner claims it. */
+  const privateTurn = Effect.fn("HandoffTest.privateTurn")(function* (
+    personId: string,
+    agentId: KinAgentId,
+  ) {
+    const [copy] = yield* sql<{ messageId: string; chatId: string }>`
+      SELECT m.message_id AS "messageId", m.chat_id AS "chatId" FROM kin_messages m
+      JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+      WHERE m.org_id = ${orgId} AND c.direct_key = ${`${personId}:${agentId}`}
+        AND m.author_kind = 'human' AND m.author_person_id = ${personId}
+      ORDER BY m.seq DESC LIMIT 1`;
+    const message = Option.getOrThrow(
+      yield* Context.get(ctx.services, KinChatRepository).getMessage({
+        orgId,
+        messageId: copy!.messageId as KinMessageId,
+      }),
+    );
+    const event = wakeEvent(message, agentId, undefined);
+    const wakeupId = `${agentId}-private-${personId}`;
+    const threadId = ThreadId.make(`${agentId}-thread`);
+    const wakeRun = yield* startWakeupRun(threadId, wakeupId);
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids)
+      VALUES (${wakeupId}, ${orgId}, ${agentId}, ${threadId}, ${wakeRun.id}, 'test', 0, 'completed', '[]')`;
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+      VALUES (${event.eventId}, ${orgId}, ${agentId}, 'chat.message', 'P0', ${JSON.stringify(event)},
+        0, 0, 'claimed', ${wakeupId})`;
+    const turn = { orgId, agentId, wakeupId };
+    return {
+      message,
+      audience: yield* turnAudience(turn),
+      people: (yield* turnPeople(turn))!.people,
+    };
+  });
+  return { mate, ask, privateTurn };
+});
+
+it.effect(
+  "a money question in the group goes on privately at the asker's own access: the owner's in his chat, a teammate's in theirs",
+  () =>
+    run(({ ctx, handoff }) =>
+      Effect.gen(function* () {
+        const { sql, orgId, owner } = ctx;
+        const { mate, ask, privateTurn } = yield* room(ctx);
+        yield* ask("mate-event", mate, "What are we charging Lumen?");
+        assert.deepStrictEqual(
+          yield* handoff.takePrivate(scopeFor(chief), { sourceEventId: "mate-event" }),
+          { person: "Arjun", agent: "Chief of staff", continued: true },
+        );
+        // A retry is the same; another agent for the same message is not.
+        yield* handoff.takePrivate(scopeFor(chief), { sourceEventId: "mate-event" });
+        const other = yield* Effect.flip(
+          handoff.takePrivate(scopeFor(chief), { sourceEventId: "mate-event", agent: "Tech lead" }),
+        );
+        assert.strictEqual(other.reason, "not_allowed");
+        // Arjun's words, as his, in his own chat with the Chief of staff, once: that turn reads
+        // at his view and is never the owner's alone.
+        const mates = yield* privateTurn("mate", chief);
+        assert.include(mates.message, { body: "What are we charging Lumen?" });
+        assert.deepStrictEqual(mates.message.author, { ...mates.message.author, personId: "mate" });
+        assert.strictEqual(mates.audience, "shared");
+        assert.deepStrictEqual(mates.people, ["mate"]);
+        const copies = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId}
+          AND chat_id = ${mates.message.chatId} AND author_kind = 'human'`;
+        assert.lengthOf(copies, 1);
+        assert.deepStrictEqual(yield* systemRows(sql, orgId, mates.message.chatId), [
+          { body: "From Company chat. Chief of staff answers you here." },
+        ]);
+        // Nothing went to the owner's own chat for Arjun's question.
+        const owners = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${orgId}
+          AND chat_id = ${ctx.chiefChat} AND body = 'What are we charging Lumen?'`;
+        assert.lengthOf(owners, 0);
+
+        // The owner asks the same there: Finance's turn in his own chat is his alone.
+        yield* ask("owner-event", owner, "And our margin on Lumen?");
+        assert.deepStrictEqual(
+          yield* handoff.takePrivate(scopeFor(chief), {
+            sourceEventId: "owner-event",
+            agent: "engineering",
+          }),
+          { person: "Owner", agent: "Tech lead", continued: true },
+        );
+        const his = yield* privateTurn(owner.personId, tech);
+        assert.strictEqual(his.message.chatId, ctx.techChat);
+        assert.strictEqual(his.audience, "owner_only");
+        assert.deepStrictEqual(his.people, []);
+
+        // Only a person's own message in a group: not the owner's direct chat, not unknown events.
+        assert.strictEqual(
+          (yield* Effect.flip(handoff.takePrivate(scopeFor(chief), { sourceEventId: "ask-event" })))
+            .reason,
+          "not_allowed",
+        );
+        assert.strictEqual(
+          (yield* Effect.flip(handoff.takePrivate(scopeFor(chief), { sourceEventId: "nowhere" })))
+            .reason,
+          "not_found",
+        );
+      }),
+    ),
+);
+
+it.effect(
+  "in the group, an agent passes a person's question to the agent there who owns it, once",
+  () =>
+    run(({ ctx, handoff }) =>
+      Effect.gen(function* () {
+        const { sql, orgId } = ctx;
+        const { mate, ask } = yield* room(ctx);
+        const sent = yield* ask("mate-event", mate, "Why is CI red?");
+        const pass = (to: string, from = chief) =>
+          handoff.handOff(scopeFor(from), { to, request: "Yours.", sourceEventId: "mate-event" });
+        assert.deepStrictEqual(yield* pass("Tech lead"), { to: "Tech lead", passed: true });
+        yield* pass("engineering");
+        const events = yield* sql<{ agentId: string; json: string }>`SELECT agent_id AS "agentId",
+          json FROM kin_events WHERE org_id = ${orgId} AND state = 'queued' ORDER BY event_id`;
+        // The same event naming the Tech lead would have made: it answers there, once.
+        assert.deepStrictEqual(
+          events.map((row) => [row.agentId, JSON.parse(row.json).dedupeKey]),
+          [[tech, wakeEvent(sent, tech, undefined).dedupeKey]],
+        );
+        // Not a second agent, and nothing posted in anyone's private chat.
+        yield* ctx.addLead(KinAgentId.make("ops"), "Ops", "operations", "1970-01-01T00:00:02.000Z");
+        assert.strictEqual((yield* Effect.flip(pass("Ops"))).reason, "not_found");
+        assert.lengthOf(yield* systemRows(sql, orgId, ctx.techChat), 0);
+      }),
+    ),
 );

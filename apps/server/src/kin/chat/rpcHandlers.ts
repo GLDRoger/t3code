@@ -250,6 +250,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     "kin.groups.rename": (input) => group((groups, people) => groups.rename(people, input)),
     "kin.groups.delete": (input) =>
       group((groups, people) => groups.remove(people, input).pipe(Effect.as({}))),
+    "kin.groups.setCompany": (input) => group((groups, people) => groups.setCompany(people, input)),
     "kin.chat.history": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.history(people, input)),

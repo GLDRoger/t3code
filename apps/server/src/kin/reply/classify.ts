@@ -164,6 +164,8 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)kin_worker_stop$/, "Stopping the work"],
   [/(?:^|__|\.)kin_leads$/, "Checking who handles this"],
   [/(?:^|__|\.)kin_hand_off$/, "Passing this on"],
+  [/(?:^|__|\.)kin_take_private$/, "Answering you directly"],
+  [/(?:^|__|\.)people_read$/, "Checking who's on the team"],
   [/(?:^|__|\.)kin_ask$/, "Writing a question"],
   [/(?:^|__|\.)kin_chart$/, "Drawing a chart"],
   [/(?:^|__|\.)kin_visual$/, "Putting a visual together"],

@@ -1,4 +1,5 @@
 import {
+  KIN_COMPANY_CHAT_TEAM_ID,
   KIN_GROUP_MAX_MEMBERS,
   KinAgentId,
   KinChatError,
@@ -14,8 +15,11 @@ import {
   type KinGroupAddMemberInput,
   type KinGroupDeleteInput,
   type KinGroupRemoveMemberInput,
+  type KinGroupSetCompanyInput,
+  type KinGroupSetCompanyResult,
   type KinGroupSetLeadInput,
   type KinOrgId,
+  type KinPersonId,
   type KinPrincipal,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -77,6 +81,19 @@ export class KinGroups extends Context.Service<
       caller: Viewers,
       input: KinGroupDeleteInput,
     ) => Effect.Effect<void, GroupError>;
+    /**
+     * The company chat: on, one group with everyone on the team and the owner's agents, the picked
+     * one answering; off, its agents leave and its history stays readable. On again reopens it.
+     */
+    readonly setCompany: (
+      caller: Viewers,
+      input: KinGroupSetCompanyInput,
+    ) => Effect.Effect<KinGroupSetCompanyResult, GroupError>;
+    /** Someone let onto the team joins the company chat while it is on. Run in their accept. */
+    readonly joinCompany: (
+      orgId: KinOrgId,
+      personId: KinPersonId,
+    ) => Effect.Effect<void, GroupError>;
   }
 >()("t3/kin/chat/KinGroups") {}
 
@@ -91,6 +108,8 @@ const ownerOnly = new KinChatError({
 });
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const CHAT_EVENT_TAGS = ["chat.message", "widget.action", "chat.reaction"] as const;
+const COMPANY_OFF = `${KIN_COMPANY_CHAT_TEAM_ID}:off`;
+const COMPANY_TITLE = "Company chat";
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -293,6 +312,81 @@ const make = Effect.gen(function* () {
   const changed = (member: KinChatMember) =>
     hub.publish({ type: "member.updated", orgId: member.orgId, chatId: member.chatId, member });
 
+  /** Puts a lead or person in a group, or back in it; one already there stays as they are. */
+  const admit = Effect.fn("KinGroups.admit")(function* (chat: KinChat, principal: KinPrincipal) {
+    if (principal._tag === "agent") yield* ownersLead(chat.orgId, principal.agentId);
+    else if (Option.isNone(yield* repo.getPerson({ orgId: chat.orgId, ...principal })))
+      return yield* notFound;
+    const rows = yield* repo.listMembers(chat);
+    const earlier = rows.find((row) =>
+      row.principal._tag === "person"
+        ? principal._tag === "person" && row.principal.personId === principal.personId
+        : principal._tag === "agent" && row.principal.agentId === principal.agentId,
+    );
+    if (earlier !== undefined && earlier.leftAt === null) return earlier;
+    if (rows.filter((row) => row.leftAt === null).length >= KIN_GROUP_MAX_MEMBERS)
+      return yield* invalid(`A group holds up to ${KIN_GROUP_MAX_MEMBERS}.`);
+    const joinedAt = yield* now;
+    const member =
+      earlier === undefined
+        ? yield* join(chat, principal, "member", joinedAt)
+        : // Someone who was here before keeps their member id, so their old messages stay theirs.
+          yield* repo.addMember({ ...earlier, role: "member", joinedAt, leftAt: null });
+    if (principal._tag === "person") yield* shareWith(chat, principal.personId);
+    if (principal._tag === "agent" && (chat.leadAgentId ?? null) === null)
+      yield* repo.updateChat({
+        orgId: chat.orgId,
+        chatId: chat.chatId,
+        leadAgentId: principal.agentId,
+      });
+    yield* changed(member);
+    return member;
+  });
+
+  /** Takes a member out of a group; a lead leaving hands the group to the lead in it longest. */
+  const dismiss = Effect.fn("KinGroups.dismiss")(function* (chat: KinChat, member: KinChatMember) {
+    const { principal } = member;
+    for (const item of yield* repo.leaveChat({ ...member, leftAt: yield* now }))
+      yield* hub.publish({ type: "waiting.updated", orgId: chat.orgId, item });
+    if (principal._tag === "agent") {
+      yield* dropQueued(chat, principal.agentId);
+      if (chat.leadAgentId === principal.agentId) {
+        // The group still needs someone to answer: the lead who has been in it longest.
+        const [next] = yield* query("KinGroups.nextLead")(sql<{ agentId: string }>`
+          SELECT m.agent_id AS "agentId" FROM kin_chat_members m
+          JOIN kin_leads l ON l.org_id = m.org_id AND l.agent_id = m.agent_id
+          JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+          WHERE m.org_id = ${chat.orgId} AND m.chat_id = ${chat.chatId}
+            AND m.principal_kind = 'agent' AND m.left_at IS NULL AND a.retired_at IS NULL
+          ORDER BY m.joined_at, m.rowid LIMIT 1`);
+        yield* repo.updateChat({
+          orgId: chat.orgId,
+          chatId: chat.chatId,
+          leadAgentId: next === undefined ? null : KinAgentId.make(next.agentId),
+        });
+      }
+    }
+    const removed = yield* repo.getMember(member);
+    if (Option.isNone(removed)) return yield* notFound;
+    yield* hub.publish({ type: "member.removed", orgId: chat.orgId, member: removed.value });
+  });
+
+  /** The org's company chat, on or off, newest first; none until the owner first turns it on. */
+  const companyChat = Effect.fn("KinGroups.companyChat")(function* (orgId: KinOrgId) {
+    const [row] = yield* query("KinGroups.companyChat")(sql<{ chatId: string }>`
+      SELECT chat_id AS "chatId" FROM kin_chats
+      WHERE org_id = ${orgId} AND kind = 'team_group' AND archived_at IS NULL
+        AND team_id IN (${KIN_COMPANY_CHAT_TEAM_ID}, ${COMPANY_OFF})
+      ORDER BY team_id = ${KIN_COMPANY_CHAT_TEAM_ID} DESC, created_at DESC LIMIT 1`);
+    if (row === undefined) return undefined;
+    const chat = yield* repo.getChat({ orgId, chatId: KinChatId.make(row.chatId) });
+    return Option.getOrUndefined(chat);
+  });
+
+  const markCompany = (chat: KinChat, teamId: string) =>
+    query("KinGroups.markCompany")(sql`UPDATE kin_chats SET team_id = ${teamId}
+      WHERE org_id = ${chat.orgId} AND chat_id = ${chat.chatId}`);
+
   return KinGroups.of({
     create: Effect.fn("KinGroups.create")(function* (caller, raw) {
       const input = yield* decodeCreate(raw).pipe(
@@ -337,6 +431,90 @@ const make = Effect.gen(function* () {
       return chat;
     }, transaction),
 
+    setCompany: Effect.fn("KinGroups.setCompany")(function* (caller, input) {
+      const person = caller.find((entry) => entry.orgId === input.orgId);
+      if (person === undefined) return yield* notFound;
+      if (!isOwner(person)) return yield* ownerOnly;
+      const found = yield* companyChat(input.orgId);
+      if (input.leadAgentId === null) {
+        if (found === undefined) return { chat: null };
+        yield* markCompany(found, COMPANY_OFF);
+        // Nobody answers there any more; the people stay, so its history stays readable.
+        for (const member of yield* repo.listMembers(found))
+          if (member.principal._tag === "agent" && member.leftAt === null)
+            yield* dismiss(found, member);
+        const off = yield* repo.updateChat({
+          orgId: found.orgId,
+          chatId: found.chatId,
+          leadAgentId: null,
+        });
+        const owners = yield* repo.activeMember({
+          ...found,
+          principal: { _tag: "person", personId: person.personId },
+        });
+        if (Option.isSome(owners)) yield* changed(owners.value);
+        return { chat: off };
+      }
+      const leadAgentId = input.leadAgentId;
+      yield* ownersLead(input.orgId, leadAgentId);
+      const agents = yield* query("KinGroups.companyAgents")(sql<{ agentId: KinAgentId }>`
+        SELECT l.agent_id AS "agentId" FROM kin_leads l
+        JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+        WHERE l.org_id = ${input.orgId} AND a.role = 'lead' AND a.retired_at IS NULL
+          AND a.owner_person_id = ${owner.personId}
+        ORDER BY a.created_at, l.agent_id`);
+      const people = yield* query("KinGroups.companyPeople")(sql<{ personId: KinPersonId }>`
+        SELECT DISTINCT b.person_id AS "personId" FROM kin_session_bindings b
+        WHERE b.org_id = ${input.orgId} AND b.revoked_at IS NULL
+          AND b.person_id <> ${person.personId}
+        ORDER BY b.person_id`);
+      const createdAt = yield* now;
+      const chat =
+        found ??
+        (yield* repo.createChat({
+          orgId: input.orgId,
+          chatId: yield* decodeChatId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
+          kind: "team_group",
+          directKey: null,
+          title: COMPANY_TITLE,
+          teamId: KIN_COMPANY_CHAT_TEAM_ID,
+          lastMessageAt: null,
+          createdAt,
+          archivedAt: null,
+          leadAgentId,
+        }));
+      if (found === undefined)
+        yield* join(chat, { _tag: "person", personId: person.personId }, "owner", createdAt);
+      const reopened = found !== undefined && found.teamId !== KIN_COMPANY_CHAT_TEAM_ID;
+      if (found === undefined || reopened) {
+        yield* markCompany(chat, KIN_COMPANY_CHAT_TEAM_ID);
+        // Every agent the owner has, so a question finds its agent in the room; he removes any.
+        for (const { agentId } of agents) yield* admit(chat, { _tag: "agent", agentId });
+      } else yield* admit(chat, { _tag: "agent", agentId: leadAgentId });
+      for (const { personId } of people) yield* admit(chat, { _tag: "person", personId });
+      const updated = yield* repo.updateChat({
+        orgId: chat.orgId,
+        chatId: chat.chatId,
+        leadAgentId,
+      });
+      if (found === undefined)
+        yield* hub.publish({ type: "chat.created", orgId: chat.orgId, chat: updated });
+      else {
+        const owners = yield* repo.activeMember({
+          ...chat,
+          principal: { _tag: "person", personId: person.personId },
+        });
+        if (Option.isSome(owners)) yield* changed(owners.value);
+      }
+      return { chat: updated };
+    }, transaction),
+
+    joinCompany: Effect.fn("KinGroups.joinCompany")(function* (orgId, personId) {
+      const chat = yield* companyChat(orgId);
+      if (chat === undefined || chat.teamId !== KIN_COMPANY_CHAT_TEAM_ID) return;
+      yield* admit(chat, { _tag: "person", personId });
+    }, transaction),
+
     members: Effect.fn("KinGroups.members")(function* (caller, input) {
       const { chat } = yield* memberOf(caller, input.chatId);
       const members = yield* repo.listMembers(chat);
@@ -370,34 +548,7 @@ const make = Effect.gen(function* () {
 
     addMember: Effect.fn("KinGroups.addMember")(function* (caller, input) {
       const { chat } = yield* ownedGroup(caller, input.chatId);
-      const { principal } = input;
-      if (principal._tag === "agent") yield* ownersLead(chat.orgId, principal.agentId);
-      else if (Option.isNone(yield* repo.getPerson({ orgId: chat.orgId, ...principal })))
-        return yield* notFound;
-      const rows = yield* repo.listMembers(chat);
-      const earlier = rows.find((row) =>
-        row.principal._tag === "person"
-          ? principal._tag === "person" && row.principal.personId === principal.personId
-          : principal._tag === "agent" && row.principal.agentId === principal.agentId,
-      );
-      if (earlier !== undefined && earlier.leftAt === null) return earlier;
-      if (rows.filter((row) => row.leftAt === null).length >= KIN_GROUP_MAX_MEMBERS)
-        return yield* invalid(`A group holds up to ${KIN_GROUP_MAX_MEMBERS}.`);
-      const joinedAt = yield* now;
-      const member =
-        earlier === undefined
-          ? yield* join(chat, principal, "member", joinedAt)
-          : // Someone who was here before keeps their member id, so their old messages stay theirs.
-            yield* repo.addMember({ ...earlier, role: "member", joinedAt, leftAt: null });
-      if (principal._tag === "person") yield* shareWith(chat, principal.personId);
-      if (principal._tag === "agent" && (chat.leadAgentId ?? null) === null)
-        yield* repo.updateChat({
-          orgId: chat.orgId,
-          chatId: chat.chatId,
-          leadAgentId: principal.agentId,
-        });
-      yield* changed(member);
-      return member;
+      return yield* admit(chat, input.principal);
     }, transaction),
 
     removeMember: Effect.fn("KinGroups.removeMember")(function* (caller, input) {
@@ -410,30 +561,7 @@ const make = Effect.gen(function* () {
           message: "The owner can't be removed. Delete the group instead.",
         });
       if (member.value.leftAt !== null) return;
-      const { principal } = member.value;
-      for (const item of yield* repo.leaveChat({ ...member.value, leftAt: yield* now }))
-        yield* hub.publish({ type: "waiting.updated", orgId: chat.orgId, item });
-      if (principal._tag === "agent") {
-        yield* dropQueued(chat, principal.agentId);
-        if (chat.leadAgentId === principal.agentId) {
-          // The group still needs someone to answer: the lead who has been in it longest.
-          const [next] = yield* query("KinGroups.nextLead")(sql<{ agentId: string }>`
-            SELECT m.agent_id AS "agentId" FROM kin_chat_members m
-            JOIN kin_leads l ON l.org_id = m.org_id AND l.agent_id = m.agent_id
-            JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
-            WHERE m.org_id = ${chat.orgId} AND m.chat_id = ${chat.chatId}
-              AND m.principal_kind = 'agent' AND m.left_at IS NULL AND a.retired_at IS NULL
-            ORDER BY m.joined_at, m.rowid LIMIT 1`);
-          yield* repo.updateChat({
-            orgId: chat.orgId,
-            chatId: chat.chatId,
-            leadAgentId: next === undefined ? null : KinAgentId.make(next.agentId),
-          });
-        }
-      }
-      const removed = yield* repo.getMember(member.value);
-      if (Option.isNone(removed)) return yield* notFound;
-      yield* hub.publish({ type: "member.removed", orgId: chat.orgId, member: removed.value });
+      yield* dismiss(chat, member.value);
       // Those who stay hear it as a change by an active member: a departed one reads as their own exit.
       yield* changed(ownerMember);
     }, transaction),

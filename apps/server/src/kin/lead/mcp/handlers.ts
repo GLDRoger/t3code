@@ -58,6 +58,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       return yield* (yield* KinHandoff).handOff(yield* McpInvocationContext, input);
     }),
   ),
+  kin_take_private: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.takePrivate")(function* (input) {
+      return yield* (yield* KinHandoff).takePrivate(yield* McpInvocationContext, input);
+    }),
+  ),
   kin_ask: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.ask")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
