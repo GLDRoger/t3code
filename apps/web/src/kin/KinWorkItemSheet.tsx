@@ -3,6 +3,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_WORK_ASSIGN,
   KIN_WORK_GONE,
+  KIN_WORK_HAND_BACK,
   KIN_WORK_ITEM_FAILED,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
@@ -37,8 +38,18 @@ import { Link } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
+import {
   CheckIcon,
   ChevronDownIcon,
+  Undo2Icon,
   ExternalLinkIcon,
   LinkIcon,
   ListChecksIcon,
@@ -274,6 +285,90 @@ function KinWorkShareRow(
   );
 }
 
+/** The holder gives the task back to whoever gave it, saying why if they like. */
+function KinWorkHandBack(
+  props: KinWorkTarget & {
+    readonly itemKey: KinRecordKey;
+    readonly to: string;
+    readonly disabled: boolean;
+    readonly onDone: () => void;
+  },
+) {
+  const { environmentId, orgId, itemKey } = props;
+  const handBack = useAtomCommand(kinClient.workHandBack, { reportFailure: false });
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [pending, setPending] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const noteId = useId();
+  return (
+    <>
+      <Button size="sm" variant="outline" disabled={props.disabled} onClick={() => setOpen(true)}>
+        <Undo2Icon />
+        {KIN_WORK_HAND_BACK.button}
+      </Button>
+      <AlertDialog
+        open={open}
+        onOpenChange={(next) => {
+          if (!pending) setOpen(next);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{KIN_WORK_HAND_BACK.title}</AlertDialogTitle>
+            <AlertDialogDescription>{KIN_WORK_HAND_BACK.detail(props.to)}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex flex-col gap-1.5 px-6">
+            <Label htmlFor={noteId}>{KIN_WORK_HAND_BACK.reasonLabel}</Label>
+            <Textarea
+              id={noteId}
+              value={note}
+              maxLength={280}
+              placeholder={KIN_WORK_HAND_BACK.reasonPlaceholder}
+              onChange={(event) => setNote(event.target.value)}
+            />
+            {failed ? (
+              <p role="alert" className="text-xs text-destructive-foreground">
+                {KIN_WORK_HAND_BACK.failed}
+              </p>
+            ) : null}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={pending} />}>
+              {KIN_WORK_COPY.cancel}
+            </AlertDialogClose>
+            <Button
+              disabled={pending}
+              onClick={() => {
+                setPending(true);
+                setFailed(false);
+                const trimmed = note.trim();
+                void handBack({
+                  environmentId,
+                  input: { orgId, key: itemKey, ...(trimmed === "" ? {} : { note: trimmed }) },
+                }).then((outcome) => {
+                  setPending(false);
+                  if (AsyncResult.isFailure(outcome)) {
+                    setFailed(true);
+                    return;
+                  }
+                  setOpen(false);
+                  appAtomRegistry.refresh(
+                    kinClient.workItem({ environmentId, input: { orgId, key: itemKey } }),
+                  );
+                  props.onDone();
+                });
+              }}
+            >
+              {KIN_WORK_HAND_BACK.confirm}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </>
+  );
+}
+
 /** What just happened to the task: said quietly when it worked, plainly when it didn't. */
 function KinWorkNoticeLine(props: {
   readonly notice: KinWorkNotice;
@@ -419,6 +514,16 @@ function KinWorkItem(
                     {KIN_WORK_COPY.done}
                   </Button>
                   <StatusMenu view={view} waitingOn={waitingOn} saving={saving} onAct={change} />
+                  {view.handBackTo === null ? null : (
+                    <KinWorkHandBack
+                      environmentId={environmentId}
+                      orgId={orgId}
+                      itemKey={view.key}
+                      to={view.handBackTo}
+                      disabled={saving}
+                      onDone={props.onClose}
+                    />
+                  )}
                 </>
               )}
             </div>
@@ -438,6 +543,16 @@ function KinWorkItem(
                 <span className="shrink-0 text-xs text-muted-foreground">{KIN_RETIRED_LABEL}</span>
               ) : null}
             </dd>
+            {view.given === null && view.reason === null ? null : (
+              <dd className="col-start-2 -mt-1 flex min-w-0 flex-col gap-0.5 text-xs">
+                {view.given === null ? null : (
+                  <span className="text-muted-foreground">{view.given}</span>
+                )}
+                {view.reason === null ? null : (
+                  <span className="text-foreground/80">“{view.reason}”</span>
+                )}
+              </dd>
+            )}
             <dt className="text-muted-foreground">Due</dt>
             <dd className="flex min-w-0 items-center gap-2 text-foreground">
               {change === null || view.closed ? (
@@ -546,9 +661,6 @@ function KinWorkItem(
               shared={view.shared}
               disabled={saving}
             />
-          )}
-          {view.given === null ? null : (
-            <p className="text-xs text-muted-foreground">{view.given}</p>
           )}
           {view.remarks.map((remark) => (
             <p key={remark} className="text-xs text-muted-foreground">
