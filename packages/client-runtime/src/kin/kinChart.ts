@@ -104,7 +104,8 @@ const NO_MINOR_UNIT = new Set(
   "BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX UYI VND VUV XAF XOF XPF".split(" "),
 );
 const THREE_MINOR_DIGITS = new Set("BHD IQD JOD KWD LYD OMR TND".split(" "));
-const SYMBOLS: Readonly<Record<string, string>> = {
+/** How each currency is written before an amount; typed amounts are read back with the same table. */
+export const KIN_CURRENCY_SYMBOLS: Readonly<Record<string, string>> = {
   INR: "₹",
   USD: "$",
   EUR: "€",
@@ -123,7 +124,7 @@ const minorDigits = (currency: string) =>
 /** One whole unit of what a chart counts: a rupee in paise, or simply 1. */
 export const kinChartWholeUnit = (unit: KinChartUnit) =>
   unit.kind === "money" ? 10 ** minorDigits(unit.currency) : 1;
-const symbol = (currency: string) => SYMBOLS[currency] ?? `${currency} `;
+const symbol = (currency: string) => KIN_CURRENCY_SYMBOLS[currency] ?? `${currency} `;
 
 // Indian grouping: the last three digits, then pairs (12,34,567).
 const group = (digits: string, indian: boolean) =>
