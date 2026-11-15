@@ -882,10 +882,8 @@ const run = <A, E>(
           Layer.mock(PreviewBrowser)({
             executable: Effect.succeed("/invented/chrome-headless-shell"),
           }),
-          // Stores a worker's screenshot under an id from its name, as the real store does by hash.
           Layer.mock(KinDocRenderer)({
-            store: (_orgId, _jobId, file) =>
-              Effect.succeed(`kin-chat-${file.name.replace(/[^a-z0-9]/gi, "-")}`),
+            store: (_orgId, _jobId, file) => Effect.succeed(`kin-chat-shot-${file.extension}`),
           }),
           // Document jobs have their own tests (`gendocs/`); these workers never make one.
           Layer.mock(Workspace.KinWorkspace)({}),
@@ -3312,7 +3310,7 @@ it.effect("a UI test's screenshots reach its chat as one Kin message with the im
       assert.deepStrictEqual(JSON.parse(posted[0]!.attachments), [
         {
           type: "image",
-          id: "kin-chat-01-home-png",
+          id: "kin-chat-shot-png",
           name: "01-home.png",
           mimeType: "image/png",
           sizeBytes: png.length,
@@ -3321,7 +3319,7 @@ it.effect("a UI test's screenshots reach its chat as one Kin message with the im
       // Readable through its message, as a member's upload is; the lead still gets the report.
       assert.lengthOf(
         yield* ctx.sql`SELECT 1 FROM kin_message_attachments
-          WHERE org_id = ${ctx.orgId} AND attachment_id = 'kin-chat-01-home-png'`,
+          WHERE org_id = ${ctx.orgId} AND attachment_id = 'kin-chat-shot-png'`,
         1,
       );
       assert.strictEqual(
