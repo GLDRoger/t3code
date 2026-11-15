@@ -1,9 +1,12 @@
 import {
+  KIN_DOCS_RPC_SCOPES,
+  KIN_FINANCE_RPC_SCOPES,
   KIN_MEMORY_RPC_SCOPES,
   KIN_PEOPLE_RPC_SCOPES,
   KIN_WORK_RPC_SCOPES,
   sessionGrantsScope,
   sessionIsChatOnly,
+  type AuthEnvironmentScope,
   type EnvironmentId,
   type SessionGrantInput,
 } from "@t3tools/contracts";
@@ -130,6 +133,9 @@ export function kinAccessEnded(
   );
 }
 
+const grants = (session: SessionGrantInput | null) => (scope: AuthEnvironmentScope) =>
+  session !== null && sessionGrantsScope(session, scope);
+
 export type KinHomeTab = "chats" | "work" | "team" | "memory" | "settings";
 
 /** The places a Kin home's dock draws. Settings is a button on Chats, Team and Memory its pages. */
@@ -142,28 +148,32 @@ export interface KinDockRefused {
   readonly docs: boolean;
 }
 
-/** Chats, then each place of Work a session may read and the host hasn't refused; Chats alone otherwise. */
+/** Chats, then each place of Work the session's grant reaches and the host hasn't refused. */
 export function kinDockTabs(
   session: SessionGrantInput | null,
   refused: KinDockRefused,
 ): ReadonlyArray<KinDockTab> {
-  if (!kinHomeTabs(session).includes("work")) return ["chats"];
+  const allowed = grants(session);
+  if (!allowed(KIN_WORK_RPC_SCOPES["kin.work.list"])) return ["chats"];
   return [
     "chats",
     "tasks",
-    ...(refused.money ? [] : (["money"] as const)),
-    ...(refused.clients ? [] : (["clients"] as const)),
-    ...(refused.docs ? [] : (["docs"] as const)),
+    ...(refused.money || !allowed(KIN_FINANCE_RPC_SCOPES["kin.work.money"])
+      ? []
+      : (["money"] as const)),
+    ...(refused.clients || !allowed(KIN_WORK_RPC_SCOPES["kin.work.parties"])
+      ? []
+      : (["clients"] as const)),
+    ...(refused.docs || !allowed(KIN_DOCS_RPC_SCOPES["kin.docs.list"]) ? [] : (["docs"] as const)),
   ];
 }
 
 /**
  * The tabs of a Kin-only home, in order, from what the session has been allowed: a tab whose page
- * the host would refuse is never offered. A teammate's session gets chats and settings.
+ * the host would refuse is never offered. A teammate's session gets chats, work and settings.
  */
 export function kinHomeTabs(session: SessionGrantInput | null): ReadonlyArray<KinHomeTab> {
-  const allowed = (scope: Parameters<typeof sessionGrantsScope>[1]) =>
-    session !== null && sessionGrantsScope(session, scope);
+  const allowed = grants(session);
   return [
     "chats",
     ...(allowed(KIN_WORK_RPC_SCOPES["kin.work.list"]) ? (["work"] as const) : []),

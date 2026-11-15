@@ -115,7 +115,7 @@ describe("the app's shell", () => {
   });
 
   it("offers the Kin tabs a session has been allowed, and no others", () => {
-    expect(kinHomeTabs(teammate)).toEqual(["chats", "settings"]);
+    expect(kinHomeTabs(teammate)).toEqual(["chats", "work", "settings"]);
     expect(kinHomeTabs(owner)).toEqual(["chats", "work", "team", "memory", "settings"]);
     expect(
       kinHomeTabs({ authenticated: true, permissions: ["kin:chat", "orchestration:read"] }),
@@ -123,7 +123,7 @@ describe("the app's shell", () => {
     expect(kinHomeTabs(null)).toEqual(["chats", "settings"]);
   });
 
-  it("docks Chats and every place of Work the owner may see, and Chats alone for a teammate", () => {
+  it("docks Chats and every place of Work the grant reaches and the host has not refused", () => {
     const none = { money: false, clients: false, docs: false };
     expect(kinDockTabs(owner, none)).toEqual(["chats", "tasks", "money", "clients", "docs"]);
     expect(kinDockTabs(owner, { ...none, money: true })).toEqual([
@@ -132,7 +132,7 @@ describe("the app's shell", () => {
       "clients",
       "docs",
     ]);
-    expect(kinDockTabs(teammate, none)).toEqual(["chats"]);
+    expect(kinDockTabs(teammate, none)).toEqual(["chats", "tasks"]);
     expect(kinDockTabs(null, none)).toEqual(["chats"]);
   });
 
