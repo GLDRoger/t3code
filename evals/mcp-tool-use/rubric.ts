@@ -50,7 +50,7 @@ const decodeVerdicts = Schema.decodeUnknownOption(
 /** One check per question; a missing or unreadable verdict fails that question. */
 export const rubricChecks = (
   rubric: Rubric,
-  content: ReadonlyArray<{ type: string; text?: string }>,
+  content: ReadonlyArray<{ readonly type: string; readonly text?: string | undefined }>,
 ) => {
   const text = content
     .flatMap((block) => (block.type === "text" ? [block.text ?? ""] : []))
