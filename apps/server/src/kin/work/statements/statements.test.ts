@@ -378,10 +378,11 @@ describe("bank statements", () => {
         assert.deepStrictEqual(JSON.parse(awaiting), [ownerId]);
         assert.strictEqual(card.balance, "adds_up");
         assert.include(card.title, "HDFC Bank ••4821");
-        // A second read of the same file is the same review, not a second card.
+        // A second read of the same file is the same review, not a second card. Haiku and
+        // Sonnet 5.5 named it without its extension, as other file inputs taught them.
         const again = yield* LeadStatements.read(scope, {
           sourceEventId: "event-1",
-          attachment: "hdfc-account.pdf",
+          attachment: "hdfc-account",
         });
         assert.strictEqual(again.statement, result.statement);
         assert.lengthOf(yield* sql`SELECT 1 FROM kin_widgets WHERE type = 'statement_review'`, 1);

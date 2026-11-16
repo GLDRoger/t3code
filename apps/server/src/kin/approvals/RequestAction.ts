@@ -33,12 +33,13 @@ import * as KinLevels from "../lead/KinLevels.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import * as Audit from "./Audit.ts";
 import * as PendingActions from "./PendingActions.ts";
+import { TurnEventId } from "../lead/eventIds.ts";
 
 export const RequestActionInput = Schema.Struct({
   kind: KinActionKind,
   target: KinActionTarget,
   reason: Schema.String.check(Schema.isMaxLength(500)),
-  sourceEventId: KinEventId,
+  sourceEventId: TurnEventId,
 });
 export type RequestActionInput = typeof RequestActionInput.Type;
 export const RequestActionResult = Schema.Union([

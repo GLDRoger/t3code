@@ -100,6 +100,10 @@ export function draftReplyText(text: string): string {
   return stripped;
 }
 
+/** What a kin_end that would leave the person waiting in silence answers (`silentEnd`). */
+export const SILENT_END_REFUSAL =
+  "Nothing reached the chat: your thinking is never shown. Write your reply now as a plain text block outside your thinking, then call kin_end.";
+
 /** What follows a segment in its run: decides whether a short segment was a status note. */
 export type SegmentNext = "tool" | "text" | "end";
 export type SegmentClass = "post" | "note" | "silent" | "empty";

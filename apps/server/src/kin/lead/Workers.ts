@@ -81,6 +81,7 @@ import {
   WorkerTracker,
 } from "./WorkerTracker.ts";
 import { isOwnerHimself } from "../people/KinAccess.ts";
+import { TurnEvent } from "./eventIds.ts";
 
 const text = (max: number) => Schema.String.check(Schema.isMaxLength(max));
 
@@ -114,13 +115,13 @@ export const DelegateInput = Schema.Struct({
     description:
       "The Work entry this works on, such as W-12. Without one, Kin tracks the worker as a new entry of yours.",
   }),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export const FollowUpInput = Schema.Struct({
   workerId: KinWorkerId,
   brief: TrimmedNonEmptyString.check(Schema.isMaxLength(100_000)),
   quoted: Schema.optional(Quoted),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export const StopInput = Schema.Struct({
   workerId: KinWorkerId,
