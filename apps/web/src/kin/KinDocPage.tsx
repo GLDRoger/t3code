@@ -1,3 +1,9 @@
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  KIN_RETRY,
+  KIN_CHECK_CONNECTION,
+  kinFailureText,
+} from "@t3tools/client-runtime/kin/kinAnswers";
 import { FileDiff } from "@pierre/diffs/react";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -63,7 +69,7 @@ import { KinDocChangesView } from "./KinDocChangesView";
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { KinDocReader } from "./KinDocReader";
 import { KinWorkShareRow } from "./KinWorkShareRow";
-import { KinWorkNotice } from "./KinWorkParts";
+import { KinWorkNotice, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinDoc, useKinDocAsk, useKinDocHistory } from "./useKinDocs";
@@ -115,7 +121,13 @@ export function KinDocPage(
     const result = await render({ environmentId, input: pdfInput });
     toastManager.close(toast);
     const made = AsyncResult.isSuccess(result) ? result.value.documents[0] : undefined;
-    if (made === undefined) return setProblem(KIN_DOCS.exportPdfFailed);
+    if (made === undefined)
+      return setProblem(
+        kinFailureText(
+          AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null,
+          KIN_DOCS.exportPdfFailed,
+        ),
+      );
     onGo({ doc: made.key });
   };
   const restore = useAtomCommand(kinClient.docRestore, { reportFailure: false });
@@ -448,7 +460,7 @@ function KinDocChanges(
     return (
       <KinWorkNotice
         title="Couldn't load the changes"
-        detail="Check your connection to the server and try again."
+        detail={KIN_CHECK_CONNECTION}
         action={
           <Button size="sm" variant="outline" onClick={() => appAtomRegistry.refresh(atom)}>
             Retry
@@ -566,16 +578,11 @@ function KinDocHistory(
               <Skeleton className="h-3.5 w-2/5" />
             </div>
           ) : state.failed !== null ? (
-            <div className="flex flex-col items-start gap-3">
-              <Alert variant="error">
-                <AlertDescription>
-                  Couldn't load the history. Check your connection.
-                </AlertDescription>
-              </Alert>
-              <Button size="sm" variant="outline" onClick={list.refresh}>
-                Retry
-              </Button>
-            </div>
+            <KinLoadFailed
+              what={"Couldn't load the history"}
+              cause={state.failed}
+              onRetry={list.refresh}
+            />
           ) : (
             <ol className="flex flex-col">
               {state.records.map((held) => {
@@ -651,7 +658,7 @@ function KinDocHistory(
                 aria-busy={state.loadingMore}
                 onClick={() => void list.loadMore()}
               >
-                {state.moreFailed ? "Try again" : "Show earlier versions"}
+                {state.moreFailed ? KIN_RETRY : "Show earlier versions"}
               </Button>
             </div>
           )}

@@ -1,18 +1,12 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_LISTS } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkFile } from "@t3tools/contracts";
-import { ChevronDownIcon, FileIcon, ImageIcon, PencilIcon } from "lucide-react";
+import { ChevronDownIcon, FileIcon, ImageIcon, PencilIcon, XIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
-import {
-  Dialog,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
@@ -185,71 +179,69 @@ export function KinEntryFilePicker(
     state._tag === "ready"
       ? state.files.filter((file) => !props.held.includes(file.attachmentId))
       : [];
+  // Inside the entry's own sheet rather than a dialog over it: nothing stacks on a sheet.
   return (
-    <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open) props.onClose();
-      }}
+    <section
+      aria-label={KIN_LISTS.entry.filesTitle}
+      className="flex w-full flex-col gap-3 rounded-lg border border-border p-3"
     >
-      <DialogPopup className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>{KIN_LISTS.entry.filesTitle}</DialogTitle>
-        </DialogHeader>
-        <DialogPanel>
-          <div className="flex flex-col gap-3">
-            <Input
-              type="search"
-              autoFocus
-              aria-label={KIN_LISTS.entry.filesSearch}
-              placeholder={KIN_LISTS.entry.filesSearch}
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-            />
-            {state._tag === "loading" ? (
-              <div role="status" aria-label="Loading files">
-                <KinWorkRowSkeletons />
-              </div>
-            ) : state._tag === "failed" ? (
-              <div className="flex flex-col items-start gap-3">
-                <Alert variant="error">
-                  <AlertDescription>{KIN_LISTS.entry.filesFailed}</AlertDescription>
-                </Alert>
-                <Button size="sm" variant="outline" onClick={retry}>
-                  Retry
-                </Button>
-              </div>
-            ) : files.length === 0 ? (
-              <p className="py-4 text-sm text-muted-foreground">
-                {text.trim() === "" ? KIN_LISTS.entry.filesNone : KIN_LISTS.entry.filesNoMatch}
-              </p>
-            ) : (
-              <ul aria-label={props.label} className="-mx-2 flex max-h-80 flex-col overflow-y-auto">
-                {files.map((file) => {
-                  const Icon = file.mimeType.startsWith("image/") ? ImageIcon : FileIcon;
-                  return (
-                    <li key={file.attachmentId}>
-                      <button
-                        type="button"
-                        onClick={() => props.onPick(file)}
-                        className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
-                      >
-                        <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-                        <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                          {file.name}
-                        </span>
-                        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                          {sentFormat.format(new Date(file.sentAt))}
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-medium text-foreground">{KIN_LISTS.entry.filesTitle}</h3>
+        <Button size="icon-xs" variant="ghost" aria-label="Close" onClick={props.onClose}>
+          <XIcon />
+        </Button>
+      </div>
+      <div className="flex flex-col gap-3">
+        <Input
+          type="search"
+          autoFocus
+          aria-label={KIN_LISTS.entry.filesSearch}
+          placeholder={KIN_LISTS.entry.filesSearch}
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+        />
+        {state._tag === "loading" ? (
+          <div role="status" aria-label="Loading files">
+            <KinWorkRowSkeletons />
           </div>
-        </DialogPanel>
-      </DialogPopup>
-    </Dialog>
+        ) : state._tag === "failed" ? (
+          <div className="flex flex-col items-start gap-3">
+            <Alert variant="error">
+              <AlertDescription>{KIN_LISTS.entry.filesFailed}</AlertDescription>
+            </Alert>
+            <Button size="sm" variant="outline" onClick={retry}>
+              {KIN_RETRY}
+            </Button>
+          </div>
+        ) : files.length === 0 ? (
+          <p className="py-4 text-sm text-muted-foreground">
+            {text.trim() === "" ? KIN_LISTS.entry.filesNone : KIN_LISTS.entry.filesNoMatch}
+          </p>
+        ) : (
+          <ul aria-label={props.label} className="-mx-2 flex max-h-80 flex-col overflow-y-auto">
+            {files.map((file) => {
+              const Icon = file.mimeType.startsWith("image/") ? ImageIcon : FileIcon;
+              return (
+                <li key={file.attachmentId}>
+                  <button
+                    type="button"
+                    onClick={() => props.onPick(file)}
+                    className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+                  >
+                    <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                      {file.name}
+                    </span>
+                    <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                      {sentFormat.format(new Date(file.sentAt))}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </section>
   );
 }

@@ -43,6 +43,8 @@ import { kinClient } from "./state/kinClient";
 import { pickKinPicture } from "./state/kinPicture";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinProfiles } from "./state/useKinProfiles";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 export type KinProfileParams = {
   readonly environmentId: string;
@@ -78,6 +80,7 @@ function useTarget(params: KinProfileParams) {
         viewerPersonId: viewer,
         ownerPersonId: held?.ownerPersonId ?? null,
         personId,
+        canEdit: profile?.canEdit,
       }),
     runsWorkspace: held !== null && held.ownerPersonId === personId,
   };
@@ -251,7 +254,8 @@ function ProfileForm(props: {
     setBusy("saving");
     const outcome = await send(checked.changes);
     setBusy(null);
-    if (!AsyncResult.isSuccess(outcome)) return setProblem(KIN_PROFILE_COPY.failed);
+    if (!AsyncResult.isSuccess(outcome))
+      return setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_PROFILE_COPY.failed));
     saved.current = true;
     navigation.goBack();
   };

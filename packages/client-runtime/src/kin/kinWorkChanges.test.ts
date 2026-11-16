@@ -26,6 +26,7 @@ import {
   kinWorkEditMoved,
   kinWorkItemNotice,
   kinWorkListNotice,
+  kinWorkStatusOffer,
 } from "./kinWorkChanges.ts";
 import { KIN_WORK_NOTHING_NAMED, kinWorkNote } from "./kinWorkStream.ts";
 
@@ -377,5 +378,40 @@ describe("createKinWorkItemWatch", () => {
     const h = watching();
     h.watch.changed(live([{ seq: 5 }, { seq: 8, key: "W-1" }]), { seq: 5 });
     expect(h.rereads()).toBe(1);
+  });
+});
+
+describe("kinWorkStatusOffer", () => {
+  const none = {
+    states: [],
+    edit: false,
+    party: false,
+    project: false,
+    clearProject: false,
+    give: false,
+    takeBack: false,
+    mark: false,
+    unmark: false,
+    share: false,
+    confirm: false,
+  } as const;
+
+  it("offers only the states the host takes", () => {
+    // #3: a milestone is open, done or dropped, so In progress and Waiting on are never offered.
+    const milestone = kinWorkStatusOffer({
+      state: "open",
+      closed: false,
+      can: { ...none, edit: true, states: ["done", "dropped"] },
+    });
+    expect(milestone.states.map((choice) => choice.state)).toEqual(["open"]);
+    expect([milestone.done, milestone.waiting, milestone.drop, milestone.menu]).toEqual([
+      true,
+      false,
+      true,
+      true,
+    ]);
+    // #1: someone else's task offers a teammate nothing to press.
+    const theirs = kinWorkStatusOffer({ state: "open", closed: false, can: none });
+    expect([theirs.done, theirs.reopen, theirs.menu]).toEqual([false, false, false]);
   });
 });

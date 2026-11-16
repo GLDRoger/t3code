@@ -1,3 +1,4 @@
+import { KIN_RETRY, KIN_CHECK_CONNECTION } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -242,11 +243,11 @@ function KinLeadBody(props: {
             <EmptyState
               variant="plain"
               title="Couldn't load this agent"
-              detail="Check your connection to the server and try again."
+              detail={KIN_CHECK_CONNECTION}
               action={
                 <Button
                   tone="secondary"
-                  label="Try again"
+                  label={KIN_RETRY}
                   onPress={() => appAtomRegistry.refresh(atom)}
                 />
               }

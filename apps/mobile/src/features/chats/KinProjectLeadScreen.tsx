@@ -14,6 +14,7 @@ import { View } from "react-native";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -81,7 +82,11 @@ function KinProjectLeadChoices(props: KinWorkTarget & { readonly projectKey: Kin
         <AppActivityIndicator />
       </View>
     ) : (
-      <EmptyState variant="plain" title="Couldn't load this project" detail="Try again soon." />
+      <KinLoadFailed
+        title="Couldn't load this project"
+        cause={state._tag === "failed" ? state.cause : null}
+        onRetry={refresh}
+      />
     );
   }
   const view = kinProjectPageView(state.value, directory.names, now);

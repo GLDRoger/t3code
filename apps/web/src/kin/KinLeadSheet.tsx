@@ -1,3 +1,4 @@
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_CLEAR_CHAT_ACTION,
@@ -97,15 +98,22 @@ export function KinLeadSheet(props: {
   const canMute = useAtomValue(kinClient.mute.permissionAtom(environmentId));
   const mute = useAtomCommand(kinClient.mute, { reportFailure: false });
   const [muteState, setMuteState] = useState<"idle" | "saving" | "failed">("idle");
+  const [muteProblem, setMuteProblem] = useState<string | null>(null);
   const muteId = useId();
   // The host decides again on the call; this only hides what it would refuse.
   const canClear = useAtomValue(kinClient.clear.permissionAtom(environmentId)) && props.ownsChat;
   const clear = useAtomCommand(kinClient.clear, { reportFailure: false });
   const [clearState, setClearState] = useState<"idle" | "confirm" | "clearing" | "failed">("idle");
+  const [clearProblem, setClearProblem] = useState("");
 
   const setMuted = async (muted: boolean) => {
     setMuteState("saving");
     const result = await mute({ environmentId, input: { chatId: props.chatId, muted } });
+    setMuteProblem(
+      AsyncResult.isFailure(result)
+        ? kinFailureText(squashAtomCommandFailure(result), "Couldn't change that.")
+        : null,
+    );
     setMuteState(AsyncResult.isFailure(result) ? "failed" : "idle");
   };
 
@@ -114,7 +122,10 @@ export function KinLeadSheet(props: {
   const clearChat = async () => {
     setClearState("clearing");
     const result = await clear({ environmentId, input: { chatId: props.chatId } });
-    if (!AsyncResult.isSuccess(result)) return setClearState("failed");
+    if (!AsyncResult.isSuccess(result)) {
+      setClearProblem(kinFailureText(squashAtomCommandFailure(result), KIN_CLEAR_CHAT_FAILED));
+      return setClearState("failed");
+    }
     setClearState("idle");
     // The chat behind the sheet is empty; only files a doc kept need saying.
     announceKinClearKept(result.value.keptFiles);
@@ -176,7 +187,7 @@ export function KinLeadSheet(props: {
               </div>
               {muteState === "failed" ? (
                 <p role="alert" className="text-xs text-destructive-foreground">
-                  Couldn't change that. Try again.
+                  {muteProblem}
                 </p>
               ) : null}
             </Section>
@@ -197,7 +208,7 @@ export function KinLeadSheet(props: {
               </Button>
               {clearState === "failed" ? (
                 <p role="alert" className="text-xs text-destructive-foreground">
-                  {KIN_CLEAR_CHAT_FAILED}
+                  {clearProblem}
                 </p>
               ) : null}
             </Section>

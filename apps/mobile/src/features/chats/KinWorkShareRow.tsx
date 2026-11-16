@@ -1,5 +1,4 @@
 import { useAtomValue } from "@effect/atom-react";
-import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import {
   KIN_WORK_AUDIENCE,
   KIN_WORK_SHARE,
@@ -16,7 +15,6 @@ import { View } from "react-native";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
-import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient } from "./state/kinClient";
@@ -79,7 +77,7 @@ export function KinWorkShareRow(
 export function KinWorkAudienceRow(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
-    readonly view: Pick<KinWorkItemView, "privacy" | "shared" | "project">;
+    readonly view: Pick<KinWorkItemView, "privacy" | "shared" | "project" | "can">;
     readonly names: KinWorkNames;
     readonly disabled: boolean;
     /** Sets the private mark; null where this viewer can't. */
@@ -88,10 +86,6 @@ export function KinWorkAudienceRow(
 ) {
   const { environmentId, orgId, itemKey, view } = props;
   const canShare = useAtomValue(kinClient.workShare.permissionAtom(environmentId));
-  const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
-  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
-  // The host lets the owner, co-owners and the project's lead mark it; a holder alone can't.
-  const mark = ownerLevel || (me?.leads ?? []).some((project) => project.key === view.project?.key);
   const share = useAtomCommand(kinClient.workShare, { reportFailure: false });
   const [asked, setAsked] = useState<{ readonly to: boolean; readonly from: boolean } | null>(null);
   const [pending, setPending] = useState(false);
@@ -99,7 +93,11 @@ export function KinWorkAudienceRow(
   const shared = asked !== null && asked.from === view.shared ? asked.to : view.shared;
   const audience = kinWorkAudience(
     { ...view, shared },
-    { mark: props.onMark !== null && mark, share: canShare },
+    {
+      mark: props.onMark !== null && view.can.mark,
+      unmark: props.onMark !== null && view.can.unmark,
+      share: view.can.share && canShare,
+    },
     props.names,
   );
   if (props.onMark === null) return null;

@@ -23,10 +23,10 @@ import type {
 import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
+import { KIN_OFFLINE_NOT_SENT, kinFailure } from "./kinAnswers.ts";
 import { formatKinChartValue, KIN_CURRENCY_SYMBOLS } from "./kinChart.ts";
 import {
   isKinChatError,
-  isKinWorkAuthorizationError,
   kinWorkAllDay,
   kinWorkClosed,
   kinWorkDueLabel,
@@ -1323,48 +1323,26 @@ export type KinListOutcome<A> =
       readonly changed: boolean;
     };
 
-const KIN_LIST_OFFLINE = "You're offline. Try again when you're back.";
-
 /** One change to an entry or a list, answered with the new value or a reason in words. */
 export async function kinListSend<A>(input: {
   readonly online: () => boolean;
   readonly send: () => Promise<AtomCommandResult<A, unknown>>;
 }): Promise<KinListOutcome<A>> {
-  if (!input.online()) return { ok: false, problem: KIN_LIST_OFFLINE, changed: false };
+  if (!input.online()) return { ok: false, problem: KIN_OFFLINE_NOT_SENT, changed: false };
   const result = await input.send();
   if (AsyncResult.isSuccess(result)) return { ok: true, value: result.value };
   const error = squashAtomCommandFailure(result);
-  const failed = (problem: string, changed = false) => ({ ok: false as const, problem, changed });
-  if (isKinWorkAuthorizationError(error))
-    return failed("This device isn't allowed to change this.");
-  if (!isKinChatError(error))
-    return failed("That didn't go through. Check your connection and try again.");
-  switch (error.reason) {
-    case "conflict":
-      return failed("This changed while you were looking at it. Check it and try again.", true);
-    case "not_found":
-      return failed("That isn't there any more.");
-    case "not_allowed":
-      // A retry key reused for something else: the form's id is stale, not the person's rights.
-      return failed(
-        /retry key/i.test(error.message)
-          ? "This was already sent once with different details. Close it and start again."
-          : "Only whoever runs this Kin can change this.",
-      );
-    case "unavailable":
-    case "disabled":
-      return failed("Kin isn't answering right now. Try again in a moment.");
-    case "limit":
-    case "invalid_state":
-      // The host says exactly what it refused; words meant for an agent's tools are not shown.
-      return failed(
-        /[a-z]+_[a-z]+/.test(error.message)
-          ? "That didn't go through. Check the details and try again."
-          : error.message,
-      );
-    default:
-      return failed("That didn't go through. Check the details and try again.");
-  }
+  // A retry key reused for something else: the form's id is stale, not the person's rights.
+  if (isKinChatError(error) && error.reason === "not_allowed" && /retry key/i.test(error.message))
+    return {
+      ok: false,
+      problem: "This was already sent once with different details. Close it and start again.",
+      changed: false,
+    };
+  const failure = kinFailure(error, "That didn't go through.", {
+    device: "This device isn't allowed to change this.",
+  });
+  return { ok: false, problem: failure.text, changed: failure.kind === "changed" };
 }
 
 export interface KinListEditDraft {

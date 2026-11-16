@@ -15,14 +15,13 @@ import type { KinRecordKey } from "@t3tools/contracts";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { useId, useState } from "react";
 
-import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
 import { Switch } from "../components/ui/switch";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { cn } from "../lib/utils";
-import { KinWorkNotice, KinWorkRowSkeletons } from "./KinWorkParts";
+import { KinWorkNotice, KinWorkRowSkeletons, KinLoadFailed } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinDates } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
@@ -163,14 +162,7 @@ export function KinWorkDates(
           </div>
         ) : null}
         {state._tag === "failed" ? (
-          <div className="flex flex-col items-start gap-3">
-            <Alert variant="error">
-              <AlertDescription>{KIN_DATES.loadFailed}. Check your connection.</AlertDescription>
-            </Alert>
-            <Button size="sm" variant="outline" onClick={retry}>
-              Retry
-            </Button>
-          </div>
+          <KinLoadFailed what={KIN_DATES.loadFailed} cause={null} onRetry={retry} />
         ) : state._tag === "loading" || window === null ? (
           <div role="status" aria-label="Loading dates">
             <KinWorkRowSkeletons />

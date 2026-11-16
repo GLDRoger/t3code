@@ -1,3 +1,4 @@
+import { KIN_RETRY, KIN_CHECK_CONNECTION } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -160,8 +161,8 @@ export function KinRatesScreen({ route }: StaticScreenProps<KinRatesParams>) {
           <EmptyState
             variant="plain"
             title="Couldn't load the rates"
-            detail="Check your connection to the server and try again."
-            action={<Button tone="secondary" label="Try again" onPress={profile.refresh} />}
+            detail={KIN_CHECK_CONNECTION}
+            action={<Button tone="secondary" label={KIN_RETRY} onPress={profile.refresh} />}
           />
         )}
       </Frame>

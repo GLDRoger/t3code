@@ -28,6 +28,7 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinListBanner } from "./components/KinListBanner";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 
 export type KinTeamParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -122,12 +123,7 @@ function KinTeamBody(target: KinTeamTarget) {
             <EmptyState variant="plain" {...KIN_TEAM_ONLY_OWNER} />
           ) : list === null ? (
             team.failed ? (
-              <EmptyState
-                variant="plain"
-                title={KIN_TEAM_LOAD_FAILED}
-                detail="Check your connection to the server and try again."
-                action={<Button tone="secondary" label="Try again" onPress={team.refresh} />}
-              />
+              <KinLoadFailed title={KIN_TEAM_LOAD_FAILED} cause={null} onRetry={team.refresh} />
             ) : (
               <View
                 className="items-center py-12"

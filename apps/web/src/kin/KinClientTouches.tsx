@@ -1,3 +1,5 @@
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_CLIENTS,
   KIN_TOUCH_KINDS,
@@ -129,12 +131,12 @@ function TouchDialog(
   const [day, setDay] = useState(today);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const ids = { note: useId(), day: useId() };
   const save = async () => {
     if (saving || note.trim() === "") return;
     setSaving(true);
-    setFailed(false);
+    setFailed(null);
     const at = kinTouchAt(day, new Date());
     const result = await log({
       environmentId: props.environmentId,
@@ -149,7 +151,7 @@ function TouchDialog(
     });
     setSaving(false);
     if (result._tag === "Success") props.onSaved();
-    else setFailed(true);
+    else setFailed(kinFailureText(squashAtomCommandFailure(result), KIN_CLIENTS.touchFailed));
   };
   return (
     <Dialog
@@ -209,7 +211,7 @@ function TouchDialog(
               </div>
               {failed ? (
                 <Alert variant="error">
-                  <AlertDescription>{KIN_CLIENTS.touchFailed}</AlertDescription>
+                  <AlertDescription>{failed}</AlertDescription>
                 </Alert>
               ) : null}
             </div>

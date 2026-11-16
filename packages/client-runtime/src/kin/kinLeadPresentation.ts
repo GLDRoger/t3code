@@ -10,6 +10,7 @@ import type {
 import { formatModelSlugName } from "@t3tools/shared/model";
 
 import { formatKinDeferralTime } from "./kinDeferralPresentation.ts";
+import { kinFailureText } from "./kinAnswers.ts";
 
 export const KIN_LEAD_NAME_MAX = 80;
 export const KIN_LEAD_CHARTER_MAX = 1_000;
@@ -231,13 +232,11 @@ export function kinLeadSaveProblem(error: unknown, creating: boolean): string {
       return "This agent is no longer here.";
     case "no_models":
       return "Choose the models your agents think with, then create it again.";
-    case "unavailable":
-    case "disabled":
-      return "Agents aren't running on this server right now. Try again in a moment.";
     default:
-      return creating
-        ? "Couldn't create the agent. Check your connection and try again."
-        : "Couldn't save your changes. Check your connection and try again.";
+      return kinFailureText(
+        error,
+        creating ? "Couldn't create the agent." : "Couldn't save your changes.",
+      );
   }
 }
 
@@ -277,7 +276,7 @@ export function kinLeadAccessProblem(error: unknown): string {
     case "not_found":
       return "That person or this agent is no longer here.";
     default:
-      return "Couldn't change that. Check your connection and try again.";
+      return kinFailureText(error, "Couldn't change that.");
   }
 }
 

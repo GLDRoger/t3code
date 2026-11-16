@@ -21,8 +21,8 @@ import {
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_WORK_COPY,
-  KIN_WORK_STATE_CHOICES,
   kinWorkApplied,
+  kinWorkStatusOffer,
   kinWorkEditMoved,
   type KinWorkAction,
   type KinWorkEdit,
@@ -375,9 +375,11 @@ function KinWorkItem(
 ) {
   const { view, environmentId, orgId, saving, edit } = props;
   const { orgs, people, joined, invited, names } = props.directory;
-  // An older host reads and hands over; everything else needs one that takes changes.
-  const change = props.canChange && view.editable ? props.onAct : null;
+  // Each control shows only where the host said it takes it (`view.can`).
+  const change = props.canChange ? props.onAct : null;
   const give = props.canGive ? props.onAct : null;
+  const offer = kinWorkStatusOffer(view);
+  const reword = change !== null && view.can.edit ? change : null;
   const assignees = kinWorkAssignees({
     orgs,
     orgId,
@@ -410,7 +412,7 @@ function KinWorkItem(
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
         <div className="flex flex-col gap-3">
-          {view.suggestion === null || change === null ? null : (
+          {view.suggestion === null || change === null || !view.can.confirm ? null : (
             <Alert variant="info">
               <AlertDescription>{view.suggestion} Keep it?</AlertDescription>
               <AlertAction>
@@ -442,9 +444,10 @@ function KinWorkItem(
               </span>
             ) : null}
           </div>
-          {change === null ? null : (
+          {change === null ||
+          !(offer.done || offer.reopen || offer.menu || view.handBackTo) ? null : (
             <div className="flex flex-wrap items-center gap-2">
-              {view.closed ? (
+              {offer.reopen ? (
                 <Button
                   size="sm"
                   variant="outline"
@@ -454,17 +457,27 @@ function KinWorkItem(
                   <RotateCcwIcon />
                   {KIN_WORK_COPY.reopen}
                 </Button>
-              ) : (
+              ) : view.closed ? null : (
                 <>
-                  <Button
-                    size="sm"
-                    disabled={saving}
-                    onClick={() => change({ type: "state", state: "done" })}
-                  >
-                    <CheckIcon />
-                    {KIN_WORK_COPY.done}
-                  </Button>
-                  <StatusMenu view={view} waitingOn={waitingOn} saving={saving} onAct={change} />
+                  {offer.done ? (
+                    <Button
+                      size="sm"
+                      disabled={saving}
+                      onClick={() => change({ type: "state", state: "done" })}
+                    >
+                      <CheckIcon />
+                      {KIN_WORK_COPY.done}
+                    </Button>
+                  ) : null}
+                  {offer.menu ? (
+                    <StatusMenu
+                      view={view}
+                      offer={offer}
+                      waitingOn={waitingOn}
+                      saving={saving}
+                      onAct={change}
+                    />
+                  ) : null}
                   {view.handBackTo === null ? null : (
                     <KinWorkHandBack
                       environmentId={environmentId}
@@ -479,7 +492,7 @@ function KinWorkItem(
               )}
             </div>
           )}
-          {change === null || view.leadNote === null ? null : (
+          {change === null || !(offer.done || offer.menu) || view.leadNote === null ? null : (
             <p className="text-xs text-muted-foreground">{view.leadNote}</p>
           )}
           {props.notice === null || edit !== null ? null : (
@@ -506,13 +519,13 @@ function KinWorkItem(
             )}
             <dt className="text-muted-foreground">Due</dt>
             <dd className="flex min-w-0 items-center gap-2 text-foreground">
-              {change === null || view.closed ? (
+              {reword === null || view.closed ? (
                 <span className="first-letter:uppercase">{view.due ?? KIN_WORK_COPY.noDate}</span>
               ) : (
-                <DueMenu view={view} now={props.now} saving={saving} onAct={change} />
+                <DueMenu view={view} now={props.now} saving={saving} onAct={reword} />
               )}
             </dd>
-            {choices === null || (change === null && view.party === null) ? null : (
+            {choices === null || (!view.can.party && view.party === null) ? null : (
               <>
                 <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.clientLabel}</dt>
                 <dd className="flex min-w-0 flex-wrap items-center gap-2 text-foreground">
@@ -521,16 +534,20 @@ function KinWorkItem(
                     value={view.party}
                     choices={choices.clients}
                     saving={saving}
-                    onPick={change === null ? null : (party) => change({ type: "place", party })}
+                    onPick={
+                      change === null || !view.can.party
+                        ? null
+                        : (party) => change({ type: "place", party })
+                    }
                     onOpen={() => {
                       if (view.party !== null) props.onOpenClient(view.party.key);
                     }}
-                    {...(change === null || view.closed
+                    {...(reword === null || view.closed
                       ? {}
                       : {
                           side: {
                             value: view.side,
-                            onPick: (side) => change({ type: "place", side }),
+                            onPick: (side) => reword({ type: "place", side }),
                           },
                         })}
                   />
@@ -542,7 +559,7 @@ function KinWorkItem(
                 </dd>
               </>
             )}
-            {choices === null || (change === null && view.project === null) ? null : (
+            {choices === null || (!view.can.project && view.project === null) ? null : (
               <>
                 <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.projectLabel}</dt>
                 <dd className="flex min-w-0 items-center gap-2 text-foreground">
@@ -551,8 +568,11 @@ function KinWorkItem(
                     value={view.project}
                     choices={choices.projects}
                     saving={saving}
+                    clearable={view.can.clearProject}
                     onPick={
-                      change === null ? null : (project) => change({ type: "place", project })
+                      change === null || !view.can.project
+                        ? null
+                        : (project) => change({ type: "place", project })
                     }
                     onOpen={() => {
                       if (view.project !== null) props.onOpenProject(view.project.key);
@@ -704,11 +724,11 @@ function KinWorkItem(
               </Button>
             </div>
           </form>
-        ) : view.notes === null && change === null ? null : (
+        ) : view.notes === null && reword === null ? null : (
           <Section
             title="Notes"
             action={
-              change === null ? null : (
+              reword === null ? null : (
                 <Button size="xs" variant="ghost" disabled={saving} onClick={props.onStartEdit}>
                   <PencilIcon />
                   {KIN_WORK_COPY.edit}
@@ -789,6 +809,8 @@ function PlaceMenu(props: {
   readonly saving: boolean;
   /** Null where the task can't be changed, which leaves only opening it. */
   readonly onPick: ((value: KinWorkRef | null) => void) | null;
+  /** Whether "None" is offered: the host may let a value change but not be cleared. */
+  readonly clearable?: boolean;
   readonly onOpen: () => void;
   /** A client's: who owes the task, us or them. */
   readonly side?: {
@@ -835,7 +857,7 @@ function PlaceMenu(props: {
             <span className={PLACE_ROW}>{choice.title}</span>
           </MenuItem>
         ))}
-        {value === null ? null : (
+        {value === null || props.clearable === false ? null : (
           <>
             {props.choices.length === 0 ? null : <MenuSeparator />}
             <MenuItem onClick={() => onPick(null)}>{KIN_WORK_NEW_COPY.none}</MenuItem>
@@ -862,11 +884,12 @@ function PlaceMenu(props: {
 /** Where the task stands, other than done: started, waiting on someone, or not worth doing. */
 function StatusMenu(props: {
   readonly view: KinWorkItemView;
+  readonly offer: ReturnType<typeof kinWorkStatusOffer>;
   readonly waitingOn: ReturnType<typeof kinWorkAssignees>;
   readonly saving: boolean;
   readonly onAct: (action: KinWorkAction) => void;
 }) {
-  const { view } = props;
+  const { view, offer } = props;
   const people = [...props.waitingOn.people, ...props.waitingOn.leads];
   return (
     <Menu>
@@ -875,7 +898,7 @@ function StatusMenu(props: {
         <ChevronDownIcon />
       </MenuTrigger>
       <MenuPopup align="start">
-        {KIN_WORK_STATE_CHOICES.map((choice) => (
+        {offer.states.map((choice) => (
           <MenuItem
             key={choice.state}
             disabled={view.state === choice.state}
@@ -885,44 +908,50 @@ function StatusMenu(props: {
             {choice.label}
           </MenuItem>
         ))}
-        <MenuSub>
-          <MenuSubTrigger>
-            <KinWorkStateIcon state="waiting" />
-            {KIN_WORK_COPY.waitingOn}
-          </MenuSubTrigger>
-          <MenuSubPopup>
-            {people.map((row) => (
+        {!offer.waiting ? null : (
+          <MenuSub>
+            <MenuSubTrigger>
+              <KinWorkStateIcon state="waiting" />
+              {KIN_WORK_COPY.waitingOn}
+            </MenuSubTrigger>
+            <MenuSubPopup>
+              {people.map((row) => (
+                <MenuItem
+                  key={row.key}
+                  disabled={row.current || row.invited}
+                  onClick={() =>
+                    props.onAct({ type: "state", state: "waiting", waitingOn: row.principal })
+                  }
+                >
+                  <KinAvatar avatar={row.avatar} size="xs" />
+                  <span className="min-w-0 flex-1 truncate">{row.name}</span>
+                  {row.invited ? (
+                    <span className="text-xs text-muted-foreground">Invited</span>
+                  ) : null}
+                </MenuItem>
+              ))}
+              {people.length === 0 ? null : <MenuSeparator />}
               <MenuItem
-                key={row.key}
-                disabled={row.current || row.invited}
-                onClick={() =>
-                  props.onAct({ type: "state", state: "waiting", waitingOn: row.principal })
-                }
+                disabled={view.state === "waiting" && view.waitingOn === null}
+                onClick={() => props.onAct({ type: "state", state: "waiting", waitingOn: null })}
               >
-                <KinAvatar avatar={row.avatar} size="xs" />
-                <span className="min-w-0 flex-1 truncate">{row.name}</span>
-                {row.invited ? (
-                  <span className="text-xs text-muted-foreground">Invited</span>
-                ) : null}
+                {KIN_WORK_COPY.waitingOnNobody}
               </MenuItem>
-            ))}
-            {people.length === 0 ? null : <MenuSeparator />}
+            </MenuSubPopup>
+          </MenuSub>
+        )}
+        {!offer.drop ? null : (
+          <>
+            <MenuSeparator />
             <MenuItem
-              disabled={view.state === "waiting" && view.waitingOn === null}
-              onClick={() => props.onAct({ type: "state", state: "waiting", waitingOn: null })}
+              variant="destructive"
+              onClick={() => props.onAct({ type: "state", state: "dropped" })}
             >
-              {KIN_WORK_COPY.waitingOnNobody}
+              <KinWorkStateIcon state="dropped" />
+              {KIN_WORK_COPY.drop}
             </MenuItem>
-          </MenuSubPopup>
-        </MenuSub>
-        <MenuSeparator />
-        <MenuItem
-          variant="destructive"
-          onClick={() => props.onAct({ type: "state", state: "dropped" })}
-        >
-          <KinWorkStateIcon state="dropped" />
-          {KIN_WORK_COPY.drop}
-        </MenuItem>
+          </>
+        )}
       </MenuPopup>
     </Menu>
   );

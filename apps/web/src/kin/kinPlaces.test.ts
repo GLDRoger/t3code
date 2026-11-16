@@ -48,7 +48,14 @@ describe("place addresses", () => {
 
   it("drops what isn't a record key or a version", () => {
     expect(
-      validateKinPlaceSearch({ task: "", v: "0", changes: -1, dates: "yes", history: "1" }),
+      validateKinPlaceSearch({
+        task: "",
+        v: "0",
+        changes: -1,
+        dates: "yes",
+        history: "1",
+        open: "sheet",
+      }),
     ).toEqual({});
   });
 });

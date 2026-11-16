@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -67,7 +68,7 @@ function ConnectionsList(props: {
               <Notice
                 tone="danger"
                 message={COPY.loadFailed}
-                action={{ label: "Try again", onPress: reload }}
+                action={{ label: KIN_RETRY, onPress: reload }}
               />
             ) : (
               <AppActivityIndicator />

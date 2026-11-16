@@ -20,9 +20,12 @@ const sensitiveField = (sql: SqlClient.SqlClient) =>
       WHERE g.org_id = r.org_id AND g.register_id = r.register_id
         AND json_extract(f.value, '$.sensitive') = 1)`,
   ]);
+/** Fields that hold who is on it as ids, which are no one's words (`KinSearch.shown`). */
+const ID_FIELDS = ["members", "attendees"];
 const fieldText = (sql: SqlClient.SqlClient, sensitive: boolean) =>
   sql`COALESCE((SELECT group_concat(j.value, ' ') FROM json_each(r.fields_json) j
-    WHERE ${sensitive ? sensitiveField(sql) : sql`NOT ${sensitiveField(sql)}`}), '')`;
+    WHERE j.key NOT IN ${sql.in(ID_FIELDS)}
+      AND ${sensitive ? sensitiveField(sql) : sql`NOT ${sensitiveField(sql)}`}), '')`;
 const latestBody = (sql: SqlClient.SqlClient) => sql`COALESCE((SELECT v.body FROM kin_doc_versions v
     WHERE v.org_id = r.org_id AND v.record_id = r.record_id ORDER BY v.version DESC LIMIT 1), '')`;
 
