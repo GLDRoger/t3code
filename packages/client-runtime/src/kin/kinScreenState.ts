@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
   EnvironmentAuthorizationError,
+  kinIsPeopleChat,
   type EnvironmentId,
   type KinChatId,
   type KinAgentId,
@@ -223,10 +224,12 @@ export function kinAvatarView(
   chat: KinChatSummary,
   counterpart: KinChatSummary["members"][number] | null,
 ): KinAvatarView {
+  const principal = counterpart?.principal;
+  if (kinIsPeopleChat(chat) && principal?._tag === "person")
+    return { kind: "person", seed: `person:${principal.personId}` };
   if (chat.kind === "team_group" || chat.kind === "project_group") {
     return { kind: "group", seed: `chat:${chat.chatId}` };
   }
-  const principal = counterpart?.principal;
   if (principal?._tag === "person") return { kind: "person", seed: `person:${principal.personId}` };
   if (principal?._tag === "agent") return kinAgentAvatar(principal.agentId);
   return { kind: "agent", seed: `chat:${chat.chatId}` };

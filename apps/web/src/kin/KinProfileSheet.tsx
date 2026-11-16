@@ -21,6 +21,8 @@ import type {
   KinPersonId,
   KinPersonProfile,
 } from "@t3tools/contracts";
+import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
+import { MessageSquareIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useRef, useState } from "react";
@@ -50,6 +52,7 @@ import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
+import { useOpenKinPeopleChat } from "./KinPeopleChat";
 import { kinClient } from "./kinClient";
 import { useKinProfiles } from "./kinPictures";
 import { useKinHostAt } from "./useKinHost";
@@ -203,12 +206,45 @@ function KinProfileSheet(props: {
               : (profile.profile?.displayName ?? KIN_PROFILE_COPY.title)}
           </SheetTitle>
           {profile.runsWorkspace ? <SheetDescription>Runs this workspace</SheetDescription> : null}
+          {profile.mine || profile.profile === null ? null : (
+            <KinMessageButton target={props.target} />
+          )}
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
           <KinProfileBody {...props.target} />
         </div>
       </SheetPopup>
     </Sheet>
+  );
+}
+
+/** A teammate's profile opens your chat with them; going there leaves the sheet's address. */
+function KinMessageButton(props: { readonly target: KinProfileTarget }) {
+  const open = useOpenKinPeopleChat();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <div className="flex flex-col items-start gap-1 pt-2">
+      <Button
+        size="sm"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          setProblem(null);
+          const failed = await open(props.target);
+          setBusy(false);
+          setProblem(failed);
+        }}
+      >
+        <MessageSquareIcon />
+        {KIN_PEOPLE_CHAT.message}
+      </Button>
+      {problem === null ? null : (
+        <p role="alert" className="text-sm text-destructive">
+          {problem}
+        </p>
+      )}
+    </div>
   );
 }
 

@@ -6,6 +6,7 @@ import * as TaskCard from "../widgets/taskCard.ts";
 import {
   KIN_CHOICE_CARD_ACTION,
   KIN_TEAM_ROOM_TEAM_ID,
+  kinIsPeopleChat,
   KinChatError,
   KinChatId,
   KinMemberId,
@@ -1094,10 +1095,26 @@ const make = Effect.gen(function* () {
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.mapError(toPersistenceSqlError("KinChatService.privateDocs")),
           )).messages[0]!;
+    // A chat between two people is called by the other one's name, for each of them.
+    const pair = kinIsPeopleChat(chat) ? yield* repo.listMembers(chat) : null;
+    const other =
+      pair === null
+        ? undefined
+        : pair.find(
+            (row) =>
+              row.principal._tag === "person" && row.principal.personId !== identity.personId,
+          );
+    const otherName =
+      other?.principal._tag === "person"
+        ? Option.getOrUndefined(
+            yield* repo.getPerson({ orgId: chat.orgId, personId: other.principal.personId }),
+          )?.displayName
+        : undefined;
     return {
       ...chat,
-      // A list row never carries a group's member list; `kin.chat.members` does.
-      members: group ? [member] : yield* repo.listMembers(chat),
+      ...(otherName === undefined ? {} : { title: otherName }),
+      // A list row never carries a group's member list, but a pair's two are who it is with.
+      members: pair ?? (group ? [member] : yield* repo.listMembers(chat)),
       lastMessage: shown,
       ...(Option.isSome(author) ? { lastAuthorName: author.value.displayName } : {}),
       // The Team room never counts toward a badge: a quiet "new" dot at most.

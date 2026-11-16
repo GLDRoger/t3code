@@ -12,6 +12,7 @@ import { kinTotalsText } from "./kinLists.ts";
 import { kinInMoney, kinMoneyAgent, kinMoneyView, type KinListOpen } from "./kinMoney.ts";
 import { kinSubscriptionsList } from "./kinSubscriptions.ts";
 import { kinWaitingRowView } from "./kinScreenState.ts";
+import { KIN_SCOPE_ALL, type KinViewerScope } from "./kinViewerScope.ts";
 import {
   kinWorkName,
   kinWorkRow,
@@ -70,8 +71,12 @@ export function kinWorkPlaceParam(show: string | undefined): {
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${count} ${count === 1 ? one : many}`;
 
-export function kinMoneyLine(money: KinMoneySummary): string {
-  if (money.owed.total.length === 0) return "Nobody owes you anything";
+export function kinMoneyLine(
+  money: KinMoneySummary,
+  scope: KinViewerScope = KIN_SCOPE_ALL,
+): string {
+  if (money.owed.total.length === 0)
+    return scope.all ? "Nobody owes you anything" : "Nothing owed is shared with you";
   return [
     `${kinTotalsText(money.owed.total)} owed`,
     money.owed.overdue.length === 0 ? null : `${kinTotalsText(money.owed.overdue)} overdue`,

@@ -1,6 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
+import {
+  KIN_SCOPE_ALL,
+  kinViewerScope,
+  type KinViewerScope,
+} from "@t3tools/client-runtime/kin/kinViewerScope";
 import type { EnvironmentId } from "@t3tools/contracts";
 
 import { connectionAtomRuntime } from "../connection/runtime";
@@ -18,4 +23,10 @@ export function useKinOwnerLevel(environmentId: EnvironmentId): boolean {
 /** The places a member reaches here (switched on, or a project they lead); null until known. */
 export function useKinPlaceReach(environmentId: EnvironmentId): KinPlaceReach | null {
   return kinPlaceReach(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)));
+}
+
+/** What part of the company the viewer sees, for words that must not overclaim. */
+export function useKinViewerScope(environmentId: EnvironmentId): KinViewerScope {
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  return isChatOnlySession() ? kinViewerScope(me) : KIN_SCOPE_ALL;
 }

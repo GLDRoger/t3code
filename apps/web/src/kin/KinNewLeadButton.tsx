@@ -1,13 +1,15 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { Atom } from "effect/reactivity";
+import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { useNavigate } from "@tanstack/react-router";
-import { PlusIcon, SparklesIcon, UserPlusIcon, UsersIcon } from "lucide-react";
+import { MessageSquareIcon, PlusIcon, SparklesIcon, UserPlusIcon, UsersIcon } from "lucide-react";
 
 import { SidebarHeaderIconButton } from "../components/sidebar/SidebarThreadHeader";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { kinClient } from "./kinClient";
+import { openKinPeoplePicker } from "./KinPeopleChat";
 import { kinGroupFormAtom } from "./kinGroupForm";
 import { kinLeadFormAtom, type KinLeadFormTarget } from "./kinLeadForm";
 import { kinTeamAddRequestAtom } from "./kinTeamForm";
@@ -28,7 +30,7 @@ export const noKinLeadPermissionAtom = Atom.make(false).pipe(Atom.withLabel("kin
 export const openKinLeadForm = (target: KinLeadFormTarget) =>
   appAtomRegistry.set(kinLeadFormAtom, target);
 
-/** The list's "+": a new group or a new lead. Hidden where this browser may make neither. */
+/** The list's "+": a chat with a teammate for everyone; a group, an agent or a teammate by grant. */
 export function KinNewLeadButton() {
   const target = kinNewLeadTarget(useKinHost());
   if (target === null) return null;
@@ -41,13 +43,16 @@ function PermittedNewLeadButton(props: { readonly target: KinLeadFormTarget }) {
   const canAddGroup = useAtomValue(kinClient.groupCreate.permissionAtom(environmentId));
   const canAddTeammate = useAtomValue(kinClient.inviteCreate.permissionAtom(environmentId));
   const navigate = useNavigate();
-  if (!canAddLead && !canAddGroup && !canAddTeammate) return null;
   return (
     <Menu>
-      <MenuTrigger render={<SidebarHeaderIconButton label="New group, agent or teammate" />}>
+      <MenuTrigger render={<SidebarHeaderIconButton label="New chat, group, agent or teammate" />}>
         <PlusIcon />
       </MenuTrigger>
       <MenuPopup align="end">
+        <MenuItem onClick={() => openKinPeoplePicker({ environmentId, orgId })}>
+          <MessageSquareIcon />
+          {KIN_PEOPLE_CHAT.newChat}
+        </MenuItem>
         {canAddGroup ? (
           <MenuItem
             onClick={() =>

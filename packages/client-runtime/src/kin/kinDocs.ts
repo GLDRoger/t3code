@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { KIN_SCOPE_ALL, type KinViewerScope } from "./kinViewerScope.ts";
 import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
 import {
   KinDocCardState,
@@ -920,9 +921,9 @@ export const KIN_SEARCH_INITIAL: KinSearchState = {
 const KIN_SEARCH_TYPING_MS = 250;
 const KIN_SEARCH_MAX = 200;
 
-export const kinSearchNothing = (text: string) => ({
-  title: "Nothing found",
-  detail: `Nothing matches “${text.trim()}”. Try fewer or different words.`,
+export const kinSearchNothing = (text: string, scope: KinViewerScope = KIN_SCOPE_ALL) => ({
+  title: scope.all ? "Nothing found" : "Nothing you can see matches",
+  detail: `Nothing ${scope.all ? "" : "you can see "}matches “${text.trim()}”. Try fewer or different words.`,
 });
 
 /**

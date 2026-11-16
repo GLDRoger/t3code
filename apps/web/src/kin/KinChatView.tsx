@@ -1,3 +1,5 @@
+import { KIN_PEOPLE_CHAT, kinPeopleChatWith } from "@t3tools/client-runtime/kin/kinPeopleChat";
+import { openKinProfile } from "./KinProfileSheet";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinOwnsDirectChat } from "@t3tools/client-runtime/kin/kinClearChat";
 import { useAtomValue } from "@effect/atom-react";
@@ -316,13 +318,20 @@ export function KinChatView(props: {
     viewer.personId !== null &&
     kinChatMuted(summary, new Set([viewer.personId]), nowMs);
   const title = summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames);
+  const pairWith =
+    summary === undefined || viewer.personId === null
+      ? null
+      : kinPeopleChatWith(summary, new Set([viewer.personId]));
   const avatar =
     summary === undefined
       ? null
       : kinAvatarView(
           summary,
           summary.members.find(
-            (member) => member.leftAt === null && member.principal._tag === "agent",
+            (member) =>
+              member.leftAt === null &&
+              (member.principal._tag === "agent" ||
+                (member.principal._tag === "person" && member.principal.personId === pairWith)),
           ) ?? null,
         );
 
@@ -346,11 +355,20 @@ export function KinChatView(props: {
       <KinChatHeader
         title={title}
         avatar={avatar}
-        tasks={tasks}
+        tasks={tasks ?? (pairWith === null ? null : KIN_PEOPLE_CHAT.privacy(title))}
         muted={muted}
-        onOpenProfile={about === null && group === null ? null : () => setProfileOpen(true)}
+        onOpenProfile={
+          pairWith !== null && environmentId !== null && summary !== undefined
+            ? () => openKinProfile({ environmentId, orgId: summary.orgId, personId: pairWith })
+            : about === null && group === null
+              ? null
+              : () => setProfileOpen(true)
+        }
       />
-      {group === null || environmentId === null || summary === undefined ? null : (
+      {group === null ||
+      environmentId === null ||
+      summary === undefined ||
+      pairWith !== null ? null : (
         <KinGroupSheet
           open={profileOpen}
           onOpenChange={setProfileOpen}

@@ -1,3 +1,4 @@
+import { useKinViewerScope } from "./state/kinChatOnly";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
@@ -144,13 +145,14 @@ function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | n
   const money = useKinMoneySummary(props, { enabled: true }).state;
   const docs = useKinDocsRecent(props);
   const counts = useKinClientCounts(props, hostClients);
+  const scope = useKinViewerScope(props.environmentId);
   return (
     <>
       <KinWorkEntryRow summary={kinWorkEntrySummary(summary)} onPress={() => open("tasks")} />
       {money._tag === "refused" || money._tag === "failed" ? null : (
         <KinPlaceEntryRow
           place="money"
-          summary={money._tag === "ready" ? kinMoneyLine(money.value) : null}
+          summary={money._tag === "ready" ? kinMoneyLine(money.value, scope) : null}
           onPress={() => open("money")}
         />
       )}
@@ -406,6 +408,7 @@ export function KinWorkTaskList(
     list.refresh();
   };
   const { filter } = listState;
+  const scope = useKinViewerScope(environmentId);
   const overview = kinWorkOverview(live.summary, filter, names);
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
@@ -431,7 +434,7 @@ export function KinWorkTaskList(
   const rows = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null).map((record) =>
     kinWorkRow(record, names, now, filter),
   );
-  const nothing = kinWorkNothing(filter, names);
+  const nothing = kinWorkNothing(filter, names, scope);
   // Needs you shows the rest, so the count says how many are loaded in all.
   const footer = kinWorkListFooter(
     filter,
@@ -637,7 +640,12 @@ export function KinWorkTaskList(
                       />
                     </ListSection>
                   </View>
-                  <KinSearchHits state={found} onRetry={search.retry} onOpen={openHit} />
+                  <KinSearchHits
+                    state={found}
+                    scope={scope}
+                    onRetry={search.retry}
+                    onOpen={openHit}
+                  />
                 </View>
               ) : null}
             </>

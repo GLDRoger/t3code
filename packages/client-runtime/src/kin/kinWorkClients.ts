@@ -23,6 +23,7 @@ import type {
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { kinMoneyText } from "./kinLists.ts";
 import { formatKinTime } from "./kinScreenState.ts";
+import { KIN_SCOPE_ALL, kinNothingShown, type KinViewerScope } from "./kinViewerScope.ts";
 import {
   kinWorkAllDay,
   kinWorkChangeText,
@@ -347,7 +348,10 @@ export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): 
 }
 
 /** Why the clients list shows nothing, and whether to offer a new client. */
-export function kinClientsNothing(filter: KinClientsFilter): {
+export function kinClientsNothing(
+  filter: KinClientsFilter,
+  scope: KinViewerScope = KIN_SCOPE_ALL,
+): {
   readonly title: string;
   readonly detail: string;
   readonly offerNew: boolean;
@@ -361,6 +365,8 @@ export function kinClientsNothing(filter: KinClientsFilter): {
       detail: "A client you close shows up here, with its history.",
       offerNew: false,
     };
+  const shown = kinNothingShown("clients", scope);
+  if (shown !== null) return { ...shown, offerNew: false };
   return {
     title: "No clients yet",
     detail:
@@ -603,7 +609,10 @@ export function kinProjectRow(
 }
 
 /** Why the projects list shows nothing, and whether to offer a new project. */
-export function kinProjectsNothing(filter: KinProjectsFilter): {
+export function kinProjectsNothing(
+  filter: KinProjectsFilter,
+  scope: KinViewerScope = KIN_SCOPE_ALL,
+): {
   readonly title: string;
   readonly detail: string;
   readonly offerNew: boolean;
@@ -619,6 +628,8 @@ export function kinProjectsNothing(filter: KinProjectsFilter): {
     };
   if (filter.view === "dropped")
     return { title: "Nothing dropped", detail: "Projects you drop show up here.", offerNew: false };
+  const shown = kinNothingShown("projects", scope);
+  if (shown !== null) return { ...shown, offerNew: false };
   return {
     title: "No projects yet",
     detail:

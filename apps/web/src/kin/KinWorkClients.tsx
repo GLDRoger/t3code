@@ -1,3 +1,4 @@
+import { useKinViewerScope } from "./useKinOwnerLevel";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -116,6 +117,7 @@ export function KinWorkClientsList(
 ) {
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
+  const scope = useKinViewerScope(props.environmentId);
   const seq = props.stale ? null : props.live.seq;
   const { state, list } = useKinClientsList(props, seq);
   const projects = useKinProjectsList(props, seq);
@@ -162,7 +164,7 @@ export function KinWorkClientsList(
           ...projectItems(projectsOf(null)),
         ]),
   ];
-  const nothing = kinClientsNothing(filter);
+  const nothing = kinClientsNothing(filter, scope);
   const loading = state.loading || projects.state.loading;
   const failed = state.failed !== null || projects.state.failed !== null;
   const more = state.more || projects.state.more;

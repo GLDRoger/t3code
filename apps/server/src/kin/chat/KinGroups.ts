@@ -7,12 +7,15 @@ import {
   KinChatId,
   KinChatsCreateGroupInput,
   KinGroupRenameInput,
+  kinIsPeopleChat,
+  kinPeopleChatTeamId,
   KinMemberId,
   KinWakeupId,
   type KinChat,
   type KinChatMember,
   type KinChatMembersInput,
   type KinChatMembersResult,
+  type KinChatsWithPersonInput,
   type KinGroupAddMemberInput,
   type KinGroupDeleteInput,
   type KinGroupRemoveMemberInput,
@@ -56,6 +59,14 @@ export class KinGroups extends Context.Service<
     readonly create: (
       caller: Viewers,
       input: KinChatsCreateGroupInput,
+    ) => Effect.Effect<KinChat, GroupError>;
+    /**
+     * The caller's chat with one teammate, made the first time: anyone may start one with anyone
+     * still on the team. Only the two of them are in it, and nobody else reads it.
+     */
+    readonly withPerson: (
+      caller: Viewers,
+      input: KinChatsWithPersonInput,
     ) => Effect.Effect<KinChat, GroupError>;
     /** The chat and everyone who is or was in it, by name. Any current member may ask. */
     readonly members: (
@@ -181,7 +192,7 @@ const make = Effect.gen(function* () {
   ) {
     const found = yield* memberOf(caller, chatId);
     if (!(yield* isOwner(found.person)) || found.member.role !== "owner") return yield* ownerOnly;
-    if (found.chat.kind === "direct")
+    if (found.chat.kind === "direct" || kinIsPeopleChat(found.chat))
       return yield* new KinChatError({
         reason: "not_allowed",
         message: "A direct chat stays between the two of you. Make a group instead.",
@@ -447,6 +458,65 @@ const make = Effect.gen(function* () {
       for (const agentId of agentIds)
         yield* join(chat, { _tag: "agent", agentId }, "member", createdAt);
       for (const personId of personIds)
+        yield* join(chat, { _tag: "person", personId }, "member", createdAt);
+      yield* hub.publish({ type: "chat.created", orgId: chat.orgId, chat });
+      return chat;
+    }, transaction),
+
+    withPerson: Effect.fn("KinGroups.withPerson")(function* (caller, input) {
+      const person = caller.find((entry) => entry.orgId === input.orgId);
+      if (person === undefined) return yield* notFound;
+      if (input.personId === person.personId)
+        return yield* invalid("Pick a teammate other than yourself.");
+      const [other] = yield* query("KinGroups.withPerson")(sql<{ personId: string }>`
+        SELECT person_id AS "personId" FROM kin_people
+        WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND removed_at IS NULL`);
+      if (other === undefined) return yield* notFound;
+      const teamId = kinPeopleChatTeamId(person.personId, input.personId);
+      const [held] = yield* query("KinGroups.withPerson")(sql<{ chatId: string }>`
+        SELECT chat_id AS "chatId" FROM kin_chats
+        WHERE org_id = ${input.orgId} AND kind = 'team_group' AND team_id = ${teamId}
+          AND archived_at IS NULL
+        ORDER BY created_at LIMIT 1`);
+      const pair = [person.personId, input.personId] as const;
+      if (held !== undefined) {
+        const chat = yield* repo.getChat({
+          orgId: input.orgId,
+          chatId: KinChatId.make(held.chatId),
+        });
+        if (Option.isNone(chat)) return yield* notFound;
+        // Either of them taken off the team and let back on is in it again, with their history.
+        const rows = yield* repo.listMembers(chat.value);
+        for (const personId of pair) {
+          const row = rows.find(
+            (member) =>
+              member.principal._tag === "person" && member.principal.personId === personId,
+          );
+          if (row !== undefined && row.leftAt === null) continue;
+          const joinedAt = yield* now;
+          const member =
+            row === undefined
+              ? yield* join(chat.value, { _tag: "person", personId }, "member", joinedAt)
+              : yield* repo.addMember({ ...row, joinedAt, leftAt: null });
+          yield* changed(member);
+        }
+        return chat.value;
+      }
+      const createdAt = yield* now;
+      const chat = yield* repo.createChat({
+        orgId: input.orgId,
+        chatId: yield* decodeChatId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
+        kind: "team_group",
+        directKey: null,
+        title: null,
+        teamId,
+        lastMessageAt: null,
+        createdAt,
+        archivedAt: null,
+        leadAgentId: null,
+      });
+      // Neither holds the chat's owner role: nobody may add a third person or rename it.
+      for (const personId of pair)
         yield* join(chat, { _tag: "person", personId }, "member", createdAt);
       yield* hub.publish({ type: "chat.created", orgId: chat.orgId, chat });
       return chat;

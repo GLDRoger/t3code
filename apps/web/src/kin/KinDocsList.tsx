@@ -1,3 +1,6 @@
+import type { KinViewerScope } from "@t3tools/client-runtime/kin/kinViewerScope";
+import { kinNothingShown } from "@t3tools/client-runtime/kin/kinViewerScope";
+import { useKinViewerScope } from "./useKinOwnerLevel";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -119,6 +122,7 @@ export function KinSearchHits(props: {
   readonly onOpen: (hit: KinSearchHitView) => void;
   /** Hits are all docs, so none needs to say what it is. */
   readonly docsOnly?: boolean;
+  readonly scope?: KinViewerScope;
 }) {
   const { state } = props;
   if (state.hits === null) {
@@ -136,7 +140,8 @@ export function KinSearchHits(props: {
     );
   }
   const hits = state.hits.map(kinSearchHit);
-  if (hits.length === 0) return <KinWorkNotice {...kinSearchNothing(state.answered)} />;
+  if (hits.length === 0)
+    return <KinWorkNotice {...kinSearchNothing(state.answered, props.scope)} />;
   return (
     <ul className={cn("flex flex-col", state.loading && "opacity-70")} aria-label="Results">
       {state.failed ? (
@@ -245,6 +250,7 @@ export function KinDocsList(
   const [playbooksOpen, setPlaybooksOpen] = useState(false);
   const [filing, setFiling] = useState<KinDocListRow | null>(null);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(props.environmentId));
+  const scope = useKinViewerScope(props.environmentId);
   const { filter } = state;
   const text = filter.text.trim().toLowerCase();
   const searching = text !== "";
@@ -426,7 +432,7 @@ export function KinDocsList(
                   ? KIN_DOCS.noMatch
                   : filter.archived
                     ? KIN_DOCS.emptyArchived
-                    : KIN_DOCS.empty)}
+                    : (kinNothingShown("docs", scope) ?? KIN_DOCS.empty))}
               />
             )}
           </div>
@@ -443,7 +449,7 @@ export function KinDocsList(
                     ? KIN_DOCS.noMatch
                     : filter.archived
                       ? KIN_DOCS.emptyArchived
-                      : KIN_DOCS.empty)}
+                      : (kinNothingShown("docs", scope) ?? KIN_DOCS.empty))}
                 />
               </div>
             ) : null}

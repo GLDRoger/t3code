@@ -12,6 +12,7 @@ import { KinNewLeadButton } from "./KinNewLeadButton";
 import { startKinOutbox } from "./kinOutbox";
 import { KinPicturesHost } from "./kinPictures";
 import { KinProfileSheetHost } from "./KinProfileSheet";
+import { KinPeoplePickerHost } from "./KinPeopleChat";
 import { KinSettingsButton, KinSettingsFromApp } from "./KinSettingsView";
 import { KinDock } from "./KinNav";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
@@ -28,6 +29,7 @@ export function KinPage() {
       <KinGroupDialogHost />
       <KinPicturesHost />
       <KinProfileSheetHost />
+      <KinPeoplePickerHost />
     </SidebarInset>
   );
 }

@@ -1,3 +1,4 @@
+import { useKinViewerScope } from "./useKinOwnerLevel";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -94,6 +95,7 @@ export function KinWorkTaskList(
   },
 ) {
   const { environmentId, orgId, live } = props;
+  const scope = useKinViewerScope(environmentId);
   const { names } = props.directory;
   const { state: changed, changes } = props.changes;
   const hostEdits = kinWorkHostEdits(live.summary);
@@ -160,7 +162,7 @@ export function KinWorkTaskList(
     if (record !== undefined) void changes.run(record, action, names);
   };
   const notice = kinWorkListNotice(changed, props.openKey);
-  const nothing = kinWorkNothing(filter, names);
+  const nothing = kinWorkNothing(filter, names, scope);
   // Needs you shows the rest, so the count says how many are loaded in all.
   const footer = kinWorkListFooter(
     filter,
