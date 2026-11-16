@@ -55,18 +55,26 @@ const inLedProject = (sql: SqlClient.SqlClient, personId: KinPersonId | Statemen
       OR (r.register_id = 'clients' AND lp.party_id = r.record_id)
       OR (r.register_id = 'contacts' AND lp.party_id = r.party_id)))`;
 
-/** `r`'s project names this person among its members (`fields.members`). */
-const onProject = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
+/** `r`'s project (or `r`, given `r.record_id`) names this person among its `fields.members`. */
+const onProject = (
+  sql: SqlClient.SqlClient,
+  personId: KinPersonId | Statement.Fragment,
+  project = sql`r.project_id`,
+) =>
   sql`EXISTS (SELECT 1 FROM kin_records mp, json_each(mp.fields_json, '$.members') m
-    WHERE mp.org_id = r.org_id AND mp.register_id = 'projects' AND mp.record_id = r.project_id
+    WHERE mp.org_id = r.org_id AND mp.register_id = 'projects' AND mp.record_id = ${project}
       AND m.value = 'person:' || ${personId})`;
 
-/** `r` is filed under a project this person leads, is a member of, or holds a task in. */
-const projectPerson = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
-  sql`(${onProject(sql, personId)} OR EXISTS (SELECT 1 FROM kin_records pw
+/** `r` is filed under (or is) a project this person leads, is a member of, or holds a task in. */
+const projectPerson = (
+  sql: SqlClient.SqlClient,
+  personId: KinPersonId | Statement.Fragment,
+  project = sql`r.project_id`,
+) =>
+  sql`(${onProject(sql, personId, project)} OR EXISTS (SELECT 1 FROM kin_records pw
     WHERE pw.org_id = r.org_id AND pw.owner_kind = 'person' AND pw.owner_id = ${personId}
-      AND ((pw.register_id = 'work' AND pw.project_id = r.project_id)
-        OR (pw.register_id = 'projects' AND pw.record_id = r.project_id))))`;
+      AND ((pw.register_id = 'work' AND pw.project_id = ${project})
+        OR (pw.register_id = 'projects' AND pw.record_id = ${project}))))`;
 
 /** `r` is a meeting this person is one of the people at (`fields.attendees`). */
 const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
@@ -241,6 +249,19 @@ const leadWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
   sql`(${ownLabelOff(sql)} AND r.register_id IN ${sql.in(LEAD_LISTS)}
     AND (r.register_id NOT IN ${sql.in(DRAFT_LISTS)} OR r.state = 'open')
     AND ${inLedProject(sql, personId)})`;
+
+/** Whether this person leads, is a member of, or holds a task in this unlabelled project. */
+export const inProject = Effect.fn("KinTeamView.inProject")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  projectId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${orgId}
+    AND r.record_id = ${projectId} AND r.register_id = 'projects' AND r.sensitive = 0
+    AND ${projectPerson(sql, personId, sql`r.record_id`)}`;
+  return row !== undefined;
+});
 
 /** The record ids of these this teammate may see, read through the caller's transaction. */
 export const teamVisible = Effect.fn("KinTeamView.visible")(function* (

@@ -31,7 +31,7 @@ import { type FieldValue, type ListName } from "./lists.ts";
 import { dueMillis, found, inList, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
 import { principalText } from "./projectSpine.ts";
 import { iso, notFound, type RecordRow, unavailable } from "./recordRows.ts";
-import { personSeesAs, placesOf, teamSeq, teamVisible } from "./teamView.ts";
+import { inProject, personSeesAs, placesOf, teamSeq, teamVisible } from "./teamView.ts";
 import * as Touches from "./touches.ts";
 
 /**
@@ -195,10 +195,14 @@ export const project = Effect.fn("KinWork.project")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinProjectPageInput,
 ) {
-  const team = yield* reader(people, input.orgId);
+  const viewer = yield* viewerOf(people, input.orgId);
+  const team = viewer.teammate ? viewer.person.personId : undefined;
   const row = yield* opened(input, "projects");
-  // Its lead sees it, and in it only what `personSees` shows them.
-  yield* unseen(team, row, input);
+  // Anyone in it opens it, Clients place or not, and in it sees only what `personSees` shows them.
+  if (team !== undefined && !(yield* read(inProject(input.orgId, team, row.recordId)))) {
+    yield* reader(people, input.orgId);
+    yield* unseen(team, row, input);
+  }
   const { now, seq } = yield* asOf(input.orgId, team);
   return yield* read(Crm.projectPage(row, now, seq, team === undefined ? undefined : [team]));
 });

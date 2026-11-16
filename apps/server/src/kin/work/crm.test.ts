@@ -1405,6 +1405,23 @@ it.effect(
           pulse: 0,
         },
       );
+      // Run 4: someone who holds a task in a project they don't lead opens its page, with no
+      // Clients place: their task and what they see, never its price, billing or notes.
+      yield* sql`UPDATE kin_records SET owner_kind = 'agent', owner_id = ${lead}, notes = 'Invented 6 lakh fixed'
+        WHERE key = 'P-1'`;
+      yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${mateId}, sensitive = 0
+        WHERE key = 'W-2'`;
+      const inIt = yield* Clients.project([mate], { orgId, key: "P-1" });
+      assert.deepStrictEqual(
+        {
+          blocked: inIt.blocked.map((one) => one.record.key),
+          billing: inIt.project.billing,
+          value: inIt.project.value,
+          notes: inIt.project.notes,
+        },
+        { blocked: ["W-2"], billing: null, value: null, notes: "" },
+      );
+      assert.notMatch(JSON.stringify(inIt), /60000000|6 lakh/u);
 
       // The milestone rule: late once passed while open; at risk within the heads-up days (3 by
       // default) with late or later work.
