@@ -1,6 +1,8 @@
 ---------------------------- MODULE CheckIn ----------------------------
 (* The owner's loose morning check-in over two days, one pulse fact about a member's task, and
-   one unprompted post that lands in the owner's quiet hours (the first four ticks of a day).
+   one unprompted post to the owner or to a member at a time it must wait: the owner's quiet
+   hours (the first four ticks of his day), or the member's quiet hours or time outside her
+   working hours, on her own clock, half a day ahead of his.
    Time is in five-minute ticks, twelve to a day; the slot's window opens at tick 5 (the slot time
    minus five minutes) and closes at tick 10 (plus twenty). Each action names the code it stands
    for (apps/server/src/scheduledTasks for T3's scheduler, apps/server/src/kin otherwise). *)
@@ -16,6 +18,9 @@ MovedSlot == 7     \* where the owner moves it
 CatchUpGrace == 36 \* checkInCatchUp.ts CATCH_UP_MS: three hours, so the rest of the model's day
 Horizon == Days * Day
 QuietTicks == 4    \* quietHold.ts: 22:00 to 08:00, the first ticks of each modelled day
+Shift == 6         \* the member's clock runs half a day ahead of the owner's
+WorkStart == 6     \* her working hours, ticks 6 to 9 of her day; she holds messages outside them
+WorkEnd == 10      \* (hold_outside_hours, on by default); the owner's switch is off
 
 VARIABLES
   clock,     \* the host's wall clock, in ticks
@@ -39,14 +44,16 @@ VARIABLES
   skipped,   \* per day: the slot ran with the fact open but queued nothing ("nothing new")
   taskShown, \* the member, who holds the task, still sees it
   posted,    \* the unprompted post was made
-  held,      \* kin_held_posts: it waits, stored, for the quiet hours to end
-  deliverAt, \* when they end
+  to,        \* whom it was for: "owner" or "member" ("" before it is made)
+  held,      \* kin_held_posts: it waits, stored, until they are free
+  deliverAt, \* when they are
   delivered, \* times it reached the chat
-  inQuiet,   \* it reached the chat inside quiet hours
+  inQuiet,   \* it reached the chat inside their quiet hours
+  offHours,  \* it reached the member outside her working hours
   jumps, outages
 
 told2 == <<toldAs, tells>>
-quiet == <<posted, held, deliverAt, delivered, inQuiet>>
+quiet == <<posted, to, held, deliverAt, delivered, inQuiet, offHours>>
 vars == <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow,
           fact, heldBy, told, skipped, taskShown, jumps, outages, told2, quiet>>
 
@@ -69,10 +76,26 @@ Init ==
   /\ told = [d \in DayRange |-> FALSE] /\ skipped = [d \in DayRange |-> FALSE]
   /\ taskShown = TRUE /\ jumps = 0 /\ outages = 0
   /\ toldAs = "" /\ tells = 0
-  /\ posted = FALSE /\ held = FALSE /\ deliverAt = 0 /\ delivered = 0 /\ inQuiet = FALSE
+  /\ posted = FALSE /\ to = "" /\ held = FALSE /\ deliverAt = 0 /\ delivered = 0
+  /\ inQuiet = FALSE /\ offHours = FALSE
 
 InWindow(c) == DayOf(c) \in DayRange /\ c >= Opens(DayOf(c)) /\ c <= Closes(DayOf(c))
 Seen(c) == [d \in DayRange |-> upInWindow[d] \/ (up /\ InWindow(c) /\ DayOf(c) = d)]
+
+\* What must hold, on each person's own clock: quiet hours for both, and for the member, whose
+\* switch is on, any time outside her working hours.
+Local(p, c) == IF p = "member" THEN (c + Shift) % Day ELSE c % Day
+QuietFor(p, c) == Local(p, c) < QuietTicks
+OffFor(p, c) == p = "member" /\ ~(Local(p, c) >= WorkStart /\ Local(p, c) < WorkEnd)
+(* quietHold.ts personRule + quietHours.ts heldAt: the code's rule. "company-clock": read on the
+   owner's clock; "quiet-only": working hours ignored (the code before this change). *)
+CodeLocal(p, c) == IF Broken = "company-clock" THEN c % Day ELSE Local(p, c)
+CodeHolds(p, c) == CodeLocal(p, c) < QuietTicks
+  \/ (p = "member" /\ Broken # "quiet-only"
+      /\ ~(CodeLocal(p, c) >= WorkStart /\ CodeLocal(p, c) < WorkEnd))
+\* quietHours.ts freeAt: the first tick from c on when the code lets it go.
+FreeAt(p, c) == CHOOSE t \in c .. c + Day :
+  ~CodeHolds(p, t) /\ \A u \in c .. t - 1 : CodeHolds(p, u)
 
 (* checkInCatchUp.ts missedSlot: T3's scheduler has moved past today's slot (next_run_at after
    now) and it has not run since its window opened, on the same day, within the grace. *)
@@ -83,9 +106,8 @@ Missed == /\ DayOf(clock) \in DayRange
 
 \* Kin's scheduler, queue and tick look every few seconds: while Kin is up nothing due waits a tick.
 Due == up /\ ((nextRun <= clock /\ DayOf(clock) \in DayRange) \/ Missed
-               \/ (held /\ clock >= deliverAt /\ ~(clock % Day < QuietTicks))
+               \/ (held /\ clock >= deliverAt /\ ~CodeHolds(to, clock))
                \/ \E d \in DayRange : queued[d] # 0 /\ clock >= queued[d] - 1)
-Quiet(c) == c % Day < QuietTicks
 
 Tick ==
   /\ clock < Horizon /\ ~Due
@@ -108,7 +130,8 @@ GoesDown == up /\ outages < 1 /\ ~Due /\ up' = FALSE /\ outages' = outages + 1
   \* A held post is a stored row: a restart keeps it ("held-in-memory": it was only in memory).
   /\ held' = (held /\ Broken # "held-in-memory")
   /\ UNCHANGED <<clock, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow, fact,
-                 heldBy, told, skipped, taskShown, jumps, told2, posted, deliverAt, delivered, inQuiet>>
+                 heldBy, told, skipped, taskShown, jumps, told2, posted, to, deliverAt, delivered, inQuiet,
+                 offHours>>
 ComesUp == ~up /\ up' = TRUE
   /\ upInWindow' = Seen(clock)
   /\ UNCHANGED <<clock, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, fact, heldBy, told,
@@ -201,35 +224,39 @@ FactClears == fact \in {"open", "held"} /\ fact' = "cleared"
   /\ UNCHANGED <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow, heldBy,
                  told, skipped, taskShown, jumps, outages, told2, quiet>>
 
-(* An unprompted line in a person's quiet hours (a night job's notice, a fact wake's turn, a
-   relay, nudge or notice the agent sends them): quietHold.ts holdIfQuiet or holdFor/holdLine
-   stores it with the end of those hours; "post-in-quiet" posts it. *)
-QuietPost ==
-  /\ ~posted /\ Quiet(clock) /\ DayOf(clock) \in DayRange
-  /\ posted' = TRUE
-  /\ IF Broken = "post-in-quiet"
-       THEN /\ delivered' = 1 /\ inQuiet' = TRUE /\ UNCHANGED <<held, deliverAt>>
-       ELSE /\ held' = TRUE /\ deliverAt' = DayOf(clock) * Day + QuietTicks
-            /\ UNCHANGED <<delivered, inQuiet>>
+(* An unprompted line to a person at a time it must wait (a night job's notice, a fact wake's
+   turn, a relay, nudge or notice the agent sends them): quietHold.ts holdIfQuiet or
+   holdFor/holdLine stores it with when they are free; "post-in-quiet" posts it. *)
+QuietPost(p) ==
+  /\ ~posted /\ (QuietFor(p, clock) \/ OffFor(p, clock)) /\ DayOf(clock) \in DayRange
+  /\ posted' = TRUE /\ to' = p
+  /\ IF Broken = "post-in-quiet" \/ ~CodeHolds(p, clock)
+       THEN /\ delivered' = 1 /\ inQuiet' = QuietFor(p, clock) /\ offHours' = OffFor(p, clock)
+            /\ UNCHANGED <<held, deliverAt>>
+       ELSE /\ held' = TRUE /\ deliverAt' = FreeAt(p, clock)
+            /\ UNCHANGED <<delivered, inQuiet, offHours>>
   /\ UNCHANGED <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow,
                  fact, heldBy, told, skipped, taskShown, jumps, outages, told2>>
 
 (* heldDelivery.ts deliverHeld on the drain tick: posts what is due and marks it delivered in one
    transaction ("deliver-twice": the mark is lost and the next tick posts it again). A host that
-   slept into the next night holds it again ("deliver-late-night": it posts once due). *)
+   slept past their free time holds it again ("deliver-late-night": it posts once due). *)
 Deliver ==
-  /\ delivered < 2 /\ up /\ held /\ clock >= deliverAt /\ (~Quiet(clock) \/ Broken = "deliver-late-night")
+  /\ delivered < 2 /\ up /\ held /\ clock >= deliverAt
+  /\ (~CodeHolds(to, clock) \/ Broken = "deliver-late-night")
   /\ held' = (Broken = "deliver-twice")
   /\ delivered' = delivered + 1
-  /\ inQuiet' = (inQuiet \/ Quiet(clock))
+  /\ inQuiet' = (inQuiet \/ QuietFor(to, clock))
+  /\ offHours' = (offHours \/ OffFor(to, clock))
   /\ UNCHANGED <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow,
-                 fact, heldBy, told, skipped, taskShown, jumps, outages, told2, posted, deliverAt>>
+                 fact, heldBy, told, skipped, taskShown, jumps, outages, told2, posted, to, deliverAt>>
 
 Next ==
   \/ Tick \/ ClockJumps \/ GoesDown \/ ComesUp \/ SlotRuns \/ CatchUp \/ OwnerMoves \/ SeedFollows
   \/ \E d \in DayRange : AgentWakes(d)
   \/ FactAppears \/ FactClears \/ \E p \in {"owner", "member"} : FactHeld(p)
-  \/ QuietPost \/ Deliver
+  \/ \E p \in {"owner", "member"} : QuietPost(p)
+  \/ Deliver
 
 Spec == Init /\ [][Next]_vars
 
@@ -250,4 +277,5 @@ ToldOnce == tells <= 1
 HeldDeliveredOnce == delivered <= 1
 HeldNeverLost == posted => (held \/ delivered >= 1)
 QuietIsQuiet == ~inQuiet
+OffHoursWait == ~offHours
 =============================================================================

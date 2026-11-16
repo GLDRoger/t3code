@@ -342,6 +342,20 @@ export const askedIn = Effect.fn("KinAudience.askedIn")(function* (turn: Turn, c
   return rows.length > 0;
 });
 
+/** `chatId` is this turn's asker's own direct chat with this agent: theirs alone to be reminded in. */
+export const askersDirectChat = Effect.fn("KinAudience.askersDirectChat")(function* (
+  turn: Turn,
+  chatId: string,
+) {
+  if (!(yield* askedIn(turn, chatId))) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const suffix = `:${turn.agentId}`;
+  const rows = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${turn.orgId}
+    AND chat_id = ${chatId} AND kind = 'direct' AND archived_at IS NULL
+    AND substr(direct_key, ${-suffix.length}) = ${suffix} LIMIT 1`;
+  return rows.length > 0;
+});
+
 /**
  * Everyone who is or ever was in the chat is owner-level; none is, in a chat that isn't this
  * org's. A chat someone else could once read stays out of owner-tier reach.

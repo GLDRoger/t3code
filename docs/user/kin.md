@@ -37,9 +37,17 @@ write to you ("short, numbers first, nothing after 8 pm"). Only you can set that
 your profile when they decide who should do something, when to message you and how. An agent nudges you about the same thing at most once a day,
 inside your hours.
 
+Your **Quiet hours** (22:00 to 07:00 unless you change them) run on your own clock. Nothing an
+agent sends you unprompted arrives in them: a message passed on from a teammate, a nudge, a note
+about a task. With **Hold non-urgent messages outside my working hours** on, which it is for
+everyone but the owner, those also wait outside your working hours. They arrive in order when your
+day starts, and whoever sent one is told when you'll get it. A reply to something you wrote in the
+last ten minutes, a teammate writing to you directly, and anything urgent arrive at once. Your
+phone rings by the same rule. Only you can change these two.
+
 **Settings → Notifications** sets how this device tells you about new messages. On the web and the
 desktop app it alerts you while Kin is open in a window you aren't looking at; on the phone it opens
-the phone's own notification settings. A message from a teammate always rings, even in quiet hours.
+the phone's own notification settings.
 
 ### Adding a teammate (owner and co-owners)
 
@@ -50,6 +58,11 @@ reach Kin, not from `localhost`, or it won't open on anyone else's device.
 Each teammate starts as a **Member**. Open them under **Settings → Team** to make them a **Co-owner**, to
 turn on what they can see (Money, Clients, Docs), to choose which agents they can message, or to
 **Remove access**.
+
+Removing access signs them out everywhere and changes nothing else. Their open tasks stay in their
+name and show under **Needs you** for you to give to someone else; no agent picks them up. To bring
+them back, choose **Make a new link** on their row: they return as the same person, with their
+role, places, chats and tasks. Only the owner's link brings back a co-owner as a co-owner.
 
 ## Talking to an agent
 
@@ -68,7 +81,9 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
 - **One reply per message.** Each message gets one answer. If the agent starts something longer,
   such as a coding job, it says so and comes back in the chat when there's news.
 - **It works with what you can see.** An agent answering you sees only what you may see.
-  When a member asks about money, it won't share figures they can't see.
+  When a member asks about money, it won't share figures they can't see. A message you ask it to
+  pass on with a sum the teammate can't see comes back to you with that said: send it without the
+  figure, or share it with them first.
 - **Long answers read like a page.** A short reply is a bubble. One with headings, a table or a
   list of several things fills the chat's width, in sections you can fold; on the phone a long one
   opens with **Read more**. A check-in arrives as a brief: a greeting, the date, then only the
@@ -90,12 +105,13 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
   for the owner alone.
 - **It comes back later.** "Remind me Friday at 10" or "check on this in two hours" sets a reminder.
-  "Every weekday at 9, tell me what's late" sets a repeating one, shown as a card you can **Run
+  Anyone can ask for one in their own chat with an agent, and it arrives there, at that time, for
+  them alone. "Every weekday at 9, tell me what's late" sets a repeating one, shown as a card you can **Run
   now**, **Pause**, **Edit** or **Delete**. Only the owner and co-owners can set repeating ones.
 - **It passes things on.** Ask one agent about another's area and it hands it over and tells you
   so. The request shows in the other agent's chat as **Sent by** the first, and the answer comes back
-  to the agent you asked, in your chat with it. Ask it to tell a teammate something and the message
-  arrives in that teammate's chat, marked as from you.
+  to the agent you asked, in your chat with it. Ask it to tell a teammate something and it arrives
+  in their chat as **Sent by** you, via the agent, and their answer comes back to you the same way.
 - **It does engineering work.** An agent that looks after engineering reads your GitHub repos, pull
   requests and checks, reviews pull requests, and starts coding work in T3 Code. It never merges
   without the owner's approval.
@@ -204,6 +220,8 @@ handling one. When nothing needs attention, the section isn't there.
 - **Give to someone else** moves a task to a teammate or an agent. They get it in their Tasks and a
   message in their chat.
 - **Hand back** returns a task you were given to the person who gave it, with a reason if you like.
+  When someone asked an agent to give it to you, that person gave it ("Zoya gave this to you, via
+  Chief of staff"), and it goes back to them.
 - **Who can see this** says who can see a task. **People on it and the project** is the usual.
   **Only me** makes it private: it hides the task from other teammates, not from the owner and
   co-owners. Only they and whoever has it see it, and it stays out of every list, count and search

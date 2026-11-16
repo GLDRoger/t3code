@@ -116,13 +116,37 @@ const writer = Layer.mock(Writer.MemoryWriter)({
   stage: (_org, wakeupId) => Effect.suspend(() => state.stage(wakeupId)),
 });
 const decodeWrite = Schema.decodeUnknownEffect(Lead.WriteInput);
+const decodeDefer = Schema.decodeEffect(Lead.DeferInput);
 const withTeamMemory = (env: Record<string, string>) =>
   Lead.layer.pipe(
     Layer.provide(recordingSchedules([], [])),
     Layer.provide(memory),
     Layer.provide(identity),
     Layer.provide(writer),
-    Layer.provide(Layer.mock(Writer.MemoryWriterAuthority)({})),
+    Layer.provide(
+      Layer.mock(Writer.MemoryWriterAuthority)({
+        resolve: (_org, wakeupId) =>
+          Effect.succeed({
+            orgId,
+            agentId: KinAgentId.make(wakeupId.replace(/^wake-/, "")),
+            level: "L1",
+            wakeupId,
+            startedAt: at,
+            timeZone: "UTC",
+            eventIds: [],
+            sources: new Map([
+              [
+                "member-said",
+                {
+                  saidBy: "fixture-member",
+                  trust: "member",
+                  source: "kin:chat:member-direct:message:member-message",
+                },
+              ],
+            ]),
+          }),
+      }),
+    ),
     Layer.provide(NodeCrypto.layer),
     Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory)),
     Layer.merge(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
@@ -482,5 +506,54 @@ it.effect("a stage that crashes or is cancelled gives the teammate's place back"
     yield* Deferred.await(staging);
     yield* Fiber.interrupt(cancelled);
     assert.strictEqual(yield* teammateWrites, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a teammate's turn sets their own reminder, in their own chat, and nothing more", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
+      VALUES ('member-direct', ${orgId}, 'direct', 0, ${at}, ${`fixture-member:${leads.a}`})`;
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+      VALUES ('member-said', ${orgId}, ${leads.a}, 'chat.message', 'P0',
+        ${JSON.stringify({
+          _tag: "chat.message",
+          chatId: "member-direct",
+          messageId: "member-message",
+          provenance: { _tag: "human", personId: "fixture-member", memberId: "member-in-direct" },
+          orgId,
+          agentId: leads.a,
+          eventId: "member-said",
+          receivedAt: at,
+          dedupeKey: null,
+        })}, 0, 0, 'claimed', ${`wake-${leads.a}`})`;
+    const staged: Array<string> = [];
+    state.stage = (wakeupId) => Effect.sync(() => void staged.push(wakeupId));
+    const service = yield* Lead.LeadMemory;
+    const defer = (fields: Partial<typeof Lead.DeferInput.Encoded>) =>
+      decodeDefer({
+        what: "Invented: send the mockups",
+        due: "2026-11-20T10:00:00+00:00",
+        onDue: "remind",
+        chatId: "member-direct",
+        sourceEventId: "member-said",
+        ...fields,
+      }).pipe(Effect.flatMap((input) => service.defer(scopeOf(leads.a), input)));
+    assert.isString((yield* defer({})).itemId);
+    assert.deepStrictEqual(staged, [`wake-${leads.a}`]);
+    const others: ReadonlyArray<Partial<typeof Lead.DeferInput.Encoded>> = [
+      { chatId: "group-chat", sourceEventId: `event-${leads.a}` },
+      { chatId: "owner-chat" },
+      { onDue: "start" },
+      { replaces: "invented-other" },
+    ];
+    for (const other of others) {
+      const refused = yield* defer({ ...other, what: `Invented ${JSON.stringify(other)}` }).pipe(
+        Effect.flip,
+      );
+      assert.strictEqual(refused.message, SHARED_REFUSAL, JSON.stringify(other));
+    }
+    assert.lengthOf(staged, 1);
   }).pipe(Effect.provide(layer)),
 );

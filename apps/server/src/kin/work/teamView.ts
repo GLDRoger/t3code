@@ -720,11 +720,17 @@ export const teamDetail = Effect.fn("KinTeamView.detail")(function* (
 });
 
 const CURRENCY_WORD = "(?:rupees?|dollars?|euros?|pounds?|bucks|rs\\.?|inr|usd|eur|gbp)";
-// A currency's symbol or word on either side of a figure, or "k", lakh and crore after one.
+// A figure starts a word: the digits inside a token ("ab3k", "W-3") are no figure of their own.
+const FIGURE = "(?<![\\p{L}\\p{N}_.])\\d[\\d,.]*";
+// A currency's symbol or word on either side of a figure, or lakh and crore after one.
 const AMOUNT = new RegExp(
-  `[₹$€£]\\s?\\d|\\d\\s?[₹$€£]|\\b${CURRENCY_WORD}\\s?\\d|\\d[\\d,.]*\\s?(?:k|lakhs?|lacs?|crores?|cr|${CURRENCY_WORD})\\b`,
-  "i",
+  `[₹$€£]\\s?\\d[\\d,.]*|${FIGURE}\\s?[₹$€£]|\\b${CURRENCY_WORD}\\s?\\d[\\d,.]*|${FIGURE}\\s?(?:lakhs?|lacs?|crores?|cr|${CURRENCY_WORD})\\b`,
+  "iu",
 );
+// "3k" is a sum only where the words around it are about money: "3k followers" is a count.
+const THOUSANDS = new RegExp(`${FIGURE}\\s?k\\b`, "iu");
+const MONEY_CONTEXT =
+  /\b(?:rupees?|dollars?|euros?|pounds?|bucks|inr|usd|eur|gbp|budget|cost|costs|price|priced|pay|pays|paid|payment|fee|fees|invoice|invoiced|quote|quoted|salary|rate|owe|owed|owes|spend|spent|charge|charged|bill|billed|refund|deposit|advance|revenue|profit|loss|discount|money|amount|cash)\b/i;
 const NUMBER_WORD =
   "(?:a|half|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion)";
 // "forty thousand rupees", "five lakh", "Rupees fifty thousand": an amount in words is an amount.
@@ -801,15 +807,16 @@ export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   text: string,
   askedBy?: KinPersonId,
 ) {
-  const amount =
-    "it names an amount or a money document. Keep amounts out of a message to a teammate";
-  if (
-    AMOUNT.test(text) ||
-    AMOUNT_WORDS.test(text) ||
-    MONEY_NUMBER.test(text) ||
-    EURO_FIGURE.test(text)
-  )
-    return amount;
+  // The agent is told which words read as a sum, so it can send the rest or ask the owner.
+  const figure = (said: string) =>
+    `“${said.trim()}” reads as an amount of money, which they may not see`;
+  const written =
+    AMOUNT.exec(text) ??
+    AMOUNT_WORDS.exec(text) ??
+    MONEY_NUMBER.exec(text) ??
+    EURO_FIGURE.exec(text) ??
+    (MONEY_CONTEXT.test(text) ? THOUSANDS.exec(text) : null);
+  if (written !== null) return figure(written[0]);
   const sql = yield* SqlClient.SqlClient;
   const known = askedBy === undefined ? sql`1 = 1` : personSees(sql, askedBy);
   // A bare figure that is the sum on something they can't see, however it is written.
@@ -824,7 +831,7 @@ export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
         JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
         WHERE p.org_id = ${orgId} AND ${same(sql`p.amount_minor`)}
           AND NOT ${personSees(sql, personId)} AND ${known}) AS hit`;
-    if (hit?.hit === 1) return amount;
+    if (hit?.hit === 1) return "it carries a figure that is a sum they may not see";
   }
   const keys = [...new Set(text.match(ENTRY_KEY) ?? [])];
   if (keys.length > 0) {
@@ -852,6 +859,6 @@ export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
     LIMIT 2000`;
   return figures.length > 0 &&
     termsFigures.some((row) => figuresIn(row.terms).some((n) => figures.includes(n)))
-    ? amount
+    ? "it carries a figure from a client's terms they may not see"
     : undefined;
 });

@@ -28,6 +28,7 @@ import {
   type KinAccessMeResult,
   type KinPeopleUpdateProfileInput,
   KinPersonProfile,
+  KinPersonQuietHours,
   type KinPeopleSetOwnerNameInput,
   type AuthSessionId,
 } from "@t3tools/contracts";
@@ -59,6 +60,7 @@ import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { placesOf } from "../work/teamView.ts";
 import { accessOf, accessSql, isOwnerHimself, mayActAsOwner, ownerLevel } from "./KinAccess.ts";
+import { KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
 import { profileSets } from "./profileFields.ts";
 
 const isKinError = Schema.is(KinChatError);
@@ -79,6 +81,7 @@ const hash = (secret: string) => NodeCrypto.createHash("sha256").update(secret).
 const decodePersonRow = Schema.decodeUnknownSync(KinPerson);
 const decodePerson = (row: Record<string, unknown>) => decodePersonRow(row);
 const decodeProfileRow = Schema.decodeUnknownSync(KinPersonProfile);
+const decodeQuiet = Schema.decodeUnknownOption(Schema.fromJsonString(KinPersonQuietHours));
 const decodeProfile = (row: {
   readonly personId: string;
   readonly displayName: string;
@@ -89,12 +92,16 @@ const decodeProfile = (row: {
   readonly timeZone: string | null;
   readonly workHours: string | null;
   readonly talkStyle: string;
+  readonly quietHours: string | null;
+  readonly hold: number | null;
 }) => {
   // An unset field stays off the wire, so the Team list's answer doesn't grow for nothing.
-  const { talkStyle, ...rest } = row;
+  const { talkStyle, quietHours, hold, ...rest } = row;
   return decodeProfileRow({
     ...rest,
     ...(talkStyle === "" ? {} : { talkStyle }),
+    ...(quietHours === null ? {} : { quietHours: JSON.parse(quietHours) }),
+    ...(hold === null ? {} : { holdOutsideHours: hold === 1 }),
     roleTags: JSON.parse(row.roleTags),
     workHours: row.workHours === null ? null : JSON.parse(row.workHours),
   });
@@ -215,7 +222,21 @@ export const make = Effect.gen(function* () {
   ) {
     if (isOwnerHimself(identity.owner, personId)) return yield* denied;
     if (isOwnerHimself(identity.owner, caller.personId) || caller.personId === personId) return;
-    if (yield* level(orgId, personId)) return yield* ownerOnly;
+    if ((yield* level(orgId, personId)) || (yield* keptLevel(orgId, personId)))
+      return yield* ownerOnly;
+  });
+  /** Removed, whether a new link would bring them back owner-level: then it is the owner's call. */
+  const keptLevel = Effect.fn("KinPeople.keptLevel")(function* (
+    orgId: KinOrgId,
+    personId: KinPersonId,
+  ) {
+    const [row] = yield* sql<{ kept: string | null }>`SELECT
+        json_extract(removed_access_json, '$.access') AS kept
+      FROM kin_people WHERE org_id = ${orgId} AND person_id = ${personId}
+        AND removed_at IS NOT NULL`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.keptLevel")),
+    );
+    return row?.kept === "co_owner";
   });
   const person = Effect.fn("KinPeople.person")(function* (orgId: KinOrgId, personId: KinPersonId) {
     const rows =
@@ -287,6 +308,58 @@ export const make = Effect.gen(function* () {
       expiresAt: DateTime.formatIso(DateTime.makeUnsafe(expiresAt)),
     };
   });
+  /**
+   * The same person let back in: the level, places, leads and chats their access was removed
+   * from come back as they were, history included, and their tasks note who let them back.
+   */
+  const bringBack = Effect.fn("KinPeople.bringBack")(function* (
+    orgId: KinOrgId,
+    personId: KinPersonId,
+  ) {
+    const [gone] = yield* sql<{ removedAt: number | null }>`SELECT removed_at AS "removedAt"
+      FROM kin_people WHERE org_id = ${orgId} AND person_id = ${personId}`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.back")),
+    );
+    yield* sql`UPDATE kin_people
+      SET access = COALESCE(json_extract(removed_access_json, '$.access'), access),
+        sees_clients = COALESCE(json_extract(removed_access_json, '$.clients'), sees_clients),
+        sees_docs = COALESCE(json_extract(removed_access_json, '$.docs'), sees_docs),
+        sees_money = COALESCE(json_extract(removed_access_json, '$.money'), sees_money),
+        removed_access_json = NULL, removed_at = NULL
+      WHERE org_id = ${orgId} AND person_id = ${personId}`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.back")),
+    );
+    const removedAt = gone?.removedAt ?? null;
+    if (removedAt === null) return;
+    // Removal stamps each with the same instant, so this undoes that removal and nothing older.
+    yield* sql`UPDATE kin_lead_access SET revoked_at = NULL
+      WHERE org_id = ${orgId} AND person_id = ${personId} AND revoked_at = ${removedAt}`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.backLeads")),
+    );
+    yield* sql`UPDATE kin_chat_members SET left_at = NULL
+      WHERE org_id = ${orgId} AND principal_kind = 'person' AND person_id = ${personId}
+        AND left_at = ${DateTime.formatIso(DateTime.makeUnsafe(removedAt))}`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.backChats")),
+    );
+    yield* viewMoved(orgId, personId);
+    yield* refresh.touch(orgId, "leads");
+    // A co-owner talks to every agent in their own chat with it, as `setAccess` opens them.
+    if (Option.isSome(chats) && (yield* level(orgId, personId))) {
+      const leads = yield* sql<{ agentId: KinAgentId }>`SELECT l.agent_id AS "agentId"
+        FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+        WHERE l.org_id = ${orgId} AND a.role = 'lead' AND a.retired_at IS NULL
+        ORDER BY l.agent_id`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinPeople.backLeadChats")),
+      );
+      for (const lead of leads)
+        yield* chats.value.createDirect(
+          { _tag: "person", orgId, personId },
+          { orgId, agentId: lead.agentId },
+        );
+    }
+    if (Option.isSome(records))
+      yield* noteTasks(records.value, personId, { orgId, personId }, "accessBack");
+  });
   const accept = Effect.fn("KinPeople.accept")(function* (input: KinInviteAcceptRequest) {
     const parts = input.secret.split(".");
     if (parts.length !== 3 || parts[0] !== identity.owner.orgId) return yield* missing;
@@ -318,11 +391,7 @@ export const make = Effect.gen(function* () {
           );
           if (!consumed.length) return yield* missing;
           const personId = KinPersonId.make(row.person_id ?? NodeCrypto.randomUUID());
-          if (row.person_id)
-            yield* sql`UPDATE kin_people SET removed_at = NULL
-              WHERE org_id = ${orgId} AND person_id = ${row.person_id}`.pipe(
-              Effect.mapError(toPersistenceSqlError("KinPeople.back")),
-            );
+          if (row.person_id) yield* bringBack(identity.owner.orgId, personId);
           if (!row.person_id) {
             const handle = yield* uniqueHandle(identity.owner.orgId, row.handle, now);
             // A new teammate starts with client names and shared docs; money stays off.
@@ -519,9 +588,10 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.mapError(sqlError("KinPeople.revokeDevice")));
   });
   /**
-   * Takes the person out of the org for good: links, sessions, every chat and lead they could
-   * reach, their pushes, and every turn or event that answers them. A person let back in later
-   * starts as a new joiner in whatever they are added to again.
+   * Takes away the person's access: links, sessions, every chat and lead they could reach, their
+   * pushes, and every turn or event that answers them. Nothing else moves: their open tasks stay
+   * in their name, each saying who removed them, and nothing is given to anyone. A new link for
+   * the same person (`accept`) brings back exactly what they had.
    */
   const removeAccess = Effect.fn("KinPeople.removeAccess")(function* (
     session: AuthenticatedSession,
@@ -534,16 +604,18 @@ export const make = Effect.gen(function* () {
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
-          const leaving = yield* person(input.orgId, input.personId);
-          // Let back in later, they start as a new joiner: their old level never comes back.
-          yield* sql`UPDATE kin_people SET access = 'member', sees_clients = 1, sees_docs = 1,
-              sees_money = 0, removed_at = ${now}
+          yield* person(input.orgId, input.personId);
+          // Removed, they hold no level anywhere; what they had is kept for a new link to restore.
+          yield* sql`UPDATE kin_people SET removed_access_json = json_object('access', access,
+              'clients', sees_clients, 'docs', sees_docs, 'money', sees_money),
+              access = 'member', sees_clients = 1, sees_docs = 1, sees_money = 0,
+              removed_at = ${now}
             WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessReset")),
           );
           yield* viewMoved(input.orgId, input.personId);
           if (Option.isSome(records))
-            yield* handTasksBack(records.value, caller.personId, input, leaving.displayName);
+            yield* noteTasks(records.value, caller.personId, input, "accessRemoved");
           // An unused link would let them straight back in.
           yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
         WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND consumed_at IS NULL
@@ -623,32 +695,25 @@ export const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(sqlError("KinPeople.removeAccess")));
   });
-  /** Open tasks a leaving person holds go back to whoever gave them, else to the owner. */
-  const handTasksBack = Effect.fn("KinPeople.handTasksBack")(function* (
+  /**
+   * Each open task the person holds says, in its history, that `by` removed their access or that
+   * they came back; it stays theirs either way, so no agent starts on it because of either.
+   */
+  const noteTasks = Effect.fn("KinPeople.noteTasks")(function* (
     tasks: KinRecords["Service"],
     by: KinPersonId,
     input: { readonly orgId: KinOrgId; readonly personId: KinPersonId },
-    name: string,
+    field: "accessRemoved" | "accessBack",
   ) {
     const held = yield* sql<{ key: string }>`SELECT key FROM kin_records
       WHERE org_id = ${input.orgId} AND register_id = 'work' AND owner_kind = 'person'
         AND owner_id = ${input.personId} AND state NOT IN ('done', 'dropped')
       ORDER BY key`.pipe(Effect.mapError(toPersistenceSqlError("KinPeople.heldTasks")));
     const writer: Writer = { actor: { _tag: "person", personId: by }, via: "owner", askedBy: by };
-    const holder = { _tag: "person", personId: input.personId } as const;
     for (const task of held)
-      yield* tasks
-        .handBack(input.orgId, writer, task.key, holder, `${name} left the company.`)
-        .pipe(
-          // Nobody else gave it to them: it is the owner's to give again.
-          Effect.catchIf(
-            (error) => isKinError(error) && error.reason === "invalid_state",
-            () =>
-              tasks.update(input.orgId, writer, task.key, {
-                owner: { _tag: "person", personId: identity.owner.personId },
-              }),
-          ),
-        );
+      yield* tasks.update(input.orgId, writer, task.key, {}, undefined, [
+        { field, from: `person:${input.personId}`, to: null },
+      ]);
   });
   const setGithubLogin = Effect.fn("KinPeople.setGithubLogin")(function* (
     session: AuthenticatedSession,
@@ -697,6 +762,18 @@ export const make = Effect.gen(function* () {
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
+          // Removed, it is the level a new link brings back; the row stays a member's meanwhile.
+          const kept = yield* sql`UPDATE kin_people
+            SET removed_access_json = json_set(removed_access_json, '$.access', ${input.access})
+            WHERE org_id = ${input.orgId} AND person_id = ${input.personId}
+              AND removed_at IS NOT NULL AND removed_access_json IS NOT NULL
+            RETURNING person_id`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.setAccess")),
+          );
+          if (kept.length > 0) {
+            yield* refresh.touch(input.orgId, "people");
+            return yield* person(input.orgId, input.personId);
+          }
           const before = (yield* person(input.orgId, input.personId)).access;
           if (before === input.access) return yield* person(input.orgId, input.personId);
           yield* sql`UPDATE kin_people SET access = ${input.access}
@@ -781,6 +858,21 @@ export const make = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           const flag = (on: boolean | undefined) => (on === undefined ? null : on ? 1 : 0);
+          // Removed, they are the places a new link brings back.
+          const kept = yield* sql`UPDATE kin_people SET removed_access_json = json_set(
+                removed_access_json,
+                '$.clients', COALESCE(${flag(input.clients)}, json_extract(removed_access_json, '$.clients')),
+                '$.docs', COALESCE(${flag(input.docs)}, json_extract(removed_access_json, '$.docs')),
+                '$.money', COALESCE(${flag(input.money)}, json_extract(removed_access_json, '$.money')))
+            WHERE org_id = ${input.orgId} AND person_id = ${input.personId}
+              AND removed_at IS NOT NULL AND removed_access_json IS NOT NULL
+            RETURNING person_id`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.setPlaces")),
+          );
+          if (kept.length > 0) {
+            yield* refresh.touch(input.orgId, "people");
+            return yield* placesFor(input.orgId, input.personId);
+          }
           const changed = yield* sql`UPDATE kin_people SET
               sees_clients = COALESCE(${flag(input.clients)}, sees_clients),
               sees_docs = COALESCE(${flag(input.docs)}, sees_docs),
@@ -803,7 +895,7 @@ export const make = Effect.gen(function* () {
     sql<Parameters<typeof decodeProfile>[0]>`SELECT person_id AS "personId",
         display_name AS "displayName", handle, avatar_attachment_id AS "pictureId",
         role_tags_json AS "roleTags", skills, time_zone AS "timeZone", work_hours_json AS "workHours",
-        talk_style AS "talkStyle"
+        talk_style AS "talkStyle", quiet_hours_json AS "quietHours", hold_outside_hours AS hold
       FROM kin_people WHERE org_id = ${orgId}
         ${personId === undefined ? sql`` : sql`AND person_id = ${personId}`}
       ORDER BY display_name, person_id`.pipe(
@@ -825,6 +917,13 @@ export const make = Effect.gen(function* () {
         Effect.provideService(SqlClient.SqlClient, sql),
       ));
     const reader = people.find((p) => p.orgId === orgId);
+    const [settings] = yield* sql<{ hours: string }>`SELECT quiet_hours_json AS hours
+      FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinPeople.quietHours")),
+    );
+    const quietHours = Option.getOrElse(decodeQuiet(settings?.hours), () => ({
+      ...KIN_DEFAULT_QUIET_HOURS,
+    }));
     // Whose profile the reader may change: the same check `updateProfile` runs.
     const editable = new Set<string>();
     for (const row of rows)
@@ -840,7 +939,11 @@ export const make = Effect.gen(function* () {
       canEdit: editable.has(profile.personId),
     });
     if (!ownerLevelReader)
-      return { profiles: rows.map(withEdit), ownerPersonId: identity.owner.personId };
+      return {
+        profiles: rows.map(withEdit),
+        ownerPersonId: identity.owner.personId,
+        quietHours,
+      };
     // The Team list's open and late counts: owner-level, as people_read's load is.
     const now = yield* Clock.currentTimeMillis;
     const held = yield* sql<{ personId: string; open: number; late: number }>`SELECT
@@ -861,6 +964,7 @@ export const make = Effect.gen(function* () {
         },
       })),
       ownerPersonId: identity.owner.personId,
+      quietHours,
     };
   });
   /**
@@ -882,6 +986,14 @@ export const make = Effect.gen(function* () {
       return yield* new KinChatError({
         reason: "not_allowed",
         message: "Only they can say how they like to be spoken to.",
+      });
+    if (
+      caller.personId !== input.personId &&
+      (input.quietHours !== undefined || input.holdOutsideHours !== undefined)
+    )
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: "Only they can set when Kin holds messages for them.",
       });
     const picture = input.picture;
     if (picture != null && picture.type !== "image")

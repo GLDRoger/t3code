@@ -1,14 +1,27 @@
-import { type KinPeopleUpdateProfileInput, KinRoleTags, KinWorkHours } from "@t3tools/contracts";
+import {
+  type KinPeopleUpdateProfileInput,
+  KinPersonQuietHours,
+  KinRoleTags,
+  KinWorkHours,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 const encodeRoleTags = Schema.encodeEffect(Schema.fromJsonString(KinRoleTags));
 const encodeWorkHours = Schema.encodeEffect(Schema.fromJsonString(KinWorkHours));
+const encodeQuietHours = Schema.encodeEffect(Schema.fromJsonString(KinPersonQuietHours));
 
 export type ProfileFields = Pick<
   KinPeopleUpdateProfileInput,
-  "displayName" | "roleTags" | "skills" | "timeZone" | "workHours" | "talkStyle"
+  | "displayName"
+  | "roleTags"
+  | "skills"
+  | "timeZone"
+  | "workHours"
+  | "talkStyle"
+  | "quietHours"
+  | "holdOutsideHours"
 >;
 
 /** The `kin_people` assignments for the given profile fields, stamped `profile_updated_at`. */
@@ -25,6 +38,10 @@ export const profileSets = Effect.fn("KinPeople.profileSets")(function* (
     fields.workHours == null
       ? fields.workHours
       : yield* encodeWorkHours(fields.workHours).pipe(Effect.orDie);
+  const quietHours =
+    fields.quietHours == null
+      ? fields.quietHours
+      : yield* encodeQuietHours(fields.quietHours).pipe(Effect.orDie);
   return [
     fields.displayName === undefined ? null : sql`display_name = ${fields.displayName}`,
     roleTags === undefined ? null : sql`role_tags_json = ${roleTags}`,
@@ -32,6 +49,10 @@ export const profileSets = Effect.fn("KinPeople.profileSets")(function* (
     fields.timeZone === undefined ? null : sql`time_zone = ${fields.timeZone}`,
     workHours === undefined ? null : sql`work_hours_json = ${workHours}`,
     fields.talkStyle === undefined ? null : sql`talk_style = ${fields.talkStyle.trim()}`,
+    quietHours === undefined ? null : sql`quiet_hours_json = ${quietHours}`,
+    fields.holdOutsideHours === undefined
+      ? null
+      : sql`hold_outside_hours = ${fields.holdOutsideHours ? 1 : 0}`,
     sql`profile_updated_at = ${now}`,
   ].filter((part) => part !== null);
 });

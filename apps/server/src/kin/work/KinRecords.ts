@@ -992,7 +992,7 @@ const make = Effect.gen(function* () {
         ${input.team === true || writer.teammate === true || writer.teamShared === true || (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list)) ? 1 : 0},
         ${options.authors === undefined ? author : options.authors.title},
         ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes},
-        ${givenAway && writer.actor._tag === "agent" ? writer.actor.agentId : null},
+        ${givenAway && writer.actor._tag === "agent" && writer.askedBy == null ? writer.actor.agentId : null},
         ${input.sensitive === true ? textBy(writer) : null})`;
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
@@ -1391,9 +1391,11 @@ const make = Effect.gen(function* () {
               from: shownPrincipal(before.owner),
               to: patch.handedBack.note,
             });
+          // A lead is the giver only on its own initiative; asked, the person who asked is.
           set(
             "assigned_by_agent_id",
             writer.actor._tag === "agent" &&
+              writer.askedBy == null &&
               patch.handedBack === undefined &&
               !samePrincipal(writer.actor, patch.owner)
               ? writer.actor.agentId

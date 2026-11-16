@@ -119,12 +119,16 @@ features:
     phone: [tab:chats, KinChat]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     tools: [kin_relay, kin_hand_off, kin_take_private]
+    note: >-
+      A relay reads as the person's, carried by the agent ("Sent by Rhea Kapoor", via Chief of
+      staff; the push says "Rhea, via Chief of staff"), both ways.
     proof:
       - apps/server/src/kin/lead/Handoff.test.ts
       - apps/server/src/kin/contract/relay.kin-contract.test.ts
       - .agents/skills/verify-kin/scripts/relay-owner-to-member.sh
       - .agents/skills/verify-kin/scripts/member-request-to-owner.sh
       - .agents/skills/verify-kin/scripts/team-room-discussion.sh
+      - .agents/skills/verify-kin/scripts/relay-marked.sh
 
   - id: team-room
     name: Agents settle something in the Team room and tell the owner once
@@ -182,8 +186,13 @@ features:
     phone: [tab:chats, KinChat]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     tools: [kin_defer, kin_schedule, kin_cancel]
+    note: >-
+      Anyone sets their own reminders in their chat with an agent and gets them there; repeating
+      ones are the owner's and co-owners'.
     proof:
       - apps/server/src/kin/triggers/deferrals.test.ts
+      - apps/server/src/kin/lead/LeadMemory.shared.test.ts
+      - .agents/skills/verify-kin/scripts/teammate-reminder.sh
       - apps/server/src/kin/triggers/KinTriggerScheduler.test.ts
       - apps/server/src/kin/contract/scheduledTask.kin-contract.test.ts
 
@@ -423,7 +432,13 @@ features:
     form: true
     roles: { owner: none, co_owner: none, lead: both, member: both }
     tools: [record_hand_back]
-    proof: [packages/client-runtime/src/kin/kinWork.test.ts]
+    note: >-
+      It goes back to whoever gave it: the person who asked the agent for it, or the agent when it
+      gave it on its own.
+    proof:
+      - packages/client-runtime/src/kin/kinWork.test.ts
+      - apps/server/src/kin/work/KinRecords.test.ts
+      - .agents/skills/verify-kin/scripts/asker-is-giver.sh
 
   - id: task-private
     name: Only me, a private task
@@ -996,9 +1011,14 @@ features:
     phone: [SettingsKin, KinTeam, KinTeammate]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [people_update]
+    note: >-
+      Removing access changes access only: open tasks stay theirs and show under Needs you, and a
+      new link from the owner brings back their level, places, chats and tasks.
     proof:
       - apps/server/src/kin/lead/peopleUpdate.test.ts
       - packages/client-runtime/src/kin/kinTeam.test.ts
+      - apps/server/src/kin/people/KinPeople.test.ts
+      - .agents/skills/verify-kin/scripts/remove-and-bring-back.sh
 
   - id: teammate-profile
     name: Change a teammate's profile
@@ -1019,10 +1039,14 @@ features:
     phone: [SettingsKin, KinProfile, KinProfileEdit]
     form: true
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: Only the person sets how they like to be spoken to; others see it read-only.
+    note: >-
+      Only the person sets how they like to be spoken to, their quiet hours, and whether Kin holds
+      non-urgent messages outside their working hours; others see these read-only.
     proof:
       - packages/client-runtime/src/kin/kinProfiles.test.ts
       - apps/server/src/kin/people/KinPeople.test.ts
+      - apps/server/src/kin/lead/messagesToPeople.test.ts
+      - .agents/skills/verify-kin/scripts/hours-two-zones.sh
 
   # ── Joining ────────────────────────────────────────────────────────────────────────────────
   - id: join

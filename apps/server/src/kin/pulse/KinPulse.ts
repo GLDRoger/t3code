@@ -199,8 +199,13 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
   facts: ReadonlyArray<SensedFact>,
 ) {
   if (viewer._tag === "owner") return facts;
+  // Who holds a task after their access went is the owner's to settle, not a teammate's.
   const candidates = facts.filter(
-    (fact) => fact.family === "work" && !fact.sensitive && fact.subject.recordId !== undefined,
+    (fact) =>
+      fact.family === "work" &&
+      fact.sense !== "holder_removed" &&
+      !fact.sensitive &&
+      fact.subject.recordId !== undefined,
   );
   if (candidates.length === 0 || viewer.people.length === 0) return [];
   const sql = yield* SqlClient.SqlClient;

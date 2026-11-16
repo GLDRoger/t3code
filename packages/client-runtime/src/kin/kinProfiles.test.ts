@@ -52,6 +52,24 @@ describe("kinProfiles", () => {
     });
     expect(kinProfileChanges(profile, { ...draft, displayName: " " }).ok).toBe(false);
     expect(kinProfileChanges(profile, { ...draft, start: "9am" }).ok).toBe(false);
+    // Quiet hours and the switch go only from their own form, and only when they change.
+    const company = { companyQuiet: { from: "21:00", to: "08:00" }, isOwner: false };
+    const own = kinProfileDraft(profile, company);
+    expect([own.quietFrom, own.quietTo, own.holdOutside]).toEqual(["21:00", "08:00", true]);
+    const mine = { ...company, mine: true };
+    expect(kinProfileChanges(profile, own, mine)).toEqual({ ok: true, changes: {} });
+    expect(
+      kinProfileChanges(profile, { ...own, quietTo: "07:00", holdOutside: false }, mine),
+    ).toEqual({
+      ok: true,
+      changes: { quietHours: { from: "21:00", to: "07:00" }, holdOutsideHours: false },
+    });
+    expect(
+      kinProfileChanges(profile, { ...own, holdOutside: false }, { ...company, mine: false }),
+    ).toEqual({ ok: true, changes: {} });
+    expect(kinProfileChanges(profile, { ...own, quietFrom: "10pm" }, mine).ok).toBe(false);
+    // The owner's switch starts off.
+    expect(kinProfileDraft(profile, { isOwner: true }).holdOutside).toBe(false);
   });
 });
 

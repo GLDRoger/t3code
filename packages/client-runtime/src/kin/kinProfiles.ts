@@ -6,6 +6,7 @@ import {
   type KinAgentId,
   type KinLeadProfile,
   type KinPersonProfile,
+  type KinPersonQuietHours,
   type KinWorkHours,
 } from "@t3tools/contracts";
 
@@ -30,6 +31,13 @@ export const KIN_PROFILE_COPY = {
   noTalk: "Not said yet",
   hoursLabel: "Working hours",
   timeZoneLabel: "Time zone",
+  quietLabel: "Quiet hours",
+  quietHint:
+    "Nothing that can wait reaches you then, on your own clock. Something urgent, with its reason, still does.",
+  holdLabel: "Hold non-urgent messages outside my working hours",
+  holdHint:
+    "Agents' notes, passed-on messages and task hand-overs wait for your next working hours, in order. Replies to what you just wrote and messages from people arrive as usual.",
+  holding: "Holds non-urgent messages outside working hours",
   noHours: "Not set",
   noSkills: "Nothing yet",
   noTags: "No roles yet",
@@ -109,6 +117,39 @@ export interface KinProfileDraft {
   readonly start: string;
   readonly end: string;
   readonly timeZone: string;
+  readonly quietFrom: string;
+  readonly quietTo: string;
+  readonly holdOutside: boolean;
+}
+
+/**
+ * What a profile's holding fields mean when the person set none: the company's quiet hours
+ * (`KinPeopleProfilesResult.quietHours`), and the switch on for everyone but the owner.
+ */
+export interface KinProfileHolding {
+  readonly companyQuiet?: KinPersonQuietHours | undefined;
+  readonly isOwner: boolean;
+}
+
+const KIN_QUIET_DEFAULT: KinPersonQuietHours = { from: "22:00", to: "07:00" };
+
+/** Their quiet hours and whether they hold messages outside their working hours, as they stand. */
+function kinProfileHolding(profile: KinPersonProfile, holding: KinProfileHolding) {
+  return {
+    quiet: profile.quietHours ?? holding.companyQuiet ?? KIN_QUIET_DEFAULT,
+    holdOutside: profile.holdOutsideHours ?? !holding.isOwner,
+  };
+}
+
+/** "22:00–07:00 · Holds non-urgent messages outside working hours". */
+export function kinQuietLine(profile: KinPersonProfile, holding: KinProfileHolding): string {
+  const held = kinProfileHolding(profile, holding);
+  return [
+    `${held.quiet.from}–${held.quiet.to}`,
+    held.holdOutside && profile.workHours !== null ? KIN_PROFILE_COPY.holding : null,
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
 }
 
 /** Where the platform can't list its zones (Hermes), the ones most teams are in. */
@@ -201,8 +242,15 @@ const deviceTimeZone = () => {
   }
 };
 
-export function kinProfileDraft(profile: KinPersonProfile): KinProfileDraft {
+export function kinProfileDraft(
+  profile: KinPersonProfile,
+  holding: KinProfileHolding = { isOwner: false },
+): KinProfileDraft {
+  const held = kinProfileHolding(profile, holding);
   return {
+    quietFrom: held.quiet.from,
+    quietTo: held.quiet.to,
+    holdOutside: held.holdOutside,
     displayName: profile.displayName,
     tags: profile.roleTags.join(", "),
     skills: profile.skills,
@@ -223,6 +271,8 @@ const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 export function kinProfileChanges(
   profile: KinPersonProfile,
   draft: KinProfileDraft,
+  /** Only the person sets when Kin holds messages for them; others' saves leave it alone. */
+  holding?: KinProfileHolding & { readonly mine: boolean },
 ):
   | {
       readonly ok: true;
@@ -233,6 +283,8 @@ export function kinProfileChanges(
         talkStyle?: string;
         timeZone?: string | null;
         workHours?: KinWorkHours | null;
+        quietHours?: KinPersonQuietHours;
+        holdOutsideHours?: boolean;
       };
     }
   | { readonly ok: false; readonly problem: string } {
@@ -248,6 +300,11 @@ export function kinProfileChanges(
     return { ok: false, problem: `Keep this under ${KIN_PROFILE_TALK_MAX} characters.` };
   if (draft.days.length > 0 && (!TIME.test(draft.start) || !TIME.test(draft.end)))
     return { ok: false, problem: "Write times as 24-hour HH:MM, such as 09:30." };
+  const mine = holding?.mine === true;
+  if (mine && (!TIME.test(draft.quietFrom) || !TIME.test(draft.quietTo)))
+    return { ok: false, problem: "Write quiet hours as 24-hour HH:MM, such as 22:00." };
+  const held = holding === undefined ? undefined : kinProfileHolding(profile, holding);
+  const quietHours = { from: draft.quietFrom, to: draft.quietTo };
   const roleTags = kinParseRoleTags(draft.tags);
   const workHours: KinWorkHours | null =
     draft.days.length === 0
@@ -268,6 +325,10 @@ export function kinProfileChanges(
       ...(talkStyle === (profile.talkStyle ?? "") ? {} : { talkStyle }),
       ...(timeZone === profile.timeZone ? {} : { timeZone }),
       ...(same(workHours, profile.workHours) ? {} : { workHours }),
+      ...(!mine || held === undefined || same(quietHours, held.quiet) ? {} : { quietHours }),
+      ...(!mine || held === undefined || draft.holdOutside === held.holdOutside
+        ? {}
+        : { holdOutsideHours: draft.holdOutside }),
     },
   };
 }

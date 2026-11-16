@@ -435,11 +435,20 @@ it.effect(
       });
 
       assert.isTrue((yield* service.removeAccess(ownerSession, { orgId, personId })).revoked);
-      const back = (yield* records.get(orgId, task.key))!;
-      assert.deepEqual(
-        [back.ownerKind, back.ownerId, back.state],
-        ["person", identity.owner.personId, "open"],
-      );
+      // Her task stays hers, and its history says who removed her access.
+      const kept = (yield* records.get(orgId, task.key))!;
+      assert.deepEqual([kept.ownerKind, kept.ownerId, kept.state], ["person", personId, "open"]);
+      const sql = yield* SqlClient.SqlClient;
+      const [change] = yield* sql<{ actor: string; fields: string }>`SELECT c.actor_id AS actor,
+          c.fields_json AS fields FROM kin_record_changes c
+        JOIN kin_records r ON r.record_id = c.record_id
+        WHERE r.key = ${task.key} ORDER BY c.seq DESC LIMIT 1`;
+      assert.equal(change?.actor, identity.owner.personId);
+      assert.include(change?.fields, "accessRemoved");
+      // While she is gone she holds no level anywhere.
+      const [gone] = yield* sql<{ access: string }>`SELECT access FROM kin_people
+        WHERE person_id = ${personId}`;
+      assert.equal(gone?.access, "member");
       for (const device of [first, second])
         assert.equal(
           (yield* sessions.verify(device.accessToken).pipe(Effect.result))._tag,
@@ -457,16 +466,18 @@ it.effect(
         list.people.map((held) => held.personId),
         personId,
       );
-      // The way back: a new link returns the same person, as a new joiner, never a co-owner.
+      // The way back: a new link from the owner returns the same person, as she was.
       const returned = yield* service.accept({ secret: (yield* link()).secret });
       assert.equal(returned.person.personId, personId);
-      assert.equal(returned.person.access, "member");
+      assert.equal(returned.person.access, "co_owner");
       assert.deepEqual(
         (yield* service.list(ownerSession, orgId)).places?.find(
           (one) => one?.personId === personId,
         ),
-        { personId, clients: true, docs: true, money: false, leads: [] },
+        { personId, clients: true, docs: true, money: true, leads: [] },
       );
+      const still = (yield* records.get(orgId, task.key))!;
+      assert.deepEqual([still.ownerKind, still.ownerId], ["person", personId]);
       assert.deepEqual(yield* joined(), [personId, other.person.personId].sort());
     }).pipe(Effect.provide(layer)),
 );
@@ -591,6 +602,25 @@ it.effect(
         "not_allowed",
       );
 
+      // A removed co-owner comes back a co-owner, so only the owner's link brings her back.
+      yield* service.setAccess(ownerSession, {
+        orgId,
+        personId: meera.person.personId,
+        access: "co_owner",
+      });
+      yield* service.removeAccess(ownerSession, { orgId, personId: meera.person.personId });
+      assert.propertyVal(
+        yield* service
+          .createInvite(raviSession, {
+            orgId,
+            displayName: "Meera",
+            personId: meera.person.personId,
+          })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+
       // Back to member: the next request reads it, and owner-level work is refused again.
       yield* service.setAccess(ownerSession, {
         orgId,
@@ -620,7 +650,7 @@ const teamLayer = Layer.mergeAll(People.layer, Groups.layer).pipe(
 
 // Review 14: removing someone left their turns running and their events queued.
 it.effect(
-  "removing access stops every turn and event answering them, takes them out of every chat, and a return starts fresh",
+  "removing access stops every turn and event answering them, takes them out of every chat, and a return puts them back",
   () =>
     Effect.gen(function* () {
       const service = yield* People.KinPeople;
@@ -836,7 +866,8 @@ it.effect(
       );
       yield* queue.finish({ orgId, wakeupId: turn.wakeupId, status: "completed" });
 
-      // Back again: a new joiner everywhere they are added, reading nothing from before.
+      // Back again: in every chat and with every lead she had, history and all; nothing she
+      // wrote before is answered again.
       const back = yield* service.accept({
         secret: (yield* service.createInvite(ownerSession, {
           orgId,
@@ -845,30 +876,28 @@ it.effect(
         })).secret,
       });
       assert.strictEqual(back.person.personId, mira.person.personId);
-      assert.deepStrictEqual(
-        (yield* repo.listMembersByPerson({ orgId, personId: mira.person.personId })).filter(
-          (member) => member.leftAt === null,
-        ),
-        [],
+      assert.sameMembers(
+        (yield* repo.listMembersByPerson({ orgId, personId: mira.person.personId }))
+          .filter((member) => member.leftAt === null)
+          .map((member) => member.chatId),
+        [direct.chatId, group.chatId],
       );
-      assert.strictEqual((yield* allow()).chatId, direct.chatId);
-      yield* groups.addMember([owner], {
-        chatId: group.chatId,
-        principal: { _tag: "person", personId: mira.person.personId },
-      });
-      for (const chatId of [direct.chatId, group.chatId])
-        assert.deepStrictEqual(
-          (yield* chats.history([mira.person], { chatId, beforeSeq: 1_000, limit: 100 })).messages,
-          [],
-        );
-      yield* say(mira.person, direct.chatId, "Invented-mira-returns");
-      const fresh = yield* wake();
-      assert.deepStrictEqual(
-        (yield* chats.read(fresh, { chatId: direct.chatId, afterSeq: 0, limit: 100 })).map(
-          (message) => message.body,
-        ),
-        ["Invented-mira-returns"],
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_lead_access WHERE person_id = ${mira.person.personId}
+          AND revoked_at IS NULL`,
+        1,
       );
+      const said = (chatId: KinChatId) =>
+        chats
+          .history([mira.person], { chatId, beforeSeq: 1_000, limit: 100 })
+          .pipe(Effect.map((page) => page.messages.map((message) => message.body)));
+      assert.include(yield* said(direct.chatId), "Invented-mira-question");
+      assert.include(yield* said(group.chatId), "Invented-mira-in-group");
+      assert.deepStrictEqual(yield* states(mira.person.personId), [
+        "expired",
+        "expired",
+        "expired",
+      ]);
     }).pipe(Effect.provide(teamLayer)),
 );
 

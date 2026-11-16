@@ -333,7 +333,7 @@ export function kinRemoveAccessCopy(name: string): {
 } {
   return {
     title: `Remove ${name}'s access?`,
-    detail: `${name} is signed out on every device and any unused link stops working. Their messages stay, and they keep their place in groups and chats, so a new link brings them back to all of it.`,
+    detail: `${name} is signed out on every device and any unused link stops working. Their open tasks stay in their name and show under Needs you, for you to give to someone else; nothing moves on its own. A new link brings them back with the same role, projects, tasks and chats.`,
     confirm: "Remove access",
   };
 }

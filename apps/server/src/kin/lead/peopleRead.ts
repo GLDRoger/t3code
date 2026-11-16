@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { workingAt } from "../triggers/quietHours.ts";
 import { playbookThreshold } from "../work/playbooks.ts";
 import { effectiveAudience } from "./Audience.ts";
 import { quote } from "./LeadPrompt.ts";
@@ -24,21 +25,6 @@ export const describeHours = (hours: KinWorkHours) => {
     ? `${DAYS[days[0] ?? 0]}–${DAYS[days.at(-1) ?? 0]}`
     : days.map((day) => DAYS[day]).join(", ");
   return `${named} ${hours.start}–${hours.end}`;
-};
-
-/** Whether `now` falls inside the hours, in their time zone. */
-export const workingAt = (hours: KinWorkHours, timeZone: string, now: number) => {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(now);
-  const part = (type: string) => parts.find((entry) => entry.type === type)?.value ?? "";
-  const day = DAYS.indexOf(part("weekday") as (typeof DAYS)[number]);
-  const time = `${part("hour")}:${part("minute")}`;
-  return hours.days.includes(day) && time >= hours.start && time < hours.end;
 };
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;

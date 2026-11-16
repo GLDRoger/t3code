@@ -126,6 +126,8 @@ type SendInput = KinMessagesSendInput & {
    * them, not the owner's, and admitted outside the chat's floor (`KinFloor.admitToPerson`).
    */
   readonly forChat?: true;
+  /** With `forChat`: another person's words the agent passes on (`kin_relay`). */
+  readonly relay?: KinMessageRelay;
 };
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
@@ -664,6 +666,16 @@ const make = Effect.gen(function* () {
       ))
     );
   });
+  const ownDirectChat = Effect.fn("KinChatService.ownDirectChat")(
+    function* (identity: PersonIdentity, chatId: KinChatId) {
+      const prefix = `${identity.personId}:`;
+      const rows = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${identity.orgId}
+        AND chat_id = ${chatId} AND kind = 'direct'
+        AND substr(direct_key, 1, ${prefix.length}) = ${prefix} LIMIT 1`;
+      return rows.length > 0;
+    },
+    Effect.mapError(toPersistenceSqlError("KinChatService.ownDirectChat")),
+  );
   /**
    * A generated doc's file is the owner's alone: the person whose agent's job made it, or who
    * asked. A file a doc's markdown shows is read by whoever reads Docs: the org's owner.
@@ -761,6 +773,7 @@ const make = Effect.gen(function* () {
       readonly floorRunId?: string | null;
       readonly clientId: { readonly kind: "send" | "act"; readonly id: string } | null;
       readonly forChat?: boolean;
+      readonly relay?: KinMessageRelay | undefined;
     },
   ) {
     // A reply the caller names must be one it may read; a hidden one reads as missing.
@@ -793,6 +806,7 @@ const make = Effect.gen(function* () {
       replyTo: input.replyTo,
       widgetId: input.widgetId,
       floorRunId: input.floorRunId ?? null,
+      ...(input.forChat === true && input.relay !== undefined ? { relay: input.relay } : {}),
       status: "posted",
       sentBy: null,
       clientMessageId: input.clientId,
@@ -1260,6 +1274,7 @@ const make = Effect.gen(function* () {
       widgetId: null,
       clientId: { kind: "send", id: request.clientMessageId },
       forChat: toPerson,
+      relay: toPerson ? input.relay : undefined,
     });
     // A reply someone waits on doesn't use up the hourly room for unprompted notices.
     if (
@@ -2610,14 +2625,16 @@ const make = Effect.gen(function* () {
         )
           return yield* invalidState;
       }
-      // Reminders and scheduled tasks act for the owner, so only the owner taps them.
+      // Reminders and scheduled tasks act for the owner, so only the owner taps them, except a
+      // reminder in someone's own direct chat: theirs to finish or snooze.
       if (
         (widget.type === "reminder" ||
           widget.type === "scheduled_task" ||
           widget.type === KIN_WORKER_PUBLISH_CARD ||
           widget.type === KIN_SOCIAL_WEEK_CARD ||
           widget.type === KIN_SOCIAL_PACK_CARD) &&
-        !owning
+        !owning &&
+        !(widget.type === "reminder" && (yield* ownDirectChat(identity, widget.chatId)))
       )
         return yield* notAllowed;
       // Any writing member of the card's chat may undo; the other taps wait on the dispatcher.

@@ -47,6 +47,8 @@ export interface Delivery {
   /** Kin's own line when the lead can't write it, saying so. */
   readonly fallbackBody: string;
   readonly deadlineAt: number;
+  /** Kin's line goes to everyone in the chat: a teammate's own reminder, in their chat. */
+  readonly forChat?: true;
 }
 
 export class KinLeadDeliveryError extends Schema.TaggedError<KinLeadDeliveryError>()(
@@ -149,6 +151,7 @@ export const makeCardWriter = Effect.gen(function* () {
     body: string,
     widget: Delivery["widget"],
     now: number,
+    audience: Repository.WriteAudience = "owner",
   ) {
     const existing = yield* repo.getWidget({ orgId, widgetId: widget.widgetId });
     if (Option.isSome(existing)) return existing.value;
@@ -156,7 +159,7 @@ export const makeCardWriter = Effect.gen(function* () {
     const message = yield* repo.insertMessage({
       orgId,
       chatId,
-      audience: "owner",
+      audience,
       messageId,
       author: { _tag: "system" },
       kind: "system",
@@ -173,7 +176,7 @@ export const makeCardWriter = Effect.gen(function* () {
       editedAt: null,
     });
     const row = widgetRow(orgId, chatId, message.messageId, widget, at);
-    yield* repo.insertWidget({ ...row, audience: "owner" });
+    yield* repo.insertWidget({ ...row, audience });
     yield* publish({
       type: "message.posted",
       orgId,
@@ -299,7 +302,10 @@ const make = Effect.gen(function* () {
     }
     const { widget } = delivery;
     const marked =
-      delivery.kind === "reminder" && typeof widget.state === "object" && widget.state !== null
+      delivery.kind === "reminder" &&
+      delivery.forChat === undefined &&
+      typeof widget.state === "object" &&
+      widget.state !== null
         ? { ...widget, state: { ...widget.state, fallback: true } }
         : widget;
     yield* cards.post(
@@ -309,6 +315,7 @@ const make = Effect.gen(function* () {
       delivery.fallbackBody,
       marked,
       now,
+      delivery.forChat === undefined ? "owner" : "chat",
     );
   });
   const settleOne = Effect.fn("KinLeadDelivery.settleOne")(function* (

@@ -791,11 +791,20 @@ it.effect(
           postTo,
         );
         assert.strictEqual(relayed.to, me!.name);
-        assert.deepStrictEqual(yield* systemRows(sql, orgId, ctx.chiefChat), [
-          {
-            body: 'Zoya Sheikh asked Chief of staff:\n"Can W-7 move to 1 Feb? I\'m on leave 20 to 29 January."',
-          },
-        ]);
+        // Posted by the agent, marked as Zoya's: "Sent by Zoya Sheikh, via Chief of staff".
+        const passedOn = yield* sql<{ author: string; body: string; relay: string }>`SELECT
+            author_kind AS author, body, relay_json AS relay FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${ctx.chiefChat} AND relay_json IS NOT NULL`;
+        assert.deepStrictEqual(
+          passedOn.map(({ author, body }) => ({ author, body })),
+          [
+            {
+              author: "agent",
+              body: 'Zoya Sheikh asked Chief of staff:\n"Can W-7 move to 1 Feb? I\'m on leave 20 to 29 January."',
+            },
+          ],
+        );
+        assert.include(passedOn[0]?.relay, '"personName":"Zoya Sheikh"');
         assert.lengthOf(
           yield* sql`SELECT 1 FROM kin_waiting WHERE person_id = ${owner.personId}
             AND chat_id = ${ctx.chiefChat}`,
