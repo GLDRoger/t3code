@@ -28,6 +28,8 @@ import {
   type SampleRun,
   shellOutput,
   shownText,
+  silentEnd,
+  filledEvent,
   namedPathsLine,
   shellRequest,
   shellResponsesRequest,
@@ -301,6 +303,50 @@ it("reads a Kin turn's text as the chat shows it, without a repeat after kin_end
     shownText([[text("NO_REPLY"), use("kin_end")], [text("Done.")]]),
     "NO_REPLY\n\nDone.",
   );
+});
+
+it("refuses a Kin kin_end that leaves a person's message unanswered, as Kin does", () => {
+  const text = (value: string) => ({ type: "text", text: value });
+  const use = (name: string) => ({
+    type: "tool_use",
+    id: name,
+    name: `mcp__t3-code__${name}`,
+    input: {},
+  });
+  const turn = (prompt: string, responses: Array<ReadonlyArray<unknown>>) =>
+    silentEnd({
+      testCase: { prompt, setup: { world: { kinLead: true } } } as never,
+      responses,
+    });
+  const asked = '> BEGIN QUOTE: owner message\n> {"body": "Did Orbit pay?"}';
+  // Sonnet 5.5: the reply only in thinking, then kin_end.
+  assert.isTrue(turn(asked, [[use("records_query")], [use("kin_end")]]));
+  assert.isTrue(turn(asked, [[text("NO_REPLY"), use("kin_end")]]));
+  assert.isFalse(turn(asked, [[text("Yes, on 4 Nov."), use("kin_end")]]));
+  assert.isFalse(turn(asked, [[use("kin_ask")], [use("kin_end")]]));
+  // A check-in owes no reply.
+  assert.isFalse(turn("> BEGIN QUOTE: pulse\n> {}", [[use("kin_end")]]));
+});
+
+it("fills a Kin tool's left-out or message-id event as Kin's tool gate does", () => {
+  const testCase = {
+    prompt: '> {"event": "event-1", "message": "msg-event-1", "body": "Orbit paid 40k"}',
+    setup: { world: { kinLead: true } },
+  } as never;
+  const use = (input: Record<string, unknown>) => ({
+    type: "tool_use" as const,
+    id: "x",
+    name: "mcp__t3-code__payment_record",
+    input,
+  });
+  for (const given of [undefined, "msg-event-1", "event-1"])
+    assert.deepStrictEqual(
+      filledEvent(testCase, use(given === undefined ? {} : { sourceEventId: given })).input,
+      { sourceEventId: "event-1" },
+    );
+  assert.deepStrictEqual(filledEvent(testCase, use({ sourceEventId: "evt-9" })).input, {
+    sourceEventId: "evt-9",
+  });
 });
 
 it("passes a good run and names every rule a bad run breaks", () => {

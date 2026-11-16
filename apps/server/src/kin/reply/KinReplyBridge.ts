@@ -58,6 +58,7 @@ import {
   PHASE_LABELS,
   isProviderErrorText,
   setupFailureIn,
+  SILENT_END_REFUSAL,
   stripTrailingSilenceMarker,
   toolLabel,
   type SegmentNext,
@@ -69,7 +70,7 @@ import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promise
 /** One rescue turn asks for the reply the run owed; its text is posted like any other. */
 const RESCUE_PROMPT =
   "You ended without a reply anyone can see. Write your reply now as plain text.";
-export { rescueMessageId };
+export { rescueMessageId, SILENT_END_REFUSAL };
 /** No turn-item or provider-turn update for this long shows the owner a stall and Stop. */
 const STALL_MS = 120_000;
 /** A streaming segment this old becomes a visible draft even while still short. */
@@ -77,9 +78,6 @@ const DRAFT_AFTER_MS = 1_000;
 const RESCUE_TIMEOUT_MS = 120_000;
 /** How long a kin_end call waits for its own item to reach the bridge before letting it end. */
 const END_SEEN_MS = 3_000;
-/** What a kin_end that would leave the person waiting in silence answers. */
-export const SILENT_END_REFUSAL =
-  "Nothing reached the chat: your thinking isn't shown to anyone. Write your reply as plain text now, then call kin_end.";
 const OVERFLOW_SUFFIX = "\n\n…more in the agent's thread";
 
 /**
