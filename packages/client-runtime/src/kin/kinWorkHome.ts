@@ -1,7 +1,6 @@
 import type {
   KinChatId,
   KinChatSummary,
-  KinDocRow,
   KinListDefinition,
   KinMoneySummary,
   KinRecord,
@@ -95,12 +94,16 @@ export const kinClientsLine = (clients: number, projects: number): string =>
     : `${plural(clients, "client")}, ${plural(projects, "project")}`;
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 
-/** `rows` are the newest-changed docs, as the host lists them; `total` counts every one. */
-export function kinDocsLine(total: number, rows: ReadonlyArray<KinDocRow>, now: Date): string {
+/** Where "changed this week" starts, moved on the hour so the count is read again hourly, not each minute. */
+export const kinDocsWeekStart = (nowMs: number): string =>
+  // @effect-diagnostics-next-line globalDate:off
+  new Date(Math.floor((nowMs - WEEK_MS) / HOUR_MS) * HOUR_MS).toISOString();
+
+/** `total` counts every doc; `changed`, those changed since `kinDocsWeekStart`. */
+export function kinDocsLine(total: number, changed: number): string {
   if (total === 0) return "No docs yet";
-  const since = now.getTime() - WEEK_MS;
-  const changed = rows.filter((row) => Date.parse(row.updatedAt) >= since).length;
   return changed === 0
     ? plural(total, "doc")
     : `${plural(total, "doc")}, ${changed} changed this week`;

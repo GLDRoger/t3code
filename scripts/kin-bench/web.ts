@@ -3,6 +3,8 @@
  * The web client measured in each person's headless Chrome from kin-verify: timings from the
  * action to the first frame that shows its result, WebSocket frames through CDP, page metrics.
  */
+import * as NodeZlib from "node:zlib";
+
 import type { CDPSession, Page } from "playwright-core";
 
 import { sleep } from "../kin-verify/instance.ts";
@@ -11,10 +13,29 @@ import type { WireRow } from "./stats.ts";
 interface Frame {
   readonly dir: "in" | "out";
   readonly bytes: number;
+  /** Server-to-client frames: about what crossed the link (`deflatedSize`). */
+  readonly deflated: number;
   readonly at: number;
   readonly request: boolean;
   /** The RPC a request frame calls, such as kin.work.list. */
   readonly method?: string;
+}
+
+/** permessage-deflate keeps its 32 KB window across a socket's messages (`server.ts`). */
+const DEFLATE_WINDOW = 32 * 1024;
+
+/**
+ * About the bytes one message costs on a socket that compresses with context takeover: deflated
+ * with the socket's previous 32 KB as its dictionary, less the 4-byte tail the extension drops.
+ * Chrome's log only has the inflated text.
+ */
+export function deflatedSize(payload: string, window: Buffer): number {
+  const raw = Buffer.from(payload);
+  const out = NodeZlib.deflateRawSync(raw, {
+    windowBits: 15,
+    ...(window.length === 0 ? {} : { dictionary: window }),
+  });
+  return Math.max(1, out.length - 4);
 }
 
 const methodOf = (payload: string) => {
@@ -51,18 +72,28 @@ export class Probe {
           bytes: event.encodedDataLength,
         });
     });
-    cdp.on("Network.webSocketFrameReceived", (event) =>
+    const windows = new Map<string, Buffer>();
+    cdp.on("Network.webSocketFrameReceived", (event) => {
+      const payload = event.response.payloadData;
+      const window = windows.get(event.requestId) ?? Buffer.alloc(0);
+      const deflated = deflatedSize(payload, window);
+      windows.set(
+        event.requestId,
+        Buffer.concat([window, Buffer.from(payload)]).subarray(-DEFLATE_WINDOW),
+      );
       probe.frames.push({
         dir: "in",
-        bytes: Buffer.byteLength(event.response.payloadData),
+        bytes: Buffer.byteLength(payload),
+        deflated,
         at: performance.now(),
         request: false,
-      }),
-    );
+      });
+    });
     cdp.on("Network.webSocketFrameSent", (event) =>
       probe.frames.push({
         dir: "out",
         bytes: Buffer.byteLength(event.response.payloadData),
+        deflated: 0,
         at: performance.now(),
         request: event.response.payloadData.includes('"_tag":"Request"'),
         ...methodOf(event.response.payloadData),
@@ -83,6 +114,7 @@ export class Probe {
       action,
       framesIn: frames.filter((one) => one.dir === "in").length,
       bytesIn: sum("in"),
+      deflatedIn: frames.reduce((total, one) => total + one.deflated, 0),
       framesOut: frames.filter((one) => one.dir === "out" && one.bytes > 20).length,
       bytesOut: sum("out"),
       largest: Math.max(0, ...frames.filter((one) => one.dir === "in").map((one) => one.bytes)),

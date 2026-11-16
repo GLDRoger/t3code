@@ -45,6 +45,8 @@ interface TurnScript {
   readonly reply?: string;
   /** Stays working this long before replying, so a person can watch the turn run. */
   readonly holdMs?: number;
+  /** Fails the prompt after its calls, as a provider error would: Kin's failure lines follow. */
+  readonly fail?: boolean;
 }
 
 const MARKER = /\[kv:([A-Za-z0-9_-]{4,64})\]/g;
@@ -192,6 +194,7 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<T
   if (script.holdMs !== undefined) await new Promise((done) => setTimeout(done, script.holdMs));
   NodeFS.writeFileSync(resultPath, JSON.stringify({ results }, null, 2));
   const ends = (script.calls ?? []).some((call) => call.name === "kin_end");
+  if (script.fail === true) throw new Error("kin-verify: this turn fails on purpose");
   return {
     reply: script.reply ?? "Done.",
     end: async () => {

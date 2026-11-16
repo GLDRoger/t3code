@@ -380,7 +380,8 @@ export type KinSendCard = typeof KinSendCard.Type;
 export const KinChoiceCardState = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
   detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
-  options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
+  // An agent's kin_ask offers at most four; Kin's own cards, such as a statement's currency, up to eight.
+  options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
   /** A picture of what is asked about, such as a new logo: a file in this card's chat. */
   image: Schema.optionalKey(
     Schema.Struct({
@@ -392,6 +393,16 @@ export const KinChoiceCardState = Schema.Struct({
   send: Schema.optionalKey(KinSendCard),
   /** Set when a newer card for the same thing closed this one. */
   replaced: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * What the answer did, in the owner's words, set by the server on a card Kin asked itself: a
+   * past-tense title ("Money recorded") and what happened ("Receipt RCT/26-27/001 for ₹25,000…").
+   */
+  outcome: Schema.optionalKey(
+    Schema.Struct({
+      title: KinTrimmedText.check(Schema.isMaxLength(120)),
+      text: KinText.check(Schema.isMaxLength(600)),
+    }),
+  ),
   // The first answer settles the card.
   answer: Schema.NullOr(
     Schema.Struct({
@@ -404,6 +415,7 @@ export const KinChoiceCardState = Schema.Struct({
   ),
 });
 export type KinChoiceCardState = typeof KinChoiceCardState.Type;
+export type KinChoiceOutcome = NonNullable<KinChoiceCardState["outcome"]>;
 
 export const KinPresenceState = Schema.Literals([
   // Older servers only; clients show no line for it.

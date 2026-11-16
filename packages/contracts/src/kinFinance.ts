@@ -243,7 +243,11 @@ export const KinMoneySummary = Schema.Struct({
   ),
 });
 export type KinMoneySummary = typeof KinMoneySummary.Type;
-export const KinMoneySummaryInput = Schema.Struct({ orgId: KinOrgId });
+export const KinMoneySummaryInput = Schema.Struct({
+  orgId: KinOrgId,
+  /** `false` answers `upcoming` empty, `upcomingTotal` still counted: for screens that draw only the count. */
+  upcomingRows: Schema.optional(Schema.Boolean),
+});
 export type KinMoneySummaryInput = typeof KinMoneySummaryInput.Type;
 
 /**

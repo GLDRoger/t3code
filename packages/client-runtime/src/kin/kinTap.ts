@@ -7,6 +7,7 @@ const decodeTap = Schema.decodeUnknownOption(
     Schema.Struct({
       text: Schema.optional(Schema.String),
       actionId: Schema.optional(Schema.String),
+      widgetId: Schema.optional(Schema.String),
     }),
   ),
 );
@@ -31,7 +32,13 @@ export function kinTapText(body: string): string {
   return action === "" ? KIN_TAP_FALLBACK_TEXT : action.charAt(0).toUpperCase() + action.slice(1);
 }
 
-/** A choice card's answer: the card itself says "You chose…", so the tap needs no bubble. */
+/**
+ * A tap the card itself answers: a choice card says what was chosen or done, and a statement
+ * card what it recorded or took back, so the tap needs no bubble of its own.
+ */
 export function kinTapAnswersChoice(body: string): boolean {
-  return Option.getOrNull(decodeTap(body))?.actionId === KIN_CHOICE_CARD_ACTION;
+  const tap = Option.getOrNull(decodeTap(body));
+  return (
+    tap?.actionId === KIN_CHOICE_CARD_ACTION || tap?.widgetId?.startsWith("kin-statement:") === true
+  );
 }

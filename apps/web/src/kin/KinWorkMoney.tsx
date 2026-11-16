@@ -168,9 +168,7 @@ export function KinWorkMoney(
   },
 ) {
   const { names } = props.directory;
-  const { state, refresh } = useKinMoneySummary(props, {
-    enabled: true,
-  });
+  const { state, refresh } = useKinMoneySummary(props, { enabled: true, use: "screen" });
   const agent = useKinAskAgent(props);
   const rates = useKinRates(props);
   const goals = useKinGoals(props, { enabled: true });
@@ -231,7 +229,6 @@ export function KinWorkMoney(
       </div>
     );
   }
-  const upcoming = summary.upcoming;
   // Every exact figure stays in its own currency; beside a foreign one, "about ₹x" when a rate is set.
   const estimates = kinEstimatesByLine(
     [
@@ -354,7 +351,7 @@ export function KinWorkMoney(
             rates={rates}
             onOpen={props.onSubscriptions}
           />
-          {upcoming.length === 0 ? null : (
+          {summary.upcomingTotal === 0 ? null : (
             <KinWorkSection
               title={KIN_MONEY.upcoming}
               fold={{

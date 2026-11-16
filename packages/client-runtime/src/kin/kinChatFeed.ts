@@ -27,7 +27,7 @@ import {
 import { kinTapAnswersChoice, kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
-import { kinSentences } from "./kinScreenState.ts";
+import { kinPlainTables, kinSentences } from "./kinScreenState.ts";
 import type { KinSynced } from "./kinStreams.ts";
 
 export const KIN_HISTORY_PAGE_SIZE = 50;
@@ -567,7 +567,7 @@ const BARE_URL = /<?(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])>?/g;
 
 /** Markdown read aloud: link text without its address, no markers, one sentence per line. */
 export function kinPlainText(markdown: string): string {
-  return markdown
+  return kinPlainTables(markdown)
     .split("\n")
     .filter((line) => !/^\s*(```|~~~)/.test(line))
     .map((line) =>
