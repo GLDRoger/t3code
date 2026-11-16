@@ -218,7 +218,8 @@ it.effect(
         assert.lengthOf(yield* passedOn(sql, orgId, KinAgentId.make("ops")), 0);
         assert.deepStrictEqual(yield* systemRows(sql, orgId, ctx.techChat), [
           {
-            body: 'Passed on by Chief of staff\n"Why is CI red on the app repo?"\nChief of staff adds: CI is red on acme/app. The owner wants to know why.',
+            // Shown as sent by Chief of staff (`relay`), on the owner's side of Tech lead's chat.
+            body: 'CI is red on acme/app. The owner wants to know why.\nThe owner wrote: "Why is CI red on the app repo?"',
           },
         ]);
         const [passed, ...more] = yield* passedOn(sql, orgId, tech);
@@ -292,7 +293,7 @@ it.effect("a check-in passes a fact to the agent who acts on it, once, in Kin's 
       assert.match(
         rows[0]!.body,
         new RegExp(
-          `^Passed on by Chief of staff from Morning check-in\\nW-1 Invented release notes: .+ \\(${key}\\)\\nChief of staff adds: Ship the notes today or move the date\\.$`,
+          `^Ship the notes today or move the date\\.\\nFrom Morning check-in: W-1 Invented release notes: .+ \\(${key}\\)$`,
         ),
       );
       const [passed, ...more] = yield* passedOn(sql, orgId, tech);

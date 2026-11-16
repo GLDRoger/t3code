@@ -1,5 +1,6 @@
 import {
   getProviderAttachmentLimitError,
+  KIN_TEAM_ROOM_TEAM_ID,
   KinOrgId,
   type KinAttachment,
   type KinMemoryItemId,
@@ -55,7 +56,7 @@ import { promptLine as connectionsLine } from "../connections/ConnectionRows.ts"
 import { inheritOutside } from "./OutsideContent.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
-import { groupRules } from "./instructions.ts";
+import { groupRules, teamRules } from "./instructions.ts";
 
 export class KinLeadPromptError extends Schema.TaggedError<KinLeadPromptError>()(
   "KinLeadPromptError",
@@ -1243,7 +1244,9 @@ export class KinLeadPrompt extends Context.Service<
                 sharedPart(quote("memory index", teamIndex)),
               ]),
           // Rooms shared with other people and agents.
-          ...(laneChat !== undefined && laneChat.kind !== "direct" ? [sharedPart(groupRules)] : []),
+          ...(laneChat !== undefined && laneChat.kind !== "direct"
+            ? [sharedPart(laneChat.teamId === KIN_TEAM_ROOM_TEAM_ID ? teamRules : groupRules)]
+            : []),
           sharedPart(TURN_DIVIDER),
           sharedPart(visible(header, ownerOnly).join("\n")),
           // The chat it was asked in, and only when asked there (`lane`).

@@ -60,6 +60,7 @@ const tableNames = [
   "kin_connections",
   "kin_cursor",
   "kin_deferral_runs",
+  "kin_discussions",
   "kin_doc_files",
   "kin_doc_job_figures",
   "kin_doc_jobs",
@@ -780,6 +781,8 @@ describe("Kin migrations", () => {
       ])
         yield* sql.unsafe(`DROP TRIGGER ${trigger}`);
       yield* sql`DROP INDEX idx_kin_messages_changes`;
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN relay_json`;
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN discussion_id`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN refs_json`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN silent`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN change_seq`;
@@ -1492,7 +1495,7 @@ describe("Kin migrations", () => {
           [151, "ToldAndHeld"],
           [152, "TeamDiscussions"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-78), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-79), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -2468,7 +2471,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 151");
+      assert.include(String(exit), "below the latest applied migration 152");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

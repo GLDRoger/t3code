@@ -476,67 +476,52 @@ const make = Effect.gen(function* () {
    * asked as a quiet callout naming who it came from, and that agent tells him in one line. Started
    * by the agents: it waits for the Chief of staff's next note (`pulse/senses/team.ts`).
    */
-  const tell = Effect.fn("KinTeam.tell")(function* (orgId: KinOrgId, discussionId: string) {
+  /**
+   * The outcome as one line in the opener's chat with the owner, with its link, once. His own
+   * request hears it at once and rings; an agent-started one is held until his next check-in runs
+   * (`deliverHeld`). A disagreement is told by its card, posted when it is brought.
+   */
+  const tell = Effect.fn("KinTeam.tell")(function* (
+    orgId: KinOrgId,
+    discussionId: string,
+    when: "final" | "check-in" = "final",
+  ) {
     const row = yield* read(orgId, discussionId);
-    if (row === undefined || !row.d.final || row.origin !== "owner") return;
-    if (row.askChatId === null || row.askAgentId === null) return;
+    if (row === undefined || !row.d.final) return;
+    if (row.askChatId === null) return;
+    const card = row.d.state === "escalated";
+    if (when === "final" && row.origin !== "owner" && !card) return;
     const claimed = yield* sql`UPDATE kin_discussions SET told_at = ${yield* Clock.currentTimeMillis}
       WHERE org_id = ${orgId} AND discussion_id = ${discussionId} AND told_at IS NULL
       RETURNING discussion_id`;
-    if (claimed.length === 0) return;
+    if (claimed.length === 0 || card) return;
     const last = yield* latest(orgId, row);
     const from =
       last?.author._tag === "agent" ? last.author.agentId : KinAgentId.make(row.d.decider);
-    const said = {
-      decided: row.outcome ?? "Decided.",
-      parked: `Parked: ${row.outcome ?? "the agents couldn't settle it, and nothing changed."}`,
-      escalated: `Yours to decide: ${row.outcome ?? row.question}`,
-      open: row.outcome ?? "",
-      closing: row.outcome ?? "",
-    }[row.d.state];
-    const body = [
-      oneLine(said),
-      ...(row.did.length > 0 ? [`Done: ${row.did.join("; ")}`] : []),
-    ].join("\n");
-    const messageId = KinMessageId.make(`kin-team-back:${hash(`${orgId}:${discussionId}`)}`);
-    const { message } = yield* chat.notice({
+    const said =
+      row.d.state === "parked"
+        ? `Parked: ${row.outcome ?? "the agents couldn't settle it, and nothing changed."}`
+        : (row.outcome ?? "Decided.");
+    yield* chat.notice({
       orgId,
       chatId: row.askChatId,
       audience: "owner",
-      messageId,
-      body,
+      messageId: KinMessageId.make(`kin-team-back:${hash(`${orgId}:${discussionId}`)}`),
+      body: [oneLine(said), ...(row.did.length > 0 ? [`Done: ${row.did.join("; ")}`] : [])].join(
+        "\n",
+      ),
       relay: { kind: "reply_from", agentId: from },
       discussionId: row.discussionId,
-      silent: true,
+      ...(when === "final" ? {} : { silent: true as const }),
     });
-    const [asker] = yield* sql<{ ownerPersonId: KinPersonId; memberId: KinMemberId | null }>`
-      SELECT a.owner_person_id AS "ownerPersonId",
-        (SELECT m.member_id FROM kin_chat_members m WHERE m.org_id = a.org_id
-          AND m.chat_id = ${row.chatId} AND m.principal_kind = 'agent' AND m.agent_id = ${from}
-          AND m.left_at IS NULL LIMIT 1) AS "memberId"
-      FROM kin_agents a WHERE a.org_id = ${orgId} AND a.agent_id = ${from}`;
-    if (asker === undefined || asker.memberId === null || last?.author._tag !== "agent") return;
-    // The agent he asked carries on in its chat with him, as after a hand-off.
-    yield* queue
-      .enqueue({
-        _tag: "chat.message",
-        orgId,
-        eventId: KinEventId.make(`team-back-${hash(messageId)}`),
-        agentId: row.askAgentId,
-        receivedAt: DateTime.makeUnsafe(message.createdAt),
-        dedupeKey: `team-back:${discussionId}`,
-        provenance: last.author,
-        chatId: row.askChatId,
-        messageId: message.messageId,
-        origin: { agentId: row.askAgentId, chatId: row.askChatId },
-      })
-      .pipe(
-        Effect.catchTags({
-          KinEventQueueConflict: () => Effect.void,
-          KinEventQueueRetiredAgent: () => Effect.void,
-          KinEventQueueUnknownAgent: () => Effect.void,
-        }),
-      );
+  });
+
+  /** Agent-started outcomes not yet told, told beside the check-in that just ran. */
+  const deliverHeld = Effect.fn("KinTeam.deliverHeld")(function* (orgId: KinOrgId) {
+    const held = yield* sql<{ discussionId: string }>`SELECT discussion_id AS "discussionId"
+      FROM kin_discussions WHERE org_id = ${orgId} AND final = 1 AND told_at IS NULL
+        AND origin = 'agent' ORDER BY ended_at, discussion_id`;
+    for (const { discussionId } of held) yield* tell(orgId, discussionId, "check-in");
   });
 
   const nameOf = (all: ReadonlyArray<Agent>, agentId: string | undefined) =>
@@ -707,8 +692,7 @@ const make = Effect.gen(function* () {
             turn_json, created_at, last_at, open_key)
           VALUES (${ctx.orgId}, ${discussionId}, ${room.chatId}, ${oneLine(input.topic)},
             ${oneLine(input.question)}, ${decider.agentId}, ${ctx.agentId},
-            ${byOwner ? "owner" : "agent"}, ${byOwner ? self.ownerChatId : null},
-            ${byOwner ? ctx.agentId : null}, 'open',
+            ${byOwner ? "owner" : "agent"}, ${self.ownerChatId}, ${ctx.agentId}, 'open',
             ${encodeJson({ agentId: ctx.agentId, kind: "named", eventId: null, said: false })},
             ${now}, ${now}, ${key})`;
         const row = yield* read(ctx.orgId, discussionId);
@@ -883,6 +867,10 @@ const make = Effect.gen(function* () {
               yield* settle(input.orgId, row, next);
             }),
           );
+      const checkIn = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
+        AND wakeup_id = ${input.wakeupId} AND tag = 'pulse'
+        AND json_extract(json, '$.checkIn') IS NOT NULL LIMIT 1`;
+      if (checkIn.length > 0) yield* sql.withTransaction(deliverHeld(input.orgId));
       for (const { discussionId } of held)
         yield* sql.withTransaction(
           Effect.gen(function* () {
