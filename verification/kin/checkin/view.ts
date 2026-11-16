@@ -17,9 +17,11 @@ export const chartConstants = { Days: "1", MaxJumps: "0" };
 export const rules: Record<string, string> = {
   OncePerDay: "A day's check-in comes at most once, across restarts and clock changes.",
   NeverBeforeWindow: "A check-in never comes before its window opens.",
-  InsideWindow: "The minute Kin picks for a check-in is inside its window, not after it closes.",
+  InsideWindow:
+    "The minute Kin picks for a check-in is inside its window; one Kin only noticed after the window closed comes at once, never later still.",
   StaysMoved: "A check-in you moved stays where you put it.",
-  FiresWhenUp: "If Kin is running at any time in the window, that day's check-in happens.",
+  FiresWhenUp:
+    "If Kin is running at any time in the window, that day's check-in happens, even when the host woke too late for T3's scheduler.",
   FactNeverAbsent:
     "A fact that is open, even one someone has in hand, is in that day's check-in, never silently left out.",
   HandleKeepsTask: "Holding a fact (“I've got it”) never hides the member's task from them.",
@@ -30,7 +32,7 @@ export const variants = [
   {
     name: "fire-early",
     breaks: "NeverBeforeWindow",
-    what: "the slot runs five minutes before its window opens",
+    what: "the slot runs five minutes before its window opens and picks its minute from that start",
   },
   {
     name: "follow-moved",
@@ -38,6 +40,21 @@ export const variants = [
     what: "following your time zone re-keys check-ins you moved",
   },
   { name: "handle-hides-task", breaks: "HandleKeepsTask", what: "holding a fact closes the task" },
+  {
+    name: "no-catch-up",
+    breaks: "FiresWhenUp",
+    what: "Kin no longer catches up a check-in T3's scheduler skipped as late (the code before this change)",
+  },
+  {
+    name: "late-offset",
+    breaks: "InsideWindow",
+    what: "a late start picks its minute from the start, not the window (the code before this change)",
+  },
+  {
+    name: "held-left-out",
+    breaks: "FactNeverAbsent",
+    what: "a fact someone holds doesn't count, so the check-in says “nothing new” (the code before this change)",
+  },
 ];
 
 export const state = (vars: Vars) => {
@@ -80,6 +97,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
           ? "The slot comes up, the fact in hand"
           : "The slot comes up, nothing open";
     }
+    case "CatchUp":
+      return "Kin notices today's check-in never ran and sends it now";
     case "AgentWakes":
       return "The agent checks in";
     case "OwnerMoves":

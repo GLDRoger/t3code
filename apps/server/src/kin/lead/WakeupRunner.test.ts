@@ -857,6 +857,48 @@ describe("WakeupRunner", () => {
         );
       }).pipe(provideDeterministicTestRuntime),
   );
+  it.effect.each([
+    { replied: true, said: ["replied"], state: "done" },
+    { replied: false, said: ["partway"], state: "failed" },
+  ] as const)(
+    "a turn that fails after visible work says it stopped partway only when no reply came (replied $replied)",
+    ({ replied, said, state }) =>
+      Effect.gen(function* () {
+        const outcomes: Array<string> = [];
+        let db: SqlClient.SqlClient | undefined;
+        const bridge = Layer.mock(KinReplyBridge)({
+          lane: () =>
+            Effect.succeedSome({
+              chatId: KinChatId.make("owner-chat"),
+              mode: "reply" as const,
+              owed: true,
+              leadName: "Lead",
+            }),
+          preparing: () => Effect.void,
+          begin: () => Effect.void,
+          // The run did something visible, and its reply posted, before the failure.
+          complete: (input) =>
+            Effect.gen(function* () {
+              const sql = db!;
+              yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+                VALUES (${input.orgId}, ${input.wakeupId}, 'item:note', 'hash')`;
+              if (replied)
+                yield* sql`UPDATE kin_events SET replied_at = 1 WHERE wakeup_id = ${input.wakeupId}`;
+            }).pipe(Effect.orDie),
+          end: () => Effect.void,
+          failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
+        });
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          db = sql;
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage("asked"));
+          yield* Fiber.join(yield* run());
+          assert.deepStrictEqual(outcomes, [...said]);
+          assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events`, [{ state }]);
+        }).pipe(Effect.provide(harness({ failed: true }).pipe(Layer.provide(bridge))));
+      }).pipe(provideDeterministicTestRuntime),
+  );
   it.effect(
     "runs two wake-ups on one T3 thread with distinct provider threads and captures only each run's usage",
     () =>
