@@ -38,6 +38,7 @@ import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { relayPrefix } from "../reply/promises.ts";
+import { personQuietUntil } from "../triggers/quietHold.ts";
 import { unreadableBy } from "../work/teamView.ts";
 import { TurnEvent } from "./eventIds.ts";
 
@@ -100,6 +101,12 @@ export const RelayInput = Schema.Struct({
       "From a teammate's chat: their request, in their words, with the task key. From the owner's chat: your message to the teammate, written for them.",
   }),
   sourceEventId: TurnEvent,
+  urgent: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+      description:
+        "Only when it can't wait for their quiet hours to end: why, in a few words. Logged; it skips quiet hours and rings them.",
+    }),
+  ),
 });
 export const RelayResult = Schema.Struct({
   to: Schema.String,
@@ -110,6 +117,8 @@ export const RelayResult = Schema.Struct({
 type PostTo = KinLevelGate["Service"]["postTo"];
 
 const NOTHING = "Nothing was passed on.";
+/** A message they sent this recently is one a relay answers, whatever the hour. */
+const ASKED_WITHIN_MS = 10 * 60_000;
 const refuse = (message: string) =>
   new KinChatError({ reason: "not_allowed", message: `${message} ${NOTHING}` });
 const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
@@ -461,6 +470,31 @@ const make = Effect.gen(function* () {
             refuse(`${to.name} can't message you; ask the team agent to tell them.`),
           ),
         );
+      // Their quiet hours hold anything they didn't just ask for: it goes when they start.
+      const now = yield* Clock.currentTimeMillis;
+      const quietUntil = yield* personQuietUntil(ctx.orgId, to.personId, now).pipe(access);
+      if (input.urgent !== undefined) {
+        // The agent's stated reason is the escape: logged, and it rings whatever rang before.
+        yield* Effect.logInfo("Kin urgent relay", {
+          orgId: ctx.orgId,
+          agentId: ctx.agentId,
+          to: to.personId,
+          reason: input.urgent,
+        });
+        yield* sql`DELETE FROM kin_push_rings WHERE org_id = ${ctx.orgId} AND person_id = ${to.personId}`;
+      } else if (quietUntil !== undefined) {
+        const [asked] = yield* sql`SELECT 1 FROM kin_messages
+          WHERE org_id = ${ctx.orgId} AND chat_id = ${direct.chatId}
+            AND author_person_id = ${to.personId}
+            AND created_at > ${DateTime.formatIso(DateTime.makeUnsafe(now - ASKED_WITHIN_MS))}
+          LIMIT 1`;
+        if (asked === undefined) {
+          const until = DateTime.formatIso(DateTime.makeUnsafe(quietUntil));
+          return yield* refuse(
+            `${to.name} is in quiet hours until ${until}. Set kin_defer (onDue "ask", due ${until}) in your chat with the owner and relay it when it wakes you; don't say it went.`,
+          );
+        }
+      }
       yield* postTo({ ...ctx, wakeupId: KinWakeupId.make(ctx.wakeupId) }, to.personId, {
         chatId: direct.chatId,
         clientMessageId: messageId,

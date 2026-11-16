@@ -20,6 +20,8 @@ import { missedSlot } from "./checkInCatchUp.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { followOwnerZone, onHostClock } from "./checkInSeeds.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { holdIfQuiet } from "../triggers/quietHold.ts";
 import { inHoursAt, nudge } from "./nudge.ts";
 import { type OutsideRead, type OutsideSource, poll } from "./outside.ts";
 
@@ -146,6 +148,8 @@ describe("pulse check-ins", () => {
       assert.strictEqual(first._tag, "queued");
       assert.strictEqual(again._tag, "duplicate");
       assert.strictEqual(first._tag === "queued" ? first.notBefore : 0, SLOT + offset);
+      // W-1 was told Monday; Tuesday's check-in runs for a task late since.
+      yield* record({ key: "W-2", list: "work", title: "Invented flyer", dueAt: MONDAY + HOUR });
       const tuesday = yield* checkIn(SLOT + DAY);
       const events = yield* pulseEvents;
       assert.deepStrictEqual(
@@ -179,6 +183,13 @@ describe("pulse check-ins", () => {
         const ends: Array<number> = [];
         for (let day = 0; day < 7; day++) {
           const opens = SLOT + day * DAY;
+          // Something untold each day, so each day's check-in runs.
+          yield* record({
+            key: `W-${day + 10}`,
+            list: "work",
+            title: "Invented poster",
+            dueAt: opens - HOUR,
+          });
           // The host woke ten minutes into the window, inside T3's grace: the run starts late.
           const late = yield* checkIn(opens + 10 * MINUTE);
           if (late._tag !== "queued") return assert.fail("not queued");
@@ -186,6 +197,11 @@ describe("pulse check-ins", () => {
           ends.push(late.notBefore - opens);
         }
         assert.isTrue(ends.every((minute) => minute <= 25 * MINUTE));
+        yield* record({ key: "W-20", list: "work", title: "Invented card", dueAt: SLOT + 6 * DAY });
+        // 17:25 on the owner's UTC clock: before his quiet hours, so nothing holds it.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:30', '18:30',
+          '03:00', 0, 1, '09:00', '{"from":"22:00","to":"08:00"}')`;
         // Noticed two hours late, after the window closed: at once, not a further offset.
         const caught = yield* checkIn(SLOT + 7 * DAY, nothingOutside, SLOT + 7 * DAY + 2 * HOUR);
         assert.strictEqual(
@@ -244,27 +260,23 @@ describe("pulse check-ins", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("facts the last check-in already had start no other; a new one or Run now does", () =>
+  it.effect("a fact is told once; only a change, a failed turn or Run now tells it again", () =>
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
-      const store = Effect.fn("test.store")(function* (firstSeenAt: number) {
-        for (const fact of (yield* KinPulse.read({ orgId, at: SLOT, viewer: { _tag: "owner" } }))
-          .facts)
-          yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense, subject_record_id,
-              scope_json, first_seen_at, last_seen_at)
-            VALUES (${orgId}, ${fact.key}, ${fact.sense}, ${fact.subject.recordId ?? null}, '{}',
-              ${firstSeenAt}, ${firstSeenAt})
-            ON CONFLICT (org_id, fact_key) DO NOTHING`;
-      });
+      const told = (key: string) =>
+        sql<{ key: string }>`SELECT DISTINCT t.fact_key AS key FROM kin_pulse_told t
+          JOIN kin_events e ON e.event_id = t.event_id WHERE e.dedupe_key = ${key}
+          ORDER BY t.fact_key`.pipe(Effect.map((rows) => rows.map((row) => row.key)));
       yield* record({ key: "W-1", list: "work", title: "Invented site copy", dueAt: MONDAY - DAY });
-      yield* store(SLOT - HOUR);
       assert.strictEqual((yield* checkIn(SLOT))._tag, "queued");
-      // The next day W-1 is still open and nothing else is: no turn, so no "nothing new" message.
+      const [w1] = yield* told("checkin:checkin-afternoon:2026-11-16");
+      assert.match(w1 ?? "", /W-1/);
+      // The next day W-1 is still open and unchanged: no turn, so no "still" message.
       assert.deepStrictEqual(yield* checkIn(SLOT + DAY), { _tag: "nothing_new" });
       // The first slot fired again after a restart is still that slot's own event.
       assert.strictEqual((yield* checkIn(SLOT))._tag, "duplicate");
-      // Run now is someone asking: it runs.
+      // Run now is someone asking: it runs, with everything open.
       const asked = yield* queueCheckIn({
         orgId,
         agentId: chief,
@@ -279,10 +291,128 @@ describe("pulse check-ins", () => {
         outside: nothingOutside,
       });
       assert.strictEqual(asked._tag, "queued");
-      // A task that went late since then is news.
+      assert.deepStrictEqual(yield* told("checkin:checkin-afternoon:run-now-1"), [w1]);
+      // Changed: Finance takes W-1 in hand until Friday, and W-3 is new: both are told.
       yield* record({ key: "W-3", list: "work", title: "Invented menu", dueAt: MONDAY });
-      yield* store(SLOT + DAY + HOUR);
+      yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense, subject_record_id, scope_json,
+          first_seen_at, last_seen_at, handled_by_kind, handled_by_id, handled_at, handled_until)
+        VALUES (${orgId}, ${w1!}, 'task_late', 'r-W-1', '{}', ${SLOT}, ${SLOT}, 'agent', ${finance},
+          ${SLOT + DAY}, ${SLOT + 4 * DAY})`;
       assert.strictEqual((yield* checkIn(SLOT + 2 * DAY))._tag, "queued");
+      const wednesday = yield* told("checkin:checkin-afternoon:2026-11-18");
+      assert.lengthOf(wednesday, 2);
+      // A check-in whose turn failed told nothing: the next one tells it again.
+      yield* sql`UPDATE kin_events SET state = 'failed'
+        WHERE dedupe_key = 'checkin:checkin-afternoon:2026-11-18'`;
+      assert.strictEqual((yield* checkIn(SLOT + 3 * DAY))._tag, "queued");
+      assert.deepStrictEqual(yield* told("checkin:checkin-afternoon:2026-11-19"), wednesday);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("on the weekly brief's day the morning check-in is the brief: one post", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* record({ key: "W-1", list: "work", title: "Invented site copy", dueAt: MONDAY - DAY });
+      const run = (scheduleId: string, at: number) =>
+        queueCheckIn({
+          orgId,
+          agentId: chief,
+          scheduleId: KinMemoryItemId.make(scheduleId),
+          title: scheduleId,
+          what: "Check-in.",
+          dueAt: at,
+          looseAt: null,
+          zone: "UTC",
+          at,
+          outside: nothingOutside,
+        });
+      assert.strictEqual((yield* run("checkin-weekly", MONDAY + 9 * HOUR))._tag, "queued");
+      yield* record({ key: "W-2", list: "work", title: "Invented flyer", dueAt: MONDAY + HOUR });
+      // Something untold since, yet the brief speaks for the morning: no second post.
+      assert.deepStrictEqual(yield* run("checkin-morning", MONDAY + 9 * HOUR + 30 * MINUTE), {
+        _tag: "folded",
+      });
+      // Tuesday has no brief: the morning check-in runs, with what is still untold.
+      assert.strictEqual((yield* run("checkin-morning", MONDAY + DAY + 9 * HOUR))._tag, "queued");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a check-in in the owner's quiet hours waits for 08:00; Run now never does", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:30', '18:30',
+        '03:00', 0, 1, '09:00', '{"from":"22:00","to":"08:00"}')`;
+      yield* record({ key: "W-1", list: "work", title: "Invented site copy", dueAt: MONDAY - DAY });
+      const night = MONDAY + 23 * HOUR + 30 * MINUTE;
+      const at = (scheduleId: string, manualId?: string) =>
+        queueCheckIn({
+          orgId,
+          agentId: chief,
+          scheduleId: KinMemoryItemId.make(scheduleId),
+          title: scheduleId,
+          what: "Check-in.",
+          dueAt: night,
+          looseAt: null,
+          manualId,
+          zone: "UTC",
+          at: night,
+          outside: nothingOutside,
+        });
+      const held = yield* at("checkin-late");
+      assert.strictEqual(held._tag === "queued" ? held.notBefore : 0, MONDAY + DAY + 8 * HOUR);
+      // Stored on the event: fired again after a restart, the same hold stands.
+      const again = yield* at("checkin-late");
+      assert.strictEqual(again._tag === "duplicate" ? again.notBefore : 0, MONDAY + DAY + 8 * HOUR);
+      const asked = yield* at("checkin-late", "run-now-2");
+      assert.strictEqual(asked._tag === "queued" ? asked.notBefore : 0, night);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("server lines in someone's quiet hours post once at 08:00, merged per chat", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:30', '18:30',
+        '03:00', 0, 1, '09:00', '{"from":"22:00","to":"08:00"}')`;
+      const posted: Array<{ messageId: string; body: string }> = [];
+      const chat = {
+        notice: (input: { readonly messageId: string; readonly body: string }) =>
+          Effect.sync(() => {
+            if (!posted.some((one) => one.messageId === input.messageId)) posted.push(input);
+          }).pipe(Effect.as({} as never)),
+      };
+      const line = (body: string) =>
+        holdIfQuiet({
+          orgId,
+          chatId: KinChatId.make("chat-cos"),
+          personId: owner,
+          kind: "memory",
+          body,
+          audience: "owner",
+        });
+      yield* TestClock.setTime(MONDAY + 15 * HOUR);
+      assert.isFalse(yield* line("Invented daytime line."));
+      yield* TestClock.setTime(MONDAY + 23 * HOUR);
+      assert.isTrue(yield* line("Invented first night line."));
+      yield* TestClock.setTime(MONDAY + DAY + 3 * HOUR);
+      assert.isTrue(yield* line("Invented second night line."));
+      assert.strictEqual(yield* deliverHeld(orgId, chat), 0);
+      yield* TestClock.setTime(MONDAY + DAY + 8 * HOUR);
+      assert.strictEqual(yield* deliverHeld(orgId, chat), 1);
+      assert.strictEqual(yield* deliverHeld(orgId, chat), 0);
+      assert.deepStrictEqual(
+        posted.map((one) => one.body),
+        ["Invented first night line.\n\nInvented second night line."],
+      );
+      // Kin asleep all day wakes in the next night: the line waits for that night's end.
+      yield* TestClock.setTime(MONDAY + DAY + 23 * HOUR);
+      assert.isTrue(yield* line("Invented third night line."));
+      yield* TestClock.setTime(MONDAY + 2 * DAY + 23 * HOUR);
+      assert.strictEqual(yield* deliverHeld(orgId, chat), 0);
+      yield* TestClock.setTime(MONDAY + 3 * DAY + 8 * HOUR);
+      assert.strictEqual(yield* deliverHeld(orgId, chat), 1);
+      assert.lengthOf(posted, 2);
     }).pipe(Effect.provide(layer)),
   );
 
