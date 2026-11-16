@@ -46,7 +46,6 @@ import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp.ts";
-import * as DocJobs from "../gendocs/DocJobs.ts";
 import * as Render from "../gendocs/render.ts";
 import * as Toolchain from "../gendocs/toolchain.ts";
 import * as Workspace from "../gendocs/workspace.ts";
@@ -401,9 +400,7 @@ const repoReads = Layer.unwrap(
 );
 // Workers run only in the linked worker environment; see workerEnvironment.ts.
 const workers = Workers.layer.pipe(
-  Layer.provideMerge(
-    WorkerTracker.layer.pipe(Layer.provide(workerPublish), Layer.provide(DocJobs.collectorLayer)),
-  ),
+  Layer.provideMerge(WorkerTracker.layer.pipe(Layer.provide(workerPublish))),
   Layer.provideMerge(Render.layer),
   Layer.provideMerge(Layer.mergeAll(Workspace.layer, Toolchain.layer)),
   Layer.provideMerge(WorkerEnvironment.layer),

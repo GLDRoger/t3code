@@ -134,6 +134,8 @@ export const SHARED_TOOLS = {
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",
+  // An agent's model is the owner's call, made in the owner's own chat.
+  agent_update: "refused",
   // What everyone in the org sees on profiles; workload only in the owner's own turns.
   people_read: "allowed",
   // Saved only for the one person who asked, with their own rights.

@@ -18,7 +18,6 @@ import { askOwner } from "../work/leadMoney.ts";
 import { parseAmount } from "../work/money.ts";
 import { admitted, askedBy, type Lead, leadTool, sourceOf, writerFor } from "../work/leadWork.ts";
 import { issueEntry } from "./amounts.ts";
-import type { DocumentInput } from "./DocJobs.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
 import { invoiceFromQuote, quotedInputs } from "./quotes.ts";
@@ -33,13 +32,75 @@ import {
 import { createsMoney, makeReceipt } from "./receipts.ts";
 import { defaultRecipes } from "./recipeDefaults.ts";
 import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
+import { REFERENCE_CAPS } from "./references.ts";
 import { KinWorkspace } from "./workspace.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
 /**
- * `kin_recipes`, `kin_issue`, `kin_recipe_undo`, `kin_receipt`, and `kin_document` with a recipe,
- * made in the call.
+ * `kin_recipes`, `kin_issue`, `kin_recipe_undo`, `kin_receipt`, and `kin_document`: a recipe's
+ * file made in the call, or a file the agent made in its own session, filed as it is.
  */
+
+const recipeName = TrimmedNonEmptyString.check(Schema.isPattern(/^[a-z][a-z0-9-]{1,39}$/));
+export const DocumentInput = Schema.Struct({
+  title: TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
+    description: "What it is, as the owner would call it: Invoice INV-12, October accounts pack.",
+  }),
+  recipe: Schema.optional(recipeName).annotate({
+    description: "The recipe to run, from kin_recipes; with writeRecipe, the recipe to write.",
+  }),
+  entry: Schema.optional(KinRecordKey).annotate({
+    description:
+      "The entry it is for, such as INV-12, when the recipe reads one or the file is about one.",
+  }),
+  from: Schema.optional(KinRecordKey).annotate({
+    description:
+      "A quote, such as QT-3, to invoice: with the invoice recipe and no entry, Kin makes a draft invoice for its client with exactly the quote's lines, then its document. Give no lines or billing details beside it.",
+  }),
+  doc: Schema.optional(KinRecordKey).annotate({
+    description:
+      "A doc, such as D-4, to make a PDF of with the report recipe: Kin lays out its own text, so never copy it into inputs.",
+  }),
+  inputs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)).annotate({
+    description:
+      "Only the recipe's inputs that come from you, by name, as the owner said them. Kin reads every stored figure and works out every sum itself.",
+  }),
+  file: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(4096))).annotate({
+    description:
+      "Without a recipe: the full path of a file you made with your own tools (PDF, PNG, JPEG, WebP, SVG, CSV, XLSX, DOCX, PPTX, Markdown, text or JSON), to file as it is.",
+  }),
+  writeRecipe: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Write a new recipe, or change the one named in recipe: the first call gives you a folder to edit, the next keeps it once its sample renders.",
+  }),
+  references: Schema.optional(
+    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(128))).check(
+      Schema.isMaxLength(REFERENCE_CAPS.files),
+    ),
+  ).annotate({
+    description:
+      "With the first writeRecipe call: files the owner sent in this chat that show the look to copy (each the file's name as its message shows it, with or without its extension), such as an invoice in the company's existing format (PDF, PNG, JPEG, WebP or SVG). Their data never goes in the recipe.",
+  }),
+  sourceEventId: TurnEvent,
+});
+export type DocumentInput = typeof DocumentInput.Type;
+export const DocumentResult = Schema.Struct({
+  recipe: Schema.NullOr(Schema.String),
+  /** The number the file carries; `null` for a draft or an unnumbered recipe. */
+  number: Schema.NullOr(Schema.String),
+  draft: Schema.Boolean,
+  /** The docs made or filed, already shown as a card in the chat. */
+  documents: Schema.Array(
+    Schema.Struct({ key: Schema.String, title: Schema.String, version: Schema.Number }),
+  ),
+  sensitive: Schema.optional(Schema.Literal(true)),
+  /** The draft a quote was invoiced as, made in the call. */
+  entry: Schema.optional(Schema.String),
+  /** writeRecipe: the folder holding the recipe to edit, until Kin keeps it. */
+  folder: Schema.optional(Schema.String),
+  /** writeRecipe: what to do next. */
+  next: Schema.optional(Schema.String),
+});
 
 const RecipeInputRow = Schema.Struct({
   name: Schema.String,
@@ -105,7 +166,7 @@ const denied = (message: string) => new KinChatError({ reason: "not_allowed", me
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
 /** The agent as a requester: its turn, the chat it answers in and the owner's message there. */
-const requesterOf = Effect.fn("KinDocuments.requester")(function* (
+export const requesterOf = Effect.fn("KinDocuments.requester")(function* (
   lead: Lead,
   sourceEventId: string,
 ) {
@@ -125,7 +186,7 @@ const requesterOf = Effect.fn("KinDocuments.requester")(function* (
   } satisfies Requester;
 });
 /** Re-checked in the transaction that files the result: the turn may still make it. */
-const stillAdmitted = (lead: Lead, tool: string, args: unknown) =>
+export const stillAdmitted = (lead: Lead, tool: string, args: unknown) =>
   toolAdmitted(lead, tool, args).pipe(
     Effect.flatMap((ok) =>
       ok
@@ -161,8 +222,6 @@ export const make = leadTool("KinDocuments.make", (lead, input: DocumentInput) =
     });
     for (const written of made.written) yield* shown(lead, written, true);
     return {
-      workerId: null,
-      threadLink: null,
       recipe: made.recipe,
       number: made.number,
       draft: made.draft,

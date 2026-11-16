@@ -55,7 +55,14 @@ import {
   turnChat,
 } from "./Audience.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
-import { isDevServer, nonClaudeLeadModel } from "./leadModels.ts";
+import {
+  chooseLeadModels,
+  companyDefaultModels,
+  isDevServer,
+  leadModelProblem,
+  nonClaudeLeadModel,
+} from "./leadModels.ts";
+import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { bootstrapLeadProject } from "./leadProject.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
@@ -256,6 +263,7 @@ const make = Effect.gen(function* () {
   const launch = yield* ThreadLaunchService.ThreadLaunchService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const settings = yield* ServerSettingsService;
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
   const paused = (orgId: KinOrgId) =>
     isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
@@ -785,12 +793,23 @@ const make = Effect.gen(function* () {
               yield* queue.finish({ orgId, wakeupId, status: "failed" });
               return yield* retire(current);
             }
+            // A model the host can't run falls back to the company default; the page says so.
+            const hostSettings = yield* settings.getSettings;
+            const devServer = yield* isDevServer;
+            const providers = Option.isSome(providerRegistry)
+              ? yield* providerRegistry.value.getProviders
+              : null;
+            const { models } = chooseLeadModels({
+              own: current.models,
+              companyDefault: yield* companyDefaultModels(orgId).pipe(
+                provideSql,
+                Effect.orElseSucceed(() => null),
+              ),
+              problemOf: (candidate) =>
+                leadModelProblem(hostSettings, providers, candidate, devServer),
+            });
             // Provisioning refuses these too; a row written another way still never launches.
-            const notClaude = nonClaudeLeadModel(
-              yield* settings.getSettings,
-              current.models,
-              yield* isDevServer,
-            );
+            const notClaude = nonClaudeLeadModel(hostSettings, models, devServer);
             if (notClaude !== undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: notClaude });
             // T3 starts the run that answers a finished task at once: own it before the slow
@@ -1054,8 +1073,8 @@ const make = Effect.gen(function* () {
                   (event) =>
                     event._tag === "routine" || (event._tag === "pulse" && event.strong === true),
                 ))
-                ? current.models.strong
-                : current.models.cheap;
+                ? models.strong
+                : models.cheap;
             // A join aborted it while it prepared: nothing launches, a fresh wake-up answers.
             if (yield* isAborted(row)) {
               yield* queue.finish({ orgId, wakeupId, status: "failed" });

@@ -135,6 +135,8 @@ export const KinLeadProfile = Schema.Struct({
   working: Schema.Boolean,
   // Soonest first after work under way, at most KIN_LEAD_TRACKING_CAP.
   tracking: Schema.Array(KinLeadTracking),
+  // Present only while the owner has it paused: nothing new wakes it until resumed.
+  paused: Schema.optional(Schema.Struct({ at: Schema.toEncoded(CanonicalUtcTimestamp) })),
   // Present only for a retired one: when, and who retired it (null for the host's command).
   retired: Schema.optional(
     Schema.Struct({
@@ -185,8 +187,66 @@ export const KinLeadUpdateInput = Schema.Struct({
   charter: Schema.optional(KinLeadCharter),
   intro: Schema.optional(KinLeadIntro),
   roleTags: Schema.optional(KinRoleTags),
+  // Claude only; the next turn runs on them.
+  models: Schema.optional(Schema.Struct({ strong: ModelSelection, cheap: ModelSelection })),
 });
 export type KinLeadUpdateInput = typeof KinLeadUpdateInput.Type;
+
+export const KinAgentModels = Schema.Struct({ strong: ModelSelection, cheap: ModelSelection });
+export type KinAgentModels = typeof KinAgentModels.Type;
+export const KinAgentPageInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
+export type KinAgentPageInput = typeof KinAgentPageInput.Type;
+/**
+ * Everything owner-level people see about one agent on its page. Teammates never get it: theirs
+ * is the contact card.
+ */
+export const KinAgentPage = Schema.Struct({
+  profile: KinLeadProfile,
+  // What the owner chose, and what its turns run on now; they differ when a choice is unavailable.
+  models: KinAgentModels,
+  runsOn: KinAgentModels,
+  // Why it runs on something else, in the owner's words; null when it runs on its own choice.
+  modelNote: Schema.NullOr(Schema.String),
+  // Its character doc as written now; null before Kin has given it one.
+  character: Schema.NullOr(Schema.Struct({ key: KinRecordKey, body: Schema.String })),
+  teamAgent: Schema.Boolean,
+  // This month's turns and tokens, by the owner's calendar.
+  usedThisMonth: Schema.Struct({ turns: NonNegativeInt, tokens: NonNegativeInt }),
+  // The quiet hours its unprompted messages wait out: the company's.
+  quietHours: Schema.Struct({ from: TimeOfDay, to: TimeOfDay }),
+  // Outside accounts its owner-only turns may use; every agent reaches the same ones.
+  connections: Schema.Array(
+    Schema.Struct({
+      label: Schema.String,
+      account: Schema.NullOr(Schema.String),
+      paused: Schema.Boolean,
+    }),
+  ),
+  // Live playbooks, which every agent follows.
+  playbooks: Schema.Array(Schema.Struct({ key: KinRecordKey, title: Schema.String })),
+});
+export type KinAgentPage = typeof KinAgentPage.Type;
+/** A new character for one agent, written over the old as a version its history keeps. */
+export const KinAgentCharacterSetInput = Schema.Struct({
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  body: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
+});
+export type KinAgentCharacterSetInput = typeof KinAgentCharacterSetInput.Type;
+export const KinAgentDefaultsInput = Schema.Struct({ orgId: KinOrgId });
+export type KinAgentDefaultsInput = typeof KinAgentDefaultsInput.Type;
+/**
+ * The models new agents start on: the owner's choice, else the first live agent's (`chosen` false);
+ * null when there is neither.
+ */
+export const KinAgentDefaults = Schema.Struct({
+  orgId: KinOrgId,
+  models: Schema.NullOr(KinAgentModels),
+  chosen: Schema.Boolean,
+});
+export type KinAgentDefaults = typeof KinAgentDefaults.Type;
+export const KinAgentDefaultsSetInput = Schema.Struct({ orgId: KinOrgId, models: KinAgentModels });
+export type KinAgentDefaultsSetInput = typeof KinAgentDefaultsSetInput.Type;
 /** Retire or restore one agent. Both are idempotent and answer with its profile. */
 export const KinLeadRetireInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
 export type KinLeadRetireInput = typeof KinLeadRetireInput.Type;

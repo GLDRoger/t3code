@@ -162,6 +162,8 @@ export class KinEventQueue extends Context.Service<
       | KinEventQueueRetiredAgent
     >;
     readonly reconsiderBudget: (orgId: KinOrgId) => Effect.Effect<void, PersistenceSqlError>;
+    /** Wakes the runner to look again, such as after an agent is resumed. */
+    readonly nudge: (orgId: KinOrgId) => Effect.Effect<void>;
     readonly changes: (orgId: KinOrgId) => Effect.Effect<Effect.Effect<void>>;
     /** Ends when work is queued for an org no one awaits `changes` of yet: a brand-new company. */
     readonly unwatched: Effect.Effect<Effect.Effect<void>>;
@@ -807,6 +809,7 @@ const make = Effect.gen(function* () {
       const rows = yield* sql<{ agent_id: string }>`SELECT e.agent_id
         FROM kin_events e JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
         WHERE e.org_id = ${orgId} AND e.state = 'queued' AND a.retired_at IS NULL
+          AND a.paused_at IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM kin_leads l
             WHERE l.org_id = e.org_id AND l.agent_id = e.agent_id AND (
@@ -847,6 +850,9 @@ const make = Effect.gen(function* () {
         Effect.mapError(toPersistenceSqlError("KinEventQueue.reconsiderBudget")),
       );
       yield* sql.afterCommit(notify(orgId));
+    }),
+    nudge: Effect.fn("KinEventQueue.nudge")(function* (orgId) {
+      yield* notify(orgId);
     }),
     enqueue,
     claim,

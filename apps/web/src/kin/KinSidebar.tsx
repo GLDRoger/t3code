@@ -1,11 +1,9 @@
 import { SidebarChromeFooter, SidebarChromeHeader } from "../components/sidebar/SidebarChrome";
 import { SidebarContent, SidebarGroup } from "../components/ui/sidebar";
 import { isElectron } from "../env";
-import { isChatOnlySession } from "../environments/primary";
 import { KinChatList } from "./KinChatList";
 import { KinNav } from "./KinNav";
 import { KinNewLeadButton } from "./KinNewLeadButton";
-import { KinSettingsButton } from "./KinSettingsView";
 
 /** The app sidebar while Kin is the open list: the same chrome as threads, over Kin's chats. */
 export function KinSidebar() {
@@ -21,7 +19,6 @@ export function KinSidebar() {
               <h2 className="min-w-0 flex-1 text-sm font-medium text-sidebar-muted-foreground">
                 Chats
               </h2>
-              <KinSettingsButton />
               <KinNewLeadButton />
             </div>
           </SidebarGroup>
@@ -31,8 +28,7 @@ export function KinSidebar() {
           <KinChatList />
         </SidebarGroup>
       </SidebarContent>
-      {/* Settings, pull requests and usage are the owner's; a teammate's session has none. */}
-      {isChatOnlySession() ? null : <SidebarChromeFooter />}
+      <SidebarChromeFooter />
     </>
   );
 }

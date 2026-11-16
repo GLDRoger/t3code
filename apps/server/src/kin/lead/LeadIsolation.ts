@@ -161,17 +161,17 @@ const signingPath = (
   environment: NodeJS.ProcessEnv,
   sign: {
     readonly directory: string;
-    readonly ghDirectory: string;
+    readonly toolDirectories: ReadonlyArray<string>;
     readonly agentName: string | undefined;
   },
 ) => ({
-  PATH: [sign.directory, sign.ghDirectory, environment.PATH].filter(Boolean).join(":"),
+  PATH: [sign.directory, ...sign.toolDirectories, environment.PATH].filter(Boolean).join(":"),
   ...(sign.agentName === undefined ? {} : { KIN_AGENT_NAME: sign.agentName }),
 });
 
 /**
- * An owner-only turn with GitHub connected (repos-rethink slice 3): Claude Code's own tools, as any
- * T3 thread has, with the pinned `gh` first on PATH. Its hook still asks per call: a turn others
+ * An owner-only turn: Claude Code's own tools, as any T3 thread has, with Kin's pinned `gh` and
+ * Typst first on PATH. Its hook still asks per call: a turn others
  * can read, one that read outside text, or a run Kin hasn't adopted gets only the confined tools.
  * A task the lead delegated (`lead: false`) gets the same, under T3's own system prompt.
  */
@@ -181,7 +181,7 @@ const fullOptions = (
     readonly hook: HookCallbackMatcher;
     readonly auth: AuthSettings;
     readonly environment: NodeJS.ProcessEnv;
-    readonly ghDirectory: string;
+    readonly toolDirectories: ReadonlyArray<string>;
     readonly signDirectory: string;
     readonly agentName: string | undefined;
     readonly lead: boolean;
@@ -211,7 +211,7 @@ const fullOptions = (
       ...environment,
       ...signingPath(environment, {
         directory: session.signDirectory,
-        ghDirectory: session.ghDirectory,
+        toolDirectories: session.toolDirectories,
         agentName: session.agentName,
       }),
       ENABLE_TOOL_SEARCH: loading.search,
@@ -257,7 +257,9 @@ export const claudeQueryRunner = <E, R>(
         yield* Effect.gen(function* () {
           yield* fs.makeDirectory(signDirectory, { recursive: true });
           const shim = path.join(signDirectory, "gh");
-          yield* fs.writeFileString(shim, ghSignScript(path.join(policy.value.ghDirectory, "gh")));
+          // The pinned gh's folder comes first (AgentSession.sessionPolicyLayer).
+          const pinned = policy.value.toolDirectories[0] ?? "";
+          yield* fs.writeFileString(shim, ghSignScript(path.join(pinned, "gh")));
           yield* fs.chmod(shim, 0o755);
         }).pipe(
           Effect.catchCause((cause) =>
@@ -326,7 +328,7 @@ export const claudeQueryRunner = <E, R>(
                   ),
                   auth: yield* confiner.ownerAuth(input.options.env),
                   environment: yield* HostProcess.Environment,
-                  ghDirectory: policy.value.ghDirectory,
+                  toolDirectories: policy.value.toolDirectories,
                   signDirectory,
                   agentName: yield* policy.value.agentName(input.threadId),
                   lead: false,
@@ -340,7 +342,7 @@ export const claudeQueryRunner = <E, R>(
           const shared = input.threadId.startsWith(SHARED_THREAD_PREFIX);
           const root = shared ? undefined : yield* confiner.root(cwd);
           const attachments = yield* confiner.root(config.attachmentsDir);
-          if (!shared && Option.isSome(policy) && (yield* policy.value.connected()))
+          if (!shared && Option.isSome(policy))
             return yield* runner.open({
               ...input,
               options: {
@@ -358,7 +360,7 @@ export const claudeQueryRunner = <E, R>(
                   ),
                   auth: yield* confiner.ownerAuth(input.options.env),
                   environment: yield* HostProcess.Environment,
-                  ghDirectory: policy.value.ghDirectory,
+                  toolDirectories: policy.value.toolDirectories,
                   signDirectory,
                   agentName: yield* policy.value.agentName(input.threadId),
                   lead: true,

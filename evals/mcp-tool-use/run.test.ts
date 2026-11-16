@@ -681,14 +681,14 @@ it("lists link tools only while a case turns the beta on, and sends chips as T3 
   assert.include(prompt?.text, "environmentId: environment-vps");
 });
 
-it("gives a Kin lead Claude Code's tools and T3's lead tools only while GitHub is connected", () => {
-  const names = (kinGitHub: boolean) =>
+it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with the owner's session", () => {
+  const names = (kinSession: boolean) =>
     buildBase(template, {
       model: "claude-sonnet-5-5",
       keepUserInstructions: false,
       kinAgent: true,
       kinLead: true,
-      kinGitHub,
+      kinSession,
     }).nativeTools.map((tool) => tool.name);
   const [before, after] = [names(false), names(true)];
   assert.include(before, "mcp__t3-code__kin_delegate");

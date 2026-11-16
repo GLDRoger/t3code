@@ -1,4 +1,4 @@
-import type { KinAgentId, KinOrgId } from "@t3tools/contracts";
+import type { KinAgentId, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -147,6 +147,8 @@ export const setCharacter = Effect.fn("KinCharacters.set")(function* (
   orgId: KinOrgId,
   agentId: KinAgentId,
   body: string,
+  /** Someone editing it on the agent's page; absent for the host's command. */
+  by?: KinPersonId,
 ) {
   yield* seedCharacters(orgId);
   const sql = yield* SqlClient.SqlClient;
@@ -156,10 +158,17 @@ export const setCharacter = Effect.fn("KinCharacters.set")(function* (
   const now = yield* Clock.currentTimeMillis;
   const written = yield* Docs.replaceBody(
     orgId,
-    { actor: { _tag: "system" }, via: "owner" },
+    {
+      actor: by === undefined ? { _tag: "system" } : { _tag: "person", personId: by },
+      via: "owner",
+    },
     {},
     { key: row.key },
-    { body, summary: "Set from the host", originKey: `kin-character-set:${agentId}:${now}` },
+    {
+      body,
+      summary: by === undefined ? "Set from the host" : "Edited on its page",
+      originKey: `kin-character-set:${agentId}:${now}`,
+    },
   );
   return { outcome: written.created ? ("set" as const) : ("unchanged" as const), key: row.key };
 });

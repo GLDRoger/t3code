@@ -77,7 +77,9 @@ import HeldRelays from "./migrations/K153_HeldRelays.ts";
 import TeamDiscussions from "./migrations/K154_TeamDiscussions.ts";
 import TalkStyle from "./migrations/K155_TalkStyle.ts";
 import NamedKeys from "./migrations/K156_NamedKeys.ts";
-import GitHubWatch from "./migrations/K157_GitHubWatch.ts";
+import AgentSettings from "./migrations/K157_AgentSettings.ts";
+import PrivateBy from "./migrations/K158_PrivateBy.ts";
+import GitHubWatch from "./migrations/K159_GitHubWatch.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -235,7 +237,9 @@ const loader = Migrator.fromRecord({
   "154_TeamDiscussions": TeamDiscussions,
   "155_TalkStyle": TalkStyle,
   "156_NamedKeys": NamedKeys,
-  "157_GitHubWatch": GitHubWatch,
+  "157_AgentSettings": AgentSettings,
+  "158_PrivateBy": PrivateBy,
+  "159_GitHubWatch": GitHubWatch,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

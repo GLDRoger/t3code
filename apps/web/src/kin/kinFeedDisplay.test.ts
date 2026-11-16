@@ -75,7 +75,7 @@ describe("kinFeedDisplay", () => {
 
   it("keeps only the last of a run of identical notices", () => {
     const notice = (key: string, text: string): KinFeedRow =>
-      ({ type: "system", key, text, retry: null, message: {} }) as never;
+      ({ type: "system", key, text, retry: null, open: null, message: {} }) as never;
     const shown = display([
       notice("n1", "Tech lead couldn't start. Trying again in a moment."),
       notice("n2", "Tech lead couldn't start. Trying again in a moment."),

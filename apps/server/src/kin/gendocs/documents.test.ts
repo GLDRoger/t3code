@@ -16,10 +16,7 @@ import {
   KinWorkerId,
   ProviderInstanceId,
   ThreadId,
-  type WorkerReport,
 } from "@t3tools/contracts";
-import { AgentScope } from "@t3tools/shared/AgentScope";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -29,7 +26,6 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -49,12 +45,13 @@ import * as OwnerMoney from "../work/ownerMoney.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
 import * as Amounts from "./amounts.ts";
 import { computeData } from "./compute.ts";
-import * as DocJobs from "./DocJobs.ts";
+import * as AgentFiles from "./agentFiles.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
 import * as LeadDocuments from "./leadDocuments.ts";
 import { answerReceiptCard } from "./receiptProposals.ts";
 import { assembleInputs, needsEntry, parseRecipe } from "./recipe.ts";
-import { copyReferences } from "./references.ts";
+import { labelChange } from "./recipeLabels.ts";
+import { checkReferences } from "./references.ts";
 import * as Render from "./render.ts";
 import { STARTER_FILES } from "./starter.ts";
 import { sheetCells } from "./tables.ts";
@@ -93,19 +90,11 @@ const identity = Layer.mock(KinIdentity)({
       threadId: ThreadId.make("lead-thread"),
     }),
 });
-const cards: Array<{
-  readonly documents: ReadonlyArray<{ readonly key: string }>;
-  readonly lastError: string | null;
-}> = [];
 // Notices Kin posted, by chat.
 const notices: Array<{ readonly chatId: string; readonly body: string }> = [];
 const chat = Layer.unwrap(
   Effect.map(SqlClient.SqlClient, (sql) =>
     Layer.mock(KinChatService)({
-      setTaskCardDocuments: (input) =>
-        Effect.sync(() => {
-          cards.push({ documents: input.documents, lastError: input.lastError });
-        }).pipe(Effect.as({} as never)),
       notice: (input) =>
         Effect.gen(function* () {
           if (input.audience === "owner" && (yield* chatShared(sql, input)))
@@ -169,12 +158,6 @@ const base = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
 );
-// Threads whose processes the fake scope can't confirm gone; every other thread's are.
-const alive = new Set<string>();
-const scopes = Layer.succeed(AgentScope, {
-  ...AgentScope.defaultValue(),
-  reap: (threadId: string) => Effect.succeed(!alive.has(threadId)),
-});
 /**
  * Typst stands aside here (`render.test.ts` runs it): a typst recipe "renders" as a PDF holding
  * its computed data, so a test reads the figures Kin worked out. Table recipes and storing are real.
@@ -232,25 +215,13 @@ const toolchain = Layer.succeed(KinToolchain, {
   present: () => Effect.undefined,
   fonts: () => Effect.undefined,
 });
-// Follow-up passes Kin sent recipe writers, by thread.
-const sent: Array<{ readonly threadId: string; readonly text: string }> = [];
-const threads = Layer.mock(ThreadManagementService)({
-  sendToThread: (input) =>
-    Effect.sync(() => {
-      sent.push({ threadId: input.threadId, text: input.text });
-    }).pipe(Effect.as({} as never)),
-});
-const layer = DocJobs.makeCollectorLayer({ sweepPage: 1 }).pipe(
-  Layer.provideMerge(threads),
-  Layer.provideMerge(renderer),
+const layer = renderer.pipe(
   Layer.provideMerge(toolchain),
-  Layer.provideMerge(scopes),
-  Layer.provideMerge(Layer.succeed(HostProcess.Platform, "linux")),
   Layer.provideMerge(Workspace.layer),
   Layer.provideMerge(Vcs.layer),
   Layer.provideMerge(chat),
   Layer.provideMerge(base),
-  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-doc-jobs-" })),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-documents-" })),
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformCrypto.layer)),
 );
 
@@ -304,7 +275,6 @@ const seed = Effect.gen(function* () {
   rendered.length = 0;
   shownCards.length = 0;
   notices.length = 0;
-  sent.length = 0;
   failing.reason = undefined;
   yield* TestClock.setTime(Date.parse("2026-11-12T06:00:00.000Z"));
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${at})`;
@@ -361,7 +331,7 @@ const seed = Effect.gen(function* () {
   return work;
 });
 
-const invoice = (more: Partial<DocJobs.DocumentInput> = {}): DocJobs.DocumentInput => ({
+const invoice = (more: Partial<LeadDocuments.DocumentInput> = {}): LeadDocuments.DocumentInput => ({
   title: "Invoice INV-1",
   recipe: "invoice",
   entry: "INV-1",
@@ -376,63 +346,20 @@ const versionsOf = (key: string) =>
   });
 const latestData = () => rendered.at(-1)!.data as Record<string, any>;
 
-/** A one-off job as `document` records it, with a worktree holding a PDF, a stray and a link. */
-const docJob = (workerId: KinWorkerId, options: { readonly worker: string }) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const fs = yield* FileSystem.FileSystem;
-    const workspace = yield* Workspace.KinWorkspace;
-    const prepared = yield* workspace.prepare(orgId, workerId, {
-      "in/inputs.json": '{"brief":"An invented note"}',
-    });
-    yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id,
-        model_json, provenance_json, status, started_at, ended_at, title, chat_id, context)
-      VALUES (${workerId}, ${orgId}, ${lead}, 'wake-3', 'build', ${`kin-work:${workerId}`}, '{}',
-        '{}', ${options.worker}, 0, ${options.worker === "running" ? null : 1}, 'Welcome note',
-        'lead-chat', 'private')`;
-    yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode, recipe,
-        recipe_commit, entry_record_id, inputs_sha256, number, sensitive, doc_origin, worktree_path,
-        branch, chat_id, audience, answered_message_id, answered_author_kind, answered_author_id,
-        created_at)
-      VALUES (${orgId}, ${workerId}, ${lead}, 'wake-3', 'document', NULL, ${prepared.base}, NULL,
-        'inputs-a', NULL, 1, 'file:welcome', ${prepared.worktree}, ${prepared.branch},
-        'lead-chat', 'owner_only', 'msg-3', 'person', ${ownerId}, 0)`;
-    yield* fs.makeDirectory(`${prepared.worktree}/out`, { recursive: true });
-    yield* fs.writeFileString(
-      `${prepared.worktree}/out/note.pdf`,
-      "%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF\n",
-    );
-    yield* fs.writeFileString(`${prepared.worktree}/out/extra.pdf`, "%PDF-1.7\n%%EOF\n");
-    yield* fs.symlink("/etc/hosts", `${prepared.worktree}/out/linked.pdf`);
-    return prepared;
+/** writeRecipe as the agent calls it, in the turn `sourceEventId` names. */
+const writeRecipe = (recipe: string, more: Partial<LeadDocuments.DocumentInput> = {}) =>
+  AgentFiles.writeRecipe(scope, {
+    title: `${recipe} recipe`,
+    recipe,
+    writeRecipe: true,
+    sourceEventId: "event-3",
+    ...more,
   });
-const owed = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ workerId: string }>`SELECT worker_id AS "workerId" FROM kin_doc_jobs
-    WHERE org_id = ${orgId} AND removed_at IS NULL ORDER BY worker_id`;
-  return rows.map((row) => row.workerId);
-});
-const pdfReport: WorkerReport = {
-  result: "done",
-  summary: "Made it.",
-  evidence: [{ kind: "file", ref: "out/note.pdf" }],
-  openQuestions: [],
-  memorySuggestions: [],
-  misleadingMemory: [],
-  parsed: true,
-};
-/** A collection that settled: a recipe writer sent another pass hasn't. */
-const settled = <A>(result: A | typeof DocJobs.CONTINUED): A => {
-  if (result === DocJobs.CONTINUED) return assert.fail("the job was sent another pass");
-  return result;
-};
-const threadOf = (workerId: KinWorkerId) => ThreadId.make(`kin-work:${workerId}`);
 
-/** A worker's job writing the quote recipe, collected; `n` names the job and its description. */
-/** A quote recipe job ready to collect: its description and template are its own when given. */
-const quoteJob = (
+/** The agent writes the quote recipe in the folder Kin gives it, from the report recipe. */
+const editQuote = (
+  folder: string,
   n: number,
-  sensitive = 0,
   own: {
     readonly description?: string;
     readonly template?: string;
@@ -443,15 +370,10 @@ const quoteJob = (
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const sql = yield* SqlClient.SqlClient;
-    const workspace = yield* Workspace.KinWorkspace;
-    const collector = yield* DocJobs.KinDocCollector;
-    const workerId = KinWorkerId.make(`wk-quote-${n}`);
-    const job = yield* workspace.prepare(orgId, workerId, {});
-    const folder = `${job.worktree}/recipes/quote`;
-    yield* fs.makeDirectory(folder, { recursive: true });
+    const recipe = `${folder}/recipes/quote`;
+    yield* fs.makeDirectory(recipe, { recursive: true });
     yield* fs.writeFileString(
-      `${folder}/RECIPE.md`,
+      `${recipe}/RECIPE.md`,
       own.recipe ??
         STARTER_FILES["recipes/report/RECIPE.md"]!.replace("name: report", "name: quote")
           .replace("title: Report", "title: Quote")
@@ -459,35 +381,25 @@ const quoteJob = (
           .replace("[report.pdf]", "[quote.pdf]"),
     );
     yield* fs.writeFileString(
-      `${folder}/template.typ`,
+      `${recipe}/template.typ`,
       own.template ?? '#let d = json("/inputs.json")\n',
     );
     yield* fs.writeFileString(
-      `${folder}/sample.json`,
+      `${recipe}/sample.json`,
       own.sample ?? STARTER_FILES["recipes/report/sample.json"]!,
     );
-    yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind,
-        thread_id, model_json, provenance_json, status, started_at, ended_at, title, chat_id,
-        context)
-      VALUES (${workerId}, ${orgId}, ${lead}, 'wake-3', 'build', ${threadOf(workerId)}, '{}',
-        '{}', 'running', 0, NULL, 'Quote recipe', 'lead-chat', 'private')`;
-    yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode, recipe,
-        recipe_commit, entry_record_id, inputs_sha256, number, sensitive, doc_origin,
-        worktree_path, branch, chat_id, audience, created_at)
-      VALUES (${orgId}, ${workerId}, ${lead}, 'wake-3', 'recipe', 'quote', ${job.base}, NULL,
-        'brief', NULL, ${sensitive}, 'recipe:quote', ${job.worktree}, ${job.branch}, 'lead-chat',
-        'owner_only', 0)`;
-    const collected = collector.collect({ orgId, workerId, threadId: threadOf(workerId) }, true, {
-      ...pdfReport,
-      evidence: [],
-    });
-    return collected;
   });
-const startQuote = (...args: Parameters<typeof quoteJob>) =>
-  Effect.map(quoteJob(...args), (collected) =>
-    collected.pipe(Effect.map((result) => settled(result))),
-  );
-const writeQuote = (n: number, sensitive = 0) => Effect.flatten(startQuote(n, sensitive));
+
+/** The agent writes the quote recipe and asks Kin to keep it; its draft is labelled `sensitive`. */
+const writeQuote = (n: number, sensitive = 0, own: Parameters<typeof editQuote>[2] = {}) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const started = yield* writeRecipe("quote");
+    yield* sql`UPDATE kin_doc_jobs SET sensitive = ${sensitive}
+      WHERE mode = 'recipe' AND recipe = 'quote' AND collected_at IS NULL`;
+    yield* editQuote(started.folder!, n, own);
+    return yield* writeRecipe("quote");
+  });
 
 describe("recipe documents", () => {
   it.effect("are made in the call from the recipe's declared inputs, read from stored rows", () =>
@@ -496,8 +408,6 @@ describe("recipe documents", () => {
       const sql = yield* SqlClient.SqlClient;
       const made = yield* LeadDocuments.make(scope, invoice());
       assert.deepStrictEqual(made, {
-        workerId: null,
-        threadLink: null,
         recipe: "invoice",
         number: null,
         draft: true,
@@ -1299,39 +1209,18 @@ describe("recipe documents", () => {
         }),
       );
       assert.match(notText.message, /is a file, not text/);
-      // A worker's brief is plain too; a money recipe it writes is private by its kind.
-      const brief = yield* DocJobs.planJob(
-        orgId,
-        {
-          title: "Note",
-          brief: "A short note.",
-          sourceEventId: quiet,
-        },
-        "lead-chat",
+      // A money recipe the agent writes is private by its kind; another starts plain.
+      yield* writeRecipe("quote", { sourceEventId: quiet });
+      yield* writeRecipe("note", { sourceEventId: quiet });
+      const drafts = yield* sql<{ recipe: string; sensitive: number }>`SELECT recipe, sensitive
+        FROM kin_doc_jobs WHERE mode = 'recipe' ORDER BY recipe`;
+      assert.deepStrictEqual(
+        drafts.map((one) => [one.recipe, one.sensitive]),
+        [
+          ["note", 0],
+          ["quote", 1],
+        ],
       );
-      const writing = yield* DocJobs.planJob(
-        orgId,
-        {
-          title: "Quote",
-          recipe: "quote",
-          writeRecipe: true,
-          brief: "A quote.",
-          sourceEventId: quiet,
-        },
-        "lead-chat",
-      );
-      for (const [plan, labelled] of [
-        [brief, false],
-        [writing, true],
-      ] as const)
-        assert.deepStrictEqual(
-          [plan.sensitive, yield* DocJobs.workerJobSensitive(orgId, plan)],
-          [false, labelled],
-          plan.mode,
-        );
-      // A recipe's document is never a worker's job any more.
-      const asWorker = yield* DocJobs.planJob(orgId, invoice(), "lead-chat").pipe(Effect.flip);
-      assert.match(asWorker.message, /Kin makes a recipe's document itself/);
     }).pipe(Effect.provide(layer)),
   );
 });
@@ -2230,128 +2119,103 @@ describe("receipts", () => {
   );
 });
 
-describe("worker document jobs", () => {
-  it.effect(
-    "file only the named files under out/, with provenance from the job's row, never the report",
-    () =>
-      Effect.gen(function* () {
-        yield* seed;
-        const fs = yield* FileSystem.FileSystem;
-        const sql = yield* SqlClient.SqlClient;
-        const config = yield* ServerConfig;
-        const collector = yield* DocJobs.KinDocCollector;
-        const report: WorkerReport = {
-          result: "done",
-          // The worker claims a number and a recipe Kin never gave; none of it is used.
-          summary: "Made INV/99-00/999 with recipe evil at commit deadbeef.",
-          evidence: [
-            { kind: "file", ref: "out/note.pdf", note: "number INV/99-00/999" },
-            { kind: "file", ref: "out/linked.pdf" },
-            { kind: "file", ref: "../../etc/passwd" },
-          ],
-          openQuestions: [],
-          memorySuggestions: [],
-          misleadingMemory: [],
-          parsed: true,
-        };
-        const first = KinWorkerId.make("wk-first");
-        const prepared = yield* docJob(first, { worker: "running" });
-        const worker = { orgId, workerId: first, threadId: threadOf(first) };
-        const result = settled(yield* collector.collect(worker, true, report));
-        assert.deepStrictEqual(
-          result?.evidence.map((item) => [item.kind, item.ref]),
-          [["link", "D-1"]],
-        );
-        assert.match(result!.summary, /^Kin filed the file as D-1\./);
-        assert.deepStrictEqual(result!.openQuestions, [
-          "../../etc/passwd wasn't saved: it isn't a plain file name in out/.",
-          "linked.pdf wasn't saved: it's a link.",
-        ]);
-        assert.isFalse(yield* fs.exists(prepared.worktree), "the worktree goes with its inputs");
-        const { doc } = yield* versionsOf("D-1");
-        const version = Docs.toVersion((yield* Docs.versionOf(orgId, doc.recordId))!);
-        assert.deepStrictEqual(
-          {
-            name: version.file?.name,
-            recipe: version.file?.recipe,
-            inputsHash: version.file?.inputsHash,
-            workerId: version.file?.workerId,
-            number: version.file?.number,
-            answered: version.provenance.answered?.messageId,
-            sensitive: doc.sensitive,
-          },
-          {
-            name: "note.pdf",
-            recipe: null,
-            inputsHash: "inputs-a",
-            workerId: first,
-            number: null,
-            answered: "msg-3",
-            sensitive: 1,
-          },
-        );
-        const stored = yield* fs.readFileString(
-          `${config.attachmentsDir}/${version.file!.attachmentId}.pdf`,
-        );
-        assert.match(stored, /^%PDF-1\.7/);
-        assert.deepStrictEqual(
-          cards.at(-1)?.documents.map((one) => one.key),
-          ["D-1"],
-        );
-        // Collecting again changes nothing; a file doc's text isn't edited.
-        settled(yield* collector.collect(worker, true, report));
-        assert.lengthOf((yield* versionsOf("D-1")).history, 1);
-        const writer = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
-        const edit = yield* Docs.rewrite(
-          orgId,
-          writer,
-          {},
-          { key: "D-1" },
-          { body: "text", baseVersion: 1, summary: "x", originKey: "edit-1" },
-        ).pipe(Effect.flip);
-        assert.match(edit.message, /generated file/);
-        // A different outcome for the same job never replaces the stored one.
-        const [row] = yield* sql<{ outcomeJson: string }>`SELECT outcome_json AS "outcomeJson"
-          FROM kin_doc_jobs WHERE worker_id = ${first}`;
-        const differing = yield* DocJobs.recordOutcome(orgId, first, '{"summary":"other"}').pipe(
-          Effect.flip,
-        );
-        assert.strictEqual(differing.reason, "not_allowed");
-        // A run that didn't finish files nothing, and the card says why.
-        const third = KinWorkerId.make("wk-third");
-        yield* docJob(third, { worker: "running" });
-        const stopped = settled(
-          yield* collector.collect(
-            { ...worker, workerId: third, threadId: threadOf(third) },
-            false,
-            report,
-          ),
-        );
-        assert.strictEqual(stopped?.result, "blocked");
-        assert.match(cards.at(-1)?.lastError ?? "", /didn't finish/);
-        assert.strictEqual(
-          yield* DocJobs.recordOutcome(orgId, first, row!.outcomeJson),
-          row!.outcomeJson,
-        );
-      }).pipe(Effect.provide(layer)),
-  );
-
-  it.effect("keep a recipe a worker wrote only once its sample renders", () =>
+describe("files the agent makes", () => {
+  it.effect("are filed as they are, linked to their entry, with their card in the chat", () =>
     Effect.gen(function* () {
       yield* seed;
-      const workspace = yield* Workspace.KinWorkspace;
-      const write = (n: number) => writeQuote(n);
-      failing.reason = "quote.pdf: template.typ:2:1: error: unknown variable: blcks";
-      const refused = yield* write(1);
+      const fs = yield* FileSystem.FileSystem;
+      const config = yield* ServerConfig;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "kin-agent-file-" });
+      const pdf = `${dir}/Welcome note.pdf`;
+      yield* fs.writeFileString(pdf, "%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF\n");
+      const note = {
+        title: "Welcome note",
+        file: pdf,
+        entry: KinRecordKey.make("INV-1"),
+        sourceEventId: "event-3",
+      };
+      const made = yield* AgentFiles.fileDocument(scope, note);
+      assert.deepStrictEqual(
+        [made.recipe, made.documents, made.sensitive],
+        [null, [{ key: "D-1", title: "Welcome note", version: 1 }], true],
+      );
+      assert.sameMembers(shownCards, ["D-1"]);
+      const { doc, history } = yield* versionsOf("D-1");
+      const version = Docs.toVersion((yield* Docs.versionOf(orgId, doc.recordId))!);
+      assert.deepStrictEqual(
+        [version.file?.name, version.file?.mimeType, version.file?.pages, doc.sensitive],
+        ["Welcome note.pdf", "application/pdf", 1, 1],
+      );
+      assert.strictEqual(version.provenance.answered?.messageId, "msg-3");
       assert.match(
-        refused!.summary,
+        yield* fs.readFileString(`${config.attachmentsDir}/${version.file!.attachmentId}.pdf`),
+        /^%PDF-1\.7/,
+      );
+      assert.lengthOf(history, 1);
+      // Asking again files nothing new.
+      yield* AgentFiles.fileDocument(scope, note);
+      assert.lengthOf((yield* versionsOf("D-1")).history, 1);
+      // A link, the wrong bytes, a path from nowhere and a web page are refused; nothing is filed.
+      yield* fs.symlink(pdf, `${dir}/linked.pdf`);
+      yield* fs.writeFileString(`${dir}/fake.pdf`, "not a PDF");
+      yield* fs.writeFileString(`${dir}/page.html`, "<p>hi</p>");
+      for (const [file, reason] of [
+        [`${dir}/linked.pdf`, /it's a link/],
+        [`${dir}/fake.pdf`, /its bytes aren't a PDF file/],
+        ["notes.pdf", /give its full path/],
+        [`${dir}/page.html`, /HTML page isn't kept/],
+        [`${dir}/missing.pdf`, /isn't there/],
+      ] as const) {
+        const refused = yield* AgentFiles.fileDocument(scope, {
+          ...note,
+          title: "Another",
+          file,
+        }).pipe(Effect.flip);
+        assert.match(refused.message, reason);
+        assert.match(refused.message, /^Nothing was filed/);
+      }
+      const bare = yield* AgentFiles.fileDocument(scope, {
+        title: "No file",
+        sourceEventId: "event-3",
+      }).pipe(Effect.flip);
+      assert.match(bare.message, /give its full path in file/);
+      assert.sameMembers([...new Set(shownCards)], ["D-1"]);
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect("keep a recipe the agent wrote only once its sample renders", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const fs = yield* FileSystem.FileSystem;
+      const workspace = yield* Workspace.KinWorkspace;
+      const started = yield* writeRecipe("quote");
+      assert.isDefined(started.folder);
+      assert.match(started.next!, /recipes\/invoice\/ shows computed fields/);
+      // Asked again with nothing changed, it says so and keeps the same folder.
+      const idle = yield* writeRecipe("quote");
+      assert.deepStrictEqual(
+        [idle.folder, idle.next?.startsWith("Nothing in recipes/quote/ has changed yet.")],
+        [started.folder, true],
+      );
+      yield* editQuote(started.folder!, 1);
+      failing.reason = "quote.pdf: template.typ:2:1: error: unknown variable: blcks";
+      const refused = yield* writeRecipe("quote").pipe(Effect.flip);
+      assert.match(
+        refused.message,
         /didn't keep the quote recipe: its sample didn't render.*blcks/,
       );
       assert.isUndefined((yield* workspace.recipes(orgId)).find((one) => one.name === "quote"));
       failing.reason = undefined;
-      const kept = yield* write(2);
-      assert.match(kept!.summary, /rendered the quote recipe's sample and committed it/);
+      const kept = yield* writeRecipe("quote");
+      assert.match(kept.next!, /rendered the quote recipe's sample and committed it/);
       assert.isDefined((yield* workspace.recipes(orgId)).find((one) => one.name === "quote"));
+      assert.isFalse(yield* fs.exists(started.folder!), "the folder goes once it is kept");
+      // The owner sees the sample in the chat: its PDF and its first page.
+      assert.lengthOf(kept.documents, 2);
+      assert.includeMembers(
+        shownCards,
+        kept.documents.map((one) => one.key),
+      );
       // Review 45: a numbered recipe that doesn't say which figure its document asks for goes back.
       const unpriced = STARTER_FILES["recipes/invoice/RECIPE.md"]!.replace(
         "name: invoice",
@@ -2359,171 +2223,134 @@ describe("worker document jobs", () => {
       )
         .replace(/^amount: .*\n/m, "")
         .replace("[invoice.pdf]", "[quote.pdf]");
-      const back = settled(
-        yield* Effect.flatten(
-          quoteJob(3, 0, {
-            recipe: unpriced,
-            // The seed's company has the starter sample's invented GSTIN and account.
-            sample: STARTER_FILES["recipes/invoice/sample.json"]!.replace(
-              "29AAAAA1111A1Z5",
-              "29CCCCC3333C1Z5",
-            ).replace("000111222333", "999888777666"),
-            template: STARTER_FILES["recipes/invoice/template.typ"]!,
-          }),
+      const back = yield* writeQuote(3, 0, {
+        recipe: unpriced,
+        // The seed's company has the starter sample's invented GSTIN and account.
+        sample: STARTER_FILES["recipes/invoice/sample.json"]!.replace(
+          "29AAAAA1111A1Z5",
+          "29CCCCC3333C1Z5",
+        ).replace("000111222333", "999888777666"),
+        template: STARTER_FILES["recipes/invoice/template.typ"]!,
+      }).pipe(Effect.flip);
+      assert.match(back.message, /it is numbered, so its front matter declares amount/);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("copy the look of the owner's file into a recipe, never the file or its data", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const fs = yield* FileSystem.FileSystem;
+      const sql = yield* SqlClient.SqlClient;
+      const config = yield* ServerConfig;
+      const workspace = yield* Workspace.KinWorkspace;
+      // The owner's old invoice, invented, sent in the chat the turn answers in.
+      const referenceId = "kin-chat-00000000-0000-4000-8000-0000000000aa-pdf";
+      const pdf = "%PDF-1.7\n% an invented reference invoice\n%%EOF\n";
+      yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+      yield* fs.writeFileString(`${config.attachmentsDir}/${referenceId}.pdf`, pdf);
+      const asked = yield* turn(4, "Make our invoices look like this");
+      const sent = [
+        {
+          type: "file",
+          id: referenceId,
+          name: "Old invoice 12.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: pdf.length,
+        },
+      ];
+      yield* sql`UPDATE kin_messages SET attachments_json = ${JSON.stringify(sent)}
+        WHERE message_id = 'msg-4'`;
+      yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+        VALUES (${referenceId}, ${orgId}, 'lead-chat', 'msg-4')`;
+      const elsewhere = yield* checkReferences(orgId, "other-chat", [referenceId]).pipe(
+        Effect.flip,
+      );
+      assert.match(elsewhere.message, /not a file in this chat/);
+      const letterhead = (more: Partial<LeadDocuments.DocumentInput> = {}) =>
+        writeRecipe("letterhead", { sourceEventId: asked, ...more });
+      const started = yield* letterhead({ references: [referenceId] });
+      assert.match(started.next!, /References: the owner sent a file .*Old invoice 12\.pdf/);
+      const folder = `${started.folder!}/recipes/letterhead`;
+      const copied = `${started.folder!}/in/references/Old invoice 12.pdf`;
+      assert.strictEqual(yield* fs.readFileString(copied), pdf);
+      assert.strictEqual(Number((yield* fs.stat(copied)).mode) & 0o222, 0, "read-only");
+      yield* fs.makeDirectory(folder, { recursive: true });
+      yield* fs.writeFileString(
+        `${folder}/RECIPE.md`,
+        STARTER_FILES["recipes/report/RECIPE.md"]!.replace(
+          "name: report",
+          "name: letterhead",
+        ).replace("[report.pdf]", "[letterhead.pdf]"),
+      );
+      yield* fs.writeFileString(`${folder}/template.typ`, '#let d = json("/inputs.json")\n');
+      yield* fs.writeFileString(
+        `${folder}/sample.json`,
+        STARTER_FILES["recipes/report/sample.json"]!,
+      );
+      // An image the agent drew for the template, which the owner sees before clearing a label.
+      yield* fs.writeFile(
+        `${folder}/stamp.png`,
+        new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      );
+      // A copy of the reference in the recipe is never kept.
+      yield* fs.writeFileString(`${folder}/old.pdf`, pdf);
+      const copy = yield* letterhead().pipe(Effect.flip);
+      assert.match(copy.message, /old\.pdf is a copy of the owner's reference Old invoice 12\.pdf/);
+      // Then Typst's own error.
+      yield* fs.remove(`${folder}/old.pdf`);
+      failing.reason = "letterhead.pdf: template.typ:1:1: error: unknown variable: oops";
+      const broken = yield* letterhead().pipe(Effect.flip);
+      assert.match(broken.message, /its sample didn't render: .*unknown variable: oops/);
+      // Rendered, its first page goes back once to set beside the references.
+      failing.reason = undefined;
+      const look = yield* letterhead();
+      assert.match(look.next!, /in\/rendered\/page-1\.png/);
+      assert.isTrue(yield* fs.exists(`${started.folder!}/in/rendered/page-1.png`));
+      assert.isUndefined(
+        (yield* workspace.recipes(orgId)).find((one) => one.name === "letterhead"),
+      );
+      const kept = yield* letterhead();
+      assert.match(kept.next!, /committed it/);
+      assert.match(kept.next!, /kin_recipe_undo with recipe letterhead/);
+      // The owner sees the new look in the chat: the sample's PDF and its first page.
+      assert.lengthOf(kept.documents, 2);
+      assert.includeMembers(
+        shownCards,
+        kept.documents.map((one) => one.key),
+      );
+      const listed = yield* OwnerDocs.recipes(people, { orgId });
+      const made = listed.recipes.find((one) => one.name === "letterhead");
+      assert.deepStrictEqual([made?.labelled, made?.files], [true, ["stamp.png"]]);
+      assert.isFalse(yield* fs.exists(started.folder!));
+
+      // A sample holding the company's real details is refused, however often it is asked.
+      const memo = (yield* writeRecipe("memo", { sourceEventId: asked })).folder!;
+      yield* fs.makeDirectory(`${memo}/recipes/memo`, { recursive: true });
+      yield* fs.writeFileString(
+        `${memo}/recipes/memo/RECIPE.md`,
+        STARTER_FILES["recipes/report/RECIPE.md"]!.replace("name: report", "name: memo").replace(
+          "[report.pdf]",
+          "[memo.pdf]",
         ),
       );
-      assert.match(back!.summary, /it is numbered, so its front matter declares amount/);
+      yield* fs.writeFileString(
+        `${memo}/recipes/memo/template.typ`,
+        '#let d = json("/inputs.json")\n',
+      );
+      yield* fs.writeFileString(
+        `${memo}/recipes/memo/sample.json`,
+        JSON.stringify({ title: "For Invented Acme", body: "Invented words." }),
+      );
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const leaky = yield* writeRecipe("memo", { sourceEventId: asked }).pipe(Effect.flip);
+        assert.match(leaky.message, /sample\.json holds the company's or a client's real details/);
+      }
+      assert.isUndefined((yield* workspace.recipes(orgId)).find((one) => one.name === "memo"));
     }).pipe(Effect.provide(layer)),
   );
 
   it.effect(
-    "send a recipe writer back with what keeps its recipe out, a bounded number of times",
-    () =>
-      Effect.gen(function* () {
-        yield* seed;
-        const fs = yield* FileSystem.FileSystem;
-        const sql = yield* SqlClient.SqlClient;
-        const config = yield* ServerConfig;
-        const workspace = yield* Workspace.KinWorkspace;
-        const collector = yield* DocJobs.KinDocCollector;
-        // The owner's old invoice, invented, sent in the chat the turn answers in.
-        const referenceId = "kin-chat-00000000-0000-4000-8000-0000000000aa-pdf";
-        const pdf = "%PDF-1.7\n% an invented reference invoice\n%%EOF\n";
-        yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
-        yield* fs.writeFileString(`${config.attachmentsDir}/${referenceId}.pdf`, pdf);
-        const asked = yield* turn(4, "Make our invoices look like this");
-        const sent_ = [
-          {
-            type: "file",
-            id: referenceId,
-            name: "Old invoice 12.pdf",
-            mimeType: "application/pdf",
-            sizeBytes: pdf.length,
-          },
-        ];
-        yield* sql`UPDATE kin_messages SET attachments_json = ${JSON.stringify(sent_)}
-          WHERE message_id = 'msg-4'`;
-        yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
-          VALUES (${referenceId}, ${orgId}, 'lead-chat', 'msg-4')`;
-        const input = {
-          title: "Letterhead",
-          recipe: "letterhead",
-          writeRecipe: true,
-          brief: "Match the reference.",
-          references: [referenceId],
-          sourceEventId: asked,
-        };
-        const elsewhere = yield* DocJobs.planJob(orgId, input, "other-chat").pipe(Effect.flip);
-        assert.match(elsewhere.message, /not a file in this chat/);
-        // A recipe written from the owner's own documents is labelled from the start.
-        const plan = yield* DocJobs.planJob(orgId, input, "lead-chat");
-        assert.deepStrictEqual(
-          [plan.sensitive, plan.references.map((one) => [one.name, one.mimeType])],
-          [true, [["Old invoice 12.pdf", "application/pdf"]]],
-        );
-
-        /** A recipe job as `document` starts it, its references copied in, in a project. */
-        const start = (workerId: KinWorkerId, recipe: string) =>
-          Effect.gen(function* () {
-            const job = yield* workspace.prepare(orgId, workerId, {});
-            yield* copyReferences(job.worktree, plan.references);
-            yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind,
-                thread_id, model_json, provenance_json, status, started_at, ended_at, title,
-                chat_id, context, project_id)
-              VALUES (${workerId}, ${orgId}, ${lead}, 'wake-4', 'build', ${threadOf(workerId)},
-                '{}', '{}', 'running', 0, NULL, 'Letterhead recipe', 'lead-chat', 'private',
-                'project-kin')`;
-            yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode,
-                recipe, recipe_commit, entry_record_id, inputs_sha256, number, sensitive,
-                doc_origin, worktree_path, branch, chat_id, audience, created_at, references_json)
-              VALUES (${orgId}, ${workerId}, ${lead}, 'wake-4', 'recipe', ${recipe}, ${job.base},
-                NULL, 'brief', NULL, 1, ${`recipe:${recipe}`}, ${job.worktree}, ${job.branch},
-                'lead-chat', 'owner_only', 0, ${JSON.stringify(plan.references)})`;
-            const folder = `${job.worktree}/recipes/${recipe}`;
-            yield* fs.makeDirectory(folder, { recursive: true });
-            yield* fs.writeFileString(
-              `${folder}/RECIPE.md`,
-              STARTER_FILES["recipes/report/RECIPE.md"]!.replace(
-                "name: report",
-                `name: ${recipe}`,
-              ).replace("[report.pdf]", `[${recipe}.pdf]`),
-            );
-            yield* fs.writeFileString(`${folder}/template.typ`, '#let d = json("/inputs.json")\n');
-            yield* fs.writeFileString(
-              `${folder}/sample.json`,
-              STARTER_FILES["recipes/report/sample.json"]!,
-            );
-            const collect = collector.collect(
-              { orgId, workerId, threadId: threadOf(workerId) },
-              true,
-              { ...pdfReport, evidence: [] },
-            );
-            return { worktree: job.worktree, folder, collect };
-          });
-
-        const look = KinWorkerId.make("wk-look");
-        const job = yield* start(look, "letterhead");
-        // An image the writer drew for the template, which the owner sees before clearing a label.
-        yield* fs.writeFile(
-          `${job.folder}/stamp.png`,
-          new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-        );
-        const copied = `${job.worktree}/in/references/Old invoice 12.pdf`;
-        assert.strictEqual(yield* fs.readFileString(copied), pdf);
-        assert.strictEqual(Number((yield* fs.stat(copied)).mode) & 0o222, 0, "read-only");
-        // A copy of the reference in the recipe: never kept, so the writer is told to remove it.
-        yield* fs.writeFileString(`${job.folder}/old.pdf`, pdf);
-        assert.strictEqual(yield* job.collect, DocJobs.CONTINUED);
-        assert.match(
-          sent.at(-1)!.text,
-          /old\.pdf is a copy of the owner's reference Old invoice 12\.pdf/,
-        );
-        // Then Typst's own error.
-        yield* fs.remove(`${job.folder}/old.pdf`);
-        failing.reason = "letterhead.pdf: template.typ:1:1: error: unknown variable: oops";
-        assert.strictEqual(yield* job.collect, DocJobs.CONTINUED);
-        assert.match(sent.at(-1)!.text, /its sample didn't render: .*unknown variable: oops/);
-        // Rendered, its first page goes back once to set beside the references.
-        failing.reason = undefined;
-        assert.strictEqual(yield* job.collect, DocJobs.CONTINUED);
-        assert.match(sent.at(-1)!.text, /in\/rendered-3\/page-1\.png/);
-        assert.isTrue(yield* fs.exists(`${job.worktree}/in/rendered-3/page-1.png`));
-        const kept = settled(yield* job.collect);
-        assert.match(kept!.summary, /committed it/);
-        assert.match(kept!.summary, /kin_recipe_undo with recipe letterhead/);
-        assert.deepStrictEqual(
-          [sent.length, new Set(sent.map((one) => one.threadId)).size],
-          [3, 1],
-        );
-        // The owner sees the new look on the task card: the sample's PDF and its first page.
-        assert.lengthOf(cards.at(-1)!.documents, 2);
-        const listed = yield* OwnerDocs.recipes(people, { orgId });
-        const letterhead = listed.recipes.find((one) => one.name === "letterhead");
-        assert.deepStrictEqual([letterhead?.labelled, letterhead?.files], [true, ["stamp.png"]]);
-        assert.isFalse(yield* fs.exists(job.worktree));
-
-        // A writer that never fixes it is sent back MAX_FOLLOW_UPS times, then the job ends.
-        const leaky = yield* start(KinWorkerId.make("wk-leaky"), "memo");
-        yield* fs.writeFileString(
-          `${leaky.folder}/sample.json`,
-          JSON.stringify({ title: "For Invented Acme", body: "Invented words." }),
-        );
-        for (let pass = 0; pass < DocJobs.MAX_FOLLOW_UPS; pass += 1) {
-          assert.strictEqual(yield* leaky.collect, DocJobs.CONTINUED);
-          assert.match(
-            sent.at(-1)!.text,
-            /sample\.json holds the company's or a client's real details/,
-          );
-        }
-        const refused = settled(yield* leaky.collect);
-        assert.match(refused!.summary, /didn't keep the memo recipe: its sample\.json holds/);
-        assert.lengthOf(sent, 3 + DocJobs.MAX_FOLLOW_UPS);
-        assert.isUndefined((yield* workspace.recipes(orgId)).find((one) => one.name === "memo"));
-      }).pipe(Effect.provide(layer)),
-  );
-
-  it.effect(
-    "label every document made from a recipe a sensitive job wrote, until the owner clears it",
+    "label every document made from a recipe a sensitive draft wrote, until the owner clears it",
     () =>
       Effect.gen(function* () {
         yield* seed;
@@ -2551,13 +2378,13 @@ describe("worker document jobs", () => {
             sensitive: false,
           });
         });
-        assert.match((yield* writeQuote(1, 1))!.summary, /committed it/);
+        assert.match((yield* writeQuote(1, 1)).next!, /committed it/);
         assert.deepStrictEqual(
           [yield* quote(), yield* quote(true), yield* labelled()],
           [true, true, true],
         );
         // A plain job's change built on it keeps the label.
-        assert.match((yield* writeQuote(2))!.summary, /committed it/);
+        assert.match((yield* writeQuote(2)).next!, /committed it/);
         assert.isTrue(yield* quote());
         const seen = (yield* listed())!.commit;
         yield* clear;
@@ -2583,19 +2410,33 @@ describe("worker document jobs", () => {
           yield* sql`DELETE FROM kin_recipe_labels WHERE commit_sha = ${commit}`;
         });
         // A plain change built on the cleared revision, its label lost.
-        assert.match((yield* writeQuote(3))!.summary, /committed it/);
+        assert.match((yield* writeQuote(3)).next!, /committed it/);
         assert.isFalse(yield* labelled());
         yield* unlabel;
         assert.isTrue(yield* labelled());
         yield* clear;
-        // Two plain changes from the same revision, the second merged with the first.
-        const first = yield* startQuote(4);
-        const second = yield* startQuote(5, 0, {
+        // Two plain changes from the same revision: another agent's lands first, and this
+        // draft's is merged with it.
+        const draft = (yield* writeRecipe("quote")).folder!;
+        yield* sql`UPDATE kin_doc_jobs SET sensitive = 0
+          WHERE mode = 'recipe' AND recipe = 'quote' AND collected_at IS NULL`;
+        yield* editQuote(draft, 5, {
           description: "Quote 3.",
           template: '#let d = json("/inputs.json")\n#d.title\n',
         });
-        assert.match((yield* first)!.summary, /committed it/);
-        const merged = (yield* second)!.summary;
+        const workspace = yield* Workspace.KinWorkspace;
+        const other = KinWorkerId.make("rw-other-agent");
+        yield* editQuote((yield* workspace.prepare(orgId, other, {})).worktree, 4);
+        const landed = yield* workspace.applyRecipeChange(orgId, {
+          workerId: other,
+          recipe: "quote",
+          agentId: KinAgentId.make("other-agent"),
+          verify: () => Effect.undefined,
+        });
+        assert.strictEqual(landed._tag, "committed");
+        if (landed._tag === "committed") yield* labelChange(orgId, "quote", landed, false);
+        yield* workspace.discard(orgId, other);
+        const merged = (yield* writeRecipe("quote")).next!;
         assert.match(merged, /committed it/);
         // The recipe is now the merge of the two, not the second job's own commit.
         const merge = (yield* listed())!.commit;
@@ -2638,92 +2479,9 @@ describe("worker document jobs", () => {
         yield* sql`DELETE FROM kin_recipe_label_baselines`;
         yield* unlabel;
         assert.isFalse(yield* labelled());
-        assert.match((yield* writeQuote(6))!.summary, /committed it/);
+        assert.match((yield* writeQuote(6)).next!, /committed it/);
         yield* OwnerDocs.undoRecipe(people, { orgId, recipe: "quote" });
         assert.isFalse(yield* labelled());
       }).pipe(Effect.provide(layer)),
-  );
-
-  it.effect("remove a job's worktree and inputs whatever ended it, and say so on its row", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      const fs = yield* FileSystem.FileSystem;
-      const sql = yield* SqlClient.SqlClient;
-      const collector = yield* DocJobs.KinDocCollector;
-      // An outcome stored before a crash still owes the worktree; collecting again removes it.
-      const stranded = KinWorkerId.make("wk-stranded");
-      const left = yield* docJob(stranded, { worker: "running" });
-      yield* sql`UPDATE kin_doc_jobs SET collected_at = 1,
-          outcome_json = '{"summary":"Kin filed no file from this job.","documents":[],"problems":[]}'
-        WHERE worker_id = ${stranded}`;
-      const again = settled(
-        yield* collector.collect(
-          { orgId, workerId: stranded, threadId: threadOf(stranded) },
-          true,
-          pdfReport,
-        ),
-      );
-      assert.match(again!.summary, /^Kin filed no file/);
-      assert.isFalse(yield* fs.exists(left.worktree));
-      // A run that ended without collection (abandoned, crashed, failed to launch) goes at startup,
-      // across pages of the sweep; a running one stays.
-      const failed = KinWorkerId.make("wk-failed");
-      const failedToo = KinWorkerId.make("wk-failed-too");
-      const running = KinWorkerId.make("wk-running");
-      const failedTree = yield* docJob(failed, { worker: "failed" });
-      const failedTooTree = yield* docJob(failedToo, { worker: "failed" });
-      const runningTree = yield* docJob(running, { worker: "running" });
-      assert.deepStrictEqual(yield* owed, [failed, failedToo, running]);
-      yield* collector.sweep;
-      assert.deepStrictEqual(yield* owed, [running]);
-      assert.isFalse(yield* fs.exists(failedTree.worktree));
-      assert.isFalse(yield* fs.exists(failedTooTree.worktree));
-      assert.isTrue(yield* fs.exists(`${runningTree.worktree}/in/inputs.json`));
-      // Cleanup takes the inputs first, and never follows a link planted in their place.
-      yield* fs.remove(`${runningTree.worktree}/in`, { recursive: true });
-      const outside = `${runningTree.worktree}.outside`;
-      yield* fs.makeDirectory(`${outside}/in`, { recursive: true });
-      yield* fs.writeFileString(`${outside}/inputs.json`, "not the job's");
-      yield* fs.writeFileString(`${outside}/in/inputs.json`, "not the job's either");
-      yield* fs.symlink(outside, `${runningTree.worktree}/in`);
-      yield* collector.cleanup(orgId, running);
-      assert.deepStrictEqual(yield* owed, []);
-      assert.strictEqual(yield* fs.readFileString(`${outside}/inputs.json`), "not the job's");
-      // Nor a worktree that is itself a link to a folder elsewhere: nothing there is removed.
-      const linked = KinWorkerId.make("wk-linked");
-      const linkedTree = yield* docJob(linked, { worker: "failed" });
-      yield* fs.remove(linkedTree.worktree, { recursive: true });
-      yield* fs.symlink(outside, linkedTree.worktree);
-      yield* collector.cleanup(orgId, linked);
-      assert.strictEqual(
-        yield* fs.readFileString(`${outside}/in/inputs.json`),
-        "not the job's either",
-      );
-      assert.deepStrictEqual(yield* owed, [linked], "still owed: Kin removed nothing");
-      yield* fs.remove(linkedTree.worktree);
-      yield* fs.remove(outside, { recursive: true });
-    }).pipe(Effect.provide(layer)),
-  );
-
-  it.effect("take nothing back until the worker's processes are confirmed gone", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      const fs = yield* FileSystem.FileSystem;
-      const collector = yield* DocJobs.KinDocCollector;
-      const workerId = KinWorkerId.make("wk-alive");
-      const prepared = yield* docJob(workerId, { worker: "running" });
-      alive.add(threadOf(workerId));
-      const refused = settled(
-        yield* collector.collect(
-          { orgId, workerId, threadId: threadOf(workerId) },
-          true,
-          pdfReport,
-        ),
-      );
-      assert.strictEqual(refused?.result, "blocked");
-      assert.match(refused!.summary, /couldn't confirm the worker had stopped/);
-      assert.deepStrictEqual(refused?.evidence, []);
-      assert.isFalse(yield* fs.exists(prepared.worktree));
-    }).pipe(Effect.provide(layer)),
   );
 });
