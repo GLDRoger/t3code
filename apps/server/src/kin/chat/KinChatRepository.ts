@@ -252,8 +252,9 @@ const waitingColumns = `${waitingBaseColumns}, (SELECT json_extract(g.state_json
    'default', CASE WHEN q.safe = 1 THEN q.default_label END,
    'by', strftime('%Y-%m-%dT%H:%M:%fZ', q.due_at / 1000.0, 'unixepoch'),
    'revision', g.revision,
-   'options', (SELECT json_group_array(json_object('optionId', json_extract(o.value, '$.optionId'),
-     'label', json_extract(o.value, '$.label'))) FROM json_each(g.state_json, '$.options') o))
+   -- A subquery's value loses its JSON subtype, so json() keeps the options an array.
+   'options', json((SELECT json_group_array(json_object('optionId', json_extract(o.value, '$.optionId'),
+     'label', json_extract(o.value, '$.label'))) FROM json_each(g.state_json, '$.options') o)))
   FROM kin_questions q JOIN kin_widgets g ON g.widget_id = kin_waiting.widget_id
   LEFT JOIN kin_leads l ON l.org_id = q.org_id AND l.agent_id = q.agent_id
   LEFT JOIN kin_agents a ON a.org_id = q.org_id AND a.agent_id = q.agent_id

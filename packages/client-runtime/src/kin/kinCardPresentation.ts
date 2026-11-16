@@ -2,6 +2,8 @@
 import {
   KIN_DOC_CARD,
   KIN_MEMORY_CHANGES_CARD,
+  KIN_SOCIAL_PACK_CARD,
+  KIN_SOCIAL_WEEK_CARD,
   KIN_STATEMENT_PASSWORD_CARD,
   KIN_STATEMENT_REVIEW_CARD,
   KIN_WORKER_PUBLISH_CARD,
@@ -26,6 +28,12 @@ import { kinChartCardView, type KinChartView } from "./kinChart.ts";
 import { kinDocCardView, type KinDocCardView } from "./kinDocs.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinSentences } from "./kinScreenState.ts";
+import {
+  kinSocialPackView,
+  kinSocialWeekView,
+  type KinSocialPackView,
+  type KinSocialWeekView,
+} from "./kinSocial.ts";
 import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentation.ts";
 import {
   formatKinDeferralTime,
@@ -79,6 +87,8 @@ export type KinCardView =
   | { readonly kind: "doc"; readonly doc: KinDocCardView }
   | { readonly kind: "statement_review"; readonly review: KinStatementReviewView }
   | { readonly kind: "statement_password"; readonly password: KinStatementPasswordView }
+  | { readonly kind: "social_week"; readonly week: KinSocialWeekView }
+  | { readonly kind: "social_pack"; readonly pack: KinSocialPackView }
   | { readonly kind: "missing" }
   /** A card this build can't draw: its own plain words, or nothing when it has none. */
   | { readonly kind: "unknown"; readonly text: string | null };
@@ -634,6 +644,14 @@ function kinLiveCardView(
     case KIN_MEMORY_CHANGES_CARD: {
       const changes = kinMemoryChangesView(widget);
       return changes === null ? unknown(widget) : { kind: "memory_changes", changes };
+    }
+    case KIN_SOCIAL_WEEK_CARD: {
+      const week = kinSocialWeekView(widget);
+      return week === null ? unknown(widget) : { kind: "social_week", week };
+    }
+    case KIN_SOCIAL_PACK_CARD: {
+      const pack = kinSocialPackView(widget);
+      return pack === null ? unknown(widget) : { kind: "social_pack", pack };
     }
     default:
       return unknown(widget);

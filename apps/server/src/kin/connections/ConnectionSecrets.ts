@@ -56,6 +56,7 @@ const unavailable = new KinChatError({
 });
 
 const secretName = (connectionId: string) => `kin-connection-${connectionId}`;
+const socialName = (groupId: string) => `kin-social-${groupId}`;
 // The store keeps each secret as `<name>.bin`; connection ids are `conn_` and 24 hex digits.
 const storedName = /^kin-connection-(conn_[0-9a-f]{24})\.bin$/;
 
@@ -89,6 +90,15 @@ export class KinConnectionSecrets extends Context.Service<
       service: string,
       client: Option.Option<Redacted.Redacted<SignInClient>>,
     ) => Effect.Effect<void, KinChatError>;
+    /** A social group's key for its posting service, by group id. */
+    readonly getSocialKey: (
+      groupId: string,
+    ) => Effect.Effect<Option.Option<Redacted.Redacted<string>>, KinChatError>;
+    readonly setSocialKey: (
+      groupId: string,
+      key: Redacted.Redacted<string>,
+    ) => Effect.Effect<void, KinChatError>;
+    readonly removeSocialKey: (groupId: string) => Effect.Effect<void, KinChatError>;
     /** The connection ids that have a credential stored, for the sweep at start. */
     readonly stored: () => Effect.Effect<ReadonlyArray<string>, KinChatError>;
   }
@@ -139,6 +149,15 @@ const make = Effect.gen(function* () {
     }),
     remove: Effect.fn("KinConnectionSecrets.remove")(function* (connectionId) {
       yield* store.remove(secretName(connectionId)).pipe(Effect.mapError(() => unavailable));
+    }),
+    getSocialKey: Effect.fn("KinConnectionSecrets.getSocialKey")(function* (groupId) {
+      return Option.map(yield* read(socialName(groupId)), Redacted.make);
+    }),
+    setSocialKey: Effect.fn("KinConnectionSecrets.setSocialKey")(function* (groupId, key) {
+      yield* write(socialName(groupId), Redacted.value(key));
+    }),
+    removeSocialKey: Effect.fn("KinConnectionSecrets.removeSocialKey")(function* (groupId) {
+      yield* store.remove(socialName(groupId)).pipe(Effect.mapError(() => unavailable));
     }),
     stored: Effect.fn("KinConnectionSecrets.stored")(function* () {
       const names = yield* fs

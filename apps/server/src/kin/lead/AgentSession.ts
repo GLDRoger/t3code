@@ -28,6 +28,8 @@ import { outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { isSocialTool } from "../social/mcp.ts";
+import { socialSeatThread } from "../social/seat.ts";
 
 const leadT3Tools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
 
@@ -123,6 +125,23 @@ export const delegatedFromLead = Effect.fn("KinAgentSession.delegatedFromLead")(
   ),
 );
 
+/** Social's tools show only in the own thread of the lead whose remit is social media. */
+const onSocialSeat = Effect.fn("KinAgentSession.onSocialSeat")(
+  function* (threadId: ThreadId) {
+    // Optional, so the endpoint's list needs no Kin server where Kin is off.
+    const services = Option.flatMap(yield* Effect.serviceOption(KinServer), (kin) => kin.services);
+    if (Option.isNone(services)) return false;
+    return yield* socialSeatThread(threadId).pipe(
+      Effect.provideService(SqlClient.SqlClient, Context.get(services.value, SqlClient.SqlClient)),
+    );
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin social tool visibility failed; hiding", { cause }).pipe(
+      Effect.as(false),
+    ),
+  ),
+);
+
 /** The name of the lead whose thread this is, or whose task it is, up T3's task links. */
 export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
   function* (threadId: ThreadId) {
@@ -173,6 +192,7 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
   if (shared && !listedOnSharedThread(name)) return false;
   if (isKinGitHubTool(name))
     return (yield* kinAppConfigured) || (LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected));
+  if (isSocialTool(name)) return yield* onSocialSeat(threadId);
   if (name === "kin_delegate") return false;
   if (!isT3Tool(name)) return true;
   return leadT3Tools.has(name) && !shared;

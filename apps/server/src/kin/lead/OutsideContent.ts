@@ -144,6 +144,12 @@ export const OUTSIDE_TOOLS = {
   kin_connection_offer: "allowed",
   // Outside text could relabel which account is for what.
   kin_connection_note: "refused",
+  // Drafts stay in Kin; only the owner's Confirm on a card Kin draws from them posts anything.
+  social_read: "allowed",
+  social_lookup: "allowed",
+  social_draft: "allowed",
+  social_week: "allowed",
+  social_pack: "allowed",
   // A delegated task, clone or browser is work outside text could steer, as a worker was.
   ...(Object.fromEntries(LEAD_T3_TOOLS.map((name) => [name, "refused" as const])) as Record<
     (typeof LEAD_T3_TOOLS)[number],

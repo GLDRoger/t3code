@@ -50,7 +50,8 @@ export const egress = Layer.unwrap(
         ),
       ),
     ).pipe(Layer.provide(FetchHttpClient.layer));
-    return EgressGuard.guarded.pipe(Layer.provide(fake));
+    // Fresh: layers are shared by reference, and the fake Zernio builds `guarded` over its own fetch.
+    return Layer.fresh(EgressGuard.guarded).pipe(Layer.provide(fake));
   }),
 );
 

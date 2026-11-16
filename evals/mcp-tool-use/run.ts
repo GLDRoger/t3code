@@ -68,6 +68,8 @@ import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
+import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
+import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinPulseToolkit } from "../../apps/server/src/kin/pulse/mcp.ts";
 import {
   MONEY_RULE,
@@ -559,6 +561,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   KinDocumentToolkit,
   KinConnectionsToolkit,
   KinPulseToolkit,
+  KinSocialToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
 const t3InputDecoders = new Map(
@@ -613,6 +616,8 @@ const visibleT3Tools = (options: {
   readonly kinLead?: boolean;
   readonly kinSession?: boolean;
   readonly kinShared?: boolean;
+  /** The lead's remit is social media, so Social's tools join (AgentSession). */
+  readonly kinSocial?: boolean;
 }) =>
   t3Tools.filter(
     (tool) =>
@@ -640,6 +645,7 @@ const visibleT3Tools = (options: {
               ...Object.keys(KinDocumentToolkit.tools),
               ...Object.keys(KinPulseToolkit.tools),
               ...Object.keys(KinConnectionsToolkit.tools),
+              ...(options.kinSocial === true ? Object.keys(KinSocialToolkit.tools) : []),
             ].some((name) => tool.name === `${T3_PREFIX}${name}`))
         : ![
             ...Object.keys(KinChatToolkit.tools),
@@ -650,6 +656,7 @@ const visibleT3Tools = (options: {
             ...Object.keys(KinPulseToolkit.tools),
             ...Object.keys(KinApprovalsToolkit.tools),
             ...Object.keys(KinConnectionsToolkit.tools),
+            ...Object.keys(KinSocialToolkit.tools),
           ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
       !(options.subagent === true && hiddenFromSubagents.has(tool.name)),
@@ -763,6 +770,7 @@ export const buildBase = (
     readonly kinLead?: boolean;
     readonly kinSession?: boolean;
     readonly kinShared?: boolean;
+    readonly kinSocial?: boolean;
     /** A native subagent starts from its task: T3 appends nothing to its system prompt. */
     readonly nativeSubagent?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
@@ -894,6 +902,7 @@ const buildCodexBase = (
     readonly kinLead?: boolean;
     readonly kinSession?: boolean;
     readonly kinShared?: boolean;
+    readonly kinSocial?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
     readonly deviceAccess?: boolean;
   },
@@ -1218,6 +1227,7 @@ const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) 
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
     .replaceAll("{{TEAM_RULES}}", kinTeamRules)
+    .replaceAll("{{SOCIAL_RULES}}", kinSocialRules)
     .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
@@ -3070,6 +3080,7 @@ const main = Effect.gen(function* () {
     kinLead = false,
     kinSession = false,
     kinShared = false,
+    kinSocial = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     replay
       ? decodeCodexCapture(template).pipe(
@@ -3084,6 +3095,7 @@ const main = Effect.gen(function* () {
               kinLead,
               kinSession,
               kinShared,
+              kinSocial,
               deviceAccess,
             }),
           ),
@@ -3100,6 +3112,7 @@ const main = Effect.gen(function* () {
               kinLead,
               kinSession,
               kinShared,
+              kinSocial,
               deviceAccess,
             });
             return role === "native-subagent"
@@ -3112,15 +3125,23 @@ const main = Effect.gen(function* () {
   // Codex has no native subagents; its cases with that role run as top-level threads.
   // A Kin turn others read carries Kin's shared-turn line, as the server's prompt does.
   const baseKey = ({ setup, prompt }: McpToolUseCase) =>
-    `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinSession === true}:${prompt.includes("{{SHARED_TURN}}")}`;
+    `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinSession === true}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}`;
   const base = yield* buildFor("top", true, false);
-  const bases = new Map<string, Base>([["top:true:false:false:false:false:false", base]]);
+  const bases = new Map<string, Base>([["top:true:false:false:false:false:false:false", base]]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
     if (bases.has(key)) continue;
-    const [role = "top", access, links, kinAgent, kinLead, kinSession, kinShared] = key.split(
-      ":",
-    ) as [McpToolUseCase["setup"]["role"], string, string, string, string, string, string];
+    const [role = "top", access, links, kinAgent, kinLead, kinSession, kinShared, kinSocial] =
+      key.split(":") as [
+        McpToolUseCase["setup"]["role"],
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
     bases.set(
       key,
       yield* buildFor(
@@ -3131,6 +3152,7 @@ const main = Effect.gen(function* () {
         kinLead === "true",
         kinSession === "true",
         kinShared === "true",
+        kinSocial === "true",
       ),
     );
   }

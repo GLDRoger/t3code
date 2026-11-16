@@ -14,6 +14,7 @@ import {
 import { KinConnectionScreen } from "./connections/KinConnectionScreen";
 import { KinConnectionsScreen } from "./connections/KinConnectionsScreen";
 import { KinGitHubConnectScreen } from "./connections/KinGitHubConnect";
+import { KinSocialConnectScreen, KinSocialLinkScreen } from "./connections/KinSocialConnect";
 import { KinDocFileScreen } from "./KinDocFileScreen";
 import { KinDocScreen } from "./KinDocScreen";
 import { KinDocChangesScreen, KinDocHistoryScreen, KinSearchScreen } from "./KinDocVersionScreens";
@@ -156,6 +157,14 @@ export const KIN_SCREENS = {
   }),
   KinGitHubConnect: createNativeStackScreen({
     screen: KinGitHubConnectScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinSocialConnect: createNativeStackScreen({
+    screen: KinSocialConnectScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinSocialLink: createNativeStackScreen({
+    screen: KinSocialLinkScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinConnectionEdit: createNativeStackScreen({

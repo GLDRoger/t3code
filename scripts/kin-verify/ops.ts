@@ -25,6 +25,22 @@ function fakeMail(instance: Instance, args: ReadonlyArray<string>): string {
   return out.stdout;
 }
 
+/** The dev server's fake Zernio, through the repo's own `kin-fake-social.ts`. */
+export function fakeSocial(instance: Instance, args: ReadonlyArray<string>): string {
+  const out = NodeChildProcess.spawnSync(
+    process.execPath,
+    [
+      NodePath.join(ROOT, "apps", "server", "scripts", "kin-fake-social.ts"),
+      NodePath.join(instance.userdata, "kin-fake-social.json"),
+      ...args,
+    ],
+    { cwd: NodePath.join(ROOT, "apps", "server"), encoding: "utf8" },
+  );
+  if (out.status !== 0)
+    throw new VerifyError(out.stderr.trim().split("\n").at(-1) ?? "fake social failed");
+  return out.stdout.trimEnd();
+}
+
 export interface SentMail {
   readonly messageId: string;
   readonly threadId: string;
@@ -74,7 +90,7 @@ export function parseDuration(text: string): number {
   return Number(match[1]) * unit;
 }
 
-const TIME_COLUMN = /(_at|_on|^at|due|until|not_before|expires|_day)$/i;
+const TIME_COLUMN = /(_at|_on|^at|due|until|not_before|expires|_day|^at_ms)$/i;
 
 /**
  * "Time passes": every stored Kin time moves `ms` into the past, which is what the runs did by
