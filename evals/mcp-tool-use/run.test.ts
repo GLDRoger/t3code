@@ -238,6 +238,47 @@ const failed = (expect: Parameters<typeof gradeSample>[0], run: SampleRun) =>
     .filter((check) => !check.pass)
     .map((check) => check.check);
 
+it("grades Kin calls as the agent made them and a card as its message", () => {
+  const call = (tool: string, input: unknown) => ({
+    step: 0,
+    tool,
+    input: normalizeToolInput(`mcp__t3-code__${tool}`, input),
+  });
+  const run = (calls: ReadonlyArray<ReturnType<typeof call>>, text = "") => ({
+    calls,
+    text,
+    stopReason: "end_turn",
+  });
+  const read = call("statement_read", {
+    sourceEventId: "event-1",
+    attachment: "a.pdf",
+    password: "lake4417",
+  });
+  assert.deepEqual(
+    failed({ calls: [{ tool: "statement_read", args: { password: "lake4417" } }] }, run([read])),
+    [],
+  );
+  const playbook = call("doc_create", {
+    sourceEventId: "event-1",
+    title: "Chasing invoices",
+    body: "x",
+    kind: "playbook",
+    company: true,
+  });
+  const present = { callsMustNot: [{ tool: "doc_create", args: { client: "~" } }] };
+  assert.deepEqual(failed(present, run([playbook])), []);
+  assert.lengthOf(
+    failed(present, run([call("doc_create", { ...(playbook.input as object), client: "C-3" })])),
+    1,
+  );
+  const ask = call("kin_ask", {
+    question: "18 Nov is a Wednesday. Which day?",
+    options: [{ label: "Tue 17" }, { label: "Wed 18" }],
+  });
+  assert.deepEqual(failed({ textMust: ["Wednesday"] }, run([ask])), []);
+  assert.lengthOf(failed({ textMustNot: ["Wednesday"] }, run([ask])), 0);
+});
+
 it("passes a good run and names every rule a bad run breaks", () => {
   const expect = {
     calls: [{ tool: "delegate_task", args: { task: "~FINDING", "target.options": "~max" } }],

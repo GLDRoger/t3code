@@ -69,6 +69,7 @@ import RetireRoutines from "./migrations/K145_RetireRoutines.ts";
 import SendDecidedBy from "./migrations/K146_SendDecidedBy.ts";
 import SendOwesCard from "./migrations/K147_SendOwesCard.ts";
 import EventReplied from "./migrations/K148_EventReplied.ts";
+import SendAccount from "./migrations/K149_SendAccount.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -218,6 +219,7 @@ const loader = Migrator.fromRecord({
   "146_SendDecidedBy": SendDecidedBy,
   "147_SendOwesCard": SendOwesCard,
   "148_EventReplied": EventReplied,
+  "149_SendAccount": SendAccount,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
