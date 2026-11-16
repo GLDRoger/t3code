@@ -157,10 +157,8 @@ function kinSendView(send: KinSendCard, now: Date): KinSendView {
           ? { tone: "pending", text: "Sending…" }
           : send.outcome.state === "sent"
             ? { tone: "ok", text: send.action === "event" ? "Saved and invitations sent" : "Sent" }
-            : {
-                tone: "error",
-                text: `Not sent: ${send.outcome.reason ?? "Kin couldn't send it."}`,
-              },
+            : // Kin's reason says what happened, including "may or may not have gone".
+              { tone: "error", text: send.outcome.reason ?? "Not sent: Kin couldn't send it." },
   };
 }
 

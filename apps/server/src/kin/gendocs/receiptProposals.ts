@@ -75,6 +75,16 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
 });
 export type Snapshot = Effect.Success<ReturnType<typeof snapshotOf>>;
 
+// A calendar day has no zone: read at noon UTC it names the same day everywhere.
+const dayText = (day: string) =>
+  new Intl.DateTimeFormat("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(Date.parse(`${day}T12:00:00Z`));
+
 /** The card's lines: figures from the records, the agent's own words labelled as its note. */
 export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
   const note = [
@@ -85,7 +95,7 @@ export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
   return [
     `Client: ${snapshot.client === null ? "none named" : `${snapshot.client.title} (${snapshot.client.key})`}`,
     `Amount: ${snapshot.amount === null ? "none given" : formatMoney(snapshot.amount)}`,
-    `Received on: ${snapshot.receivedOn ?? "no day given"}`,
+    `Received on: ${snapshot.receivedOn === null ? "no day given" : dayText(snapshot.receivedOn)}`,
     ...(snapshot.entry === null ? [] : [`Receipt entry: ${snapshot.entry.key}`]),
     `Set against: ${snapshot.against === null ? "no invoice; it stays an advance" : `${snapshot.against.title} (${snapshot.against.key})`}`,
     ...(note.length === 0 ? [] : [`Agent's note: ${note.join(", ")}`]),

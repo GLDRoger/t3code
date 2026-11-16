@@ -790,6 +790,16 @@ const make = Effect.gen(function* () {
       for (const item of yield* repo.listOpenWaiting(identity)) {
         if (item.chatId !== message.chatId || item.reason !== "question" || item.messageId === null)
           continue;
+        // A card still taking taps waits for its tap, such as a send card's Confirm.
+        if (item.widgetId !== null) {
+          const card = yield* repo.getWidget({ orgId: identity.orgId, widgetId: item.widgetId });
+          if (
+            Option.isSome(card) &&
+            card.value.closedAt === null &&
+            !ChoiceCard.choiceExpired(card.value, Date.parse(yield* now))
+          )
+            continue;
+        }
         const question = yield* requireRecord(
           repo.getMessage({ orgId: identity.orgId, messageId: item.messageId }),
         );
