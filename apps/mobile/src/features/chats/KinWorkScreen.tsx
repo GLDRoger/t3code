@@ -446,6 +446,7 @@ export function KinWorkTaskList(
     needs: needs?.needs ?? [],
     hidden: needs?.hidden ?? 0,
     handled: needs?.handled.length ?? 0,
+    expanded: needs?.expanded ?? false,
   });
   // The plain list reads by whom each task waits on; a filtered one stays one list.
   const items: ReadonlyArray<KinWorkGroupItem<KinRecord>> = grouped

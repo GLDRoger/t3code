@@ -11,7 +11,7 @@ import {
 import * as DateTime from "effect/DateTime";
 
 import { kinMoneyDraft, kinMoneyText } from "./kinLists.ts";
-import type { KinNeedsYouRow } from "./kinWorkHome.ts";
+import { KIN_NEEDS_YOU_SHOWN, type KinNeedsYouRow } from "./kinWorkHome.ts";
 import { kinFailure } from "./kinAnswers.ts";
 
 /**
@@ -349,6 +349,8 @@ export function kinTasksBlock(input: {
   readonly hidden: number;
   /** Answered rows, kept for their Undo until the read lets them go. */
   readonly handled: number;
+  /** After "See all": every row, not the first few. */
+  readonly expanded: boolean;
 }): {
   readonly attention: ReadonlyArray<KinAttentionRow>;
   readonly needs: ReadonlyArray<KinNeedsYouRow>;
@@ -362,7 +364,20 @@ export function kinTasksBlock(input: {
     (row) => !(row.open.type === "task" && input.onMe.has(row.open.key)),
   );
   if (attention.length === 0 && needs.length === 0 && input.handled === 0) return null;
-  return { attention, needs, total: attention.length + needs.length + input.hidden };
+  const total = attention.length + needs.length + input.hidden;
+  // The rows it shows, so the list below keeps every task the block doesn't. A money row leads,
+  // so a long run of attention rows never hides it.
+  const limit = input.expanded ? total : KIN_NEEDS_YOU_SHOWN;
+  const lead = needs[0]?.id === "attention:money" ? 1 : 0;
+  const shownAttention = attention.slice(0, Math.max(0, limit - lead));
+  return {
+    attention: shownAttention,
+    needs: [
+      ...needs.slice(0, lead),
+      ...needs.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length)),
+    ],
+    total,
+  };
 }
 
 /**

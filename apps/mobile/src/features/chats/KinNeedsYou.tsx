@@ -124,11 +124,10 @@ export function KinTasksAttention(
     if (to.type === "record") openRecord("KinWorkItem", { ...base, task: to.key });
     else if (to.type === "money") openPlace("money");
   };
-  const limit = expanded ? total : KIN_NEEDS_YOU_SHOWN;
-  // The money row leads, so a long run of attention rows never hides it.
+  // The rows come already cut to what shows (`kinTasksBlock`); the money row leads.
   const lead = needs[0]?.id === "attention:money" ? 1 : 0;
-  const shownAttention = attentionRows.slice(0, Math.max(0, limit - lead));
-  const shownNeeds = needs.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length));
+  const shownAttention = attentionRows;
+  const shownNeeds = needs.slice(lead);
   const shown = needs.slice(0, lead);
   return (
     <View className="px-4">

@@ -3,6 +3,7 @@ import {
   kinAttention,
   kinNeedsYouBeside,
   kinTasksAttention,
+  kinTasksBlock,
   type KinAttentionOpen,
   type KinAttentionRow,
 } from "@t3tools/client-runtime/kin/kinAttention";
@@ -121,12 +122,23 @@ export function KinNeedsYou(
 ) {
   const read = useKinNeedsRows({ ...props, names: props.directory.names }, props.mine);
   if (read === null) return null;
+  const cut = kinTasksBlock({
+    ownerLevel: true,
+    onMe: new Set(),
+    attention: read.attention,
+    needs: read.needs,
+    hidden: read.hidden,
+    handled: read.handled.length,
+    expanded: read.expanded,
+  });
   return (
     <KinNeedsBlock
       {...props}
       {...read}
+      attention={cut?.attention ?? []}
+      needs={cut?.needs ?? []}
       title={KIN_WORK_HOME.needsYou}
-      total={read.attention.length + read.needs.length + read.hidden}
+      total={cut?.total ?? 0}
       empty={KIN_WORK_HOME.nothingNeedsYou}
     />
   );
@@ -169,14 +181,10 @@ function KinNeedsBlock(
         params: { environmentId, orgId, chatId: to.chatId },
       });
   };
-  const limit = expanded ? total : KIN_NEEDS_YOU_SHOWN;
-  // The money row leads, so a long run of attention rows never hides it.
+  // The rows come already cut to what shows (`kinTasksBlock`); the money row leads.
   const lead = rows[0]?.id === "attention:money" ? 1 : 0;
-  const shownAttention = attentionRows.slice(0, Math.max(0, limit - lead));
-  const shown = [
-    ...rows.slice(0, lead),
-    ...rows.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length)),
-  ];
+  const shownAttention = attentionRows;
+  const shown = rows;
   const needRow = (row: (typeof rows)[number]) => {
     const Icon = ICON[row.kind];
     return (

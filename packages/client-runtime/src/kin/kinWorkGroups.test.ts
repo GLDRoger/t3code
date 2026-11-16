@@ -10,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { kinTasksBlock, type KinAttentionRow } from "./kinAttention.ts";
 import { KIN_WORK_DEFAULT_FILTER, type KinWorkNames } from "./kinWork.ts";
+import { KIN_NEEDS_YOU_SHOWN } from "./kinWorkHome.ts";
 import {
   kinTasksTop,
   kinWorkGroupWithin,
@@ -200,10 +201,14 @@ describe("the top of Tasks", () => {
     handled: null,
     money: false,
   });
+  // More than the block shows before "See all": the rest must stay in the list.
   const attention = [
     row("late:rhea", lateOnRhea.key),
     row("late:zoya", lateOnZoya.key),
     row("quiet:client", null),
+    row("stuck:dev", devs.key),
+    row("stuck:meera", meerasLoose.key),
+    row("stuck:zoya", zoyas.key),
   ];
 
   it.each([
@@ -222,6 +227,7 @@ describe("the top of Tasks", () => {
         needs: [],
         hidden: 0,
         handled: 0,
+        expanded: false,
       });
     const { block, items } = top(attention);
     const shown = [
@@ -233,6 +239,10 @@ describe("the top of Tasks", () => {
     expect(new Set(shown).size).toBe(shown.length);
     expect([...shown].sort()).toEqual(company.map((one) => one.key).sort());
     expect(block === null).toBe(!ownerLevel);
+    // Only what it shows before "See all"; the rest of the tasks stay in the list.
+    expect((block?.attention.length ?? 0) + (block?.needs.length ?? 0)).toBeLessThanOrEqual(
+      KIN_NEEDS_YOU_SHOWN,
+    );
     // Nothing left in it is nothing at all: no heading, no "nothing needs you" line.
     expect(top([]).block).toBeNull();
     expect(
@@ -243,6 +253,7 @@ describe("the top of Tasks", () => {
         needs: [],
         hidden: 0,
         handled: 0,
+        expanded: false,
       }),
     ).toBeNull();
   });
