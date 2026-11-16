@@ -2,6 +2,7 @@ import { KinChatError, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -14,9 +15,8 @@ import { ThreadManagementService } from "../../orchestration-v2/ThreadManagement
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Lead from "../lead/LeadMemory.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { KinWorkers } from "../lead/Workers.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { DocumentInput, DocumentResult } from "./DocJobs.ts";
+import { fileDocument, writeRecipe } from "./agentFiles.ts";
 import * as Documents from "./leadDocuments.ts";
 import { KinDocRenderer } from "./render.ts";
 import { KinWorkspace } from "./workspace.ts";
@@ -41,7 +41,6 @@ const shared = {
     Lead.LeadMemory,
     McpInvocationContext,
     ThreadManagementService,
-    KinWorkers,
     KinWorkspace,
     KinRecords,
     KinIdentity,
@@ -49,18 +48,19 @@ const shared = {
     KinLevelGate,
     SqlClient.SqlClient,
     FileSystem.FileSystem,
+    Path.Path,
     ServerConfig,
   ],
 };
 
-/** Files Kin makes: a recipe's document in the call, or a worker's one-off file or new recipe. */
+/** Files Kin makes from a recipe in the call, files the agent made, and recipes the agent writes. */
 export const KinDocumentToolkit = Toolkit.make(
   Tool.make("kin_document", {
     ...shared,
     description:
-      "Make a file the owner keeps or sends: a PDF, spreadsheet, deck, image or CSV. A doc is text you write and keep current (doc_create); a chart answers in chat (kin_chart); this makes a file. With recipe (from kin_recipes) and entry, Kin makes it now, in this call: it reads every stored figure, works out every sum itself, files the result as a doc and shows its card in the chat. Pass in inputs only the recipe inputs that are yours, never an amount Kin stores, and never work out a figure yourself. If it is refused, nothing was made and the reason says why. A numbered recipe makes a draft marked DRAFT until the entry is issued (kin_issue), which makes it again with its number. A quote is an entry of the quotes list made with the quotation recipe; to invoice it, pass from with its key and the invoice recipe instead of entry. A doc becomes a PDF with the report recipe and doc: its key. Without recipe a worker makes a one-off file from your brief, which must hold every figure it shows; it arrives later on a task card. writeRecipe has a worker write a new recipe, or change the one named: to change how a document looks or what it shows, change its recipe. To make it look like a file the owner sent, such as an invoice in their old format, add references with that file's attachment id: the worker copies the look, never the data, Kin renders the sample and shows it to the owner, and kin_recipe_undo puts the old look back. Only when only the owner is in the turn. Identical retries return the same result.",
-    parameters: DocumentInput,
-    success: DocumentResult,
+      "Make or file a file the owner keeps or sends: a PDF, spreadsheet, deck, image or CSV. A doc is text you write and keep current (doc_create); a chart answers in chat (kin_chart); this makes a file. With recipe (from kin_recipes) and entry, Kin makes it now, in this call: it reads every stored figure, works out every sum itself, files the result as a doc and shows its card in the chat. Pass in inputs only the recipe inputs that are yours, never an amount Kin stores, and never work out a figure yourself. If it is refused, nothing was made and the reason says why. A numbered recipe makes a draft marked DRAFT until the entry is issued (kin_issue), which makes it again with its number. A quote is an entry of the quotes list made with the quotation recipe; to invoice it, pass from with its key and the invoice recipe instead of entry. A doc becomes a PDF with the report recipe and doc: its key. When no recipe fits, make the file yourself with your shell (typst is on your PATH) and pass its full path in file: Kin checks it and files it as a doc with its card in the chat. writeRecipe writes a new recipe, or changes the one named: to change how a document looks or what it shows, change its recipe. The first call gives you a folder to edit with your own tools; call again to keep it, which Kin does once its sample renders, showing the sample to the owner. To make it look like a file the owner sent, such as an invoice in their old format, add references with that file's attachment id on the first call: copy the look, never the data. kin_recipe_undo puts the old look back. Only when only the owner is in the turn. Identical retries return the same result.",
+    parameters: Documents.DocumentInput,
+    success: Documents.DocumentResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_recipes", {
     ...shared,
@@ -108,10 +108,10 @@ export const handlers = McpToolAccess.toLayer(KinDocumentToolkit, {
   kin_document: McpToolAccess.actsAsCaller(
     Effect.fn("KinDocumentToolkit.document")(function* (input) {
       const scope = yield* McpInvocationContext;
-      // A recipe's document is the server's to make now; only a worker writes a file or a recipe.
-      return input.recipe !== undefined && input.writeRecipe !== true
-        ? yield* Documents.make(scope, input)
-        : yield* (yield* KinWorkers).document(scope, input);
+      if (input.writeRecipe === true) return yield* writeRecipe(scope, input);
+      return input.recipe === undefined
+        ? yield* fileDocument(scope, input)
+        : yield* Documents.make(scope, input);
     }, Effect.mapError(failure)),
   ),
   kin_recipes: McpToolAccess.reads(
