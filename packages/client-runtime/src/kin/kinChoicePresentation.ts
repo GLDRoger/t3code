@@ -294,7 +294,12 @@ export function kinChoiceAccessibilityLabel(view: KinChoiceCardView, status: str
       view.send.outcome?.text ?? null,
       status,
     ]);
-  return kinSentences(["Question", view.question, view.detail, status]);
+  return kinSentences([
+    view.outcome === null ? "Question" : null,
+    view.question,
+    view.detail,
+    status,
+  ]);
 }
 
 export function kinChoiceActInput(
