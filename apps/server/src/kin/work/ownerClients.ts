@@ -16,12 +16,10 @@ import {
   type KinWorkPrincipal,
   type KinPartyPage,
   type KinPartyRow,
-  type KinPersonId,
   KinChatError,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError, type SqlError } from "effect/sql/SqlError";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
@@ -31,7 +29,15 @@ import { type FieldValue, type ListName } from "./lists.ts";
 import { dueMillis, found, inList, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
 import { principalText } from "./projectSpine.ts";
 import { iso, notFound, type RecordRow, unavailable } from "./recordRows.ts";
-import { inProject, personSeesAs, placesOf, teamSeq, teamVisible } from "./teamView.ts";
+import {
+  KIN_OWNER_LEVEL,
+  inProject,
+  placesOf,
+  teamSeq,
+  teamVisible,
+  viewerOfPeople,
+  type KinViewer,
+} from "./teamView.ts";
 import * as Touches from "./touches.ts";
 
 /**
@@ -50,11 +56,9 @@ const read = <A, E, R>(effect: Effect.Effect<A, E | SqlError, R>) =>
     ),
   );
 
-const asOf = Effect.fn("KinWork.crm.asOf")(function* (
-  orgId: KinOrgId,
-  team?: KinPersonId | undefined,
-) {
+const asOf = Effect.fn("KinWork.crm.asOf")(function* (orgId: KinOrgId, viewer: KinViewer) {
   const records = yield* KinRecords;
+  const [team] = viewer._tag === "people" ? viewer.people : [];
   return {
     now: yield* Clock.currentTimeMillis,
     seq: team === undefined ? yield* records.seq(orgId) : yield* read(teamSeq(orgId, team)),
@@ -71,10 +75,10 @@ const reader = Effect.fn("KinWork.crm.reader")(function* (
   orgId: KinOrgId,
 ) {
   const viewer = yield* viewerOf(people, orgId);
-  if (!viewer.teammate) return undefined;
+  if (!viewer.teammate) return KIN_OWNER_LEVEL;
   const places = yield* read(placesOf(orgId, viewer.person.personId));
   if (!places.reaches.clients) return yield* noClients;
-  return viewer.person.personId;
+  return viewerOfPeople([viewer.person.personId]);
 });
 /**
  * A client row as anyone besides the owner reads it: who they are, not what is owed. The contact
@@ -83,13 +87,16 @@ const reader = Effect.fn("KinWork.crm.reader")(function* (
 const nameOnly = <A extends KinPartyRow>({ lastContactAt: _, ...row }: A): A =>
   ({ ...row, weOwe: 0, theyOwe: 0, late: 0, overdue: 0, next: null }) as A;
 const unseen = Effect.fn("KinWork.crm.unseen")(function* (
-  team: KinPersonId | undefined,
+  viewer: KinViewer,
   row: RecordRow,
   input: { readonly key: string } | { readonly recordId: string },
 ) {
-  if (team === undefined) return;
-  const seen = yield* read(teamVisible(row.orgId as KinOrgId, team, [row.recordId]));
-  if (!seen.has(row.recordId)) return yield* notFound("key" in input ? input.key : "with that id");
+  if (viewer._tag === "ownerLevel") return;
+  for (const team of viewer.people) {
+    const seen = yield* read(teamVisible(row.orgId as KinOrgId, team, [row.recordId]));
+    if (!seen.has(row.recordId))
+      return yield* notFound("key" in input ? input.key : "with that id");
+  }
 });
 
 const opened = Effect.fn("KinWork.crm.opened")(function* (
@@ -103,13 +110,11 @@ export const parties = Effect.fn("KinWork.parties")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartiesInput,
 ) {
-  const team = yield* reader(people, input.orgId);
-  const { now, seq } = yield* asOf(input.orgId, team);
-  const sql = yield* SqlClient.SqlClient;
-  const sees = team === undefined ? undefined : personSeesAs(sql, team, "c");
-  const page = yield* read(Crm.parties(input.orgId, now, input, sees));
+  const viewer = yield* reader(people, input.orgId);
+  const { now, seq } = yield* asOf(input.orgId, viewer);
+  const page = yield* read(Crm.parties(input.orgId, now, input, viewer));
   return {
-    parties: team === undefined ? page.rows : page.rows.map(nameOnly),
+    parties: viewer._tag === "ownerLevel" ? page.rows : page.rows.map(nameOnly),
     total: page.total,
     nextCursor: page.nextCursor,
     seq,
@@ -121,25 +126,22 @@ export const projects = Effect.fn("KinWork.projects")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinProjectsInput,
 ) {
-  const team = yield* reader(people, input.orgId);
-  const { now, seq } = yield* asOf(input.orgId, team);
+  const viewer = yield* reader(people, input.orgId);
+  const { now, seq } = yield* asOf(input.orgId, viewer);
   const party =
     input.party === undefined
       ? undefined
       : yield* inList(input.orgId, input.party, "clients").pipe(
-          Effect.tap((row) => unseen(team, row, { key: row.key })),
+          Effect.tap((row) => unseen(viewer, row, { key: row.key })),
           // A client they can't see answers as one never there, whatever it is.
           Effect.mapError((error) =>
-            team === undefined || input.party === undefined ? error : notFound(input.party),
+            viewer._tag === "ownerLevel" || input.party === undefined
+              ? error
+              : notFound(input.party),
           ),
         );
-  const sql = yield* SqlClient.SqlClient;
-  const sees =
-    team === undefined
-      ? undefined
-      : { projects: personSeesAs(sql, team, "p"), viewers: [team] as const };
   const page = yield* read(
-    Crm.projects(input.orgId, now, { ...input, partyId: party?.recordId }, sees),
+    Crm.projects(input.orgId, now, { ...input, partyId: party?.recordId }, viewer),
   );
   return {
     projects: page.rows,
@@ -154,12 +156,14 @@ export const party = Effect.fn("KinWork.party")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPartyPageInput,
 ) {
-  const team = yield* reader(people, input.orgId);
+  const viewer = yield* reader(people, input.orgId);
   const row = yield* opened(input, "clients");
-  yield* unseen(team, row, input);
-  const { now, seq } = yield* asOf(input.orgId, team);
-  const page = yield* read(Crm.partyPage(row, now, seq, team === undefined ? undefined : [team]));
-  if (team === undefined) return page;
+  yield* unseen(viewer, row, input);
+  const { now, seq } = yield* asOf(input.orgId, viewer);
+  const page = yield* read(Crm.partyPage(row, now, seq, viewer));
+  if (viewer._tag === "ownerLevel") return page;
+  const [team] = viewer.people;
+  if (team === undefined) return yield* noClients;
   // Its name, contacts and the projects they lead; never terms, tax, notes, contact log or what's owed.
   const shown = yield* read(
     teamVisible(input.orgId, team, [
@@ -195,16 +199,19 @@ export const project = Effect.fn("KinWork.project")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinProjectPageInput,
 ) {
-  const viewer = yield* viewerOf(people, input.orgId);
-  const team = viewer.teammate ? viewer.person.personId : undefined;
+  const person = yield* viewerOf(people, input.orgId);
+  const viewer = person.teammate ? viewerOfPeople([person.person.personId]) : KIN_OWNER_LEVEL;
   const row = yield* opened(input, "projects");
   // Anyone in it opens it, Clients place or not, and in it sees only what `personSees` shows them.
-  if (team !== undefined && !(yield* read(inProject(input.orgId, team, row.recordId)))) {
+  if (
+    person.teammate &&
+    !(yield* read(inProject(input.orgId, person.person.personId, row.recordId)))
+  ) {
     yield* reader(people, input.orgId);
-    yield* unseen(team, row, input);
+    yield* unseen(viewer, row, input);
   }
-  const { now, seq } = yield* asOf(input.orgId, team);
-  return yield* read(Crm.projectPage(row, now, seq, team === undefined ? undefined : [team]));
+  const { now, seq } = yield* asOf(input.orgId, viewer);
+  return yield* read(Crm.projectPage(row, now, seq, viewer));
 });
 
 /** `s:<seq>`: the next page is everything older than the last line shown. */
@@ -232,17 +239,21 @@ export const history = Effect.fn("KinWork.history")(function* (
   const before = yield* beforeOf(input.cursor);
   const limit = input.limit ?? 50;
   const { items } = yield* read(
-    Crm.history(row, {
-      ...(before === null ? {} : { beforeSeq: before }),
-      limit: limit + 1,
-    }),
+    Crm.history(
+      row,
+      {
+        ...(before === null ? {} : { beforeSeq: before }),
+        limit: limit + 1,
+      },
+      KIN_OWNER_LEVEL,
+    ),
   );
   const page = items.slice(0, limit);
   const last = page.at(-1);
   return {
     items: page,
     nextCursor: items.length > limit && last !== undefined ? `s:${last.seq}` : null,
-    seq: (yield* asOf(input.orgId)).seq,
+    seq: (yield* asOf(input.orgId, KIN_OWNER_LEVEL)).seq,
   };
 });
 
@@ -297,7 +308,9 @@ const createIn = Effect.fn("KinWork.crm.create")(function* (
 const partyOut = (row: RecordRow) =>
   read(Effect.flatMap(Clock.currentTimeMillis, (now) => Crm.partyDetail(row, now)));
 const projectOut = (row: RecordRow) =>
-  read(Effect.flatMap(Clock.currentTimeMillis, (now) => Crm.projectDetail(row, now)));
+  read(
+    Effect.flatMap(Clock.currentTimeMillis, (now) => Crm.projectDetail(row, now, KIN_OWNER_LEVEL)),
+  );
 
 export const createParty = Effect.fn("KinWork.createParty")(function* (
   people: ReadonlyArray<PersonIdentity>,

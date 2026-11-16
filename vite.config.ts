@@ -461,6 +461,59 @@ export default defineConfig({
         },
       },
       {
+        // A person's read applies `personSees` through a required `KinViewer`; docs/kin/RULES.md.
+        files: ["apps/server/src/kin/**"],
+        excludeFiles: ["**/*.{test,testkit}.ts"],
+        rules: {
+          "t3code/kin-viewer-scoped-reads": "error",
+          "t3code/kin-owner-level": "error",
+          "t3code/kin-messages-to-people": "error",
+        },
+      },
+      {
+        // The gate, the floor, the chat service and the turn's own reply are the floor's path.
+        files: [
+          "apps/server/src/kin/lead/LevelGate.ts",
+          "apps/server/src/kin/floor/**",
+          "apps/server/src/kin/chat/KinChatService.ts",
+          "apps/server/src/kin/reply/KinReplyBridge.ts",
+          "apps/server/src/kin/mcp/KinChatToolkit.ts",
+        ],
+        rules: { "t3code/kin-messages-to-people": "off" },
+      },
+      {
+        // The one place that answers "may act as owner" and "is the owner himself".
+        files: ["apps/server/src/kin/people/KinAccess.ts"],
+        rules: { "t3code/kin-owner-level": "off" },
+      },
+      {
+        files: [
+          "apps/server/src/kin/work/crm.ts",
+          "apps/server/src/kin/work/projectSpine.ts",
+          "apps/server/src/kin/work/leadSpine.ts",
+          "apps/server/src/kin/work/leadWork.ts",
+          "apps/server/src/kin/work/leadDocs.ts",
+          "apps/server/src/kin/work/leadClients.ts",
+          "apps/server/src/kin/work/leadMoney.ts",
+          "apps/server/src/kin/work/owner*.ts",
+          "apps/server/src/kin/work/moneyViews.ts",
+          "apps/server/src/kin/work/search.ts",
+          "apps/server/src/kin/work/goals.ts",
+          "apps/server/src/kin/pulse/people.ts",
+          "apps/server/src/kin/pulse/checkIns.ts",
+        ],
+        rules: { "t3code/kin-viewer-scoped-reads": ["error", { readModel: true }] },
+      },
+      {
+        files: [
+          "apps/server/src/kin/**/rpcHandlers.ts",
+          "apps/server/src/kin/**/mcp/**",
+          "apps/server/src/kin/mcp/**",
+        ],
+        excludeFiles: ["**/*.{test,testkit}.ts"],
+        rules: { "t3code/kin-viewer-scoped-reads": ["error", { transport: true }] },
+      },
+      {
         files: ["apps/mobile/src/**"],
         rules: {
           "t3code/no-mobile-uniwind-theme-escape-hatches": "error",

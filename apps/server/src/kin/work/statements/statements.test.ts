@@ -66,6 +66,7 @@ import { parseRecipe, sourceOf } from "../../gendocs/recipe.ts";
 import { STARTER_FILES } from "../../gendocs/starter.ts";
 import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
+import { KIN_OWNER_LEVEL } from "../teamView.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
 
 // An invented company, Lakeview Studio, with invented clients, invoices and statements.
@@ -512,7 +513,11 @@ describe("bank statements", () => {
       );
       assert.isAbove(applied.card.unexplained!, 1);
       // Money sees both invoices paid, and spend is the expenses alone: bank rows are neither.
-      const summary = yield* moneySummary(orgId, Date.parse("2026-10-31T12:00:00.000Z"));
+      const summary = yield* moneySummary(
+        orgId,
+        Date.parse("2026-10-31T12:00:00.000Z"),
+        KIN_OWNER_LEVEL,
+      );
       const [spent] = yield* sql<{
         total: number;
       }>`SELECT SUM(amount_minor) AS total FROM kin_records

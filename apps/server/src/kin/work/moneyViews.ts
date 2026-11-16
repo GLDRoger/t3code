@@ -3,7 +3,6 @@ import type {
   KinMoney,
   KinMoneySummary,
   KinOrgId,
-  KinPersonId,
   KinRecordRef,
 } from "@t3tools/contracts";
 import { KinRecordId } from "@t3tools/contracts";
@@ -26,7 +25,7 @@ import {
 } from "./recordRows.ts";
 import { parseFields } from "./lists.ts";
 import { allLists, isFieldDate, type ListDef, stateLabel } from "./registers.ts";
-import { viewSees } from "./teamView.ts";
+import { seenBy, type KinViewer } from "./teamView.ts";
 
 /**
  * Read views over every list: the dates view and the Money summary, computed from stored
@@ -58,7 +57,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
     readonly to: number;
     readonly lists?: ReadonlyArray<string> | undefined;
     readonly open?: boolean | undefined;
-    readonly view?: ReadonlyArray<KinPersonId> | undefined;
+    readonly viewer: KinViewer;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -76,7 +75,7 @@ const fieldHits = Effect.fn("KinMoneyViews.fieldHits")(function* (
         r.record_id AS id, r.key, r.fields_json AS "fieldsJson" FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = ${def.id}
         ${input.open === true ? sql`AND r.state NOT IN ('done', 'dropped')` : sql``}
-        ${input.view === undefined ? sql`` : sql`AND ${viewSees(sql, input.view)}`}
+        AND ${seenBy(sql, input.viewer)}
         AND (${sql.or(
           fields.map(
             (one) =>
@@ -115,8 +114,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
     readonly open?: boolean | undefined;
     readonly offset?: number | undefined;
     readonly limit?: number | undefined;
-    /** Only what every one of these people may see (`viewSees`). */
-    readonly view?: ReadonlyArray<KinPersonId> | undefined;
+    readonly viewer: KinViewer;
   },
   now: number,
 ) {
@@ -130,7 +128,7 @@ export const dates = Effect.fn("KinMoneyViews.dates")(function* (
         ? []
         : [sql`r.register_id IN ${sql.in(input.lists)}`]),
       ...(input.open === true ? [sql`r.state NOT IN ('done', 'dropped')`] : []),
-      ...(input.view === undefined ? [] : [viewSees(sql, input.view)]),
+      seenBy(sql, input.viewer),
     ]);
   const hits = sql`SELECT r.record_id AS id, 'due' AS kind, r.due_at AS at, r.key FROM kin_records r
       WHERE ${where("due_at")}
@@ -195,11 +193,11 @@ const monthStart = (month: string, zone: string) =>
 export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   orgId: KinOrgId,
   now: number,
-  /** Figures of only what every one of these people may see (`viewSees`), never the company's. */
-  view?: ReadonlyArray<KinPersonId>,
+  /** For people, figures of only what all of them see, never the company's. */
+  viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const seen = view === undefined ? sql`1 = 1` : viewSees(sql, view);
+  const seen = seenBy(sql, viewer);
   const zone = yield* ownerZone(orgId);
   const today = dayIn(now, zone);
   const thisMonth = monthOf(today);
@@ -215,7 +213,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const owing = yield* owedInvoices({
     orgId,
     now,
-    ...(view === undefined ? {} : { seen: viewSees(sql, view) }),
+    ...(viewer._tag === "ownerLevel" ? {} : { seen }),
   });
   const clients = new Map<string | null, typeof owing>();
   for (const invoice of owing)
@@ -285,7 +283,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
 
   const upcoming = yield* dates(
     orgId,
-    { from: now, to: now + 30 * DAY_MS, open: true, limit: 50, view },
+    { from: now, to: now + 30 * DAY_MS, open: true, limit: 50, viewer },
     now,
   );
   return {
@@ -389,7 +387,7 @@ export const moneySection = (summary: KinMoneySummary, zone: string) => {
  * quotes, else the sent ones, else the project's value, less every invoice issued under it. The
  * answer to "how much is left from them" before the last invoice exists.
  */
-export const stillToInvoice = Effect.fn("KinMoneyViews.stillToInvoice")(function* (
+export const ownerLevelStillToInvoice = Effect.fn("KinMoneyViews.stillToInvoice")(function* (
   orgId: KinOrgId,
 ) {
   const sql = yield* SqlClient.SqlClient;

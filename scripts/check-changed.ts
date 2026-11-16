@@ -40,6 +40,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
+import { MIGRATIONS, kinBranchChecks } from "./kin-branch-checks.ts";
 
 const GiB = 1024 ** 3;
 
@@ -259,10 +260,12 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // Include them in the key, but skip large ignored folders that no check reads.
   // Recompute after a passing run so edits made during it are never cached as passing.
   const ci = Option.getOrElse(yield* Config.option(Config.String("CI")), () => "");
+  const tip = (yield* git(root, ["rev-parse", ref])).toString().trim();
   const inputKey = Effect.gen(function* () {
     const hash = NodeCrypto.createHash("sha256");
     // CI changes test behavior (vite.config.ts rejects .only under CI).
-    hash.update(`${process.version}\0${base}\0${ci}\0`);
+    // The ref's tip too: Kin's branch checks read what landed there since the merge base.
+    hash.update(`${process.version}\0${base}\0${tip}\0${ci}\0`);
     hash.update(
       yield* git(root, [
         "diff",
@@ -474,7 +477,24 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const command = (name: string, args: ReadonlyArray<string>) => ({ name, run: vp(args) });
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
 
+  // Kin's merge-survival, migration-number and instructions-version checks against the ref.
+  const kinBranch = (yield* fs.exists(inRoot(MIGRATIONS)))
+    ? [
+        {
+          name: "kin branch",
+          run: kinBranchChecks(root, ref, 14).pipe(
+            Effect.map((problems) => ({ ok: problems.length === 0, output: problems.join("\n") })),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.catch((message) => Effect.succeed({ ok: false, output: String(message) })),
+          ),
+        },
+      ]
+    : [];
+
   const steps: Array<Step<never>> = [
+    ...kinBranch,
     ...(runPatchCheck ? [{ name: "unused patches", run: checkPatches }] : []),
     ...(present.length > 0
       ? [command("format", ["fmt", "--check", "--no-error-on-unmatched-pattern", ...present])]

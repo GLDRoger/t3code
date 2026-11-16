@@ -50,7 +50,8 @@ import {
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount } from "./money.ts";
-import { dates, moneySection, moneySummary, stillToInvoice } from "./moneyViews.ts";
+import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import { endOfDay, iso, notFound, ownerZone } from "./recordRows.ts";
 import {
   attachCard,
@@ -438,9 +439,13 @@ const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   const now = yield* Clock.currentTimeMillis;
   // In a turn others read: figures of only the money lines they all see, such as their project's.
   const team = yield* viewOf(lead);
-  const summary = yield* moneySummary(lead.orgId, now, team?.people);
+  const summary = yield* moneySummary(
+    lead.orgId,
+    now,
+    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
+  );
   const section = moneySection(summary, summary.timeZone);
-  const toInvoice = team === undefined ? yield* stillToInvoice(lead.orgId) : [];
+  const toInvoice = team === undefined ? yield* ownerLevelStillToInvoice(lead.orgId) : [];
   return {
     asOf: iso(now),
     ...(section === undefined && toInvoice.length === 0
@@ -607,7 +612,7 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
       lists: input.lists,
       open: input.open ?? true,
       limit: input.limit ?? 30,
-      view: team?.people,
+      viewer: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
     },
     now,
   );

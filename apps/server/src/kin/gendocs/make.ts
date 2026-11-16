@@ -15,6 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Docs from "../work/docs.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
+import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
 import { ownerZone, type RecordRow } from "../work/recordRows.ts";
@@ -146,7 +147,7 @@ const fromDoc = Effect.fn("KinDocMaker.fromDoc")(function* (
     return yield* invalid(
       `The ${recipe.name} recipe doesn't lay out a doc's text; the report recipe does. ${NOTHING}`,
     );
-  const row = yield* Docs.docRow(request.orgId, { key: request.doc });
+  const row = yield* Docs.docRow(request.orgId, { key: request.doc }, KIN_OWNER_LEVEL);
   const latest = yield* Docs.versionOf(request.orgId, row.recordId);
   if (latest === undefined || latest.bodyKind !== "markdown")
     return yield* invalid(

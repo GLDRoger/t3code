@@ -11,7 +11,6 @@ import {
   type KinDocRenderResult,
   type KinDocsListInput,
   type KinOrgId,
-  type KinPersonId,
   type KinRecipeClearLabelResult,
   type KinRecipeDefaultInput,
   type KinRecipeDefaultResult,
@@ -49,7 +48,15 @@ import {
   workFailure,
 } from "./recordRows.ts";
 import { search as runSearch } from "./search.ts";
-import { personSees, placesOf, teamSeq, teamVisible } from "./teamView.ts";
+import {
+  KIN_OWNER_LEVEL,
+  personSees,
+  placesOf,
+  teamSeq,
+  teamVisible,
+  viewerOfPeople,
+  type KinViewer,
+} from "./teamView.ts";
 
 /**
  * What people's clients read and do in Docs: read, compare, restore and search. The owner and
@@ -86,11 +93,11 @@ const offsetOf = (cursor: string | undefined) => {
 const detailOf = Effect.fn("KinDocs.detail")(function* (
   orgId: KinOrgId,
   ref: { readonly key: string } | { readonly recordId: string },
+  viewer: KinViewer,
   version?: number,
-  team?: KinPersonId,
 ) {
   const records = yield* KinRecords;
-  const row = yield* Docs.docRow(orgId, ref, team);
+  const row = yield* Docs.docRow(orgId, ref, viewer);
   const latest = yield* Docs.versionOf(orgId, row.recordId);
   const shown = yield* Docs.versionOf(orgId, row.recordId, version);
   if (latest === undefined) return yield* unavailable;
@@ -101,16 +108,15 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
     });
   const now = yield* Clock.currentTimeMillis;
   const detail = yield* records.detail(row, 0);
-  const linked =
-    team === undefined
-      ? undefined
-      : yield* teamVisible(
-          orgId,
-          team,
-          detail.links.flatMap((link) =>
-            link.kind === "record" && link.record !== undefined ? [link.record.recordId] : [],
-          ),
-        );
+  const ids = detail.links.flatMap((link) =>
+    link.kind === "record" && link.record !== undefined ? [link.record.recordId] : [],
+  );
+  let linked: ReadonlySet<string> | undefined;
+  if (viewer._tag === "people")
+    for (const person of viewer.people) {
+      const seen = yield* teamVisible(orgId, person, ids);
+      linked = new Set([...(linked ?? seen)].filter((id) => seen.has(id)));
+    }
   return {
     ...Docs.toDocRow(row, latest, now),
     version: Docs.toVersion(shown),
@@ -217,8 +223,8 @@ export const get = Effect.fn("KinDocs.get")(
     return yield* detailOf(
       input.orgId,
       "key" in input ? { key: input.key } : { recordId: input.recordId },
+      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
       input.version,
-      team,
     );
   },
   Effect.catchTags({ SqlError: () => unavailable }),
@@ -229,7 +235,11 @@ export const history = Effect.fn("KinDocs.history")(
     const team = yield* reader(people, input.orgId);
     const before = input.cursor === undefined ? undefined : /^v:(\d{1,9})$/.exec(input.cursor)?.[1];
     if (input.cursor !== undefined && before === undefined) return yield* badCursor;
-    const row = yield* Docs.docRow(input.orgId, { key: input.key }, team);
+    const row = yield* Docs.docRow(
+      input.orgId,
+      { key: input.key },
+      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+    );
     const limit = input.limit ?? 50;
     const rows = yield* Docs.history(input.orgId, row.recordId, {
       ...(before === undefined ? {} : { before: Number.parseInt(before, 10) }),
@@ -251,7 +261,11 @@ export const history = Effect.fn("KinDocs.history")(
 export const diff = Effect.fn("KinDocs.diff")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinDocDiffInput) {
     const team = yield* reader(people, input.orgId);
-    const row = yield* Docs.docRow(input.orgId, { key: input.key }, team);
+    const row = yield* Docs.docRow(
+      input.orgId,
+      { key: input.key },
+      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+    );
     const to = yield* Docs.versionOf(input.orgId, row.recordId, input.to);
     if (to === undefined)
       return yield* new KinChatError({
@@ -296,7 +310,7 @@ export const restore = Effect.fn("KinDocs.restore")(
         originKey: `owner-restore:${person.personId}:${input.key}:${input.version}:${input.latest}`,
       },
     );
-    return yield* detailOf(input.orgId, { key: input.key });
+    return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL);
   },
   Effect.catchTags({ SqlError: () => unavailable }),
 );
@@ -312,7 +326,7 @@ export const search = Effect.fn("KinDocs.search")(
       closed: input.closed,
       limit: input.limit ?? 20,
       viewer: team === undefined ? "owner" : "team",
-      view: team === undefined ? undefined : [team],
+      scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
     });
     return {
       hits: found.hits.map((hit) => ({
@@ -488,7 +502,7 @@ export const label = Effect.fn("KinDocs.label")(
         sensitive: input.sensitive,
       },
     );
-    return yield* detailOf(input.orgId, { key: input.key });
+    return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL);
   },
   Effect.catchTags({ SqlError: () => unavailable }),
 );
@@ -517,7 +531,7 @@ export const file = Effect.fn("KinDocs.file")(
       },
       input.rev,
     );
-    return yield* detailOf(input.orgId, { key: input.key });
+    return yield* detailOf(input.orgId, { key: input.key }, KIN_OWNER_LEVEL);
   },
   Effect.catchTags({ SqlError: () => unavailable }),
 );

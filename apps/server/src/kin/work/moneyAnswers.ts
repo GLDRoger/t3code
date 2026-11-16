@@ -5,6 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth } from "./money.ts";
 import { dates } from "./moneyViews.ts";
+import { KIN_OWNER_LEVEL } from "./teamView.ts";
 import {
   countedEntry,
   countedPayment,
@@ -505,7 +506,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
   const overdueOut = outgoing.filter((one) => one.at < now);
   const undated = yield* dates(
     orgId,
-    { from: now, to: last + 1, lists: ["dates"], open: true, limit: 10 },
+    { from: now, to: last + 1, lists: ["dates"], open: true, limit: 10, viewer: KIN_OWNER_LEVEL },
     now,
   );
 

@@ -107,6 +107,7 @@ const paceAt = (target: number, start: number, end: number | null, at: number) =
  * Every goal not dropped, with progress counted now. `money` false leaves out goals that count
  * money, for people the owner keeps money from.
  */
+// oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- goals are the whole team's by design; `money` hides what members may not see.
 export const goalsNow = Effect.fn("KinGoals.now")(function* (
   orgId: KinOrgId,
   at: number,

@@ -10,7 +10,6 @@ import {
   type KinDocVersion,
   type KinDocVersionKind,
   type KinOrgId,
-  type KinPersonId,
   type KinRecordRelation,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
@@ -34,7 +33,7 @@ import { fieldText, listOf, parseFields } from "./lists.ts";
 import { guardPlaybook } from "./playbooks.ts";
 import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "./recordRows.ts";
 import { indexRecord } from "./searchIndex.ts";
-import { teamVisible } from "./teamView.ts";
+import { KIN_OWNER_LEVEL, viewVisible, type KinViewer } from "./teamView.ts";
 import { SensitiveRefusal } from "./workerAttempts.ts";
 
 /**
@@ -190,16 +189,16 @@ export const versionOf = Effect.fn("KinDocs.version")(function* (
 export const docRow = Effect.fn("KinDocs.row")(function* (
   orgId: KinOrgId,
   ref: { readonly key: string } | { readonly recordId: string },
-  /** Someone besides the owner: a doc they may not see is no doc at all (`personSees`). */
-  team?: KinPersonId,
+  /** For a person, a doc they may not see is no doc at all (`personSees`). */
+  viewer: KinViewer,
 ) {
   const records = yield* KinRecords;
   const row =
     "key" in ref ? yield* records.get(orgId, ref.key) : yield* records.getById(orgId, ref.recordId);
   const hidden =
     row !== undefined &&
-    team !== undefined &&
-    !(yield* teamVisible(orgId, team, [row.recordId])).has(row.recordId);
+    viewer._tag === "people" &&
+    !(yield* viewVisible(orgId, viewer.people, row.recordId));
   if (row === undefined || hidden || listOf(row.registerId) !== "docs")
     return yield* docNotFound("key" in ref ? ref.key : "with that id");
   return row;
@@ -460,7 +459,7 @@ export const edit = Effect.fn("KinDocs.edit")(function* (
 ) {
   return yield* transaction(
     Effect.gen(function* () {
-      const row = yield* docRow(orgId, ref);
+      const row = yield* docRow(orgId, ref, KIN_OWNER_LEVEL);
       const again = yield* retried(orgId, row.recordId, input.originKey);
       if (again !== undefined) return again;
       const current = yield* versionOf(orgId, row.recordId);
@@ -499,7 +498,7 @@ export const rewrite = Effect.fn("KinDocs.rewrite")(function* (
   if (body.length > DOC_BODY_MAX) return yield* tooLong(body.length);
   return yield* transaction(
     Effect.gen(function* () {
-      const row = yield* docRow(orgId, ref);
+      const row = yield* docRow(orgId, ref, KIN_OWNER_LEVEL);
       const again = yield* retried(orgId, row.recordId, input.originKey);
       if (again !== undefined) return again;
       const current = yield* versionOf(orgId, row.recordId);
@@ -535,7 +534,7 @@ export const restore = Effect.fn("KinDocs.restore")(function* (
 ) {
   return yield* transaction(
     Effect.gen(function* () {
-      const row = yield* docRow(orgId, ref);
+      const row = yield* docRow(orgId, ref, KIN_OWNER_LEVEL);
       const again = yield* retried(orgId, row.recordId, input.originKey);
       if (again !== undefined) return again;
       const current = yield* versionOf(orgId, row.recordId);
@@ -650,7 +649,7 @@ export const move = Effect.fn("KinDocs.move")(function* (
   return yield* transaction(
     Effect.gen(function* () {
       const records = yield* KinRecords;
-      const row = yield* docRow(orgId, ref);
+      const row = yield* docRow(orgId, ref, KIN_OWNER_LEVEL);
       // A doc has one home: the company, or a client and project.
       const toClient =
         (patch.partyId !== undefined && patch.partyId !== null) ||
@@ -697,7 +696,7 @@ export const link = Effect.fn("KinDocs.link")(function* (
   return yield* transaction(
     Effect.gen(function* () {
       const records = yield* KinRecords;
-      const row = yield* docRow(orgId, ref);
+      const row = yield* docRow(orgId, ref, KIN_OWNER_LEVEL);
       const linked: Array<{
         readonly key: string;
         readonly title: string;

@@ -23,7 +23,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { mayActAsOwner } from "../people/KinAccess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { readableFrom } from "../chat/sharing.ts";
@@ -54,7 +54,9 @@ import {
   workFailure,
 } from "./recordRows.ts";
 import {
+  KIN_OWNER_LEVEL,
   TEAM_REFUSED,
+  viewerOfPeople,
   ledProjects,
   teamDetail,
   teamKeys,
@@ -98,8 +100,7 @@ export const viewerOf = Effect.fn("KinWork.viewer")(function* (
     person,
     teammate:
       person.orgId !== owner.orgId ||
-      (person.personId !== owner.personId &&
-        !(yield* ownerLevel(orgId, person.personId).pipe(Effect.mapError(() => ownerOnly)))),
+      !(yield* mayActAsOwner(orgId, person.personId, owner).pipe(Effect.mapError(() => ownerOnly))),
   };
 });
 export type Viewer = Effect.Success<ReturnType<typeof viewerOf>>;
@@ -348,7 +349,10 @@ export const get = Effect.fn("KinWork.get")(function* (
     input,
     seq,
   );
-  const { milestone, tasks } = yield* milestoneLinks(row).pipe(workFailure);
+  const { milestone, tasks } = yield* milestoneLinks(
+    row,
+    viewer.teammate ? viewerOfPeople([viewer.person.personId]) : KIN_OWNER_LEVEL,
+  ).pipe(workFailure);
   const linked = [
     ...(milestone === undefined ? [] : [milestone.recordId]),
     ...(tasks ?? []).map((task) => task.recordId),
