@@ -7,7 +7,6 @@ import {
 } from "@t3tools/client-runtime/kin/kinNavigation";
 import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { Atom } from "effect/reactivity";
 import { useEffect } from "react";
 import {
   BanknoteIcon,
@@ -34,13 +33,13 @@ import { cn } from "../lib/utils";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import {
   kinDestinationAt,
+  kinDestinationLink,
   kinInboxUnreadAtom,
-  kinLastChatId,
+  kinShownDestinationsAtom,
   kinListShownAt,
   noAttentionAtom,
   threadsAttentionAtom,
 } from "./kinListSwitch";
-import { KIN_PLACE_PATH } from "./kinPlaces";
 import { useKinAttention } from "./useKinAttention";
 import { useKinDocsLive } from "./useKinDocs";
 import { useKinHost } from "./useKinHost";
@@ -55,17 +54,6 @@ const ICON: Record<KinDestination, LucideIcon> = {
   clients: BriefcaseBusinessIcon,
   docs: FileTextIcon,
 };
-
-/** The destinations the nav last showed, and for which company; null before it has shown any. */
-export const kinShownDestinationsAtom = Atom.make<{
-  readonly target: KinWorkTarget;
-  readonly destinations: ReadonlyArray<KinDestination>;
-} | null>(null).pipe(Atom.keepAlive, Atom.withLabel("kin:shown-destinations"));
-
-/** Opens a destination the way the nav does, for the command palette. */
-export function kinDestinationLink(destination: KinDestination, target: KinWorkTarget) {
-  return destinationLink(destination, target, false);
-}
 
 interface KinNavEntry {
   readonly destination: KinDestination;
@@ -112,15 +100,6 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
   }));
 }
 
-function destinationLink(destination: KinDestination, target: KinWorkTarget, narrow: boolean) {
-  if (destination !== "chats") return { to: KIN_PLACE_PATH[destination], params: target } as const;
-  // A wide window shows the list beside the chat, so Chats comes back to the chat you left.
-  const chatId = narrow ? null : kinLastChatId();
-  return chatId === null
-    ? ({ to: "/kin" } as const)
-    : ({ to: "/kin/$environmentId/$orgId/$chatId", params: { ...target, chatId } } as const);
-}
-
 const badgeLabel = (destination: KinDestination, badge: string) =>
   destination === "chats" ? `${badge} unread` : `${badge} need you`;
 
@@ -154,7 +133,7 @@ function KinNavList(props: KinWorkTarget) {
                   aria-current={active ? "page" : undefined}
                   data-kin-destination={destination}
                   onClick={close}
-                  render={<Link {...destinationLink(destination, props, isMobile)} />}
+                  render={<Link {...kinDestinationLink(destination, props, isMobile)} />}
                 >
                   <Icon />
                   <span className="min-w-0 flex-1 truncate">
@@ -235,7 +214,7 @@ export function KinDock(props: KinWorkTarget) {
         return (
           <Link
             key={destination}
-            {...destinationLink(destination, props, true)}
+            {...kinDestinationLink(destination, props, true)}
             aria-current={active ? "page" : undefined}
             data-kin-destination={destination}
             className={cn(

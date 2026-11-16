@@ -117,7 +117,7 @@ import {
 import { useKinPaletteHits } from "../kin/useKinDocs";
 import { useKinHost } from "../kin/useKinHost";
 import { useKinListSwitch } from "../kin/useKinListSwitch";
-import { kinDestinationLink, kinShownDestinationsAtom } from "../kin/KinNav";
+import { kinDestinationLink, kinShownDestinationsAtom } from "../kin/kinListSwitch";
 import { KIN_DESTINATION_NAMES } from "@t3tools/client-runtime/kin/kinNavigation";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";

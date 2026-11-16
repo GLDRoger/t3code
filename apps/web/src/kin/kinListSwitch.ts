@@ -20,6 +20,8 @@ import { registerCommands } from "../shortcuts/dispatcher";
 import { environmentPresentations } from "../state/presentation";
 import { environmentThreadShells } from "../state/threads";
 import { kinClient } from "./kinClient";
+import { KIN_PLACE_PATH } from "./kinPlaces";
+import type { KinWorkTarget } from "./useKinWork";
 import { hasSavedKinHost, kinHostAtom } from "./useKinHost";
 
 const LAST_LIST_STORAGE_KEY = "t3code:kin:lastList";
@@ -40,6 +42,7 @@ function readLastList(): KinList | null {
 let lastUsed: KinList | null = typeof window === "undefined" ? null : readLastList();
 let lastKinHref: string | null = null;
 let listBehindModal: KinList = "threads";
+// The chat last open, for Chats on a wide window; null before one has been.
 let lastKinChatId: string | null = null;
 
 // Pages under a company that aren't a chat; anything else there is a chat id.
@@ -60,11 +63,6 @@ export function kinDestinationAt(pathname: string): KinDestination | null {
   const page = pathname.split("/")[4];
   if (page === "tasks" || page === "money" || page === "clients" || page === "docs") return page;
   return "chats";
-}
-
-/** The chat last open, for Chats on a wide window; null before one has been. */
-export function kinLastChatId(): string | null {
-  return lastKinChatId;
 }
 
 /**
@@ -259,3 +257,23 @@ export const kinInboxUnreadAtom = Atom.family((environmentId: EnvironmentId) =>
 export const noAttentionAtom = Atom.make(NO_KIN_LIST_ATTENTION).pipe(
   Atom.withLabel("kin:no-attention"),
 );
+
+/** Where a destination opens; the nav, the dock and the command palette all go through it. */
+export function kinDestinationLink(
+  destination: KinDestination,
+  target: KinWorkTarget,
+  narrow = false,
+) {
+  if (destination !== "chats") return { to: KIN_PLACE_PATH[destination], params: target } as const;
+  // A wide window shows the list beside the chat, so Chats comes back to the chat you left.
+  const chatId = narrow ? null : lastKinChatId;
+  return chatId === null
+    ? ({ to: "/kin" } as const)
+    : ({ to: "/kin/$environmentId/$orgId/$chatId", params: { ...target, chatId } } as const);
+}
+
+/** The destinations the nav last showed, and for which company; null before it has shown any. */
+export const kinShownDestinationsAtom = Atom.make<{
+  readonly target: KinWorkTarget;
+  readonly destinations: ReadonlyArray<KinDestination>;
+} | null>(null).pipe(Atom.keepAlive, Atom.withLabel("kin:shown-destinations"));
