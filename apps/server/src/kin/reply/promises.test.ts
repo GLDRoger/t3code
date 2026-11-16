@@ -67,3 +67,22 @@ it.effect("a promise to tell someone stands only when the turn told them", () =>
     assert.isUndefined(yield* unkeptPromise(wake));
   }).pipe(Effect.provide(layer)),
 );
+
+// Run 4: a check-in told the owner "Finance will send the reminder once you confirm", and
+// nothing was handed to Finance.
+it.effect("a promise about what another agent will do stands only when it was handed over", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* seed;
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      VALUES ('finance', ${orgId}, 'Finance', 'lead', 'ishaan', ${at})`;
+    yield* say(1, "Finance has the invoice figures.");
+    assert.isUndefined(yield* unkeptPromise(wake));
+    yield* say(2, "Orbit is 11 days overdue, and Finance will send the reminder once you confirm.");
+    assert.strictEqual(yield* unkeptPromise(wake), "Finance");
+    yield* sql`INSERT INTO kin_handoffs (org_id, message_id, from_agent_id, to_agent_id, event_id,
+        created_at)
+      VALUES (${orgId}, 'kin-handoff:x', ${chief}, 'finance', 'handoff-x', ${Date.parse(at)})`;
+    assert.isUndefined(yield* unkeptPromise(wake));
+  }).pipe(Effect.provide(layer)),
+);

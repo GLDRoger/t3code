@@ -261,7 +261,7 @@ export class KinReplyBridge extends Context.Service<
 
 type AnswerItem = Extract<OrchestrationV2TurnItem, { type: "assistant_message" }>;
 /** The model's own words. Its reasoning never reaches a chat, even shown as an update. */
-const isAnswer = (item: OrchestrationV2TurnItem): item is AnswerItem =>
+const isAnswer = (item: OrchestrationV2TurnItem) =>
   item.type === "assistant_message" && !isClaudeThinkingItem(item);
 const textOf = (item: AnswerItem, projection?: OrchestrationV2ThreadProjection) =>
   item.textOmitted === true
@@ -687,7 +687,7 @@ const make = Effect.gen(function* () {
     wake.lastOutputAt = now;
     wake.latest = Math.max(wake.latest, item.ordinal);
     reopen(wake, item);
-    if (isAnswer(item)) {
+    if (item.type === "assistant_message" && isAnswer(item)) {
       const segment = segmentFor(wake, item.id, item.ordinal, now);
       for (const earlier of pendingBefore(wake, item.ordinal)) yield* decide(wake, earlier, "text");
       if (segment.outcome !== null) return;
@@ -809,7 +809,7 @@ const make = Effect.gen(function* () {
     for (const [index, item] of items.entries()) {
       reopen(wake, item);
       if (isEndCall(item)) wake.endedAt = Math.min(wake.endedAt ?? item.ordinal, item.ordinal);
-      if (!isAnswer(item) || item.streaming) continue;
+      if (item.type !== "assistant_message" || !isAnswer(item) || item.streaming) continue;
       const segment = segmentFor(wake, item.id, item.ordinal, now);
       if (segment.outcome !== null) continue;
       segment.text = textOf(item, projection);
@@ -826,7 +826,7 @@ const make = Effect.gen(function* () {
         segment,
         following === undefined || isEndCall(following)
           ? "end"
-          : isAnswer(following)
+          : following.type === "assistant_message"
             ? "text"
             : "tool",
       );

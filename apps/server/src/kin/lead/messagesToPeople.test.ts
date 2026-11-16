@@ -102,6 +102,7 @@ const layer = Layer.mergeAll(
     ),
   ),
   Layer.provideMerge(authorityLayer),
+  Layer.provideMerge(kinSecretsTest),
 );
 
 /** A tool call exactly as the lead's provider sends it; its JSON answer, or its refusal. */

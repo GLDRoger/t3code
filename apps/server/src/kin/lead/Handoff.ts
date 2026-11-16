@@ -36,6 +36,7 @@ import { outsideStamp, stampEvent } from "./OutsideContent.ts";
 import type { KinLevelGate } from "./LevelGate.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
 import { relayPrefix } from "../reply/promises.ts";
 import { unreadableBy } from "../work/teamView.ts";
 
@@ -60,8 +61,14 @@ export const HandOffInput = Schema.Struct({
       "What you are passing on, in the owner's terms, with anything useful you already found. The owner's own message goes along with it.",
   }),
   sourceEventId: TrimmedNonEmptyString.annotate({
-    description: "The event of the owner's message you are passing on.",
+    description: "The event of the owner's message, or of the check-in, you are passing on.",
   }),
+  fact: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(300)).annotate({
+      description:
+        "From a check-in: the key of the pulse fact the other agent should act on, as pulse_read gives it.",
+    }),
+  ),
 });
 export const HandOffResult = Schema.Struct({
   // The lead it went to, by name, to tell the owner.
@@ -557,6 +564,107 @@ const make = Effect.gen(function* () {
     };
   }, guarded("KinHandoff.leads"));
 
+  /** One other live lead of the owner's, by name or domain. */
+  const targetOf = Effect.fnUntraced(function* (
+    ctx: Lead,
+    all: ReadonlyArray<Colleague>,
+    to: string,
+  ) {
+    const others = all.filter((entry) => entry.agentId !== ctx.agentId);
+    if (others.length === 0)
+      return yield* refuse("There is no other agent to pass this to. Answer it yourself.");
+    const wanted = fold(to);
+    const byName = others.filter((entry) => fold(entry.name) === wanted);
+    const matches =
+      byName.length > 0 ? byName : others.filter((entry) => fold(entry.domain) === wanted);
+    const [target] = matches;
+    if (matches.length !== 1 || target === undefined)
+      return yield* new KinChatError({
+        reason: matches.length === 0 ? "not_found" : "invalid_state",
+        message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describe(others)}. ${NOTHING} Call again with one of those names.`,
+      });
+    return target;
+  });
+
+  /**
+   * From a check-in, a pulse fact another agent acts on: Kin's own words for the fact, then the
+   * lead's line, land in that agent's chat with the owner and wake it there. Once per fact a turn.
+   */
+  const passFact = Effect.fnUntraced(function* (
+    ctx: Lead,
+    self: Colleague,
+    all: ReadonlyArray<Colleague>,
+    event: Extract<KinEvent, { _tag: "pulse" }>,
+    input: typeof HandOffInput.Type,
+  ) {
+    const memberId = self.memberId;
+    if (memberId === null) return yield* missing();
+    if (input.fact === undefined)
+      return yield* refuse(
+        "From a check-in, pass a fact: its key from pulse_read in fact, and what the other agent should do in request.",
+      );
+    const now = yield* Clock.currentTimeMillis;
+    const facts = yield* KinPulse.read({
+      orgId: ctx.orgId,
+      at: now,
+      viewer: { _tag: "owner" },
+      includeHandled: true,
+      limit: 200,
+    }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    const fact = facts.facts.find((one) => one.key === input.fact);
+    if (fact === undefined)
+      return yield* refuse(
+        "That fact isn't open now: pulse_read lists the open ones. Nothing was passed on.",
+      );
+    const target = yield* targetOf(ctx, all, input.to);
+    const key = `handoff:fact:${ctx.wakeupId}:${fact.key}`;
+    const id = NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
+    const messageId = KinMessageId.make(`kin-handoff:${id}`);
+    const claimed = yield* sql`INSERT INTO kin_handoffs
+        (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at)
+      VALUES (${ctx.orgId}, ${messageId}, ${ctx.agentId}, ${target.agentId}, ${`handoff-${id}`},
+        ${now})
+      ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id`;
+    if (claimed.length === 0) return { to: target.name, passed: true as const };
+    const about =
+      fact.subject.key === fact.subject.title
+        ? fact.subject.title
+        : `${fact.subject.key} ${fact.subject.title}`;
+    const body = [
+      `Passed on by ${self.name} from ${event.checkIn?.title ?? "Kin's facts"}`,
+      `${about}: ${fact.consequence} (${fact.key})`,
+      `${self.name} adds: ${input.request.replace(/\s+/g, " ")}`,
+    ]
+      .join("\n")
+      .slice(0, messageBodyLimit);
+    const { message } = yield* chat.notice({
+      orgId: ctx.orgId,
+      chatId: target.ownerChatId,
+      audience: "owner",
+      messageId,
+      body,
+    });
+    yield* queue.enqueue({
+      _tag: "chat.message",
+      orgId: ctx.orgId,
+      eventId: KinEventId.make(`handoff-${id}`),
+      agentId: target.agentId,
+      receivedAt: DateTime.makeUnsafe(message.createdAt),
+      dedupeKey: key,
+      provenance: {
+        _tag: "agent",
+        agentId: ctx.agentId,
+        memberId,
+        ownerPersonId: self.ownerPersonId,
+        threadId: ctx.threadId,
+      },
+      chatId: target.ownerChatId,
+      messageId: message.messageId,
+      origin: { agentId: ctx.agentId, chatId: self.ownerChatId },
+    });
+    return { to: target.name, passed: true as const };
+  });
+
   const handOff = Effect.fn("KinHandoff.handOff")(function* (
     scope: McpInvocationScope,
     input: typeof HandOffInput.Type,
@@ -580,6 +688,7 @@ const make = Effect.gen(function* () {
             AND event_id = ${input.sourceEventId} ORDER BY event_id`;
         if (stored === undefined) return yield* missing();
         const event = yield* decodeEvent(stored.json);
+        if (event._tag === "pulse") return yield* passFact(ctx, self, all, event, input);
         // Asked in a group of the owner and agents: the agent there answers it there.
         if (event._tag === "chat.message" && event.chatId !== self.ownerChatId)
           return yield* passInRoom(ctx, input);
@@ -609,27 +718,15 @@ const make = Effect.gen(function* () {
           return yield* refuse(
             "Something from outside your own chat with the owner came in with this, so it can't be passed on now. Say in one line which agent owns it instead.",
           );
-        const others = all.filter((entry) => entry.agentId !== ctx.agentId);
-        if (others.length === 0)
-          return yield* refuse("There is no other agent to pass this to. Answer it yourself.");
-        const wanted = fold(input.to);
-        const byName = others.filter((entry) => fold(entry.name) === wanted);
-        const matches =
-          byName.length > 0 ? byName : others.filter((entry) => fold(entry.domain) === wanted);
-        if (matches.length !== 1)
-          return yield* new KinChatError({
-            reason: matches.length === 0 ? "not_found" : "invalid_state",
-            message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describe(others)}. ${NOTHING} Call again with one of those names.`,
-          });
-        const [target] = matches;
+        const target = yield* targetOf(ctx, all, input.to);
         /** Where this owner message already went: there again is the same hand-off, else refused. */
         const already = Effect.fnUntraced(function* () {
           const [record] = yield* sql<{ toAgentId: KinAgentId }>`SELECT to_agent_id AS "toAgentId"
             FROM kin_handoffs WHERE org_id = ${ctx.orgId} AND message_id = ${event.messageId}
             ORDER BY message_id`;
           if (record === undefined) return undefined;
-          if (record.toAgentId === target!.agentId)
-            return { to: target!.name, passed: true as const };
+          if (record.toAgentId === target.agentId)
+            return { to: target.name, passed: true as const };
           const went = all.find((entry) => entry.agentId === record.toAgentId)?.name;
           return yield* refuse(
             `This was already passed on${went === undefined ? "" : ` to ${went}`}, and a request goes to one agent only. Tell the owner where it went instead.`,
@@ -657,13 +754,13 @@ const make = Effect.gen(function* () {
         // row is claimed before anything is posted, so a second destination never gets it.
         const claimed = yield* sql<{ toAgentId: KinAgentId }>`INSERT INTO kin_handoffs
             (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at)
-          VALUES (${ctx.orgId}, ${event.messageId}, ${ctx.agentId}, ${target!.agentId},
+          VALUES (${ctx.orgId}, ${event.messageId}, ${ctx.agentId}, ${target.agentId},
             ${`handoff-${id}`}, ${yield* Clock.currentTimeMillis})
           ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id AS "toAgentId"`;
         if (claimed.length === 0) return (yield* already()) ?? (yield* unavailable());
         const { message } = yield* chat.notice({
           orgId: ctx.orgId,
-          chatId: target!.ownerChatId,
+          chatId: target.ownerChatId,
           audience: "owner",
           messageId: KinMessageId.make(`kin-handoff:${id}`),
           body,
@@ -672,7 +769,7 @@ const make = Effect.gen(function* () {
           _tag: "chat.message",
           orgId: ctx.orgId,
           eventId: KinEventId.make(`handoff-${id}`),
-          agentId: target!.agentId,
+          agentId: target.agentId,
           receivedAt: DateTime.makeUnsafe(message.createdAt),
           dedupeKey,
           // The passing lead said it, so what the other lead remembers of it is agent-trust.
@@ -683,7 +780,7 @@ const make = Effect.gen(function* () {
             ownerPersonId: self.ownerPersonId,
             threadId: ctx.threadId,
           },
-          chatId: target!.ownerChatId,
+          chatId: target.ownerChatId,
           messageId: message.messageId,
           origin: { agentId: ctx.agentId, chatId: self.ownerChatId },
         });
@@ -692,7 +789,7 @@ const make = Effect.gen(function* () {
           Effect.flatMap((source) => stampEvent(ctx.orgId, `handoff-${id}`, source)),
           Effect.provideService(SqlClient.SqlClient, sql),
         );
-        return { to: target!.name, passed: true as const };
+        return { to: target.name, passed: true as const };
       }),
     );
   }, guarded("KinHandoff.handOff"));

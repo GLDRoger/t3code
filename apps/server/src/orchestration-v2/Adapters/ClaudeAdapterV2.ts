@@ -2098,11 +2098,9 @@ function textFromClaudeContent(content: SDKAssistantMessage["message"]["content"
 }
 
 /** A turn item made from a thinking block (`<message>:thinking:<n>`), even one shown as an update. */
-export const isClaudeThinkingItem = (item: {
-  readonly nativeItemRef: { readonly driver: string; readonly nativeId: string } | null;
-}) =>
+export const isClaudeThinkingItem = (item: Pick<OrchestrationV2TurnItem, "nativeItemRef">) =>
   item.nativeItemRef?.driver === CLAUDE_PROVIDER &&
-  /:thinking:\d+$/u.test(item.nativeItemRef.nativeId);
+  /:thinking:\d+$/u.test(item.nativeItemRef.nativeId ?? "");
 
 // Claude 5.1+ emits at most one pre-tool text block as thinking; treat only a second consecutive thinking block as text.
 function claudeWritesUpdatesAsThinking(model: string): boolean {
