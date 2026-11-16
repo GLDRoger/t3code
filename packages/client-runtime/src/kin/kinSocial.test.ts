@@ -8,7 +8,7 @@ import {
   type KinSocialWeekCard,
   type KinWidget,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "@effect/vitest";
 
 import { kinSocialPostActions, kinSocialRows, kinSocialWeekView } from "./kinSocial.ts";
 
