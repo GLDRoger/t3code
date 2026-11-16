@@ -71,6 +71,7 @@ import { KinRecords, type Withdrawal } from "../work/KinRecords.ts";
 import * as Attempts from "../work/workerAttempts.ts";
 import { workerEnded } from "../work/workerEntries.ts";
 import { ownsAgent } from "../people/KinAccess.ts";
+import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 
 export const endedStatuses = new Set<OrchestrationV2RunStatus>([
   "completed",
@@ -324,6 +325,7 @@ const make = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
   const environment = yield* Effect.serviceOption(ServerEnvironment);
+  const sessions = yield* Effect.serviceOption(KinAgentSessionPolicy);
   const projects = yield* ProjectService.ProjectService;
   const { stateDir } = yield* ServerConfig;
   const fs = yield* FileSystem.FileSystem;
@@ -1614,6 +1616,8 @@ const make = Effect.gen(function* () {
     if (subagent.origin !== "app_owned" || strays.has(subagent.id)) return;
     const lead = registry.lookup(subagent.threadId);
     if (lead === undefined) return;
+    // With GitHub connected, delegate_task is how an agent starts longer work.
+    if (Option.isSome(sessions) && (yield* sessions.value.connected())) return;
     strays.add(subagent.id);
     yield* threads.stopDelegatedTasks({
       threadId: subagent.threadId,

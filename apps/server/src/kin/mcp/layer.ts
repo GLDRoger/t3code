@@ -10,6 +10,7 @@ import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
+import * as AgentSession from "../lead/AgentSession.ts";
 import * as KinLead from "../lead/layer.ts";
 import { isWorkThread } from "../lead/workThread.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
@@ -68,7 +69,9 @@ const auth = HttpRouter.middleware<{ provides: McpInvocationContext | KinServer 
 
 // Whatever is registered here, every tool call passes the gate first.
 export const endpoint = <A, E, R>(registrations: Layer.Layer<A, E, R>) =>
-  McpHttpServer.layerMcpTransport(Layer.merge(registrations, KinToolGate.layer)).pipe(
+  McpHttpServer.layerMcpTransport(
+    Layer.mergeAll(registrations, KinToolGate.layer, AgentSession.endpointVisibility),
+  ).pipe(
     Layer.provide(
       Layer.effect(
         McpSessionRegistry.McpSessionRegistry,
@@ -90,10 +93,12 @@ export const transport = (base: typeof McpHttpServer.layer) =>
     Layer.unwrap(
       Effect.gen(function* () {
         const kin = yield* KinServer;
-        // Kin leads cannot bypass their toolkit through T3 scheduling or thread-launch tools.
+        // T3's own tools are served here too, shown to a lead only as `AgentSession` allows:
+        // never scheduling or thread-launch tools, which would start work outside Kin's chats.
         return Option.isSome(kin.services)
           ? endpoint(
               Layer.mergeAll(
+                McpHttpServer.layerTools,
                 registration,
                 KinApprovalsMcp.registration,
                 KinConnectionsMcp.registration.pipe(

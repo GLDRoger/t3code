@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalFetch:off globalDate:off globalTimers:off - an ACP agent process, spoken over stdio.
 /**
- * A Kin lead with no model, run by a dev server as the `kinVerifyScript` ACP instance. A prompt
- * with `[kv:<id>]` makes it call the tools in `<verify dir>/turns/<id>.json` on the session's real
- * Kin MCP endpoint, write `<id>.result.json` and reply with the file's `reply`.
+ * A Kin lead with no model: `[kv:<id>]` runs the calls in `<verify dir>/turns/<id>.json` (plus
+ * local `shell` and `sleep`) on the session's Kin MCP endpoint and replies with its `reply`.
+ * T3's finished-task notice runs `turns/notice.json`, with "$task" for the task it names.
  */
+import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -89,11 +90,12 @@ async function mcpClient(server: McpServer) {
       : text;
     return json === undefined ? undefined : (JSON.parse(json) as Record<string, unknown>);
   };
-  await post("initialize", {
+  const opened = await post("initialize", {
     protocolVersion: "2025-06-18",
     capabilities: {},
     clientInfo: { name: "kin-verify", version: "1" },
   });
+  if (sessionId === undefined) throw new Error(`initialize: ${JSON.stringify(opened)}`);
   await post("notifications/initialized", {}, true);
   return {
     list: () => post("tools/list", {}),
@@ -120,6 +122,26 @@ async function capture(server: McpServer | undefined, prompt: string) {
   NodeFS.writeFileSync(NodePath.join(dir, `${name}.json`), JSON.stringify({ prompt, tools }));
 }
 
+/** T3's notice that a delegated task finished, as T3 words it or as Kin's prompt names it. */
+const NOTICE =
+  /Delegated tasks? ([^\s,]+)|task\.finished[\s\S]*?taskIds\\*"\s*:\s*\[\s*\\*"([^"\\]+)/;
+
+/** What a tool answered, as the agent reads it: the structured result, else its JSON text. */
+const answerOf = (response: unknown): unknown => {
+  const result = (
+    response as {
+      result?: { structuredContent?: unknown; content?: ReadonlyArray<{ text?: string }> };
+    }
+  )?.result;
+  if (result?.structuredContent !== undefined) return result.structuredContent;
+  const text = result?.content?.map((part) => part.text ?? "").join("") ?? "";
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+};
+
 /** "$event" and "$chat" become the event the turn answers and the chat it replies to. */
 function filler(before: string, prompt: string) {
   const eventId = [...before.matchAll(/"event"\s*:\s*"([^"]+)"/g)].at(-1)?.[1];
@@ -139,21 +161,24 @@ function filler(before: string, prompt: string) {
 
 type Call = { readonly name: string; readonly arguments?: unknown };
 
+type McpClient = Awaited<ReturnType<typeof mcpClient>>;
+type CallResult = { readonly name: string; readonly response?: unknown; readonly error?: string };
+
+/**
+ * Runs `calls` in order into `results`. `shell` runs in `cwd` and `sleep` waits, as a model's own
+ * tools and thinking would; the endpoint is connected at the first other call.
+ */
 async function callAll(
-  client: Awaited<ReturnType<typeof mcpClient>>,
+  connect: () => Promise<McpClient>,
   calls: ReadonlyArray<Call>,
   fill: (value: unknown) => unknown,
+  results: Array<CallResult> = [],
+  cwd = process.cwd(),
 ) {
-  const listed = (await client.list()) as {
-    result?: { tools?: ReadonlyArray<{ name: string; inputSchema?: { properties?: object } }> };
-  };
+  let client: McpClient | undefined;
+  let listed: unknown;
   // Most Kin tools take the event the turn answers, which a real agent copies from its prompt.
-  const takesEvent = new Set(
-    (listed.result?.tools ?? [])
-      .filter((tool) => Object.hasOwn(tool.inputSchema?.properties ?? {}, "sourceEventId"))
-      .map((tool) => tool.name),
-  );
-  const results: Array<{ name: string; response: unknown }> = [];
+  let takesEvent = new Set<string>();
   // "$key" in a later call's text is the first record key an earlier call answered with.
   let key: string | undefined;
   const withKey = (value: unknown): unknown =>
@@ -166,6 +191,34 @@ async function callAll(
           : value;
   for (const call of calls) {
     const args = (call.arguments ?? {}) as Record<string, unknown>;
+    if (call.name === "sleep") {
+      await new Promise((done) => setTimeout(done, Number(args.ms ?? 0)));
+      results.push({ name: "sleep" });
+      continue;
+    }
+    if (call.name === "shell") {
+      const run = NodeChildProcess.spawnSync("sh", ["-c", String(fill(args.command))], {
+        cwd,
+        encoding: "utf8",
+      });
+      results.push({
+        name: "shell",
+        response: { exitCode: run.status, output: `${run.stdout}${run.stderr}`.slice(-4000) },
+      });
+      continue;
+    }
+    if (client === undefined) {
+      client = await connect();
+      listed = await client.list();
+      const tools = (listed ?? {}) as {
+        result?: { tools?: ReadonlyArray<{ name: string; inputSchema?: { properties?: object } }> };
+      };
+      takesEvent = new Set(
+        (tools.result?.tools ?? [])
+          .filter((tool) => Object.hasOwn(tool.inputSchema?.properties ?? {}, "sourceEventId"))
+          .map((tool) => tool.name),
+      );
+    }
     const withEvent =
       takesEvent.has(call.name) && args.sourceEventId === undefined
         ? { ...args, sourceEventId: "$event" }
@@ -215,16 +268,25 @@ async function teamTurn(server: McpServer | undefined, prompt: string): Promise<
     log({ did: "passed" });
     return { reply: "Pass." };
   }
-  log({ did: "ran", results: await callAll(client, step.calls ?? [], filler(prompt, prompt)) });
+  log({
+    did: "ran",
+    results: await callAll(async () => client, step.calls ?? [], filler(prompt, prompt)),
+  });
   return { reply: "Said." };
 }
 
-async function runTurn(server: McpServer | undefined, prompt: string): Promise<Turn> {
+async function runTurn(
+  server: McpServer | undefined,
+  prompt: string,
+  cwd: string | undefined,
+): Promise<Turn> {
   await capture(server, prompt).catch(() => undefined);
   const team = await teamTurn(server, prompt);
   if (team !== undefined) return team;
   // The prompt may quote earlier messages; the newest marker is this turn's.
-  const id = [...prompt.matchAll(MARKER)].at(-1)?.[1];
+  const marked = [...prompt.matchAll(MARKER)].at(-1)?.[1];
+  const notice = marked === undefined ? NOTICE.exec(prompt) : null;
+  const id = marked ?? (notice === null ? undefined : "notice");
   // A check-in (Run now) answers with `<verify dir>/checkin-reply.md` once, to show a brief.
   const brief = NodePath.join(verifyDir, "checkin-reply.md");
   if (prompt.includes("This is a check-in") && NodeFS.existsSync(brief)) {
@@ -233,10 +295,11 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<T
     return { reply };
   }
   if (id === undefined) return { reply: "Noted." };
+  const task = notice?.[1] ?? notice?.[2];
   const scriptPath = NodePath.join(verifyDir, "turns", `${id}.json`);
   const resultPath = NodePath.join(verifyDir, "turns", `${id}.result.json`);
-  // A turn re-run after a restart must not repeat its tool calls.
-  if (NodeFS.existsSync(resultPath)) return { reply: "Done." };
+  // A turn re-run after a restart must not repeat its tool calls; every notice is its own turn.
+  if (notice === null && NodeFS.existsSync(resultPath)) return { reply: "Done." };
   let script: TurnScript;
   try {
     script = JSON.parse(NodeFS.readFileSync(scriptPath, "utf8")) as TurnScript;
@@ -246,14 +309,37 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<T
   NodeFS.writeFileSync(NodePath.join(verifyDir, "turns", `${id}.prompt.txt`), prompt);
   // A real agent copies the event it answers and the chat it replies to from its prompt;
   // "$event" and "$chat" ask for those.
-  const fill = filler(prompt.slice(0, prompt.lastIndexOf(`[kv:${id}]`)), prompt);
-  const results: Array<unknown> = [];
-  try {
+  const base = filler(prompt.slice(0, prompt.lastIndexOf(`[kv:${id}]`)), prompt);
+  const results: Array<CallResult> = [];
+  // "$from:<n>:<a.b>" is a field of the answer to this turn's call n, as an agent copies one.
+  const from = (value: string) => {
+    const [, index = "", path = ""] = value.split(":");
+    return path
+      .split(".")
+      .filter(Boolean)
+      .reduce<unknown>(
+        (at, key) => (at as Record<string, unknown> | undefined)?.[key],
+        answerOf(results[Number(index)]?.response),
+      );
+  };
+  const fill = (value: unknown): unknown =>
+    value === "$task"
+      ? task
+      : typeof value === "string" && value.startsWith("$from:")
+        ? from(value)
+        : Array.isArray(value)
+          ? value.map(fill)
+          : typeof value === "object" && value !== null
+            ? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, fill(entry)]))
+            : base(value);
+  const connect = async () => {
     if (server === undefined) throw new Error("no MCP server in this session");
-    const client = await mcpClient(server);
-    results.push(...(await callAll(client, script.calls ?? [], fill)));
+    return mcpClient(server);
+  };
+  try {
+    await callAll(connect, script.calls ?? [], fill, results, cwd ?? process.cwd());
   } catch (error) {
-    results.push({ error: String(error) });
+    results.push({ name: "error", error: String(error) });
   }
   if (script.holdMs !== undefined) await new Promise((done) => setTimeout(done, script.holdMs));
   NodeFS.writeFileSync(resultPath, JSON.stringify({ results }, null, 2));
@@ -262,7 +348,7 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<T
 }
 
 function main(): void {
-  const sessions = new Map<string, { server: McpServer | undefined }>();
+  const sessions = new Map<string, { server: McpServer | undefined; cwd: string | undefined }>();
   const send = (message: JsonRpcMessage) =>
     process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
   const models = {
@@ -290,12 +376,14 @@ function main(): void {
         const servers = (params.mcpServers ?? []) as ReadonlyArray<McpServer>;
         sessions.set(sessionId, {
           server: servers.find((server) => endpointOf(server) !== undefined),
+          cwd: typeof params.cwd === "string" ? params.cwd : undefined,
         });
         return { ...(message.method === "session/new" ? { sessionId } : {}), models };
       }
       case "session/prompt": {
         const sessionId = String(params.sessionId);
-        const turn = await runTurn(sessions.get(sessionId)?.server, promptText(params));
+        const session = sessions.get(sessionId);
+        const turn = await runTurn(session?.server, promptText(params), session?.cwd);
         send({
           method: "session/update",
           params: {

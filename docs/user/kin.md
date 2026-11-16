@@ -237,6 +237,17 @@ One account is connected at a time; to switch, **Disconnect** and connect again.
 Kin's computer out; to end it on GitHub too, revoke GitHub CLI under GitHub's Settings →
 Applications. If GitHub stops accepting the login, the row says so and offers **Reconnect**.
 
+Once GitHub is connected, an agent works on GitHub as you in chats only you and co-owners can read.
+It clones, branches, commits, pushes, opens pull requests and issues, reviews and comments. On your
+own and your organizations' repos it just does it; it asks first before acting in someone else's
+repo, changing a repo's settings, secrets or access, deleting a repo, or force-pushing or deleting a
+main branch. Longer work runs as a task in its own checkout, and when it finishes the agent replies
+once with what changed and the pull request. Commits name you as the author and credit the agent
+on a `Co-authored-by` line. Say "commit as yourself" (pull requests and comments still show as you) or "don't credit yourself" and it remembers.
+Teammates' chats and shared rooms still get no shell: what they ask for comes to you.
+
+To try pull requests in a browser on Ubuntu 23.10 or later, run `t3 browser setup` once as root.
+
 ## Check-ins and the weekly brief
 
 A check-in is an agent's regular round: it looks over what needs attention and tells you what

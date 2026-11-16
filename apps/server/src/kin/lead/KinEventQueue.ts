@@ -72,13 +72,14 @@ const SteerInput = Schema.Struct({
 });
 
 /**
- * An event's lane, the chat a wake-up answers: a message's or tap's chat, a worker's or teammate
- * task's asking chat, else the lead's direct chat with its owner. A due deferral from another chat
+ * An event's lane, the chat a wake-up answers: a message's or tap's chat, a worker's, teammate
+ * task's or finished delegated task's asking chat, else the lead's direct chat with its owner. A due deferral from another chat
  * gets its own lane so its level never mixes with owner-chat events. From stored rows, never model text.
  */
 const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
   THEN json_extract(e.json, '$.chatId')
-  WHEN e.tag IN ('worker.report', 'record.changed') AND json_extract(e.json, '$.chatId') IS NOT NULL
+  WHEN e.tag IN ('worker.report', 'record.changed', 'task.finished')
+    AND json_extract(e.json, '$.chatId') IS NOT NULL
   THEN json_extract(e.json, '$.chatId')
   WHEN e.tag IN ('deferral.due', 'worker.report') AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
   THEN 'origin:' || json_extract(e.json, '$.origin.agentId') || ':' || json_extract(e.json, '$.origin.chatId')
@@ -302,6 +303,7 @@ const make = Effect.gen(function* () {
             case "deferral.due":
             case "action.resolved":
             case "worker.report":
+            case "task.finished":
               priority = "P1";
               break;
             case "routine":
@@ -420,8 +422,9 @@ const make = Effect.gen(function* () {
       SELECT
         MIN(CASE WHEN COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS first_at,
         MAX(CASE WHEN COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS last_at,
-        MIN(CASE WHEN priority = 'P0' AND COALESCE(not_before, queued_at) <= ${now}
-          THEN queued_at END) AS urgent_at,
+        -- A finished task's run is already going: it can't wait for a batch.
+        MIN(CASE WHEN (priority = 'P0' OR tag = 'task.finished')
+          AND COALESCE(not_before, queued_at) <= ${now} THEN queued_at END) AS urgent_at,
         MIN(CASE WHEN not_before > ${now} THEN not_before END) AS deferred_at
       FROM kin_events
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND state = 'queued'
@@ -809,6 +812,10 @@ const make = Effect.gen(function* () {
               OR EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_turns t
                 WHERE t.thread_id = l.thread_id AND t.completed_at IS NULL)
             )
+            -- The run T3 started for a finished task waits for the wake-up that takes it over.
+            AND NOT EXISTS (SELECT 1 FROM kin_events f WHERE f.org_id = l.org_id
+              AND f.agent_id = l.agent_id AND f.tag = 'task.finished' AND f.state = 'queued'
+              AND json_extract(f.json, '$.threadId') = l.thread_id)
           )
         GROUP BY e.agent_id ORDER BY e.agent_id`;
       const candidates = yield* Effect.forEach(rows, (row) =>

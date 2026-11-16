@@ -13,8 +13,8 @@ import { ownerLevelPeople, ownerLevelSql } from "../people/KinAccess.ts";
 export type TurnAudience = "owner_only" | "shared";
 
 /**
- * Events that answer in the chat they name: a worker report names the chat its work was asked in,
- * and a teammate's task their direct chat with the lead.
+ * Events that answer in the chat they name: a worker report or finished task names the chat its
+ * work was asked in, and a teammate's task their direct chat with the lead.
  */
 export const CHAT_ANSWER_TAGS = [
   "chat.message",
@@ -22,6 +22,7 @@ export const CHAT_ANSWER_TAGS = [
   "chat.reaction",
   "worker.report",
   "record.changed",
+  "task.finished",
 ];
 
 /**
@@ -108,7 +109,9 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
           return "shared" as const;
         chats.add(event.chatId);
       } else if (
-        (event.tag === "worker.report" || event.tag === "record.changed") &&
+        (event.tag === "worker.report" ||
+          event.tag === "record.changed" ||
+          event.tag === "task.finished") &&
         event.chatId !== null
       ) {
         // A report answers in the chat its worker was asked for in, read by everyone there.
