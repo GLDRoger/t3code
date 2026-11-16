@@ -71,6 +71,7 @@ import {
 } from "./classify.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
 import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
+import { flagTextQuestion } from "../questions/openQuestions.ts";
 
 export { rescueMessageId };
 /** No turn-item or provider-turn update for this long shows the owner a stall and Stop. */
@@ -1023,6 +1024,11 @@ const make = Effect.gen(function* () {
           }
           yield* flushOverflow(wake);
           yield* keptPromises(wake);
+          // A reply ending on a question to the one person here: stored as open, for every agent.
+          yield* flagTextQuestion({ ...wake, chatId: wake.lane.chatId }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.catchCause((cause) => Effect.logWarning("Kin question check failed", { cause })),
+          );
           return yield* answered(wake);
         }),
       );
