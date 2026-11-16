@@ -700,8 +700,10 @@ const make = Effect.gen(function* () {
       resolution: null,
     };
     if (yield* repo.addWaiting(item)) {
-      yield* hub.publish({ type: "waiting.updated", orgId: identity.orgId, item });
-      return item;
+      // As stored, so a card's row has its question.
+      const added = Option.getOrElse(yield* repo.getWaiting(item), () => item);
+      yield* hub.publish({ type: "waiting.updated", orgId: identity.orgId, item: added });
+      return added;
     }
     const existing = (yield* repo.listOpenWaiting({
       orgId: identity.orgId,

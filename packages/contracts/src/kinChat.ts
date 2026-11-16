@@ -483,6 +483,8 @@ export const KinWaitingItem = Schema.Struct({
   createdAt: IsoDateTime,
   resolvedAt: Schema.NullOr(IsoDateTime),
   resolution: Schema.NullOr(KinTrimmedText),
+  /** The card's question, when a card waits; absent from servers without it. */
+  question: Schema.optional(Schema.NullOr(KinTrimmedText)),
 });
 export type KinWaitingItem = typeof KinWaitingItem.Type;
 export const KinChatSummary = Schema.Struct({
