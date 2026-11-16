@@ -2371,6 +2371,15 @@ it.effect(
         ],
       );
       assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-3" })).reason);
+      // Model tasks: handed back on the screen to the person who gave it, that person is told.
+      yield* OwnerWork.handBack([mate], { orgId, key: "W-2", note: "Invented: blocked on design" });
+      assert.deepStrictEqual(
+        (yield* sql<{ body: string }>`SELECT body FROM kin_messages
+          WHERE chat_id = 'lead-chat' AND message_id LIKE 'kin-assign-%' ORDER BY seq`).map(
+          (row) => row.body,
+        ),
+        ["Mate handed W-2 Invented: fix the login screen back: Invented: blocked on design."],
+      );
       // Run 4: a meeting already held is recorded, one to come is attended: neither is a task.
       yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
       const meetings = [];
@@ -2530,5 +2539,26 @@ it.effect(
         notes: "Invented: repo is invented/app",
       });
       assert.isUndefined((yield* give).tasks[0]!.refused);
+      // Model tasks: given to someone else meanwhile, it still doesn't bounce back to the agent
+      // that handed it back before, nothing on it having changed since.
+      yield* bounce;
+      yield* LeadWork.assign(scope, {
+        sourceEventId: "ask-event",
+        tasks: [{ key, to: "Mate", reason: "Invented: has time" }],
+      });
+      yield* OwnerWork.handBack([mate], { orgId, key, note: "Invented: not my area" });
+      assert.include((yield* give).tasks[0]!.refused, "no repo yet");
+      // Model people: someone removed from the company is given nothing.
+      yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${mateId}`;
+      yield* LeadWork.update(scope, {
+        key,
+        sourceEventId: "ask-event",
+        notes: "Invented: design is ready",
+      });
+      const toGone = yield* LeadWork.assign(scope, {
+        sourceEventId: "ask-event",
+        tasks: [{ key, to: "Mate", reason: "Invented: has time" }],
+      });
+      assert.include(toGone.tasks[0]!.refused, "No one called Mate is in the company");
     }).pipe(Effect.provide(layer)),
 );
