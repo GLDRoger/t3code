@@ -10,6 +10,7 @@ import { Pressable, useWindowDimensions, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import type { FilePreviewSource } from "../../../components/ui/FilePreviewModal";
+import { FilePreviewGallery } from "../../../components/ui/FilePreviewGallery";
 import { Chip } from "../../../components/ui/Chip";
 import * as Dialog from "../../../components/ui/Dialog";
 import * as Haptics from "expo-haptics";
@@ -46,6 +47,7 @@ import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { MessageAttachmentList } from "../../threads/ThreadFeed";
+import { attachmentImageGallery } from "../../threads/messageImageGallery";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 import { KinAvatar } from "./KinAvatar";
 import { KinDocRefs } from "./KinDocRefs";
@@ -84,13 +86,21 @@ function KinAttachments(props: {
 }) {
   return (
     <View className="w-[280px] max-w-full">
-      <MessageAttachmentList
-        {...(props.unposted === true ? { unposted: true } : {})}
-        attachments={props.attachments}
-        environmentId={props.environmentId}
-        onPressPreview={props.onPressPreview}
-        onPlaybackStart={NO_PLAYBACK}
-      />
+      <FilePreviewGallery
+        value={
+          props.unposted === true
+            ? []
+            : attachmentImageGallery(props.attachments, props.environmentId)
+        }
+      >
+        <MessageAttachmentList
+          {...(props.unposted === true ? { unposted: true } : {})}
+          attachments={props.attachments}
+          environmentId={props.environmentId}
+          onPressPreview={props.onPressPreview}
+          onPlaybackStart={NO_PLAYBACK}
+        />
+      </FilePreviewGallery>
     </View>
   );
 }
