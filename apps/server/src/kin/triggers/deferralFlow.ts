@@ -36,7 +36,7 @@ import { workersConfigured } from "../lead/workerEnvironment.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { readGithubLinks } from "./deferralGithub.ts";
-import { cardChatFor } from "./deferralOrigin.ts";
+import { askersChat, cardChatFor } from "./deferralOrigin.ts";
 import {
   DeferralSnapshot,
   GRACE_MS,
@@ -170,6 +170,8 @@ const make = Effect.gen(function* () {
       | undefined;
     readonly leadName: string | undefined;
     readonly fallbackChat: KinChatId | null;
+    /** Set when someone set it in their own chat with the lead: Kin reminds them there. */
+    readonly askersChat: KinChatId | undefined;
   }) {
     const { orgId, itemId, title, fire, fireAt, now } = input;
     const card = {
@@ -179,7 +181,23 @@ const make = Effect.gen(function* () {
       status: "due",
     } as const satisfies KinReminderCard;
     const widgetId = KinWidgetId.make(kinReminderWidgetId(orgId, itemId, fireAt));
-    const fallbackBody = `Reminder: ${title}.${lateNote(fireAt, now, input.timeZone)} (${input.leadName ?? "Your agent"} couldn't write this one, so Kin sent it.)`;
+    const reminder = `Reminder: ${title}.${lateNote(fireAt, now, input.timeZone)}`;
+    const fallbackBody = `${reminder} (${input.leadName ?? "Your agent"} couldn't write this one, so Kin sent it.)`;
+    // The lead's wake-up answers in its owner's chat, so a teammate's own reminder is Kin's line.
+    if (input.askersChat !== undefined) {
+      yield* deliveries.fallback({
+        orgId,
+        eventId: KinEventId.make(`reminder-own-${fire.fireId}`),
+        kind: "reminder",
+        agentId: KinAgentId.make("kin"),
+        chatId: input.askersChat,
+        widget: { widgetId, type: "reminder", state: card },
+        fallbackBody: reminder,
+        deadlineAt: now,
+        forChat: true,
+      });
+      return;
+    }
     if (input.lead !== undefined) {
       const dedupeKey = fire.fireId;
       const eventId = KinEventId.make(`reminder_${hex(`${orgId.length}:${orgId}${dedupeKey}`)}`);
@@ -325,7 +343,11 @@ const make = Effect.gen(function* () {
       if (!(yield* workersConfigured)) gates.push("workers can't launch yet");
     }
     // A reminder is the lead's to write when a wake-up can run; budget is read outside the writer.
-    const reminderLead = onDue === "remind" ? yield* deferralLead(sql, orgId, item) : undefined;
+    const ownChat = onDue === "remind" ? yield* askersChat(sql, orgId, item?.chat) : undefined;
+    const reminderLead =
+      onDue === "remind" && ownChat === undefined
+        ? yield* deferralLead(sql, orgId, item)
+        : undefined;
     const reminderAdmitted =
       reminderLead === undefined
         ? false
@@ -457,6 +479,7 @@ const make = Effect.gen(function* () {
             lead: reminderAdmitted ? reminderLead : undefined,
             leadName: reminderLead?.name,
             fallbackChat: reminderLead?.ownerChatId ?? (yield* cardChat(orgId, item)),
+            askersChat: ownChat,
           });
           yield* setState("reminded");
         }

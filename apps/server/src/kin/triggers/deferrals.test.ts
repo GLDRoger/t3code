@@ -933,6 +933,50 @@ it.effect("a reminder set privately in a group later shared fires into the owner
   }).pipe(Effect.provide(layerFor([remind])));
 });
 
+it.effect("a teammate's own reminder comes to them in their chat, never the owner's", () => {
+  const remind = makeDeferral("def-t", {
+    on_due: "remind",
+    chat: KinChatId.make("teammate-direct"),
+  });
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Repository.KinChatRepository;
+    const lead = KinAgentId.make(`lead-${orgId}`);
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
+      VALUES ('teammate-direct', ${orgId}, 'direct', 0, '1970-01-01T00:00:00.000Z',
+        ${`teammate:${lead}`})`;
+    for (const [memberId, principal] of [
+      ["teammate-in-direct", { _tag: "person", personId: KinPersonId.make("teammate") }],
+      ["lead-in-direct", { _tag: "agent", agentId: lead }],
+    ] as const)
+      yield* repo.addMember({
+        orgId,
+        chatId: KinChatId.make("teammate-direct"),
+        memberId: KinMemberId.make(memberId),
+        principal,
+        role: "member",
+        joinedAt: "1970-01-01T00:00:00.000Z",
+        leftAt: null,
+        mutedUntil: null,
+      });
+    yield* (yield* TriggerService.KinTriggerService).syncItem(remind);
+    yield* tick(dueAt);
+
+    const card = yield* reminderCard("def-t", dueAt);
+    assert.equal(card.chatId, "teammate-direct");
+    assert.notProperty(card.state, "fallback");
+    const lines = yield* sql<{ chatId: string; body: string }>`SELECT chat_id AS "chatId", body
+      FROM kin_messages WHERE org_id = ${orgId} AND body LIKE 'Reminder:%' ORDER BY seq`;
+    assert.deepStrictEqual(lines, [{ chatId: "teammate-direct", body: "Reminder: def-t." }]);
+    const woken = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
+      AND json_extract(json, '$.subject.type') = 'reminder'`;
+    assert.lengthOf(woken, 0);
+  }).pipe(Effect.provide(layerFor([remind])));
+});
+
 it.effect("a reminder whose wake-up fails falls back to Kin's line, marked as a fallback", () => {
   const remind = makeDeferral("def-r", { on_due: "remind" });
   return Effect.gen(function* () {

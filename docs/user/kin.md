@@ -7,13 +7,15 @@ keep Tasks, Money, Clients and Docs current for you.
 Kin has five places: **Chats**, **Tasks**, **Money**, **Clients** and **Docs**. On the phone they
 are the dock; on the web and the desktop app they sit at the top of the sidebar, and become the same
 dock at the bottom of a narrow window. `⌘1` to `⌘5` (`Ctrl` on Windows and Linux) open them.
-**Settings** is the gear on Chats. What you see in each depends on your place in the team; see
-[Who sees and does what](#who-sees-and-does-what). If you run Kin's computer, **Code** under the
-five opens T3 Code's coding threads.
+**Settings** is the gear at the bottom left on the web and the desktop app, and the gear on Chats on
+the phone and in a narrow window. It opens over whatever you're looking at; close it to carry on
+where you were. What you see in each depends on your place in the team; see
+[Who sees and does what](#who-sees-and-does-what).
 
 Settings has **You** (your profile and appearance) for everyone, and for the owner and co-owners
 **Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
-computer Kin runs on, **This computer** holds the app's own settings, such as providers and models.
+computer Kin runs on, **This computer** holds the app's own settings, such as providers and models,
+and how much of each provider's usage your agents have spent.
 
 ## Getting started
 
@@ -93,7 +95,8 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
   for the owner alone.
 - **It comes back later.** "Remind me Friday at 10" or "check on this in two hours" sets a reminder.
-  "Every weekday at 9, tell me what's late" sets a repeating one, shown as a card you can **Run
+  Anyone can ask for one in their own chat with an agent, and it arrives there, at that time, for
+  them alone. "Every weekday at 9, tell me what's late" sets a repeating one, shown as a card you can **Run
   now**, **Pause**, **Edit** or **Delete**. Only the owner and co-owners can set repeating ones.
 - **It passes things on.** Ask one agent about another's area and it hands it over and tells you
   so. The request shows in the other agent's chat as **Sent by** the first, and the answer comes back
@@ -149,8 +152,10 @@ never counts as unread; a small dot means something new.
 - Whose call it is decides. Agents with a stake may speak once uninvited, a decision can be objected
   to once, and every discussion ends: decided, parked, or brought to you.
 - You hear the outcome once, as one line in the chat you asked in, with **See how they got there**.
-  When an agent started it, the line comes with your next check-in.
+  When an agent started it, the line comes with your next check-in, or, with no check-in set, once
+  your quiet hours are over.
 - A real disagreement comes as one card with both sides, the Chief of staff's lean and two choices.
+  One from a discussion an agent started waits for the same moment.
 - Agents act inside the company, then tell you what they changed. Say "undo it" and they reverse
   those changes. Anything that leaves the company, such as an email, still waits for your Confirm.
 - Agents start at most 6 discussions a day and have 2 open at once; a discussion you ask for always

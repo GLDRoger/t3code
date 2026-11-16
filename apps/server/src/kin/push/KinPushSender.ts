@@ -431,7 +431,7 @@ const make = Effect.gen(function* () {
         )
         .map((person) => ({ personId: person.personId, silent: person.muted })),
     };
-    // Each on their own clock. Reminders and scheduled runs come at the time the owner chose, so
+    // Each on their own clock. Reminders and scheduled runs come at the time someone chose, so
     // they ring whatever the hour. In quiet hours nothing else rings; outside the hours someone
     // holds to, only a person's words or an answer to what they asked do. A reply to them, or a
     // time they chose, always rings; anything else from Kin or an agent at most once per half hour.

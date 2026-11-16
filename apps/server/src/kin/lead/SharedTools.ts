@@ -5,7 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
-import { aborted, askedIn, effectiveAudience, turnChat } from "./Audience.ts";
+import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 
 type Turn = {
@@ -37,6 +37,13 @@ const inTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
 const inAskedChat: Condition = Effect.fnUntraced(function* (turn, args) {
   const chatId = field(args, "chatId");
   return typeof chatId === "string" && (yield* askedIn(turn, chatId));
+});
+
+/** A reminder for whoever asked, in their own chat with this agent: it never messages anyone else. */
+const ownReminder: Condition = Effect.fnUntraced(function* (turn, args) {
+  const chatId = field(args, "chatId");
+  if (field(args, "onDue") !== "remind" || field(args, "replaces") !== undefined) return false;
+  return typeof chatId === "string" && (yield* askersDirectChat(turn, chatId));
 });
 
 /** The turn answers in the company chat: what it makes is shared with the whole team. */
@@ -156,7 +163,7 @@ export const SHARED_TOOLS = {
   kin_journal: "team_memory",
   // Who may know an item is the owner's to decide.
   memory_label: "refused",
-  kin_defer: "refused",
+  kin_defer: ownReminder,
   kin_schedule: "refused",
   kin_cancel: "refused",
   kin_github_repos: "refused",
@@ -220,6 +227,17 @@ export const SHARED_TOOLS = {
   // A shell's worth of reach as the owner, on his GitHub login (`AgentSession`).
   ...t3ToolsRefused,
 } satisfies Record<string, SharedToolPolicy>;
+
+/**
+ * Whether a shared thread lists `name`. Its turns are never owner-only (`effectiveAudience`), so a
+ * tool refused there, or one without a line, can't succeed in any of them.
+ */
+export const listedOnSharedThread = (name: string) => {
+  const policy: SharedToolPolicy | undefined = Object.hasOwn(SHARED_TOOLS, name)
+    ? SHARED_TOOLS[name as keyof typeof SHARED_TOOLS]
+    : undefined;
+  return policy !== undefined && policy !== "refused";
+};
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */
 export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(

@@ -33,6 +33,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import {
   SHARED_REFUSAL,
   aborted,
+  askersDirectChat,
   effectiveAudience,
   turnChat,
   type TurnAudience,
@@ -446,12 +447,27 @@ const make = Effect.gen(function* () {
     return { ctx, audience: yield* effectiveAudience(ctx).pipe(provideSql) };
   });
   /**
-   * Reminders, scheduled tasks and who may know an item are the owner's: a turn someone else
+   * Scheduled tasks, cancellations and who may know an item are the owner's: a turn someone else
    * reads changes none of them.
    */
   const notes = Effect.fn("LeadMemory.notes")(function* (scope: McpInvocationScope) {
     const { ctx, audience } = yield* turn(scope);
     if (audience !== "owner_only") return yield* invalid(SHARED_REFUSAL);
+    return ctx;
+  });
+  /** A turn someone else reads sets only its asker's own reminder, in their chat with this lead. */
+  const reminderTurn = Effect.fn("LeadMemory.reminderTurn")(function* (
+    scope: McpInvocationScope,
+    input: typeof DeferInput.Type,
+  ) {
+    const { ctx, audience } = yield* turn(scope);
+    if (audience === "owner_only") return ctx;
+    if (
+      input.onDue !== "remind" ||
+      input.replaces !== undefined ||
+      !(yield* askersDirectChat(ctx, input.chatId).pipe(provideSql))
+    )
+      return yield* invalid(SHARED_REFUSAL);
     return ctx;
   });
   /**
@@ -1038,13 +1054,13 @@ const make = Effect.gen(function* () {
       );
     }, Effect.mapError(failure)),
     defer: Effect.fn("LeadMemory.defer")(function* (scope, input) {
-      const ctx = yield* notes(scope);
+      const ctx = yield* reminderTurn(scope, input);
       return yield* locked(
         ctx.orgId,
         ctx.agentId,
         Effect.gen(function* () {
           // Again under the lock: a join may have aborted the turn since.
-          const ctx = yield* notes(scope);
+          const ctx = yield* reminderTurn(scope, input);
           yield* checkSource(ctx, input.sourceEventId);
           const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
             input.sourceEventId,
@@ -1092,7 +1108,7 @@ const make = Effect.gen(function* () {
             what: input.what,
             chat: input.chatId,
             source_event: input.sourceEventId,
-            // Reminders and scheduled tasks are the owner's own.
+            // Out of the team's memory, whoever set it.
             sensitive: true,
           };
           yield* receipt(

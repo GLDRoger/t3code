@@ -671,19 +671,18 @@ features:
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof: [packages/client-runtime/src/kin/kinLists.test.ts]
 
-  # ── Settings (the gear on Chats) ───────────────────────────────────────────────────────────
+  # ── Settings (the gear at the bottom left on web, on Chats on the phone) ──────────────────
   - id: kin-settings
     name: Kin settings
     tab: settings
     web: [settings]
     phone: [SettingsKin]
-    roles: { owner: both, co_owner: both, lead: phone, member: phone }
+    roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
-      On web the gear shows only to the owner level in a chat-only session; the owner's app has
-      Settings pages instead. A lead's or member's phone settings are their profile (on web, the
-      name in the sidebar), this phone's notifications, appearance and leaving the team: the
-      browser and the web app already hold those, so web adds no entry. A teammate who follows
-      the link is told these settings are the owner's.
+      On web Settings is a modal over the open page (`?settings=<section>`), from the gear at the
+      bottom left of the sidebar, or on Chats in a narrow window. Everyone has You; the owner
+      level adds Company; the owner on Kin's computer adds This computer. A section someone can't
+      open shows their profile.
     proof: [.agents/skills/verify-kin/scripts/checkin-new-agent.sh]
 
   - id: company
@@ -717,7 +716,7 @@ features:
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     note: >-
-      Inside the app's Settings dialog the form opens as a dialog; in Kin's own settings, a sheet.
+      Settings is a modal, so on web the form opens as a dialog over it; on the phone, a sheet.
       A check-in tells only what the owner hasn't been told; on the weekly brief's day the morning
       check-in is the brief; one in quiet hours (22:00 to 07:00 unless set) waits for their end.
     proof:
@@ -857,8 +856,8 @@ features:
       - packages/client-runtime/src/kin/kinJoin.test.ts
 
 unlisted:
-  "web:team": Old address; opens Settings → Team.
-  "web:memory": Old address; opens Settings → Memory.
+  "web:team": Old address; opens the Settings modal on Team.
+  "web:memory": Old address; opens the Settings modal on Memory.
   "web:settings/approvals": The app's old address; opens Kin's Settings → Approvals.
   "web:settings/company": The app's old address; opens Kin's Settings → Company details.
   "web:settings/check-ins": The app's old address; opens Kin's Settings → Check-ins.

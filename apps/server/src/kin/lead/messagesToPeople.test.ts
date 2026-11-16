@@ -45,6 +45,8 @@ import { LeadMemory } from "./LeadMemory.ts";
 import { handlers as leadHandlers } from "./mcp/handlers.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { SHARED_REFUSAL } from "./Audience.ts";
+import { listedOnSharedThread } from "./SharedTools.ts";
 import { KinWorkers } from "./Workers.ts";
 
 const chief = KinAgentId.make("chief");
@@ -80,7 +82,10 @@ const kinServices = Layer.unwrap(
       Handoff.layer,
       Team.layer,
       Layer.mock(KinWorkers)({}),
-      Layer.mock(LeadMemory)({}),
+      Layer.mock(LeadMemory)({
+        defer: (_scope, input) =>
+          Effect.succeed({ itemId: KinMemoryItemId.make(`def-${input.what}`) }),
+      }),
       repoReadsOff,
       pullRequestCareOff,
     ).pipe(Layer.provideMerge(Layer.succeedContext(services)));
@@ -623,6 +628,75 @@ it.effect("a visual in a teammate's chat goes only when everyone there may see i
       const hidden = yield* visual("This month", "47200 billed");
       assert.isFalse(hidden.ok);
       assert.match(String(hidden.value.message), /not everyone in this chat may see/);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a teammate sets a reminder for themselves, in their own chat, and nothing more", () =>
+  Effect.andThen(
+    TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
+    Effect.gen(function* () {
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      const identity = Context.get(services, KinIdentity);
+      const chats = Context.get(services, KinChatService);
+      const sql = yield* SqlClient.SqlClient;
+      yield* pairSession(AuthSessionId.make("owner"));
+      const [resolved] = yield* identity.resolve({
+        sessionId: AuthSessionId.make("owner"),
+        subject: "browser",
+        method: "browser-session-cookie",
+        scopes: AuthStandardClientScopes,
+      });
+      const owner = resolved!;
+      const { orgId } = owner;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access, time_zone)
+        VALUES ('zoya', ${orgId}, 'zoya', 'Zoya Sheikh', ${at}, 'member', 'UTC')`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 'lead', ${owner.personId}, ${at})`;
+      yield* identity.registerAgentThread({ orgId, agentId: chief, threadId });
+      const ownerChat = (yield* chats.createDirect(owner, { orgId, agentId: chief })).chatId;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+          worker_projects_json, owner_chat_id, domain)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 0, ${threadId}, '{}', '[]', ${ownerChat},
+          'chief-of-staff')`;
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, ${chief}, ${owner.personId}, 0)`;
+      const zoya = { _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") };
+      const zoyasChat = (yield* chats.createDirect(zoya, { orgId, agentId: chief })).chatId;
+      const message = yield* chats.send(zoya, {
+        chatId: zoyasChat,
+        body: "Remind me Friday at 10 to send the Lumen mockups",
+        clientMessageId: "remind-friday",
+      });
+      const asked = `event:${yield* startAgentWakeup({ orgId, agentId: chief, threadId, message })}`;
+      const defer = (args: Record<string, unknown>) =>
+        call("kin_defer", {
+          what: "Send the Lumen mockups",
+          due: "2026-11-20T10:00:00+00:00",
+          onDue: "remind",
+          chatId: zoyasChat,
+          sourceEventId: asked,
+          ...args,
+        });
+      // Listed on her turns, and hers, in her chat with the agent: set.
+      assert.isTrue(listedOnSharedThread("kin_defer"));
+      const set = yield* defer({});
+      assert.isTrue(set.ok, JSON.stringify(set.value));
+      assert.strictEqual(set.value.itemId, "def-Send the Lumen mockups");
+      // Anything that would message someone else or start work: refused.
+      for (const other of [
+        { chatId: ownerChat },
+        { onDue: "start" },
+        { onDue: "chase" },
+        { onDue: "ask" },
+        { replaces: "def-the-owners" },
+      ]) {
+        const refused = yield* defer({ ...other, what: `Other ${JSON.stringify(other)}` }).pipe(
+          Effect.flip,
+        );
+        assert.strictEqual(refused.message, SHARED_REFUSAL, JSON.stringify(other));
+      }
     }).pipe(Effect.provide(layer)),
   ),
 );

@@ -162,3 +162,17 @@ export const cardChatFor = Effect.fn("Deferrals.cardChatFor")(function* (
   if (row === undefined) return null;
   return row.shared === 1 ? fallback : KinChatId.make(chatId);
 });
+
+/** Someone's own direct chat with an agent, not a lead's owner chat: their reminders go back there. */
+export const askersChat = Effect.fn("Deferrals.askersChat")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  chatId: string | undefined,
+) {
+  if (chatId === undefined) return undefined;
+  const [row] = yield* sql`SELECT 1 FROM kin_chats c WHERE c.org_id = ${orgId}
+    AND c.chat_id = ${chatId} AND c.kind = 'direct' AND c.archived_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM kin_leads l WHERE l.org_id = c.org_id
+      AND l.owner_chat_id = c.chat_id) ORDER BY c.chat_id`;
+  return row === undefined ? undefined : KinChatId.make(chatId);
+});
