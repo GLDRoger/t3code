@@ -124,8 +124,10 @@ never counts as unread; a small dot means something new.
 - Whose call it is decides. Agents with a stake may speak once uninvited, a decision can be objected
   to once, and every discussion ends: decided, parked, or brought to you.
 - You hear the outcome once, as one line in the chat you asked in, with **See how they got there**.
-  When an agent started it, the line comes with your next check-in.
+  When an agent started it, the line comes with your next check-in, or, with no check-in set, once
+  your quiet hours are over.
 - A real disagreement comes as one card with both sides, the Chief of staff's lean and two choices.
+  One from a discussion an agent started waits for the same moment.
 - Agents act inside the company, then tell you what they changed. Say "undo it" and they reverse
   those changes. Anything that leaves the company, such as an email, still waits for your Confirm.
 - Agents start at most 6 discussions a day and have 2 open at once; a discussion you ask for always
