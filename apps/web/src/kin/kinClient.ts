@@ -1,5 +1,8 @@
 import { EnvironmentSupervisor } from "@t3tools/client-runtime/connection";
-import { createKinRpcCommand } from "@t3tools/client-runtime/kin/kinAccess";
+import {
+  createKinQueryAtomFamily,
+  createKinRpcCommand,
+} from "@t3tools/client-runtime/kin/kinAccess";
 import {
   KIN_CHAT_LABEL,
   KIN_INBOX_LABEL,
@@ -355,7 +358,7 @@ const docDiffRead = createKinRpcCommand(connectionAtomRuntime, {
 });
 const readDocDiff = guardedRead(docDiffRead);
 
-/** A read refreshed on a new session and whenever the host says its topic changed. */
+/** A read refreshed whenever the host says its topic changed; a reconnect resumes it. */
 const kinRefreshOn = createKinRefreshTriggers(connectionAtomRuntime);
 const syncKinOwnerTimeZone = createKinOwnerTimeZoneSync(connectionAtomRuntime);
 const readOrgs = guardedRead(orgsRead);
@@ -369,7 +372,7 @@ const knownKinHosts = new Set<EnvironmentId>();
 const KIN_HISTORY_PAGE_TIMEOUT = Duration.seconds(20);
 
 /** Who is in a chat, by name: a group's authors, mentions and details. */
-const chatMembers = createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+const chatMembers = createKinQueryAtomFamily(connectionAtomRuntime, {
   label: "kin:chat-members",
   execute: Effect.fn("KinWebClient.chatMembers")(function* (input: KinChatMembersInput) {
     return yield* readMembers(input);
@@ -405,7 +408,7 @@ const chatStream = makeKinChatStream(
 );
 
 /** The viewer's own leads, and the leads of others they may message. */
-const leads = createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+const leads = createKinQueryAtomFamily(connectionAtomRuntime, {
   label: "kin:leads",
   execute: Effect.fn("KinWebClient.leads")(function* (input: KinLeadsListInput) {
     return yield* readLeads(input);
@@ -432,7 +435,7 @@ const rereadLeadsOnChange = onKinDirectChatsChange((environmentId, orgIds) => {
 
 /** Web's Kin reads and commands. Mobile's twin adds the device cache and push. */
 export const kinClient = {
-  orgs: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  orgs: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:orgs",
     execute: Effect.fn("KinWebClient.orgs")(function* (input: KinOrgsListInput) {
       const environmentId = yield* currentEnvironmentId;
@@ -495,7 +498,7 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
   }),
   /** One agent's whole page, for owner-level people. */
-  agentPage: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  agentPage: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:agent-page",
     execute: Effect.fn("KinWebClient.agentPage")(function* (input: KinAgentPageInput) {
       return yield* readAgentPage(input);
@@ -503,7 +506,7 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("leads"),
   }),
-  agentDefaults: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  agentDefaults: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:agent-defaults",
     execute: Effect.fn("KinWebClient.agentDefaults")(function* (input: KinAgentDefaultsInput) {
       return yield* readAgentDefaults(input);
@@ -532,7 +535,7 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
   }),
   /** Who besides the owner may message one of the owner's leads. */
-  leadAccess: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  leadAccess: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:lead-access",
     execute: Effect.fn("KinWebClient.leadAccess")(function* (input: KinLeadAccessInput) {
       return yield* readLeadAccess(input);
@@ -541,7 +544,7 @@ export const kinClient = {
     refreshTrigger: kinRefreshOn("leads"),
   }),
   /** The owner's connections to outside services, live on the host's `connections` topic. */
-  connections: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  connections: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:connections",
     execute: Effect.fn("KinWebClient.connections")(function* (input: KinConnectionsInput) {
       return yield* readConnections(input);
@@ -549,7 +552,7 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("connections"),
   }),
-  connection: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  connection: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:connection",
     execute: Effect.fn("KinWebClient.connection")(function* (input: KinConnectionRef) {
       return yield* readConnection(input);
@@ -557,7 +560,7 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("connections"),
   }),
-  connectionCalls: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  connectionCalls: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:connection-calls",
     execute: Effect.fn("KinWebClient.connectionCalls")(function* (input: KinConnectionCallsInput) {
       return yield* readConnectionCalls(input);
@@ -566,7 +569,7 @@ export const kinClient = {
     refreshTrigger: kinRefreshOn("connections"),
   }),
   /** The owner's own GitHub login on the host; live on the `connections` topic. */
-  github: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  github: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:github",
     execute: Effect.fn("KinWebClient.github")(function* (input: KinGitHubInput) {
       return yield* readGitHub(input);
@@ -602,7 +605,7 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:github` },
   }),
   /** The company's and clients' social accounts; owner-level only. */
-  social: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  social: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:social",
     execute: Effect.fn("KinWebClient.social")(function* (input: KinSocialInput) {
       return yield* readSocial(input);
@@ -696,7 +699,7 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
   }),
   /** The outside hosts the owner lets visuals load from. Owner only. */
-  visualHosts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  visualHosts: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:visual-hosts",
     execute: Effect.fn("KinWebClient.visualHosts")(function* (input: KinVisualHostsInput) {
       return yield* readVisualHosts(input);
@@ -726,7 +729,7 @@ export const kinClient = {
   }),
   chatMembers,
   /** The people of the org, for choosing who joins a group or may message a lead. */
-  people: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  people: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:people",
     execute: Effect.fn("KinWebClient.people")(function* (input: KinPeopleListInput) {
       return yield* readPeople(input);
@@ -735,7 +738,7 @@ export const kinClient = {
     refreshTrigger: kinRefreshOn("people"),
   }),
   /** Everyone's profile; any person of the org reads them. */
-  profiles: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  profiles: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:profiles",
     execute: Effect.fn("KinWebClient.profiles")(function* (input: KinPeopleListInput) {
       return yield* readProfiles(input);
@@ -754,7 +757,7 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
   }),
   /** The invite links nobody has opened yet. The owner's Team page reads them. */
-  invites: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  invites: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:invites",
     execute: Effect.fn("KinWebClient.invites")(function* (input: KinPeopleListInput) {
       return yield* readInvites(input);
@@ -943,7 +946,7 @@ export const kinClient = {
     },
   }),
   /** What the owner's leads remember, and who may know each thing. */
-  memory: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  memory: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:memory",
     execute: Effect.fn("KinWebClient.memory")(function* (input: KinMemoryListInput) {
       return yield* readMemory(input);
@@ -972,7 +975,7 @@ export const kinClient = {
   }),
   /** The owner's daily limit. The host announces no change to it, so a set re-reads it here. */
   /** What needs attention, handled ones included; read again whenever the host's facts move. */
-  attention: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  attention: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:pulse",
     execute: Effect.fn("KinWebClient.attention")(function* (input: KinPulseListInput) {
       return yield* readPulse({ ...input, acceptSenses: KIN_PULSE_LATER_SENSES });
@@ -986,7 +989,7 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => input.factKey },
   }),
   /** The company's goals with progress; Work's changes re-read it too (`useKinGoals`). */
-  goals: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  goals: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:goals",
     execute: Effect.fn("KinWebClient.goals")(function* (input: KinGoalsInput) {
       return yield* readGoals(input);
@@ -1017,7 +1020,7 @@ export const kinClient = {
     tag: "kin.checkIns.act",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.scheduleId },
   }),
-  budget: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  budget: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:budget",
     execute: Effect.fn("KinWebClient.budget")(function* (input: KinBudgetGetInput) {
       return yield* readBudget(input);
@@ -1036,18 +1039,17 @@ export const kinClient = {
   /** One page of a filter; the list's controller decides when. */
   workList: workListRead,
   /** One task with its links and history. */
-  workItem: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workItem: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:item",
     execute: Effect.fn("KinWebClient.workItem")(function* (input: KinWorkGetInput) {
       return yield* readWorkItem(input);
     }),
     staleTimeMs: 30_000,
-    // Read again on reconnecting; between those, the screen's watch reads only when this task changed.
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    // Reads again when the host can't say what changed; the screen's watch follows named changes.
+    refreshTrigger: kinWorkRefreshOn([]),
   }),
   /** Where the owner's days begin and end, so an all-day due date reads as the day it was set. */
-  workZone: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workZone: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:zone",
     execute: Effect.fn("KinWebClient.workZone")(function* (input: KinOwnerTimeZoneGetInput) {
       return yield* readWorkZone(input);
@@ -1067,28 +1069,27 @@ export const kinClient = {
   /** A page of a client's or project's history. */
   workHistory: workHistoryRead,
   /** A client with what is owed each way, its contacts and its projects. */
-  workClient: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workClient: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:client",
     execute: Effect.fn("KinWebClient.workClient")(function* (input: KinPartyPageInput) {
       return yield* readWorkClient(input);
     }),
     staleTimeMs: 30_000,
-    // Read again on reconnecting; between those, the page's watch reads only when it is behind.
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    // Reads again when the host can't say what changed; the screen's watch follows named changes.
+    refreshTrigger: kinWorkRefreshOn([]),
   }),
   /** A project with its health, what is blocked and what changed this week. */
-  workProject: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workProject: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:project",
     execute: Effect.fn("KinWebClient.workProject")(function* (input: KinProjectPageInput) {
       return yield* readWorkProject(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
+    // Reads again when the host can't say what changed; the screen's watch follows named changes.
+    refreshTrigger: kinWorkRefreshOn([]),
   }),
   /** How many clients and open projects there are: the lists' own totals, without their rows. */
-  workCounts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workCounts: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:counts",
     execute: Effect.fn("KinWebClient.workCounts")(function* (input: { readonly orgId: KinOrgId }) {
       const [clients, projects] = yield* Effect.all(
@@ -1104,7 +1105,7 @@ export const kinClient = {
     refreshTrigger: kinWorkRefreshOn(["clients", "projects"], kinRefreshOn("workChoices")),
   }),
   /** The active clients and open projects a task or a project can be put under, by name. */
-  workChoices: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workChoices: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:choices",
     execute: Effect.fn("KinWebClient.workChoices")(function* (input: { readonly orgId: KinOrgId }) {
       const [clients, projects] = yield* Effect.all(
@@ -1121,7 +1122,7 @@ export const kinClient = {
     refreshTrigger: kinWorkRefreshOn(["clients", "projects"], kinRefreshOn("workChoices")),
   }),
   /** One teammate's open projects, and the open projects they could be put on, by name. */
-  teammateProjects: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  teammateProjects: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:teammate-projects",
     execute: Effect.fn("KinWebClient.teammateProjects")(function* (input: {
       readonly orgId: KinOrgId;
@@ -1188,20 +1189,18 @@ export const kinClient = {
   /** One page of docs; the list's controller decides when. Its `permissionAtom` gates Docs. */
   docsList: docsListRead,
   /** The docs linked to one client or one project, on that client's or project's page. */
-  docsUnder: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  docsUnder: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:docs:under",
     execute: Effect.fn("KinWebClient.docsUnder")(function* (input: KinDocsListInput) {
       return yield* readDocsList(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
   }),
   /**
    * How many docs there are and how many changed since `since`: the list's own totals, without
    * its rows. The caller reads again when the docs' change number passes `seq`.
    */
-  docsCounts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  docsCounts: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:docs:counts",
     execute: Effect.fn("KinWebClient.docsCounts")(function* (input: {
       readonly orgId: KinOrgId;
@@ -1217,29 +1216,22 @@ export const kinClient = {
       return { total: all.total, changed: changed.total, seq: Math.min(all.seq, changed.seq) };
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
   }),
   /** A doc at one version, with its outline. */
-  doc: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  doc: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:docs:doc",
     execute: Effect.fn("KinWebClient.doc")(function* (input: KinDocGetInput) {
       return yield* readDoc(input);
     }),
     staleTimeMs: 30_000,
-    // Read again on reconnecting; between those, the reader's watch reads only when it changed.
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
   }),
   /** What differs between two versions, as a patch. Versions never change, so neither does this. */
-  docDiff: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  docDiff: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:docs:diff",
     execute: Effect.fn("KinWebClient.docDiff")(function* (input: KinDocDiffInput) {
       return yield* readDocDiff(input);
     }),
     staleTimeMs: 5 * 60_000,
-    refreshTrigger: ({ environmentId }: { readonly environmentId: EnvironmentId }) =>
-      environmentSessionGenerationAtom(connectionAtomRuntime, environmentId),
   }),
   /** A page of a doc's versions, newest first. */
   docHistory: createKinRpcCommand(connectionAtomRuntime, {
@@ -1291,7 +1283,7 @@ export const kinClient = {
     tag: "kin.work.decline",
   }),
   /** Every list an agent set up, as its definition: fields, statuses, categories. */
-  workLists: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workLists: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:lists",
     execute: Effect.fn("KinWebClient.workLists")(function* (input: KinListsInput) {
       return yield* readWorkLists(input);
@@ -1300,7 +1292,7 @@ export const kinClient = {
     refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS, kinRefreshOn("workLists")),
   }),
   /** Money's own screen: its coming-up count includes tasks, so any change reads it again. */
-  workMoney: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workMoney: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:money",
     execute: Effect.fn("KinWebClient.workMoney")(function* (input: KinMoneySummaryInput) {
       return yield* readWorkMoney(input);
@@ -1309,7 +1301,7 @@ export const kinClient = {
     refreshTrigger: kinWorkRefreshOn("any"),
   }),
   /** The same read for a line of what is owed, which no task moves. */
-  workOwed: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workOwed: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:owed",
     execute: Effect.fn("KinWebClient.workOwed")(function* (input: KinMoneySummaryInput) {
       return yield* readWorkMoney(input);
@@ -1318,7 +1310,7 @@ export const kinClient = {
     refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS),
   }),
   /** Bank balances from confirmed statements; read again when a statement or Work changes. */
-  workCash: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workCash: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:cash",
     execute: Effect.fn("KinWebClient.workCash")(function* (input: KinCashInput) {
       return yield* readWorkCash(input);
@@ -1327,7 +1319,7 @@ export const kinClient = {
     refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS, kinRefreshOn("moneyStatements")),
   }),
   /** What is expected in and out in the next 30 days, and runway. */
-  workOutlook: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workOutlook: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:outlook",
     execute: Effect.fn("KinWebClient.workOutlook")(function* (input: KinOutlookInput) {
       return yield* readWorkOutlook(input);
@@ -1335,7 +1327,7 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS, kinRefreshOn("moneyStatements")),
   }),
-  workBudgets: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  workBudgets: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:budgets",
     execute: Effect.fn("KinWebClient.workBudgets")(function* (input: KinMoneyBudgetsInput) {
       return yield* readWorkBudgets(input);
@@ -1378,7 +1370,7 @@ export const kinClient = {
   workFiles: workFilesRead,
   /** Its `permissionAtom` says whether this browser may read company details at all. */
   companyRead: companyProfileRead,
-  companyProfile: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  companyProfile: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:company",
     execute: Effect.fn("KinWebClient.companyProfile")(function* (input: KinCompanyProfileInput) {
       return yield* readCompanyProfile(input);
@@ -1414,7 +1406,7 @@ export const kinClient = {
   }),
   /** Money's receipts, newest first. Its `permissionAtom` gates the section. */
   receiptsRead,
-  receipts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  receipts: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:receipts",
     execute: Effect.fn("KinWebClient.receipts")(function* (input: KinReceiptsInput) {
       return yield* readReceipts(input);
@@ -1428,7 +1420,7 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
   }),
   /** The company's document templates. */
-  recipes: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+  recipes: createKinQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:docs:recipes",
     execute: Effect.fn("KinWebClient.recipes")(function* (input: KinRecipesInput) {
       return yield* readRecipes(input);

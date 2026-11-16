@@ -26,23 +26,27 @@ const kinRefreshesStream = (input: KinRefreshesSubscribeInput) =>
     Stream.empty,
   );
 
-/** A topic's last revision heard, and how often it has moved since this client first heard it. */
+/** A topic's last revision heard, in which run of the host, and how often it has moved since. */
 interface KinRefreshMoves {
   readonly revision: number;
   readonly moves: number;
+  readonly boot: string | undefined;
 }
 
 /**
  * Takes in a revision. The first one is where things stand, not a change; an unknown one (still
- * connecting, an older host, a topic the viewer can't read) changes nothing.
+ * connecting, an older host, a topic the viewer can't read) changes nothing. A new run of the host
+ * counts from zero again, so a revision heard in it moves whatever it reads.
  */
 function kinRefreshMoved(
   held: KinRefreshMoves | undefined,
   revision: number | undefined,
+  boot: string | undefined,
 ): KinRefreshMoves | undefined {
   if (revision === undefined) return held;
-  if (held === undefined) return { revision, moves: 0 };
-  return revision === held.revision ? held : { revision, moves: held.moves + 1 };
+  if (held === undefined) return { revision, moves: 0, boot };
+  if (held.boot !== boot) return { revision, moves: held.moves + 1, boot };
+  return revision === held.revision ? held : { revision, moves: held.moves + 1, boot };
 }
 
 type Target = {
@@ -51,15 +55,18 @@ type Target = {
 };
 
 /**
- * Refresh signals for query atoms' `refreshTrigger`: a new session, or a move of the read's topic.
- * What each signal has heard is kept outside its node, so a read shown again after its screen was
- * away still sees a move it missed, as `refreshTrigger` reads expect.
+ * Refresh signals for query atoms' `refreshTrigger`: a move of the read's topic. A host that names
+ * its run (`boot`) resumes across a reconnect, so a new session alone moves nothing; an older one's
+ * reads still follow each new session. What each signal has heard is kept outside its node, so a
+ * read shown again after its screen was away still sees a move it missed.
  */
 export function kinRefreshTriggers(
   revisions: (target: Target) => Atom.Atom<AsyncResult.AsyncResult<KinRefreshes, unknown>>,
   generation: (environmentId: EnvironmentId) => Atom.Atom<number>,
 ) {
   const heard = new Map<string, KinRefreshMoves>();
+  /** Hosts that named their run: their reads resume across reconnects. Read only on a new session. */
+  const resuming = new Set<EnvironmentId>();
   const parse = (key: string) => JSON.parse(key) as [EnvironmentId, KinOrgId, KinRefreshTopic];
   const moves = Atom.family((key: string) => {
     const [environmentId, orgId, topic] = parse(key);
@@ -68,14 +75,22 @@ export function kinRefreshTriggers(
         get(revisions({ environmentId, input: { orgId } })),
         () => null,
       );
-      const moved = kinRefreshMoved(heard.get(key), held?.[topic]);
+      if (held?.boot !== undefined) resuming.add(environmentId);
+      const moved = kinRefreshMoved(heard.get(key), held?.[topic], held?.boot);
       if (moved !== undefined) heard.set(key, moved);
       return moved?.moves ?? 0;
     }).pipe(Atom.withLabel(`${KIN_REFRESHES_LABEL}:${topic}:moves:${environmentId}`));
   });
+  /** Sessions after the first on a host that can't resume; 0 on one that can. */
+  const unresumed = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) => {
+      const sessions = get(generation(environmentId));
+      return resuming.has(environmentId) ? 0 : Math.max(0, sessions - 1);
+    }).pipe(Atom.withLabel(`${KIN_REFRESHES_LABEL}:unresumed:${environmentId}`)),
+  );
   const family = Atom.family((key: string) => {
     const [environmentId, , topic] = parse(key);
-    return Atom.make((get) => `${get(generation(environmentId))}:${get(moves(key))}`).pipe(
+    return Atom.make((get) => `${get(unresumed(environmentId))}:${get(moves(key))}`).pipe(
       Atom.withLabel(`${KIN_REFRESHES_LABEL}:${topic}:${environmentId}`),
     );
   });
@@ -86,6 +101,7 @@ export function kinRefreshTriggers(
     {
       /** How often a topic has moved since this client first heard it; for a read over several orgs. */
       moves: (topic: KinRefreshTopic) => (target: Target) => moves(keyOf(topic, target)),
+      unresumed,
     },
   );
 }
@@ -126,7 +142,8 @@ export function noteKinDirectoryOrgs(
 }
 
 /**
- * A read across the directory's orgs: a new session, or a move of `topic` in any org it last named,
+ * A read across the directory's orgs: a move of `topic` in any org it last named, or a new session
+ * on a host that can't resume,
  * so an agent made or a person renamed on another device has its name here. Orgs being noted move
  * nothing.
  */
@@ -140,7 +157,7 @@ export function createKinDirectoryTrigger<R, ER>(
       let moved = 0;
       for (const orgId of get(kinDirectoryOrgsAtom(environmentId)))
         moved += get(triggers.moves(topic)({ environmentId, input: { orgId } }));
-      return `${get(environmentSessionGenerationAtom(runtime, environmentId))}:${moved}`;
+      return `${get(triggers.unresumed(environmentId))}:${moved}`;
     });
 }
 

@@ -103,6 +103,11 @@ interface EnvironmentQueryAtomOptions<Input, A, E, R> extends Omit<
   }) => Atom.Atom<unknown> | undefined;
   readonly isFinal?: (value: A) => boolean;
   /**
+   * A held answer outlives a reconnect: only `refreshTrigger` (or a read still owed when the
+   * connection dropped) reads again. For hosts whose triggers resume across sessions, as Kin's do.
+   */
+  readonly keepAcrossSessions?: boolean;
+  /**
    * Runs where each server answer lands, before readers see it, so derived records (summaries,
    * snapshots, watches) come from the producer instead of from components watching the data.
    * Cached and emitted provisional values are not answers.
@@ -519,7 +524,11 @@ function runInEnvironment<A, E, R>(
  * refreshes on its next read.
  */
 const refreshOnSignalWhileRead =
-  <V>(signal: Atom.Atom<unknown>, isFinal: (value: V) => boolean) =>
+  <V>(
+    signal: Atom.Atom<unknown>,
+    isFinal: (value: V) => boolean,
+    owe: (registry: AtomRegistry.AtomRegistry) => void = () => undefined,
+  ) =>
   <A extends V>(self: Atom.Atom<A>): Atom.Atom<A> => {
     // The signal value each registry's data was read under. Held outside the node because the
     // registry can sweep this node while `self` keeps the data, and the rebuilt node must still
@@ -533,7 +542,10 @@ const refreshOnSignalWhileRead =
         const changed =
           readUnder.has(get.registry) && !Object.is(readUnder.get(get.registry), current);
         readUnder.set(get.registry, current);
-        if (changed && !isFinal(get.once(self))) get.refresh(self);
+        if (changed && !isFinal(get.once(self))) {
+          owe(get.registry);
+          get.refresh(self);
+        }
         return get.once(self);
       },
       { initialValueTarget: self },
@@ -671,6 +683,15 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
   const family = Atom.family((key: string) => {
     const target = parseEnvironmentRpcKey<Input>(key);
     const idleTtlMs = options.idleTtlMs ?? 5 * 60_000;
+    // Per registry: the connection the last build saw, and whether a read is still owed.
+    const sessions = new WeakMap<
+      AtomRegistry.AtomRegistry,
+      { connection: EnvironmentConnection | null; owed: boolean }
+    >();
+    const owe = (registry: AtomRegistry.AtomRegistry) => {
+      const held = sessions.get(registry);
+      if (held !== undefined) held.owed = true;
+    };
     const queryAtom = runtime
       .atom<
         A,
@@ -683,6 +704,29 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
           get(connectionAtom(target.environmentId)),
           () => null,
         );
+        let settle: Effect.Effect<void> = Effect.void;
+        if (options.keepAcrossSessions === true) {
+          const held = sessions.get(get.registry);
+          const previous = Option.flatMap(
+            get.self<AsyncResult.AsyncResult<A, unknown>>(),
+            AsyncResult.value,
+          );
+          // Only the connection moved, and the answer held was read in full: it still stands.
+          if (
+            held !== undefined &&
+            held.connection !== connection &&
+            !held.owed &&
+            Option.isSome(previous)
+          ) {
+            held.connection = connection;
+            return Effect.succeed(previous.value);
+          }
+          const mark = { connection, owed: true };
+          sessions.set(get.registry, mark);
+          settle = Effect.sync(() => {
+            mark.owed = false;
+          });
+        }
         // A refetch that returns equal content keeps the previous value's
         // references, so readers of the data skip re-rendering on idle polls.
         const share = (value: A): A =>
@@ -762,10 +806,14 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
         const onAnswer = options.onAnswer;
         const answer = () =>
           onAnswer === undefined
-            ? execute().pipe(Effect.map(share))
+            ? execute().pipe(
+                Effect.map(share),
+                Effect.tap(() => settle),
+              )
             : execute().pipe(
                 Effect.map(share),
                 Effect.tap((value) => onAnswer(target, value, get.registry)),
+                Effect.tap(() => settle),
               );
         if (!options.persistence) return answer();
         const persistence = options.persistence;
@@ -811,7 +859,7 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
     return (
       refreshTrigger === undefined
         ? intervalQuery
-        : intervalQuery.pipe(refreshOnSignalWhileRead(refreshTrigger, isFinal))
+        : intervalQuery.pipe(refreshOnSignalWhileRead(refreshTrigger, isFinal, owe))
     ).pipe(Atom.setIdleTTL(idleTtlMs), Atom.withLabel(`${options.label}:${key}`));
   });
   return (target) => family(environmentRpcKey(target));

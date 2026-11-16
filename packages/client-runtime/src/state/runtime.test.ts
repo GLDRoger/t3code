@@ -104,7 +104,9 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     rpcSession,
     isFinal,
     onAnswer,
+    keepAcrossSessions,
   }: {
+    readonly keepAcrossSessions?: boolean;
     readonly refreshTrigger?: Atom.Atom<unknown>;
     readonly onAnswer?: QueryAnswerHandler<undefined, A>;
     readonly isFinal?: (value: A) => boolean;
@@ -156,6 +158,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
     ...(isFinal === undefined ? {} : { isFinal }),
     ...(onAnswer === undefined ? {} : { onAnswer }),
+    ...(keepAcrossSessions === undefined ? {} : { keepAcrossSessions }),
   });
 
   return {
@@ -994,6 +997,64 @@ describe("environment query lifecycle", () => {
         ).toBe("updated");
       }),
     ),
+  );
+
+  it.effect(
+    "a query kept across sessions reads again on a reconnect only when a read is owed",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let executions = 0;
+          const trigger = Atom.make(0).pipe(Atom.keepAlive);
+          const harness = yield* makeEnvironmentQueryHarness(
+            Effect.sync(() => (executions += 1)),
+            { refreshTrigger: trigger, keepAcrossSessions: true },
+          );
+          const registry = yield* mountEnvironmentQuery(harness.atom);
+          const read = readEnvironmentQuery(registry, harness.atom);
+          const reconnect = (generation: number) =>
+            Effect.gen(function* () {
+              yield* SubscriptionRef.set(
+                harness.supervisorState,
+                queryConnectionState({ phase: "connecting", stage: "opening" }),
+              );
+              yield* Effect.yieldNow;
+              yield* SubscriptionRef.set(
+                harness.supervisorSession,
+                Option.some({ ...QUERY_RPC_SESSION }),
+              );
+              yield* SubscriptionRef.set(
+                harness.supervisorState,
+                queryConnectionState({ generation }),
+              );
+              yield* Effect.yieldNow;
+            });
+
+          expect(yield* read).toBe(1);
+          yield* reconnect(2);
+          expect(yield* read).toBe(1);
+          expect(executions).toBe(1);
+
+          // The trigger moves while the connection is down: the read waits for the next session.
+          yield* SubscriptionRef.set(
+            harness.supervisorState,
+            queryConnectionState({ phase: "connecting", stage: "opening" }),
+          );
+          yield* Effect.yieldNow;
+          registry.set(trigger, 1);
+          yield* Effect.yieldNow;
+          expect(executions).toBe(1);
+          yield* SubscriptionRef.set(
+            harness.supervisorSession,
+            Option.some({ ...QUERY_RPC_SESSION }),
+          );
+          yield* SubscriptionRef.set(
+            harness.supervisorState,
+            queryConnectionState({ generation: 3 }),
+          );
+          expect(yield* read).toBe(2);
+        }),
+      ),
   );
 
   it.effect("refreshes on its trigger while read, and once on its next read when idle", () =>

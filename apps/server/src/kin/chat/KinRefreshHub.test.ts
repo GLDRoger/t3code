@@ -111,6 +111,7 @@ describe("KinRefreshHub", () => {
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
           VALUES ('priya', ${me.orgId}, 'priya', 'Priya', '2026-11-09T00:00:00.000Z')`;
         const priya = { ...me, personId: KinPersonId.make("priya") };
+        const { boot } = yield* RefreshHub.KinRefreshHub;
         const ownerSees = yield* Stream.toQueue(subscribeRefreshes([me], { orgId: me.orgId }), {
           capacity: "unbounded",
         });
@@ -124,6 +125,7 @@ describe("KinRefreshHub", () => {
           leads: 0,
           pulse: 0,
           workLists: 0,
+          boot,
         });
 
         // Things only the owner reads: the company, and a lead Priya can't message.
@@ -163,14 +165,14 @@ describe("KinRefreshHub", () => {
           personId: priya.personId,
         });
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
-        assert.deepStrictEqual(yield* Queue.take(priyaSees), {
-          timeZone: 0,
-          people: 0,
-          leads: 1,
-          pulse: 0,
-          workLists: 0,
-        });
+        const moved = { timeZone: 0, people: 0, leads: 1, pulse: 0, workLists: 0, boot };
+        assert.deepStrictEqual(yield* Queue.take(priyaSees), moved);
         assert.strictEqual(yield* Queue.size(priyaSees), 0);
+        // Her reconnect with nothing moved since hears the same numbers, so she reads nothing again.
+        const again = yield* Stream.toQueue(subscribeRefreshes([priya], { orgId: me.orgId }), {
+          capacity: "unbounded",
+        });
+        assert.deepStrictEqual(yield* Queue.take(again), moved);
       }).pipe(Effect.scoped, Effect.provide(paired)),
   );
 
