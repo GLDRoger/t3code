@@ -99,8 +99,8 @@ type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId" |
   readonly caller?: McpThreadCaller | undefined;
   // The reply bridge posts for a wake-up it resolved itself; its running row is the authority.
   readonly wakeupId?: KinWakeupId | undefined;
-  // Only the server-only task card creator may attribute a message outside an agent wake-up.
-  readonly serverTaskCard?: true;
+  // Only Kin itself (worker task cards, a failed send's mail again) posts outside a wake-up.
+  readonly serverPosted?: true;
   /** Shown in the chat, but never pushed and never counted as unread or on the badge. */
   readonly silent?: true;
   readonly clientMessageId: {
@@ -1587,7 +1587,7 @@ const make = Effect.gen(function* () {
             }
             if (
               author._tag === "agent" &&
-              input.serverTaskCard !== true &&
+              input.serverPosted !== true &&
               !(input.wakeupId !== undefined
                 ? yield* wakeupRunning({
                     orgId: input.orgId,

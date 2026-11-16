@@ -533,10 +533,13 @@ const make = Effect.gen(function* () {
         thread.endedAt !== null ||
         thread.agentId !== agent.agentId ||
         agent.ownerPersonId !== identity.ownerPersonId ||
-        !(identity.wakeupId !== undefined
-          ? yield* repo.wakeupRunning({ ...identity, wakeupId: identity.wakeupId })
-          : identity.caller !== undefined &&
-            (yield* repo.hasRunningWakeup({ ...identity, caller: identity.caller })))
+        !(
+          identity.hostPosted === true ||
+          (identity.wakeupId !== undefined
+            ? yield* repo.wakeupRunning({ ...identity, wakeupId: identity.wakeupId })
+            : identity.caller !== undefined &&
+              (yield* repo.hasRunningWakeup({ ...identity, caller: identity.caller })))
+        )
       )
         return yield* notAllowed;
     }
@@ -739,6 +742,9 @@ const make = Effect.gen(function* () {
       audience: input.forChat === true ? "chat" : yield* authorAudience(identity),
       caller: identity._tag === "agent" ? identity.caller : undefined,
       wakeupId: identity._tag === "agent" ? identity.wakeupId : undefined,
+      ...(identity._tag === "agent" && identity.hostPosted === true
+        ? { serverPosted: true as const }
+        : {}),
       chatId: input.chatId,
       messageId,
       author: authorFor(identity, member),
@@ -1200,7 +1206,11 @@ const make = Effect.gen(function* () {
         reason: "limit",
         message: "This wake-up has posted all it may in this chat.",
       });
-    const authorization = yield* floor.authorize(identity, chat, input.intent);
+    // Kin's own post is a notice the owner waits on: it never spends the running turn's grant.
+    const authorization =
+      identity.hostPosted === true
+        ? { runId: null, owed: true }
+        : yield* floor.authorize(identity, chat, input.intent);
     const message = yield* post(identity, member, {
       chatId: input.chatId,
       body: "",
@@ -2109,7 +2119,7 @@ const make = Effect.gen(function* () {
           threadId: thread.threadId,
           memberId: member.memberId,
         },
-        serverTaskCard: true,
+        serverPosted: true,
         body: "",
         intent: "answer",
         kind: "text",

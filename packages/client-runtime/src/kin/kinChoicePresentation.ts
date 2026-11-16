@@ -224,6 +224,25 @@ export function kinChoiceAnswerText(
   return `${who} “${answer.label}”${answer.emoji === null ? "" : ` with ${answer.emoji}`}`;
 }
 
+/**
+ * Whether the card is answered, by the host or by this device's tap still on its way, and the
+ * line that says so. A send card's own outcome ("Sent", "Not sent: …") already says it: no line.
+ */
+export function kinChoiceAnswered(
+  view: KinChoiceCardView,
+  viewerPersonId: KinPersonId | null,
+  tappedLabel: string | null,
+): { readonly text: string | null } | null {
+  const text =
+    view.answer !== null
+      ? kinChoiceAnswerText(view.answer, viewerPersonId)
+      : tappedLabel !== null
+        ? `You chose “${tappedLabel}”`
+        : null;
+  if (text === null) return null;
+  return { text: view.send?.outcome == null ? text : null };
+}
+
 export function kinChoiceAccessibilityLabel(view: KinChoiceCardView, status: string | null) {
   if (view.send !== null)
     return kinSentences([

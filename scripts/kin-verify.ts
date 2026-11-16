@@ -38,6 +38,7 @@ import {
 } from "./kin-verify/instance.ts";
 import {
   mailDeliver,
+  mailExpire,
   mailSentLines,
   parseDuration,
   query,
@@ -62,6 +63,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--reply "<text>"] [--raw]
                                           one real turn, no model: the agent calls the tool
   mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
+  mail expire <address> [--back]          the account's sign-in stops working (or works again)
   clock advance <90m|12h|3d|2w> | clock set-date <YYYY-MM-DD>
   db "<select …>"                         read-only SQL on this instance's database
   phone pair [--android] [--as <person>]  deep link that pairs the dev client to this instance
@@ -501,7 +503,10 @@ async function main() {
             rest.slice(1).filter((arg) => arg !== "deliver"),
           ),
         );
-      throw new VerifyError("mail sent | mail deliver --to --from --subject --body [--thread]");
+      if (action === "expire") return console.log(mailExpire(instance, rest.slice(1)));
+      throw new VerifyError(
+        "mail sent | mail deliver --to --from --subject --body [--thread] | mail expire <address> [--back]",
+      );
     }
     case "clock":
       return clock(instance, args);

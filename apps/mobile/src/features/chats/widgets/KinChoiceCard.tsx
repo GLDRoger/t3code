@@ -20,7 +20,7 @@ import { kinConnectionChange } from "@t3tools/client-runtime/kin/kinConnections"
 import {
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
-  kinChoiceAnswerText,
+  kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
   type KinChoiceCardView,
@@ -293,35 +293,29 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
     setSwitchProblem(failed);
   };
 
-  const answerText =
-    choice.answer !== null
-      ? kinChoiceAnswerText(choice.answer, props.viewerPersonId)
-      : sentOption !== undefined
-        ? `You chose “${sentOption.label}”`
-        : null;
+  const answered = kinChoiceAnswered(choice, props.viewerPersonId, sentOption?.label ?? null);
+  const fromPicker =
+    choice.send !== null &&
+    phase === "open" &&
+    canAct &&
+    answered === null &&
+    choice.send.fromChoices.length > 1
+      ? { busy: switching, problem: switchProblem, pick: (id: string) => void pickFrom(id) }
+      : null;
 
   return (
     <View className="gap-2.5 rounded-[20px] border border-border bg-card-alt p-4">
       <View
-        accessible
-        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answerText)}
+        // Grouped for VoiceOver, except while Change sits inside: a group hides its buttons.
+        accessible={fromPicker === null}
+        accessibilityLabel={kinChoiceAccessibilityLabel(choice, answered?.text ?? null)}
         className="gap-1.5"
       >
         <Text textRole="headline" className="font-t3-bold text-foreground">
           {choice.question}
         </Text>
         {choice.send !== null ? (
-          <SendDetail
-            send={choice.send}
-            pickFrom={
-              phase === "open" &&
-              canAct &&
-              answerText === null &&
-              choice.send.fromChoices.length > 1
-                ? { busy: switching, problem: switchProblem, pick: (id) => void pickFrom(id) }
-                : null
-            }
-          />
+          <SendDetail send={choice.send} pickFrom={fromPicker} />
         ) : choice.detail === null ? null : (
           <Text textRole="footnote" className="text-foreground-secondary">
             {choice.detail}
@@ -331,15 +325,17 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
       {choice.image === null ? null : (
         <ChoiceImage environmentId={environmentId} image={choice.image} />
       )}
-      {answerText !== null ? (
-        <Text
-          textRole="footnote"
-          className="font-t3-medium text-foreground-secondary"
-          importantForAccessibility="no"
-          accessibilityElementsHidden
-        >
-          {answerText}
-        </Text>
+      {answered !== null ? (
+        answered.text === null ? null : (
+          <Text
+            textRole="footnote"
+            className="font-t3-medium text-foreground-secondary"
+            importantForAccessibility="no"
+            accessibilityElementsHidden
+          >
+            {answered.text}
+          </Text>
+        )
       ) : phase === "expired" ? (
         <Text textRole="footnote" className="text-foreground-muted">
           {choice.closedText}

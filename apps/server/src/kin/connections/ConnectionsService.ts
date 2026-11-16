@@ -2337,6 +2337,8 @@ const make = Effect.gen(function* () {
       chatId: KinChatId.make(stale.row.chatId),
       agent: {
         _tag: "agent" as const,
+        // The owner's tap, not a turn, brings the mail back: the agent's turn may have ended.
+        hostPosted: true as const,
         orgId,
         agentId: KinAgentId.make(stale.row.agentId),
         ownerPersonId: KinPersonId.make(stale.row.owner),
