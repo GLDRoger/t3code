@@ -774,6 +774,7 @@ describe("Kin migrations", () => {
       ])
         yield* sql.unsafe(`DROP TRIGGER ${trigger}`);
       yield* sql`DROP INDEX idx_kin_messages_changes`;
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN form`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN refs_json`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN silent`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN change_seq`;
@@ -1481,7 +1482,7 @@ describe("Kin migrations", () => {
           [150, "PersonRemoved"],
           [151, "MessageForm"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-77), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-78), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },

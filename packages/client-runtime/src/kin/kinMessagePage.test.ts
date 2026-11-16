@@ -58,7 +58,9 @@ describe("kinMessageLayout", () => {
   it("keeps people's messages and deleted ones as bubbles, and a brief as a brief", () => {
     expect(kinMessageLayout(said("## Plan\nShip.", { author: human }))).toBe("bubble");
     expect(kinMessageLayout(said("## Plan\nShip.", { status: "deleted" }))).toBe("bubble");
-    expect(kinMessageLayout(said("Quiet day. Nothing needs you.", { form: "brief" }))).toBe("brief");
+    expect(kinMessageLayout(said("Quiet day. Nothing needs you.", { form: "brief" }))).toBe(
+      "brief",
+    );
   });
 });
 
@@ -66,13 +68,17 @@ describe("kinPageView", () => {
   it("cuts a brief into the sections that have something in them, without its greeting", () => {
     const view = kinPageView(BRIEF, true);
     expect(view.lead).toBeNull();
-    expect(view.sections.map((section) => section.title)).toEqual(["Needs you", "Money", "Clients"]);
+    expect(view.sections.map((section) => section.title)).toEqual([
+      "Needs you",
+      "Money",
+      "Clients",
+    ]);
   });
 
   it("drops only the greeting from a brief's opening line", () => {
-    expect(kinPageView("Good morning Rhea. A quiet day.\n\n## Needs you\n- Nothing.", true).lead).toBe(
-      "A quiet day.",
-    );
+    expect(
+      kinPageView("Good morning Rhea. A quiet day.\n\n## Needs you\n- Nothing.", true).lead,
+    ).toBe("A quiet day.");
   });
 
   it("keeps today's unsectioned brief whole, as its lead", () => {
@@ -93,7 +99,11 @@ describe("kinPageView", () => {
 describe("kinLinkedMarkdown", () => {
   const links: ReadonlyArray<KinMessageLink> = [
     { text: "Finance", to: { _tag: "chat", chatId: "c" }, note: null },
-    { text: "Orbit Dental", to: { _tag: "record", key: "C-1", kind: "client" }, note: "Orbit Dental" },
+    {
+      text: "Orbit Dental",
+      to: { _tag: "record", key: "C-1", kind: "client" },
+      note: "Orbit Dental",
+    },
     {
       text: "Orbit Dental retainer",
       to: { _tag: "record", key: "P-2", kind: "project" },

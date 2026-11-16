@@ -1,5 +1,9 @@
 import { useNavigation } from "@react-navigation/native";
-import { kinBodyMarkdown, kinImageSource, kinImageText } from "@t3tools/client-runtime/kin/kinChatFeed";
+import {
+  kinBodyMarkdown,
+  kinImageSource,
+  kinImageText,
+} from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   kinBriefHead,
   kinLinkedMarkdown,
@@ -154,7 +158,12 @@ export function KinMessagePage(
             <Text
               accessibilityRole="header"
               className="text-foreground"
-              style={{ fontFamily: GREETING_FONT, fontStyle: "italic", fontSize: 30, lineHeight: 36 }}
+              style={{
+                fontFamily: GREETING_FONT,
+                fontStyle: "italic",
+                fontSize: 30,
+                lineHeight: 36,
+              }}
             >
               {head.greeting}
             </Text>

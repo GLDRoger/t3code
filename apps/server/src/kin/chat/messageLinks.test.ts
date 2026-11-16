@@ -42,7 +42,10 @@ const orbitRetainer: LinkName = {
   to: { _tag: "record", key: "P-2", kind: "project" },
   note: "Orbit Dental retainer",
 };
-const invoice = { to: { _tag: "record" as const, key: "INV-1", kind: "entry" as const }, note: "INV-1" };
+const invoice = {
+  to: { _tag: "record" as const, key: "INV-1", kind: "entry" as const },
+  note: "INV-1",
+};
 
 describe("matchLinks", () => {
   it("links exact names and document numbers once each, and nothing in code or links", () => {
@@ -51,7 +54,12 @@ describe("matchLinks", () => {
       "Orbit Dental paid. finance was slow, INV-1 again, and `INV-1` in code.",
       "[INV-1](https://x.example) and https://x.example/INV-1 stay as written. FINANCE too.",
     ].join("\n");
-    const links = matchLinks(body, [finance, orbit, orbitRetainer], new Map([["INV-1", invoice]]), false);
+    const links = matchLinks(
+      body,
+      [finance, orbit, orbitRetainer],
+      new Map([["INV-1", invoice]]),
+      false,
+    );
     assert.deepStrictEqual(
       links.map((link) => [link.text, link.to]),
       [

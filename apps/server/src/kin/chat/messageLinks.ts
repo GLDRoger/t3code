@@ -112,7 +112,11 @@ const kindOf = (register: string): Extract<KinMessageLinkTarget, { _tag: "record
         : register === "docs"
           ? "doc"
           : "entry";
-const noteOf = (row: { readonly title: string; readonly register: string; readonly state: string }) =>
+const noteOf = (row: {
+  readonly title: string;
+  readonly register: string;
+  readonly state: string;
+}) =>
   kindOf(row.register) === "task"
     ? `${row.title} · ${STATE_WORDS[row.state] ?? row.state}`
     : row.title;
@@ -144,7 +148,13 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
     WHERE r.org_id = ${orgId} AND r.register_id IN ('clients', 'projects')
       AND r.state <> 'dropped' AND ${seenBy(sql, viewer)}`;
   // A document's own number, such as INV/26-27/004, as it is printed and mailed.
-  const numbered = yield* sql<{ key: string; title: string; register: string; state: string; number: string }>`SELECT
+  const numbered = yield* sql<{
+    key: string;
+    title: string;
+    register: string;
+    state: string;
+    number: string;
+  }>`SELECT
       r.key, r.title, r.register_id AS register, r.state,
       json_extract(r.fields_json, '$.number') AS number FROM kin_records r
     WHERE r.org_id = ${orgId} AND json_extract(r.fields_json, '$.number') IS NOT NULL
@@ -164,7 +174,14 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
     ...agents.flatMap((row) => {
       if (seenAgents.has(row.name)) return [];
       seenAgents.add(row.name);
-      return [{ name: row.name, to: { _tag: "chat" as const, chatId: row.chatId }, note: null, chat: true }];
+      return [
+        {
+          name: row.name,
+          to: { _tag: "chat" as const, chatId: row.chatId },
+          note: null,
+          chat: true,
+        },
+      ];
     }),
     ...people.map((row) => ({
       name: row.name,
@@ -194,7 +211,9 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
   messages: ReadonlyArray<KinMessage>,
 ) {
   if (reader?._tag !== "person") return messages;
-  const texts = messages.filter((message) => message.kind === "text" && message.status !== "deleted");
+  const texts = messages.filter(
+    (message) => message.kind === "text" && message.status !== "deleted",
+  );
   if (texts.length === 0) return messages;
   const owner = yield* ownerLevel(orgId, reader.personId);
   const viewer = owner ? KIN_OWNER_LEVEL : viewerOfPeople([reader.personId]);

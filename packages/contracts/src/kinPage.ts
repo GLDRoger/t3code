@@ -46,10 +46,12 @@ export function kinPageSections(body: string): ReadonlyArray<KinPageSection> {
     if (title === null) sections[sections.length - 1]!.lines.push(line);
     else sections.push({ title, lines: [] });
   }
-  return sections
-    .map((section) => ({ title: section.title, markdown: section.lines.join("\n").trim() }))
-    // A heading with nothing under it is left out, as an empty section of a brief is.
-    .filter((section) => section.markdown !== "");
+  return (
+    sections
+      .map((section) => ({ title: section.title, markdown: section.lines.join("\n").trim() }))
+      // A heading with nothing under it is left out, as an empty section of a brief is.
+      .filter((section) => section.markdown !== "")
+  );
 }
 
 /**
@@ -83,7 +85,13 @@ export function kinPageShape(body: string): KinPageShape {
 
 /** "Good morning", "Good afternoon" or "Good evening" for an hour of the reader's day. */
 export const kinGreeting = (hour: number) =>
-  hour < 5 ? "Good evening" : hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  hour < 5
+    ? "Good evening"
+    : hour < 12
+      ? "Good morning"
+      : hour < 17
+        ? "Good afternoon"
+        : "Good evening";
 
 /** A brief's opening line when it is only a greeting, which the layout already says. */
 export const kinIsGreeting = (line: string) => GREETING.test(line.trim());
@@ -101,7 +109,8 @@ const firstLine = (markdown: string) =>
 export function kinPageGist(body: string): string {
   const sections = kinPageSections(body);
   const needs = sections.find(
-    (section) => section.title !== null && /^(needs you|needs your attention|for you)$/i.test(section.title),
+    (section) =>
+      section.title !== null && /^(needs you|needs your attention|for you)$/i.test(section.title),
   );
   for (const section of needs === undefined ? sections : [needs, ...sections]) {
     const line = firstLine(section.markdown);

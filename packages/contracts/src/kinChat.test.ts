@@ -361,6 +361,16 @@ const samples = {
     { _tag: "doc", key: "D-3", version: 2, section: "pricing" },
     { _tag: "doc", key: "D-3", version: 1, section: null },
   ],
+  KinMessageLinkTarget: [
+    { _tag: "chat", chatId: "chat-finance" },
+    { _tag: "person", personId: "person-zoya" },
+    { _tag: "record", key: "INV-1", kind: "entry" },
+    { _tag: "settings" },
+  ],
+  KinMessageLink: [
+    { text: "W-1", to: { _tag: "record", key: "W-1", kind: "task" }, note: "Logo files · Open" },
+    { text: "Finance", to: { _tag: "chat", chatId: "chat-finance" }, note: null },
+  ],
   KinMessageRef: [
     {
       _tag: "doc",

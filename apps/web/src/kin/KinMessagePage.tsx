@@ -5,12 +5,7 @@ import {
   kinLinkOf,
   kinPageView,
 } from "@t3tools/client-runtime/kin/kinMessagePage";
-import {
-  KinOrgId,
-  KinPersonId,
-  type EnvironmentId,
-  type KinMessageLink,
-} from "@t3tools/contracts";
+import { KinOrgId, KinPersonId, type EnvironmentId, type KinMessageLink } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
@@ -34,7 +29,11 @@ function KinInAppLink(props: Where & { readonly link: KinMessageLink; readonly l
   switch (to._tag) {
     case "chat":
       return (
-        <Link to="/kin/$environmentId/$orgId/$chatId" params={{ ...params, chatId: to.chatId }} title={title}>
+        <Link
+          to="/kin/$environmentId/$orgId/$chatId"
+          params={{ ...params, chatId: to.chatId }}
+          title={title}
+        >
           {label}
         </Link>
       );
@@ -163,9 +162,13 @@ export function KinMessagePage(
   },
 ) {
   const view = kinPageView(props.body, props.brief !== null);
-  const head = props.brief === null ? null : kinBriefHead(props.brief.createdAt, props.brief.firstName);
+  const head =
+    props.brief === null ? null : kinBriefHead(props.brief.createdAt, props.brief.firstName);
   return (
-    <article aria-label={props.label} className="flex w-full min-w-0 flex-col gap-3 py-1 text-sm text-foreground">
+    <article
+      aria-label={props.label}
+      className="flex w-full min-w-0 flex-col gap-3 py-1 text-sm text-foreground"
+    >
       {head === null ? null : (
         <header className="flex flex-col gap-0.5">
           <h2 className="m-0 font-serif text-3xl leading-tight font-normal italic tracking-tight text-foreground">

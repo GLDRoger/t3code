@@ -219,67 +219,68 @@ export function KinMessageBubble(props: {
         ) : null}
       </View>
     ) : null;
-  const bubble = hasBubble && page === null ? (
-    <View
-      accessible
-      accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
-      accessibilityActions={[
-        ...inApp.map((link, index) => ({ name: `kin-${index}`, label: `Open ${link.text}` })),
-        ...links.map((link, index) => ({ name: `link-${index}`, label: `Open ${link.label}` })),
-        ...sheetActions,
-      ]}
-      onAccessibilityAction={(event) => {
-        const name = event.nativeEvent.actionName;
-        if (name === "copy") {
-          copyTextWithHaptic(message.body, { target: "kin-message" });
-          return;
-        }
-        if (name.startsWith("react-")) {
-          const emoji = KIN_REACTION_EMOJI.find((candidate) => name === `react-${candidate}`);
-          if (emoji !== undefined) onReact?.(emoji);
-          return;
-        }
-        if (name.startsWith("kin-")) {
-          const target = inApp[Number(name.slice("kin-".length))];
-          if (target !== undefined) onOpenTarget(target.to);
-          return;
-        }
-        const link = links[Number(name.slice("link-".length))];
-        if (link !== undefined) props.onLinkPress(link.href);
-      }}
-      className={cn("gap-1", row.own ? OWN_BUBBLE_CLASS_NAME : OTHER_BUBBLE_CLASS_NAME)}
-    >
-      {hasBody ? (
-        <KinLinkedText
-          markdown={message.body}
-          links={message.links}
-          textStyle={row.own ? props.ownMarkdownStyle : props.markdownStyle}
-          // A long press opens the sheet, whose Select text offers selection instead.
-          selectable={onOpenActions === null}
-          onLinkPress={props.onLinkPress}
-          onOpenTarget={onOpenTarget}
-        />
-      ) : deleted ? (
-        <Text
-          textRole="body"
-          className={cn(
-            "italic",
-            row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted",
-          )}
-        >
-          Message deleted
-        </Text>
-      ) : null}
-      {suggested || message.editedAt !== null ? (
-        <Text
-          textRole="caption"
-          className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
-        >
-          {suggested ? "Suggestion, not sent yet" : "Edited"}
-        </Text>
-      ) : null}
-    </View>
-  ) : null;
+  const bubble =
+    hasBubble && page === null ? (
+      <View
+        accessible
+        accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
+        accessibilityActions={[
+          ...inApp.map((link, index) => ({ name: `kin-${index}`, label: `Open ${link.text}` })),
+          ...links.map((link, index) => ({ name: `link-${index}`, label: `Open ${link.label}` })),
+          ...sheetActions,
+        ]}
+        onAccessibilityAction={(event) => {
+          const name = event.nativeEvent.actionName;
+          if (name === "copy") {
+            copyTextWithHaptic(message.body, { target: "kin-message" });
+            return;
+          }
+          if (name.startsWith("react-")) {
+            const emoji = KIN_REACTION_EMOJI.find((candidate) => name === `react-${candidate}`);
+            if (emoji !== undefined) onReact?.(emoji);
+            return;
+          }
+          if (name.startsWith("kin-")) {
+            const target = inApp[Number(name.slice("kin-".length))];
+            if (target !== undefined) onOpenTarget(target.to);
+            return;
+          }
+          const link = links[Number(name.slice("link-".length))];
+          if (link !== undefined) props.onLinkPress(link.href);
+        }}
+        className={cn("gap-1", row.own ? OWN_BUBBLE_CLASS_NAME : OTHER_BUBBLE_CLASS_NAME)}
+      >
+        {hasBody ? (
+          <KinLinkedText
+            markdown={message.body}
+            links={message.links}
+            textStyle={row.own ? props.ownMarkdownStyle : props.markdownStyle}
+            // A long press opens the sheet, whose Select text offers selection instead.
+            selectable={onOpenActions === null}
+            onLinkPress={props.onLinkPress}
+            onOpenTarget={onOpenTarget}
+          />
+        ) : deleted ? (
+          <Text
+            textRole="body"
+            className={cn(
+              "italic",
+              row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted",
+            )}
+          >
+            Message deleted
+          </Text>
+        ) : null}
+        {suggested || message.editedAt !== null ? (
+          <Text
+            textRole="caption"
+            className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
+          >
+            {suggested ? "Suggestion, not sent yet" : "Edited"}
+          </Text>
+        ) : null}
+      </View>
+    ) : null;
 
   return (
     <View

@@ -108,7 +108,9 @@ export function kinPageView(markdown: string, brief = false): KinPageView {
   const lead = lines.join("\n").trim();
   return {
     lead: lead === "" ? null : lead,
-    sections: all.filter((section): section is KinPageSection & { title: string } => section.title !== null),
+    sections: all.filter(
+      (section): section is KinPageSection & { title: string } => section.title !== null,
+    ),
   };
 }
 

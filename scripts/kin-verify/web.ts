@@ -365,7 +365,11 @@ export async function waitFor(
 /** The window's size and light or dark, as a phone-width or wide screen would show the page. */
 export async function view(
   session: WebSession,
-  options: { readonly width: number; readonly height: number; readonly colorScheme: "dark" | "light" | null },
+  options: {
+    readonly width: number;
+    readonly height: number;
+    readonly colorScheme: "dark" | "light" | null;
+  },
 ) {
   await session.page.setViewportSize({ width: options.width, height: options.height });
   if (options.colorScheme !== null) {
