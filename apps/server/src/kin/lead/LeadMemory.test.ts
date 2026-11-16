@@ -52,7 +52,6 @@ import { SHARED_REFUSAL } from "./Audience.ts";
 import * as Lead from "./LeadMemory.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { recordingSchedules } from "../triggers/kinSchedules.testkit.ts";
-import { KinWorkers } from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
 import * as PullRequestCare from "../github/PullRequestCare.ts";
 import * as Registry from "./KinLeadRegistry.ts";
@@ -84,7 +83,6 @@ const client = McpSchema.McpServerClient.of({
 });
 const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-  Layer.provide(Layer.mock(KinWorkers)({})),
   Layer.provide(Layer.mock(KinHandoff)({})),
   Layer.provide(Layer.mock(KinTeam)({})),
   Layer.provide(KinRepoReads.notConnectedLayer),
@@ -368,9 +366,6 @@ it.live(
             ),
           );
         assert.sameMembers(yield* visible(scope), [
-          "kin_delegate",
-          "kin_follow_up",
-          "kin_worker_stop",
           "kin_leads",
           "agent_update",
           "people_read",

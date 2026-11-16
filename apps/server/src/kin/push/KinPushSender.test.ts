@@ -414,26 +414,6 @@ describe("KinPushSender", () => {
       });
       assert.isUndefined(apns.sent[0]?.collapseId);
 
-      // Kin's publish card rings with Kin's own words, never the lead's title or the files.
-      apns.sent.length = 0;
-      const held = yield* postWidget(
-        sql,
-        "worker_publish",
-        { pullRequestTitle: "Invented client terms", files: [{ path: "acme-terms.md" }] },
-        [member],
-        "Kin is holding a worker's changes until you choose to publish them.",
-      );
-      yield* notify({ _tag: "widget", orgId, widgetId: held });
-      assert.lengthOf(apns.sent, 1);
-      assert.deepStrictEqual(alerts(apns.sent), [
-        {
-          title: "Payments team",
-          body: "Kin is holding a worker's changes until you choose to publish them.",
-        },
-      ]);
-      // It stacks under the chat like its messages do.
-      assert.match(apns.sent[0]?.collapseId ?? "", /^kin:/);
-
       // A question card with no message of its own says what it asks, in the card's words.
       apns.sent.length = 0;
       const asked = yield* postWidget(
@@ -447,8 +427,8 @@ describe("KinPushSender", () => {
       assert.deepStrictEqual(alerts(apns.sent), [
         { title: "Payments team", body: "Confirm receipt R-12 from Harbourline?" },
       ]);
-      assert.notInclude(JSON.stringify(apns.sent), "Invented client terms");
-      assert.notInclude(JSON.stringify(apns.sent), "acme-terms");
+      // It stacks under the chat like its messages do.
+      assert.match(apns.sent[0]?.collapseId ?? "", /^kin:/);
 
       // A card that waits on someone rings as a card, not again as its message.
       const card = yield* postWidget(sql, "task", { status: "needs_decision" }, [member]);

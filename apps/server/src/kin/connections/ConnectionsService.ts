@@ -61,7 +61,7 @@ import { effectiveAudience, turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { markOutside, outsideRead, OUTSIDE_REFUSAL } from "../lead/OutsideContent.ts";
-import { sensitiveShown } from "../work/workerAttempts.ts";
+import { sensitiveShown } from "../work/sensitiveReads.ts";
 import { quote } from "../lead/LeadPrompt.ts";
 import {
   callable,

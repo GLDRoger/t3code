@@ -359,7 +359,7 @@ const setupCommand = Command.make("setup", {
   project: Flag.String("project").pipe(
     Flag.withSchema(ProjectId),
     Flag.withDescription(
-      "The project Kin's GitHub inbox thread lives in, usually the agent's worker project (`kin lead list`).",
+      "The project Kin's GitHub inbox thread lives in, usually the agent's project (`kin lead list`).",
     ),
   ),
   newSecret: Flag.Boolean("new-secret").pipe(

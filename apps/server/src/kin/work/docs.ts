@@ -34,7 +34,7 @@ import { guardPlaybook } from "./playbooks.ts";
 import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "./recordRows.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople, viewVisible, type KinViewer } from "./teamView.ts";
-import { SensitiveRefusal } from "./workerAttempts.ts";
+import { SensitiveRefusal } from "./sensitiveReads.ts";
 
 /**
  * Docs over the records engine: a doc is a `docs` entry, so owner, client, project, label, links

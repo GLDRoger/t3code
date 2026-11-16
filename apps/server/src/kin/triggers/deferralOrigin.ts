@@ -54,18 +54,15 @@ export const deferralOrigin = Effect.fn("Deferrals.origin")(function* (
       ? item?.chat === undefined || lead === undefined
         ? undefined
         : { agentId: lead.agentId, chatId: item.chat }
-      : (event._tag === "deferral.due" ||
-            event._tag === "chat.message" ||
-            event._tag === "worker.report") &&
+      : (event._tag === "deferral.due" || event._tag === "chat.message") &&
           event.origin !== undefined
-        ? // Made while answering a due deferral, a passed-on request or reported work: where
-          // that was first asked.
+        ? // Made while answering a due deferral or a passed-on request: where that was first asked.
           event.origin
         : event._tag === "chat.message" ||
             event._tag === "widget.action" ||
             event._tag === "chat.reaction"
           ? { agentId: KinAgentId.make(row.agentId), chatId: event.chatId }
-          : event._tag === "worker.report" && event.chatId !== undefined
+          : event._tag === "task.finished"
             ? { agentId: KinAgentId.make(row.agentId), chatId: event.chatId }
             : { agentId: KinAgentId.make(row.agentId), chatId: KinChatId.make(row.ownerChatId) };
   const asker =

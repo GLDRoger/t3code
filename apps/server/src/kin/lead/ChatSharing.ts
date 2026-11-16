@@ -14,14 +14,14 @@ import type * as Statement from "effect/sql/Statement";
 
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
-import { historyFloor, joinRaisedFloor } from "../chat/sharing.ts";
+import { historyFloor } from "../chat/sharing.ts";
 import { abortChatTurns } from "./Audience.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 
 /** Chat events that answer a person's message, tap or reaction in its chat. */
 const CHAT_EVENT_TAGS = ["chat.message", "widget.action", "chat.reaction"] as const;
 
-/** The fixed line a private worker's card in a shared chat shows instead of its own. */
+/** The fixed line a delegated task's card in a shared chat shows instead of its own. */
 const movedCardTitle = (lead: string) => `Moved to your private chat with ${lead}`;
 
 /**
@@ -42,8 +42,8 @@ const endChatThreads = Effect.fnUntraced(function* (
 
 /**
  * In every join's transaction, after `recordJoin`: aborts the running turns there and ends the
- * chat's lead threads; expires waiting events below the history floor; moves private work, and
- * all work there once the floor rose, with its waiting reports, to the owner chat. Returns what
+ * chat's lead threads; expires waiting events below the history floor; names the tasks agents
+ * delegated there, whose cards the caller freezes, as only owner-only turns delegate. Returns what
  * runs after commit.
  */
 export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(function* (input: {
@@ -52,12 +52,19 @@ export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(functio
   readonly personId: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const floorRaised = yield* joinRaisedFloor(sql, input);
   const turns = yield* abortChatTurns(input);
   const threads = yield* endChatThreads(sql, input.orgId, sql`chat_id = ${input.chatId}`);
   const [chat] = yield* sql<{ floor: number | null }>`
     SELECT ${historyFloor(sql, input.orgId, input.chatId)} AS floor`;
-  if (chat === undefined || chat.floor === null) return { turns, threads, expired: [], moved: [] };
+  const moved = yield* sql<{ threadId: string; leadName: string }>`
+    SELECT DISTINCT json_extract(w.state_json, '$.threadId') AS "threadId",
+      a.display_name AS "leadName"
+    FROM kin_widgets w JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+    JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.author_agent_id
+    WHERE w.org_id = ${input.orgId} AND w.chat_id = ${input.chatId} AND w.type = 'task'
+      AND json_extract(w.state_json, '$.threadId') IS NOT NULL
+    ORDER BY 1`;
+  if (chat === undefined || chat.floor === null) return { turns, threads, expired: [], moved };
   // Waiting, or held by a turn this join aborted: no fresh turn answers them where others read.
   const pending = sql`(e.state = 'queued' OR (e.state = 'claimed' AND EXISTS (SELECT 1
     FROM kin_wakeups w WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
@@ -68,20 +75,6 @@ export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(functio
       AND EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = e.org_id
         AND m.message_id = json_extract(e.json, '$.messageId') AND m.seq < ${chat.floor})
     RETURNING agent_id AS "agentId"`;
-  const now = yield* Clock.currentTimeMillis;
-  // Every worker here now began below a raised floor, and its thread holds what was said then,
-  // finished or not: a follow-up would resume it.
-  const moved = yield* sql<{ workerId: string; agentId: KinAgentId; threadId: string }>`
-    UPDATE kin_workers AS k SET moved_at = ${now}
-    WHERE k.org_id = ${input.orgId} AND k.chat_id = ${input.chatId} AND k.moved_at IS NULL
-      AND (k.context = 'private' OR ${floorRaised ? 1 : 0} = 1)
-    RETURNING worker_id AS "workerId", agent_id AS "agentId", thread_id AS "threadId"`;
-  yield* sql`UPDATE kin_events AS e SET json = json_remove(e.json, '$.chatId', '$.origin')
-    WHERE e.org_id = ${input.orgId} AND e.tag = 'worker.report'
-      AND json_extract(e.json, '$.chatId') = ${input.chatId} AND ${pending}
-      AND EXISTS (SELECT 1 FROM kin_workers k WHERE k.org_id = e.org_id
-        AND k.worker_id = json_extract(e.json, '$.workerId')
-        AND (k.context = 'private' OR k.moved_at IS NOT NULL))`;
   return { turns, threads, expired, moved };
 });
 
@@ -133,44 +126,7 @@ export const onPersonRemoved = Effect.fn("KinChatSharing.onPersonRemoved")(funct
 });
 
 /**
- * Where a worker's report and card go: its own chat, or its lead's owner chat once that chat was
- * shared after an owner-only turn gave it the work, or a join raised its floor above where the
- * work began (`moved`). From stored rows only. `audience`: private work's words are the owner's.
- */
-export const workerChat = Effect.fn("KinChatSharing.workerChat")(function* (input: {
-  readonly orgId: KinOrgId;
-  readonly workerId: string;
-}) {
-  const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{
-    chatId: string | null;
-    ownerChatId: string;
-    moved: number;
-    leadName: string;
-    context: string;
-  }>`SELECT k.chat_id AS "chatId", l.owner_chat_id AS "ownerChatId", a.display_name AS "leadName",
-      k.context,
-      (k.moved_at IS NOT NULL OR (k.context = 'private' AND c.shared_at IS NOT NULL)) AS moved
-    FROM kin_workers k JOIN kin_leads l ON l.org_id = k.org_id AND l.agent_id = k.agent_id
-    JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
-    LEFT JOIN kin_chats c ON c.org_id = k.org_id AND c.chat_id = k.chat_id
-    WHERE k.org_id = ${input.orgId} AND k.worker_id = ${input.workerId} ORDER BY k.worker_id`;
-  if (row === undefined) return undefined;
-  return row.moved === 1
-    ? {
-        chatId: row.ownerChatId,
-        moved: { from: row.chatId, leadName: row.leadName },
-        audience: "owner" as const,
-      }
-    : {
-        chatId: row.chatId,
-        moved: undefined,
-        audience: row.context === "shared" ? ("chat" as const) : ("owner" as const),
-      };
-});
-
-/**
- * A moved worker's card in the chat it left keeps no words of its own: the fixed line, no model,
+ * A moved task's card in the chat it left keeps no words of its own: the fixed line, no model,
  * pull request or error, and closed, so nothing updates it there again.
  */
 export const freezeMovedCard = Effect.fn("KinChatSharing.freezeMovedCard")(function* (input: {
@@ -218,7 +174,7 @@ const OWNER_CARDS = ["deferral", "reminder", "scheduled_task"];
  * After a join, the chat's open cards from below its history floor stop taking taps there: the
  * owner's reminder, deferral and scheduled-task cards move to the owner chat of the lead they fire
  * with, on a new line there, and the rest close. Approval cards stay with their signed flow; task
- * cards follow their worker (`freezeMovedCard`).
+ * cards freeze and follow their task (`freezeMovedCard`).
  */
 export const settleCards = Effect.fn("KinChatSharing.settleCards")(function* (input: {
   readonly orgId: KinOrgId;

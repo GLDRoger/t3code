@@ -17,6 +17,7 @@ export const KIN_DAILY_LIMIT = {
   custom: "Set elsewhere",
   failed: "Couldn't change the daily limit.",
   waiting: "Waiting until tomorrow",
+  used: "Used today",
 };
 
 export interface KinDailyLimitChoice {
@@ -82,4 +83,24 @@ export function kinDailyLimitWaiting(budget: KinBudget | null): ReadonlyArray<{
       ? []
       : [{ agentId: agent.agentId, name: agent.name, line: parts.join(", ") }];
   });
+}
+
+const units = (n: number) =>
+  n >= 1_000_000
+    ? `${(n / 1_000_000).toFixed(1)}M`
+    : n >= 1_000
+      ? `${Math.round(n / 1_000)}k`
+      : `${Math.round(n)}`;
+const share = (used: number, limit: number | null) =>
+  limit === null
+    ? `${units(used)} units`
+    : `${Math.round((used / Math.max(limit, 1)) * 100)}% of the limit`;
+
+/** Today's spend against each limit: "agents 40% of the limit, tasks they started 1.2M units". */
+export function kinDailyLimitUsed(budget: KinBudget | null): string | null {
+  if (budget === null) return null;
+  return `agents ${share(budget.leadUnits, budget.limits.leadUnits)}, tasks they started ${share(
+    budget.workerUnits,
+    budget.limits.workerUnits,
+  )}`;
 }

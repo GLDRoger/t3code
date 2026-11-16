@@ -33,7 +33,6 @@ import { githubCommand } from "./githubWebhook.ts";
 import { importCommand } from "./importCommand.ts";
 import { statementCommand } from "./statementCommand.ts";
 import { pulseCommand } from "./pulseCommand.ts";
-import { workerShellCommand } from "./workerShell.ts";
 
 export class KinLeadCliError extends Schema.TaggedError<KinLeadCliError>()("KinLeadCliError", {
   message: Schema.String,
@@ -120,7 +119,7 @@ const describe = (lead: Provision.LeadSummary) =>
     `  owner chat ${lead.ownerChatId}, created by ${lead.createdByPersonId ?? "unknown"}`,
     `  charter ${lead.charter === "" ? "none" : JSON.stringify(lead.charter)}`,
     `  model ${lead.model.instanceId}:${lead.model.model}`,
-    `  worker projects ${lead.workerProjects.length === 0 ? "none" : lead.workerProjects.join(", ")}`,
+    `  projects ${lead.workerProjects.length === 0 ? "none" : lead.workerProjects.join(", ")}`,
     `  ${lead.retiredAt === null ? "live" : `retired ${lead.retiredAt}`}`,
   ].join("\n");
 
@@ -163,10 +162,10 @@ const charterFlag = Flag.String("charter").pipe(
   ),
 );
 
-const workerProjectsFlag = Flag.String("worker-project").pipe(
+const workerProjectsFlag = Flag.String("project").pipe(
   Flag.withSchema(ProjectId),
   Flag.withDescription(
-    "A project the agent is held to in chats its owner didn't put it in. Repeat for more. The owner's own chats with it reach every repository in the worker environment.",
+    "A project whose pull requests the agent may ask the owner to merge. Repeat for more.",
   ),
   Flag.atLeast(0),
 );
@@ -196,7 +195,7 @@ const createCommand = Command.make("create", {
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Create an agent with a direct chat to its owner, where it posts, starts workers and opens draft PRs; merges still need the owner's signed approval. An org can have many; a re-run with the same name and domain reports the existing agent.",
+    "Create an agent with a direct chat to its owner, where it posts and starts work; merges still need the owner's signed approval. An org can have many; a re-run with the same name and domain reports the existing agent.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
@@ -246,7 +245,7 @@ const retireCommand = Command.make("retire", {
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Retire an agent. Nothing is deleted and `kin lead restore` brings it back; its turns, workers, timers and approval requests stop now.",
+    "Retire an agent. Nothing is deleted and `kin lead restore` brings it back; its turns, tasks, timers and approval requests stop now.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
@@ -256,7 +255,7 @@ const retireCommand = Command.make("retire", {
           return yield* Console.log(encodeJson({ _tag: result._tag, lead: result.lead }));
         yield* Console.log(
           result._tag === "retired"
-            ? `Retired ${result.lead.name} (${result.lead.agentId}). Nothing more of it runs; a running server stops its turn and its workers within a minute, a stopped one when it next starts.`
+            ? `Retired ${result.lead.name} (${result.lead.agentId}). Nothing more of it runs; a running server stops its turn and its tasks within a minute, a stopped one when it next starts.`
             : `${result.lead.name} (${result.lead.agentId}) was already retired at ${result.lead.retiredAt}.`,
         );
       }),
@@ -270,7 +269,7 @@ const restoreCommand = Command.make("restore", {
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Bring a retired agent back, with its chats, timers and schedules. Stopped workers stay stopped.",
+    "Bring a retired agent back, with its chats, timers and schedules. Stopped tasks stay stopped.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
@@ -298,14 +297,14 @@ const projectsCommand = Command.make("projects", {
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
-    "Replace the projects a live agent is held to in chats its owner didn't put it in. Pass none to clear them. Applies to its next tool call.",
+    "Replace the projects whose pull requests a live agent may ask the owner to merge. Pass none to clear them. Applies to its next tool call.",
   ),
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
       Effect.gen(function* () {
         const result = yield* provision.setWorkerProjects(flags.agentId, flags.workerProjects);
         if (flags.json) return yield* Console.log(encodeJson(result));
-        yield* Console.log(`Updated worker projects:\n${describe(result.lead)}`);
+        yield* Console.log(`Updated projects:\n${describe(result.lead)}`);
       }),
     ),
   ),
@@ -343,7 +342,7 @@ export const kinCommand = Command.make("kin").pipe(
   Command.withSubcommands([
     Command.make("lead").pipe(
       Command.withDescription(
-        "Create, list and retire this host's Kin agents, and set their worker projects, charters and characters.",
+        "Create, list and retire this host's Kin agents, and set their projects, charters and characters.",
       ),
       Command.withSubcommands([
         createCommand,
@@ -360,6 +359,5 @@ export const kinCommand = Command.make("kin").pipe(
     peopleCommand,
     pulseCommand,
     statementCommand,
-    workerShellCommand,
   ]),
 );

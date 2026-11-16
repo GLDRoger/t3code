@@ -1,10 +1,4 @@
-import {
-  KinAgentId,
-  type KinChatId,
-  type KinOrgId,
-  type KinWorkerId,
-  type MemoryItemHead,
-} from "@t3tools/contracts";
+import { KinAgentId, type KinChatId, type KinOrgId, type MemoryItemHead } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -13,9 +7,9 @@ import { KinRecords, type Writer } from "./KinRecords.ts";
 import { endOfDay, ownerZone } from "./recordRows.ts";
 
 /**
- * Brings what leads already tracked into Work: every running worker, and the open commitments and
- * objectives in memory. Each becomes an entry keyed by where it came from (`worker:`, `memory:`),
- * so running it again, at every start, adds only what is new and never overwrites an entry.
+ * Brings what leads already tracked into Work: the open commitments and objectives in memory. Each
+ * becomes an entry keyed by where it came from (`memory:`), so running it again, at every start,
+ * adds only what is new and never overwrites an entry.
  * Memory is read, never written: the index stops listing those two kinds instead (`buildIndex`).
  */
 
@@ -52,18 +46,7 @@ export const importWork = Effect.fn("KinWorkImport.run")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
-  let workers = 0;
   let memory = 0;
-  const running = yield* sql<{
-    workerId: KinWorkerId;
-    agentId: KinAgentId;
-    title: string | null;
-    chatId: KinChatId | null;
-  }>`SELECT k.worker_id AS "workerId", k.agent_id AS "agentId", k.title, k.chat_id AS "chatId"
-    FROM kin_workers k WHERE k.org_id = ${orgId} AND k.ended_at IS NULL AND k.review_of IS NULL
-      AND NOT EXISTS (SELECT 1 FROM kin_record_links l WHERE l.org_id = k.org_id
-        AND l.kind = 'worker' AND l.target = k.worker_id)
-    ORDER BY k.started_at, k.worker_id`;
   // An entry the owner dropped since stays dropped: a run again adds only what is new.
   const unlessDropped = <E extends { readonly reason?: string }, R>(
     create: Effect.Effect<{ readonly created: boolean }, E, R>,
@@ -74,26 +57,6 @@ export const importWork = Effect.fn("KinWorkImport.run")(function* (
         () => Effect.succeed({ created: false }),
       ),
     );
-  for (const worker of running) {
-    const { created } = yield* unlessDropped(
-      records.create(orgId, writer, {
-        originKey: `worker:${worker.workerId}`,
-        title: worker.title?.trim().slice(0, 280) || "Coding task",
-        state: "doing",
-        owner: { _tag: "agent", agentId: worker.agentId },
-        category: "task",
-        links: [
-          {
-            kind: "worker",
-            target: worker.workerId,
-            relation: "attempt",
-            label: worker.title?.slice(0, 280) ?? null,
-          },
-        ],
-      }),
-    );
-    if (created) workers++;
-  }
   const open = items.filter(
     (item) =>
       IMPORTED.has(item.kind) &&
@@ -124,5 +87,5 @@ export const importWork = Effect.fn("KinWorkImport.run")(function* (
       if (created) memory++;
     }
   }
-  return { workers, memory };
+  return { memory };
 });

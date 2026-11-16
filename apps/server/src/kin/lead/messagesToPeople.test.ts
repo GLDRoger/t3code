@@ -47,7 +47,6 @@ import { KinLeadToolkit } from "./mcp/tools.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
-import { KinWorkers } from "./Workers.ts";
 
 const chief = KinAgentId.make("chief");
 const threadId = ThreadId.make("chief-thread");
@@ -81,7 +80,6 @@ const kinServices = Layer.unwrap(
     return Layer.mergeAll(
       Handoff.layer,
       Team.layer,
-      Layer.mock(KinWorkers)({}),
       Layer.mock(LeadMemory)({
         defer: (_scope, input) =>
           Effect.succeed({ itemId: KinMemoryItemId.make(`def-${input.what}`) }),

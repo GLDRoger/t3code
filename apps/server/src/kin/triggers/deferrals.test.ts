@@ -1,7 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
-  EnvironmentId,
   KinAgentId,
   KinChatId,
   KinDeferralCard,
@@ -35,7 +34,6 @@ import * as Budget from "../lead/KinBudget.ts";
 import * as Queue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
-import * as WorkerEnvironment from "../lead/workerEnvironment.ts";
 import { laneFor } from "../reply/KinReplyBridge.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
@@ -93,21 +91,11 @@ const fakeGithub = (states: Map<string, Omit<GithubLinkState, "link">>) => ({
       ),
     ),
 });
-const workerEnvironment = (configured: boolean) =>
-  WorkerEnvironment.KinWorkerEnvironment.of({
-    environmentId: configured ? Option.some(EnvironmentId.make("workers")) : Option.none(),
-    call: Effect.fn("test.workerEnvironmentCall")(function* () {
-      return yield* Effect.die("Deferral tests start no workers.");
-    }),
-    stopServer: Effect.die("Deferral tests start no workers."),
-    startServer: Effect.die("Deferral tests start no workers."),
-  });
-// Stands in for LEAD-11, the worker environment and #44's GitHub client.
+// Stands in for LEAD-11 and #44's GitHub client.
 const openGates =
   (states: Map<string, Omit<GithubLinkState, "link">>, stopped = false) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
-      Effect.provideService(WorkerEnvironment.KinWorkerEnvironment, workerEnvironment(true)),
       Effect.provideService(Deferrals.KinDeferralStopSwitch, {
         isStopped: () => Effect.succeed(stopped),
       }),
@@ -395,7 +383,7 @@ it.effect("asks when the stop switch is on, and production defaults never start"
     assert.equal((yield* runOf("def-1"))?.state, "asked");
     assert.include((yield* cardOf("def-1")).text, "the stop switch is on");
 
-    // No stop switch, GitHub reader, worker release or L2 yet: every gate asks.
+    // No stop switch, GitHub reader or L2 yet: every gate asks.
     yield* service
       .syncItem(linked)
       .pipe(Effect.provideService(KinDeferralGithubReader, KinDeferralGithubReader.defaultValue()));
@@ -406,7 +394,6 @@ it.effect("asks when the stop switch is on, and production defaults never start"
     for (const reason of [
       "couldn't verify GitHub",
       "the stop switch is on",
-      "workers can't launch yet",
       "starting work isn't open to me here",
     ])
       assert.include(text, reason);
@@ -488,16 +475,13 @@ it.effect(
             isStopped: () => Effect.succeed(true),
           }),
         ),
-        yield* tap("start_now", "gated", staged).pipe(
-          Effect.provideService(WorkerEnvironment.KinWorkerEnvironment, workerEnvironment(false)),
-        ),
       ];
       yield* sql`UPDATE kin_leads SET level = 'L1' WHERE org_id = ${orgId}`;
       refusals.push(yield* tap("start_now", "level", staged));
       yield* sql`UPDATE kin_leads SET level = 'L2' WHERE org_id = ${orgId}`;
       assert.deepStrictEqual(
         refusals.map((result) => result._tag === "Failure" && result.failure.cause),
-        ["stopped", "workers_blocked", "below_l2"],
+        ["stopped", "below_l2"],
       );
       assert.deepStrictEqual({ run: yield* runOf("def-1"), card: yield* cardOf("def-1") }, before);
       assert.lengthOf(yield* starts(), 0);

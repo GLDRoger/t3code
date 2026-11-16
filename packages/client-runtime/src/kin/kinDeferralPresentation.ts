@@ -4,7 +4,6 @@ import {
   KinDeferralCard,
   type KinReminderCardAction,
   type KinScheduledTaskCardAction,
-  type KinWorkerPublishCardAction,
   type KinWidget,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -29,8 +28,7 @@ export type KinDeferralActionId =
   | "monday"
   | "cancel"
   | KinReminderCardAction
-  | KinScheduledTaskCardAction
-  | KinWorkerPublishCardAction;
+  | KinScheduledTaskCardAction;
 export type KinDeferralPhase =
   | "confirmed"
   | "heads_up"
@@ -159,18 +157,6 @@ export const KIN_DEFERRAL_ACTIONS: Record<KinDeferralActionId, KinDeferralAction
     id: "delete",
     label: "Delete",
     accessibilityLabel: "Delete this scheduled task",
-    tone: "secondary",
-  },
-  publish: {
-    id: "publish",
-    label: "Publish",
-    accessibilityLabel: "Publish these changes to GitHub",
-    tone: "secondary",
-  },
-  dont_publish: {
-    id: "dont_publish",
-    label: "Don't publish",
-    accessibilityLabel: "Don't publish these changes",
     tone: "secondary",
   },
 };
@@ -397,7 +383,6 @@ export function kinActionFailureNotice(
 /** Why the host may refuse [Start now] (TRIG-8's `Deferrals.act`), in the owner's words. */
 export const KIN_START_NOW_REFUSALS = {
   stopped: "Starts are paused for now. Ask your agent in the chat.",
-  workers_blocked: "Kin can't start new work right now. Ask your agent in the chat.",
   below_l2: "Your agent can't start work from here. Ask it in the chat.",
 } as const satisfies Record<string, string>;
 
@@ -480,8 +465,6 @@ const SERVER_DONE: Partial<Record<KinDeferralActionId, string>> = {
   pause: "Paused.",
   resume: "Resumed.",
   delete: "Deleted.",
-  publish: "Publishing.",
-  dont_publish: "Kin won't publish it.",
 };
 
 /**

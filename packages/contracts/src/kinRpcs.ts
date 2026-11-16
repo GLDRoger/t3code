@@ -46,7 +46,6 @@ import {
 import { KinPushRpcs, KIN_PUSH_RPC_SCOPES } from "./kinPush.ts";
 import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
 import { KinVisualRpcs, KIN_VISUAL_RPC_SCOPES } from "./kinVisual.ts";
-import { KinWorkerNetworkRpcs, KIN_WORKER_NETWORK_RPC_SCOPES } from "./kinWorkerNetwork.ts";
 import { KinConnectionRpcs, KIN_CONNECTION_RPC_SCOPES } from "./kinConnections.ts";
 import { KinSocialRpcs, KIN_SOCIAL_RPC_SCOPES } from "./kinSocial.ts";
 import {
@@ -217,7 +216,6 @@ export const KinRpcs = [
   ...KinGithubWebhookRpcs,
   ...KinPushRpcs,
   ...KinPeopleRpcs,
-  ...KinWorkerNetworkRpcs,
   ...KinConnectionRpcs,
   ...KinSocialRpcs,
   ...KinRefreshRpcs,
@@ -236,7 +234,6 @@ export const KIN_RPC_SCOPES = {
   ...KIN_PUSH_RPC_SCOPES,
   ...KIN_PEOPLE_RPC_SCOPES,
   ...KIN_VISUAL_RPC_SCOPES,
-  ...KIN_WORKER_NETWORK_RPC_SCOPES,
   ...KIN_CONNECTION_RPC_SCOPES,
   ...KIN_SOCIAL_RPC_SCOPES,
   ...KIN_REFRESH_RPC_SCOPES,
@@ -442,9 +439,6 @@ const KIN_RPC_ACCESS = {
   "kin.people.setAccess": "org_owner",
   "kin.people.setPlaces": "owner_level",
   "kin.access.me": "person",
-  "kin.workers.network.get": "owner_level",
-  "kin.workers.network.allow": "owner_level",
-  "kin.workers.network.remove": "owner_level",
   "kin.refreshes.subscribe": "person",
   // Needs attention and goals: the service shows a member only what they may see.
   "kin.pulse.read": "person",
@@ -661,9 +655,6 @@ export const KIN_RPC_AGGREGATES = {
   "kin.webhooks.github.rotate": "kin-webhooks",
   "kin.webhooks.github.remove": "kin-webhooks",
   "kin.webhooks.github.status": "kin-webhooks",
-  "kin.workers.network.get": "kin-workers",
-  "kin.workers.network.allow": "kin-workers",
-  "kin.workers.network.remove": "kin-workers",
   "kin.connections.list": "kin-connections",
   "kin.connections.get": "kin-connections",
   "kin.connections.add": "kin-connections",

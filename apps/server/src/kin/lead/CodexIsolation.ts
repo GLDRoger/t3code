@@ -18,7 +18,6 @@ import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts
 import { instructions } from "./instructions.ts";
 import { GH_SIGN_FOLDER } from "./LeadIsolation.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
-import { isWorkThread } from "./workThread.ts";
 
 type Json = Schema.Json;
 type Params = Readonly<Record<string, unknown>>;
@@ -205,7 +204,7 @@ export const codexClientFactory = <E, R>(
         open: Effect.fn("KinCodexIsolation.open")(function* (input) {
           const client = yield* factory.open(input);
           const threadId: ThreadId = input.threadId;
-          if (threadId.startsWith(dreamThreadPrefix) || isWorkThread(threadId)) return client;
+          if (threadId.startsWith(dreamThreadPrefix)) return client;
           const cwd = input.runtimePolicy.cwd ?? undefined;
           const isKin =
             cwd !== undefined &&

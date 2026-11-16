@@ -20,7 +20,6 @@ import {
   KinMemberId,
   KinMemoryItemId,
   KinRecordId,
-  KinWorkerId,
   ScheduledTaskId,
   ScheduledTaskWebhookDeliveryId,
   type KinEvent,
@@ -857,7 +856,7 @@ it.effect(
       // Mid-run, the lead is working; then its answer posts and the run ends.
       yield* Queue.offer(fake.live, itemEvent(tool("t", 1, "mcp__kin__kin_journal", runId)));
       fake.items = [
-        text("a", 2, "I keep track of your repos, run workers and remind you of things.", runId),
+        text("a", 2, "I keep track of your repos, start tasks and remind you of things.", runId),
         tool("t2", 3, "Write", runId),
       ];
       yield* complete;
@@ -1428,26 +1427,6 @@ const WAKE_KINDS: Record<KinEvent["_tag"] | "hand-over", WakeCase> = {
         reason: "assigned",
       })),
   },
-  "worker.report": {
-    owed: true,
-    event: ({ direct }) =>
-      Effect.succeed((base) => ({
-        ...base,
-        _tag: "worker.report",
-        provenance: { _tag: "system" },
-        workerId: KinWorkerId.make("worker-1"),
-        chatId: direct,
-        report: {
-          result: "done",
-          summary: "Fixed the login bug.",
-          evidence: [],
-          openQuestions: [],
-          memorySuggestions: [],
-          misleadingMemory: [],
-          parsed: true,
-        },
-      })),
-  },
   // T3's notice that a task the owner asked for ended: what changed, the PR, the screenshots.
   "task.finished": {
     owed: true,
@@ -1599,13 +1578,7 @@ it.effect.each(
 );
 
 // Review 48: ten notices this hour refused a hand-over or task reply, and it counted as answered.
-it.effect.each([
-  "hand-over",
-  "record.changed",
-  "worker.report",
-  "task.finished",
-  "github",
-] as const)(
+it.effect.each(["hand-over", "record.changed", "task.finished", "github"] as const)(
   "the hourly notice limit holds back only unprompted notices, never an owed reply (%s)",
   (kind) =>
     Effect.gen(function* () {

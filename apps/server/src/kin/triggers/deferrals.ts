@@ -28,7 +28,6 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { type DeferralSource, firingOrigin } from "./deferralOrigin.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
-import { workersConfigured } from "../lead/workerEnvironment.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as MemoryWriter from "../memory/MemoryWriter.ts";
@@ -511,7 +510,6 @@ const make = Effect.gen(function* () {
             const dueAt = Date.parse(card.dueAt);
             if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
               return yield* Effect.fail("stopped" as const);
-            if (!(yield* workersConfigured)) return yield* Effect.fail("workers_blocked" as const);
             const lead = yield* deferralLead(sql, orgId, item.head);
             if (lead === undefined || !startsAtLevel(lead.level))
               return yield* Effect.fail("below_l2" as const);

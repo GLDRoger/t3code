@@ -273,12 +273,27 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
       status, event_ids)
     VALUES ('w-old', ${orgId}, ${finance}, 'thread-fin', 'test', 0, 'completed', '[]')`;
-  yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id,
-      model_json, provenance_json, status, started_at, ended_at)
-    VALUES ('worker-1', ${orgId}, ${finance}, 'w-old', 'build', 'thread-worker-1', '{}', '{}',
-      'failed', ${B}, ${B + DAY})`;
-  yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation, created_at)
-    VALUES (${orgId}, 'r-W-7', 'worker', 'worker-1', 'attempt', 0)`;
+  // A task Finance delegated waits on a decision from B + 1 day; a closed one says nothing.
+  const task = (id: string, status: string, closed: string | null) =>
+    sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_agent_id,
+        author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body,
+        mentions_json, status, created_at)
+      VALUES (${`m-${id}`}, ${orgId}, ${`chat-${finance}`}, ${id === "task-1" ? 1 : 2}, 'agent',
+        ${finance}, ${owner}, 'thread-fin', 'member-fin', 'member', 'text', '', '[]', 'posted',
+        ${stamp})`.pipe(
+      Effect.andThen(
+        sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
+            revision, state_json, awaiting_json, closed_at, updated_at)
+          VALUES (${id}, ${orgId}, ${`chat-${finance}`}, ${`m-${id}`}, 'native', 'task', 1,
+            ${JSON.stringify({ threadId: `thread-${id}`, title: "Invented export", status })},
+            '[]', ${closed}, ${DateTime.formatIso(DateTime.makeUnsafe(B + DAY))})`,
+      ),
+    );
+  // The cards alone: their chat member and thread rows add nothing here.
+  yield* sql`PRAGMA foreign_keys = OFF`;
+  yield* task("task-1", "needs_decision", null);
+  yield* task("task-2", "blocked", DateTime.formatIso(DateTime.makeUnsafe(B + DAY)));
+  yield* sql`PRAGMA foreign_keys = ON`;
 });
 
 // Open PRs as webhooks left them: #1 opened at B with a review asked at B + 2 days and failing
@@ -316,7 +331,7 @@ const SENSES: ReadonlyArray<readonly [string, string, number]> = [
   // Budgets read this month's spending, so they turn on when the month does.
   ["budget_near", "b-software", B],
   ["budget_over", "b-travel", B],
-  ["worker_failed", "worker-1", B + DAY],
+  ["task_stuck", "thread-task-1", B + DAY],
   // Lumen's last contact is INV-5, issued at B - 30 days; cold at the default 30 days.
   ["client_cold", "C-1", B],
   ["client_waiting_on_us", "C-1", B + 5 * DAY + 24 * HOUR],
@@ -407,14 +422,14 @@ describe("KinPulse", () => {
       const sql = yield* SqlClient.SqlClient;
       const queue = yield* KinEventQueue.KinEventQueue;
       const at = B + DAY + 12 * HOUR;
-      // Due at the same tick: the invoice and the worker are both the Finance agent's.
+      // Due at the same tick: the invoice and the task are both the Finance agent's.
       yield* sql`UPDATE kin_records SET due_at = ${at - 10 * DAY} WHERE record_id = 'r-INV-1'`;
       const first = yield* KinPulse.tick(orgId, at);
       const second = yield* KinPulse.tick(orgId, at + MINUTE);
       assert.lengthOf(second.woken, 0);
       assert.includeMembers(
         first.woken.map((key) => key.split(":")[0]),
-        ["invoice_overdue", "worker_failed", "budget_over"],
+        ["invoice_overdue", "task_stuck", "budget_over"],
       );
       const events = yield* sql<{ agent: string; tag: string }>`SELECT agent_id AS agent, tag
         FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY event_id`;

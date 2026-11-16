@@ -50,7 +50,7 @@ import * as KinRecords from "./KinRecords.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { teamVisible } from "./teamView.ts";
-import { sensitiveShown } from "./workerAttempts.ts";
+import { sensitiveShown } from "./sensitiveReads.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Docs from "./docs.ts";
 import * as OwnerClients from "./ownerClients.ts";
@@ -523,19 +523,9 @@ const head = (id: string, fields: Partial<MemoryItemHead>) =>
     ...fields,
   }) as MemoryItemHead;
 
-it.effect("the import brings running workers and open commitments and objectives in once", () =>
+it.effect("the import brings open commitments and objectives in once", () =>
   Effect.gen(function* () {
     yield* seed;
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
-      VALUES ('old', ${orgId}, ${lead}, 'test', 0, 'completed', '[]')`;
-    yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id,
-        model_json, provenance_json, status, started_at, title)
-      VALUES ('running', ${orgId}, ${lead}, 'old', 'build', 'running-thread', '{}', '{}', 'running',
-        0, 'Invented README fix'),
-        ('ended', ${orgId}, ${lead}, 'old', 'build', 'ended-thread', '{}', '{}', 'completed', 0,
-        'Invented old fix')`;
-    yield* sql`UPDATE kin_workers SET ended_at = 1 WHERE worker_id = 'ended'`;
     const items = [
       head("promise", { due: "2026-11-20", chat: "other-chat" as never }),
       head("goal", { kind: "objective", sensitive: undefined }),
@@ -543,13 +533,12 @@ it.effect("the import brings running workers and open commitments and objectives
       head("fact", { kind: "claim" }),
       head("wrong", { invalid_at: at }),
     ];
-    assert.deepStrictEqual(yield* importWork(orgId, items), { workers: 1, memory: 2 });
+    assert.deepStrictEqual(yield* importWork(orgId, items), { memory: 2 });
     const records = yield* KinRecords.KinRecords;
     const rows = (yield* records.query(orgId, {})).rows;
     assert.sameDeepMembers(
       rows.map((row) => [row.title, row.state, row.ownerId, row.sensitive]),
       [
-        ["Invented README fix", "doing", lead, 0],
         ["Invented promise", "open", other, 0],
         // Unlabelled memory stays sensitive.
         ["Invented goal", "open", lead, 1],
@@ -564,8 +553,8 @@ it.effect("the import brings running workers and open commitments and objectives
     yield* records.update(orgId, { actor: { _tag: "system" }, via: "owner" }, goal.key, {
       state: "dropped",
     });
-    assert.deepStrictEqual(yield* importWork(orgId, items), { workers: 0, memory: 0 });
-    assert.lengthOf((yield* records.query(orgId, {})).rows, 3);
+    assert.deepStrictEqual(yield* importWork(orgId, items), { memory: 0 });
+    assert.lengthOf((yield* records.query(orgId, {})).rows, 2);
     assert.include(yield* records.get(orgId, promise.key), { state: "done" });
     assert.include(yield* records.get(orgId, goal.key), { state: "dropped" });
   }).pipe(Effect.provide(layer)),

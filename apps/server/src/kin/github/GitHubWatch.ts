@@ -20,7 +20,7 @@ import { KinServer } from "../KinServer.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { githubClosed } from "../work/workerEntries.ts";
+import { githubClosed } from "../work/githubEntries.ts";
 import { isAgentText, signed } from "./agentMark.ts";
 import {
   decideTriggers,

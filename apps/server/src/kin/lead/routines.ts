@@ -33,8 +33,9 @@ export interface MorningFacts {
   /** `off` without the Kin App; otherwise what the read missed, empty when complete. */
   readonly github: "off" | ReadonlyArray<RoutineGithubGap>;
   readonly objectives: ReadonlyArray<RoutineRow>;
-  readonly workersRunning: number;
-  readonly workersBlocked: ReadonlyArray<RoutineRow>;
+  /** Tasks agents delegated, from their cards. */
+  readonly tasksRunning: number;
+  readonly tasksBlocked: ReadonlyArray<RoutineRow>;
   readonly postponed: number;
   readonly yesterdayUnits: number | null;
   readonly pastReview: ReadonlyArray<RoutineRow>;
@@ -136,13 +137,13 @@ function morningLines(facts: MorningFacts) {
         ? []
         : [`GitHub, partial: ${facts.github.map((gap) => githubGaps[gap]).join("; ")}.`]),
     ...inline("Objectives at risk", facts.objectives),
-    ...(facts.workersRunning === 0 && facts.workersBlocked.length === 0
+    ...(facts.tasksRunning === 0 && facts.tasksBlocked.length === 0
       ? []
       : [
-          `Workers: ${facts.workersRunning} running, ${facts.workersBlocked.length} blocked${
-            facts.workersBlocked.length === 0
+          `Tasks: ${facts.tasksRunning} running, ${facts.tasksBlocked.length} stuck${
+            facts.tasksBlocked.length === 0
               ? ""
-              : ` (${facts.workersBlocked
+              : ` (${facts.tasksBlocked
                   .slice(0, INLINE_ENTRIES)
                   .map((row) => escapeMarkdown(row.title))
                   .join("; ")})`
@@ -196,7 +197,7 @@ const sections = (
         ["review_requested", facts.reviews],
         ["ci_red", facts.ciRed],
         ["objective_at_risk", facts.objectives],
-        ["worker", facts.workersBlocked],
+        ["worker", facts.tasksBlocked],
         ["past_review", facts.pastReview],
       ]
     : [

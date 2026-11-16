@@ -16,7 +16,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { isWorkThread } from "../kin/lead/workThread.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -358,8 +357,6 @@ export const make = Effect.gen(function* () {
       ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       ...(input.projectCwd === undefined ? {} : { projectCwd: input.projectCwd }),
     };
-    // Repository code, run as this server's user, for an agent Kin gave no shell.
-    if (isWorkThread(input.threadId)) return { status: "skipped-for-link" } as const;
     // A thread whose origin cannot be read might be a link's: run nothing.
     const thread = yield* threads.getThreadShell(ThreadId.make(input.threadId)).pipe(
       Effect.mapError(

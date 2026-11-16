@@ -32,15 +32,6 @@ const item = {
   trust: "owner",
   links: [],
 };
-const report = {
-  result: "done",
-  summary: "Built contracts",
-  evidence: [{ kind: "commit", ref: "abc", note: "Verified" }],
-  openQuestions: [],
-  memorySuggestions: [{ kind: "decision", title: "Identity", body: "Use agentId", links: [] }],
-  misleadingMemory: [{ itemId: "item-1", why: "Outdated" }],
-  parsed: true,
-};
 const event = {
   orgId: "org-1",
   agentId: "agent-1",
@@ -96,7 +87,6 @@ const eventSamples = {
   routine: { ...event, _tag: "routine", routine: "morning_brief" },
   watchdog: { ...event, _tag: "watchdog", finding: "Stale", itemIds: ["item-1"] },
   pulse: { ...event, _tag: "pulse", factKeys: ["task_late:W-1:due=0"] },
-  "worker.report": { ...event, _tag: "worker.report", workerId: "worker-1", report },
   "record.changed": {
     ...event,
     _tag: "record.changed",
@@ -154,14 +144,6 @@ const samples = {
   MemoryItemHead: {
     schema: Kin.MemoryItemHead,
     values: [{ ...item, orgId: "org-1", path: "deferrals/item-1.md" }],
-  },
-  WorkerReport: {
-    schema: Kin.WorkerReport,
-    values: [
-      report,
-      { ...report, parsed: false, result: "blocked", evidence: [{ kind: "link", ref: "thread" }] },
-      { ...report, result: "needs_decision" },
-    ],
   },
   KinEvent: {
     schema: Kin.KinEvent,
@@ -233,7 +215,6 @@ describe("Kin lead contracts", () => {
   });
 
   it.each([
-    { schema: Kin.WorkerReport, value: { ...report, summary: "x".repeat(801) } },
     { schema: Kin.KinLead, value: { ...lead, levelSince: "yesterday" } },
     { schema: Kin.KinLead, value: { ...lead, levelSince: "2026-11-07T05:30:00.000+05:30" } },
     ...[
