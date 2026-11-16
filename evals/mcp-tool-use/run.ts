@@ -96,6 +96,11 @@ import {
   type State,
 } from "./margin.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
+import { type AppServer, type AppServerEvent, openAppServer } from "./appServer.ts";
+import {
+  CONFINED_CONFIG,
+  codexInstructions,
+} from "../../apps/server/src/kin/lead/CodexIsolation.ts";
 import {
   CAPTION_PROMPT,
   classifySegment,
@@ -1783,6 +1788,8 @@ type Config = {
   readonly effort: string;
   readonly maxSteps: number;
   readonly shellModel: ShellModel;
+  /** `--harness app-server`: GPT models run in `codex app-server` as Kin runs them (`CodexIsolation`). */
+  readonly appServer?: AppServer;
 };
 
 /**
@@ -2474,6 +2481,8 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   base: Base,
   spent: { readonly usage: Usage; readonly shellUsage: Usage },
 ) {
+  if (config.appServer !== undefined)
+    return yield* runAppServerSample(testCase, config, config.appServer, base, spent);
   const sample = { ...makeSample(testCase, base), shellUsage: spent.shellUsage };
   yield* withDevices(sample);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
@@ -2611,6 +2620,143 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   };
 }, Effect.scoped);
 
+/** Earlier turns as Responses items; a tool call carries its namespace, as Codex records one. */
+const responsesHistory = (messages: ReadonlyArray<ApiMessage>, namespace: string): Array<unknown> =>
+  messages.flatMap((message) =>
+    message.content.flatMap((block): Array<unknown> => {
+      if (block.type === "tool_use")
+        return [
+          {
+            type: "function_call",
+            call_id: block.id,
+            name: valueText(block.name).replace(T3_PREFIX, ""),
+            namespace,
+            arguments: JSON.stringify(block.input ?? {}),
+          },
+        ];
+      if (block.type === "tool_result")
+        return [
+          {
+            type: "function_call_output",
+            call_id: block.tool_use_id,
+            output: valueText(block.content),
+          },
+        ];
+      if (!isText(block)) return [];
+      return [
+        {
+          type: "message",
+          role: message.role,
+          content: [
+            { type: message.role === "user" ? "input_text" : "output_text", text: block.text },
+          ],
+        },
+      ];
+    }),
+  );
+
+const APP_SERVER_NAMESPACE = "t3_code";
+
+/**
+ * One sample in `codex app-server`, confined as `CodexIsolation` confines a Kin thread: Kin's
+ * instructions as the base instructions, no environment, and the turn's T3 and Kin tools as dynamic
+ * tools that the case's mocks answer. A Claude lead's ToolSearch list becomes Codex's deferred loading.
+ */
+const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSample")(function* (
+  testCase: McpToolUseCase,
+  config: Config,
+  server: AppServer,
+  base: Base,
+  spent: { readonly usage: Usage; readonly shellUsage: Usage },
+) {
+  const t3 = [...new Map(base.t3.map((tool) => [tool.name, tool])).values()];
+  const sample: Sample = {
+    ...makeSample(testCase, base),
+    tools: t3,
+    shellUsage: spent.shellUsage,
+  };
+  const messages = buildMessages(sample).map((message) => ({
+    ...message,
+    // Claude Code's reminders (its ToolSearch list) are its harness, not the case.
+    content: message.content.filter((block) => !base.reminders.includes(block)),
+  }));
+  const last = messages.at(-1);
+  if (testCase.prompt === "" || last?.role !== "user")
+    return yield* Effect.die(new Error(`${testCase.id}: the app-server harness needs a prompt.`));
+  const prompt = last.content
+    .filter(isText)
+    .map((block) => block.text)
+    .join("\n\n");
+  const deferred = new Set(base.deferred.map((tool) => tool.name));
+  const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
+  const calls: Array<Call> = [];
+  let step = 0;
+  const result = yield* Effect.tryPromise({
+    try: () =>
+      server.runTurn({
+        model: config.model,
+        effort: config.effort,
+        baseInstructions: codexInstructions,
+        config: CONFINED_CONFIG,
+        namespace: APP_SERVER_NAMESPACE,
+        tools: t3.map((tool) => ({
+          name: tool.name.replace(T3_PREFIX, ""),
+          description: valueText(tool.description),
+          inputSchema: tool.input_schema,
+          deferLoading: deferred.has(tool.name),
+        })),
+        history: responsesHistory(messages.slice(0, -1), APP_SERVER_NAMESPACE),
+        prompt,
+        maxToolCalls: Math.max(config.maxSteps, testCase.maxSteps ?? 0) * 3,
+        onToolCall: (tool, args) => {
+          const use = {
+            type: "tool_use" as const,
+            id: `call_${step}`,
+            name: `${T3_PREFIX}${tool}`,
+            input: args,
+          };
+          const [recorded] = ranCalls(sample, step++, [use]);
+          if (recorded !== undefined) calls.push(recorded);
+          return runPromise(
+            answerToolCall(sample, config, filledEvent(testCase, use)).pipe(
+              Effect.map((answer) => {
+                settle(recorded, answer);
+                return { text: valueText(answer.content), failed: answer.is_error === true };
+              }),
+            ),
+          );
+        },
+      }),
+    catch: (cause) => new EvalToolCallError({ tool: "app-server", cause }),
+  });
+  spent.usage.input += result.usage.input - result.usage.cached;
+  spent.usage.cacheRead += result.usage.cached;
+  spent.usage.output += result.usage.output;
+  // The turn as the runner's other harnesses record it, so the graders read it the same way.
+  const responses = result.events.map((event: AppServerEvent) =>
+    event.type === "text"
+      ? [text(event.text)]
+      : [{ type: "tool_use", id: event.id, name: `${T3_PREFIX}${event.tool}`, input: event.args }],
+  );
+  sample.responses.push(...responses);
+  const finals = result.events.flatMap((event) =>
+    event.type === "text" && event.phase !== "commentary" ? [event.text] : [],
+  );
+  return {
+    calls,
+    text: shownText(responses),
+    stopReason: result.stopReason,
+    finalText: finals.at(-1) ?? "",
+    silent: rescuePrompt(sample) !== undefined,
+    linked: [...sample.linked],
+    usage: spent.usage,
+    shellUsage: sample.shellUsage,
+    latencyMs: result.ms,
+    reasoningTokens: result.usage.reasoning,
+    transcript: result.items,
+  };
+});
+
 type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   readonly role: string;
   readonly pass: boolean;
@@ -2620,6 +2766,7 @@ type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   readonly error?: string;
   readonly usage: Usage;
   readonly shellUsage: Usage;
+  readonly latencyMs?: number;
 };
 
 /** The share of samples that passed. Samples that errored are left out: NaN if all did. */
@@ -2659,6 +2806,15 @@ const spend = (usages: ReadonlyArray<Usage>, model: ShellModel | undefined) => {
 };
 
 const caseKey = (row: ResultRow) => row.id;
+/** The app-server harness times each turn; the others make one request per step and don't. */
+const latencyLine = (rows: ReadonlyArray<ResultRow>) => {
+  const times = rows.flatMap((row) => (row.latencyMs === undefined ? [] : [row.latencyMs]));
+  if (times.length === 0) return [];
+  const sorted = times.toSorted((a, b) => a - b);
+  const at = (q: number) =>
+    (sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]! / 1000).toFixed(1);
+  return [`- Turn latency: median ${at(0.5)} s, p90 ${at(0.9)} s, over ${times.length} turns.`];
+};
 /** Markdown report. With a baseline, each case shows its earlier pass rate and the change. */
 export const summarize = (
   rows: Array<ResultRow>,
@@ -2723,9 +2879,10 @@ export const summarize = (
     `- Cases: ${caseCount("pass")} pass, ${caseCount("margin")} pass within margin, ${caseCount("fail")} fail.`,
     ...(errors.length > 0 ? [errorNote] : []),
     codex
-      ? "- Cost: the agent is not priced. `vibeproxy` in `~/.codex/config.toml` may use a subscription or bill an API key per token; agent tokens are below."
+      ? "- Cost: the agent is not priced. GPT models run on a ChatGPT sign-in (`--harness app-server`) or the `vibeproxy` in `~/.codex/config.toml`; agent tokens are below."
       : `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample.`,
     `- Agent tokens: ${agent.tokens}${codex ? "." : ` ($${agent.cost.toFixed(2)}).`}`,
+    ...latencyLine(rows),
     `- Shell simulator (${options.shellModel}) tokens: ${shell.tokens} (API-price estimate $${shell.cost.toFixed(2)}).`,
     ...(codex
       ? [
@@ -2767,6 +2924,7 @@ const Flags = Schema.Struct({
   "stop-on-regression": Schema.Boolean,
   "regression-budget": Schema.optional(PositiveIntOrZero),
   context: Schema.Boolean,
+  harness: Schema.Literals(["capture", "app-server"]),
 });
 const decodeFlags = Schema.decodeUnknownEffect(Flags);
 const decodeCapture = Schema.decodeUnknownEffect(Schema.fromJsonString(Capture));
@@ -2812,6 +2970,8 @@ const main = Effect.gen(function* () {
       "regression-budget": string,
       // Prints the size of T3's text and tool schemas, then exits. Needs no template or key.
       context: { type: "boolean", default: false },
+      // GPT models only: replay the Codex capture through a proxy, or run in `codex app-server`.
+      harness: { ...string, default: "capture" },
     },
   });
   const flags = yield* decodeFlags({ template: "", ...values });
@@ -2840,6 +3000,9 @@ const main = Effect.gen(function* () {
   const wanted = flags.case?.flatMap((ids) => ids.split(","));
   const codex = isCodex(flags.model);
   const harness = codex ? "codex" : "claude";
+  // The app-server harness builds Kin's request as a Claude lead's, then runs it in Codex.
+  const appServer = codex && flags.harness === "app-server";
+  const replay = codex && !appServer;
   const duplicates = cases.filter((one, i) => cases.findIndex(({ id }) => id === one.id) !== i);
   if (duplicates.length > 0)
     return yield* Effect.die(
@@ -2850,9 +3013,15 @@ const main = Effect.gen(function* () {
       (wanted === undefined || wanted.includes(id)) &&
       (setup.harness === undefined || setup.harness === harness),
   );
-  const selectedCases = flags["first-per-area"]
-    ? matching.filter((one, i) => matching.findIndex(({ area }) => area === one.area) === i)
+  // Only a Kin lead runs in the app-server harness: other cases need the captured Codex harness.
+  const runnable = appServer
+    ? matching.filter(({ setup }) => setup.world?.kinLead === true)
     : matching;
+  if (runnable.length < matching.length)
+    yield* Effect.log(`Skipped ${matching.length - runnable.length} cases that are not Kin leads.`);
+  const selectedCases = flags["first-per-area"]
+    ? runnable.filter((one, i) => runnable.findIndex(({ area }) => area === one.area) === i)
+    : runnable;
   if (selectedCases.length === 0) return yield* Effect.die(new Error("No case matches --case."));
   const selected = yield* Effect.forEach(selectedCases, (testCase) =>
     Effect.gen(function* () {
@@ -2881,7 +3050,7 @@ const main = Effect.gen(function* () {
   // CLIProxyAPI capture.
   const templatePath =
     flags.template ||
-    path.join(import.meta.dirname, "templates", codex ? "codex.json.gz" : "claude.json.gz");
+    path.join(import.meta.dirname, "templates", replay ? "codex.json.gz" : "claude.json.gz");
   const templateBytes = yield* fs.readFile(templatePath);
   const template = new TextDecoder().decode(
     templatePath.endsWith(".gz") ? NodeZlib.gunzipSync(templateBytes) : templateBytes,
@@ -2896,7 +3065,7 @@ const main = Effect.gen(function* () {
     kinSession = false,
     kinShared = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
-    codex
+    replay
       ? decodeCodexCapture(template).pipe(
           Effect.map((capture) =>
             buildCodexBase(capture.request.provider_native, {
@@ -2937,7 +3106,7 @@ const main = Effect.gen(function* () {
   // Codex has no native subagents; its cases with that role run as top-level threads.
   // A Kin turn others read carries Kin's shared-turn line, as the server's prompt does.
   const baseKey = ({ setup, prompt }: McpToolUseCase) =>
-    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinSession === true}:${prompt.includes("{{SHARED_TURN}}")}`;
+    `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinSession === true}:${prompt.includes("{{SHARED_TURN}}")}`;
   const base = yield* buildFor("top", true, false);
   const bases = new Map<string, Base>([["top:true:false:false:false:false:false", base]]);
   for (const testCase of selected) {
@@ -3015,7 +3184,7 @@ const main = Effect.gen(function* () {
         }
       : undefined;
   const out = flags.out;
-  if ((!apiKey && !anthropic && !codex) || out === undefined) {
+  if ((!apiKey && !anthropic && (!codex || appServer)) || out === undefined) {
     const message =
       "Set ANTHROPIC_API_KEY, or ANTHROPIC_BASE_URL with ANTHROPIC_AUTH_TOKEN, and pass --out <directory>.";
     return yield* Effect.die(new Error(message));
@@ -3024,10 +3193,17 @@ const main = Effect.gen(function* () {
     apiKey,
     ...(anthropic ? { anthropic } : {}),
     model: flags.model,
-    ...(codex || !isPricedModel(flags["shell-model"]) ? { proxy: proxyConfig() } : {}),
+    ...(replay || !isPricedModel(flags["shell-model"]) ? { proxy: proxyConfig() } : {}),
     effort,
     maxSteps: flags["max-steps"] ?? (codex ? 10 : 6),
     shellModel: flags["shell-model"],
+    ...(appServer
+      ? {
+          appServer: yield* Effect.acquireRelease(Effect.sync(openAppServer), (server) =>
+            Effect.sync(server.close),
+          ),
+        }
+      : {}),
   };
   const previous =
     flags.baseline === undefined ? [] : yield* readNdjson(flags.baseline, decodeBaselineRow);
@@ -3138,7 +3314,7 @@ const main = Effect.gen(function* () {
     { concurrency: flags.concurrency, discard: true },
   ).pipe(Effect.ignore);
   const samples = flags.samples === undefined ? "2-3 (adaptive)" : flags.samples;
-  const header = `Commit \`${commit}\`, ${flags.model} at ${effort} effort, user instructions ${flags["user-instructions"]}, ${samples} samples per case, template \`${path.basename(templatePath)}\``;
+  const header = `Commit \`${commit}\`, ${flags.model}${appServer ? " (codex app-server)" : ""} at ${effort} effort, user instructions ${flags["user-instructions"]}, ${samples} samples per case, template \`${path.basename(templatePath)}\``;
   const finished = new Set(rows.map((row) => row.id)).size;
   const stopped =
     regressions.length === 0
@@ -3169,6 +3345,7 @@ const main = Effect.gen(function* () {
 
 if (import.meta.main) {
   main.pipe(
+    Effect.scoped,
     Effect.provide(
       Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer, FetchHttpClient.layer),
     ),
