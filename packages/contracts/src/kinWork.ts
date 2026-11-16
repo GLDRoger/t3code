@@ -225,6 +225,31 @@ export const KinRecordChange = Schema.Struct({
 });
 export type KinRecordChange = typeof KinRecordChange.Type;
 
+/**
+ * What the reader may do to an entry from its sheet, decided by the checks its writes run. A
+ * screen offers exactly these; absent from older hosts.
+ */
+export const KinRecordCan = Schema.Struct({
+  /** States it may move to from where it is now; empty when its state isn't theirs to change. */
+  states: Schema.Array(KinRecordState),
+  /** Title, notes, due and who it waits on. */
+  edit: Schema.Boolean,
+  /** Its client, and its project. */
+  party: Schema.Boolean,
+  project: Schema.Boolean,
+  /** Give it to someone else; take it back to themselves. */
+  give: Schema.Boolean,
+  takeBack: Schema.Boolean,
+  /** Mark it private; take the mark off. */
+  mark: Schema.Boolean,
+  unmark: Schema.Boolean,
+  /** Share it with the whole team or take that back (`kin.work.share`). */
+  share: Schema.Boolean,
+  /** Keep or decline an agent's suggestion. */
+  confirm: Schema.Boolean,
+});
+export type KinRecordCan = typeof KinRecordCan.Type;
+
 /** An entry with everything the entry sheet shows. */
 export const KinRecordDetail = Schema.Struct({
   ...KinRecord.fields,
@@ -251,6 +276,8 @@ export const KinRecordDetail = Schema.Struct({
   changes: Schema.Array(KinRecordChange),
   /** This entry's latest change number, links included: compare with a `changed` event's. */
   seq: Schema.optional(NonNegativeInt),
+  /** What the reader may do to it now. */
+  can: Schema.optional(KinRecordCan),
   /** The files its file fields keep, such as a receipt. */
   files: Schema.optional(Schema.Array(KinFileRef)),
   /** An invoice's payments, newest first, voided ones included. */

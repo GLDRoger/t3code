@@ -3,6 +3,8 @@ import {
   KinChatError,
   type KinOrgId,
   type KinRecord,
+  type KinRecordCan,
+  type KinRecordDetail,
   type KinWorkAssignInput,
   type KinWorkConfirmInput,
   type KinWorkCreateInput,
@@ -49,6 +51,7 @@ import {
   ownerZone,
   principal,
   type RecordRow,
+  samePrincipal,
   toRecord,
   unavailable,
   workFailure,
@@ -58,6 +61,7 @@ import {
   TEAM_REFUSED,
   viewerOfPeople,
   ledProjects,
+  teamCan,
   teamDetail,
   teamKeys,
   teamRecord,
@@ -155,12 +159,63 @@ export const inList = Effect.fn("KinWork.inList")(function* (
   const row = yield* records.get(orgId, key);
   // Work's edits also reach the lists defined in chat, whose own fields are typed there.
   const inIt =
-    row !== undefined &&
-    (row.registerId === list ||
-      (list === "work" && (!isBuiltIn(row.registerId) || row.registerId === "milestones")));
+    row !== undefined && (row.registerId === list || (list === "work" && workEdits(row)));
   if (row === undefined || !inIt) return yield* missing(key, list);
   return row;
 });
+/** Work's own edits reach this entry: a task, a milestone, or a list defined in chat. */
+const workEdits = (row: Pick<RecordRow, "registerId">) =>
+  row.registerId === "work" || row.registerId === "milestones" || !isBuiltIn(row.registerId);
+
+const NOTHING: KinRecordCan = {
+  states: [],
+  edit: false,
+  party: false,
+  project: false,
+  give: false,
+  takeBack: false,
+  mark: false,
+  unmark: false,
+  share: false,
+  confirm: false,
+};
+
+/**
+ * What this viewer may do to this entry from its sheet: for a teammate `teamCan` asks the rule
+ * their write runs; owner-level, the same checks `update`, `assign` and `share` make.
+ */
+const canOf = Effect.fn("KinWork.canOf")(function* (
+  viewer: Viewer,
+  orgId: KinOrgId,
+  detail: Pick<KinRecordDetail, "recordId" | "key" | "state" | "owner" | "confirmed">,
+  row: Pick<RecordRow, "registerId">,
+) {
+  const def = yield* listDef(orgId, row.registerId).pipe(workFailure);
+  const states = def?.states ?? [];
+  if (viewer.teammate)
+    return yield* teamCan(orgId, viewer.person.personId, detail, states).pipe(
+      workFailure,
+      Effect.map((can) => (def === undefined ? NOTHING : can)),
+    );
+  const edits = def !== undefined && workEdits(row);
+  const open = !isClosed(detail.state);
+  return {
+    states: edits ? states.filter((state) => state !== detail.state) : [],
+    edit: edits,
+    party: edits,
+    project: edits,
+    give: edits && open,
+    takeBack:
+      edits &&
+      open &&
+      !samePrincipal(detail.owner, { _tag: "person", personId: viewer.person.personId }),
+    mark: edits,
+    unmark: edits,
+    share: !UNSHARED.has(row.registerId),
+    confirm: edits && !detail.confirmed && open,
+  } satisfies KinRecordCan;
+});
+
 /**
  * A client or project named in Work. To a teammate there is none: any key is answered as one
  * never there, without reading it, so a key that exists tells them nothing.
@@ -399,7 +454,8 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   /** Their own write just made it private: they saw it until then, so the answer still reads. */
   justHidden = false,
 ) {
-  if (!viewer.teammate) return detail;
+  const can = yield* canOf(viewer, detail.orgId, detail, row);
+  if (!viewer.teammate) return { ...detail, can };
   const { personId } = viewer.person;
   const seen = yield* teamVisible(detail.orgId, personId, [detail.recordId]).pipe(workFailure);
   if (!seen.has(detail.recordId) && !justHidden)
@@ -428,7 +484,7 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
           !(yield* placesOf(detail.orgId, personId).pipe(workFailure)).clients
         ? named()
         : detail;
-  return yield* teamDetail(shown, personId, number, whole).pipe(workFailure);
+  return { ...(yield* teamDetail(shown, personId, number, whole).pipe(workFailure)), can };
 });
 
 type Counts = { open: number; doing: number; waiting: number; late: number; dueThisWeek: number };
