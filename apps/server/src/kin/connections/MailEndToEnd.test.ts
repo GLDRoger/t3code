@@ -66,38 +66,49 @@ const scope: McpInvocationScope = {
   },
 };
 
-type Card = Parameters<KinLevelGate["Service"]["ask"]>[1] & { readonly widgetId: string };
+type Card = Parameters<KinLevelGate["Service"]["ask"]>[1] & {
+  readonly widgetId: string;
+  /** Every ask's state when this card became visible, oldest first. */
+  asksWhenShown?: ReadonlyArray<string>;
+};
 const gateFor = (cards: Array<Card>) =>
-  Layer.mock(KinLevelGate)({
-    ask: (agent, input, bind) =>
-      Effect.gen(function* () {
-        const widgetId = `w-${cards.length + 1}`;
-        cards.push({ ...input, widgetId });
-        const widget = {
-          orgId: agent.orgId,
-          chatId: input.chatId,
-          widgetId: KinWidgetId.make(widgetId),
-          messageId: KinMessageId.make(`m-${widgetId}`),
-          widgetClass: "native" as const,
-          type: "choice",
-          revision: 1,
-          state: {},
-          source: null,
-          feed: null,
-          awaiting: [owner],
-          pinnedAt: null,
-          closedAt: null,
-          updatedAt: stamp,
-        };
-        if (bind !== undefined) yield* bind(widget).pipe(Effect.orDie);
-        return widget;
+  Layer.unwrap(
+    Effect.map(SqlClient.SqlClient, (sql) =>
+      Layer.mock(KinLevelGate)({
+        ask: (agent, input, bind) =>
+          Effect.gen(function* () {
+            const widgetId = `w-${cards.length + 1}`;
+            const card: Card = { ...input, widgetId };
+            cards.push(card);
+            const widget = {
+              orgId: agent.orgId,
+              chatId: input.chatId,
+              widgetId: KinWidgetId.make(widgetId),
+              messageId: KinMessageId.make(`m-${widgetId}`),
+              widgetClass: "native" as const,
+              type: "choice",
+              revision: 1,
+              state: {},
+              source: null,
+              feed: null,
+              awaiting: [owner],
+              pinnedAt: null,
+              closedAt: null,
+              updatedAt: stamp,
+            };
+            if (bind !== undefined) yield* bind(widget);
+            card.asksWhenShown = (yield* sql<{ state: string }>`SELECT state
+          FROM kin_connection_asks ORDER BY rowid`).map((one) => one.state);
+            return widget;
+          }).pipe(Effect.orDie),
+        closeReplaced: (_agent, widgetIds) =>
+          Effect.sync(() => {
+            for (const widgetId of widgetIds)
+              cards.push({ ...cards[0]!, widgetId: `closed:${widgetId}` });
+          }),
       }),
-    closeReplaced: (_agent, widgetIds) =>
-      Effect.sync(() => {
-        for (const widgetId of widgetIds)
-          cards.push({ ...cards[0]!, widgetId: `closed:${widgetId}` });
-      }),
-  });
+    ),
+  );
 
 const layerFor = (fake: FakeMail, cards: Array<Card>) =>
   Connections.layer.pipe(
@@ -408,6 +419,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           body: "Friday works. I'll confirm 11:00 tomorrow.",
         });
         const corrected = cards.at(-2)!;
+        // The first card is replaced by the time the correction shows, so no tap lands between.
+        assert.deepStrictEqual(corrected.asksWhenShown?.slice(-2), ["stale", "open"]);
         assert.strictEqual(cards.at(-1)!.widgetId, `closed:${card.widgetId}`);
         assert.include(yield* tap(card.widgetId, owner).pipe(Effect.flip), {
           reason: "widget_changed",
@@ -633,6 +646,44 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.deepStrictEqual(yield* tap("w-fresh", owner), { state: "sent", reason: null });
         assert.lengthOf(fake.sent(), 2);
         assert.strictEqual(fake.sent()[1]!.threadId, inbound.threadId);
+
+        // The mail service fails while sending: not sent, and the same mail comes back too.
+        const third = yield* reply("Yes, and the PDF is attached.");
+        fake.setDown(HELLO, true);
+        const broke = yield* tap(third.widgetId, owner);
+        if (broke === undefined || !("state" in broke) || broke.fresh === undefined)
+          return assert.fail("no fresh card after a failed send");
+        assert.strictEqual(broke.state, "failed");
+        assert.include(broke.reason ?? "", "The same mail is below");
+        fake.setDown(HELLO, false);
+        const retry = yield* connections.freshAsk(orgId, broke.fresh, NOW);
+        yield* retry.bind("w-retry");
+        assert.deepStrictEqual(yield* tap("w-retry", owner), { state: "sent", reason: null });
+        assert.lengthOf(fake.sent(), 3);
+
+        // Kin restarts between the Confirm and the send: at start the card fails, the mail is back.
+        const fourth = yield* reply("Yes. Thanks for checking.");
+        const sql = yield* SqlClient.SqlClient;
+        const confirmed = yield* sql.withTransaction(
+          connections.answerAsk({
+            orgId,
+            widgetId: fourth.widgetId,
+            personId: owner,
+            confirmed: true,
+            via: "tap",
+            now: NOW,
+          }),
+        );
+        assert.strictEqual(confirmed?._tag, "send");
+        const [cut] = yield* connections.interruptedSends(orgId, NOW + 1);
+        if (cut?.fresh === undefined) return assert.fail("no fresh card after a restart");
+        assert.deepInclude(cut, { widgetId: fourth.widgetId, state: "failed" });
+        assert.include(cut.reason ?? "", "may or may not have gone");
+        assert.lengthOf(yield* connections.interruptedSends(orgId, NOW + 1), 0);
+        const resumed = yield* connections.freshAsk(orgId, cut.fresh, NOW);
+        yield* resumed.bind("w-resumed");
+        assert.deepStrictEqual(yield* tap("w-resumed", owner), { state: "sent", reason: null });
+        assert.lengthOf(fake.sent(), 4);
       }),
     ),
   );

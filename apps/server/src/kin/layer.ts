@@ -3,6 +3,7 @@ import { KinChatRepository } from "./chat/KinChatRepository.ts";
 import type * as SqlClient from "effect/sql/SqlClient";
 import * as TaskCardUpdater from "./chat/TaskCardUpdater.ts";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as KinEnabled from "./KinEnabled.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -23,7 +24,7 @@ import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import * as FileSystem from "effect/FileSystem";
 import { ServerConfig } from "../config.ts";
-import { answerChoice } from "./work/cardAnswers.ts";
+import { answerChoice, resumeInterruptedSends } from "./work/cardAnswers.ts";
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
@@ -66,6 +67,14 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
       yield* (yield* KinChatService).attachChoiceAnswers((input) =>
         answerChoice(input, scope).pipe(Effect.provide(services), Effect.provide(files)),
+      );
+      yield* resumeInterruptedSends(owner.orgId, yield* Clock.currentTimeMillis).pipe(
+        Effect.provide(services),
+        Effect.provide(files),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't settle sends cut off by a restart", Cause.pretty(cause)),
+        ),
+        Effect.forkIn(scope),
       );
       const updaterServices = yield* Effect.context<
         KinChatRepository | TaskCardIndex | KinChatHub | SqlClient.SqlClient
