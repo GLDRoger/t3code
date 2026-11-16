@@ -187,6 +187,9 @@ export const make = Effect.gen(function* () {
   const chats = yield* Effect.serviceOption(KinChatService);
   const groups = yield* Effect.serviceOption(KinGroups);
   const records = yield* Effect.serviceOption(KinRecords);
+  /** Work's live streams re-read what this person may see once the change commits. */
+  const viewMoved = (orgId: KinOrgId, personId: KinPersonId) =>
+    Option.isSome(records) ? records.value.peopleMoved(orgId, [personId]) : Effect.void;
   const level = (orgId: KinOrgId, personId: KinPersonId) =>
     ownerLevel(orgId, personId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   /** The caller, when owner-level here: the owner or a co-owner runs Team. */
@@ -533,6 +536,7 @@ export const make = Effect.gen(function* () {
             WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessReset")),
           );
+          yield* viewMoved(input.orgId, input.personId);
           if (Option.isSome(records))
             yield* handTasksBack(records.value, caller.personId, input, leaving.displayName);
           // An unused link would let them straight back in.
@@ -694,6 +698,7 @@ export const make = Effect.gen(function* () {
             WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND access IS NOT 'owner'`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.setAccess")),
           );
+          yield* viewMoved(input.orgId, input.personId);
           // A co-owner talks to every agent in their own chat with it, never in the owner's.
           if (input.access === "co_owner" && Option.isSome(chats)) {
             const leads = yield* sql<{ agentId: KinAgentId }>`SELECT l.agent_id AS "agentId"
@@ -780,6 +785,7 @@ export const make = Effect.gen(function* () {
             Effect.mapError(toPersistenceSqlError("KinPeople.setPlaces")),
           );
           if (changed.length === 0) return yield* missing;
+          yield* viewMoved(input.orgId, input.personId);
           yield* refresh.touch(input.orgId, "people");
           // Their own screens read places from `kin.access.me`, which follows `leads`.
           yield* refresh.touch(input.orgId, "leads");

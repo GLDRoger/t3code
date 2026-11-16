@@ -67,6 +67,34 @@ function compactRecord(record: KinRecord, shared: string | undefined): KinRecord
   };
 }
 
+/** One row as a stream sends it: compact, with its own `can`. */
+export const kinCompactRecord = (record: KinRecord): KinRecordCompact =>
+  compactRecord(record, undefined);
+
+/** A compact row whole again; `shared` is the page's `can` for a row that carries none. */
+export function kinRestoreRecord(
+  row: KinRecordCompact,
+  orgId: KinOrgId,
+  shared?: KinRecordCan,
+): KinRecord {
+  const can = row.can ?? shared;
+  return {
+    ...row,
+    orgId: row.orgId ?? orgId,
+    waitingOn: row.waitingOn ?? null,
+    category: row.category ?? null,
+    dueAt: row.dueAt ?? null,
+    dueAllDay: row.dueAllDay === true,
+    late: row.late === true,
+    confirmed: row.confirmed !== false,
+    sensitive: row.sensitive === true,
+    working: row.working === true,
+    pullRequest: row.pullRequest ?? null,
+    closedAt: row.closedAt ?? null,
+    ...(can === undefined ? {} : { can }),
+  };
+}
+
 /** The server's side of `acceptCompactRows`. */
 export function kinCompactWorkList(result: KinWorkListResult): KinWorkListResult {
   const { records, ...rest } = result;
@@ -86,24 +114,7 @@ export function kinRestoreWorkList(result: KinWorkListResult, orgId: KinOrgId): 
   const { rows, can: shared, ...rest } = result;
   return {
     ...rest,
-    records: rows.map((row): KinRecord => {
-      const can = row.can ?? shared;
-      return {
-        ...row,
-        orgId: row.orgId ?? orgId,
-        waitingOn: row.waitingOn ?? null,
-        category: row.category ?? null,
-        dueAt: row.dueAt ?? null,
-        dueAllDay: row.dueAllDay === true,
-        late: row.late === true,
-        confirmed: row.confirmed !== false,
-        sensitive: row.sensitive === true,
-        working: row.working === true,
-        pullRequest: row.pullRequest ?? null,
-        closedAt: row.closedAt ?? null,
-        ...(can === undefined ? {} : { can }),
-      };
-    }),
+    records: rows.map((row) => kinRestoreRecord(row, orgId, shared)),
   };
 }
 
