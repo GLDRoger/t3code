@@ -101,6 +101,7 @@ import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, type AppServerEvent, openAppServer } from "./appServer.ts";
 import {
   CONFINED_CONFIG,
+  codexFullSessionInstructions,
   codexInstructions,
 } from "../../apps/server/src/kin/lead/CodexIsolation.ts";
 import {
@@ -2709,7 +2710,12 @@ const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSample")(fu
       server.runTurn({
         model: config.model,
         effort: config.effort,
-        baseInstructions: codexInstructions,
+        // An owner-only session's note says it has a shell, as Kin's does; the eval runs none.
+        baseInstructions:
+          testCase.setup.world?.kinSession === true &&
+          !/\{\{(SHARED_TURN|GROUP_RULES)\}\}/.test(testCase.prompt)
+            ? codexFullSessionInstructions
+            : codexInstructions,
         config: CONFINED_CONFIG,
         namespace: APP_SERVER_NAMESPACE,
         tools: t3.map((tool) => ({

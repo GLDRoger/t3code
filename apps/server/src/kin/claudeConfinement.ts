@@ -229,7 +229,21 @@ const keptVariables = new Set([
   "MCP_TOOL_TIMEOUT",
   "API_TIMEOUT_MS",
 ]);
-const keptPrefixes = /^(?:ANTHROPIC_|CLAUDE_|LC_|XDG_|AWS_|VERTEX_REGION_|DISABLE_)/;
+const keptPrefixList = [
+  "ANTHROPIC_",
+  "CLAUDE_",
+  "LC_",
+  "XDG_",
+  "AWS_",
+  "VERTEX_REGION_",
+  "DISABLE_",
+];
+const keptPrefixes = new RegExp(`^(?:${keptPrefixList.join("|")})`);
+/** The same keep list as globs, for a Codex shell's `shell_environment_policy.include_only`. */
+export const sessionVariablePatterns = [
+  ...keptVariables,
+  ...keptPrefixList.map((prefix) => `${prefix}*`),
+];
 
 export const sessionEnvironment = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
   Object.fromEntries(
