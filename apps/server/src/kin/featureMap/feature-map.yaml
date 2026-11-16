@@ -247,7 +247,7 @@ features:
   - id: task-new
     name: New task
     tab: tasks
-    web: [tasks, dialog:New task]
+    web: [tasks, "?open", dialog:New task]
     phone: [tab:tasks, KinWorkNew]
     form: true
     roles: { owner: both, co_owner: both, lead: both, member: both }
