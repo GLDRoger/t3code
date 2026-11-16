@@ -515,9 +515,22 @@ const uiFuzz = async (ctx: Context): Promise<Finding[] | string> => {
     found.push(
       finding("ui-fuzz", "runner", "run", "-", output.trim().split("\n").at(-1) ?? `exit ${code}`),
     );
-  if (!ctx.keepTraces)
-    for (const role of FUZZ_ROLES)
-      NodeFS.rmSync(NodePath.join(out, role, "trace"), { recursive: true, force: true });
+  // The taps before each violation survive the trace, which is deleted to save disk.
+  for (const role of FUZZ_ROLES) {
+    const dir = NodePath.join(out, role);
+    if (!NodeFS.existsSync(NodePath.join(dir, "trace", "trace.jsonl"))) continue;
+    const explained = await run(NodePath.join(dir, "explain.txt"), process.execPath, [
+      NodePath.join(ROOT, "verification", "kin", "ui", "explain.ts"),
+      dir,
+    ]);
+    if (explained.code !== 0)
+      NodeFS.appendFileSync(
+        NodePath.join(dir, "explain.txt"),
+        `explain exited ${explained.code}\n`,
+      );
+    if (!ctx.keepTraces)
+      NodeFS.rmSync(NodePath.join(dir, "trace"), { recursive: true, force: true });
+  }
   return found;
 };
 
