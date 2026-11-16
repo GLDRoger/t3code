@@ -65,6 +65,7 @@ const NOTICE_TAGS = [
   "action.resolved",
   "resume",
   "record.changed",
+  "task.finished",
 ];
 /** For event `e`: a request another lead passed on, which landed as Kin's own row. */
 const passedOn = (sql: SqlClient.SqlClient) =>
@@ -78,7 +79,7 @@ const NOTICE_WINDOW_MS = 3_600_000;
  * For an event row aliased `alias`: work someone gave the lead, whose report or assignment waits
  * on its words. The hourly notice limit never refuses those.
  */
-export const owedNotice = (alias: string) => `(${alias}.tag = 'worker.report'
+export const owedNotice = (alias: string) => `(${alias}.tag IN ('worker.report', 'task.finished')
   OR (${alias}.tag = 'record.changed' AND json_extract(${alias}.json, '$.reason') = 'assigned'))`;
 const notGranted = new KinChatError({
   reason: "floor_not_granted",

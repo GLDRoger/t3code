@@ -1442,6 +1442,20 @@ const WAKE_KINDS: Record<KinEvent["_tag"] | "hand-over", WakeCase> = {
         },
       })),
   },
+  // T3's notice that a task the owner asked for ended: what changed, the PR, the screenshots.
+  "task.finished": {
+    owed: true,
+    event: ({ direct }) =>
+      Effect.succeed((base) => ({
+        ...base,
+        _tag: "task.finished",
+        provenance: { _tag: "system" },
+        threadId,
+        messageId: MessageId.make("delegated-completion:1"),
+        taskIds: [NodeId.make("task-1")],
+        chatId: direct,
+      })),
+  },
   // Reminders, briefs and scheduled runs owe their words through `LeadDelivery`'s fallback.
   "deferral.due": {
     owed: false,
@@ -1579,7 +1593,13 @@ it.effect.each(
 );
 
 // Review 48: ten notices this hour refused a hand-over or task reply, and it counted as answered.
-it.effect.each(["hand-over", "record.changed", "worker.report", "github"] as const)(
+it.effect.each([
+  "hand-over",
+  "record.changed",
+  "worker.report",
+  "task.finished",
+  "github",
+] as const)(
   "the hourly notice limit holds back only unprompted notices, never an owed reply (%s)",
   (kind) =>
     Effect.gen(function* () {

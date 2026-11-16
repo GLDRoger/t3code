@@ -72,6 +72,7 @@ import * as Handoff from "./Handoff.ts";
 import * as Workers from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
 import * as PullRequestCare from "../github/PullRequestCare.ts";
+import * as TaskWake from "./TaskWake.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as WorkerPublish from "./workerPublish.ts";
@@ -478,7 +479,15 @@ const issuedAmounts = Layer.effectDiscard(
   ),
 );
 const production = withServices(
-  Layer.mergeAll(runner, ChatWake.layer, registration, tracker, workImport, issuedAmounts).pipe(
+  Layer.mergeAll(
+    runner,
+    ChatWake.layer,
+    registration,
+    tracker,
+    TaskWake.layer,
+    workImport,
+    issuedAmounts,
+  ).pipe(
     Layer.provideMerge(workers),
     Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),
