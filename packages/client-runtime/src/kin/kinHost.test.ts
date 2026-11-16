@@ -241,11 +241,13 @@ describe("resolveKinHost", () => {
   });
 
   it("keeps a stand-in while the saved host retries from scratch, as on coming to the front", () => {
-    const failing = { [c]: { phase: "error", error: "refused" } } as const;
+    const refused = { phase: "error", error: "refused" } as const;
+    const restarting = { phase: "connecting", error: null } as const;
+    const failing = { [c]: refused };
     const standing = resolve({ [b]: ready }, { savedHostId: c, phases: failing });
     expect(standing).toMatchObject({ environmentId: b, standInFor: c });
     // Back in front, the saved host starts over: a first attempt with no failure yet.
-    const retry = { [c]: { phase: "connecting", error: null } } as const;
+    const retry = { [c]: restarting };
     expect(
       resolve({ [b]: ready }, { savedHostId: c, phases: retry, previous: standing }),
     ).toMatchObject({ environmentId: b, connected: true, standInFor: c });
@@ -257,14 +259,14 @@ describe("resolveKinHost", () => {
     expect(
       resolve(
         { [b]: ready },
-        { savedHostId: c, phases: { ...retry, [b]: retry[c] }, previous: standing },
+        { savedHostId: c, phases: { ...retry, [b]: restarting }, previous: standing },
       ),
     ).toMatchObject({ environmentId: b, standInFor: c, probe: ready });
     // A stand-in that is really down leaves the saved host's cache.
     expect(
       resolve(
         { [b]: ready },
-        { savedHostId: c, phases: { ...retry, [b]: failing[c] }, previous: standing },
+        { savedHostId: c, phases: { ...retry, [b]: refused }, previous: standing },
       ),
     ).toMatchObject({ environmentId: c, connected: false });
   });
