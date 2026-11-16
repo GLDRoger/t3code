@@ -921,7 +921,10 @@ describe("KinLeadProvision", () => {
         const [row] = yield* sql<{ models: string }>`SELECT models_json AS models FROM kin_leads
           WHERE org_id = ${tech.orgId} AND agent_id = ${tech.agentId}`;
         assert.strictEqual(JSON.parse(row!.models).strong.model, "claude-sonnet-4-6");
-        const codex = { ...sonnet, strong: { instanceId: ProviderInstanceId.make("mine"), model: "gpt" } };
+        const codex = {
+          ...sonnet,
+          strong: { instanceId: ProviderInstanceId.make("mine"), model: "gpt" },
+        };
         assert.strictEqual(yield* refusal(edit({ models: codex })), "not_claude");
 
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)

@@ -67,7 +67,7 @@ export interface KinAgentPageTarget {
 }
 
 /** The agent page open over Kin, from Settings, the command palette or a link in a message. */
-export const kinAgentPageAtom = Atom.make<KinAgentPageTarget | null>(null).pipe(
+const kinAgentPageAtom = Atom.make<KinAgentPageTarget | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("kin:agent-page"),
 );
@@ -75,7 +75,7 @@ export const openKinAgentPage = (target: KinAgentPageTarget) =>
   appAtomRegistry.set(kinAgentPageAtom, target);
 
 /** Who the viewer is to an agent's page; the host decides again on every read and write. */
-export function useKinAgentPageCan(environmentId: EnvironmentId) {
+function useKinAgentPageCan(environmentId: EnvironmentId) {
   const ownerLevel = useKinOwnerLevel(environmentId);
   const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
   return kinAgentPageCan({
@@ -122,7 +122,9 @@ function KinAgentSheet(props: { readonly target: KinAgentPageTarget }) {
               environmentId={environmentId}
               orgId={orgId}
               agentId={agentId}
-              activeAgents={(leads?.leads ?? []).filter((lead) => lead.retired === undefined).length}
+              activeAgents={
+                (leads?.leads ?? []).filter((lead) => lead.retired === undefined).length
+              }
               personId={null}
               onClose={closePage}
             />
@@ -370,7 +372,12 @@ function AgentPageBody(props: {
           </ul>
         )}
       </KinAgentSection>
-      <AgentInHand lead={lead} environmentId={environmentId} orgId={orgId} onClose={props.onClose} />
+      <AgentInHand
+        lead={lead}
+        environmentId={environmentId}
+        orgId={orgId}
+        onClose={props.onClose}
+      />
       {canPause ? (
         <KinAgentSection title={lead.paused === undefined ? KIN_AGENT_PAGE.pause : "Paused"}>
           <p className="text-xs text-muted-foreground">{KIN_AGENT_PAGE.pauseDetail}</p>
@@ -698,9 +705,10 @@ const NO_AGENTS: ReadonlyArray<KinLeadProfile> = [];
 const noAgentsAtom = Atom.make(NO_AGENTS).pipe(Atom.withLabel("kin:no-agents"));
 const agentsOf = Atom.family((key: string) => {
   const [environmentId, orgId] = key.split("\n") as [EnvironmentId, KinOrgId];
-  return Atom.make((get) =>
-    Option.getOrNull(AsyncResult.value(get(kinClient.leads({ environmentId, input: { orgId } }))))
-      ?.leads ?? NO_AGENTS,
+  return Atom.make(
+    (get) =>
+      Option.getOrNull(AsyncResult.value(get(kinClient.leads({ environmentId, input: { orgId } }))))
+        ?.leads ?? NO_AGENTS,
   ).pipe(Atom.withLabel("kin:palette-agents"));
 });
 

@@ -47,7 +47,9 @@ export const matchModel = (
     offered.find(({ model }) => model.slug === words || model.aliases?.includes(words)) ??
     offered
       .filter(({ model }) => model.isLegacy !== true)
-      .find(({ model }) => squash(model.name).includes(wanted) || squash(model.slug).includes(wanted));
+      .find(
+        ({ model }) => squash(model.name).includes(wanted) || squash(model.slug).includes(wanted),
+      );
   if (found === undefined && words !== current.model)
     return `This server offers no Claude model called ${words}. It has: ${offered
       .filter(({ model }) => model.isLegacy !== true)
@@ -109,11 +111,12 @@ export const updateAgent = Effect.fn("KinAgentUpdate.update")(function* (
     fields: { models: { strong, cheap: agent.models.cheap } },
   }).pipe(
     Effect.provideService(ServerSettingsService, settings.value),
-    Effect.catchTag("KinLeadProvisionError", (error) =>
-      Effect.fail(
-        refused(error.reason === "not_found" ? "not_found" : "invalid_state", error.message),
-      ),
-    ),
+    Effect.catchTags({
+      KinLeadProvisionError: (error) =>
+        Effect.fail(
+          refused(error.reason === "not_found" ? "not_found" : "invalid_state", error.message),
+        ),
+    }),
   );
   const effort = strong.options?.find((option) => option.id === "effort")?.value;
   return {

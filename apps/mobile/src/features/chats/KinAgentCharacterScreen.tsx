@@ -44,9 +44,7 @@ export function KinAgentCharacterScreen({ route }: StaticScreenProps<KinAgentCha
   const page = pageAtom === null ? null : <Editor target={target!} pageAtom={pageAtom} />;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
-      {page ?? (
-        <AppBar title={KIN_AGENT_PAGE.character} onClose={() => navigation.goBack()} />
-      )}
+      {page ?? <AppBar title={KIN_AGENT_PAGE.character} onClose={() => navigation.goBack()} />}
     </View>
   );
 }

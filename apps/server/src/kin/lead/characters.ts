@@ -158,7 +158,10 @@ export const setCharacter = Effect.fn("KinCharacters.set")(function* (
   const now = yield* Clock.currentTimeMillis;
   const written = yield* Docs.replaceBody(
     orgId,
-    { actor: by === undefined ? { _tag: "system" } : { _tag: "person", personId: by }, via: "owner" },
+    {
+      actor: by === undefined ? { _tag: "system" } : { _tag: "person", personId: by },
+      via: "owner",
+    },
     {},
     { key: row.key },
     {

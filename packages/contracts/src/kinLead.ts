@@ -216,7 +216,11 @@ export const KinAgentPage = Schema.Struct({
   quietHours: Schema.Struct({ from: TimeOfDay, to: TimeOfDay }),
   // Outside accounts its owner-only turns may use; every agent reaches the same ones.
   connections: Schema.Array(
-    Schema.Struct({ label: Schema.String, account: Schema.NullOr(Schema.String), paused: Schema.Boolean }),
+    Schema.Struct({
+      label: Schema.String,
+      account: Schema.NullOr(Schema.String),
+      paused: Schema.Boolean,
+    }),
   ),
   // Live playbooks, which every agent follows.
   playbooks: Schema.Array(Schema.Struct({ key: KinRecordKey, title: Schema.String })),

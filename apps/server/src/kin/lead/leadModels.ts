@@ -1,9 +1,4 @@
-import type {
-  KinOrgId,
-  ModelSelection,
-  ServerProvider,
-  ServerSettings,
-} from "@t3tools/contracts";
+import type { KinOrgId, ModelSelection, ServerProvider, ServerSettings } from "@t3tools/contracts";
 import { KinLead } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -47,10 +42,7 @@ export const nonClaudeLeadModel = (
 };
 
 /** The model's name as its provider lists it, else the id it was saved with. */
-export const modelLabel = (
-  providers: ReadonlyArray<ServerProvider> | null,
-  selection: ModelSelection,
-) =>
+const modelLabel = (providers: ReadonlyArray<ServerProvider> | null, selection: ModelSelection) =>
   providers
     ?.find((provider) => provider.instanceId === selection.instanceId)
     ?.models.find(

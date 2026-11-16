@@ -318,8 +318,7 @@ function LeadForm(props: {
           (held) => held.domain === "chief-of-staff" && held.retired === undefined,
         )
       : undefined;
-    const chatId =
-      writeForMe && chief !== undefined ? chief.ownerChatId : result.value.ownerChatId;
+    const chatId = writeForMe && chief !== undefined ? chief.ownerChatId : result.value.ownerChatId;
     if (writeForMe && chief !== undefined)
       setComposerDraftText(
         kinDraftKey(environmentId, orgId, chatId),

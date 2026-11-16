@@ -91,8 +91,11 @@ describe("chooseLeadModels", () => {
   });
   it("treats a switched-off Claude as unavailable", () => {
     assert.match(
-      leadModelProblem(settings, [claude(["claude-sonnet-4-6"], false)], both("claude-sonnet-4-6")) ??
-        "",
+      leadModelProblem(
+        settings,
+        [claude(["claude-sonnet-4-6"], false)],
+        both("claude-sonnet-4-6"),
+      ) ?? "",
       /isn't available/,
     );
   });

@@ -110,7 +110,7 @@ function AgentRows(props: KinWorkTarget) {
       title={
         <button
           type="button"
-          className="flex min-h-11 w-full items-center gap-3 rounded-sm text-start outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex min-h-11 w-full items-center gap-3 rounded-sm text-start outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
           onClick={() => void open(lead)}
         >
           <KinAvatar avatar={kinAgentAvatar(lead.agentId)} size="sm" />
