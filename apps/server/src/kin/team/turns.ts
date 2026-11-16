@@ -152,7 +152,7 @@ const nextTurns = (d: Discussion, said: Said): Discussion => {
   const asked = named.length > 0 ? named : [answerer(d, said.agentId)].filter((id) => id !== null);
   const base: Array<Turn> = asked.map((agentId) => ({
     agentId,
-    kind: named.length > 0 ? "named" : "decider",
+    kind: named.length === 0 && agentId === d.decider ? "decider" : "named",
   }));
   const recent = new Set(d.speakers.slice(-2));
   const offers = { ...d.offers };
@@ -169,11 +169,17 @@ const nextTurns = (d: Discussion, said: Said): Discussion => {
     !d.chaired && d.messages >= TEAM_CHAIR_AT && said.agentId !== d.chair
       ? [{ agentId: d.chair, kind: "chair" }]
       : [];
-  const turns: Array<Turn> = [
+  // The uninvited agent speaks right after the message it reacts to; turns still owed from
+  // earlier messages follow. A stale pitch-in or chair check is not carried.
+  const turns: Array<Turn> = [];
+  for (const turn of [
     ...chair,
-    ...base.filter((turn) => chair.length === 0 || turn.agentId !== d.chair),
     ...(pitch === undefined ? [] : [{ agentId: pitch, kind: "pitch_in" as const }]),
-  ];
+    ...base,
+    ...d.pending.filter((turn) => turn.kind === "named" || turn.kind === "decider"),
+  ])
+    if (turn.agentId !== said.agentId && !turns.some((held) => held.agentId === turn.agentId))
+      turns.push(turn);
   const [turn, ...pending] = turns;
   const next = { ...d, offers, chaired: d.chaired || chair.length > 0, pending };
   return turn === undefined ? closing(next) : { ...next, turn };
@@ -201,11 +207,17 @@ export const afterSay = (d: Discussion, said: Said): Discussion => {
     if (objector === undefined) return finished(base, "decided");
     return { ...base, state: "decided", pending: [], turn: { agentId: objector, kind: "object" } };
   }
-  if (d.turn?.kind === "object")
-    return nextTurns(
-      { ...base, state: "open", objectionUsed: true, afterObjection: TEAM_AFTER_OBJECTION },
-      { ...said, to: said.to.length > 0 ? said.to : [d.decider] },
-    );
+  if (d.turn?.kind === "object") {
+    const reopened: Discussion = {
+      ...base,
+      state: "open",
+      objectionUsed: true,
+      afterObjection: TEAM_AFTER_OBJECTION,
+    };
+    return reopened.messages >= TEAM_MAX_MESSAGES
+      ? closing(reopened)
+      : nextTurns(reopened, { ...said, to: said.to.length > 0 ? said.to : [d.decider] });
+  }
   const afterObjection = base.afterObjection === null ? null : base.afterObjection - 1;
   const counted = { ...base, afterObjection };
   if (

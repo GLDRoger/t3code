@@ -14,4 +14,3 @@ export const teamRoomOf = Effect.fn("KinTeamRoom.of")(function* (orgId: KinOrgId
       AND archived_at IS NULL ORDER BY created_at LIMIT 1`;
   return row === undefined ? null : KinChatId.make(row.chatId);
 });
-

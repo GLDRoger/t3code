@@ -51,7 +51,7 @@ const Intent = Schema.Literals(["answer", "evidence", "objection", "decision", "
 
 export const TeamOpenInput = Schema.Struct({
   topic: TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
-    description: "What it is about, in a few words, such as \"Brochure for new clients\".",
+    description: 'What it is about, in a few words, such as "Brochure for new clients".',
   }),
   question: TrimmedNonEmptyString.check(Schema.isMaxLength(300)).annotate({
     description: "The one question to settle.",
@@ -66,7 +66,9 @@ export const TeamOpenInput = Schema.Struct({
   to: Schema.optional(
     Schema.Array(Name)
       .check(Schema.isMaxLength(2))
-      .annotate({ description: "Up to two agents your message asks. Leave out to ask the decider." }),
+      .annotate({
+        description: "Up to two agents your message asks. Leave out to ask the decider.",
+      }),
   ),
 });
 export const TeamSayInput = Schema.Struct({
@@ -102,7 +104,7 @@ export const TeamSayInput = Schema.Struct({
       .check(Schema.isMaxLength(10))
       .annotate({
         description:
-          "With decide: what you already changed inside the company, one per line with its key, such as \"Task W-4 for Social\". \"Undo it\" reverses these.",
+          'With decide: what you already changed inside the company, one per line with its key, such as "Task W-4 for Social". "Undo it" reverses these.',
       }),
   ),
   positions: Schema.optional(
@@ -304,7 +306,9 @@ const make = Effect.gen(function* () {
           TEAM_ROOM_MUTED,
         );
     for (const agent of all)
-      if (!members.some((m) => m.principal._tag === "agent" && m.principal.agentId === agent.agentId))
+      if (
+        !members.some((m) => m.principal._tag === "agent" && m.principal.agentId === agent.agentId)
+      )
         yield* join({ _tag: "agent", agentId: agent.agentId }, "member", null);
     if (found === null)
       yield* sql.afterCommit(hub.publish({ type: "chat.created", orgId, chat: room }));
@@ -448,10 +452,7 @@ const make = Effect.gen(function* () {
       d.turn.kind === row.turn.kind &&
       changes.said !== true;
     let turn: StoredTurn | null = null;
-    if (d.turn !== null)
-      turn = sameTurn
-        ? row.turn
-        : { ...d.turn, eventId: null, said: false };
+    if (d.turn !== null) turn = sameTurn ? row.turn : { ...d.turn, eventId: null, said: false };
     yield* sql`UPDATE kin_discussions SET state = ${d.state}, final = ${d.final ? 1 : 0},
         question = ${changes.question ?? row.question}, widened = ${d.widened ? 1 : 0},
         outcome = ${changes.outcome ?? row.outcome}, did_json = ${encodeJson(changes.did ?? row.did)},
@@ -491,7 +492,8 @@ const make = Effect.gen(function* () {
     if (row.askChatId === null) return;
     const card = row.d.state === "escalated";
     if (when === "final" && row.origin !== "owner" && !card) return;
-    const claimed = yield* sql`UPDATE kin_discussions SET told_at = ${yield* Clock.currentTimeMillis}
+    const claimed =
+      yield* sql`UPDATE kin_discussions SET told_at = ${yield* Clock.currentTimeMillis}
       WHERE org_id = ${orgId} AND discussion_id = ${discussionId} AND told_at IS NULL
       RETURNING discussion_id`;
     if (claimed.length === 0 || card) return;
@@ -548,7 +550,9 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => []),
     );
     return [
-      ...new Set(owed.flatMap((invoice) => (invoice.partyTitle === null ? [] : [invoice.partyTitle]))),
+      ...new Set(
+        owed.flatMap((invoice) => (invoice.partyTitle === null ? [] : [invoice.partyTitle])),
+      ),
     ].filter((name) => name.trim().length >= 3);
   });
 
@@ -618,7 +622,8 @@ const make = Effect.gen(function* () {
         AND m.message_id = json_extract(e.json, '$.messageId') AND m.author_kind = 'human'
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId} AND e.wakeup_id = ${ctx.wakeupId}
         AND e.tag = 'chat.message' AND json_extract(e.json, '$.origin') IS NULL`;
-    for (const row of rows) if (yield* ownerLevel(ctx.orgId, row.personId).pipe(access)) return true;
+    for (const row of rows)
+      if (yield* ownerLevel(ctx.orgId, row.personId).pipe(access)) return true;
     return false;
   });
 
@@ -683,10 +688,16 @@ const make = Effect.gen(function* () {
               state: row.d.state,
             };
         }
-        const [max] = yield* sql<{ n: number | null }>`SELECT MAX(CAST(SUBSTR(discussion_id, 4) AS INTEGER)) AS n
+        const [max] = yield* sql<{
+          n: number | null;
+        }>`SELECT MAX(CAST(SUBSTR(discussion_id, 4) AS INTEGER)) AS n
           FROM kin_discussions WHERE org_id = ${ctx.orgId}`;
         const discussionId = KinDiscussionId.make(`TD-${(max?.n ?? 0) + 1}`);
-        const d = Turns.opened({ openedBy: ctx.agentId, decider: decider.agentId, chair: chair.agentId });
+        const d = Turns.opened({
+          openedBy: ctx.agentId,
+          decider: decider.agentId,
+          chair: chair.agentId,
+        });
         yield* sql`INSERT INTO kin_discussions (org_id, discussion_id, chat_id, topic, question,
             decider_agent_id, opened_by_agent_id, origin, ask_chat_id, ask_agent_id, state,
             turn_json, created_at, last_at, open_key)
@@ -729,7 +740,7 @@ const make = Effect.gen(function* () {
             chatId: receiver.ownerChatId,
             audience: "owner",
             messageId: KinMessageId.make(`kin-team-sent:${hash(`${ctx.orgId}:${discussionId}`)}`),
-            body: message.body,
+            body: `${oneLine(input.question)}\n${message.body}`,
             relay: { kind: "sent_by", agentId: ctx.agentId },
             discussionId,
             silent: true,
@@ -787,8 +798,13 @@ const make = Effect.gen(function* () {
         if (refusal !== null) return yield* refuse(refusal);
         if (end !== null && input.outcome === undefined)
           return yield* refuse("Say the outcome: the one line the owner reads.");
-        if (end === "bring" && (input.positions === undefined || input.lean === undefined || input.options === undefined))
-          return yield* refuse("To bring it to the owner, give both positions, your lean and his two options.");
+        if (
+          end === "bring" &&
+          (input.positions === undefined || input.lean === undefined || input.options === undefined)
+        )
+          return yield* refuse(
+            "To bring it to the owner, give both positions, your lean and his two options.",
+          );
         yield* post(ctx, row, {
           text: input.text,
           intent: end === "decide" ? "decision" : input.intent,
@@ -899,7 +915,9 @@ const make = Effect.gen(function* () {
         yield* sql
           .withTransaction(ensureRoom(orgId))
           .pipe(
-            Effect.catchCause((cause) => Effect.logWarning("Kin Team room upkeep failed", { orgId, cause })),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin Team room upkeep failed", { orgId, cause }),
+            ),
           );
       const rows = yield* sql<{
         orgId: KinOrgId;

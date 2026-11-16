@@ -27,9 +27,10 @@ const laneOf = (domain: string): Lane | null =>
   LANE_OF.find(([pattern]) => pattern.test(domain))?.[1] ?? null;
 
 const mentions = (text: string, name: string) =>
-  new RegExp(`(^|[^\\p{L}\\p{N}])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\p{L}\\p{N}])`, "iu").test(
-    text,
-  );
+  new RegExp(
+    `(^|[^\\p{L}\\p{N}])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\p{L}\\p{N}])`,
+    "iu",
+  ).test(text);
 
 /**
  * Agents whose stake `text` touches, strongest first: 2 for an entity it owns (Finance: a client

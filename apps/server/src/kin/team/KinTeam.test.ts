@@ -1,0 +1,541 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
+import { kinSecretsTest } from "../lead/layer.testkit.ts";
+import { assert, it } from "@effect/vitest";
+import {
+  AuthSessionId,
+  AuthStandardClientScopes,
+  EnvironmentId,
+  KinAgentId,
+  type KinChatId,
+  KinMemoryItemId,
+  KinPersonId,
+  KinWakeupId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import { McpSchema, McpServer } from "effect/ai";
+
+import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import { KinGroups } from "../chat/KinGroups.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import { environment } from "../chat/TaskCard.testkit.ts";
+import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
+import { notConnectedLayer as repoReadsOff } from "../github/KinRepoReads.ts";
+import { notConnectedLayer as pullRequestCareOff } from "../github/PullRequestCare.ts";
+import * as Kin from "../layer.ts";
+import { agentServices } from "../mcp/KinChatToolkit.ts";
+import * as KinToolGate from "../mcp/KinToolGate.ts";
+import * as Handoff from "../lead/Handoff.ts";
+import { LeadMemory } from "../lead/LeadMemory.ts";
+import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
+import { KinLeadToolkit } from "../lead/mcp/tools.ts";
+import { KinWorkers } from "../lead/Workers.ts";
+import * as Team from "./KinTeam.ts";
+
+const providerInstanceId = ProviderInstanceId.make("codex");
+const at = "2026-10-01T00:00:00.000Z";
+const client = McpSchema.McpServerClient.of({
+  clientId: 1,
+  clientCapabilities: {},
+  clientInfo: { name: "test", version: "1" },
+  protocolVersion: "2025-06-18",
+  initializePayload: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "test", version: "1" },
+  },
+  getClient: Effect.die("unused"),
+});
+const scopeOf = (agent: string): McpInvocationScope => ({
+  environmentId: EnvironmentId.make("environment"),
+  requestNamespace: agent,
+  issuedAt: 0,
+  capabilities: new Set(),
+  client: undefined,
+  thread: {
+    threadId: ThreadId.make(`${agent}-thread`),
+    providerSessionId: agent,
+    providerInstanceId,
+  },
+});
+
+const kinServices = Layer.unwrap(
+  Effect.gen(function* () {
+    const services = Option.getOrThrow((yield* Kin.KinServer).services);
+    return Layer.mergeAll(
+      Handoff.layer,
+      Team.layer,
+      Layer.mock(KinWorkers)({}),
+      Layer.mock(LeadMemory)({}),
+      Layer.mock(KinReplyBridge)({ silentEnd: () => Effect.succeed(false) }),
+      repoReadsOff,
+      pullRequestCareOff,
+    ).pipe(Layer.provideMerge(Layer.succeedContext(services)));
+  }),
+);
+const layer = Layer.mergeAll(
+  McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers),
+  KinToolGate.layer,
+).pipe(
+  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provideMerge(kinServices),
+  Layer.provideMerge(
+    Layer.mock(ThreadManagement.ThreadManagementService)({
+      getThreadShell: (id) => Effect.succeed({ ...liveThreadShell(id), providerInstanceId }),
+    }),
+  ),
+  Layer.provideMerge(
+    Kin.layer.pipe(
+      Layer.provide(kinSecretsTest),
+      Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+      Layer.provideMerge(environment),
+    ),
+  ),
+  Layer.provideMerge(authorityLayer),
+  Layer.provideMerge(kinSecretsTest),
+);
+
+/** A tool call exactly as an agent's provider sends it: its JSON answer, or its refusal. */
+const callAs = Effect.fn("test.callAs")(function* (
+  agent: string,
+  name: string,
+  args: Record<string, unknown>,
+) {
+  const server = yield* McpServer.McpServer;
+  const identity = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinIdentity);
+  const result = yield* server
+    .callTool({ name, arguments: args })
+    .pipe(
+      Effect.provideService(McpInvocationContext, scopeOf(agent)),
+      Effect.provideService(KinIdentity, identity),
+      Effect.provideService(McpSchema.McpServerClient, client),
+    );
+  const text = result.content.find((item) => item.type === "text")?.text ?? "{}";
+  return { ok: result.isError !== true, value: JSON.parse(text) as Record<string, unknown> };
+});
+
+/**
+ * Ambermill Studio (invented): Rhea owns it, Meera co-owns it, Dev is a member. Four agents:
+ * the Chief of staff (the team agent), Finance, Social and Growth, each with a chat with Rhea.
+ */
+const ambermill = Effect.gen(function* () {
+  const services = Option.getOrThrow((yield* Kin.KinServer).services);
+  const identity = Context.get(services, KinIdentity);
+  const chats = Context.get(services, KinChatService);
+  const sql = yield* SqlClient.SqlClient;
+  yield* pairSession(AuthSessionId.make("owner"));
+  const [resolved] = yield* identity.resolve({
+    sessionId: AuthSessionId.make("owner"),
+    subject: "browser",
+    method: "browser-session-cookie",
+    scopes: AuthStandardClientScopes,
+  });
+  const owner = resolved!;
+  const { orgId } = owner;
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea Rao' WHERE person_id = ${owner.personId}`;
+  for (const [id, name, access] of [
+    ["meera", "Meera Shah", "co_owner"],
+    ["dev", "Dev Malhotra", "member"],
+  ] as const)
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access})`;
+  const person = (id: string) => ({
+    _tag: "person" as const,
+    orgId,
+    personId: KinPersonId.make(id),
+  });
+  const chatOf = new Map<string, KinChatId>();
+  for (const [id, name, domain] of [
+    ["chief", "Chief of staff", "chief-of-staff"],
+    ["finance", "Finance", "finance"],
+    ["social", "Social", "social"],
+    ["growth", "Growth", "growth"],
+  ] as const) {
+    const agentId = KinAgentId.make(id);
+    const threadId = ThreadId.make(`${id}-thread`);
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      VALUES (${agentId}, ${orgId}, ${name}, 'lead', ${owner.personId}, ${at})`;
+    yield* identity.registerAgentThread({ orgId, agentId, threadId });
+    const chatId = (yield* chats.createDirect(owner, { orgId, agentId })).chatId;
+    chatOf.set(id, chatId);
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+        worker_projects_json, owner_chat_id, domain)
+      VALUES (${agentId}, ${orgId}, ${name}, 0, ${threadId}, '{}', '[]', ${chatId}, ${domain})`;
+  }
+  yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+    VALUES (${orgId}, 'chief', ${owner.personId}, 0)`;
+  /** A turn of `agent`'s, woken on `message` or, without one, on Kin's own event. */
+  const wake = Effect.fn("test.wake")(function* (
+    agent: string,
+    message?: Effect.Success<ReturnType<typeof chats.send>>,
+  ) {
+    return yield* startAgentWakeup({
+      orgId,
+      agentId: KinAgentId.make(agent),
+      threadId: ThreadId.make(`${agent}-thread`),
+      ...(message === undefined ? {} : { message }),
+    });
+  });
+  return { sql, chats, owner, orgId, person, chatOf: (id: string) => chatOf.get(id)!, wake };
+});
+
+const roomRows = (sql: SqlClient.SqlClient, orgId: string) =>
+  sql<{ author: string | null; intent: string | null; body: string }>`SELECT l.name AS author,
+      m.intent, m.body FROM kin_messages m
+    JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id AND c.team_id = 'team-room'
+    LEFT JOIN kin_leads l ON l.org_id = m.org_id AND l.agent_id = m.author_agent_id
+    WHERE m.org_id = ${orgId} AND m.status = 'posted' ORDER BY m.seq`;
+const teamWakes = (sql: SqlClient.SqlClient, orgId: string) =>
+  sql<{ agent: string; key: string; priority: string }>`SELECT agent_id AS agent,
+      dedupe_key AS key, priority FROM kin_events
+    WHERE org_id = ${orgId} AND dedupe_key LIKE 'team:%' ORDER BY rowid`;
+const discussion = (sql: SqlClient.SqlClient, orgId: string) =>
+  sql<{ state: string; final: number; told: number | null; turn: string | null }>`SELECT state,
+      final, told_at AS told, turn_json AS turn FROM kin_discussions
+    WHERE org_id = ${orgId} ORDER BY created_at DESC LIMIT 1`.pipe(Effect.map((rows) => rows[0]!));
+const relayed = (sql: SqlClient.SqlClient, orgId: string, chatId: KinChatId) =>
+  sql<{
+    body: string;
+    relay: string | null;
+    discussion: string | null;
+    silent: number;
+  }>`SELECT body,
+      relay_json AS relay, discussion_id AS discussion, silent FROM kin_messages
+    WHERE org_id = ${orgId} AND chat_id = ${chatId} AND relay_json IS NOT NULL ORDER BY seq`;
+
+// conversations.md, the brochure: Rhea asks Social to settle the print run with the team. Social
+// opens it naming Finance, whose call it is; Growth pitches in uninvited; Finance widens the
+// question once and decides; Growth objects once; Finance decides again; Rhea hears it in one
+// line in Social's chat, once, with what was changed.
+it.effect("a discussion the owner asked for runs its turns, ends, and is told once", () =>
+  Effect.andThen(
+    TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, person, chatOf, wake } = yield* ambermill;
+      const ask = yield* chats.send(owner, {
+        chatId: chatOf("social"),
+        body: "Settle the brochure print run with the team.",
+        clientMessageId: "ask",
+      });
+      yield* wake("social", ask);
+      const opened = yield* callAs("social", "team_open", {
+        topic: "Brochure print run",
+        question: "How many brochures do we print for the Kochi expo?",
+        decider: "Finance",
+        text: "The printer quotes ₹38 a copy for 400. I'd print 400 for the expo stand.",
+      });
+      assert.isTrue(opened.ok, JSON.stringify(opened.value));
+      assert.deepStrictEqual(opened.value, {
+        discussion: "TD-1",
+        next: "Finance",
+        state: "open",
+      });
+      // Finance is woken on the strong model; nobody else is, and nothing rings.
+      assert.deepStrictEqual(
+        (yield* teamWakes(sql, orgId)).map(({ agent, priority }) => [agent, priority]),
+        [["finance", "P1"]],
+      );
+      // Finance's chat shows the request on Rhea's side, sent by Social.
+      const sent = yield* relayed(sql, orgId, chatOf("finance"));
+      assert.lengthOf(sent, 1);
+      assert.include(sent[0]!.body, "How many brochures do we print for the Kochi expo?");
+      assert.deepStrictEqual(JSON.parse(sent[0]!.relay!), { kind: "sent_by", agentId: "social" });
+      assert.strictEqual(sent[0]!.silent, 1);
+
+      // Not Finance's turn yet for Growth: refused, and nothing posts.
+      yield* wake("growth");
+      const early = yield* callAs("growth", "team_say", { text: "Hi", intent: "answer" });
+      assert.isFalse(early.ok);
+
+      yield* wake("finance");
+      const answer = yield* callAs("finance", "team_say", {
+        text: "₹15,200 for 400 is over the ₹12,000 print budget. 300 copies fit at ₹11,400.",
+        intent: "answer",
+      });
+      assert.isTrue(answer.ok, JSON.stringify(answer.value));
+      // Social answers (it spoke last); Growth, whose lane "expo" leads touch, may pitch in once.
+      const keys = (yield* teamWakes(sql, orgId)).map(({ key }) => key);
+      assert.match(keys.at(-1)!, /^team:TD-1:\d+:social:named$/);
+
+      yield* wake("social");
+      const back = yield* callAs("social", "team_say", {
+        text: "300 runs out by day two; the expo has 900 visitors and our leads come from it.",
+        intent: "objection",
+      });
+      assert.isTrue(back.ok, JSON.stringify(back.value));
+      const pitched = (yield* teamWakes(sql, orgId)).filter(({ key }) => /:pitch_in$/.test(key));
+      assert.lengthOf(pitched, 1);
+      assert.strictEqual(pitched[0]!.agent, "growth");
+      assert.strictEqual(pitched[0]!.priority, "P2");
+
+      // Growth, uninvited, pitches in first; then the decider answers and widens the question.
+      assert.match(JSON.parse((yield* discussion(sql, orgId)).turn!).kind, /^pitch_in$/);
+      yield* wake("growth");
+      const pitch = yield* callAs("growth", "team_say", {
+        text: "Last expo, 40 of 60 leads took a brochure. 400 is right.",
+        intent: "answer",
+      });
+      assert.isTrue(pitch.ok, JSON.stringify(pitch.value));
+      let holder = JSON.parse((yield* discussion(sql, orgId)).turn!) as { agentId: string };
+      assert.strictEqual(holder.agentId, "finance");
+      yield* wake("finance");
+      const widened = yield* callAs("finance", "team_say", {
+        text: "Then the question is the budget, not the count.",
+        intent: "answer",
+        widen: "Do we raise the expo print budget, and to how much?",
+      });
+      assert.isTrue(widened.ok, JSON.stringify(widened.value));
+      // Widened once: a second widening is refused whoever holds the turn.
+      holder = JSON.parse((yield* discussion(sql, orgId)).turn!) as { agentId: string };
+      yield* wake(holder.agentId);
+      const again = yield* callAs(holder.agentId, "team_say", {
+        text: "Widening twice.",
+        intent: "answer",
+        widen: "Something else",
+      });
+      assert.isFalse(again.ok);
+
+      // Growth answers the wider question, to Finance by name; Finance decides.
+      assert.strictEqual(holder.agentId, "growth");
+      const raise = yield* callAs("growth", "team_say", {
+        text: "Raise it to ₹15,200: one extra client from the expo pays for it ten times over.",
+        intent: "answer",
+        to: ["Finance"],
+      });
+      assert.isTrue(raise.ok, JSON.stringify(raise.value));
+      yield* wake("finance");
+      const decided = yield* callAs("finance", "team_say", {
+        text: "Raise the print budget to ₹15,200 and print 400.",
+        intent: "decision",
+        end: "decide",
+        outcome: "Print 400 brochures for the Kochi expo; print budget raised to ₹15,200.",
+        did: ["BUD-2 expo print budget ₹12,000 → ₹15,200"],
+      });
+      assert.isTrue(decided.ok, JSON.stringify(decided.value));
+      const objector = JSON.parse((yield* discussion(sql, orgId)).turn!) as {
+        agentId: string;
+        kind: string;
+      };
+      assert.strictEqual(objector.kind, "object");
+      yield* wake(objector.agentId);
+      const objected = yield* callAs(objector.agentId, "team_say", {
+        text: "Fine on count, but book the printer by Friday or the price goes up.",
+        intent: "objection",
+      });
+      assert.isTrue(objected.ok, JSON.stringify(objected.value));
+      // Nobody objects twice: the objection is spent.
+      for (let i = 0; i < 4 && (yield* discussion(sql, orgId)).final === 0; i++) {
+        const holder = JSON.parse((yield* discussion(sql, orgId)).turn!) as { agentId: string };
+        yield* wake(holder.agentId);
+        const said = yield* callAs(holder.agentId, "team_say", {
+          text: "Booking the printer for Thursday. Decided.",
+          intent: "decision",
+          end: "decide",
+          outcome:
+            "Print 400 brochures for the Kochi expo, printer booked for Thursday; budget ₹15,200.",
+          did: ["BUD-2 expo print budget ₹12,000 → ₹15,200"],
+        });
+        if (!said.ok) {
+          yield* (yield* Team.KinTeam).wakeupEnded({
+            orgId,
+            agentId: KinAgentId.make(holder.agentId),
+            wakeupId: yield* passedTurn(sql, orgId, holder.agentId, yield* wake(holder.agentId)),
+          });
+        }
+      }
+      const ended = yield* discussion(sql, orgId);
+      assert.strictEqual(ended.state, "decided");
+      assert.isNotNull(ended.told);
+
+      // Rhea hears it once, in Social's chat, as from the agent who answered, with what changed.
+      const told = (yield* relayed(sql, orgId, chatOf("social"))).filter(
+        (row) => row.discussion === "TD-1",
+      );
+      assert.lengthOf(told, 1);
+      assert.match(told[0]!.body, /^Print 400 brochures for the Kochi expo/);
+      assert.include(told[0]!.body, "Done: BUD-2 expo print budget ₹12,000 → ₹15,200");
+      assert.strictEqual(told[0]!.silent, 0);
+      assert.strictEqual(JSON.parse(told[0]!.relay!).kind, "reply_from");
+
+      // One message per turn, every one in the room; caps leave room.
+      const rows = yield* roomRows(sql, orgId);
+      assert.isAtMost(rows.length, 16);
+      assert.isTrue(rows.every((row) => row.author !== null));
+
+      // The room: Rhea and Meera read it, muted and off the badge; Dev can't, nor be added.
+      const repo = Context.get(
+        Option.getOrThrow((yield* Kin.KinServer).services),
+        KinChatRepository,
+      );
+      const [room] = yield* sql<{ chatId: KinChatId }>`SELECT chat_id AS "chatId" FROM kin_chats
+        WHERE org_id = ${orgId} AND team_id = 'team-room'`;
+      const page = { chatId: room!.chatId, beforeSeq: 1_000, limit: 100 };
+      assert.isAbove((yield* chats.history(owner, page)).messages.length, 0);
+      assert.isAbove((yield* chats.history(person("meera"), page)).messages.length, 0);
+      assert.strictEqual(yield* repo.unreadTotal({ orgId, personId: owner.personId }), 1);
+      const ownerList = yield* chats
+        .subscribeChats([owner], { orgId })
+        .pipe(Stream.take(1), Stream.runCollect);
+      const listed = ownerList[0]!._tag === "snapshot" ? ownerList[0]!.chats : [];
+      const roomRow = listed.find((chat) => chat.chatId === room!.chatId)!;
+      assert.strictEqual(roomRow.unread, 0);
+      assert.isTrue(roomRow.fresh);
+      const refused = yield* Effect.flip(chats.history(person("dev"), page));
+      assert.deepInclude(refused, { _tag: "KinChatError", reason: "not_found" });
+      const devList = yield* chats
+        .subscribeChats([person("dev")], { orgId })
+        .pipe(Stream.take(1), Stream.runCollect);
+      assert.isFalse(
+        (devList[0]!._tag === "snapshot" ? devList[0]!.chats : []).some(
+          (chat) => chat.chatId === room!.chatId,
+        ),
+      );
+      const groups = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinGroups);
+      const added = yield* Effect.flip(
+        groups.addMember([owner], {
+          chatId: room!.chatId,
+          principal: { _tag: "person", personId: KinPersonId.make("dev") },
+        }),
+      );
+      assert.deepInclude(added, { _tag: "KinChatError", reason: "not_allowed" });
+      // A member made a co-owner's peer by a stray membership row still can't read it.
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at)
+        VALUES ('stray-dev', ${orgId}, ${room!.chatId}, 'person', 'dev', 'member', ${at})`;
+      const stray = yield* Effect.flip(chats.history(person("dev"), page));
+      assert.deepInclude(stray, { _tag: "KinChatError", reason: "not_found" });
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+/** Marks the turn event `holder` holds as run by `wakeupId`, as claiming it would. */
+const passedTurn = Effect.fn("test.passedTurn")(function* (
+  sql: SqlClient.SqlClient,
+  orgId: string,
+  holder: string,
+  wakeupId: string,
+) {
+  yield* sql`UPDATE kin_events SET wakeup_id = ${wakeupId}
+    WHERE org_id = ${orgId} AND event_id = (SELECT json_extract(turn_json, '$.eventId')
+      FROM kin_discussions WHERE org_id = ${orgId} AND final = 0
+        AND json_extract(turn_json, '$.agentId') = ${holder} LIMIT 1)`;
+  return KinWakeupId.make(wakeupId);
+});
+
+// Agents start at most two at once and six a day; one started by an agent waits for the owner's
+// next check-in to be told, and then is told once, silently, beside it.
+it.effect("an agent-started discussion is capped, held, and told beside the next check-in", () =>
+  Effect.andThen(
+    TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
+    Effect.gen(function* () {
+      const { sql, orgId, chatOf, wake } = yield* ambermill;
+      yield* wake("growth");
+      for (const topic of ["Expo stand size", "Kochi hotel"]) {
+        const opened = yield* callAs("growth", "team_open", {
+          topic,
+          question: `${topic}: which option?`,
+          decider: "Chief of staff",
+          text: "Two options; I lean to the cheaper.",
+        });
+        assert.isTrue(opened.ok, JSON.stringify(opened.value));
+      }
+      const third = yield* callAs("growth", "team_open", {
+        topic: "Lanyards",
+        question: "Do we print lanyards?",
+        decider: "Social",
+        text: "Thoughts?",
+      });
+      assert.isFalse(third.ok);
+      assert.match(String(third.value.message ?? JSON.stringify(third.value)), /open|two/i);
+
+      // The chair parks the first at its closing turn: the owner isn't told yet.
+      const [first] = yield* sql<{ id: string }>`SELECT discussion_id AS id FROM kin_discussions
+        WHERE org_id = ${orgId} ORDER BY created_at LIMIT 1`;
+      yield* sql`UPDATE kin_discussions SET state = 'closing',
+          turn_json = json_object('agentId', 'chief', 'kind', 'closing', 'eventId', NULL,
+            'said', json('false'))
+        WHERE org_id = ${orgId} AND discussion_id = ${first!.id}`;
+      yield* wake("chief");
+      const parked = yield* callAs("chief", "team_say", {
+        discussion: first!.id,
+        text: "Parking this until the floor plan is in.",
+        intent: "decision",
+        end: "park",
+        outcome: "Stand size waits for the floor plan; default 3×3 m, decided by Thursday.",
+      });
+      assert.isTrue(parked.ok, JSON.stringify(parked.value));
+      const held = yield* relayed(sql, orgId, chatOf("growth"));
+      assert.lengthOf(held, 0);
+
+      // The next check-in runs: the parked outcome is told beside it, silently, once.
+      const checkIn = yield* startAgentWakeup({
+        orgId,
+        agentId: KinAgentId.make("chief"),
+        threadId: ThreadId.make("chief-thread"),
+        event: (base) => ({
+          ...base,
+          _tag: "pulse",
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: KinMemoryItemId.make("morning-check-in"),
+            title: "Morning check-in",
+            what: "",
+            slot: "d",
+          },
+        }),
+      });
+      const team = yield* Team.KinTeam;
+      yield* team.wakeupEnded({ orgId, agentId: KinAgentId.make("chief"), wakeupId: checkIn });
+      yield* team.wakeupEnded({ orgId, agentId: KinAgentId.make("chief"), wakeupId: checkIn });
+      const told = yield* relayed(sql, orgId, chatOf("growth"));
+      assert.lengthOf(told, 1);
+      assert.match(told[0]!.body, /^Parked: Stand size waits for the floor plan/);
+      assert.strictEqual(told[0]!.silent, 1);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// An agent's words outside the Team room still wake no other agent: the group-chat rule.
+it.effect("an agent's message outside the Team room wakes no other agent", () =>
+  Effect.andThen(
+    TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
+      yield* wake(
+        "social",
+        yield* chats.send(owner, {
+          chatId: chatOf("social"),
+          body: "Does Finance know the print budget?",
+          clientMessageId: "budget",
+        }),
+      );
+      const { agent, post } = yield* agentServices.pipe(
+        Effect.provideService(McpInvocationContext, scopeOf("social")),
+      );
+      yield* post(agent, {
+        chatId: chatOf("social"),
+        body: "Finance, what's the print budget?",
+        intent: "answer",
+        clientMessageId: "to-finance",
+      });
+      const others = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
+        AND agent_id <> 'social' AND tag = 'chat.message'`;
+      assert.lengthOf(others, 0);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
