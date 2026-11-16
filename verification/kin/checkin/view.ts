@@ -10,7 +10,7 @@ export const title =
   "Your loose morning check-in, a fact it tells once, and a post your quiet hours hold";
 
 export const guide =
-  "Your check-in is set “around 9:00”: it may come any time from 8:55 to 9:20, the same minute however often Kin works it out. Each box is where today's check-in stands; each arrow is something that happens: time passes, Kin's host sleeps or wakes, its clock is set forward or back, you move the check-in to 9:10, and a fact about a member's overdue task is held (“I've got it”) or clears. A fact is told once, and again only when it changed. Something nobody asked for that comes in your quiet hours waits for them to end. The model covers two days, one outage, one clock change and one move. Red boxes are where a rule below breaks.";
+  "Your check-in is set “around 9:00”: it may come any time from 8:55 to 9:20, the same minute however often Kin works it out. Each box is where today's check-in stands; each arrow is something that happens: time passes, Kin's host sleeps or wakes, its clock is set forward or back, you move the check-in to 9:10, and a fact about a member's overdue task is held (“I've got it”) or clears. A fact is told once, and again only when it changed. Something nobody asked for that comes in your quiet hours, a message passed on to you included, waits for them to end. The model covers two days, one outage, one clock change and one move. Red boxes are where a rule below breaks.";
 
 /** The chart is drawn on one day without clock changes; the rules are checked on the full bound. */
 export const chartConstants = { Days: "1", MaxJumps: "0" };

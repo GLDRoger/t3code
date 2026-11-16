@@ -18,6 +18,8 @@ import { ownerZone } from "../work/recordRows.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS, type KinQuietHours } from "./quietHours.ts";
 
 const MINUTE = 60_000;
+/** A message they sent this recently is one a line to them answers, whatever the hour. */
+const ANSWERS_WITHIN_MS = 10 * MINUTE;
 const decodeJsonQuiet = Schema.decodeUnknownOption(
   Schema.fromJsonString(KinTriggerSettings.fields.quietHours),
 );
@@ -62,7 +64,7 @@ const personQuiet = Effect.fn("KinQuiet.person")(function* (
     person?.owner === 1
       ? yield* ownerZone(orgId)
       : (validZone(person?.zone) ?? (yield* ownerZone(orgId)));
-  return { quiet: isQuiet(now, zone, hours), endsAt: quietEndsAt(now, zone, hours) };
+  return { quiet: isQuiet(now, zone, hours), endsAt: quietEndsAt(now, zone, hours), zone };
 });
 
 /**
@@ -87,6 +89,78 @@ export const holdIfQuiet = Effect.fn("KinQuiet.hold")(function* (input: {
     VALUES (${SecureRandom.uuidV4Unsafe()}, ${input.orgId}, ${input.chatId}, ${input.personId},
       ${input.kind}, ${input.body}, ${input.audience}, ${now}, ${quiet.endsAt})`;
   return true;
+});
+
+/** When a held line reaches them, on their own clock: "07:00 their time (Tue 17 Nov)". */
+export const theirTime = (at: number, zone: string) => {
+  const part = (options: Intl.DateTimeFormatOptions) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: zone, ...options }).format(at).replace(/,/g, "");
+  return `${part({ hour: "2-digit", minute: "2-digit", hourCycle: "h23" })} their time (${part({ weekday: "short", day: "numeric", month: "short" })})`;
+};
+
+/**
+ * Until when a relay, nudge or notice for `personId` in `chatId` waits: the end of their quiet
+ * hours, or `notBefore` when later. Undefined, it posts now, as it does when they wrote in that
+ * chat in the last 10 minutes: then it answers them.
+ */
+export const holdFor = Effect.fn("KinQuiet.holdFor")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly personId: KinPersonId;
+  readonly chatId: KinChatId;
+  readonly notBefore?: number | undefined;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  const quiet = yield* personQuiet(input.orgId, input.personId, now);
+  const at = Math.max(quiet.endsAt, input.notBefore ?? now);
+  if (at <= now) return undefined;
+  const [answers] = yield* sql`SELECT 1 FROM kin_messages
+    WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+      AND author_person_id = ${input.personId}
+      AND created_at > ${DateTime.formatIso(DateTime.makeUnsafe(now - ANSWERS_WITHIN_MS))}
+    LIMIT 1`;
+  return answers === undefined ? { at, zone: quiet.zone } : undefined;
+});
+
+/**
+ * Stores one line for `personId` to post at `at` (`deliverHeld`), as `agentId` when given, else
+ * as Kin's own row; `waits` makes it wait on their answer. `key` names it, so a retried call
+ * holds nothing more. Returns when it posts.
+ */
+export const holdLine = Effect.fn("KinQuiet.holdLine")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly chatId: KinChatId;
+  readonly personId: KinPersonId;
+  readonly key: string;
+  readonly body: string;
+  readonly audience: WriteAudience;
+  readonly at: number;
+  readonly agentId?: KinAgentId | undefined;
+  readonly waits?: boolean;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const [held] = yield* sql<{ at: number }>`SELECT deliver_at AS at FROM kin_held_posts
+    WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND kind = ${input.key}
+    ORDER BY rowid LIMIT 1`;
+  if (held !== undefined) return held.at;
+  yield* sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind, body,
+      audience, held_at, deliver_at, agent_id, waits)
+    VALUES (${SecureRandom.uuidV4Unsafe()}, ${input.orgId}, ${input.chatId}, ${input.personId},
+      ${input.key}, ${input.body}, ${input.audience}, ${yield* Clock.currentTimeMillis},
+      ${input.at}, ${input.agentId ?? null}, ${input.waits === true ? 1 : 0})`;
+  return input.at;
+});
+
+/** The escape from someone's quiet hours: the agent's stated reason, logged, and it rings them. */
+export const urgentNow = Effect.fn("KinQuiet.urgent")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly personId: KinPersonId;
+  readonly reason: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* Effect.logInfo("Kin urgent message", input);
+  yield* sql`DELETE FROM kin_push_rings WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`;
 });
 
 /**

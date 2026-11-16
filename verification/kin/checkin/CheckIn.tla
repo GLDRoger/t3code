@@ -201,8 +201,9 @@ FactClears == fact \in {"open", "held"} /\ fact' = "cleared"
   /\ UNCHANGED <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow, heldBy,
                  told, skipped, taskShown, jumps, outages, told2, quiet>>
 
-(* An unprompted line (a night job's notice, a fact wake's turn) in the owner's quiet hours:
-   quietHold.ts holdIfQuiet stores it with the end of those hours; "post-in-quiet" posts it. *)
+(* An unprompted line in a person's quiet hours (a night job's notice, a fact wake's turn, a
+   relay, nudge or notice the agent sends them): quietHold.ts holdIfQuiet or holdFor/holdLine
+   stores it with the end of those hours; "post-in-quiet" posts it. *)
 QuietPost ==
   /\ ~posted /\ Quiet(clock) /\ DayOf(clock) \in DayRange
   /\ posted' = TRUE

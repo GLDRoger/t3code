@@ -40,9 +40,20 @@ import {
 } from "./Audience.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { directKey } from "./LeadAccess.ts";
+import { holdFor, holdLine, urgentNow } from "../triggers/quietHold.ts";
 import { unreadableBy } from "../work/teamView.ts";
 
 type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
+type PostToInput = PostInput & {
+  /** Why it can't wait for their quiet hours: logged, and it posts now. */
+  readonly urgent?: string | undefined;
+  /** It waits at least until then, as a nudge does for their working hours. */
+  readonly notBefore?: number | undefined;
+};
+/** A message for a person that waits, stored, for their quiet hours to end (`deliverHeld`). */
+export type HeldPost = { readonly _tag: "held"; readonly at: number; readonly zone: string };
+export const isHeld = (posted: KinMessage | HeldPost): posted is HeldPost =>
+  "_tag" in posted && posted._tag === "held";
 type WidgetInput = Parameters<KinChatService["Service"]["upsertWidget"]>[1];
 type AskInput = Parameters<KinChatService["Service"]["ask"]>[1];
 type ChartInput = Parameters<KinChatService["Service"]["chart"]>[1];
@@ -65,13 +76,14 @@ export class KinLevelGate extends Context.Service<
     /**
      * A message written for one teammate, in their own direct chat with the lead. An owner-level
      * turn may send it, though they are not the owner, when its text holds nothing they can't
-     * see (`unreadableBy`): a nudge, a relayed answer, a question about their work.
+     * see (`unreadableBy`): a nudge, a relayed answer, a question about their work. In their
+     * quiet hours it is held to their end, unless urgent or it answers what they just wrote.
      */
     readonly postTo: (
       agent: AgentIdentity,
       personId: KinPersonId,
-      input: PostInput,
-    ) => Effect.Effect<KinMessage, KinChatError>;
+      input: PostToInput,
+    ) => Effect.Effect<KinMessage | HeldPost, KinChatError>;
     /** The turn's one reply grows by its next segment, gated like the post that began it. */
     readonly extend: (
       agent: AgentIdentity,
@@ -407,13 +419,35 @@ const make = Effect.gen(function* () {
         "gated message",
         agent,
         input.chatId,
-        chat.send(agent, {
-          chatId: input.chatId,
-          clientMessageId: input.clientMessageId,
-          body: input.body,
-          intent: input.intent,
-          forChat: true,
-        }),
+        Effect.gen(function* () {
+          const where = { orgId: agent.orgId, personId, chatId: input.chatId };
+          const held =
+            input.urgent === undefined
+              ? yield* holdFor({ ...where, notBefore: input.notBefore })
+              : yield* urgentNow({ ...where, agentId: agent.agentId, reason: input.urgent }).pipe(
+                  Effect.as(undefined),
+                );
+          if (held !== undefined)
+            return {
+              _tag: "held" as const,
+              zone: held.zone,
+              at: yield* holdLine({
+                ...where,
+                key: input.clientMessageId,
+                body: input.body,
+                audience: "chat",
+                at: held.at,
+                agentId: agent.agentId,
+              }),
+            };
+          return yield* chat.send(agent, {
+            chatId: input.chatId,
+            clientMessageId: input.clientMessageId,
+            body: input.body,
+            intent: input.intent,
+            forChat: true,
+          });
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         { personId, text: input.body },
       ),
     ),
