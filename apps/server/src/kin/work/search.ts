@@ -127,7 +127,11 @@ export const search = Effect.fn("KinSearch.search")(function* (
         listOf(row.registerId),
       ),
       title: row.title,
-      snippet: ((said) => (said === "" ? row.title : said))(withoutIds(row.snippet)),
+      // A project's notes carry its price and terms, which only its lead and the owner read.
+      snippet:
+        input.viewer === "team" && listOf(row.registerId) === "projects"
+          ? row.title
+          : ((said) => (said === "" ? row.title : said))(withoutIds(row.snippet)),
       ...(section === undefined || section.id === "top"
         ? {}
         : { section: { id: section.id, title: section.title } }),

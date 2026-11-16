@@ -1216,3 +1216,46 @@ it.effect(
       assert.strictEqual((yield* playbookThreshold(elsewhere, "overloaded_load")).value, 8);
     }).pipe(Effect.provide(layer)),
 );
+
+it.effect(
+  "playbooks are the team's to read, until the owner marks one private: then it is hidden from them",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${mateId}`;
+      assert.strictEqual(yield* seedPlaybooks(orgId, ownerId), PLAYBOOK_SEEDS.length);
+      const mate = { _tag: "person" as const, orgId, personId: mateId };
+      const listed = (yield* OwnerDocs.list([mate], { orgId })).docs;
+      assert.lengthOf(listed, PLAYBOOK_SEEDS.length);
+      const chasing = listed.find((doc) => doc.title === "Chasing money")!;
+      const other = listed.find((doc) => doc.key !== chasing.key)!;
+      const found = (text: string) =>
+        OwnerDocs.search([mate], { orgId, text }).pipe(
+          Effect.map(({ hits }) => hits.map((hit) => hit.key)),
+        );
+      assert.include(yield* found("chasing"), chasing.key);
+
+      yield* OwnerDocs.label([owner], { orgId, key: chasing.key, sensitive: true });
+      assert.notInclude(
+        (yield* OwnerDocs.list([mate], { orgId })).docs.map((doc) => doc.key),
+        chasing.key,
+      );
+      assert.strictEqual(
+        reasonOf(yield* Effect.flip(OwnerDocs.get([mate], { orgId, key: chasing.key }))),
+        "not_found",
+      );
+      assert.notInclude(yield* found("chasing"), chasing.key);
+      // An agent working for them reads the rest and never the private one.
+      yield* turn("mate", "shared");
+      assert.strictEqual(
+        reasonOf(yield* Effect.flip(LeadDocs.read(scopeOf(lead), { key: chasing.key }))),
+        "not_found",
+      );
+      assert.strictEqual((yield* LeadDocs.read(scopeOf(lead), { key: other.key })).key, other.key);
+      assert.strictEqual(
+        (yield* OwnerDocs.get([owner], { orgId, key: chasing.key })).key,
+        chasing.key,
+      );
+    }).pipe(Effect.provide(layer)),
+);

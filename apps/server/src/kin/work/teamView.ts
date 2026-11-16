@@ -86,8 +86,9 @@ const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fra
 
 /**
  * What a non-owner-level person sees, on every screen, count, search and turn: a task they hold or
- * attend, private or not. Unlabelled: what they made, gave or share, their projects' entries and
- * docs (a private task is never its project lead's), and company docs with the Docs place on.
+ * attend, private or not. Unlabelled: what they made, gave or share, the projects they are on,
+ * their projects' entries and docs (a private task is never its project lead's), and company docs
+ * with the Docs place on.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
@@ -99,7 +100,8 @@ export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Sta
   OR (${ownLabelOff(sql)} AND r.register_id <> 'bank_transactions'
     AND ${inLedProject(sql, personId)})
   OR (NOT ${sensitiveNow(sql)} AND (
-    (r.register_id IN ('clients', 'contacts') AND ${placeOn(sql, personId, "sees_clients")})
+    (r.register_id = 'projects' AND ${onProject(sql, personId, sql`r.record_id`)})
+    OR (r.register_id IN ('clients', 'contacts') AND ${placeOn(sql, personId, "sees_clients")})
     OR (r.register_id = 'docs' AND r.project_id IS NOT NULL AND ${projectPerson(sql, personId)})
     OR (r.register_id = 'docs' AND (r.team_shared = 1
       OR json_extract(r.fields_json, '$.home') = 'company')
@@ -596,6 +598,19 @@ export const teamRecord = <
   ...record
 }: A) => record;
 
+/** `teamRecord`, keeping its project where the teammate sees that project (`personSees`). */
+export const teamRecordIn = <
+  A extends KinRecord & { readonly files?: unknown; readonly payments?: unknown },
+>(
+  record: A,
+  seen: ReadonlySet<string>,
+) => {
+  const plain = teamRecord(record);
+  return record.project !== undefined && seen.has(record.project.recordId)
+    ? { ...plain, project: record.project }
+    : plain;
+};
+
 /** History lines a teammate reads: what the task says and who holds it, never money or labels. */
 const TEAM_FIELDS = new Set([
   "title",
@@ -636,9 +651,12 @@ export const teamDetail = Effect.fn("KinTeamView.detail")(function* (
   const linked = detail.links.flatMap((link) =>
     link.kind === "record" && link.record !== undefined ? [link.record.recordId] : [],
   );
-  const visible = yield* teamVisible(detail.orgId, personId, linked);
+  const visible = yield* teamVisible(detail.orgId, personId, [
+    ...linked,
+    ...(detail.project === undefined ? [] : [detail.project.recordId]),
+  ]);
   const sheet: KinRecordDetail = {
-    ...(whole ? detail : teamRecord(detail)),
+    ...(whole ? detail : teamRecordIn(detail, visible)),
     source: { chatId: null, messageId: null },
     links: detail.links.filter((link) =>
       link.kind === "pull_request" || link.kind === "url"

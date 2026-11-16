@@ -806,7 +806,11 @@ const accessRows = Effect.fn("KinLeadProvision.accessRows")(function* (lead: Lea
     ORDER BY x.granted_at, x.person_id`.pipe(
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.accessRows")),
   );
+  const team = yield* LeadAccess.teamAgent(lead.orgId).pipe(
+    Effect.mapError(toPersistenceSqlError("KinLeadProvision.accessRows")),
+  );
   return {
+    everyone: team === lead.agentId,
     people: rows.map((row) => ({
       personId: row.personId,
       displayName: row.displayName as KinLeadAccessResult["people"][number]["displayName"],
