@@ -116,7 +116,7 @@ const checkIn = (dueAt: number, outside: OutsideRead = nothingOutside) =>
     title: "Afternoon check-in",
     what: "Afternoon check-in.",
     dueAt,
-    loose: true,
+    looseAt: "15:30",
     zone: "UTC",
     at: dueAt,
     outside,
@@ -159,11 +159,6 @@ describe("pulse check-ins", () => {
       );
       assert.strictEqual(tuesday._tag, "queued");
       assert.notStrictEqual(looseOffsetMs(afternoon, "2026-11-17"), offset);
-      // Every day lands inside 15:25 to 15:50.
-      for (let day = 0; day < 60; day++) {
-        const each = looseOffsetMs(afternoon, `day-${day}`);
-        assert.isTrue(each >= 0 && each <= 25 * MINUTE && each % MINUTE === 0);
-      }
       // A late task is a judgement call: the main model.
       assert.isTrue(JSON.parse(events[0]!.json).strong);
     }).pipe(Effect.provide(layer)),

@@ -457,7 +457,7 @@ const make = Effect.gen(function* () {
               title,
               what: task.prompt,
               dueAt: Date.parse(fire.dueAt),
-              loose: row.looseAt !== null,
+              looseAt: row.looseAt,
               manualId: manual ? fire.fireId : undefined,
               zone: KinSchedules.hostTimeZone(),
               at: now,
