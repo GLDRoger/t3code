@@ -183,7 +183,7 @@ export type KinAccessMeResult = typeof KinAccessMeResult.Type;
 
 export const KIN_PROFILE_NAME_MAX = 80;
 export const KIN_PROFILE_SKILLS_MAX = 300;
-const KIN_PROFILE_TALK_MAX = 200;
+export const KIN_PROFILE_TALK_MAX = 200;
 /** Days are 0 (Sunday) to 6; start and end are local times in the person's time zone. */
 export const KinWorkHours = Schema.Struct({
   days: Schema.Array(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 }))).check(

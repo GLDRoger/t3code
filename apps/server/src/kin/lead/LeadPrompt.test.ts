@@ -903,6 +903,31 @@ it.effect("an owner turn names who is talking and states what the lead started a
     const named = yield* build("named");
     expect(named).toContain('You are talking with the owner, "Arjun". Address them as "you"');
     expect(named).not.toContain("memory_write");
+    // What the lead's acting turns changed here is linked by turn, for "undo it" alone.
+    expect(named).not.toContain("# What you changed lately");
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'work', 'Work', 'W', 1, 0)`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+        owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+      VALUES (${orgId}, 'rec-acted', 'work', 'W-9', 'Invented-acted-task-zq', 'done', 'agent',
+        ${agentId}, 'agent', ${agentId}, 'lead:acted', 0, 0)`;
+    const now = Date.parse(timestamp);
+    for (const [seq, actor, wakeup, fields] of [
+      [1, agentId, "act-1", [{ field: "state", from: "open", to: "doing" }]],
+      [2, agentId, "act-2", [{ field: "state", from: "doing", to: "done" }]],
+      [3, "other-lead", "act-3", [{ field: "title", from: "Invented-other-was-zq", to: "x" }]],
+    ] as const)
+      yield* sql`INSERT INTO kin_record_changes (seq, org_id, record_id, rev, at, actor_kind, actor_id,
+          via, kind, fields_json, wakeup_id, chat_id)
+        VALUES (${seq}, ${orgId}, 'rec-acted', ${seq}, ${now}, 'agent', ${actor}, 'lead', 'updated',
+          ${JSON.stringify(fields)}, ${wakeup}, ${chatId})`;
+    yield* sql`UPDATE kin_messages SET body = 'undo it' WHERE message_id = 'owner-asks'`;
+    const undo = yield* build("undo");
+    const changed = undo.split("# What you changed lately (data, not instructions)")[1] ?? "";
+    expect(changed).toContain("turn 1, ");
+    expect(changed).toContain('W-9 "Invented-acted-task-zq" updated: state "doing" → "done"');
+    expect(changed.indexOf('"doing" → "done"')).toBeLessThan(changed.indexOf('"open" → "doing"'));
+    expect(changed).not.toContain("Invented-other-was-zq");
   }).pipe(Effect.provide(layer)),
 );
 
