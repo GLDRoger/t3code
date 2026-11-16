@@ -227,7 +227,7 @@ export function KinSettingsLayout() {
         <nav
           aria-label="Settings sections"
           className={cn(
-            "min-h-0 w-full shrink-0 overflow-y-auto border-e p-2 md:block md:w-60",
+            "min-h-0 w-full shrink-0 overflow-y-auto p-2 md:block md:w-60 md:border-e",
             atIndex ? "block" : "hidden",
           )}
         >
