@@ -25,4 +25,6 @@ No check covers these. Decide them in review:
 - `pulse/senses/money.ts` decides when an invoice is overdue with its own chase grace; it doesn't use `owedInvoices`. Keep the two in step by hand.
 - A client screen uses the device's zone for when things happened, since the device belongs to its viewer. Company due days use the owner's zone through `kinZonedDayStart`.
 - A loose check-in shows "around" a time. `KinSchedules.isAround` decides which ones are loose.
+- Every entry on a money list carries the list's private label, and Kin can't tell it from the owner's own (`ownLabelOff` in `work/teamView.ts`): a project's lead sees every invoice filed under their project, and the owner can't hide one invoice from that lead alone.
+- Outside a project they lead, a teammate sees a money entry only when it is shared with the team and their Money place is on; there is no sharing one invoice with one person.
 - A header count and the list under it come from separate SQL in a few places: the Work summary and the client page's owed counts. They use the same predicate, so a change to one must change the other.

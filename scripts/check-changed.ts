@@ -41,6 +41,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
 import { MIGRATIONS, kinBranchChecks } from "./kin-branch-checks.ts";
+import { modelsFor } from "./kin-model.ts";
 
 const GiB = 1024 ** 3;
 
@@ -493,8 +494,14 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       ]
     : [];
 
+  // Kin's TLA+ models, each only when a file it stands for changed; skipped without Java.
+  const kinModels = modelsFor(files).map((name) =>
+    command(`kin model ${name}`, ["exec", "node", "scripts/kin-model.ts", name, "--if-java"]),
+  );
+
   const steps: Array<Step<never>> = [
     ...kinBranch,
+    ...kinModels,
     ...(runPatchCheck ? [{ name: "unused patches", run: checkPatches }] : []),
     ...(present.length > 0
       ? [command("format", ["fmt", "--check", "--no-error-on-unmatched-pattern", ...present])]
