@@ -1,8 +1,8 @@
 #!/bin/sh
 # A stand-in for gh, for GitHubLogin.test.ts and `KIN_DEV_FAKE_GITHUB`. State lives in
 # $KIN_FAKE_GH: `token` and `user` are the login it holds, `decision` (ok, expired or denied)
-# answers a waiting code sign-in, `revoked` makes GitHub refuse the login, and `calls` records
-# every run. Invented login and tokens only; it never reaches GitHub.
+# answers a waiting code sign-in, `revoked` makes GitHub refuse the login, `prs` counts the PRs
+# `pr create` made, and `calls` records every run. Invented login and tokens only; it never reaches GitHub.
 S="$KIN_FAKE_GH"
 echo "$*" >> "$S/calls"
 case "$1 $2" in
@@ -21,6 +21,11 @@ case "$1 $2" in
   "api -i")
     if [ -f "$S/revoked" ]; then echo "gh: Bad credentials (HTTP 401)" >&2; exit 1; fi
     printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: gist, read:org, repo, workflow\r\n\r\n{"login":"%s","id":1}\n' "$(cat "$S/user")"
+    exit 0 ;;
+  "pr create")
+    # A PR for the checkout's branch, numbered by how many came before; never reaches GitHub.
+    n=$(( $(cat "$S/prs" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$S/prs"
+    echo "https://github.com/$(cat "$S/user")/$(basename "$(git remote get-url origin)" .git)/pull/$n"
     exit 0 ;;
   "api user/orgs")
     printf 'invented-co\nside-project\n'; exit 0 ;;

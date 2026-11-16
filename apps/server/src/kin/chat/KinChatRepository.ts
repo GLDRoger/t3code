@@ -719,8 +719,8 @@ const make = Effect.gen(function* () {
         AND m.thread_id = root.thread_id AND m.run_id = root.run_id
       WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
         AND w.thread_id = ${input.threadId} AND w.status = 'running'
-        AND json_extract(m.payload_json, '$.createdBy') = 'system'
         AND json_extract(m.payload_json, '$.creationSource') = 'server'
+        AND ((json_extract(m.payload_json, '$.createdBy') = 'system'
         AND ((json_extract(root.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id
           AND root.run_id = COALESCE(w.run_id, (
             SELECT first.run_id FROM orchestration_v2_projection_runs first
@@ -733,8 +733,10 @@ const make = Effect.gen(function* () {
               OR substr(json_extract(root.payload_json, '$.userMessageId'), 1, length(w.wakeup_id) + 15)
                 = 'kin-steer-msg:' || w.wakeup_id || ':')
             AND root.ordinal > (SELECT own.ordinal FROM orchestration_v2_projection_runs own
-              WHERE own.thread_id = w.thread_id AND own.run_id = w.run_id
-                AND json_extract(own.payload_json, '$.userMessageId') = 'kin-wakeup-msg:' || w.wakeup_id)))
+              WHERE own.thread_id = w.thread_id AND own.run_id = w.run_id))))
+          -- T3's notice that a delegated task finished, in the run this wake-up took over: only
+          -- Kin sets run_id, and only to such a run (TaskWake).
+          OR (json_extract(m.payload_json, '$.createdBy') = 'agent' AND root.run_id = w.run_id))
         ORDER BY w.wakeup_id LIMIT 1`;
       return rows.length > 0;
     },

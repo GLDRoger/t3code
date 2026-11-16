@@ -792,6 +792,26 @@ const make = Effect.gen(function* () {
             );
             if (notClaude !== undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: notClaude });
+            // T3 starts the run that answers a finished task at once: own it before the slow
+            // preparation below, so its first tool calls already find their turn.
+            for (const event of events) {
+              if (event._tag !== "task.finished" || row.runId !== null) continue;
+              const state = noticeState(
+                yield* threads.getThreadRecords(event.threadId, ["messages", "runs"]),
+                event.messageId,
+              );
+              if (state._tag !== "live") continue;
+              row = { ...row, threadId: event.threadId, runId: state.run.id };
+              yield* sql`UPDATE kin_wakeups SET thread_id = ${event.threadId}, run_id = ${state.run.id}
+                WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId}
+                  AND status = 'running'`;
+              yield* registry.register(event.threadId, {
+                orgId,
+                agentId,
+                wakeupId,
+                level: current.level,
+              });
+            }
             const admitted = yield* admitEvents(orgId, agentId, events);
             const cheapOnly = admitted.cheapOnly;
             for (const group of admitted.held) {
@@ -1089,7 +1109,14 @@ const make = Effect.gen(function* () {
               WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
               }),
             );
-            yield* registry.register(threadId, { orgId, agentId, wakeupId, level: current.level });
+            // A finished task's run may already be this wake-up's (above).
+            if (registry.lookup(threadId)?.wakeupId !== wakeupId)
+              yield* registry.register(threadId, {
+                orgId,
+                agentId,
+                wakeupId,
+                level: current.level,
+              });
             if (Option.isSome(bridge))
               yield* bridge.value.begin({
                 orgId,

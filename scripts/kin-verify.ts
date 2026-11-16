@@ -63,6 +63,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   as <person> rpc <method> ['<json>']     a client RPC as that person (orgId is filled in)
   tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--reply "<text>"] [--hold <s>] [--raw]
                                           one real turn, no model: the agent calls the tool
+  tool <agent> --script <file.json>       the same with several calls (and "shell"/"sleep" steps)
   mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
   mail expire <address> [--back]          the account's sign-in stops working (or works again)
   push sent                               what Kin would have pushed, per person's device (no APNs)
@@ -341,15 +342,28 @@ async function rpc(instance: Instance, person: string, args: Args) {
 
 async function tool(instance: Instance, args: Args) {
   const [agent, name, json] = args.positional;
-  if (agent === undefined || name === undefined)
+  const script = flag(args, "script");
+  if (agent === undefined || (name === undefined && script === undefined))
     throw new VerifyError(
-      "tool needs <agent> <tool-name> ['<json>'], such as tool chief people_read",
+      "tool needs <agent> <tool-name> ['<json>'] or <agent> --script <file>, such as tool chief people_read",
     );
+  // A script file holds several calls, as `{"calls": [{"name", "arguments"}], "reply"}`.
+  const scripted =
+    script === undefined
+      ? undefined
+      : (JSON.parse(NodeFS.readFileSync(script, "utf8")) as {
+          calls: Array<{ name: string; arguments?: unknown }>;
+          reply?: string;
+        });
+  const reply = flag(args, "reply") ?? scripted?.reply;
   const results = await runTurn(instance, {
     agent,
     person: flag(args, "as-turn-of") ?? "owner",
-    calls: [{ name, arguments: json === undefined ? {} : JSON.parse(json) }],
-    ...(flag(args, "reply") === undefined ? {} : { reply: flag(args, "reply")! }),
+    calls: scripted?.calls.map((call) => ({
+      name: call.name,
+      arguments: call.arguments ?? {},
+    })) ?? [{ name: name!, arguments: json === undefined ? {} : JSON.parse(json) }],
+    ...(reply === undefined ? {} : { reply }),
     ...(flag(args, "hold") === undefined ? {} : { holdSeconds: Number(flag(args, "hold")) }),
   });
   for (const result of results)

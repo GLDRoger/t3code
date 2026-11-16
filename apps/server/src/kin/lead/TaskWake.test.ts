@@ -57,7 +57,7 @@ const message = (
       generation: 1,
       taskIds: [NodeId.make("task-1")],
     },
-  }) as OrchestrationV2ConversationMessage;
+  }) as unknown as OrchestrationV2ConversationMessage;
 
 it.each([
   ["T3's run for it is queued", [run("wake", 2, notice, "queued")], "live:wake"],
@@ -123,7 +123,7 @@ it.effect("a lead thread's notice becomes one task.finished event for its chat; 
     yield* wake.enqueue(message("shared-notice", null, ThreadId.make("kin-shared:tech")));
     yield* wake.enqueue(message("ordinary-notice", null, ThreadId.make("thread-1")));
     assert.deepStrictEqual(
-      enqueued.map((event) =>
+      enqueued.map((event): ReadonlyArray<unknown> | string =>
         event._tag === "task.finished"
           ? [event.threadId, event.messageId, event.taskIds, event.chatId, event.provenance._tag]
           : event._tag,

@@ -1532,15 +1532,32 @@ describe("WakeupRunner", () => {
       const started = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
       let turns = 0;
-      // The lead's first turn runs freely; the turn for T3's notice waits while `live`.
-      const onTurn = () =>
+      const calls: Array<string> = [];
+      let check: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
+      // The lead's first turn runs freely; the turn for T3's notice waits while `live`, then
+      // calls a Kin tool as the agent would once its wake-up owns it.
+      const onTurn = ({ threadId }: { readonly threadId: ThreadId }) =>
         Effect.suspend(() =>
           ++turns === 2 && live
-            ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            ? Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.andThen(check(threadId)),
+              )
             : Effect.void,
         );
       yield* Effect.gen(function* () {
         yield* seed;
+        const services = yield* Effect.context<
+          KinIdentity.KinIdentity | McpSessionRegistry.McpSessionRegistry
+        >();
+        check = (threadId) =>
+          resolveAgent(threadId).pipe(
+            Effect.provideContext(services),
+            Effect.match({
+              onFailure: (error) => calls.push(error.message),
+              onSuccess: () => calls.push("allowed"),
+            }),
+          );
         const queue = yield* KinEventQueue.KinEventQueue;
         const threads = yield* ThreadManagement.ThreadManagementService;
         const sql = yield* SqlClient.SqlClient;
@@ -1608,6 +1625,8 @@ describe("WakeupRunner", () => {
           ],
         );
         assert.strictEqual(wakeups[1]!.runId, live ? sent.run.id : runs[2]!.id);
+        // Before Kin took it over, the run's Kin calls were refused; after, they are the agent's.
+        assert.deepStrictEqual(calls, live ? ["allowed"] : []);
         assert.deepStrictEqual(
           yield* sql`SELECT state FROM kin_events WHERE event_id = 'task-finished'`,
           [{ state: "done" }],
