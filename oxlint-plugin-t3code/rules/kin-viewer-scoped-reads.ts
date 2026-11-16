@@ -4,7 +4,9 @@ const VIEWER_NAMES = new Set(["viewer", "viewers", "view", "sees", "team"]);
 /** Calls that resolve who a request reads for; their results scope the function's reads. */
 const RESOLVERS = new Set(["viewerOf", "viewOf", "reader", "moneyReader"]);
 /** Calls that refuse anyone below the owner level; a function making one reads for them. */
-const OWNER_GATES = new Set(["theOwner", "ownerOnlyGate"]);
+const OWNER_GATES = new Set(["theOwner", "ownerOnlyGate", "ownerTurn"]);
+/** Wrappers whose second argument is an agent tool's body (`leadTool` in work/leadWork.ts). */
+const TOOL_WRAPPERS = new Set(["leadTool"]);
 const VIEWER_TYPE = /\b(?:KinViewer|KinPersonId|Fragment)\b/;
 const RECORDS = /\bkin_records\b/;
 
@@ -231,10 +233,44 @@ export default defineRule({
       if (!transport) checkScopedSql(node);
     };
 
+    // An agent tool's body runs in turns teammates read, so it is a read for a person even with no
+    // viewer in sight; the scoped check above only starts from one.
+    const functionsByName = new Map<string, FunctionNode>();
+    const toolBodies: Array<{ call: ESTree.CallExpression; body: ESTree.Node }> = [];
+    const checkToolBody = (call: ESTree.CallExpression, body: ESTree.Node) => {
+      const fn = body.type === "Identifier" ? functionsByName.get(body.name) : firstFunction(body);
+      if (fn === undefined || takesViewer(fn) || fn.body == null || !queriesRecords(fn.body))
+        return;
+      context.report({
+        node: call,
+        message:
+          "This agent tool reads records with no viewer, and teammates read its turns. Resolve with `viewOf(lead)` and apply it (`viewSees`/`viewVisible`, or `resolveRef`), or gate it to the owner level.",
+      });
+    };
+
     return {
       FunctionDeclaration: onFunction,
       FunctionExpression: onFunction,
       ArrowFunctionExpression: onFunction,
+      VariableDeclarator(node) {
+        if (node.id.type !== "Identifier" || node.init == null) return;
+        const fn = firstFunction(node.init);
+        if (fn !== undefined) functionsByName.set(node.id.name, fn);
+      },
+      CallExpression(node) {
+        const body = node.arguments[1];
+        if (
+          !transport &&
+          node.callee.type === "Identifier" &&
+          TOOL_WRAPPERS.has(node.callee.name) &&
+          body !== undefined &&
+          isNode(body)
+        )
+          toolBodies.push({ call: node, body });
+      },
+      "Program:exit"() {
+        for (const { call, body } of toolBodies) checkToolBody(call, body);
+      },
       ExportNamedDeclaration(node) {
         if (!readModel || node.declaration == null) return;
         const declaration = node.declaration;

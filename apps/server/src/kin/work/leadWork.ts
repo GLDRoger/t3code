@@ -754,34 +754,34 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
   } as typeof Row.Type;
 };
 
-/** A client or project the lead named by key, or by name as typed, among the active ones. */
-const resolveRef = Effect.fn("KinWorkTools.resolveRef")(function* (
+/**
+ * A client or project the lead named by key, or by name as typed, among the active ones. In a turn
+ * others read, one they may not all see answers exactly as one that doesn't exist.
+ */
+export const refRecord = Effect.fn("KinWorkTools.refRecord")(function* (
   lead: Lead,
   text: string,
   list: "clients" | "projects",
 ) {
   const sql = yield* SqlClient.SqlClient;
-  // In a turn others read, one they may not all see is never named, and never denied either.
   const team = yield* viewOf(lead);
   const rows = yield* sql<{
     recordId: string;
     key: string;
     name: string;
+    createdAt: number;
     active: number;
-    seen: number;
   }>`
-    SELECT r.record_id AS "recordId", r.key, r.title AS name,
-      r.state NOT IN ('done', 'dropped') AS active,
-      ${team === undefined ? sql`1` : viewSees(sql, team.people)} AS seen
+    SELECT r.record_id AS "recordId", r.key, r.title AS name, r.created_at AS "createdAt",
+      r.state NOT IN ('done', 'dropped') AS active
     FROM kin_records r WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list}
+      AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
     ORDER BY r.key LIMIT ${REF_CANDIDATES}`;
-  const candidates = (seen: boolean) =>
-    rows.filter(
-      (row) => (row.seen === 1) === seen && (row.active === 1 || row.key === text.toUpperCase()),
-    );
-  const noun = LISTS[list].noun;
-  const match = matchName(text, candidates(true));
-  if (match._tag === "found") return match.item.recordId;
+  const match = matchName(
+    text,
+    rows.filter((row) => row.active === 1 || row.key === text.toUpperCase()),
+  );
+  if (match._tag === "found") return match.item;
   if (match._tag === "ambiguous")
     return yield* invalid(
       `Several ${list} could be ${text.slice(0, 60)}: ${match.items
@@ -789,20 +789,20 @@ const resolveRef = Effect.fn("KinWorkTools.resolveRef")(function* (
         .map((row) => `${row.name} (${row.key})`)
         .join(", ")}. Ask which one is meant, or use the key.`,
     );
-  if (matchName(text, candidates(false))._tag !== "none")
-    return yield* new KinChatError({
-      reason: "not_found",
-      message: `No ${noun} ${text.slice(0, 60)} that everyone in this chat may see. One may exist that someone here can't see, so don't say there is none and don't add it again: leave it off here, or ask the owner in his own chat.`,
-    });
+  const nearest =
+    match.nearest.length === 0
+      ? ""
+      : ` Nearest: ${match.nearest.map((row) => `${row.name} (${row.key})`).join(", ")}; ask "did you mean …?" if one may be it.`;
   return yield* new KinChatError({
     reason: "not_found",
-    message: `No ${noun} called ${text.slice(0, 60)}.${
-      match.nearest.length === 0
-        ? ""
-        : ` Nearest: ${match.nearest.map((row) => `${row.name} (${row.key})`).join(", ")}; ask "did you mean …?" if one may be it.`
-    } Find it with records_query list ${list}, or create it if it's new.`,
+    message:
+      team === undefined
+        ? `No ${LISTS[list].noun} called ${text.slice(0, 60)}.${nearest} Find it with records_query list ${list}, or create it if it's new.`
+        : `No ${LISTS[list].noun} called ${text.slice(0, 60)} that everyone in this chat may see.${nearest} Leave it off here, or ask the owner in his own chat; don't add it again.`,
   });
 });
+const resolveRef = (lead: Lead, text: string, list: "clients" | "projects") =>
+  refRecord(lead, text, list).pipe(Effect.map((row) => row.recordId));
 const REF_CANDIDATES = 2000;
 export const refOrNull = Effect.fn("KinWorkTools.refOrNull")(function* (
   lead: Lead,
@@ -811,6 +811,12 @@ export const refOrNull = Effect.fn("KinWorkTools.refOrNull")(function* (
 ) {
   if (text === undefined || text === null) return text;
   return yield* resolveRef(lead, text, list);
+});
+
+/** Refused unless only the owner level reads this turn: for tools `SHARED_TOOLS` refuses. */
+export const ownerTurn = Effect.fn("KinWorkTools.ownerTurn")(function* (lead: Lead) {
+  if ((yield* effectiveAudience(lead)) !== "owner_only")
+    return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
 });
 
 /** The built-in list's own fields a row or an update names; `null` clears one. */

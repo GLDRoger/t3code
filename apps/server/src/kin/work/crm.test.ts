@@ -1009,6 +1009,57 @@ it.effect("a teammate gets none of the client calls, and a client change ticks s
 );
 
 it.effect(
+  "in a teammate's turn a client they can't see answers like no client, and no name comes back",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ list: "clients", title: "Invented Open Co" }],
+      });
+      yield* LeadWork.update(scope, { key: "C-1", sourceEventId: "ask-event", sensitive: true });
+      // The teammate sees clients, joins the chat, and the turn becomes one they read.
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('lead-chat-mate', ${orgId}, 'lead-chat', 'person', ${mateId}, 'member', ${at})`;
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+      const log = (client: string) =>
+        LeadClients.logTouch(scope, {
+          sourceEventId: "ask-event",
+          client,
+          kind: "call",
+          note: "Invented call",
+        }).pipe(Effect.flip);
+      const hidden = yield* log("C-1");
+      const missing = yield* log("C-9");
+      assert.strictEqual(hidden.reason, "not_found");
+      assert.strictEqual(hidden.message, missing.message.replace("C-9", "C-1"));
+      assert.notInclude((yield* log("Invented Acme")).message, "C-1");
+      for (const error of [hidden, missing]) assert.notInclude(error.message, "Invented Acme");
+      assert.deepStrictEqual(
+        yield* sql`SELECT party_id FROM kin_client_touches WHERE org_id = ${orgId}`,
+        [],
+      );
+      // A client everyone there sees still takes the teammate's contact, by name.
+      assert.strictEqual(
+        (yield* LeadClients.logTouch(scope, {
+          sourceEventId: "ask-event",
+          client: "C-2",
+          kind: "call",
+          note: "Invented call",
+        })).client,
+        "Invented Open Co (C-2)",
+      );
+      // The whole client stays the owner's, even past the gate.
+      assert.include(yield* Effect.flip(LeadClients.contact(scope, { key: "C-2" })), {
+        reason: "not_allowed",
+      });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "contact is what people logged and what Kin issued or received, never a draft or a chat",
   () =>
     Effect.gen(function* () {
