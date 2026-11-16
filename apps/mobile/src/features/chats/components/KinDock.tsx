@@ -4,7 +4,7 @@ export interface KinDockProps {
   readonly tabs: ReadonlyArray<KinDockTab>;
   readonly selectedTab: KinDockTab;
   readonly onSelect: (tab: KinDockTab) => void;
-  /** A short count on a tab: what needs attention, on Tasks. iOS only for now. */
+  /** A short count on a tab: unread on Chats, what needs attention on Tasks. iOS only for now. */
   readonly badges?: Partial<Readonly<Record<KinDockTab, string>>>;
 }
 

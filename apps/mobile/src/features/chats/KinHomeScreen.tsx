@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { KIN_TEAMMATE_WELCOME } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { kinAttentionBadge, kinAttentionCount } from "@t3tools/client-runtime/kin/kinAttention";
+import { kinBadgeCount } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { kinDockTabs, type KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
 import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
 import type { SessionGrantInput } from "@t3tools/contracts";
@@ -34,6 +35,7 @@ import {
 } from "./state/kinChatOnly";
 import { useKinDocsLive } from "./state/useKinDocs";
 import { useKinHost } from "./state/useKinHost";
+import { useKinInbox } from "./state/useKinInbox";
 import { useKinMoneySummary } from "./state/useKinMoney";
 import { useKinWork, type KinWorkTarget } from "./state/useKinWork";
 
@@ -105,6 +107,7 @@ function KinHomeTabs(props: {
   const tab = tabs.includes(held.tab) ? held.tab : "chats";
   const docked = tabs.length > 1;
   const bottomClearance = docked ? kinDockClearance(insets.bottom) : 0;
+  const unread = useKinUnreadBadge();
   const select = (next: KinDockTab) =>
     appAtomRegistry.set(kinHomeTabAtom, { ...appAtomRegistry.get(kinHomeTabAtom), tab: next });
   const settings: AppBarAction = {
@@ -153,15 +156,26 @@ function KinHomeTabs(props: {
         )}
       </KinTabContext>
       {!docked ? null : workTarget === null ? (
-        <KinDock tabs={tabs} selectedTab={tab} onSelect={select} />
+        <KinDock
+          tabs={tabs}
+          selectedTab={tab}
+          onSelect={select}
+          {...(unread === null ? {} : { badges: { chats: unread } })}
+        />
       ) : (
-        <KinBadgedDock {...workTarget} tabs={tabs} selectedTab={tab} onSelect={select} />
+        <KinBadgedDock
+          {...workTarget}
+          tabs={tabs}
+          selectedTab={tab}
+          onSelect={select}
+          {...(unread === null ? {} : { badges: { chats: unread } })}
+        />
       )}
     </View>
   );
 }
 
-/** The dock, with what needs attention counted on Tasks. */
+/** The dock, with unread messages counted on Chats and what needs attention on Tasks. */
 function KinBadgedDock(props: KinWorkTarget & KinDockProps) {
   const badge = kinAttentionBadge(kinAttentionCount(useKinAttention(props, true, true)));
   return (
@@ -169,9 +183,15 @@ function KinBadgedDock(props: KinWorkTarget & KinDockProps) {
       tabs={props.tabs}
       selectedTab={props.selectedTab}
       onSelect={props.onSelect}
-      {...(badge === null ? {} : { badges: { tasks: badge } })}
+      badges={{ ...props.badges, ...(badge === null ? {} : { tasks: badge }) }}
     />
   );
+}
+
+/** The Chats list's unread total, the same count as the app icon's badge. */
+function useKinUnreadBadge() {
+  const { state } = useKinInbox();
+  return state._tag === "ready" ? kinAttentionBadge(kinBadgeCount(state.inbox.value)) : null;
 }
 
 /** A tab's state that isn't its list, inside the scroll view that clears the floating bar. */

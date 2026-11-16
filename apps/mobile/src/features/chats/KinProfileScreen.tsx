@@ -1,5 +1,6 @@
 import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { useOpenKinPeopleChat } from "./KinPeoplePickScreen";
+import { KinTimeZonePicker } from "./components/KinTimeZonePicker";
 import { useNavigation, usePreventRemove, type StaticScreenProps } from "@react-navigation/native";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
@@ -454,16 +455,8 @@ function ProfileForm(props: {
           borderTop
           onChange={(end) => set({ end })}
         />
-        <Field
-          label={KIN_PROFILE_COPY.timeZoneLabel}
-          value={draft.timeZone}
-          placeholder="Asia/Kolkata"
-          maxLength={64}
-          autoCapitalize="none"
-          borderTop
-          onChange={(timeZone) => set({ timeZone })}
-        />
       </ListSection>
+      <KinTimeZonePicker value={draft.timeZone} onChange={(timeZone) => set({ timeZone })} />
     </Frame>
   );
 }
