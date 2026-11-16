@@ -574,7 +574,7 @@ export const openQuestionsSection = Effect.fn("KinQuestions.section")(function* 
   return {
     heading: `# Open questions to ${who} (already asked; don't ask or repeat them)`,
     body: [
-      "Like a fact already told, each is with them once. When they answer one in words, kin_ask_close it as answered; withdraw your own when it no longer stands.",
+      "Like a fact already told, each is with them once: never put one to them again, on a card or in words; at most say it is open and what happens at its day. When they answer one in words, kin_ask_close it as answered; withdraw your own when it no longer stands.",
       ...lines,
     ].join("\n"),
   };
