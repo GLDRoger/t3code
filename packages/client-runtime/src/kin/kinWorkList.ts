@@ -1,4 +1,13 @@
-import type { KinOrgId, KinRecord, KinWorkListInput, KinWorkListResult } from "@t3tools/contracts";
+import {
+  kinPatchWorkPage,
+  kinWorkHeldPage,
+  type KinOrgId,
+  type KinRecord,
+  type KinWorkHeldPage,
+  type KinWorkListInput,
+  type KinWorkListResult,
+  type KinWorkRows,
+} from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
@@ -80,6 +89,16 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
   readonly onChange: (state: KinPagedListState<Filter, Row>) => void;
   /** Runs `run` after `ms`; returns its cancel. */
   readonly schedule: (run: () => void, ms: number) => () => void;
+  /**
+   * The rows held brought up to date without a read, from what the host already sent; null when
+   * only a read can. `moved` says rows came or went, so the next page reads from the top.
+   */
+  readonly catchUp?: (state: KinPagedListState<Filter, Row>) => {
+    readonly records: ReadonlyArray<Row>;
+    readonly total: number;
+    readonly more: boolean;
+    readonly moved: boolean;
+  } | null;
 }) {
   type State = KinPagedListState<Filter, Row>;
   const append = (held: ReadonlyArray<Row>, page: ReadonlyArray<Row>) => {
@@ -93,8 +112,12 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
   let generation = 0;
   let running = false;
   let cursor: string | null = null;
+  /** Rows came or went without a read, so `cursor`'s place among them no longer holds. */
+  let drifted = false;
   /** The highest change number announced while a read was running. */
   let announced: number | null = null;
+  /** One announced meanwhile has to read, whatever its number. */
+  let announcedForce = false;
   /** The filter the rows on screen were read for; null with none. */
   let shownFor: Filter | null = null;
   let cancelTyping: (() => void) | null = null;
@@ -107,8 +130,10 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
   const afterRead = () => {
     running = false;
     const seen = announced;
+    const force = announcedForce;
     announced = null;
-    if (seen !== null) changed(seen);
+    announcedForce = false;
+    if (seen !== null) changed(seen, force);
   };
 
   /** Reads from the top: one page, or as many as it takes to cover the rows already shown. */
@@ -147,6 +172,7 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
       seq ??= result.value.seq;
     } while (next !== null && records.length < want);
     cursor = next;
+    drifted = false;
     shownFor = state.filter;
     set({
       records,
@@ -169,17 +195,28 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
     void load(Math.max(state.records.length, KIN_WORK_PAGE));
   };
 
-  /** The host announced change number `seq`. */
-  function changed(seq: number) {
-    const behind = state.seq === null || seq > state.seq || state.stale;
+  /** The host announced change number `seq`; `force` reads again whatever the number. */
+  function changed(seq: number, force = false) {
+    const behind = force || state.seq === null || seq > state.seq || state.stale;
     if (!behind) return;
     if (running) {
       announced = Math.max(announced ?? 0, seq);
+      announcedForce ||= force;
       return;
     }
     // Still typing: the read that follows the pause will be current anyway.
     if (cancelTyping !== null) return;
-    reread();
+    const caught = force || state.stale || state.seq === null ? null : options.catchUp?.(state);
+    if (caught === undefined || caught === null) return reread();
+    drifted ||= caught.moved;
+    const same =
+      caught.total === state.total &&
+      caught.more === state.more &&
+      caught.records.length === state.records.length &&
+      caught.records.every((row, index) => row === state.records[index]);
+    // Nothing shown moved: the number advances without a redraw.
+    if (same) state = { ...state, seq };
+    else set({ records: caught.records, total: caught.total, more: caught.more, seq });
   }
 
   const abandon = () => {
@@ -221,7 +258,11 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
     changed,
     /** The next page, when the owner reaches the end of what is shown. */
     loadMore: async () => {
-      if (running || cursor === null || state.seq === null) return;
+      if (running || state.seq === null || !state.more) return;
+      if (drifted || cursor === null) {
+        set({ loadingMore: true, moreFailed: false });
+        return load(state.records.length + KIN_WORK_PAGE);
+      }
       const mine = ++generation;
       running = true;
       set({ loadingMore: true, moreFailed: false });
@@ -262,22 +303,163 @@ export function createKinWorkList(options: {
   readonly schedule: (run: () => void, ms: number) => () => void;
   /** Where the list starts: narrowed to a client or project, when opened from one. */
   readonly initial?: KinWorkFilter;
+  /** The tasks the host sent whole lately (`KinWorkLive.rows`); null from an older host. */
+  readonly rows?: () => KinWorkRows | null;
 }) {
-  return createKinPagedList<KinWorkFilter, KinRecord>({
+  const follow = kinWorkPageFollower(options.rows ?? (() => null));
+  const list = createKinPagedList<KinWorkFilter, KinRecord>({
     initial: options.initial ?? KIN_WORK_DEFAULT_FILTER,
     sameFilter: kinWorkSameFilter,
     idOf: (record) => record.recordId,
     onChange: options.onChange,
     schedule: options.schedule,
-    read: async (filter, page) =>
-      mapPage(
-        await options.read({
-          ...kinWorkListQuery(options.orgId, filter, options.now(), options.hostFilters()),
-          ...page,
-        }),
-        (value) => ({ ...value, rows: value.records }),
-      ),
+    read: async (filter, page) => {
+      const input = {
+        ...kinWorkListQuery(options.orgId, filter, options.now(), options.hostFilters()),
+        ...page,
+      };
+      const result = await follow.read(input, options.read);
+      return mapPage(result, (value) => ({ ...value, rows: value.records }));
+    },
+    catchUp: (state) => follow.catchUp(state.records),
   });
+  return {
+    ...list,
+    /** The host announced `seq`: rows it sent apply in place, and anything else reads again. */
+    changed: (seq: number) => list.changed(seq, follow.newEpoch()),
+  };
+}
+
+/**
+ * Keeps one list read's pages in step with the rows Work's stream sends: what each read answered,
+ * at which number and epoch, and what the stream said since.
+ */
+function kinWorkPageFollower(rows: () => KinWorkRows | null) {
+  let held: { readonly input: KinWorkListInput; readonly page: KinWorkHeldPage } | null = null;
+  /** Counts reads from the top: an answer to one since overtaken is not the page shown. */
+  let reads = 0;
+  return {
+    /** Reads through `read`, keeping its answer; a page after the first adds to the one held. */
+    read: async (
+      input: KinWorkListInput,
+      read: (input: KinWorkListInput) => Promise<AtomCommandResult<KinWorkListResult, unknown>>,
+    ) => {
+      const sent = rows();
+      const top = input.cursor === undefined ? ++reads : reads;
+      if (input.cursor === undefined) held = null;
+      const before = held;
+      const result = await read(input);
+      if (top !== reads) return result;
+      if (!AsyncResult.isSuccess(result) || sent === null) {
+        held = null;
+        return result;
+      }
+      const { value } = result;
+      const more = value.nextCursor !== null;
+      if (input.cursor === undefined) {
+        const { cursor: _cursor, limit: _limit, ...asked } = input;
+        held = {
+          input: asked,
+          page: {
+            ...kinWorkHeldPage(
+              { records: value.records, total: value.total, more },
+              { seq: value.seq, asOf: value.asOf ?? null, epoch: sent.epoch },
+            ),
+            mark: sent.arrival,
+          },
+        };
+      } else if (before !== null && held === before) {
+        const seen = new Set(before.page.records.map((record) => record.key));
+        held = {
+          input: before.input,
+          page: {
+            ...before.page,
+            records: [
+              ...before.page.records,
+              ...value.records.filter((record) => !seen.has(record.key)),
+            ],
+            total: value.total,
+            more,
+          },
+        };
+      }
+      return result;
+    },
+    /** The held page as it stands now; null when only a read can tell. */
+    catchUp: (shown: ReadonlyArray<KinRecord>) => {
+      const now = rows();
+      if (held === null || now === null) return null;
+      // What is on screen has to be what was read, or the page patched isn't the one shown.
+      const { records } = held.page;
+      if (records.length !== shown.length || records.some((r, i) => r.key !== shown[i]?.key))
+        return null;
+      const patched = kinPatchWorkPage(held.page, held.input, now);
+      if (patched === null) return null;
+      held = { input: held.input, page: patched.page };
+      return {
+        records: patched.page.records,
+        total: patched.page.total,
+        more: patched.page.more,
+        moved: patched.moved,
+      };
+    },
+    /** The stream started over since the page was read: it reads again. */
+    newEpoch: () => {
+      const now = rows();
+      return held !== null && now !== null && held.page.epoch !== now.epoch;
+    },
+  };
+}
+
+/**
+ * One read of Work's tasks (a person's due today) kept current: read once, then brought up to
+ * date from the rows the stream sends, and read again only when those can't say.
+ */
+export function createKinWorkFollowedRead(options: {
+  readonly read: (
+    input: KinWorkListInput,
+  ) => Promise<AtomCommandResult<KinWorkListResult, unknown>>;
+  readonly rows: () => KinWorkRows | null;
+  /** The rows to show for `input`; an empty list when the first read failed. */
+  readonly onChange: (records: ReadonlyArray<KinRecord>, input: KinWorkListInput) => void;
+}) {
+  const follow = kinWorkPageFollower(options.rows);
+  let asked: KinWorkListInput | null = null;
+  let shown: ReadonlyArray<KinRecord> | null = null;
+  let generation = 0;
+  const read = async (input: KinWorkListInput) => {
+    const mine = ++generation;
+    const result = await follow.read(input, options.read);
+    if (mine !== generation) return;
+    // A failed reread keeps what was shown; the stale notice says the page is behind.
+    if (AsyncResult.isSuccess(result)) shown = result.value.records;
+    else shown ??= [];
+    options.onChange(shown, input);
+  };
+  return {
+    /** Wants `input` as of a change to Work; reads only what the stream couldn't bring. */
+    update: (input: KinWorkListInput) => {
+      const same = asked !== null && JSON.stringify(input) === JSON.stringify(asked);
+      const caught = !same || shown === null || follow.newEpoch() ? null : follow.catchUp(shown);
+      asked = input;
+      if (caught === null) return void read(input);
+      const before = shown;
+      if (
+        before === null ||
+        caught.records.length !== before.length ||
+        caught.records.some((record, index) => record !== before[index])
+      ) {
+        shown = caught.records;
+        options.onChange(shown, input);
+      }
+    },
+    /** Stops caring about a read in flight; the next `update` reads afresh. */
+    dispose: () => {
+      generation += 1;
+      asked = null;
+      shown = null;
+    },
+  };
 }
 
 /** A host's answer as a page, whatever it calls its rows. */

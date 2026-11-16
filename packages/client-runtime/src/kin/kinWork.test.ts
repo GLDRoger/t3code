@@ -223,6 +223,7 @@ describe("kinWorkScreenState", () => {
           unnamed: 0,
           lists: {},
           unlisted: 0,
+          rows: null,
         }),
       },
       "failed",
