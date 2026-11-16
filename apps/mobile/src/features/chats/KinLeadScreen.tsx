@@ -19,7 +19,6 @@ import {
   kinLeadAccessChanged,
   kinLeadOwnerSeesLine,
   kinLeadAccessProblem,
-  kinLeadModelName,
   kinLeadTrackingDetail,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import {
@@ -59,7 +58,6 @@ import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
-import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAgentSections } from "./KinAgentSections";
@@ -131,7 +129,6 @@ function KinLeadBody(props: {
     : kinClient.leads({ environmentId, input: { orgId } });
   const result = useAtomValue(atom);
   const retire = useKinAgentRetire(environmentId);
-  const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
   // What was last read stays up while a change is read again.
   const held = Option.getOrNull(AsyncResult.value(result));
   const lead = held?.leads.find((entry) => entry.agentId === agentId) ?? null;
@@ -172,7 +169,6 @@ function KinLeadBody(props: {
             <>
               <KinLeadProfileView
                 lead={lead}
-                modelName={kinLeadModelName(lead.model, providers)}
                 access={
                   isRetired ? (
                     canRestore ? (
@@ -527,12 +523,9 @@ function KinLeadContactView({ contact }: { readonly contact: KinLeadContact }) {
 /** Also drawn from fixtures in the component catalog. */
 export function KinLeadProfileView({
   lead,
-  modelName,
   access,
 }: {
   readonly lead: KinLeadProfile;
-  /** The model as the model picker names it. */
-  readonly modelName: string;
   /** The owner's "Who can message" section, placed under what the lead is for. */
   readonly access?: ReactNode;
 }) {
@@ -579,10 +572,7 @@ export function KinLeadProfileView({
         </View>
       </ListSection>
       {access}
-      <ListSection
-        title={retired === undefined ? "In hand" : "On hold"}
-        footer={`Thinks with ${modelName}.`}
-      >
+      <ListSection title={retired === undefined ? "In hand" : "On hold"}>
         {lead.tracking.length === 0 ? (
           <View className="px-4 py-3">
             <Text textRole="body" className="text-foreground-muted">

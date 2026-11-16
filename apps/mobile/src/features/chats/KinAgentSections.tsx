@@ -132,6 +132,7 @@ function Models(props: {
               key={role}
               label={KIN_AGENT_PAGE[role]}
               value={page.models[role]}
+              valueName={kinLeadModelName(page.models[role].model, providers)}
               options={options}
               disabled={busy}
               borderTop={index > 0}

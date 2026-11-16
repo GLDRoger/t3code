@@ -1,5 +1,8 @@
 import type { EnvironmentId, ModelSelection } from "@t3tools/contracts";
-import { KIN_AGENT_DRIVER } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import {
+  KIN_AGENT_DRIVER,
+  kinLeadModelName,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { Pressable } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -21,6 +24,8 @@ export function useKinAgentModelOptions(environmentId: EnvironmentId): ReadonlyA
 export function KinAgentModelRow(props: {
   readonly label: string;
   readonly value: ModelSelection;
+  /** Its name when the menu doesn't list it, such as a model the server no longer offers. */
+  readonly valueName?: string;
   readonly options: ReadonlyArray<ModelOption>;
   readonly disabled: boolean;
   readonly borderTop?: boolean;
@@ -34,11 +39,15 @@ export function KinAgentModelRow(props: {
   const accounts = new Set(props.options.map((option) => option.providerKey)).size > 1;
   const name = (option: ModelOption) =>
     accounts ? `${option.label} · ${option.providerLabel}` : option.label;
+  const shown =
+    current === undefined
+      ? (props.valueName ?? kinLeadModelName(props.value.model, null))
+      : name(current);
   return (
     <Menu
       accessible
       accessibilityRole="button"
-      accessibilityLabel={`${props.label}: ${current === undefined ? props.value.model : name(current)}`}
+      accessibilityLabel={`${props.label}: ${shown}`}
       actions={props.options.map((option) => ({
         id: option.key,
         title: name(option),
@@ -59,7 +68,7 @@ export function KinAgentModelRow(props: {
       >
         <Text className="min-w-0 flex-1 text-base text-foreground">{props.label}</Text>
         <Text className="shrink text-right text-base text-foreground-muted" numberOfLines={1}>
-          {current === undefined ? props.value.model : name(current)}
+          {shown}
         </Text>
         <SymbolView name="chevron.down" size={13} tintColorClassName="accent-icon-muted" />
       </Pressable>
