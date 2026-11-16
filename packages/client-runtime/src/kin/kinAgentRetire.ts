@@ -4,6 +4,7 @@ import type {
   KinMessage,
   KinOrgsListResult,
 } from "@t3tools/contracts";
+import { kinFailureText } from "./kinAnswers.ts";
 
 export const KIN_RETIRE_ACTION = "Retire agent";
 export const KIN_RESTORE_ACTION = "Restore";
@@ -105,11 +106,10 @@ export function kinRetireProblem(error: unknown, name: string): string {
       return "Only the person who set up this agent can retire it.";
     case "not_found":
       return "This agent is no longer here.";
-    case "unavailable":
-    case "disabled":
-      return "Agents aren't running on this server right now. Try again in a moment.";
     default:
-      return `Couldn't retire ${name}. Check your connection and try again.`;
+      return kinFailureText(error, `Couldn't retire ${name}.`, {
+        busy: "Agents aren't running on this server right now.",
+      });
   }
 }
 
@@ -122,11 +122,8 @@ export function kinRestoreProblem(error: unknown, name: string): string {
       return "Only the person who set up this agent can restore it.";
     case "not_found":
       return "This agent is no longer here.";
-    case "unavailable":
-    case "disabled":
-      return "Agents aren't running on this server right now. Try again in a moment.";
     default:
-      return `Couldn't restore ${name}. Check your connection and try again.`;
+      return kinFailureText(error, `Couldn't restore ${name}.`);
   }
 }
 

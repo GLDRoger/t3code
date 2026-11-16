@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -96,6 +97,7 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { useKinClientCounts, useKinDocsRecent, useKinMyDueTasks } from "./state/useKinWorkHome";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 
 /** What the Tasks search finds besides tasks, which the list itself already narrows to. */
 const ELSEWHERE = ["clients", "contacts", "projects", "docs"] as const;
@@ -313,17 +315,10 @@ export function KinPlace(
       ) : state._tag === "offline" ? (
         <EmptyState variant="plain" {...KIN_WORK_OFFLINE} />
       ) : state._tag === "failed" ? (
-        <EmptyState
-          variant="plain"
+        <KinLoadFailed
           title={KIN_WORK_LOAD_FAILED}
-          detail="Check your connection to the server and try again."
-          action={
-            <Button
-              tone="secondary"
-              label="Try again"
-              onPress={() => appAtomRegistry.refresh(kinWorkLiveAtom(target))}
-            />
-          }
+          cause={null}
+          onRetry={() => appAtomRegistry.refresh(kinWorkLiveAtom(target))}
         />
       ) : (
         <View
@@ -594,11 +589,10 @@ export function KinWorkTaskList(
                     <AppActivityIndicator />
                   </View>
                 ) : listState.failed !== null ? (
-                  <EmptyState
-                    variant="plain"
+                  <KinLoadFailed
                     title={KIN_WORK_LOAD_FAILED}
-                    detail="Check your connection to the server and try again."
-                    action={<Button tone="secondary" label="Try again" onPress={list.refresh} />}
+                    cause={listState.failed}
+                    onRetry={list.refresh}
                   />
                 ) : (
                   <EmptyState
@@ -623,7 +617,7 @@ export function KinWorkTaskList(
                   <Button
                     tone="secondary"
                     size="compact"
-                    label={listState.moreFailed ? "Try again" : "Show more"}
+                    label={listState.moreFailed ? KIN_RETRY : "Show more"}
                     loading={listState.loadingMore}
                     disabled={listState.loadingMore}
                     onPress={() => void list.loadMore()}

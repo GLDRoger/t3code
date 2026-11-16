@@ -1,3 +1,5 @@
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
@@ -222,7 +224,7 @@ function KinDocStates(props: DocTarget) {
         <EmptyState
           variant="plain"
           {...KIN_DOCS.failed}
-          action={<Button tone="secondary" label="Try again" onPress={refresh} />}
+          action={<Button tone="secondary" label={KIN_RETRY} onPress={refresh} />}
         />
       )}
     </KinWorkFrame>
@@ -370,7 +372,13 @@ function KinDocBody(
     const result = await render({ environmentId, input });
     setMaking(false);
     const made = AsyncResult.isSuccess(result) ? result.value.documents[0] : undefined;
-    if (made === undefined) return Alert.alert(KIN_DOCS.exportPdfFailed);
+    if (made === undefined)
+      return Alert.alert(
+        kinFailureText(
+          AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null,
+          KIN_DOCS.exportPdfFailed,
+        ),
+      );
     openRecord("KinDoc", { environmentId, orgId, doc: made.key });
   };
   const jump = (id: string) => {

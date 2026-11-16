@@ -38,6 +38,7 @@ import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinCompanyProfile } from "./state/useKinMoney";
 import type { KinWorkTarget } from "./state/useKinWork";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 
 export type KinCompanyParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -77,11 +78,10 @@ function Permitted(props: KinWorkTarget) {
         {state._tag === "loading" ? (
           <KinWorkLoading label="Loading company details" />
         ) : (
-          <EmptyState
-            variant="plain"
+          <KinLoadFailed
             title={KIN_COMPANY.loadFailed}
-            detail="Check your connection to the server and try again."
-            action={<Button tone="secondary" label="Try again" onPress={refresh} />}
+            cause={state._tag === "failed" ? state.cause : null}
+            onRetry={refresh}
           />
         )}
       </KinWorkFrame>

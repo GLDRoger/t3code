@@ -7,7 +7,7 @@ describe("kinAttachmentFailure", () => {
     const stalled = new Error("All fibers interrupted without error");
     expect(kinAttachmentFailure(stalled, ["image"])).toEqual({
       title: "Couldn't send the photo",
-      message: "Check the connection and try again. It's still in the message box.",
+      message: "Check your connection to the server and try again. It's still in the message box.",
     });
     expect(
       kinAttachmentFailure(new Error("Upload failed for 'a.pdf' (500)."), ["file", "image"]),

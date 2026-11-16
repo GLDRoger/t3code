@@ -15,7 +15,7 @@ export const KIN_DAILY_LIMIT = {
     "How much work your agents do each day. Once they reach it, only your urgent messages run until midnight.",
   none: "No limit",
   custom: "Set elsewhere",
-  failed: "Couldn't change the daily limit. Try again.",
+  failed: "Couldn't change the daily limit.",
   waiting: "Waiting until tomorrow",
 };
 

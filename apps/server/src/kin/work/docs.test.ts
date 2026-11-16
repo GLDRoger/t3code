@@ -789,6 +789,26 @@ it.effect("one search finds entries and docs, and the team view hides what label
     assert.deepStrictEqual((yield* found("team")).hits, [
       ["Invented launch plan", "docs", false, "pricing"],
     ]);
+    // Who is on a project is ids, not words: no search finds them or shows them in a snippet.
+    yield* records.create(orgId, writer, {
+      list: "projects",
+      originKey: "booking-project",
+      title: "Invented booking project",
+      owner: me,
+      fields: { members: ["person:invented-member-id"] },
+    });
+    const onIt = yield* search(orgId, {
+      text: "booking project",
+      limit: 5,
+      viewer: "owner",
+      scope: KIN_OWNER_LEVEL,
+    });
+    assert.notInclude(JSON.stringify(onIt.hits), "invented-member-id");
+    assert.lengthOf(
+      (yield* search(orgId, { text: "member", limit: 5, viewer: "owner", scope: KIN_OWNER_LEVEL }))
+        .hits,
+      0,
+    );
     // A label set later hides at once: labels are read at query time, not indexed.
     yield* records.update(
       orgId,

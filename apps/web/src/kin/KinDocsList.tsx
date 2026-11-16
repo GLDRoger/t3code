@@ -1,3 +1,4 @@
+import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DOCS,
@@ -38,7 +39,6 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
-import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -49,6 +49,7 @@ import {
   KinWorkPrivateMark,
   KinWorkRowSkeletons,
   KinWorkSection,
+  KinLoadFailed,
 } from "./KinWorkParts";
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { kinClient } from "./kinClient";
@@ -122,14 +123,12 @@ export function KinSearchHits(props: {
   const { state } = props;
   if (state.hits === null) {
     return state.failed ? (
-      <div className="flex flex-col items-start gap-3 py-4">
-        <Alert variant="error">
-          <AlertDescription>{KIN_SEARCH.failed}</AlertDescription>
-        </Alert>
-        <Button size="sm" variant="outline" onClick={props.onRetry}>
-          Retry
-        </Button>
-      </div>
+      <KinLoadFailed
+        what={KIN_SEARCH.failed}
+        cause={state.failed.cause}
+        onRetry={props.onRetry}
+        className="py-4"
+      />
     ) : (
       <div role="status" aria-label="Searching">
         <KinWorkRowSkeletons />
@@ -143,7 +142,7 @@ export function KinSearchHits(props: {
       {state.failed ? (
         <li>
           <p role="alert" className="px-2 pb-2 text-xs text-destructive-foreground">
-            {KIN_SEARCH.failed}
+            {kinFailureText(state.failed.cause, `${KIN_SEARCH.failed}.`)}
           </p>
         </li>
       ) : null}
@@ -410,14 +409,12 @@ export function KinDocsList(
                 <KinWorkRowSkeletons />
               </div>
             ) : state.failed !== null ? (
-              <div className="flex flex-col items-start gap-3 py-4">
-                <Alert variant="error">
-                  <AlertDescription>{KIN_DOCS.loadFailed}. Check your connection.</AlertDescription>
-                </Alert>
-                <Button size="sm" variant="outline" onClick={list.refresh}>
-                  Retry
-                </Button>
-              </div>
+              <KinLoadFailed
+                what={KIN_DOCS.loadFailed}
+                cause={state.failed}
+                onRetry={list.refresh}
+                className="py-4"
+              />
             ) : (
               <KinWorkNotice
                 {...(searching
@@ -457,7 +454,7 @@ export function KinDocsList(
                   aria-busy={state.loadingMore}
                   onClick={() => void list.loadMore()}
                 >
-                  {state.moreFailed ? "Try again" : "Show more"}
+                  {state.moreFailed ? KIN_RETRY : "Show more"}
                 </Button>
               </div>
             )}

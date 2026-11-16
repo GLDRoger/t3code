@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
 import {
   KinDocCardState,
   type KinChatId,
@@ -58,7 +59,7 @@ export const KIN_DOCS = {
   export: "Export as Markdown",
   exportPdf: "Export PDF",
   exportingPdf: "Making the PDF…",
-  exportPdfFailed: "Couldn't make the PDF. Try again.",
+  exportPdfFailed: "Couldn't make the PDF.",
   restore: "Restore this version",
   restoring: "Restoring…",
   compare: "Compare with the latest",
@@ -90,7 +91,7 @@ export const KIN_DOCS = {
   },
   failed: {
     title: "Couldn't load this doc",
-    detail: "Check your connection to the server and try again.",
+    detail: KIN_CHECK_CONNECTION,
   },
   noChanges: {
     title: "Nothing changed",
@@ -143,7 +144,7 @@ export const KIN_SEARCH = {
     title: "Search everything in Work",
     detail: "Tasks, clients, contacts, projects and docs, by any words in them.",
   },
-  failed: "Couldn't search. Check your connection and try again.",
+  failed: "Couldn't search",
   includeClosed: "Include closed and archived",
 } as const;
 
@@ -700,11 +701,7 @@ export function kinDocRestoreOutcome(
     !/[a-z]+_[a-z]+/.test(error.message)
   )
     return { _tag: "refused", moved: false, text: error.message };
-  return {
-    _tag: "refused",
-    moved: false,
-    text: "Couldn't restore it. Check your connection and try again.",
-  };
+  return { _tag: "refused", moved: false, text: kinFailureText(error, "Couldn't restore it.") };
 }
 
 // Pointing at a part
@@ -905,7 +902,8 @@ export interface KinSearchState {
   /** The words `hits` answer. */
   readonly answered: string;
   readonly loading: boolean;
-  readonly failed: boolean;
+  /** Why the last search failed, said through `kinFailure`; null when it didn't. */
+  readonly failed: { readonly cause: unknown } | null;
 }
 
 export const KIN_SEARCH_INITIAL: KinSearchState = {
@@ -914,7 +912,7 @@ export const KIN_SEARCH_INITIAL: KinSearchState = {
   hits: null,
   answered: "",
   loading: false,
-  failed: false,
+  failed: null,
 };
 
 const KIN_SEARCH_TYPING_MS = 250;
@@ -951,18 +949,18 @@ export function createKinSearch(options: {
     const result = await options.read({ text, closed: state.closed });
     if (mine !== generation) return;
     if (AsyncResult.isSuccess(result))
-      set({ hits: result.value.hits, answered: text, loading: false, failed: false });
-    else set({ loading: false, failed: true });
+      set({ hits: result.value.hits, answered: text, loading: false, failed: null });
+    else set({ loading: false, failed: { cause: result } });
   };
   const queue = (ms: number) => {
     cancel?.();
     cancel = null;
     generation++;
     if (state.text.trim() === "") {
-      set({ hits: null, answered: "", loading: false, failed: false });
+      set({ hits: null, answered: "", loading: false, failed: null });
       return;
     }
-    set({ loading: true, failed: false });
+    set({ loading: true, failed: null });
     cancel = options.schedule(() => {
       cancel = null;
       void ask();

@@ -1,3 +1,4 @@
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
@@ -23,7 +24,7 @@ import {
   type KinTeamList,
   type KinTeammate,
 } from "@t3tools/client-runtime/kin/kinTeam";
-import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
+import { executeAtomQuery, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import type {
   EnvironmentId,
@@ -82,6 +83,7 @@ import { kinProfileRequestAtom, kinTeamAddRequestAtom } from "./kinTeamForm";
 import { openKinProfile } from "./KinProfileSheet";
 import { KinCompanyChatRow, KinTeamAgentRow } from "./KinTeamAgent";
 import { useKinHostAt } from "./useKinHost";
+import { KinLoadFailed } from "./KinWorkParts";
 
 interface KinTeamTarget {
   readonly environmentId: EnvironmentId;
@@ -267,14 +269,12 @@ function KinTeamBody(
   const { list } = team;
   if (list === null) {
     return team.failed ? (
-      <div className="mx-auto flex w-full max-w-3xl flex-col items-start gap-3 p-4">
-        <Alert variant="error">
-          <AlertDescription>{KIN_TEAM_LOAD_FAILED}. Check your connection.</AlertDescription>
-        </Alert>
-        <Button size="sm" variant="outline" onClick={team.refresh}>
-          Retry
-        </Button>
-      </div>
+      <KinLoadFailed
+        what={KIN_TEAM_LOAD_FAILED}
+        cause={null}
+        onRetry={team.refresh}
+        className="mx-auto w-full max-w-3xl p-4"
+      />
     ) : (
       <div
         className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4"
@@ -655,7 +655,7 @@ function KinTeammatePlaces(props: {
     setAsked((held) => ({ ...held, [place]: on }));
     const result = await setPlaces({ environmentId, input: { orgId, personId, [place]: on } });
     if (AsyncResult.isFailure(result))
-      setProblem("That didn't save. Check your connection and try again.");
+      setProblem(kinFailureText(squashAtomCommandFailure(result), "That didn't save."));
     await refreshKinTeam({ environmentId, orgId });
     setAsked((held) => {
       const rest = { ...held };

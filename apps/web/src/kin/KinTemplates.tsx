@@ -47,6 +47,7 @@ import {
   type KinPreviewFile,
 } from "./useKinMoney";
 import { useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import { KinLoadFailed } from "./KinWorkParts";
 
 type Ask = { readonly kind: "undo" | "clear" | "set"; readonly template: KinTemplateView };
 
@@ -165,16 +166,11 @@ export function KinTemplatesSection(props: KinWorkTarget) {
           <Skeleton className="h-3.5 w-1/2" />
         </div>
       ) : state._tag !== "ready" ? (
-        <div className="flex flex-col items-start gap-2">
-          <Alert variant="error">
-            <AlertDescription>
-              Couldn't load your templates. Check your connection.
-            </AlertDescription>
-          </Alert>
-          <Button size="sm" variant="outline" onClick={recipes.refresh}>
-            Retry
-          </Button>
-        </div>
+        <KinLoadFailed
+          what={"Couldn't load your templates"}
+          cause={state._tag === "failed" ? state.cause : null}
+          onRetry={recipes.refresh}
+        />
       ) : state.value.recipes.length === 0 ? (
         <p className="text-sm text-muted-foreground">{KIN_TEMPLATES.empty}</p>
       ) : (

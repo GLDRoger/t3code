@@ -46,6 +46,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { KinLoadFailedRow } from "./components/KinLoadFailed";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { Menu } from "../../components/ui/Menu";
@@ -163,7 +164,11 @@ export function KinCashSection(props: Section) {
       {state._tag === "loading" ? (
         <Plain>Loading…</Plain>
       ) : view === null ? (
-        <ListActionRow label={`${KIN_CASH.loadFailed}. Try again`} onPress={refresh} />
+        <KinLoadFailedRow
+          title={KIN_CASH.loadFailed}
+          cause={state._tag === "failed" ? state.cause : null}
+          onRetry={refresh}
+        />
       ) : (
         <>
           {view.known ? null : <Plain>{KIN_CASH.none}</Plain>}
@@ -298,7 +303,11 @@ export function KinOutlookSection(props: Section) {
       {state._tag === "loading" ? (
         <Plain>Loading…</Plain>
       ) : view === null ? (
-        <ListActionRow label={`${KIN_OUTLOOK.loadFailed}. Try again`} onPress={refresh} />
+        <KinLoadFailedRow
+          title={KIN_OUTLOOK.loadFailed}
+          cause={state._tag === "failed" ? state.cause : null}
+          onRetry={refresh}
+        />
       ) : (
         <>
           {view.empty ? (
@@ -495,7 +504,11 @@ export function KinBudgetsSection(
       {state._tag === "loading" ? (
         <Plain>Loading…</Plain>
       ) : state._tag === "failed" ? (
-        <ListActionRow label={`${KIN_BUDGETS.loadFailed}. Try again`} onPress={refresh} />
+        <KinLoadFailedRow
+          title={KIN_BUDGETS.loadFailed}
+          cause={state._tag === "failed" ? state.cause : null}
+          onRetry={refresh}
+        />
       ) : views.length === 0 ? (
         <Plain>{KIN_BUDGETS.empty}</Plain>
       ) : (

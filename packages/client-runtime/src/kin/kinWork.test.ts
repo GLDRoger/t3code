@@ -19,7 +19,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { AtomCommandResult } from "../state/runtime.ts";
 import {
-  KIN_WORK_CHANGED,
   KIN_WORK_DEFAULT_FILTER,
   KIN_WORK_NO_DRAFT,
   createKinWorkActions,
@@ -38,6 +37,7 @@ import {
   kinWorkShown,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { KIN_CHANGED } from "./kinAnswers.ts";
 
 const orgId = KinOrgId.make("invented-org");
 const me = { _tag: "person", personId: KinPersonId.make("invented-owner") } as const;
@@ -361,7 +361,7 @@ describe("kinWorkItemView", () => {
         50,
         place,
       );
-    const owner = { mark: true, share: true };
+    const owner = { mark: true, unmark: true, share: true };
     const plain = kinWorkAudience({ ...at(false, false), project }, owner);
     expect(plain.current).toBe("people");
     expect(plain.answer).toBe("You, whoever has it and the people on Invented app");
@@ -377,10 +377,18 @@ describe("kinWorkItemView", () => {
       shared: true,
     });
     // A teammate who can't share or mark sees the answer with nothing to pick.
-    expect(kinWorkAudience(at(false, false), { mark: false, share: false }).choices).toEqual([]);
+    expect(
+      kinWorkAudience(at(false, false), { mark: false, unmark: false, share: false }).choices,
+    ).toEqual([]);
+    // #10: a milestone or client is never shared on its own, so the whole team is never offered.
+    const unshared = { mark: true, unmark: true, share: false };
+    expect(kinWorkAudience(at(false, false), unshared).choices.map((one) => one.id)).toEqual([
+      "people",
+      "me",
+    ]);
     // J14: Priya, the project's lead, reads it from her side: "you" is never the owner.
     const priyas = { ...names, me: priya.personId, owner: me.personId };
-    const lead = { mark: true, share: false };
+    const lead = { mark: true, unmark: false, share: false };
     const hers = kinWorkAudience({ ...at(false, false), project }, lead, priyas);
     expect(hers.answer).toBe("Invented Owner, whoever has it and the people on Invented app");
     // She may make it private; un-marking and sharing stay the owner's.
@@ -625,7 +633,7 @@ describe("createKinWorkActions", () => {
     );
     expect(await h.made.give({ key: "W-1", rev: 3 }, lead)).toEqual({
       ok: false,
-      problem: KIN_WORK_CHANGED,
+      problem: KIN_CHANGED,
       changed: true,
     });
     expect(h.reread).toEqual(["W-1"]);

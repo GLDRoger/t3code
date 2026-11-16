@@ -1,3 +1,4 @@
+import { KIN_CHECK_CONNECTION } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
@@ -240,7 +241,7 @@ export function KinDocChangesView(
     return (
       <KinWorkNotice
         title="Couldn't load the changes"
-        detail="Check your connection to the server and try again."
+        detail={KIN_CHECK_CONNECTION}
         action={
           <Button
             size="sm"

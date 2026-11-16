@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -142,7 +143,7 @@ function KinProjectStates(props: ProjectTarget) {
         <EmptyState
           variant="plain"
           {...KIN_PROJECT_FAILED}
-          action={<Button tone="secondary" label="Try again" onPress={refresh} />}
+          action={<Button tone="secondary" label={KIN_RETRY} onPress={refresh} />}
         />
       ) : (
         <KinWorkLoading label="Loading project" />

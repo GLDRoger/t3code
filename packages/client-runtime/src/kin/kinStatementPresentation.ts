@@ -1,3 +1,4 @@
+import { kinFailureText } from "./kinAnswers.ts";
 import {
   KIN_STATEMENT_CARD_ROWS,
   KIN_STATEMENT_PASSWORD_CARD,
@@ -420,7 +421,7 @@ export const kinStatementPasswordLines = (
         ...(card.detail === undefined ? [] : [card.detail]),
       ];
     case "wrong":
-      return ["That password didn't open it. Try again."];
+      return ["That password didn't open it. Check it and send it again."];
     case "opened":
       return [
         `Opened ${card.fileName}. Its review card follows.`,
@@ -454,4 +455,4 @@ export const kinStatementRereadText = (
 export const kinStatementFailureText = (cause: unknown): string =>
   isKinChatError(cause) && cause.message.trim() !== ""
     ? cause.message.slice(0, 300)
-    : KIN_SEND_FAILED_TEXT;
+    : kinFailureText(cause, KIN_SEND_FAILED_TEXT);

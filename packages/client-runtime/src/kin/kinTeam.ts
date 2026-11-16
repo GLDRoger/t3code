@@ -1,5 +1,4 @@
 import {
-  EnvironmentAuthorizationError,
   KinChatError,
   type KinInviteId,
   type KinOrgId,
@@ -23,6 +22,7 @@ import { AsyncResult } from "effect/reactivity";
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import type { KinAvatarView } from "./kinScreenState.ts";
 import { kinRoleLine } from "./kinProfiles.ts";
+import { kinFailureText } from "./kinAnswers.ts";
 
 export const KIN_TEAM_TITLE = "Team";
 export const KIN_TEAM_ADD = "Add teammate";
@@ -266,7 +266,7 @@ export function kinTeamEntrySummary(
 ): string {
   if (list === null) return "The people who chat with you and your agents";
   const rows = kinTeamView(list, KIN_TEAM_NO_EDITS, ownerPersonId);
-  const joined = rows.filter((row) => row.state === "joined").length;
+  const joined = rows.filter((row) => row.state === "joined" || row.state === "owner").length;
   const waiting = rows.filter((row) => row.state === "invited").length;
   if (joined === 0 && waiting === 0) return "Add the people you work with";
   const parts = [
@@ -441,22 +441,15 @@ export function kinTeammateLeadLine(allowed: boolean | null): string {
 }
 
 const isChatError = Schema.is(KinChatError);
-const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
 /** Why a team change didn't happen, in the owner's words. `doing` reads "make this link". */
 function kinTeamProblem(error: unknown, doing: string): string {
-  if (isAuthorizationError(error)) return `This device isn't allowed to ${doing}.`;
-  if (!isChatError(error)) return `Couldn't ${doing}. Check your connection and try again.`;
-  switch (error.reason) {
-    case "not_allowed":
-      return `Only the owner can ${doing}.`;
-    case "not_found":
-      return "That person or link is no longer here.";
-    case "disabled":
-      return "Kin is turned off on this server.";
-    default:
-      return `Couldn't ${doing} right now. Try again in a moment.`;
-  }
+  if (isChatError(error) && error.reason === "disabled") return "Kin is turned off on this server.";
+  return kinFailureText(error, `Couldn't ${doing}.`, {
+    refused: `Only the owner can ${doing}.`,
+    gone: "That person or link is no longer here.",
+    device: `This device isn't allowed to ${doing}.`,
+  });
 }
 
 const isGone = (error: unknown) => isChatError(error) && error.reason === "not_found";

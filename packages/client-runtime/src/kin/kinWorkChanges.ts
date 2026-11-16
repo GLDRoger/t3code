@@ -22,6 +22,7 @@ import {
   kinWorkSettled,
   type KinWorkAnswers,
   type KinWorkChangeResult,
+  type KinWorkItemView,
   type KinWorkNames,
   type KinWorkRef,
 } from "./kinWork.ts";
@@ -81,13 +82,31 @@ export const KIN_WORK_COPY = {
   openThread: "Open thread",
 };
 
-export const KIN_WORK_STATE_CHOICES: ReadonlyArray<{
+const KIN_WORK_STATE_CHOICES: ReadonlyArray<{
   readonly state: "open" | "doing";
   readonly label: string;
 }> = [
   { state: "open", label: "Not started" },
   { state: "doing", label: "In progress" },
 ];
+
+/** The status controls a task's sheet shows, each only where the host takes it (`view.can`). */
+export function kinWorkStatusOffer(view: Pick<KinWorkItemView, "state" | "closed" | "can">) {
+  const to = (state: KinRecordState) => view.can.states.includes(state);
+  const states = KIN_WORK_STATE_CHOICES.filter(
+    (choice) => choice.state === view.state || to(choice.state),
+  );
+  const waiting = to("waiting") || (view.state === "waiting" && view.can.edit);
+  const drop = to("dropped");
+  return {
+    done: !view.closed && to("done"),
+    reopen: view.closed && to("open"),
+    states,
+    waiting,
+    drop,
+    menu: !view.closed && (states.some((choice) => to(choice.state)) || waiting || drop),
+  };
+}
 
 type Patch = Partial<
   Pick<

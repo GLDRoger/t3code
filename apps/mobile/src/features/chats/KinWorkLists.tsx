@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
@@ -39,6 +40,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 
 const HEALTH_TONE: Record<KinHealthView["tone"], string> = {
   good: "text-foreground-muted",
@@ -219,11 +221,10 @@ function NamedList(props: {
               {state.loading ? (
                 <KinWorkLoading label={props.loading} />
               ) : state.failed !== null ? (
-                <EmptyState
-                  variant="plain"
+                <KinLoadFailed
                   title={props.loadFailed}
-                  detail="Check your connection to the server and try again."
-                  action={<Button tone="secondary" label="Try again" onPress={list.refresh} />}
+                  cause={state.failed}
+                  onRetry={list.refresh}
                 />
               ) : (
                 <EmptyState
@@ -249,7 +250,7 @@ function NamedList(props: {
                   <Button
                     tone="secondary"
                     size="compact"
-                    label={state.moreFailed ? "Try again" : "Show more"}
+                    label={state.moreFailed ? KIN_RETRY : "Show more"}
                     loading={state.loadingMore}
                     disabled={state.loadingMore}
                     onPress={() => void list.loadMore()}

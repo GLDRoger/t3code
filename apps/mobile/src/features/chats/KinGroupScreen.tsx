@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinListRoute } from "./state/kinHome";
 import { kinStackWithoutChat } from "./state/kinChatStack";
 import { resetRootStack } from "../../lib/root-stack-reset";
@@ -142,7 +143,7 @@ function KinGroupBody(props: {
               action={
                 <Button
                   tone="secondary"
-                  label="Try again"
+                  label={KIN_RETRY}
                   onPress={() => appAtomRegistry.refresh(atom)}
                 />
               }
