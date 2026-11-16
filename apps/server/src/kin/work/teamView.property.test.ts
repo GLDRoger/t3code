@@ -6,6 +6,7 @@ import { KinChatError, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as Arbitrary from "effect/Arbitrary";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -18,7 +19,8 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { search } from "./search.ts";
-import { personSees, unreadableBy, viewerOfPeople } from "./teamView.ts";
+import { listDef } from "./registers.ts";
+import { personSees, teamCan, unreadableBy, viewerOfPeople } from "./teamView.ts";
 
 // Invented org, people and entries only.
 const orgId = KinOrgId.make("org");
@@ -114,6 +116,9 @@ const once = Effect.gen(function* () {
     yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
       VALUES (${person}, ${orgId}, ${person}, ${person}, '2026-11-11',
         ${person === ownerId ? "owner" : "member"})`;
+  for (const member of MEMBERS)
+    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+      VALUES (${`session-${member}`}, ${orgId}, ${member}, 0)`;
   for (const [id, prefix, builtIn, definition] of REGISTERS)
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
         created_at, definition_json) VALUES (${orgId}, ${id}, ${id}, ${prefix}, ${builtIn}, ${at},
@@ -488,6 +493,75 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
         yield* install(emptyWorld);
         const text = `${before}${form.replaceAll("{n}", n).replace("{w}", w)}${after}`;
         assert.isUndefined(yield* tell(text), text);
+      }),
+  );
+
+  it.effect.prop(
+    "every control a teammate's sheet offers is one their write is let through",
+    [world],
+    ([w]) =>
+      Effect.gen(function* () {
+        const records = yield* KinRecords.KinRecords;
+        const sql = yield* SqlClient.SqlClient;
+        yield* install(w);
+        for (const viewer of MEMBERS) {
+          const personId = KinPersonId.make(viewer);
+          const writer = {
+            actor: { _tag: "person" as const, personId },
+            via: "owner" as const,
+            askedBy: personId,
+            teammate: true,
+          };
+          for (const id of yield* seen(viewer)) {
+            const row = yield* records.getById(orgId, id);
+            // The world makes contacts under projects or with no client, which Kin never writes.
+            if (
+              row === undefined ||
+              (row.registerId === "contacts" && (row.projectId !== null || row.partyId === null))
+            )
+              continue;
+            const detail = yield* records.detail(row, 1);
+            const def = yield* listDef(orgId, row.registerId);
+            // `canOf` offers nothing on an entry whose list can't be read, such as this fake one.
+            if (def === undefined) continue;
+            const can = (yield* teamCan(orgId, personId, [{ ...detail, states: def.states }])).get(
+              detail.recordId,
+            )!;
+            const led = rowsOf(w).find((r) => r.list === "projects" && r.owner === viewer);
+            const other = viewer === "ana" ? "ben" : "ana";
+            const writes: ReadonlyArray<readonly [boolean, KinRecords.Patch]> = [
+              ...can.states.map((state) => [true, { state }] as const),
+              [can.edit, { title: "Renamed" }],
+              [can.project, { projectId: led?.id ?? null }],
+              [can.clearProject, { projectId: null }],
+              [can.give, { owner: { _tag: "person", personId: KinPersonId.make(other) } }],
+              [can.takeBack, { owner: { _tag: "person", personId } }],
+              [can.mark, { sensitive: true }],
+            ];
+            for (const [offered, patch] of writes) {
+              if (!offered) continue;
+              // Rolled back, so each write starts from the same world.
+              let exit: Exit.Exit<unknown, unknown> = Exit.void;
+              yield* sql
+                .withTransaction(
+                  records.update(orgId, writer, row.key, patch).pipe(
+                    Effect.exit,
+                    Effect.flatMap((out) => {
+                      exit = out;
+                      return Effect.fail("rolled back");
+                    }),
+                  ),
+                )
+                .pipe(Effect.ignore);
+              // Closing a project with open work is refused for what it holds, not who asks.
+              const held = Exit.isFailure(exit) && /still has \d+ open entries/.test(String(exit));
+              assert.isTrue(
+                Exit.isSuccess(exit) || held,
+                `${viewer} offered ${JSON.stringify(patch)} on ${row.key}: ${String(exit)}`,
+              );
+            }
+          }
+        }
       }),
   );
 });

@@ -1,3 +1,4 @@
+import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_WORK_STALE,
@@ -248,7 +249,10 @@ export function KinWorkClientsList(
             <div className="flex flex-col items-start gap-3 py-4">
               <Alert variant="error">
                 <AlertDescription>
-                  {KIN_CLIENTS.loadFailed}. Check your connection.
+                  {kinFailureText(
+                    state.failed ?? projects.state.failed,
+                    `${KIN_CLIENTS.loadFailed}.`,
+                  )}
                 </AlertDescription>
               </Alert>
               <Button
@@ -295,7 +299,7 @@ export function KinWorkClientsList(
               aria-busy={state.loadingMore || projects.state.loadingMore}
               onClick={loadMore}
             >
-              {state.moreFailed || projects.state.moreFailed ? "Try again" : "Show more"}
+              {state.moreFailed || projects.state.moreFailed ? KIN_RETRY : "Show more"}
             </Button>
           </div>
         )
@@ -798,7 +802,7 @@ function ClientPage(
                   aria-busy={history.state.loadingMore}
                   onClick={() => void history.list.loadMore()}
                 >
-                  {history.state.moreFailed ? "Try again" : KIN_CLIENTS.earlier}
+                  {history.state.moreFailed ? KIN_RETRY : KIN_CLIENTS.earlier}
                 </Button>
               </div>
             ) : null}

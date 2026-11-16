@@ -319,17 +319,13 @@ describe("kinListSend refusals", () => {
       "That retry key already created a different entry.",
       "This was already sent once with different details. Close it and start again.",
     ],
-    [
-      "not_allowed",
-      "Only the owner can see Work yet.",
-      "Only whoever runs this Kin can change this.",
-    ],
+    ["not_allowed", "Only the owner can see Work yet.", "Only the owner can see Work yet."],
     [
       "limit",
       "Too many chats are open on this device. Close some and try again.",
       "Too many chats are open on this device. Close some and try again.",
     ],
-    ["limit", "kin_work over cap", "That didn't go through. Check the details and try again."],
+    ["limit", "kin_work over cap", "That didn't go through. Check the details."],
   ] as const)("shows %s (%s) in plain words", async (reason, message, shown) => {
     expect(await refused(reason, message)).toMatchObject({ ok: false, problem: shown });
   });

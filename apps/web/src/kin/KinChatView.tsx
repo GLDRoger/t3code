@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinOwnsDirectChat } from "@t3tools/client-runtime/kin/kinClearChat";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
@@ -1111,7 +1112,7 @@ function KinPresenceLine(props: {
           <StopGenerationButton
             size="compact"
             label={props.stop === "failed" ? "Try stopping again" : "Stop"}
-            tooltip={props.stop === "failed" ? "Try again" : "Stop"}
+            tooltip={props.stop === "failed" ? KIN_RETRY : "Stop"}
             disabled={props.stop === "stopping"}
             onClick={onStop}
           />

@@ -10,6 +10,7 @@ import {
   type KinPersonId,
   type KinRecord,
   type KinRecordChange,
+  type KinRecordCan,
   type KinRecordDetail,
   type KinRecordKey,
   type KinRecordLink,
@@ -28,6 +29,7 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
+import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
@@ -54,7 +56,7 @@ export const KIN_WORK_GONE = {
 };
 export const KIN_WORK_ITEM_FAILED = {
   title: "Couldn't load this task",
-  detail: "Check your connection to the server and try again.",
+  detail: KIN_CHECK_CONNECTION,
 };
 export const KIN_WORK_TITLE_MAX = 280;
 export const KIN_WORK_NOTES_MAX = 4_000;
@@ -349,8 +351,7 @@ export type KinWorkScreenState =
     };
 
 export const isKinChatError = Schema.is(KinChatError);
-export const isKinWorkAuthorizationError = Schema.is(EnvironmentAuthorizationError);
-const isAuthorizationError = isKinWorkAuthorizationError;
+const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
 /** The host said this viewer may not read Work. */
 export const kinWorkRefused = (error: unknown): boolean =>
@@ -472,7 +473,7 @@ export interface KinWorkRowView {
   /** "Due Fri 14 Nov"; null with no date or once it is closed. */
   readonly due: string | null;
   readonly late: boolean;
-  /** A lead picked it up on its own and nobody has confirmed it. */
+  /** A lead picked it up on its own, nobody has confirmed it, and this reader may. */
   readonly suggested: boolean;
   /**
    * What one tap on the row's mark does, where a tap changes nothing but the task: finish one a
@@ -539,13 +540,18 @@ export function kinWorkRow(
     ownerAvatar: kinWorkAvatar(record.owner),
     due,
     late: record.late,
-    suggested: !record.confirmed && !kinWorkClosed(record.state),
+    // Keep and decline only where the host takes them, on hosts that say (`can`).
+    suggested: !record.confirmed && !kinWorkClosed(record.state) && (record.can?.confirm ?? true),
     tick:
       record.owner._tag === "agent" || !record.confirmed
         ? null
         : kinWorkClosed(record.state)
-          ? "reopen"
-          : "done",
+          ? (record.can?.states.includes("open") ?? true)
+            ? "reopen"
+            : null
+          : (record.can?.states.includes("done") ?? true)
+            ? "done"
+            : null,
     working: record.working,
     ownerRetired,
     about,
@@ -726,6 +732,8 @@ export interface KinWorkItemView {
   readonly privacy: KinWorkPrivacy;
   /** The owner shared it with the team. */
   readonly shared: boolean;
+  /** What the host lets this reader do to it: a control shows only when it is here. */
+  readonly can: KinRecordCan;
 }
 
 /** How private something is, and what to say about it beside the label. */
@@ -746,7 +754,7 @@ export const KIN_WORK_HAND_BACK = {
   reasonLabel: "Why (optional)",
   reasonPlaceholder: "I'm on the release this week",
   confirm: "Hand back",
-  failed: "Couldn't hand it back. Try again.",
+  failed: "Couldn't hand it back.",
 } as const;
 
 export function kinWorkPrivacy(input: {
@@ -772,7 +780,7 @@ export const KIN_WORK_SHARE = {
   label: "Share with team",
   on: "Your teammates can see this task and follow it.",
   off: "Teammates see this only if they hold it, or it's in a project they lead or are on.",
-  failed: "Couldn't change who sees this. Try again.",
+  failed: "Couldn't change who sees this.",
 };
 
 /** Who sees a task: the people on it and its project, the whole team, or only the owner's side. */
@@ -786,7 +794,7 @@ export const KIN_WORK_MILESTONE = {
 
 export const KIN_WORK_AUDIENCE = {
   label: "Who can see this",
-  failed: "Couldn't change who sees this. Try again.",
+  failed: "Couldn't change who sees this.",
 } as const;
 
 /**
@@ -795,8 +803,8 @@ export const KIN_WORK_AUDIENCE = {
  */
 export function kinWorkAudience(
   view: Pick<KinWorkItemView, "privacy" | "shared" | "project">,
-  /** `share` is owner-level: without it only marking private is the reader's (a project lead). */
-  can: { readonly mark: boolean; readonly share: boolean },
+  /** What the host lets this reader change (`KinRecordDetail.can`). */
+  can: Pick<KinRecordCan, "mark" | "unmark" | "share">,
   names?: Pick<KinWorkNames, "me" | "owner" | "people">,
 ) {
   const people = view.project === null ? "People on it" : "People on it and the project";
@@ -815,16 +823,17 @@ export function kinWorkAudience(
     team: "The whole team",
     me: owner === null ? "Only me" : `Only ${owner} and co-owners`,
   };
-  const ids: ReadonlyArray<KinWorkAudience> = can.share
-    ? [
-        ...(can.mark || current === "people" ? ["people" as const] : []),
-        ...(can.mark || current !== "me" ? ["team" as const] : []),
-        ...(can.mark ? ["me" as const] : []),
-      ]
-    : // Un-marking and sharing are the owner's: a lead may only make it more private.
-      can.mark && current !== "me"
-      ? [current, "me"]
-      : [];
+  const now = { private: view.privacy.private && !view.privacy.inherited, shared: view.shared };
+  // A choice is offered only when the host takes every change it makes.
+  const reachable = (to: KinWorkAudience) => {
+    const move = kinWorkAudienceMove(now, to);
+    return (
+      to === current ||
+      ((move.private === null || (move.private ? can.mark : can.unmark)) &&
+        (move.shared === null || can.share))
+    );
+  };
+  const ids = (["people", "team", "me"] as const).filter(reachable);
   const choices = ids.map((id) => ({ id, label: label[id] }));
   return { current, answer, choices: choices.length > 1 ? choices : [] };
 }
@@ -842,14 +851,14 @@ export const KIN_ENTRY_SHARE: typeof KIN_WORK_SHARE = {
   label: "Share with team",
   on: "Teammates who can see Money read its figures.",
   off: "Only the owner and co-owners see this, and the lead of its project.",
-  failed: "Couldn't change who sees this. Try again.",
+  failed: "Couldn't change who sees this.",
 };
 
 export const KIN_DOC_SHARE: typeof KIN_WORK_SHARE = {
   label: "Share with team",
   on: "Teammates who can see Docs read this one.",
   off: "Only the owner and co-owners see this doc, and the lead of its project.",
-  failed: "Couldn't change who sees this. Try again.",
+  failed: "Couldn't change who sees this.",
 };
 
 const CATEGORY_LABEL = {
@@ -1130,6 +1139,7 @@ export function kinWorkItemView(
   // Only a host that takes changes sends a task's own change number.
   const editable = item.seq !== undefined;
   const isClosed = kinWorkClosed(item.state);
+  const can = item.can ?? olderHostCan(item, editable, isClosed, names);
   const suggested = !item.confirmed && !isClosed;
   const lead = item.owner._tag === "agent";
   return {
@@ -1176,13 +1186,13 @@ export function kinWorkItemView(
       ),
     })),
     historyNote: item.changes.length >= changesCap ? "Earlier history isn't shown." : null,
-    assignLabel: isClosed ? null : "Give to someone else",
+    assignLabel: can.give ? "Give to someone else" : null,
     editable,
     closed: isClosed,
     suggestion: suggested
       ? `${item.createdBy._tag === "agent" ? kinWorkActorName(item.createdBy, names) : "An agent"} suggested this task.`
       : null,
-    takeBack: !isClosed && !isMe(item.owner, names),
+    takeBack: can.takeBack,
     leadNote: !lead
       ? null
       : row.ownerRetired
@@ -1211,8 +1221,33 @@ export function kinWorkItemView(
       privateNote: `Only ${ownerWord(names) ?? "you"}, co-owners and whoever holds it see this.`,
     }),
     shared: item.shared === true,
+    can,
   };
 }
+
+/** A host from before `can`: it took what its sheet offered then, and checked on the write. */
+const olderHostCan = (
+  item: KinRecordDetail,
+  editable: boolean,
+  closed: boolean,
+  names: KinWorkNames,
+): KinRecordCan => ({
+  states: editable
+    ? (["open", "doing", "waiting", "done", "dropped"] as const).filter(
+        (state) => state !== item.state,
+      )
+    : [],
+  edit: editable,
+  party: editable,
+  project: editable,
+  clearProject: editable,
+  give: !closed,
+  takeBack: !closed && !isMe(item.owner, names),
+  mark: editable,
+  unmark: editable,
+  share: editable,
+  confirm: editable && !item.confirmed && !closed,
+});
 
 /** An all-day date as `YYYY-MM-DD` where the owner is; null with no date or a timed one. */
 export function kinWorkAllDay(at: string | null, allDay: boolean, names: KinWorkNames) {
@@ -1467,36 +1502,21 @@ export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
 
 // The owner's changes
 
-export const KIN_WORK_CHANGED =
-  "This changed while you were looking at it. Here is the latest, so check it and try again.";
-const KIN_WORK_NOT_SENT = "That didn't go through. Check your connection and try again.";
 const KIN_WORK_CLOSED_GIVE = "This task is closed. Reopen it before giving it to someone.";
 
 /** What the owner was doing when the host refused, where that changes what to say. */
 type Refused = "give" | "decline" | null;
 
-/** Why a change didn't go through, in words for the owner. */
+/** Why a change didn't go through, in words for the owner (`kinFailure`). */
 function problemOf(error: unknown, doing: Refused): string {
-  if (isAuthorizationError(error)) return "This device isn't allowed to change Work.";
-  if (!isKinChatError(error)) return KIN_WORK_NOT_SENT;
-  switch (error.reason) {
-    case "conflict":
-      return KIN_WORK_CHANGED;
-    case "not_found":
-      return "That isn't there any more. Someone may have left, or the task was removed.";
-    // The host says what is true for this person and task, in words meant for them.
-    case "not_allowed":
-      return error.message.trim() === "" ? "You can't change this task." : error.message;
-    case "unavailable":
-    case "disabled":
-      return "Kin isn't answering right now. Try again in a moment.";
-    case "invalid_state":
-      if (doing === "give") return KIN_WORK_CLOSED_GIVE;
-      if (doing === "decline") return "This is already one of your tasks. Drop it instead.";
-      return "That didn't go through. Check the details and try again.";
-    default:
-      return "That didn't go through. Check the details and try again.";
+  if (isKinChatError(error) && error.reason === "invalid_state") {
+    if (doing === "give") return KIN_WORK_CLOSED_GIVE;
+    if (doing === "decline") return "This is already one of your tasks. Drop it instead.";
   }
+  return kinFailureText(error, "That didn't go through.", {
+    gone: "That isn't there any more. Someone may have left, or the task was removed.",
+    device: "This device isn't allowed to change Work.",
+  });
 }
 
 type Sent<A> = Promise<AtomCommandResult<A, unknown>>;

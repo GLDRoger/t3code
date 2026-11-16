@@ -1333,18 +1333,19 @@ it.effect(
           [missing.reason, missing.message.replace(absentKey, presentKey)],
         );
       });
-      yield* same(
-        OwnerWork.list([mate], { orgId, party: "C-99" }),
-        OwnerWork.list([mate], { orgId, party: plain.key }),
-        "C-99",
-        plain.key,
-      );
-      yield* same(
-        OwnerWork.list([mate], { orgId, project: "P-99" }),
-        OwnerWork.list([mate], { orgId, project: project.key }),
-        "P-99",
-        project.key,
-      );
+      // A filter by one they can't see is an empty list, as for one never there (#2).
+      const emptied = ({ asOf: _asOf, ...page }: { readonly asOf: string }) => page;
+      for (const [field, absentKey, presentKey] of [
+        ["party", "C-99", plain.key],
+        ["project", "P-99", project.key],
+      ] as const)
+        assert.deepStrictEqual(
+          emptied(yield* OwnerWork.list([mate], { orgId, [field]: presentKey })),
+          emptied(yield* OwnerWork.list([mate], { orgId, [field]: absentKey })),
+        );
+      assert.lengthOf((yield* OwnerWork.list([mate], { orgId, party: "C-99" })).records, 0);
+      // "No client" filters what they see, refusing nothing.
+      assert.isAtLeast((yield* OwnerWork.list([mate], { orgId, party: null })).records.length, 1);
       const theirs = yield* OwnerWork.get([mate], { orgId, key: "W-4" });
       for (const [field, absentKey, presentKey] of [
         ["party", "C-99", plain.key],
@@ -1407,11 +1408,7 @@ it.effect(
         { reason: "not_found", message: "No entry with that id in Work." },
       );
       // The sensitive client is no client to them, as a filter or on a new task.
-      const noClient = yield* Effect.flip(OwnerWork.list([mate], { orgId, party: "C-99" }));
-      assert.deepInclude(yield* Effect.flip(OwnerWork.list([mate], { orgId, party: client.key })), {
-        reason: noClient.reason,
-        message: noClient.message.replace("C-99", client.key),
-      });
+      assert.lengthOf((yield* OwnerWork.list([mate], { orgId, party: client.key })).records, 0);
       assert.include(
         yield* Effect.flip(
           OwnerWork.create([mate], {

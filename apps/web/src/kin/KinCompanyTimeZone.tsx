@@ -1,3 +1,5 @@
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -39,11 +41,12 @@ function CompanyTimeZone(props: KinWorkTarget) {
   const canSet = granted && ownerLevel;
   const set = useAtomCommand(kinClient.timeZoneSet, { reportFailure: false });
   const [state, setState] = useState<"idle" | "saving" | "failed">("idle");
+  const [problem, setProblem] = useState("");
   const zone = Option.getOrNull(AsyncResult.value(result));
   if (!canSet || AsyncResult.isFailure(result) || zone === null) return null;
   const description =
     state === "failed"
-      ? "The time zone wasn't saved. Try again."
+      ? problem
       : zone.fromHost === true
         ? `None set yet, so Kin uses this computer's: ${zone.timeZone}. Check-ins, due days and times follow it.`
         : `${zone.timeZone}. Check-ins, due days and times follow it.`;
@@ -61,7 +64,12 @@ function CompanyTimeZone(props: KinWorkTarget) {
             onClick={() => {
               setState("saving");
               void set({ ...query, input: { orgId: props.orgId, timeZone: browserZone } }).then(
-                (outcome) => setState(AsyncResult.isFailure(outcome) ? "failed" : "idle"),
+                (outcome) => {
+                  if (AsyncResult.isSuccess(outcome)) return setState("idle");
+                  const why = squashAtomCommandFailure(outcome);
+                  setProblem(kinFailureText(why, "The time zone wasn't saved."));
+                  setState("failed");
+                },
               );
             }}
           >

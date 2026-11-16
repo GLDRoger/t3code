@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
+import { KIN_BUSY, KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
 import {
   KinChatError,
   KinMemoryItemId,
@@ -235,7 +236,7 @@ describe("what the owner's leads remember", () => {
     host.release(false);
     await kept;
     expect(states(list, host.edits())).toEqual({ a: "suggested", b: "team" });
-    expect(host.edits().problem).toBe("Couldn't change that. Try again.");
+    expect(host.edits().problem).toBe(`Couldn't change that. ${KIN_BUSY}`);
     expect(host.refreshes()).toBe(0);
 
     host.release(true);
@@ -257,7 +258,7 @@ describe("what the owner's leads remember", () => {
     host.release(false);
     await refused;
     expect(states(list, host.edits())).toEqual({ a: "only_owner", b: "team" });
-    expect(host.edits().problem).toBe("Couldn't change that. Try again.");
+    expect(host.edits().problem).toBe(`Couldn't change that. ${KIN_BUSY}`);
 
     const forgotten = host.actions.forget(list, KinMemoryItemId.make("a"));
     host.release(true);
@@ -274,7 +275,7 @@ describe("what the owner's leads remember", () => {
     host.release(true);
     await tapped;
     expect(states(list, host.edits())).toEqual({ a: "suggested" });
-    expect(host.edits().problem).toBe("Couldn't change that. Try again.");
+    expect(host.edits().problem).toBe(`Couldn't change that. ${KIN_CHECK_CONNECTION}`);
     expect(host.refreshes()).toBe(1);
   });
 

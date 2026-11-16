@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { KIN_WORK_ONLY_OWNER, type KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
@@ -133,7 +134,7 @@ function waiting(
     <EmptyState
       variant="plain"
       {...copy.failed}
-      action={<Button tone="secondary" label="Try again" onPress={retry} />}
+      action={<Button tone="secondary" label={KIN_RETRY} onPress={retry} />}
     />
   );
 }

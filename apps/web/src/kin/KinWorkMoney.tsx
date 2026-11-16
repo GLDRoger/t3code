@@ -22,7 +22,6 @@ import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions"
 import { ArrowLeftRightIcon, MessageSquareIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 
-import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
@@ -41,7 +40,7 @@ import { KinNewReceiptDialog, KinReceiptsSection } from "./KinReceipts";
 import { KinAttentionSection } from "./KinAttention";
 import { KinGoalSheet, KinGoals } from "./KinGoals";
 import { useKinGoals } from "./useKinAttention";
-import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection } from "./KinWorkParts";
+import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection, KinLoadFailed } from "./KinWorkParts";
 import {
   kinListsOf,
   useKinAskAgent,
@@ -196,14 +195,12 @@ export function KinWorkMoney(
   if (state._tag === "refused") return <KinWorkNotice {...KIN_MONEY.onlyOwner} />;
   if (state._tag === "failed" || state._tag === "gone") {
     return (
-      <div className="mx-auto flex w-full max-w-3xl flex-col items-start gap-3 p-4">
-        <Alert variant="error">
-          <AlertDescription>{KIN_MONEY.loadFailed}. Check your connection.</AlertDescription>
-        </Alert>
-        <Button size="sm" variant="outline" onClick={refresh}>
-          Retry
-        </Button>
-      </div>
+      <KinLoadFailed
+        what={KIN_MONEY.loadFailed}
+        cause={state._tag === "failed" ? state.cause : null}
+        onRetry={refresh}
+        className="mx-auto w-full max-w-3xl p-4"
+      />
     );
   }
   if (state._tag === "loading" || props.lists.state._tag === "loading") {

@@ -1,3 +1,4 @@
+import { KIN_RETRY, KIN_CHECK_CONNECTION } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinListSend, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
@@ -335,8 +336,8 @@ function KinSubscriptionsGate(props: KinWorkTarget) {
           <EmptyState
             variant="plain"
             title="Couldn't load subscriptions"
-            detail="Check your connection to the server and try again."
-            action={<Button tone="secondary" label="Try again" onPress={lists.refresh} />}
+            detail={KIN_CHECK_CONNECTION}
+            action={<Button tone="secondary" label={KIN_RETRY} onPress={lists.refresh} />}
           />
         ) : (
           <KinWorkLoading label="Loading subscriptions" />

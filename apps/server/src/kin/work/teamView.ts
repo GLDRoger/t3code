@@ -7,13 +7,16 @@ import {
   type KinRecord,
   type KinRecordChange,
   type KinRecordDetail,
+  type KinRecordCan,
+  type KinRecordState,
+  type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
 import { LISTS } from "./lists.ts";
-import { inheritedSensitive, notFound, sensitiveNow } from "./recordRows.ts";
+import { inheritedSensitive, notFound, samePrincipal, sensitiveNow } from "./recordRows.ts";
 
 /** Lists a project's lead writes in, inside that project; quotes and invoices only as drafts. */
 const LEAD_LISTS = ["work", "milestones", "docs", "quotes", "invoices"] as const;
@@ -329,46 +332,65 @@ const DRAFTS_ONLY = new KinChatError({
     "Only the owner or a co-owner issues, sends or marks a quote or invoice paid; a project's lead keeps it a draft (state open).",
 });
 
-/**
- * A teammate's write, checked inside its transaction before any retry, revision or other answer:
- * they are still let in, the task is one they see (else it is no task at all) and, for a change,
- * one they hold or gave away, or one of a project they lead. The repository runs this, so no
- * caller's earlier read decides it.
- */
-export const teamGuard = Effect.fn("KinTeamView.guard")(function* (
+type TeamWrite = {
+  readonly row: { readonly recordId: string; readonly key: string } | undefined;
+  /** A change to the task, not a retry of the create that made it. */
+  readonly changes: boolean;
+  readonly input: Readonly<Partial<Record<(typeof OWNERS_FIELDS)[number] | "state", unknown>>>;
+};
+
+/** What `teamRule` decides these entries' writes on: read once, inside the write's transaction. */
+const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
-  write: {
-    readonly row: { readonly recordId: string; readonly key: string } | undefined;
-    /** A change to the task, not a retry of the create that made it. */
-    readonly changes: boolean;
-    readonly input: Readonly<Partial<Record<(typeof OWNERS_FIELDS)[number] | "state", unknown>>>;
-  },
+  recordIds: ReadonlyArray<string>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const member = yield* sql`SELECT 1 FROM kin_session_bindings b
     JOIN kin_people p ON p.org_id = b.org_id AND p.person_id = b.person_id
     WHERE b.org_id = ${orgId} AND b.person_id = ${personId} AND b.revoked_at IS NULL LIMIT 1`;
-  if (member.length === 0) return yield* noLongerTeam;
-  const { row, input } = write;
   const led = new Set((yield* ledProjects(orgId, personId)).map((project) => project.recordId));
-  const intoLed = input.projectId === undefined || led.has(input.projectId as KinRecordId);
+  const seen =
+    recordIds.length === 0
+      ? []
+      : yield* sql<{ recordId: string; writes: number; leads: number; registerId: string }>`SELECT
+          r.record_id AS "recordId", ${teamWrites(sql, personId)} AS writes,
+          ${leadWrites(sql, personId)} AS leads, r.register_id AS "registerId"
+        FROM kin_records r WHERE r.org_id = ${orgId}
+          AND r.record_id IN ${sql.in([...new Set(recordIds)])} AND ${personSees(sql, personId)}
+        ORDER BY r.record_id`;
+  const byId = new Map(seen.map((row) => [row.recordId, row]));
+  /** One entry's facts; `undefined` for a write that makes one. */
+  return (recordId: string | undefined) => ({
+    member: member.length > 0,
+    led,
+    seen: recordId === undefined ? undefined : (byId.get(recordId) ?? null),
+  });
+});
+type TeamFacts = ReturnType<Effect.Success<ReturnType<typeof teamFactsOf>>>;
+
+/**
+ * Whether a teammate's write goes through, and the refusal when it doesn't: they are still let in,
+ * the task is one they see (else it is no task at all) and, for a change, one they hold or gave
+ * away, or one of a project they lead. Both the write (`teamGuard`) and what a sheet offers
+ * (`teamCan`) ask this, so a control the host offers is one it takes.
+ */
+const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined => {
+  if (!facts.member) return noLongerTeam;
+  const { row, input } = write;
+  const intoLed = input.projectId === undefined || facts.led.has(input.projectId as KinRecordId);
   let lead: { readonly draft: boolean } | undefined;
   if (row !== undefined) {
-    const [seen] = yield* sql<{ writes: number; leads: number; registerId: string }>`SELECT
-        ${teamWrites(sql, personId)} AS writes, ${leadWrites(sql, personId)} AS leads,
-        r.register_id AS "registerId"
-      FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId}
-        AND ${personSees(sql, personId)}`;
-    if (seen === undefined) return yield* notFound(row.key);
+    const seen = facts.seen;
+    if (seen === undefined || seen === null) return notFound(row.key);
     if (write.changes && seen.writes !== 1)
-      return yield* new KinChatError({
+      return new KinChatError({
         reason: "not_allowed",
         message: `Only whoever holds ${row.key}, or gave it to them, can change it.`,
       });
     if (seen.leads === 1 && intoLed)
       lead = { draft: (DRAFT_LISTS as ReadonlyArray<string>).includes(seen.registerId) };
-    if (lead !== undefined && input.list !== undefined) return yield* TEAM_REFUSED;
+    if (lead !== undefined && input.list !== undefined) return TEAM_REFUSED;
   } else {
     const list = typeof input.list === "string" ? input.list : "work";
     if (
@@ -378,16 +400,82 @@ export const teamGuard = Effect.fn("KinTeamView.guard")(function* (
     )
       lead = { draft: (DRAFT_LISTS as ReadonlyArray<string>).includes(list) };
   }
-  if (lead === undefined) {
-    if (OWNERS_FIELDS.some((field) => input[field] !== undefined)) return yield* TEAM_REFUSED;
-    return;
-  }
+  if (lead === undefined)
+    return OWNERS_FIELDS.some((field) => input[field] !== undefined) ? TEAM_REFUSED : undefined;
   // Making something more private is always theirs; un-marking it is the owner's.
   if (LEADS_REFUSED.some((field) => input[field] !== undefined) || input.sensitive === false)
-    return yield* TEAM_REFUSED;
+    return TEAM_REFUSED;
   // An invoice is made issued unless it says otherwise, so a lead's new one must say draft.
   if (lead.draft && (row === undefined ? input.state !== "open" : input.state !== undefined))
-    return yield* DRAFTS_ONLY;
+    return DRAFTS_ONLY;
+  return undefined;
+};
+
+/**
+ * A teammate's write, checked inside its transaction before any retry, revision or other answer.
+ * The repository runs this, so no caller's earlier read decides it.
+ */
+export const teamGuard = Effect.fn("KinTeamView.guard")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  write: TeamWrite,
+) {
+  const facts = yield* teamFactsOf(
+    orgId,
+    personId,
+    write.row === undefined ? [] : [write.row.recordId],
+  );
+  const refused = teamRule(facts(write.row?.recordId), write);
+  if (refused !== undefined) return yield* refused;
+});
+
+type CanRow = {
+  readonly recordId: string;
+  readonly key: string;
+  readonly state: KinRecordState;
+  readonly owner: KinWorkPrincipal;
+  /** Its list's states (`checkInput` refuses any other). */
+  readonly states: ReadonlyArray<KinRecordState>;
+};
+
+/**
+ * What a teammate may do to each of these entries, as `teamRule` would answer each write: the
+ * same facts, one probe per control, read once for them all.
+ */
+export const teamCan = Effect.fn("KinTeamView.can")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  rows: ReadonlyArray<CanRow>,
+) {
+  const factsOf = yield* teamFactsOf(
+    orgId,
+    personId,
+    rows.map((row) => row.recordId),
+  );
+  return new Map(
+    rows.map((row) => {
+      const facts = factsOf(row.recordId);
+      const takes = (input: TeamWrite["input"]) =>
+        teamRule(facts, { row, changes: true, input }) === undefined;
+      const open = row.state !== "done" && row.state !== "dropped";
+      const led = [...facts.led][0];
+      const moves = takes({});
+      const can: KinRecordCan = {
+        states: row.states.filter((state) => state !== row.state && takes({ state })),
+        edit: moves,
+        party: takes({ partyId: "" }),
+        project: led !== undefined && takes({ projectId: led }),
+        clearProject: takes({ projectId: null }),
+        give: open && moves,
+        takeBack: open && moves && !samePrincipal(row.owner, { _tag: "person", personId }),
+        mark: takes({ sensitive: true }),
+        unmark: takes({ sensitive: false }),
+        share: false,
+        confirm: false,
+      };
+      return [row.recordId, can] as const;
+    }),
+  );
 });
 
 /** `p` is a teammate who sees `r`: a person let in by an invite, never the owner's own session. */

@@ -1,3 +1,8 @@
+import {
+  KIN_CHECK_CONNECTION,
+  KIN_RETRY,
+  kinFailure,
+} from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -72,6 +77,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 
 export type KinListParams = {
   readonly environmentId: string;
@@ -141,7 +147,7 @@ function KinListGate(
           <EmptyState
             variant="plain"
             title={KIN_LISTS.entriesFailed}
-            detail="Check your connection to the server and try again."
+            detail={KIN_CHECK_CONNECTION}
           />
         ) : (
           <KinWorkLoading label="Loading list" />
@@ -155,6 +161,8 @@ function KinListGate(
       : undefined;
   if (def === undefined) {
     const found = lists.state._tag === "ready";
+    const failure = kinFailure(lists.state._tag === "failed" ? lists.state.cause : null, "");
+    const retry = !found && failure.retry;
     return (
       <KinWorkFrame title={KIN_LISTS.title} onBack={back}>
         <EmptyState
@@ -163,13 +171,13 @@ function KinListGate(
           detail={
             found
               ? "It may have been renamed. Open Lists to see what there is."
-              : "Check your connection to the server and try again."
+              : failure.text.trim()
           }
           action={
             <Button
               tone="secondary"
-              label={found ? "Back" : "Try again"}
-              onPress={found ? back : lists.refresh}
+              label={retry ? KIN_RETRY : "Back"}
+              onPress={retry ? lists.refresh : back}
             />
           }
         />
@@ -624,11 +632,10 @@ function KinListEntries(
                 {state.loading ? (
                   <KinWorkLoading label="Loading entries" />
                 ) : state.failed !== null ? (
-                  <EmptyState
-                    variant="plain"
+                  <KinLoadFailed
                     title={KIN_LISTS.entriesFailed}
-                    detail="Check your connection to the server and try again."
-                    action={<Button tone="secondary" label="Try again" onPress={entries.refresh} />}
+                    cause={state.failed}
+                    onRetry={entries.refresh}
                   />
                 ) : (
                   <EmptyState variant="plain" {...nothing} />
@@ -646,7 +653,7 @@ function KinListEntries(
                   <Button
                     tone="secondary"
                     size="compact"
-                    label={state.moreFailed ? "Try again" : "Show more"}
+                    label={state.moreFailed ? KIN_RETRY : "Show more"}
                     loading={state.loadingMore}
                     disabled={state.loadingMore}
                     onPress={() => void entries.loadMore()}
@@ -836,12 +843,7 @@ function KinDatesBody(props: KinWorkTarget) {
     return (
       <KinWorkFrame {...frame}>
         {failed ? (
-          <EmptyState
-            variant="plain"
-            title={KIN_DATES.loadFailed}
-            detail="Check your connection to the server and try again."
-            action={<Button tone="secondary" label="Try again" onPress={retry} />}
-          />
+          <KinLoadFailed title={KIN_DATES.loadFailed} cause={null} onRetry={retry} />
         ) : (
           <KinWorkLoading label="Loading dates" />
         )}

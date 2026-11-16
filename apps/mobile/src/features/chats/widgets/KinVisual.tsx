@@ -1,3 +1,5 @@
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, KinOrgId, KinVisualCardState } from "@t3tools/contracts";
 import {
@@ -121,7 +123,7 @@ function KinVisualWebView(props: {
         if (!shared)
           Dialog.alert("Couldn't save this file", "Sharing is unavailable on this device.");
       },
-      () => Dialog.alert("Couldn't save this file", "Try again."),
+      () => Dialog.alert("Couldn't save this file", "Sharing didn't finish."),
     );
   };
   const askToOpen = (url: string) => {
@@ -284,7 +286,7 @@ export const KinVisual = memo(function KinVisual(props: {
   const [blocked, setBlocked] = useState<string | null>(null);
   const [declined, setDeclined] = useState(false);
   const [allowing, setAllowing] = useState<string | null>(null);
-  const [problem, setProblem] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
   const canAllow = useAtomValue(kinClient.visualHostAllow.permissionAtom(props.environmentId));
   const allow = useAtomCommand(kinClient.visualHostAllow, { reportFailure: false });
   const height = htmlRenderFrameHeight(
@@ -311,14 +313,14 @@ export const KinVisual = memo(function KinVisual(props: {
       confirmText: "Allow for every visual",
       onConfirm: () => {
         setAllowing(host);
-        setProblem(false);
+        setProblem(null);
         void allow({
           environmentId: props.environmentId,
           input: { orgId: props.orgId, host },
         }).then((result) => {
           setAllowing(null);
           if (!AsyncResult.isSuccess(result)) {
-            setProblem(true);
+            setProblem(kinFailureText(squashAtomCommandFailure(result), "Couldn't allow it."));
             return;
           }
           setBlocked(null);
@@ -371,7 +373,7 @@ export const KinVisual = memo(function KinVisual(props: {
             </Text>
             <Pressable accessibilityRole="button" hitSlop={12} onPress={() => void retry()}>
               <Text textRole="footnote" className="font-t3-medium text-primary">
-                Try again
+                {KIN_RETRY}
               </Text>
             </Pressable>
           </View>
@@ -424,7 +426,7 @@ export const KinVisual = memo(function KinVisual(props: {
       ) : null}
       {problem ? (
         <Text accessibilityRole="alert" textRole="caption" className="text-danger-foreground">
-          Couldn't allow it. Try again.
+          {problem}
         </Text>
       ) : null}
       {expanded && uri !== null ? (

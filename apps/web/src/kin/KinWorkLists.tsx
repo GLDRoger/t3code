@@ -1,3 +1,4 @@
+import { KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_LISTS,
@@ -60,7 +61,7 @@ import {
 } from "../components/ui/table";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { cn } from "../lib/utils";
-import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection } from "./KinWorkParts";
+import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection, KinLoadFailed } from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import {
@@ -105,21 +106,19 @@ export function KinWorkListPage(
   const def =
     state._tag === "ready" ? state.value.lists.find((one) => one.list === props.list) : undefined;
   if (def === undefined) {
+    const failure = kinFailure(state._tag === "failed" ? state.cause : null, "");
+    const retry = state._tag !== "ready" && failure.retry;
     return (
       <KinWorkNotice
         title={state._tag === "ready" ? "This list isn't here" : KIN_LISTS.loadFailed}
         detail={
           state._tag === "ready"
             ? "It may have been renamed. Open Docs to see the lists there are."
-            : "Check your connection and try again."
+            : failure.text.trim()
         }
         action={
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={state._tag === "ready" ? props.onGone : lists.refresh}
-          >
-            {state._tag === "ready" ? "Open Docs" : "Retry"}
+          <Button size="sm" variant="outline" onClick={retry ? lists.refresh : props.onGone}>
+            {retry ? KIN_RETRY : "Open Docs"}
           </Button>
         }
       />
@@ -418,16 +417,12 @@ function KinListEntries(
               <KinWorkRowSkeletons />
             </div>
           ) : state.failed !== null ? (
-            <div className="flex flex-col items-start gap-3 py-4">
-              <Alert variant="error">
-                <AlertDescription>
-                  {KIN_LISTS.entriesFailed}. Check your connection.
-                </AlertDescription>
-              </Alert>
-              <Button size="sm" variant="outline" onClick={entries.refresh}>
-                Retry
-              </Button>
-            </div>
+            <KinLoadFailed
+              what={KIN_LISTS.entriesFailed}
+              cause={state.failed}
+              onRetry={entries.refresh}
+              className="py-4"
+            />
           ) : rows.length === 0 ? (
             <KinWorkNotice {...nothing} />
           ) : layout === "table" ? (
@@ -501,7 +496,7 @@ function KinListEntries(
               aria-busy={state.loadingMore}
               onClick={() => void entries.loadMore()}
             >
-              {state.moreFailed ? "Try again" : "Show more"}
+              {state.moreFailed ? KIN_RETRY : "Show more"}
             </Button>
           </div>
         )}

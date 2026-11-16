@@ -50,7 +50,7 @@ describe("retiring an agent", () => {
       "Only the person who set up this agent can restore it.",
     );
     expect(kinRestoreProblem(new Error("socket closed"), "Finance")).toBe(
-      "Couldn't restore Finance. Check your connection and try again.",
+      "Couldn't restore Finance. Check your connection to the server and try again.",
     );
   });
 

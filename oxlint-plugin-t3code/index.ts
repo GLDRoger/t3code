@@ -1,5 +1,6 @@
 import { definePlugin } from "@oxlint/plugins";
 
+import kinFailureWords from "./rules/kin-failure-words.ts";
 import kinMessagesToPeople from "./rules/kin-messages-to-people.ts";
 import kinOwnerLevel from "./rules/kin-owner-level.ts";
 import kinViewerScopedReads from "./rules/kin-viewer-scoped-reads.ts";
@@ -44,6 +45,7 @@ export default definePlugin({
   },
   rules: {
     "kin-messages-to-people": kinMessagesToPeople,
+    "kin-failure-words": kinFailureWords,
     "kin-owner-level": kinOwnerLevel,
     "kin-viewer-scoped-reads": kinViewerScopedReads,
     "kin-zoned-time": kinZonedTime,

@@ -4,6 +4,7 @@ import * as DateTime from "effect/DateTime";
 
 import { kinMoneyDraft, kinMoneyText } from "./kinLists.ts";
 import type { KinNeedsYouRow } from "./kinWorkHome.ts";
+import { kinFailure } from "./kinAnswers.ts";
 
 /**
  * "Needs attention": what Kin worked out needs someone, on the screens it is about. One model for
@@ -20,7 +21,7 @@ export const KIN_ATTENTION = {
   snoozeTomorrow: "Snooze until tomorrow",
   snoozeMonday: "Snooze until Monday",
   snoozeWeek: "Snooze for a week",
-  failed: "Couldn't save that. Try again.",
+  failed: "Couldn't save that.",
 } as const;
 
 /** Where a row opens: the entry itself, Money, or nowhere of its own (ask the agent instead). */
@@ -233,6 +234,29 @@ export function kinTasksAttention(open: ReadonlyArray<KinAttentionRow>): {
             open: { type: "money" },
           },
   };
+}
+
+/**
+ * The read as it stands once these answers were tapped: a fact answered here leaves at once and
+ * the live read brings it back, as handled or open again (after an Undo), when it changes.
+ */
+export function kinAttentionShown(
+  read: KinPulseRead | null,
+  answered: ReadonlySet<string>,
+): KinPulseRead | null {
+  if (read === null || answered.size === 0) return read;
+  const facts = read.facts.filter((fact) => fact.handled !== null || !answered.has(fact.key));
+  return facts.length === read.facts.length ? read : { ...read, facts };
+}
+
+/**
+ * What a tap on an answer leaves to say: nothing once it went through, and nothing when the fact
+ * is no longer current, since it is already sorted (`kinFailure`'s "gone").
+ */
+export function kinAttentionProblem(failure: unknown | null): string | null {
+  if (failure === null) return null;
+  const said = kinFailure(failure, KIN_ATTENTION.failed);
+  return said.kind === "gone" ? null : said.text;
 }
 
 /** The badge on Tasks: what needs attention and nobody has in hand yet. */

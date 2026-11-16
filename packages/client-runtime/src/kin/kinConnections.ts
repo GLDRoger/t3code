@@ -1,5 +1,4 @@
 import {
-  EnvironmentAuthorizationError,
   KinChatError,
   KinConnectionKey,
   type KinConnection,
@@ -27,6 +26,7 @@ import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { formatKinTime } from "./kinScreenState.ts";
+import { KIN_SERVICE_SLOW, KIN_SERVICE_UNREACHED, kinFailureText } from "./kinAnswers.ts";
 
 /**
  * The owner's Connections screens: plain-word states for connections and their tools, the Add
@@ -134,16 +134,14 @@ export const KIN_CONNECTIONS_COPY = {
 } as const;
 
 const isChatError = Schema.is(KinChatError);
-const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
 /** A failure the host sent back, in the owner's words, with what to do about it. */
 function kinConnectionErrorText(message: string): string {
   if (/refused the key/i.test(message))
     return "The service didn't accept the key. Make a new key there and use Replace key.";
   if (/key is missing/i.test(message)) return "The key is missing. Use Replace key to add it.";
-  if (/couldn't reach/i.test(message))
-    return `${message} Check the address, or try again in a minute.`;
-  if (/didn't answer in time/i.test(message)) return `${message} Try again in a minute.`;
+  if (/couldn't reach/i.test(message)) return `${message} ${KIN_SERVICE_UNREACHED}`;
+  if (/didn't answer in time/i.test(message)) return `${message} ${KIN_SERVICE_SLOW}`;
   if (/public internet addresses|only over https|name or password/i.test(message))
     return `${message} Use the service's public https address.`;
   if (/redirect/i.test(message)) return `${message} Use the address the redirect points to.`;
@@ -154,20 +152,21 @@ function kinConnectionErrorText(message: string): string {
 
 /** Why an owner action on a connection failed, from the command's result. */
 function kinConnectionProblem(error: unknown, doing: string): string {
-  if (isAuthorizationError(error)) return `This device isn't allowed to ${doing}.`;
-  if (!isChatError(error)) return `Couldn't ${doing}. Check your connection and try again.`;
-  switch (error.reason) {
-    case "not_allowed":
-      return error.message === "" ? KIN_CONNECTIONS_COPY.onlyOwner : error.message;
-    case "not_found":
-      return "That connection is no longer here.";
-    case "disabled":
-      return "Kin is turned off on this server.";
-    default:
-      return error.message === ""
-        ? `Couldn't ${doing} right now. Try again in a moment.`
-        : kinConnectionErrorText(error.message);
-  }
+  if (isChatError(error) && error.reason === "disabled") return "Kin is turned off on this server.";
+  // The service's own failure, passed on by the host, says what to fix there.
+  if (
+    isChatError(error) &&
+    error.message !== "" &&
+    !["not_allowed", "not_found", "conflict"].includes(error.reason)
+  )
+    return kinConnectionErrorText(error.message);
+  return kinFailureText(error, `Couldn't ${doing}.`, {
+    gone: "That connection is no longer here.",
+    device: `This device isn't allowed to ${doing}.`,
+    ...(isChatError(error) && error.message === ""
+      ? { refused: KIN_CONNECTIONS_COPY.onlyOwner }
+      : {}),
+  });
 }
 
 export type KinConnectionTone = "ok" | "attention" | "error" | "muted";
