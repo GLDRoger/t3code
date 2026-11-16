@@ -1,12 +1,13 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous digest; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 
-import type {
-  KinOrgId,
-  KinSocialAccount,
-  KinSocialMedia,
-  KinSocialPlatform,
-  KinSocialPostState,
+import {
+  KIN_SOCIAL_PLATFORM_LABELS,
+  type KinOrgId,
+  type KinSocialAccount,
+  type KinSocialMedia,
+  type KinSocialPlatform,
+  type KinSocialPostState,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -25,17 +26,71 @@ export const PLATFORM_RULES: Record<
     readonly videoMb: number;
   }
 > = {
-  instagram: { label: "Instagram", caption: 2200, needs: "media", imageMb: 8, videoMb: 300 },
-  facebook: { label: "Facebook", caption: 60000, needs: null, imageMb: 10, videoMb: 1000 },
-  linkedin: { label: "LinkedIn", caption: 3000, needs: null, imageMb: 8, videoMb: 500 },
-  twitter: { label: "X", caption: 280, needs: null, imageMb: 5, videoMb: 512 },
-  threads: { label: "Threads", caption: 500, needs: null, imageMb: 8, videoMb: 1000 },
-  tiktok: { label: "TikTok", caption: 2200, needs: "media", imageMb: 20, videoMb: 1000 },
-  youtube: { label: "YouTube", caption: 5000, needs: "video", imageMb: 0, videoMb: 2000 },
-  pinterest: { label: "Pinterest", caption: 500, needs: "media", imageMb: 20, videoMb: 1000 },
-  bluesky: { label: "Bluesky", caption: 300, needs: null, imageMb: 1, videoMb: 50 },
+  instagram: {
+    label: KIN_SOCIAL_PLATFORM_LABELS.instagram,
+    caption: 2200,
+    needs: "media",
+    imageMb: 8,
+    videoMb: 300,
+  },
+  facebook: {
+    label: KIN_SOCIAL_PLATFORM_LABELS.facebook,
+    caption: 60000,
+    needs: null,
+    imageMb: 10,
+    videoMb: 1000,
+  },
+  linkedin: {
+    label: KIN_SOCIAL_PLATFORM_LABELS.linkedin,
+    caption: 3000,
+    needs: null,
+    imageMb: 8,
+    videoMb: 500,
+  },
+  twitter: {
+    label: KIN_SOCIAL_PLATFORM_LABELS.twitter,
+    caption: 280,
+    needs: null,
+    imageMb: 5,
+    videoMb: 512,
+  },
+  threads: {
+    label: KIN_SOCIAL_PLATFORM_LABELS.threads,
+    caption: 500,
+    needs: null,
+    imageMb: 8,
+    videoMb: 1000,
+  },
+  tiktok: {
+    label: KIN_SOCIAL_PLATFORM_LABELS.tiktok,
+    caption: 2200,
+    needs: "media",
+    imageMb: 20,
+    videoMb: 1000,
+  },
+  youtube: {
+    label: KIN_SOCIAL_PLATFORM_LABELS.youtube,
+    caption: 5000,
+    needs: "video",
+    imageMb: 0,
+    videoMb: 2000,
+  },
+  pinterest: {
+    label: KIN_SOCIAL_PLATFORM_LABELS.pinterest,
+    caption: 500,
+    needs: "media",
+    imageMb: 20,
+    videoMb: 1000,
+  },
+  bluesky: {
+    label: KIN_SOCIAL_PLATFORM_LABELS.bluesky,
+    caption: 300,
+    needs: null,
+    imageMb: 1,
+    videoMb: 50,
+  },
   googlebusiness: {
-    label: "Google Business Profile",
+    label: KIN_SOCIAL_PLATFORM_LABELS.googlebusiness,
     caption: 1500,
     needs: null,
     imageMb: 5,

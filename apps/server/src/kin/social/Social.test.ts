@@ -201,7 +201,7 @@ const tap = (
         revision: card.revision,
         actionId,
         value,
-        clientActionId: `${actionId}-${card.revision}`,
+        clientActionId: `${card.widgetId}:${actionId}:${card.revision}:${String(value)}`,
       },
     );
   });
@@ -397,14 +397,27 @@ it.effect(
         yield* social.week(scope, { group: "Lumen Studio" });
         const [ownCard, lumenCard] = yield* weekCard;
         assert.lengthOf(ownCard!.card.posts, 5);
-        assert.isNull(ownCard!.card.client);
+        assert.isNull(ownCard!.card.clientReview);
         assert.deepEqual(
           lumenCard!.card.posts.map((post) => post.account.name),
           ["Lumen Studio"],
         );
-        assert.isFalse(lumenCard!.card.client?.ok);
+        assert.isFalse(lumenCard!.card.clientReview?.ok);
         // Nothing reaches the service before Confirm.
         assert.lengthOf(fake.load().posts, 0);
+
+        // The client's card: his switch for the client's OK, and nothing mixed with ours.
+        const [, lumen] = yield* weekCard;
+        assert.match(yield* failure(tap(lumen!, "confirm", lumen!.card.digest)), /said OK/);
+        yield* tap(lumen!, "client_ok", true);
+        const [, noted] = yield* weekCard;
+        assert.isTrue(noted!.card.clientReview?.ok);
+        yield* tap(noted!, "confirm", noted!.card.digest);
+        yield* social.runDue;
+        assert.deepEqual(
+          fake.load().posts.map((post) => post.accountId),
+          [lumenIg.accountId],
+        );
 
         // Only the owner's side taps; a member's tap is refused.
         assert.match(
@@ -423,7 +436,7 @@ it.effect(
           card!.card.posts.map((post) => post.state),
           ["scheduled", "scheduled", "scheduled", "scheduled", "removed"],
         );
-        assert.lengthOf(fake.load().posts, 4);
+        assert.lengthOf(fake.load().posts, 5);
         assert.isTrue(fake.load().posts.every((post) => post.idempotencyKey !== null));
         // The removed post was never sent.
         assert.isFalse(fake.load().posts.some((post) => post.content === "Hiring a designer"));
@@ -432,7 +445,7 @@ it.effect(
         yield* sql`UPDATE kin_social_posts SET state = 'scheduling', service_post_id = NULL
         WHERE post_id = ${ids[1]!}`;
         yield* social.runDue;
-        assert.lengthOf(fake.load().posts, 4);
+        assert.lengthOf(fake.load().posts, 5);
 
         // Undo before it goes out cancels it at the service.
         [card] = yield* weekCard;
@@ -440,7 +453,7 @@ it.effect(
         yield* social.runDue;
         [card] = yield* weekCard;
         assert.equal(card!.card.posts.find((post) => post.postId === ids[2])?.state, "cancelled");
-        assert.lengthOf(fake.load().posts, 3);
+        assert.lengthOf(fake.load().posts, 4);
 
         // Three go out; one fails on the platform, says why, and Retry posts it.
         fake.failNext(li!.accountId, "LinkedIn refused the post: duplicate content.");
@@ -457,13 +470,7 @@ it.effect(
         yield* social.runDue;
         [card] = yield* weekCard;
         assert.equal(card!.card.posts.find((post) => post.postId === ids[1])?.state, "posted");
-        assert.lengthOf(fake.load().posts, 3);
-
-        // The client's card: his switch for the client's OK, and nothing mixed with ours.
-        const [, lumen] = yield* weekCard;
-        yield* tap(lumen!, "client_ok", true);
-        const [, noted] = yield* weekCard;
-        assert.isTrue(noted!.card.client?.ok);
+        assert.lengthOf(fake.load().posts, 4);
       }),
     );
   },

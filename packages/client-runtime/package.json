@@ -595,6 +595,10 @@
       "types": "./src/kin/kinGitHub.ts",
       "default": "./src/kin/kinGitHub.ts"
     },
+    "./kin/kinSocial": {
+      "types": "./src/kin/kinSocial.ts",
+      "default": "./src/kin/kinSocial.ts"
+    },
     "./kin/kinCurrency": {
       "types": "./src/kin/kinCurrency.ts",
       "default": "./src/kin/kinCurrency.ts"

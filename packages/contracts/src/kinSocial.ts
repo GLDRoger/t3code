@@ -24,6 +24,19 @@ export const KIN_SOCIAL_PLATFORMS = [
 ] as const;
 export const KinSocialPlatform = Schema.Literals(KIN_SOCIAL_PLATFORMS);
 export type KinSocialPlatform = typeof KinSocialPlatform.Type;
+/** Each platform as people call it. */
+export const KIN_SOCIAL_PLATFORM_LABELS: Record<KinSocialPlatform, string> = {
+  instagram: "Instagram",
+  facebook: "Facebook",
+  linkedin: "LinkedIn",
+  twitter: "X",
+  threads: "Threads",
+  tiktok: "TikTok",
+  youtube: "YouTube",
+  pinterest: "Pinterest",
+  bluesky: "Bluesky",
+  googlebusiness: "Google Business Profile",
+};
 
 const Text = (max: number) => Schema.String.check(Schema.isMaxLength(max));
 
@@ -181,7 +194,7 @@ export const KinSocialWeekCard = Schema.Struct({
   digest: Schema.NullOr(Text(64)),
   confirmedAt: Schema.NullOr(IsoDateTime),
   /** A client's card: whether the owner noted the client's OK, and the preview made for them. */
-  client: Schema.NullOr(
+  clientReview: Schema.NullOr(
     Schema.Struct({
       ok: Schema.Boolean,
       notedAt: Schema.NullOr(IsoDateTime),

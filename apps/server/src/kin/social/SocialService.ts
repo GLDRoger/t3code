@@ -36,6 +36,7 @@ import { ServerConfig } from "../../config.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinConnectionSecrets } from "../connections/ConnectionSecrets.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
@@ -209,6 +210,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
   const config = yield* ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const renderer = yield* Effect.serviceOption(KinDocRenderer);
+  const refreshes = yield* KinRefreshObserver;
   const context = yield* Effect.context<Ctx>();
   /** A public method: Kin's services provided, and every failure said as Kin's own. */
   const bind = <A, E, R extends Ctx>(effect: Effect.Effect<A, E, R>) =>
@@ -389,6 +391,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       sql.withTransaction,
       Effect.mapError(() => unavailable("Kin couldn't save the accounts.")),
     );
+    // Every other device showing Connections reads them again.
+    yield* refreshes.touch(input.orgId, "connections");
     return yield* view(input.orgId);
   });
 
@@ -437,6 +441,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     if (group === undefined)
       return yield* invalid("Those social accounts aren't connected any more.");
     yield* recheck(group);
+    yield* refreshes.touch(input.orgId, "connections");
     return yield* view(input.orgId);
   });
 
@@ -459,6 +464,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       Effect.mapError(() => unavailable("Kin couldn't remove the accounts.")),
     );
     yield* secrets.removeSocialKey(input.groupId);
+    yield* refreshes.touch(input.orgId, "connections");
     return yield* view(input.orgId);
   });
 
@@ -1162,7 +1168,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     const widget = yield* repo.getWidget({ orgId, widgetId: cardId as never });
     if (Option.isNone(widget)) return;
     const card = Cards.readWeek(widget.value.state);
-    if (Option.isNone(card) || card.value.client === null || !card.value.client.making) return;
+    if (Option.isNone(card) || card.value.clientReview === null || !card.value.clientReview.making)
+      return;
     const files: Array<{ name: string; bytes: Uint8Array }> = [];
     for (const post of posts) {
       const media = mediaOf(post);
@@ -1220,9 +1227,9 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
         reason: result._tag === "failed" ? result.reason : "unknown",
       });
     yield* Cards.refreshWeekCard(orgId, cardId, (state) =>
-      state.client === null
+      state.clientReview === null
         ? state
-        : { ...state, client: { ...state.client, making: false, preview } },
+        : { ...state, clientReview: { ...state.clientReview, making: false, preview } },
     );
   });
 
@@ -1233,7 +1240,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     if (event.type !== "widget.updated" || event.widget.type !== KIN_SOCIAL_WEEK_CARD)
       return Effect.void;
     const card = Cards.readWeek(event.widget.state);
-    const making = Option.isSome(card) && card.value.client?.making === true;
+    const making = Option.isSome(card) && card.value.clientReview?.making === true;
     return making
       ? makePreview(event.orgId, event.widget.widgetId).pipe(
           sql.withTransaction,

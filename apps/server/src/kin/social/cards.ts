@@ -137,7 +137,7 @@ const weekState = Effect.fn("KinSocialCards.weekState")(function* (
     posts,
     digest: previous.confirmedAt !== null || proposed.length === 0 ? null : digestOf(proposed),
     confirmedAt: previous.confirmedAt,
-    client: previous.client,
+    clientReview: previous.clientReview,
     replaced: previous.replaced,
   } satisfies KinSocialWeekCard;
 });
@@ -225,7 +225,7 @@ export const writeWeekCard = Effect.fn("KinSocialCards.writeWeek")(function* (in
     group: { kind: input.group.partyId === null ? "own" : "client", label: input.group.label },
     title: input.title,
     confirmedAt: null,
-    client:
+    clientReview:
       input.group.partyId === null
         ? null
         : { ok: false, notedAt: null, preview: null, making: false },
@@ -341,6 +341,10 @@ export const applyWeekTap = Effect.fn("KinSocialCards.applyWeek")(function* (
     }
     case "confirm": {
       if (card.confirmedAt !== null) return yield* invalid("These posts are already confirmed.");
+      if (card.clientReview !== null && !card.clientReview.ok)
+        return yield* invalid(
+          `Turn on "${card.group.label} said OK" first: a client's posts go out only with their OK.`,
+        );
       const proposed = (yield* postsOfCard(orgId, widget.widgetId)).filter(
         (post) => post.state === "proposed",
       );
@@ -394,14 +398,14 @@ export const applyWeekTap = Effect.fn("KinSocialCards.applyWeek")(function* (
       break;
     }
     case "client_ok": {
-      if (card.client === null) return yield* invalid("This card is for our own accounts.");
+      if (card.clientReview === null) return yield* invalid("This card is for our own accounts.");
       const ok = tap.value === true;
-      next = { ...card, client: { ...card.client, ok, notedAt: ok ? iso(now) : null } };
+      next = { ...card, clientReview: { ...card.clientReview, ok, notedAt: ok ? iso(now) : null } };
       break;
     }
     case "preview": {
-      if (card.client === null) return yield* invalid("This card is for our own accounts.");
-      next = { ...card, client: { ...card.client, making: true } };
+      if (card.clientReview === null) return yield* invalid("This card is for our own accounts.");
+      next = { ...card, clientReview: { ...card.clientReview, making: true } };
       break;
     }
   }
