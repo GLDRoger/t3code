@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ServerSettings } from "@t3tools/contracts";
+import { ProviderInstanceId, ServerSettings } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import { nonClaudeLeadModel } from "./leadModels.ts";
@@ -14,8 +14,8 @@ const settings = Schema.decodeSync(ServerSettings)({
   },
 });
 const on = (instanceId: string) => ({
-  strong: { instanceId, model: "m" },
-  cheap: { instanceId: "claudeAgent", model: "m" },
+  strong: { instanceId: ProviderInstanceId.make(instanceId), model: "m" },
+  cheap: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "m" },
 });
 
 describe("nonClaudeLeadModel", () => {

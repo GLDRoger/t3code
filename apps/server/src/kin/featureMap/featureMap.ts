@@ -24,8 +24,8 @@ export interface Feature {
   readonly id: string;
   readonly name: string;
   readonly tab: string;
-  readonly web?: ReadonlyArray<string>;
-  readonly phone?: ReadonlyArray<string>;
+  readonly web?: ReadonlyArray<string> | undefined;
+  readonly phone?: ReadonlyArray<string> | undefined;
   readonly roles: Record<Role, Reach>;
   readonly note?: string;
   readonly tools?: ReadonlyArray<string>;
