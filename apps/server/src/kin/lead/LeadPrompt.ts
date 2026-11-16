@@ -1165,6 +1165,8 @@ export class KinLeadPrompt extends Context.Service<
 
         // The instructions travel in the session's system prompt (LeadIsolation); memory changes per head.
         // Every part is the owner's unless marked `shared`; a shared prompt keeps only those.
+        // A Team-room turn says what it asks in its own quote; group-chat lines would contradict it.
+        const inTeamRoom = laneChat?.teamId === KIN_TEAM_ROOM_TEAM_ID;
         const header: ReadonlyArray<Part> = [
           sharedPart(`Agent name: ${encoded(leadName, true)}`),
           ...(intro === undefined || intro.text.trim() === ""
@@ -1196,8 +1198,12 @@ export class KinLeadPrompt extends Context.Service<
                 ),
                 ...(room === undefined || laneChat === undefined
                   ? []
-                  : [sharedPart(groupLine(room, agentId, laneChat.leadAgentId ?? null))]),
-                ...(input.lane.mode === "reply" || replyDue
+                  : [
+                      sharedPart(
+                        groupLine(room, agentId, laneChat.leadAgentId ?? null, inTeamRoom),
+                      ),
+                    ]),
+                ...(input.lane.mode === "reply" || replyDue || inTeamRoom
                   ? []
                   : [
                       sharedPart(
@@ -1205,7 +1211,7 @@ export class KinLeadPrompt extends Context.Service<
                       ),
                     ]),
               ]),
-          ...(speaking === undefined ? [] : [sharedPart(speaking)]),
+          ...(speaking === undefined || inTeamRoom ? [] : [sharedPart(speaking)]),
           sharedPart(
             `Owner time: ${ownerClock(now, timeZone)}${
               timeZone === undefined
@@ -1713,6 +1719,7 @@ function groupLine(
   room: ReadonlyArray<{ readonly member: KinChatMember; readonly name: string }>,
   self: KinAgentId,
   leadAgentId: KinAgentId | null,
+  teamRoom = false,
 ): string {
   const here = room.filter(({ member }) => member.leftAt === null);
   // A group made before leads were chosen follows the lead who joined first.
@@ -1727,9 +1734,13 @@ function groupLine(
   const more = here.length - named.length;
   return [
     `In this group: ${named.join(", ")}${more > 0 ? `, and ${more} more` : ""}. Everyone in it reads your reply.`,
-    lead === self
-      ? "You are this group's default agent: you answer a message that names nobody, and one that names you."
-      : "You answer here only when a message names you.",
+    ...(teamRoom
+      ? []
+      : [
+          lead === self
+            ? "You are this group's default agent: you answer a message that names nobody, and one that names you."
+            : "You answer here only when a message names you.",
+        ]),
   ].join("\n");
 }
 /** The most of a message body a lead is shown; past it the prompt cuts the text. */
