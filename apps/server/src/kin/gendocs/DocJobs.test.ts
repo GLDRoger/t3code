@@ -1639,11 +1639,26 @@ describe("receipts", () => {
         // Cancel ends a proposal.
         yield* answerCard(`kin-receipt:${more.proposal}`, "no");
         assert.match((yield* Effect.flip(call({ proposal: more.proposal }))).message, /said no/);
+        // A second card for the same money, worded differently, waits beside the first.
+        const twin = yield* proposed({ ...ask, towards: "the redesign's advance" });
         // The owner's tap records exactly what its card showed, once; the agent reads it after.
         yield* answerCard(`kin-receipt:${advance.proposal}`, "yes");
         assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
         const twice = yield* Effect.flip(answerCard(`kin-receipt:${advance.proposal}`, "yes"));
         assert.include(twice.message, "already answered");
+        // The twin's Confirm records nothing: the same advance is on the books since it was drawn.
+        const dup = yield* Effect.flip(answerCard(`kin-receipt:${twin.proposal}`, "yes"));
+        assert.match(dup.message, /figures changed since this card was made/);
+        assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
+        // A card drawn now says so, so a real second payment is confirmed knowingly.
+        const knowing = yield* proposed({ ...ask, reference: "second transfer" });
+        const [knowingCard] = yield* sql<{ state: string }>`SELECT state_json AS state
+          FROM kin_widgets WHERE widget_id = ${`choice:card-kin-receipt:${knowing.proposal}`}`;
+        assert.include(
+          String(JSON.parse(knowingCard!.state).detail),
+          "Already recorded: ₹500.00 from Invented Acme on Thu, 5 Nov 2026",
+        );
+        yield* answerCard(`kin-receipt:${knowing.proposal}`, "no");
         const made = yield* call({ proposal: advance.proposal });
         const again = yield* call({ proposal: advance.proposal });
         assert.deepStrictEqual(
@@ -1681,6 +1696,20 @@ describe("receipts", () => {
         const stale = yield* Effect.flip(answerCard(`kin-receipt:${entry.proposal}`, "yes"));
         assert.match(stale.message, /figures changed since this card was made/);
         assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
+        // Set against an invoice, the card shows what that invoice has already received.
+        yield* records.pay(orgId, { actor: { _tag: "system" }, via: "import" }, "INV-1", {
+          amount: { minor: 400_00, currency: "INR" },
+          paidOn: "2026-11-01",
+          originKey: "test:part-paid",
+        });
+        const towardsInvoice = yield* proposed({ ...ask, against: KinRecordKey.make("INV-1") });
+        const [againstCard] = yield* sql<{ state: string }>`SELECT state_json AS state
+          FROM kin_widgets WHERE widget_id = ${`choice:card-kin-receipt:${towardsInvoice.proposal}`}`;
+        assert.include(
+          String(JSON.parse(againstCard!.state).detail),
+          "Already received on it: ₹400.00 of ₹1,000.01",
+        );
+        yield* answerCard(`kin-receipt:${towardsInvoice.proposal}`, "no");
       }).pipe(Effect.provide(layer)),
   );
 

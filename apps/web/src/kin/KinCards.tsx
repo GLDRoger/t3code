@@ -8,6 +8,7 @@ import {
   type KinTaskTone,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
+  kinAddressPieces,
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
   kinChoiceAnswered,
@@ -52,7 +53,7 @@ import {
   MenuRadioItem,
   MenuTrigger,
 } from "../components/ui/menu";
-import { memo, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useRef, useState, type ReactNode } from "react";
 
 import { useAssetUrls } from "../assets/assetUrls";
 import { AttachmentImage } from "../components/media/AttachmentImage";
@@ -456,6 +457,21 @@ function KinChoiceCard(props: {
 }
 
 /** Exactly what a send card sends: who, the subject, the whole body and each file. */
+/** An address line that may wrap after "@" or a dot (`kinAddressPieces`), never mid-word. */
+function AddressPieces(props: { readonly value: string }) {
+  let at = 0;
+  return kinAddressPieces(props.value).map((piece) => {
+    const start = at;
+    at += piece.length;
+    return (
+      <Fragment key={start}>
+        {start === 0 ? null : <wbr />}
+        {piece}
+      </Fragment>
+    );
+  });
+}
+
 function KinSendDetail(props: {
   readonly send: NonNullable<KinChoiceCardView["send"]>;
   /** Set while the owner may still switch From. */
@@ -488,7 +504,9 @@ function KinSendDetail(props: {
           <div key={line.label} className="contents">
             <dt className="text-muted-foreground">{line.label}</dt>
             <dd className="flex min-w-0 items-start justify-between gap-2">
-              <span className="min-w-0 break-words text-foreground">{line.value}</span>
+              <span className="min-w-0 break-words text-foreground">
+                <AddressPieces value={line.value} />
+              </span>
               {line.label === "From" && pickFrom !== null ? (
                 <Menu>
                   <MenuTrigger

@@ -16,6 +16,7 @@ import {
   KinPersonId,
   KIN_STATEMENT_CARD_ROWS,
   KinStatementReviewCard,
+  KinChoiceCardState,
   type KinEvent,
   type KinStatementSelectChange,
   ProviderInstanceId,
@@ -71,6 +72,7 @@ import { queueTap, tellLead } from "./statementWake.ts";
 
 // An invented company, Lakeview Studio, with invented clients, invoices and statements.
 // The ids Kin's identity bootstraps, so the server's own layer below knows this owner too.
+const isChoiceCard = Schema.is(KinChoiceCardState);
 const orgId = KinOrgId.make("kin-default");
 const ownerId = KinPersonId.make("kin-default-owner");
 const lead = KinAgentId.make("lead");
@@ -2129,6 +2131,8 @@ describe("bank statement safety", () => {
         const [card] = yield* currencyCard(asked.statement);
         const options = JSON.parse(card!.state).options.map((one: { label: string }) => one.label);
         assert.strictEqual(options[0], first, heading);
+        // The card is one the phone and web can draw: every choice it offers decodes.
+        assert.isTrue(isChoiceCard(JSON.parse(card!.state)), heading);
         const review = (yield* reviewCardOf(asked.statement)).card;
         assert.include(review.summary[0], "doesn't say which currency");
         const blocked = yield* Effect.flip(

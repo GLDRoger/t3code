@@ -21,6 +21,7 @@ import {
   KinMessagesSendInput,
   KinWidgetsActInput,
   KinChoiceCardState,
+  type KinChoiceOutcome,
   type KinSendCard,
   KinAgentIntent,
   type KinAuthor,
@@ -139,7 +140,10 @@ export type ChoiceAnswerHandler = (input: {
   readonly option: { readonly label: string; readonly kind?: "yes" | "no" | undefined };
   readonly via: "tap" | "reaction";
   readonly now: number;
-}) => Effect.Effect<void, Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError>;
+}) => Effect.Effect<
+  KinChoiceOutcome | undefined,
+  Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
+>;
 type WaitingInput = Pick<
   KinWaitingItem,
   "chatId" | "personId" | "messageId" | "widgetId" | "reason"
@@ -945,32 +949,38 @@ const make = Effect.gen(function* () {
             emoji: reaction?.emoji ?? null,
           });
     // A profile change a lead asked for lands only here, from the owner's own answer on its card.
-    if (choice !== null)
-      yield* answerChange({
-        orgId: identity.orgId,
-        widgetId: widget.widgetId,
-        personId: identity.personId,
-        confirmed: choice.option.kind === "yes",
-        via: reaction === null ? "tap" : "reaction",
-        now: yield* Clock.currentTimeMillis,
-      }).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-        Effect.provideService(KinRefreshObserver, refresh),
-        Effect.mapError(cardTapError),
-      );
-    if (choice !== null && onChoice !== undefined)
-      yield* onChoice({
-        orgId: identity.orgId,
-        widget,
-        personId: identity.personId,
-        option: choice.option,
-        via: reaction === null ? "tap" : "reaction",
-        now: yield* Clock.currentTimeMillis,
-      }).pipe(
-        Effect.mapError((cause) =>
-          SqlError.isSqlError(cause) || Schema.isSchemaError(cause) ? cardTapError(cause) : cause,
-        ),
-      );
+    const changed =
+      choice === null
+        ? undefined
+        : yield* answerChange({
+            orgId: identity.orgId,
+            widgetId: widget.widgetId,
+            personId: identity.personId,
+            confirmed: choice.option.kind === "yes",
+            via: reaction === null ? "tap" : "reaction",
+            now: yield* Clock.currentTimeMillis,
+          }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.provideService(KinRefreshObserver, refresh),
+            Effect.mapError(cardTapError),
+          );
+    const handled =
+      choice === null || onChoice === undefined
+        ? undefined
+        : yield* onChoice({
+            orgId: identity.orgId,
+            widget,
+            personId: identity.personId,
+            option: choice.option,
+            via: reaction === null ? "tap" : "reaction",
+            now: yield* Clock.currentTimeMillis,
+          }).pipe(
+            Effect.mapError((cause) =>
+              SqlError.isSqlError(cause) || Schema.isSchemaError(cause)
+                ? cardTapError(cause)
+                : cause,
+            ),
+          );
     const message = yield* post(identity, member, {
       chatId: widget.chatId,
       kind: "widget_action",
@@ -988,7 +998,10 @@ const make = Effect.gen(function* () {
       const answered = yield* repo.updateWidget({
         ...widget,
         audience: "chat",
-        state: answer,
+        state: {
+          ...answer,
+          ...((changed ?? handled) === undefined ? {} : { outcome: changed ?? handled }),
+        },
         awaiting: [],
         expectedRevision: widget.revision,
         updatedAt: yield* now,

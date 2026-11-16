@@ -719,9 +719,8 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
     const refused = tooLongForCard(lines.join("\n"));
     if (refused !== undefined) return yield* refused;
     if (lines.length > 0) {
-      const sql = yield* SqlClient.SqlClient;
-      const [chat] = yield* sql<{ chatId: string }>`SELECT owner_chat_id AS "chatId" FROM kin_leads
-        WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`;
+      // Asked where the turn was asked: a co-owner's turn can't post in the owner's own chat.
+      const chat = yield* turnChat(lead);
       if (chat === undefined) return yield* invalid("There is no owner chat to confirm this in.");
       const changeId = `pc_${retryKey(`${lead.orgId}|${lead.agentId}|${lead.wakeupId}|${rev}|${stableStringify(patch)}`)}`;
       yield* proposeChange({
@@ -764,7 +763,7 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
       ? {}
       : {
           proposed: [...proposed],
-          next: "Nothing has changed yet. Kin showed the owner this change on a card; it applies when they tap Confirm. Say so in one line.",
+          next: "Nothing has changed yet. Kin showed this change on a card in this chat; it applies when they tap Confirm. Say so in one line.",
         }),
     sensitive: true as const,
   };
