@@ -61,6 +61,8 @@ import { isChatOnlySession } from "../environments/primary";
 import { useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
 import type { ThemePreferenceMode } from "../themePalette";
+import { KinAgentDefaultsSetting } from "./KinAgentsSetting";
+import { withKinAgentPage } from "./kinPlaces";
 import { KinCheckInsSetting } from "./KinCheckIns";
 import { kinClient } from "./kinClient";
 import { KinCompanyProfileSettings } from "./KinCompanyProfile";
@@ -427,8 +429,9 @@ function KinSettingsAgents(props: KinSettingsTarget) {
           {agents.map((agent) => (
             <li key={agent.agentId}>
               <Link
-                to="/kin/$environmentId/$orgId/$chatId"
-                params={{ environmentId, orgId, chatId: agent.ownerChatId }}
+                // Over the Kin page under Settings, which closes as the agent's page opens.
+                to="."
+                search={(prev) => withKinAgentPage(prev, agent.agentId)}
                 className="flex items-center gap-3 px-3 py-2.5 outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
               >
                 <SparklesIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
@@ -446,9 +449,8 @@ function KinSettingsAgents(props: KinSettingsTarget) {
           ))}
         </ul>
       )}
-      <p className="text-xs text-muted-foreground">
-        Open an agent to talk to it; its chat shows what it&apos;s for and who can message it.
-      </p>
+      <p className="text-xs text-muted-foreground">Open an agent to see its page.</p>
+      <KinAgentDefaultsSetting {...props} />
     </div>
   );
 }

@@ -21,6 +21,7 @@ import { KinGroupFormScreen } from "./KinGroupFormScreen";
 import { KinPeoplePickScreen } from "./KinPeoplePickScreen";
 import { KinGroupScreen } from "./KinGroupScreen";
 import { KinLeadFormScreen } from "./KinLeadFormScreen";
+import { KinAgentCharacterScreen } from "./KinAgentCharacterScreen";
 import { KinListSettingsScreen, KinPaymentScreen } from "./KinListEntry";
 import { KinEntryEditScreen } from "./KinListEntryEdit";
 import { KinDatesScreen, KinListScreen } from "./KinListScreen";
@@ -29,6 +30,7 @@ import { KinMemoryScreen } from "./KinMemoryScreen";
 import { KinRatesScreen } from "./KinMoneyEstimate";
 import { KinSubscriptionsScreen } from "./KinSubscriptions";
 import { KinProjectLeadScreen } from "./KinProjectLeadScreen";
+import { KinProjectPeopleScreen } from "./KinProjectPeopleScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
 import { KinSettingsScreen } from "./KinSettings";
 import { KinCheckInFormScreen } from "./KinCheckIns";
@@ -244,6 +246,10 @@ export const KIN_SCREENS = {
     screen: KinProjectLeadScreen,
     options: sheetRoute({ detent: 0.75 }),
   }),
+  KinProjectPeople: createNativeStackScreen({
+    screen: KinProjectPeopleScreen,
+    options: sheetRoute({ detent: 0.75 }),
+  }),
   KinTeammate: createNativeStackScreen({
     screen: KinTeammateScreen,
     options: sheetRoute({ detent: 0.75 }),
@@ -288,6 +294,11 @@ export const KIN_SCREENS = {
   // A full sheet, so the keyboard never covers the field being typed in.
   KinLeadForm: createNativeStackScreen({
     screen: KinLeadFormScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  // A full sheet, so the keyboard never covers the character being written.
+  KinAgentCharacter: createNativeStackScreen({
+    screen: KinAgentCharacterScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinGroup: createNativeStackScreen({

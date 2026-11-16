@@ -1,9 +1,17 @@
 // @effect-diagnostics globalDate:off - Fixtures build times relative to a fixed clock.
 import { describe, expect, it } from "vite-plus/test";
 
-import { KinPersonId, KinRecordId, KinRecordKey, type KinPartyRow } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinOrgId,
+  KinPersonId,
+  KinRecordId,
+  KinRecordKey,
+  type KinPartyRow,
+} from "@t3tools/contracts";
 
 import {
+  kinProjectPeopleChoices,
   kinNewTaskChoices,
   kinClientContactLine,
   kinClientRow,
@@ -78,6 +86,37 @@ describe("kinClientRow", () => {
     );
     // A teammate's row comes without counts, so its zeros aren't "Nothing open".
     expect(kinClientRow(row, names, now).line).toBe("");
+  });
+});
+
+describe("kinProjectPeopleChoices", () => {
+  const person = (id: string, displayName: string) => ({
+    personId: KinPersonId.make(id),
+    orgId: KinOrgId.make("invented-org"),
+    handle: id,
+    displayName,
+    githubLogin: null,
+  });
+  it("offers teammates then agents at work, never one already on it or retired", () => {
+    const finance = KinAgentId.make("finance");
+    const chief = KinAgentId.make("chief");
+    const old = KinAgentId.make("old");
+    const choices = kinProjectPeopleChoices({
+      people: [person("zoya", "Zoya"), person("arjun", "Arjun"), person("dev", "Dev")],
+      names: {
+        agents: new Map([
+          [finance, "Finance"],
+          [chief, "Chief of staff"],
+          [old, "Old helper"],
+        ]),
+        retired: new Set([old]),
+      },
+      on: [
+        { _tag: "person", personId: KinPersonId.make("zoya") },
+        { _tag: "agent", agentId: finance },
+      ],
+    });
+    expect(choices.map((one) => one.name)).toEqual(["Arjun", "Dev", "Chief of staff"]);
   });
 });
 

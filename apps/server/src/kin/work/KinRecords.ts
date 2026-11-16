@@ -974,7 +974,7 @@ const make = Effect.gen(function* () {
         created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
         closed_at, party_id, project_id, repo, fields_json, amount_minor, currency, date_at,
         date_all_day, repeat_json, request_hash, team_shared, title_by, notes_by,
-        assigned_by_agent_id)
+        assigned_by_agent_id, marked_by_person_id)
       VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
         ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
         ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
@@ -992,7 +992,8 @@ const make = Effect.gen(function* () {
         ${input.team === true || writer.teammate === true || writer.teamShared === true || (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list)) ? 1 : 0},
         ${options.authors === undefined ? author : options.authors.title},
         ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes},
-        ${givenAway && writer.actor._tag === "agent" ? writer.actor.agentId : null})`;
+        ${givenAway && writer.actor._tag === "agent" ? writer.actor.agentId : null},
+        ${input.sensitive === true ? textBy(writer) : null})`;
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
@@ -1496,6 +1497,7 @@ const make = Effect.gen(function* () {
         if (patch.sensitive === true && row.sensitive === 0) {
           changes.push({ field: "sensitive", from: "false", to: "true" });
           set("sensitive", 1);
+          set("marked_by_person_id", textBy(writer));
         } else if (
           patch.sensitive === false &&
           row.sensitive === 1 &&
@@ -1503,6 +1505,7 @@ const make = Effect.gen(function* () {
         ) {
           changes.push({ field: "sensitive", from: "true", to: "false" });
           set("sensitive", 0);
+          set("marked_by_person_id", null);
         }
         if (patch.team !== undefined && (patch.team ? 1 : 0) !== row.teamShared) {
           changes.push({ field: "team", from: shown(row.teamShared === 1), to: shown(patch.team) });

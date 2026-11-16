@@ -16,6 +16,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinRecordId,
+  type KinWorkPrincipal,
   type MemoryItemHead,
   ProviderInstanceId,
   ThreadId,
@@ -478,12 +479,14 @@ it.effect(
         "kin.work.assign",
         "kin.work.handBack",
         "kin.work.update",
+        // Its lead too; the service refuses anyone else (`teamGuard`).
+        "kin.work.projectPeople",
       ]);
       const methods = [
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 39);
+      assert.lengthOf(methods, 40);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),
@@ -2498,6 +2501,31 @@ it.effect(
         coming!,
         /^Lead lead added you to the meeting W-\d+ Invented review .+ on Thu 19 Nov \d\d:\d\d\.$/u,
       );
+      // Put on a project from the app, or made its lead, they are told once, with its key.
+      const portal = yield* OwnerClients.createProject([owner], {
+        orgId,
+        name: "Invented portal",
+        clientRequestId: "portal",
+      });
+      const added = yield* OwnerClients.projectPeople([owner], {
+        orgId,
+        key: portal.key,
+        add: [mateHolds],
+      });
+      yield* OwnerClients.projectPeople([owner], { orgId, key: portal.key, add: [mateHolds] });
+      yield* OwnerClients.updateProject([owner], {
+        orgId,
+        key: portal.key,
+        rev: added.rev,
+        owner: mateHolds,
+      });
+      assert.deepStrictEqual(
+        (yield* notices).slice(-2).map((row) => row.body),
+        [
+          `Owner added you to ${portal.key} Invented portal.`,
+          `Owner made you the lead of ${portal.key} Invented portal.`,
+        ],
+      );
     }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );
 
@@ -2576,9 +2604,8 @@ it.effect(
       })).row;
       assert.notInclude(keysOf(yield* OwnerWork.list([mate], { orgId })), plan.key);
       const byProject = OwnerWork.list([mate], { orgId, project: project.key });
-      yield* records.update(orgId, ownerWrites, project.key, {
-        fields: { members: [`person:${mateId}`] },
-      });
+      const mateHolds = { _tag: "person" as const, personId: mateId };
+      yield* OwnerClients.projectPeople([owner], { orgId, key: project.key, add: [mateHolds] });
       assert.include(keysOf(yield* OwnerWork.list([mate], { orgId })), plan.key);
       // Its page lists them too, as the member sees them: the private one stays out.
       const onPage = keysOf(yield* byProject);
@@ -2587,6 +2614,63 @@ it.effect(
       assert.isTrue(
         (yield* teamVisible(orgId, mateId, [milestone.recordId])).has(milestone.recordId),
       );
+      // A member changes nobody's place on a project they don't lead, their own included; one
+      // they can't see answers as no project at all.
+      const portal = (yield* records.create(orgId, ownerWrites, {
+        list: "projects",
+        originKey: "portal",
+        title: "Invented portal",
+        owner: ownerHolds,
+      })).row;
+      const people = (
+        key: string,
+        change: { add?: ReadonlyArray<KinWorkPrincipal>; remove?: ReadonlyArray<KinWorkPrincipal> },
+      ) => OwnerClients.projectPeople([mate], { orgId, key, ...change });
+      assert.include(yield* Effect.flip(people(portal.key, { add: [mateHolds] })), {
+        reason: "not_found",
+      });
+      yield* OwnerClients.projectPeople([owner], { orgId, key: portal.key, add: [mateHolds] });
+      const agentOn = { _tag: "agent" as const, agentId: lead };
+      for (const change of [{ remove: [mateHolds] }, { add: [agentOn] }])
+        assert.include(yield* Effect.flip(people(portal.key, change)), { reason: "not_allowed" });
+      // Its lead puts people and agents on it and takes them off.
+      yield* records.update(orgId, ownerWrites, portal.key, { owner: mateHolds });
+      assert.deepStrictEqual((yield* people(portal.key, { add: [agentOn] })).members, [
+        mateHolds,
+        agentOn,
+      ]);
+      assert.deepStrictEqual((yield* people(portal.key, { remove: [agentOn] })).members, [
+        mateHolds,
+      ]);
+      // The lead marks a task of theirs "Only me": they keep it, and take the mark off again.
+      const draft = yield* ownerTask("portal copy", { projectId: portal.recordId });
+      const marked = yield* OwnerWork.update([mate], {
+        orgId,
+        key: draft.key,
+        rev: draft.rev,
+        sensitive: true,
+      });
+      assert.deepInclude(marked, { sensitive: true, markedBy: mateId });
+      assert.isTrue(marked.can?.unmark);
+      assert.include(keysOf(yield* OwnerWork.list([mate], { orgId })), draft.key);
+      assert.isFalse(
+        (yield* OwnerWork.update([mate], {
+          orgId,
+          key: draft.key,
+          rev: marked.rev,
+          sensitive: false,
+        })).sensitive,
+      );
+      // One the owner marked stays his to unmark.
+      assert.include(
+        yield* Effect.flip(
+          OwnerWork.update([mate], { orgId, key: ownersOwn.key, rev: 99, sensitive: false }),
+        ),
+        { reason: "not_found" },
+      );
+      // Taken off a project, its tasks leave their view at once.
+      yield* OwnerClients.projectPeople([owner], { orgId, key: project.key, remove: [mateHolds] });
+      assert.notInclude(keysOf(yield* OwnerWork.list([mate], { orgId })), plan.key);
     }).pipe(Effect.provide(layer)),
 );
 

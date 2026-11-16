@@ -4,11 +4,16 @@ import {
   EnvironmentId,
   KinAgentId,
   KinOrgId,
+  type KinAgentDefaults,
   type KinLeadProfile,
   type ModelSelection,
 } from "@t3tools/contracts";
 import {
-  KIN_AGENT_DRIVER,
+  KIN_AGENT_PAGE,
+  kinAgentWriteCharacterStarter,
+} from "@t3tools/client-runtime/kin/kinAgentPage";
+import {
+  kinDomainLabel,
   KIN_CHIEF_OF_STAFF,
   KIN_LEAD_CHARTER_MAX,
   KIN_LEAD_MODELS,
@@ -24,9 +29,9 @@ import {
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useRef, useState, type ComponentProps, type ReactNode } from "react";
-import { Pressable, TextInput, View } from "react-native";
+import { TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
@@ -34,15 +39,15 @@ import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
-import { SymbolView } from "../../components/ui/AppSymbol";
 import { ListSection } from "../../components/ui/ListSection";
-import { Menu } from "../../components/ui/Menu";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
-import { buildModelOptions, type ModelOption } from "../../lib/modelOptions";
-import { useEnvironmentServerConfig } from "../../state/entities";
+import { setComposerDraftText } from "../../state/use-composer-drafts";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient, refreshKinAgents } from "./state/kinClient";
+import { KinAgentModelRow, useKinAgentModelOptions } from "./KinAgentModelRow";
+import { kinDraftKey } from "./components/KinComposer";
 
 export type KinLeadFormParams = {
   readonly environmentId: string;
@@ -58,6 +63,10 @@ const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 const decodeAgentId = Schema.decodeUnknownOption(KinAgentId);
 
 const NEW_LEAD: KinLeadDraft = { name: "", area: "", charter: "", intro: "" };
+// An edit reads no defaults.
+const noDefaultsAtom: Atom.Atom<AsyncResult.AsyncResult<KinAgentDefaults, unknown>> = Atom.make(
+  AsyncResult.initial(),
+);
 
 /** Makes a lead, or changes one's name, area and what it is for. */
 export function KinLeadFormScreen({ route }: StaticScreenProps<KinLeadFormParams>) {
@@ -184,17 +193,25 @@ function LeadForm(props: {
     (noModels ||
       (AsyncResult.isSuccess(leads) &&
         leads.value.leads.every((held) => held.retired !== undefined)));
-  const config = useEnvironmentServerConfig(environmentId);
-  const modelOptions = buildModelOptions(config, null, undefined, null).filter(
-    (option) =>
-      option.providerDriver === KIN_AGENT_DRIVER && !option.isUnavailable && !option.isHidden,
+  const modelOptions = useKinAgentModelOptions(environmentId);
+  const defaults = Option.getOrNull(
+    AsyncResult.value(
+      useAtomValue(
+        creating ? kinClient.agentDefaults({ environmentId, input: { orgId } }) : noDefaultsAtom,
+      ),
+    ),
   );
   const [pickedModels, setPickedModels] = useState<{
     readonly strong: ModelSelection;
     readonly cheap: ModelSelection;
   } | null>(null);
   const models =
-    pickedModels ?? kinLeadStartingModels(modelOptions.map((option) => option.selection));
+    pickedModels ??
+    defaults?.models ??
+    kinLeadStartingModels(modelOptions.map((option) => option.selection));
+  const [character, setCharacter] = useState("");
+  const [writeForMe, setWriteForMe] = useState(false);
+  const setCharacterBody = useAtomCommand(kinClient.characterSet, { reportFailure: false });
   const dirty =
     draft.name !== initial.name ||
     draft.area !== initial.area ||
@@ -274,9 +291,15 @@ function LeadForm(props: {
         domain,
         charter,
         ...(intro === "" ? undefined : { intro }),
-        ...(firstAgent && models !== null ? { models } : undefined),
+        ...((firstAgent || pickedModels !== null) && models !== null ? { models } : undefined),
       },
     });
+    // The host gives every new agent a starter character; the owner's own replaces it.
+    if (AsyncResult.isSuccess(result) && character.trim() !== "")
+      await setCharacterBody({
+        environmentId,
+        input: { orgId, agentId: result.value.agentId, body: character.trim() },
+      });
     setSaving(false);
     if (!AsyncResult.isSuccess(result)) {
       const cause = AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null;
@@ -290,11 +313,18 @@ function LeadForm(props: {
     saved.current = true;
     refreshLeads();
     navigation.goBack();
-    navigation.navigate("KinChat", {
-      environmentId,
-      orgId,
-      chatId: result.value.ownerChatId,
-    });
+    const chief = AsyncResult.isSuccess(leads)
+      ? leads.value.leads.find(
+          (held) => held.domain === "chief-of-staff" && held.retired === undefined,
+        )
+      : undefined;
+    const chatId = writeForMe && chief !== undefined ? chief.ownerChatId : result.value.ownerChatId;
+    if (writeForMe && chief !== undefined)
+      setComposerDraftText(
+        kinDraftKey(environmentId, orgId, chatId),
+        kinAgentWriteCharacterStarter(name, kinDomainLabel(domain)),
+      );
+    navigation.navigate("KinChat", { environmentId, orgId, chatId });
   };
 
   const left = KIN_LEAD_CHARTER_MAX - draft.charter.length;
@@ -369,19 +399,19 @@ function LeadForm(props: {
           }
         />
       </View>
-      {firstAgent ? (
+      {creating ? (
         <View className="gap-2">
           <ListSection title={KIN_LEAD_MODELS.title}>
             {models === null ? null : (
               <>
-                <ModelRow
+                <KinAgentModelRow
                   label={KIN_LEAD_MODELS.strong}
                   value={models.strong}
                   options={modelOptions}
                   disabled={!allowed || saving}
                   onPick={(strong) => setPickedModels({ ...models, strong })}
                 />
-                <ModelRow
+                <KinAgentModelRow
                   label={KIN_LEAD_MODELS.cheap}
                   value={models.cheap}
                   options={modelOptions}
@@ -394,7 +424,36 @@ function LeadForm(props: {
           </ListSection>
           <Note
             problem={models === null ? KIN_LEAD_MODELS.none : null}
-            hint={KIN_LEAD_MODELS.hint}
+            hint={firstAgent ? KIN_LEAD_MODELS.hint : KIN_AGENT_PAGE.modelDetail}
+          />
+        </View>
+      ) : null}
+      {creating ? (
+        <View className="gap-2">
+          <ListSection title={KIN_AGENT_PAGE.characterField}>
+            <TextInput
+              multiline
+              accessibilityLabel={KIN_AGENT_PAGE.characterField}
+              value={character}
+              editable={allowed && !saving && !writeForMe}
+              onChangeText={setCharacter}
+              placeholder={KIN_AGENT_PAGE.characterPlaceholder}
+              placeholderTextColorClassName="accent-placeholder"
+              textAlignVertical="top"
+              className="min-h-24 px-4 py-3 font-sans text-base leading-normal text-foreground"
+            />
+            <View className="border-t border-border-subtle">
+              <ListToggleRow
+                label={KIN_AGENT_PAGE.writeForMe}
+                value={writeForMe}
+                disabled={character.trim() !== ""}
+                onValueChange={setWriteForMe}
+              />
+            </View>
+          </ListSection>
+          <Note
+            problem={null}
+            hint={writeForMe ? KIN_AGENT_PAGE.writeForMeDetail : KIN_AGENT_PAGE.characterRule}
           />
         </View>
       ) : null}
@@ -469,55 +528,5 @@ function Field(props: {
         className="min-h-8 font-sans text-base text-foreground"
       />
     </View>
-  );
-}
-
-/** One of the first agent's models: a row that opens the server's Claude models as a menu. */
-function ModelRow(props: {
-  readonly label: string;
-  readonly value: ModelSelection;
-  readonly options: ReadonlyArray<ModelOption>;
-  readonly disabled: boolean;
-  readonly borderTop?: boolean;
-  readonly onPick: (selection: ModelSelection) => void;
-}) {
-  const same = (option: ModelOption) =>
-    option.selection.instanceId === props.value.instanceId &&
-    option.selection.model === props.value.model;
-  const current = props.options.find(same);
-  // Two Claude accounts list the same models; the account then tells them apart.
-  const accounts = new Set(props.options.map((option) => option.providerKey)).size > 1;
-  const name = (option: ModelOption) =>
-    accounts ? `${option.label} · ${option.providerLabel}` : option.label;
-  return (
-    <Menu
-      accessible
-      accessibilityRole="button"
-      accessibilityLabel={`${props.label}: ${current === undefined ? props.value.model : name(current)}`}
-      actions={props.options.map((option) => ({
-        id: option.key,
-        title: name(option),
-        state: same(option) ? ("on" as const) : ("off" as const),
-      }))}
-      onPressAction={({ nativeEvent }) => {
-        const picked = props.options.find((option) => option.key === nativeEvent.event);
-        if (picked !== undefined) props.onPick(picked.selection);
-      }}
-    >
-      <Pressable
-        disabled={props.disabled}
-        className={
-          props.borderTop
-            ? "flex-row items-center gap-3 border-t border-border-subtle px-4 py-3"
-            : "flex-row items-center gap-3 px-4 py-3"
-        }
-      >
-        <Text className="min-w-0 flex-1 text-base text-foreground">{props.label}</Text>
-        <Text className="shrink text-right text-base text-foreground-muted" numberOfLines={1}>
-          {current === undefined ? props.value.model : name(current)}
-        </Text>
-        <SymbolView name="chevron.down" size={13} tintColorClassName="accent-icon-muted" />
-      </Pressable>
-    </Menu>
   );
 }

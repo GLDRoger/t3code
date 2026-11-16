@@ -1316,6 +1316,12 @@ function KinChatFeed(props: {
           <KinSystemLine
             row={item}
             onRetry={retry === null || pending.length > 0 ? null : () => sendSample(retry)}
+            onOpen={(open) => {
+              const target = { environmentId: props.environmentId, orgId: props.orgId };
+              if (open.kind === "project")
+                navigation.navigate("KinProject", { ...target, project: open.key });
+              else navigation.navigate("KinWorkItem", { ...target, task: open.key });
+            }}
           />
         );
       }

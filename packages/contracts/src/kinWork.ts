@@ -186,6 +186,10 @@ export const KinRecord = Schema.Struct({
   fields: Schema.optional(Schema.Record(Schema.String, KinFieldValue)),
   /** What the reader may do to it now. */
   can: Schema.optional(KinRecordCan),
+  /** Who gave it to its holder, when that is someone else; absent from older hosts. */
+  givenBy: Schema.optional(KinWorkPrincipal),
+  /** Who marked it private ("Only me"), while it is; absent when unknown or not marked. */
+  markedBy: Schema.optional(KinPersonId),
 });
 export type KinRecord = typeof KinRecord.Type;
 
@@ -978,6 +982,8 @@ export const KinProjectPage = Schema.Struct({
   meetings: Schema.optional(Schema.Array(KinRecord)),
   specChanged: Schema.optional(Schema.Array(KinSpecChange)),
   money: Schema.optional(KinProjectMoney),
+  /** What this reader may change on it; absent from older hosts. */
+  can: Schema.optional(Schema.Struct({ people: Schema.Boolean })),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });
@@ -1024,6 +1030,8 @@ export const KinProjectsInput = Schema.Struct({
   party: Schema.optional(KinRecordKey),
   state: Schema.optional(KinProjectState),
   text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  /** Only the projects this person leads or is on. */
+  person: Schema.optional(KinPersonId),
   cursor: Schema.optional(PageCursor),
   limit: Schema.optional(PageLimit),
 });
@@ -1170,6 +1178,20 @@ export const KinProjectUpdateInput = Schema.Struct({
   state: Schema.optional(KinProjectState),
 });
 export type KinProjectUpdateInput = typeof KinProjectUpdateInput.Type;
+/** Puts people and agents on a project or takes them off: its owner, a co-owner or its lead. */
+export const KinProjectPeopleInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  add: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
+  remove: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
+});
+export type KinProjectPeopleInput = typeof KinProjectPeopleInput.Type;
+export const KinProjectPeopleResult = Schema.Struct({
+  key: KinRecordKey,
+  rev: NonNegativeInt,
+  members: Schema.Array(KinWorkPrincipal),
+});
+export type KinProjectPeopleResult = typeof KinProjectPeopleResult.Type;
 
 export const KIN_WORK_WS_METHODS = {
   summary: "kin.work.summary",
@@ -1194,6 +1216,7 @@ export const KIN_WORK_WS_METHODS = {
   updateContact: "kin.work.updateContact",
   createProject: "kin.work.createProject",
   updateProject: "kin.work.updateProject",
+  projectPeople: "kin.work.projectPeople",
   logTouch: "kin.work.logTouch",
   removeTouch: "kin.work.removeTouch",
 } as const;
@@ -1305,6 +1328,11 @@ export const KinWorkRpcs = [
     success: KinProjectDetail,
     error,
   }),
+  Rpc.make(KIN_WORK_WS_METHODS.projectPeople, {
+    payload: KinProjectPeopleInput,
+    success: KinProjectPeopleResult,
+    error,
+  }),
   Rpc.make(KIN_WORK_WS_METHODS.logTouch, {
     payload: KinTouchLogInput,
     success: KinClientTouch,
@@ -1345,6 +1373,7 @@ export const KIN_WORK_RPC_SCOPES = {
   [KIN_WORK_WS_METHODS.updateContact]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.createProject]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.updateProject]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.projectPeople]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.logTouch]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.removeTouch]: AuthKinChatScope,
 } as const;

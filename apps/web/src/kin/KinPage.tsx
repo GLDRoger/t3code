@@ -5,6 +5,7 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
+import { KinAgentPageHost } from "./KinAgentPage";
 import { KinChatList } from "./KinChatList";
 import { KinGroupDialogHost } from "./KinGroupDialog";
 import { KinLeadDialogHost } from "./KinLeadDialog";
@@ -28,6 +29,7 @@ export function KinPage() {
       <Outlet />
       <KinDockHost />
       <KinLeadDialogHost />
+      <KinAgentPageHost />
       <KinGroupDialogHost />
       <KinPicturesHost />
       <KinProfileSheetHost />

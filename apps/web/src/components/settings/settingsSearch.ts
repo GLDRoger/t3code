@@ -1261,6 +1261,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["kin timezone zone check-ins due dates hours clock"],
   },
   {
+    id: "kin-agents",
+    title: "Agents",
+    to: "/settings/company",
+    searchTerms: ["kin agents model character personality pause retire new agents default"],
+  },
+  {
     id: "kin-daily-limit",
     title: "Daily limit",
     to: "/settings/company",

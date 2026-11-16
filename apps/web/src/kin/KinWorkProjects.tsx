@@ -45,6 +45,7 @@ import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
+import { KinProjectPeopleSection } from "./KinProjectPeople";
 import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
 import {
   KinWorkHealthBadge,
@@ -424,23 +425,14 @@ function ProjectPage(
           </ul>
         </KinWorkSection>
       )}
-      {view.people.length === 0 ? null : (
-        <KinWorkSection
-          title={KIN_PROJECTS.people}
-          fold={{ summary: KIN_PROJECTS.count(view.people.length, "person", "people") }}
-        >
-          <ul className="flex flex-col gap-1">
-            {view.people.map((row) => (
-              <li key={row.key} className="flex min-w-0 items-baseline justify-between gap-3">
-                <span className="truncate text-sm text-foreground">{row.name}</span>
-                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                  {row.line}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </KinWorkSection>
-      )}
+      <KinProjectPeopleSection
+        environmentId={environmentId}
+        orgId={orgId}
+        view={view}
+        people={props.directory.people}
+        names={names}
+        onChanged={props.onRefresh}
+      />
       {view.meetings.length === 0 ? null : (
         <KinWorkSection
           title={KIN_PROJECTS.meetings}
