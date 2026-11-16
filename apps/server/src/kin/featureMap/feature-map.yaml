@@ -1,0 +1,711 @@
+# Kin's features: where each lives, how each role reaches it on web and phone, which agent tools
+# serve it, and what proves it. featureMap.test.ts holds this file to the code:
+#   - every web route and pane, phone screen and agent tool belongs to a feature (or `unlisted`);
+#   - every proof file exists (`proof: none` is allowed and counted);
+#   - paths keep the owner's rule: list → record, forms are sheets, at most three levels past
+#     where you start, never a page opened from a sheet. A path that breaks it says why.
+# Render it with `node apps/server/scripts/kin-feature-map.ts <out.md>`.
+#
+# web steps: a route (`tasks`, `chat`, `settings/check-ins`), a pane (`?client`; `?task` and
+#   `?history` open as sheets), `sheet:` or `dialog:` <title>, or inline `menu:`, `card:`,
+#   `section:`, `button:` <label>, which add no depth.
+# phone steps: `tab:<dock tab>` or a first screen, then KIN_SCREENS names, plus the same inline steps.
+# roles: owner, co_owner, lead (a member who leads a project), member; each `both`, `web`,
+#   `phone` or `none`. A role's reach follows what the host allows, not only what the client shows.
+
+features:
+  # ── Chats ──────────────────────────────────────────────────────────────────────────────────
+  - id: chat-list
+    name: Chats with agents and people
+    tab: chats
+    web: [home]
+    phone: [KinChats]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    proof: [packages/client-runtime/src/kin/kinChatListRows.test.ts]
+
+  - id: chat-agent
+    name: Talk to an agent
+    tab: chats
+    web: [home, chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [kin_chat_post, kin_chat_read, kin_react, kin_end]
+    proof:
+      - apps/server/src/kin/chat/KinChatService.test.ts
+      - apps/server/src/kin/lead/ChatWake.test.ts
+
+  - id: chat-cards
+    name: Questions, charts and visuals in a chat
+    tab: chats
+    web: [chat, card:Question]
+    phone: [tab:chats, KinChat, card:Question]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [kin_ask, kin_widget_upsert, kin_chart, kin_visual]
+    proof:
+      - apps/server/src/kin/widgets/registry.test.ts
+      - apps/server/src/kin/visualSeal.test.ts
+      - packages/client-runtime/src/kin/kinCardPresentation.test.ts
+
+  - id: waiting-on-you
+    name: Waiting on you
+    tab: chats
+    web: [home, section:Waiting on you, chat]
+    phone: [tab:chats, KinWaiting]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    proof: [packages/client-runtime/src/kin/kinInboxModel.test.ts]
+
+  - id: relay-and-hand-off
+    name: An agent carries a message between people
+    tab: chats
+    web: [chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [kin_relay, kin_hand_off, kin_take_private]
+    proof:
+      - apps/server/src/kin/lead/Handoff.test.ts
+      - apps/server/src/kin/contract/relay.kin-contract.test.ts
+      - .agents/skills/verify-kin/scripts/relay-owner-to-member.sh
+      - .agents/skills/verify-kin/scripts/member-request-to-owner.sh
+
+  - id: coding-workers
+    name: An agent starts coding workers and follows up
+    tab: chats
+    web: [chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: Through the agent; what a worker may touch follows the asker's access.
+    tools: [kin_delegate, kin_follow_up, kin_worker_stop]
+    proof:
+      - apps/server/src/kin/lead/Workers.test.ts
+      - apps/server/src/kin/contract/delegateTask.kin-contract.test.ts
+
+  - id: github
+    name: GitHub repos, pull requests, runs and reviews
+    tab: chats
+    web: [chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: Through the agent, on repos linked to a project.
+    tools:
+      [
+        kin_github_repos,
+        kin_github_prs,
+        kin_github_pr,
+        kin_github_runs,
+        kin_github_review,
+        kin_github_link,
+      ]
+    proof:
+      - apps/server/src/kin/github/KinRepoReads.test.ts
+      - apps/server/src/kin/github/PullRequestCare.test.ts
+
+  - id: come-back-later
+    name: An agent comes back later or on a schedule
+    tab: chats
+    web: [chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [kin_defer, kin_schedule, kin_cancel]
+    proof:
+      - apps/server/src/kin/triggers/deferrals.test.ts
+      - apps/server/src/kin/triggers/KinTriggerScheduler.test.ts
+      - apps/server/src/kin/contract/scheduledTask.kin-contract.test.ts
+
+  - id: approvals
+    name: Approve what an agent wants to do
+    tab: chats
+    web: [chat, card:Approval]
+    phone: [tab:chats, SettingsKin, KinApprovals]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [request_action]
+    proof:
+      - apps/server/src/kin/approvals/PendingActions.test.ts
+      - apps/server/src/kin/approvals/ActionExecutor.test.ts
+      - apps/server/src/kin/chat/approvalCards.test.ts
+
+  - id: send-mail
+    name: Send or reply to mail, confirmed on a card
+    tab: chats
+    web: [chat, card:Send this email]
+    phone: [tab:chats, KinChat, card:Send this email]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: Only the owner or a co-owner confirms; one Confirm sends once.
+    tools: [kin_connection_call, kin_connection_tools, kin_connection_offer, kin_connection_note]
+    proof:
+      - apps/server/src/kin/connections/MailEndToEnd.test.ts
+      - apps/server/src/kin/connections/ConnectionsService.test.ts
+      - .agents/skills/verify-kin/scripts/send-card-once.sh
+      - .agents/skills/verify-kin/scripts/overdue-invoice-reminder.sh
+
+  - id: statements
+    name: Read a bank statement and match its rows
+    tab: chats
+    web: [chat, card:Statement]
+    phone: [tab:chats, KinChat, card:Statement]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [statement_read, statement_rows]
+    proof:
+      - apps/server/src/kin/work/statements/statements.test.ts
+      - apps/server/src/kin/work/statements/statementMatch.test.ts
+
+  - id: groups
+    name: Start a group chat
+    tab: chats
+    web: [home, menu:New, dialog:New group]
+    phone: [tab:chats, menu:New, KinGroupForm]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof:
+      - apps/server/src/kin/chat/KinGroups.test.ts
+      - packages/client-runtime/src/kin/kinGroups.test.ts
+
+  - id: group-details
+    name: A group's members and who answers
+    tab: chats
+    web: [chat, sheet:Group]
+    phone: [tab:chats, KinChat, KinGroup]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: Anyone in the group reads it; only its owner changes it.
+    proof: [apps/server/src/kin/chat/KinGroups.test.ts]
+
+  - id: agent-details
+    name: An agent's card, who may message it, retire and restore
+    tab: chats
+    web: [chat, sheet:Agent]
+    phone: [tab:chats, KinChat, KinLead]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [kin_leads]
+    proof:
+      - packages/client-runtime/src/kin/kinAgentRetire.test.ts
+      - apps/server/src/kin/lead/KinStop.test.ts
+
+  - id: agent-create
+    name: Create or edit an agent
+    tab: chats
+    web: [home, menu:New, dialog:New agent]
+    phone: [tab:chats, SettingsKin, KinAgents, KinLeadForm]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof:
+      - apps/server/src/kin/lead/KinLeadProvision.test.ts
+      - .agents/skills/verify-kin/scripts/checkin-new-agent.sh
+
+  - id: memory
+    name: What Kin remembers
+    tab: chats
+    web: [memory]
+    phone: [tab:chats, SettingsKin, KinMemory]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [memory_search, memory_read, memory_write, kin_journal, memory_label]
+    proof:
+      - apps/server/src/kin/memory/Memory.test.ts
+      - apps/server/src/kin/memory/MemoryWriter.test.ts
+
+  # ── Tasks ──────────────────────────────────────────────────────────────────────────────────
+  - id: tasks
+    name: Tasks, with what needs you first
+    tab: tasks
+    web: [tasks]
+    phone: [tab:tasks]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: A member sees what they hold, made or gave, and their projects' tasks.
+    tools: [records_query, record_get]
+    proof:
+      - packages/client-runtime/src/kin/kinWorkList.test.ts
+      - .agents/skills/verify-kin/scripts/assign-member-sees.sh
+
+  - id: pulse
+    name: Needs attention (the pulse)
+    tab: tasks
+    web: [tasks, section:Needs you]
+    phone: [tab:tasks, section:Needs you]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: Money facts reach only the owner level.
+    tools: [pulse_read, pulse_handle, pulse_nudge]
+    proof:
+      - apps/server/src/kin/pulse/KinPulse.test.ts
+      - .agents/skills/verify-kin/scripts/overdue-invoice-reminder.sh
+
+  - id: task-new
+    name: New task
+    tab: tasks
+    web: [tasks, dialog:New task]
+    phone: [tab:tasks, KinWorkNew]
+    form: true
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [record_create]
+    proof:
+      - packages/client-runtime/src/kin/kinWorkForms.test.ts
+      - .agents/skills/verify-kin/scripts/assign-member-sees.sh
+
+  - id: task
+    name: A task, its status, due date and notes
+    tab: tasks
+    web: [tasks, "?task"]
+    phone: [tab:tasks, KinWorkItem]
+    form: true
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [record_update]
+    proof:
+      - apps/server/src/kin/work/KinRecords.test.ts
+      - packages/client-runtime/src/kin/kinWork.test.ts
+
+  - id: task-assign
+    name: Give a task to someone, or take it back
+    tab: tasks
+    web: [tasks, "?task", menu:Give it to]
+    phone: [tab:tasks, KinWorkItem, KinWorkAssign]
+    form: true
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [record_assign]
+    proof:
+      - apps/server/src/kin/lead/messagesToPeople.test.ts
+      - .agents/skills/verify-kin/scripts/assign-member-sees.sh
+
+  - id: task-hand-back
+    name: Hand a task back
+    tab: tasks
+    web: [tasks, "?task", button:Hand back]
+    phone: [tab:tasks, KinWorkItem, KinWorkHandBack]
+    form: true
+    roles: { owner: none, co_owner: none, lead: both, member: both }
+    tools: [record_hand_back]
+    proof: [packages/client-runtime/src/kin/kinWork.test.ts]
+
+  - id: task-private
+    name: Only me, a private task
+    tab: tasks
+    web: [tasks, "?task", menu:Who can see this]
+    phone: [tab:tasks, KinWorkItem, menu:Who can see this]
+    form: true
+    roles: { owner: both, co_owner: both, lead: both, member: none }
+    note: A lead may mark a task private; sharing with the team is owner-level.
+    proof:
+      - apps/server/src/kin/lead/WorkIsolation.test.ts
+      - .agents/skills/verify-kin/scripts/private-task-hidden.sh
+
+  - id: work-links
+    name: Tasks, Money, Clients or Docs opened from the coding app
+    tab: tasks
+    web: [work]
+    phone: [tab:chats, KinWork]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: Web `work` is the old link, redirected to its place; phone pushes a place outside the dock.
+    proof: [apps/web/src/kin/kinPlaces.test.ts]
+
+  # ── Money ──────────────────────────────────────────────────────────────────────────────────
+  - id: money
+    name: Money, owed, overdue, cash and outlook
+    tab: money
+    web: [money]
+    phone: [tab:money]
+    roles: { owner: both, co_owner: both, lead: both, member: none }
+    note: A lead reaches Money for the projects they lead; members never see an amount.
+    tools: [money_summary, money_query]
+    proof:
+      - apps/server/src/kin/work/money.test.ts
+      - packages/client-runtime/src/kin/kinMoney.test.ts
+      - .agents/skills/verify-kin/scripts/member-no-money.sh
+
+  - id: list-entries
+    name: A list's entries, invoices, expenses, quotes and custom lists
+    tab: money
+    web: [money, "?list"]
+    phone: [tab:money, KinList]
+    roles: { owner: both, co_owner: both, lead: both, member: none }
+    proof:
+      - packages/client-runtime/src/kin/kinLists.test.ts
+      - apps/server/src/kin/work/KinRecords.test.ts
+
+  - id: entry-edit
+    name: Change a list entry
+    tab: money
+    web: [money, "?list", "?task"]
+    phone: [tab:money, KinList, KinWorkItem, KinEntryEdit]
+    form: true
+    roles: { owner: both, co_owner: both, lead: both, member: none }
+    proof: [apps/server/src/kin/work/KinRecords.test.ts]
+
+  - id: payment
+    name: Record a payment
+    tab: money
+    web: [money, "?list", "?task", section:Record payment]
+    phone: [tab:money, KinList, KinWorkItem, KinPayment]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [payment_record]
+    proof: [apps/server/src/kin/work/money.test.ts]
+
+  - id: make-document
+    name: Make an invoice, quote or receipt PDF
+    tab: money
+    web: [money, "?list", "?task", dialog:Make its PDF]
+    phone: [tab:money, KinList, KinWorkItem, KinMakeDocument]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [kin_document, kin_recipes, kin_issue, kin_recipe_undo]
+    proof:
+      - apps/server/src/kin/gendocs/render.test.ts
+      - apps/server/src/kin/gendocs/DocJobs.test.ts
+      - packages/client-runtime/src/kin/kinInvoices.test.ts
+
+  - id: receipt
+    name: An advance receipt
+    tab: money
+    web: [money, menu:Add, dialog:New receipt]
+    phone: [tab:money, menu:Add, KinReceiptNew]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [kin_receipt]
+    proof: [apps/server/src/kin/gendocs/compute.test.ts]
+
+  - id: receipt-apply
+    name: Set a receipt against an invoice
+    tab: money
+    web: [money, section:Receipts, dialog:Set against]
+    phone: [tab:money, section:Receipts, KinReceiptApply]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: none
+
+  - id: budget
+    name: A spending budget
+    tab: money
+    web: [money, menu:Add, dialog:Set a budget]
+    phone: [tab:money, menu:Add, KinBudget]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [budget_set]
+    proof: [packages/client-runtime/src/kin/kinBudget.test.ts]
+
+  - id: goal
+    name: A goal
+    tab: money
+    web: [money, menu:Add, sheet:Goal]
+    phone: [tab:money, menu:Add, KinGoalForm]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: none
+
+  - id: subscriptions
+    name: Subscriptions
+    tab: money
+    web: [money, "?subscriptions"]
+    phone: [tab:money, KinSubscriptions]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [packages/client-runtime/src/kin/kinSubscriptions.test.ts]
+
+  - id: rates
+    name: Exchange rates
+    tab: money
+    web: [money, dialog:Exchange rates]
+    phone: [tab:money, section:Rates, KinRates]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [packages/client-runtime/src/kin/kinCurrency.test.ts]
+
+  - id: dates
+    name: All dates, renewals and dues
+    tab: money
+    web: [money, "?dates"]
+    phone: [tab:money, KinDates]
+    roles: { owner: both, co_owner: both, lead: both, member: none }
+    tools: [dates_query]
+    proof: none
+
+  # ── Clients ────────────────────────────────────────────────────────────────────────────────
+  - id: clients
+    name: Clients and their projects
+    tab: clients
+    web: [clients]
+    phone: [tab:clients]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: A member reaches Clients only with the Clients place on.
+    tools: [client_read]
+    proof: [apps/server/src/kin/work/crm.test.ts]
+
+  - id: client
+    name: A client
+    tab: clients
+    web: [clients, "?client"]
+    phone: [tab:clients, KinClient]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: Amounts, contacts and history are owner-level.
+    proof:
+      - apps/server/src/kin/work/crm.test.ts
+      - .agents/skills/verify-kin/scripts/member-no-money.sh
+
+  - id: client-form
+    name: Add or change a client
+    tab: clients
+    web: [clients, menu:Add, dialog:Add client]
+    phone: [tab:clients, KinClientForm]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [packages/client-runtime/src/kin/kinWorkClients.test.ts]
+
+  - id: contact
+    name: A client's contacts
+    tab: clients
+    web: [clients, "?client", dialog:Add contact]
+    phone: [tab:clients, KinClient, KinContactForm]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [apps/server/src/kin/work/crm.test.ts]
+
+  - id: log-contact
+    name: Log a call or meeting with a client
+    tab: clients
+    web: [clients, "?client", dialog:Log contact]
+    phone: [tab:clients, KinClient, KinTouchForm]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [touch_log]
+    proof: [apps/server/src/kin/work/crm.test.ts]
+
+  - id: project
+    name: A project, its tasks, milestones and lead
+    tab: clients
+    web: [clients, "?project"]
+    phone: [tab:clients, KinProject]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: A member's project page can't list its tasks (kin.work.list takes only led projects).
+    proof:
+      - apps/server/src/kin/work/KinRecords.test.ts
+      - .agents/skills/verify-kin/scripts/private-task-hidden.sh
+
+  - id: project-form
+    name: Add or change a project
+    tab: clients
+    web: [clients, menu:Add, dialog:Add project]
+    phone: [tab:clients, KinProjectForm]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [packages/client-runtime/src/kin/kinWorkClients.test.ts]
+
+  - id: milestone
+    name: Add a milestone
+    tab: clients
+    web: [clients, "?project", dialog:Add milestone]
+    phone: [tab:clients, KinProject, KinMilestoneForm]
+    form: true
+    roles: { owner: both, co_owner: both, lead: web, member: none }
+    note: The web lets a project's lead add one; the phone shows the button to the owner level only.
+    proof: none
+
+  - id: project-lead
+    name: Change a project's lead
+    tab: clients
+    web: [clients, "?project", sheet:Project lead]
+    phone: [tab:clients, KinProject, KinProjectLead]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [packages/client-runtime/src/kin/kinTeam.test.ts]
+
+  # ── Docs ───────────────────────────────────────────────────────────────────────────────────
+  - id: docs
+    name: Docs, lists and playbooks
+    tab: docs
+    web: [docs]
+    phone: [tab:docs]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: A member reaches Docs with the Docs place on, or through a project they're on.
+    tools: [docs_search, list_define]
+    proof:
+      - apps/server/src/kin/work/docs.test.ts
+      - packages/client-runtime/src/kin/kinDocs.test.ts
+
+  - id: doc
+    name: Read and write a doc
+    tab: docs
+    web: [docs, "?doc"]
+    phone: [tab:docs, KinDoc]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [doc_create, doc_read, doc_edit, doc_rewrite, doc_link]
+    proof:
+      - apps/server/src/kin/work/docs.test.ts
+      - apps/server/src/kin/work/docBody.test.ts
+      - apps/server/src/kin/chat/privateDocs.test.ts
+
+  - id: doc-history
+    name: A doc's versions, restore one
+    tab: docs
+    web: [docs, "?doc", "?history"]
+    phone: [tab:docs, KinDoc, KinDocHistory]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: Restoring is owner-level.
+    tools: [doc_history, doc_restore]
+    proof: [packages/client-runtime/src/kin/kinDocChanges.test.ts]
+
+  - id: doc-changes
+    name: What changed between two versions
+    tab: docs
+    web: [docs, "?doc", "?changes"]
+    phone: [tab:docs, KinDoc, KinDocChanges]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    proof: [packages/client-runtime/src/kin/kinDocChanges.test.ts]
+
+  - id: doc-file
+    name: File a doc under a client, project or the company
+    tab: docs
+    web: [docs, dialog:File]
+    phone: [tab:docs, KinDocFile]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [doc_move]
+    proof: [apps/server/src/kin/work/docs.test.ts]
+
+  - id: list-settings
+    name: Define or change a list
+    tab: docs
+    web: [docs, "?list", dialog:Edit list]
+    phone: [tab:docs, KinList, KinListSettings]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [packages/client-runtime/src/kin/kinLists.test.ts]
+
+  # ── Settings (the gear on Chats) ───────────────────────────────────────────────────────────
+  - id: kin-settings
+    name: Kin settings
+    tab: settings
+    web: [settings]
+    phone: [tab:chats, SettingsKin]
+    roles: { owner: both, co_owner: both, lead: phone, member: phone }
+    note: On web the gear shows only in a chat-only session; the owner's app has Settings pages instead.
+    proof: none
+
+  - id: company
+    name: Company details, brand and templates
+    tab: settings
+    web: [settings/company]
+    phone: [tab:chats, SettingsKin, KinCompany]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [company_profile]
+    depth_reason: >-
+      A long settings form (legal details, brand, templates) that stays a page like the rest of
+      Settings; the owner's rule says forms are sheets, so this is an open exception.
+    proof:
+      - packages/client-runtime/src/kin/kinBrand.test.ts
+      - packages/client-runtime/src/kin/kinTemplates.test.ts
+
+  - id: daily-limit
+    name: Time zone and the daily spending limit
+    tab: settings
+    web: [settings/company, section:Daily limit]
+    phone: [tab:chats, SettingsKin, section:Daily limit]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [apps/server/src/kin/lead/KinBudget.test.ts]
+
+  - id: check-ins
+    name: Check-ins, an agent's regular round
+    tab: settings
+    web: [settings/check-ins, sheet:Add check-in]
+    phone: [tab:chats, SettingsKin, KinCheckInForm]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: In the app's Settings › Check-ins the sheet opens behind the Settings dialog; Kin's own settings works.
+    proof:
+      - apps/server/src/kin/pulse/checkIn.test.ts
+      - packages/client-runtime/src/kin/kinCheckIns.test.ts
+      - .agents/skills/verify-kin/scripts/checkin-new-agent.sh
+
+  - id: connections
+    name: Mail and tool connections
+    tab: settings
+    web: [settings/kin-connections]
+    phone: [tab:chats, SettingsKin, KinConnections, KinConnection]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof:
+      - apps/server/src/kin/connections/ConnectionsService.test.ts
+      - packages/client-runtime/src/kin/kinConnections.test.ts
+
+  - id: connection-add
+    name: Add a connection
+    tab: settings
+    web: [settings/kin-connections, dialog:Add connection]
+    phone: [tab:chats, SettingsKin, KinConnections, KinConnectionAdd]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [packages/client-runtime/src/kin/kinConnections.test.ts]
+
+  - id: connection-edit
+    name: Rename a connection, change its key or note
+    tab: settings
+    web: [settings/kin-connections, section:Connection, dialog:Rename]
+    phone: [tab:chats, SettingsKin, KinConnections, KinConnection, KinConnectionEdit]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    depth_reason: >-
+      Four levels on the phone: Settings › Connections › a connection › edit. The gear adds a
+      level the dock tabs don't have.
+    proof: [apps/server/src/kin/connections/ConnectionsService.test.ts]
+
+  - id: team
+    name: The team
+    tab: settings
+    web: [team]
+    phone: [tab:chats, SettingsKin, KinTeam]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [people_read]
+    proof:
+      - apps/server/src/kin/people/KinPeople.test.ts
+      - packages/client-runtime/src/kin/kinTeam.test.ts
+
+  - id: invite
+    name: Add a teammate
+    tab: settings
+    web: [team, dialog:Add teammate]
+    phone: [tab:chats, SettingsKin, KinTeam, KinInvite]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [apps/server/src/kin/people/http.test.ts]
+
+  - id: teammate
+    name: A teammate's access, places and devices
+    tab: settings
+    web: [team, sheet:Teammate]
+    phone: [tab:chats, SettingsKin, KinTeam, KinTeammate]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [people_update]
+    proof:
+      - apps/server/src/kin/lead/peopleUpdate.test.ts
+      - packages/client-runtime/src/kin/kinTeam.test.ts
+
+  - id: teammate-profile
+    name: Change a teammate's profile
+    tab: settings
+    web: [team, sheet:Teammate]
+    phone: [tab:chats, SettingsKin, KinTeam, KinTeammate, KinProfile, KinProfileEdit]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    depth_reason: >-
+      Five levels on the phone, past the rule: Team › teammate › profile › edit. Open; the
+      teammate sheet should edit the profile itself.
+    proof: [packages/client-runtime/src/kin/kinProfiles.test.ts]
+
+  - id: profile
+    name: Your profile, name, time zone and hours
+    tab: settings
+    web: [home, sheet:Profile]
+    phone: [tab:chats, SettingsKin, KinProfile, KinProfileEdit]
+    form: true
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    proof: [packages/client-runtime/src/kin/kinProfiles.test.ts]
+
+  # ── Joining ────────────────────────────────────────────────────────────────────────────────
+  - id: join
+    name: Join with an invite link
+    tab: join
+    web: [invite]
+    phone: [KinJoin]
+    roles: { owner: none, co_owner: both, lead: both, member: both }
+    proof:
+      - apps/server/src/kin/people/http.test.ts
+      - packages/client-runtime/src/kin/kinJoin.test.ts
+
+unlisted:
+  "web:?v": Picks the version of the open doc; not a screen.
+  "web:?section": Scrolls the open doc to a section; not a screen.
+  "web:?from": The base version of the compare view (`?changes`); not a screen.
+  "phone:KinSearch": No in-app way reaches it, only the link kin/:env/:org/search; search is each tab's search bar.
