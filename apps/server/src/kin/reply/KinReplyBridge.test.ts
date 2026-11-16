@@ -12,6 +12,8 @@ import {
   KinWakeupId,
   MessageId,
   NodeId,
+  EnvironmentId,
+  ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
@@ -39,11 +41,15 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
+import { McpSchema, McpServer } from "effect/ai";
 
 import {
   CLAUDE_PROVIDER,
   claudeThinkingItemId,
 } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
@@ -51,6 +57,13 @@ import { KinGroups } from "../chat/KinGroups.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, steerMessageId, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
+import { notConnectedLayer as repoReadsOff } from "../github/KinRepoReads.ts";
+import { notConnectedLayer as pullRequestCareOff } from "../github/PullRequestCare.ts";
+import { KinHandoff } from "../lead/Handoff.ts";
+import { LeadMemory } from "../lead/LeadMemory.ts";
+import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
+import { KinLeadToolkit } from "../lead/mcp/tools.ts";
+import { KinWorkers } from "../lead/Workers.ts";
 import {
   authorityLayer,
   startAgentWakeup,
@@ -1611,5 +1624,131 @@ it.effect("a reply Kin refused is not an answer: the owner sees that none came",
     );
     // The rescue's text would be refused the same way.
     assert.strictEqual(fake.rescues, 0);
+  }).pipe(Effect.provide(layer)),
+);
+
+const endScope: McpInvocationScope = {
+  environmentId: EnvironmentId.make("environment"),
+  requestNamespace: "lead",
+  issuedAt: 0,
+  capabilities: new Set(),
+  client: undefined,
+  thread: {
+    threadId,
+    providerSessionId: "lead",
+    providerInstanceId: ProviderInstanceId.make("claude"),
+  },
+};
+const endClient = McpSchema.McpServerClient.of({
+  clientId: 1,
+  clientCapabilities: {},
+  clientInfo: { name: "test", version: "1" },
+  protocolVersion: "2025-06-18",
+  initializePayload: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "test", version: "1" },
+  },
+  getClient: Effect.die("unused"),
+});
+
+/** kin_end as the lead's provider calls it, answered by this wake-up's bridge. */
+const endTool = Effect.fn("test.endTool")(function* (
+  services: Effect.Success<ReturnType<typeof setup>>["services"],
+  bridge: ReplyBridge.KinReplyBridge["Service"],
+) {
+  const tools = yield* Layer.build(
+    McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers).pipe(
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ReplyBridge.KinReplyBridge, bridge),
+          Layer.mock(LeadMemory)({ end: () => Effect.void }),
+          Layer.mock(KinWorkers)({}),
+          Layer.mock(KinHandoff)({}),
+          repoReadsOff,
+          pullRequestCareOff,
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (id) =>
+              Effect.succeed({
+                ...liveThreadShell(id),
+                providerInstanceId: ProviderInstanceId.make("claude"),
+              }),
+          }),
+        ).pipe(Layer.provideMerge(Layer.succeedContext(services))),
+      ),
+    ),
+  );
+  const server = Context.get(tools, McpServer.McpServer);
+  return server.callTool({ name: "kin_end", arguments: { summary: "Answered the owner." } }).pipe(
+    Effect.provideService(McpInvocationContext, endScope),
+    Effect.provideService(KinIdentity, Context.get(services, KinIdentity)),
+    Effect.provideService(McpSchema.McpServerClient, endClient),
+    Effect.map((result) => ({
+      ok: result.isError !== true,
+      text: result.content.find((item) => item.type === "text")?.text ?? "",
+    })),
+  );
+});
+
+// Sonnet 5.5 evals (Nov 2026): 17 of 93 turns put the whole reply in thinking and called kin_end,
+// so the owner heard nothing. kin_end now refuses that end; turns that rightly end quietly don't.
+it.effect.each([
+  { name: "a question answered only in thinking", ask: "Did the deploy finish?", first: false },
+  { name: "a reply written as text", ask: "Did the deploy finish?", first: true, said: true },
+  {
+    name: "thanks taken with a 👍",
+    ask: "Thanks, that's all for today.",
+    first: true,
+    react: true,
+  },
+])("kin_end refuses to end a turn that owes words and posted none: $name", (input) =>
+  Effect.gen(function* () {
+    const {
+      services,
+      bridge,
+      fake,
+      runId,
+      complete,
+      posted,
+      identity,
+      chats,
+      owner,
+      wakeupId,
+      message,
+      sql,
+    } = yield* setup({ ask: input.ask });
+    yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE agent_id = ${agentId}`;
+    const end = yield* endTool(services, bridge);
+    if (input.react === true) {
+      const lead = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+      );
+      yield* chats.react(lead, { messageId: message!.messageId, emoji: "👍", on: true });
+    }
+    const said = text("a", 2, "Yes, it finished at 4:10 pm.", runId);
+    const first = [thought("r", 1, runId), ...(input.said === true ? [said] : [])];
+    // The call reaches the server before its item reaches the bridge: it waits for the item.
+    const ending = yield* end.pipe(Effect.forkScoped);
+    for (const item of [...first, tool("end", 3, "mcp__kin__kin_end", runId)])
+      yield* Queue.offer(fake.live, itemEvent(item));
+    const answer = yield* Fiber.join(ending);
+    assert.strictEqual(answer.ok, input.first);
+    if (!input.first) {
+      assert.include(answer.text, ReplyBridge.SILENT_END_REFUSAL);
+      // The reply it then writes is a reply, not a status line before a tool.
+      const reply = text("b", 4, "Yes, it finished at 4:10 pm.", runId);
+      const again = yield* end.pipe(Effect.forkScoped);
+      for (const item of [reply, tool("end2", 5, "mcp__kin__kin_end", runId)])
+        yield* Queue.offer(fake.live, itemEvent(item));
+      assert.isTrue((yield* Fiber.join(again)).ok);
+    }
+    fake.items = [];
+    yield* complete;
+    assert.strictEqual(fake.rescues, 0);
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      input.react === true ? [] : ["Yes, it finished at 4:10 pm."],
+    );
   }).pipe(Effect.provide(layer)),
 );

@@ -1,4 +1,5 @@
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { kinSecretsTest } from "./layer.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -85,6 +86,7 @@ const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers)
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provide(Layer.mock(KinWorkers)({})),
   Layer.provide(Layer.mock(KinHandoff)({})),
+  Layer.provide(Layer.mock(KinReplyBridge)({ silentEnd: () => Effect.succeed(false) })),
   Layer.provide(KinRepoReads.notConnectedLayer),
   Layer.provide(PullRequestCare.notConnectedLayer),
   Layer.provide(

@@ -22,10 +22,12 @@ VARIABLES
   worked,    \* this wake-up did something visible (kin_wakeups visible check)
   floor,     \* "open" or "closed" (KinFloor runs: a newer message closes the old run)
   presence,  \* the lead's line: "off", "on"
-  restarts
+  restarts,
+  ended,     \* the lead called kin_end and Kin let the turn end
+  blind      \* it let it end because the bridge hadn't seen the call yet
 
 vars == <<ev, tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged, lost,
-          worked, floor, presence, restarts>>
+          worked, floor, presence, restarts, ended, blind>>
 
 Claimed == {m \in Msgs : ev[m] = "claimed"}
 
@@ -36,6 +38,7 @@ Init ==
   /\ answered = [m \in Msgs |-> FALSE] /\ promise = "none" /\ notes = [m \in Msgs |-> 0]
   /\ thought = FALSE /\ nudged = FALSE /\ lost = FALSE /\ worked = FALSE
   /\ floor = "open" /\ presence = "off" /\ restarts = 0
+  /\ ended = FALSE /\ blind = FALSE
 
 (* chat/KinChatService.ts sendClaimed → floor.open; lead/ChatWake.ts enqueues the wake event. *)
 PersonSends(m) ==
@@ -43,7 +46,7 @@ PersonSends(m) ==
   /\ ev' = [ev EXCEPT ![m] = "queued"]
   /\ floor' = "open"
   /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged, lost,
-                 worked, presence, restarts>>
+                 worked, presence, restarts, ended, blind>>
 
 (* KinEventQueue.claim takes every queued event of the chat; bridge.preparing/begin: the line. *)
 Claim ==
@@ -51,14 +54,16 @@ Claim ==
   /\ ev' = [m \in Msgs |-> IF ev[m] = "queued" THEN "claimed" ELSE ev[m]]
   /\ wake' = "running" /\ presence' = "on"
   /\ covered' = [m \in Msgs |-> FALSE] /\ nudged' = FALSE /\ worked' = FALSE /\ promise' = "none"
+  /\ ended' = FALSE /\ blind' = FALSE
   /\ UNCHANGED <<tries, replies, answered, notes, fails, thought, lost, floor, restarts>>
 
 (* KinEventQueue.steer: a message sent mid-turn joins the running wake-up with its own slot. *)
 Steer(m) ==
   /\ wake = "running" /\ ev[m] = "queued"
   /\ ev' = [ev EXCEPT ![m] = "claimed"]
+  /\ ended' = FALSE
   /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged, lost,
-                 worked, floor, presence, restarts>>
+                 worked, floor, presence, restarts, blind>>
 
 (* reply/KinReplyBridge.ts deliver: an answer segment posts once per slot (reply:<item>), extends
    after; isAnswer keeps Claude thinking items out (only the variant posts them). The post's own
@@ -72,14 +77,14 @@ LeadReplies ==
   /\ covered' = [m \in Msgs |-> covered[m] \/ m \in Claimed]
   /\ worked' = TRUE
   /\ promise' \in IF promise = "none" THEN {"none", "open"} ELSE {promise}
-  /\ UNCHANGED <<ev, tries, wake, notes, fails, thought, nudged, lost, floor, presence, restarts>>
+  /\ UNCHANGED <<ev, tries, wake, notes, fails, thought, nudged, lost, floor, presence, restarts, ended, blind>>
 
 (* The card is posted, or the hand-over sent, that the reply promised. *)
 LeadKeepsPromise ==
   /\ wake = "running" /\ promise = "open"
   /\ promise' = "kept"
   /\ UNCHANGED <<ev, tries, wake, covered, replies, answered, notes, fails, thought, nudged, lost,
-                 worked, floor, presence, restarts>>
+                 worked, floor, presence, restarts, ended, blind>>
 
 LeadThinks ==
   /\ wake = "running"
@@ -88,7 +93,7 @@ LeadThinks ==
             /\ covered' = [m \in Msgs |-> covered[m] \/ m \in Claimed]
        ELSE UNCHANGED <<thought, covered>>
   /\ UNCHANGED <<ev, tries, wake, replies, answered, promise, notes, fails, nudged, lost, worked, floor,
-                 presence, restarts>>
+                 presence, restarts, ended, blind>>
 
 (* lead/Handoff.ts relay, pulse nudge → LevelGate.postTo → KinFloor.admitToPerson: the hourly
    limit only, whatever the floor (the variant goes through authorize instead). *)
@@ -99,18 +104,29 @@ LeadNudgesAsker ==
   /\ covered' = IF Broken = "relay-counts" THEN [m \in Msgs |-> covered[m] \/ m \in Claimed]
                 ELSE covered
   /\ UNCHANGED <<ev, tries, wake, replies, answered, promise, notes, fails, thought, floor, presence,
-                 restarts>>
+                 restarts, ended, blind>>
 
 LeadWorks == wake = "running" /\ ~worked /\ worked' = TRUE
   /\ UNCHANGED <<ev, tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged,
-                 lost, floor, presence, restarts>>
+                 lost, floor, presence, restarts, ended, blind>>
 
 (* A newer human message elsewhere, or six agent turns, closes this floor run. *)
 FloorCloses == floor = "open" /\ floor' = "closed"
   /\ UNCHANGED <<ev, tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged,
-                 lost, worked, presence, restarts>>
+                 lost, worked, presence, restarts, ended, blind>>
 
 Owed == {m \in Claimed : ~covered[m]}
+
+(* lead/mcp/handlers.ts kin_end → KinReplyBridge.silentEnd: once the bridge has seen the call's
+   item, a turn that still owes a message words can't end, and the lead is told to write its
+   reply. When the bridge hasn't seen it in time the turn may end; RunCompletes' rescue answers. *)
+LeadEnds ==
+  /\ wake = "running" /\ ~ended /\ ended' = TRUE
+  /\ \/ /\ (Owed = {} \/ Broken = "end-silent") /\ UNCHANGED blind
+     \/ blind' = TRUE
+  /\ UNCHANGED <<ev, tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged,
+                 lost, worked, floor, presence, restarts>>
+
 Ended == [m \in Msgs |-> IF m \in Claimed THEN "done" ELSE ev[m]]
 
 (* KinReplyBridge.complete: a completed run that owed a reply gets one rescue turn, then
@@ -124,7 +140,7 @@ RunCompletes ==
         /\ UNCHANGED <<replies, answered>>
   /\ ev' = Ended /\ wake' = "idle"
   /\ presence' = IF Broken = "line-stays" THEN presence ELSE "off"
-  /\ UNCHANGED <<tries, covered, promise, notes, thought, nudged, lost, worked, floor, restarts>>
+  /\ UNCHANGED <<tries, covered, promise, notes, thought, nudged, lost, worked, floor, restarts, ended, blind>>
 
 (* WakeupRunner.finishWakeup after a failed or timed-out run: something visible → each message
    with its reply posted is done, the others failed with "{Lead} stopped partway."
@@ -152,7 +168,7 @@ RunFails ==
             /\ UNCHANGED notes
   /\ wake' = "idle"
   /\ presence' = IF Broken = "line-stays" THEN presence ELSE "off"
-  /\ UNCHANGED <<covered, replies, answered, promise, thought, nudged, lost, worked, floor, restarts>>
+  /\ UNCHANGED <<covered, replies, answered, promise, thought, nudged, lost, worked, floor, restarts, ended, blind>>
 
 (* Kin shuts down mid-turn: WakeupRunner.cleanup(interrupted) → KinEventQueue.requeueUnfinished
    marks done the claimed events whose reply posted (replied_at) and puts the rest back; the line
@@ -164,11 +180,11 @@ Restart ==
                             ELSE ev[m]]
   /\ wake' = "idle" /\ presence' = "off" /\ restarts' = restarts + 1
   /\ UNCHANGED <<tries, covered, replies, answered, promise, notes, fails, thought, nudged, lost, worked,
-                 floor>>
+                 floor, ended, blind>>
 
 Next ==
   \/ \E m \in Msgs : PersonSends(m) \/ Steer(m)
-  \/ Claim \/ LeadReplies \/ LeadKeepsPromise \/ LeadThinks \/ LeadNudgesAsker \/ LeadWorks
+  \/ Claim \/ LeadReplies \/ LeadEnds \/ LeadKeepsPromise \/ LeadThinks \/ LeadNudgesAsker \/ LeadWorks
   \/ FloorCloses
   \/ RunCompletes \/ RunFails \/ Restart
 
@@ -185,4 +201,6 @@ NeverReasoning == ~thought
 RelayLands == ~lost
 EveryMessageAnswered == \A m \in Msgs : ev[m] # "none" ~> replies[m] + fails[m] >= 1
 LineClears == presence = "on" ~> presence = "off"
+\* kin_end never closes a turn on a message still owed words, unless the bridge couldn't tell yet.
+EndNotSilent == (wake = "running" /\ ended /\ ~blind) => Owed = {}
 =============================================================================

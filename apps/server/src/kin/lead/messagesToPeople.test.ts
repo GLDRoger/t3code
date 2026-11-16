@@ -1,4 +1,5 @@
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { kinSecretsTest } from "./layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
@@ -77,6 +78,7 @@ const kinServices = Layer.unwrap(
       Handoff.layer,
       Layer.mock(KinWorkers)({}),
       Layer.mock(LeadMemory)({}),
+      Layer.mock(KinReplyBridge)({ silentEnd: () => Effect.succeed(false) }),
       repoReadsOff,
       pullRequestCareOff,
     ).pipe(Layer.provideMerge(Layer.succeedContext(services)));

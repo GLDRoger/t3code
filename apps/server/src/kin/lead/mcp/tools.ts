@@ -1,3 +1,4 @@
+import { KinReplyBridge } from "../../reply/KinReplyBridge.ts";
 import {
   KinChatError,
   KinMessageId,
@@ -253,6 +254,8 @@ export const KinLeadToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_end", {
     ...shared,
+    // It reads the turn to refuse ending one that owes words and posted none.
+    dependencies: [...shared.dependencies, KinIdentity, SqlClient.SqlClient, KinReplyBridge],
     description:
       "Finish the turn with a one-line summary, then stop. Call it after your reply and write nothing after it: your reply is the text you wrote before this call. Memory staged this turn is saved once the turn ends. Does not approve actions or change authority.",
     parameters: Lead.EndInput,
