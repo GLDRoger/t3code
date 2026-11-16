@@ -13,7 +13,8 @@ import { useEffect, useRef } from "react";
 
 import { NotificationSettings } from "../components/settings/NotificationSettings";
 import { SettingsPageContainer, SettingsSection } from "../components/settings/settingsLayout";
-import { useScopedSettings } from "../components/settings/useScopedSettings";
+import { SettingsScopeProvider } from "../components/settings/SettingsScopeContext";
+import { useClientSettings } from "../hooks/useSettings";
 import {
   hasDesktopNotifications,
   hasNotificationSound,
@@ -24,14 +25,17 @@ import { useKinInbox } from "./useKinHost";
 /** Settings → You → Notifications: this computer's alerts for Kin messages. */
 export function KinSettingsNotifications() {
   return (
-    <SettingsPageContainer>
-      <SettingsSection title={KIN_MESSAGE_ALERTS.title}>
-        <NotificationSettings
-          description={KIN_MESSAGE_ALERTS.detail}
-          label={KIN_MESSAGE_ALERTS.label}
-        />
-      </SettingsSection>
-    </SettingsPageContainer>
+    // This device's own setting: the app-wide scope, which the Kin modal doesn't otherwise hold.
+    <SettingsScopeProvider search={{}} onChange={() => {}}>
+      <SettingsPageContainer>
+        <SettingsSection title={KIN_MESSAGE_ALERTS.title}>
+          <NotificationSettings
+            description={KIN_MESSAGE_ALERTS.detail}
+            label={KIN_MESSAGE_ALERTS.label}
+          />
+        </SettingsSection>
+      </SettingsPageContainer>
+    </SettingsScopeProvider>
   );
 }
 
@@ -40,7 +44,7 @@ const looking = () => document.visibilityState === "visible" && document.hasFocu
 /** Rings this computer when a chat gets a message while Kin is open in a window you aren't in. */
 export function KinMessageAlerts() {
   const { host, state } = useKinInbox();
-  const mode = useScopedSettings((settings) => settings.notificationMode);
+  const mode = useClientSettings((settings) => settings.notificationMode);
   const navigate = useNavigate();
   const seen = useRef<KinUnreadSeen | null>(null);
   const environmentId = state._tag === "ready" ? state.environmentId : null;

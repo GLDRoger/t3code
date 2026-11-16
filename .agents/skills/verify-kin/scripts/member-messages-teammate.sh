@@ -8,9 +8,10 @@ chat="$(json "$(kv as zoya rpc kin.chats.withPerson "{\"personId\":\"$ARJUN\"}")
 [[ "$(json "$(kv as arjun rpc kin.chats.withPerson "{\"personId\":\"$ZOYA\"}")" chatId)" == "$chat" ]] ||
   fail "Arjun's way in opened a second chat"
 kv as zoya rpc kin.messages.send "{\"chatId\":\"$chat\",\"clientMessageId\":\"pair-$RUN\",\"body\":\"Lunch at one? $RUN\"}" >/dev/null
-expect_in "$(kv as arjun rpc kin.chat.history "{\"chatId\":\"$chat\"}")" "Lunch at one? $RUN" "Arjun can't read Zoya's message"
+page="{\"chatId\":\"$chat\",\"beforeSeq\":100000,\"limit\":50}"
+expect_in "$(kv as arjun rpc kin.chat.history "$page")" "Lunch at one? $RUN" "Arjun can't read Zoya's message"
 for person in owner meera dev; do
-  expect_in "$(kv as "$person" rpc kin.chat.history "{\"chatId\":\"$chat\"}" 2>&1 || true)" "not_found" "$person reads their chat"
+  expect_in "$(kv as "$person" rpc kin.chat.history "$page" 2>&1 || true)" "not_found" "$person reads their chat"
 done
 expect_in "$(kv as zoya rpc kin.chats.withPerson "{\"personId\":\"$ZOYA\"}" 2>&1 || true)" "invalid_state" "Zoya opened a chat with herself"
 # On the web: New offers it, and the chat names the only two readers.
