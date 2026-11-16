@@ -8,6 +8,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 
@@ -39,9 +40,51 @@ const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const OUTSIDE_CAP = 60;
 
 /**
+ * Whether any of `facts` is news since this agent's last check-in: first seen after it, never
+ * stored yet, or out of someone's hands since. With none, a check-in would only say "nothing new".
+ */
+const anyNews = Effect.fn("KinPulse.checkInNews")(function* (
+  input: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    /** This slot's own event: fired again after a restart, it is not the last one. */
+    readonly dedupeKey: string;
+    readonly at: number;
+  },
+  keys: ReadonlyArray<string>,
+) {
+  const { orgId, agentId, at } = input;
+  if (keys.length === 0) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const [last] = yield* sql<{ at: number | null }>`SELECT MAX(received_at) AS at FROM kin_events
+    WHERE org_id = ${orgId} AND agent_id = ${agentId} AND tag = 'pulse'
+      AND dedupe_key LIKE 'checkin:%' AND dedupe_key != ${input.dedupeKey}
+      AND state != 'failed'`;
+  const since = last?.at ?? null;
+  if (since === null) return true;
+  const stored = new Map<string, { readonly firstSeenAt: number; readonly until: number | null }>();
+  for (let start = 0; start < keys.length; start += 500)
+    for (const row of yield* sql<{ key: string; firstSeenAt: number; until: number | null }>`
+      SELECT fact_key AS key, first_seen_at AS "firstSeenAt", handled_until AS until
+      FROM kin_pulse_facts
+      WHERE org_id = ${orgId} AND fact_key IN ${sql.in(keys.slice(start, start + 500))}
+      ORDER BY fact_key`)
+      stored.set(row.key, row);
+  return keys.some((key) => {
+    const row = stored.get(key);
+    return (
+      row === undefined ||
+      row.firstSeenAt > since ||
+      (row.until !== null && row.until > since && row.until <= at)
+    );
+  });
+});
+
+/**
  * One check-in: the open facts, held ones too, and what is new outside, handed to the agent as
- * one pulse event at the slot's minute. With neither, nothing is queued and no model runs. `slot`
- * keys the event, so one slot queues once however often it is fired.
+ * one pulse event at the slot's minute. With nothing new since the agent's last check-in, nothing
+ * is queued and no model runs; a Run now tap still runs. `slot` keys the event, so one slot
+ * queues once however often it is fired.
  */
 export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly orgId: KinOrgId;
@@ -79,6 +122,14 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
     .slice(0, OUTSIDE_CAP);
   if (facts.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   const slot = input.manualId ?? dayIn(input.dueAt, input.zone);
+  const dedupeKey = `checkin:${input.scheduleId}:${slot}`;
+  const news =
+    input.manualId !== undefined ||
+    (yield* anyNews(
+      { orgId, agentId: input.agentId, dedupeKey, at },
+      facts.map((fact) => fact.key),
+    ));
+  if (!news && lines.length === 0) return { _tag: "nothing_new" } as const;
   // The minute is picked in the window as it stands that day, never from a late start: a run
   // that starts after its minute fires at once.
   const notBefore =
@@ -89,7 +140,6 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
             looseOffsetMs(input.scheduleId, slot, looseSpanMinutes(input.looseAt)),
         )
       : undefined;
-  const dedupeKey = `checkin:${input.scheduleId}:${slot}`;
   const queued = yield* queue
     .enqueue(
       yield* decodeEvent({
