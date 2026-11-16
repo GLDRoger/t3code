@@ -69,6 +69,12 @@ describe("kinPageView", () => {
     expect(view.sections.map((section) => section.title)).toEqual(["Needs you", "Money", "Clients"]);
   });
 
+  it("drops only the greeting from a brief's opening line", () => {
+    expect(kinPageView("Good morning Rhea. A quiet day.\n\n## Needs you\n- Nothing.", true).lead).toBe(
+      "A quiet day.",
+    );
+  });
+
   it("keeps today's unsectioned brief whole, as its lead", () => {
     const view = kinPageView("Morning!\nINV-1 is still overdue.\nstill: the logo files.", true);
     expect(view).toEqual({ lead: "INV-1 is still overdue.\nstill: the logo files.", sections: [] });
@@ -106,6 +112,8 @@ describe("kinLinkedMarkdown", () => {
     expect(kinLinkOf("t3-context://v1/kin-link/1", links)?.to).toEqual(links[1]!.to);
     expect(kinLinkOf("t3-context://v1/kin-link/9", links)).toBeNull();
     expect(kinLinkOf("https://x.example", links)).toBeNull();
+    expect(kinLinkedMarkdown("Ask Finance.", links, "plain")).toBe("Ask [Finance](kin-link:0).");
+    expect(kinLinkOf("kin-link:0", links)?.text).toBe("Finance");
   });
 
   it("leaves a body with no links as written", () => {

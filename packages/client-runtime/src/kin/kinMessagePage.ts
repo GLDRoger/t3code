@@ -28,8 +28,11 @@ export function kinMessageLayout(
   return kinPageShape(message.body);
 }
 
-// A link made here rides T3's context-reference href, which both markdown renderers keep.
+// On the web a link rides T3's context-reference href, which its markdown keeps; the phone's
+// renderer draws those as chips, so there it is a plain `kin-link:<n>`.
 const LINK_KIND = "kin-link";
+const PLAIN_LINK = /^kin-link:(\d{1,3})$/;
+export type KinLinkHref = "context" | "plain";
 const FENCED = /^\s{0,3}(```|~~~)[^\n]*\n[\s\S]*?(?:^\s{0,3}\1[^\n]*$|(?![\s\S]))/gm;
 const INLINE_CODE = /`[^`\n]*`/g;
 const MARKDOWN_LINK = /!?\[[^\]\n]*\]\([^)\n]*\)/g;
@@ -40,7 +43,11 @@ const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  * The body with each link's text, the first place it is written outside code and existing links,
  * made an in-app link. Longer texts go first, so "Orbit Dental retainer" isn't cut by "Orbit Dental".
  */
-export function kinLinkedMarkdown(body: string, links: ReadonlyArray<KinMessageLink> | undefined) {
+export function kinLinkedMarkdown(
+  body: string,
+  links: ReadonlyArray<KinMessageLink> | undefined,
+  href: KinLinkHref = "context",
+) {
   if (links === undefined || links.length === 0) return body;
   const taken: Array<{ at: number; end: number; index: number }> = [];
   for (const pattern of [FENCED, INLINE_CODE, MARKDOWN_LINK, BARE_URL])
@@ -63,8 +70,11 @@ export function kinLinkedMarkdown(body: string, links: ReadonlyArray<KinMessageL
   let out = "";
   let from = 0;
   for (const one of taken.filter((t) => t.index >= 0).sort((a, b) => a.at - b.at)) {
-    const href = formatComposerContextHref(LINK_KIND, ComposerContextId.make(String(one.index)));
-    out += `${body.slice(from, one.at)}[${body.slice(one.at, one.end)}](${href})`;
+    const target =
+      href === "plain"
+        ? `${LINK_KIND}:${one.index}`
+        : formatComposerContextHref(LINK_KIND, ComposerContextId.make(String(one.index)));
+    out += `${body.slice(from, one.at)}[${body.slice(one.at, one.end)}](${target})`;
     from = one.end;
   }
   return out + body.slice(from);
@@ -75,6 +85,8 @@ export function kinLinkOf(
   href: string,
   links: ReadonlyArray<KinMessageLink> | undefined,
 ): KinMessageLink | null {
+  const plain = PLAIN_LINK.exec(href)?.[1];
+  if (plain !== undefined) return links?.[Number(plain)] ?? null;
   const reference = parseComposerContextHref(href);
   if (reference === null || reference.kind !== LINK_KIND) return null;
   return links?.[Number(reference.contextId)] ?? null;
@@ -90,9 +102,10 @@ export function kinPageView(markdown: string, brief = false): KinPageView {
   const all = kinPageSections(markdown);
   const first = all[0]?.title === null ? all[0] : undefined;
   const lines = first?.markdown.split("\n") ?? [];
-  const lead = (brief && lines[0] !== undefined && kinIsGreeting(lines[0]) ? lines.slice(1) : lines)
-    .join("\n")
-    .trim();
+  // "Good morning Rhea. A quiet day." keeps "A quiet day."; the greeting is the heading's.
+  const opening = lines[0] ?? "";
+  if (brief && kinIsGreeting(opening)) lines[0] = opening.replace(/^[^.!?]*[.!?]?\s*/, "");
+  const lead = lines.join("\n").trim();
   return {
     lead: lead === "" ? null : lead,
     sections: all.filter((section): section is KinPageSection & { title: string } => section.title !== null),

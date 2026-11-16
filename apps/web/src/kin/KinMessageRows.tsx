@@ -187,7 +187,8 @@ export function KinMessageRow(props: {
     <div
       className={cn(
         ROW,
-        rowSpacing(row.continues),
+        // A page starts a new block even inside one author's run.
+        layout === "bubble" ? rowSpacing(row.continues) : "pt-5",
         "group/kin-message",
         row.own ? "items-end" : "items-start",
       )}

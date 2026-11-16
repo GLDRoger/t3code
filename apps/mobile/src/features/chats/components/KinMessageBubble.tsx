@@ -283,7 +283,12 @@ export function KinMessageBubble(props: {
 
   return (
     <View
-      className={cn("gap-1 px-4", rowSpacing(row.continues), row.own ? "items-end" : "items-start")}
+      className={cn(
+        "gap-1 px-4",
+        // A page starts a new block even inside one author's run.
+        layout === "bubble" ? rowSpacing(row.continues) : "pt-5",
+        row.own ? "items-end" : "items-start",
+      )}
     >
       {row.showAuthor && !props.direct && message.author._tag !== "system" ? (
         <KinAuthorLine

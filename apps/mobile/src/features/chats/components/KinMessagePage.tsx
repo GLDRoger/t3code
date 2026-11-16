@@ -17,7 +17,6 @@ import {
   SelectableMarkdownText,
   type MarkdownFileContextMenu,
   type MarkdownImageRenderer,
-  type MarkdownLinkCustomization,
   type NativeMarkdownTextStyle,
 } from "../../../native/SelectableMarkdownText";
 
@@ -65,8 +64,6 @@ export function KinLinkedText(props: {
   readonly selectable?: boolean;
 }) {
   const { links } = props;
-  const linkCustomization = (href: string): MarkdownLinkCustomization | undefined =>
-    kinLinkOf(href, links) === null ? undefined : { color: props.textStyle.linkColor };
   const fileContextMenu = (href: string): MarkdownFileContextMenu | undefined => {
     const link = kinLinkOf(href, links);
     if (link === null) return undefined;
@@ -80,7 +77,7 @@ export function KinLinkedText(props: {
   };
   return (
     <SelectableMarkdownText
-      markdown={kinLinkedMarkdown(kinBodyMarkdown(props.markdown), links)}
+      markdown={kinLinkedMarkdown(kinBodyMarkdown(props.markdown), links, "plain")}
       textStyle={props.textStyle}
       {...(props.selectable === undefined ? {} : { selectable: props.selectable })}
       preserveSoftBreaks
@@ -90,7 +87,6 @@ export function KinLinkedText(props: {
         if (link === null) props.onLinkPress(href);
         else props.onOpenTarget(link.to);
       }}
-      linkCustomization={linkCustomization}
       fileContextMenu={fileContextMenu}
       renderImage={renderImageAsText}
       resolveImageSource={kinImageSource}
