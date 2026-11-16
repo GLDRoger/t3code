@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import { acceptInvite, ownerToken, originOf, runTurn } from "./actors.ts";
+import { benchImport, benchTurns } from "./benchSeed.ts";
 import {
   type Instance,
   ORG,
@@ -13,7 +14,7 @@ import {
 } from "./instance.ts";
 import { RpcConnection, VerifyError } from "./rpc.ts";
 
-export const SEEDS = ["lifecycle", "empty"] as const;
+export const SEEDS = ["lifecycle", "empty", "bench"] as const;
 export type SeedName = (typeof SEEDS)[number];
 
 /** Days from today, as the YYYY-MM-DD the import reads. Every date is relative, so runs agree. */
@@ -343,6 +344,7 @@ export async function seed(
       startsOn: day(-30),
       dueOn: day(60),
     });
+    if (name === "bench") benchImport(instance);
   } finally {
     owner.close();
   }
@@ -351,7 +353,7 @@ export async function seed(
 
 /** What needs a running lead loop: a doc written by an agent through its real tool. */
 export async function seedTurns(instance: Instance, name: SeedName) {
-  if (name !== "lifecycle") return;
+  if (name === "empty") return;
   const [doc] = await runTurn(instance, {
     agent: "chief",
     person: "owner",
@@ -373,4 +375,5 @@ export async function seedTurns(instance: Instance, name: SeedName) {
   };
   if (response?.result === undefined || response.result.isError === true)
     throw new VerifyError(`seed: doc_create failed: ${JSON.stringify(doc).slice(0, 300)}`);
+  if (name === "bench") await benchTurns(instance);
 }

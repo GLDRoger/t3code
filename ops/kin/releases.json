@@ -1,0 +1,58 @@
+[
+  {
+    "commit": "a20d71ab5ef8e535048fde9b6aaf70bf30e209c1",
+    "date": "2026-11-16",
+    "mode": "full",
+    "findings": [
+      {
+        "fingerprint": "c500f4a58fa0",
+        "stage": "ui-fuzz",
+        "check": "property",
+        "step": "countMatchesList",
+        "role": "coowner"
+      },
+      {
+        "fingerprint": "51338929c0f5",
+        "stage": "ui-fuzz",
+        "check": "property",
+        "step": "noSheetOnSheet",
+        "role": "coowner"
+      },
+      {
+        "fingerprint": "39e3a56335a8",
+        "stage": "ui-fuzz",
+        "check": "property",
+        "step": "noNotAvailable",
+        "role": "lead"
+      },
+      {
+        "fingerprint": "318ae53448da",
+        "stage": "ui-fuzz",
+        "check": "property",
+        "step": "noCouldntLoad",
+        "role": "lead"
+      },
+      {
+        "fingerprint": "f0da726829b1",
+        "stage": "ui-fuzz",
+        "check": "property",
+        "step": "noSheetOnSheet",
+        "role": "lead"
+      },
+      {
+        "fingerprint": "48ba05de1827",
+        "stage": "ui-fuzz",
+        "check": "property",
+        "step": "noNotAvailable",
+        "role": "member"
+      },
+      {
+        "fingerprint": "c89e17f72546",
+        "stage": "ui-fuzz",
+        "check": "property",
+        "step": "noSheetOnSheet",
+        "role": "owner"
+      }
+    ]
+  }
+]

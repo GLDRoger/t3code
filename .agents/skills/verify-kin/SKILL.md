@@ -99,6 +99,8 @@ bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the 
 | `owner-money-forms`        | a goal, the coming-up dates, an advance set against INV-1 once; members are refused                  |
 | `private-client-unnamed`   | C-3 marked private: in Zoya's turn touch_log, record_get, records_query answer as for no client      |
 
+`node scripts/kin-release-check.ts` runs all ten with the models, property tests and UI fuzz before a release ([Releasing Kin](../../../docs/operations/kin-release.md)).
+
 A script that sees a known product bug prints a `known` line on stderr instead of passing
 silently. Write a new script from `lib.sh`: `kv`, `fail`, `pass`, `expect_in`, `expect_not_in`,
 `sent_count`, `card_id`. Assert on what a person sees (snapshot text) or what left the building
@@ -112,6 +114,27 @@ break the behaviour in the product, watch it fail, and revert.
   chat. A screen that fails to load hides everything; check it loaded.
 - A claim about mail needs `mail sent` before and after; count, thread and `inReplyTo`.
 - A claim that something happens once needs the second attempt and its refusal.
+
+## Benchmark
+
+`node scripts/kin-bench.ts --out <dir>` measures speed and prompt size on the `bench` seed: Ambermill
+at a busy year's size (a 2,000-message group with chart and choice cards, 500 tasks, 200 clients,
+300 docs, 12 months of invoices and expenses). It seeds its own instance (`bench`) from cold, then:
+
+- captures the real prompt of each turn kind on the dev server, with the scripted agent keeping
+  every prompt it is sent (`<verify dir>/capture-prompts`); tokens are UTF-8 bytes / 4;
+- restarts the server as an installed host runs it (`t3 serve`, the production web build it
+  serves itself) and times start-up and the hot reads;
+- walks the web client in the owner's headless Chrome (cold load, long chat, switching, the four
+  dock places, a task sheet, typing, scrolling, idle CPU) with WebSocket frames from CDP;
+- opens all five people's browsers and counts what each receives after one change.
+
+It writes `baseline-<commit>.json`, `.md` and `report.html`, then stops everything with `down`.
+A run takes about 15 minutes; `--runs <n>` sets samples per action (default 5), `--reuse` skips
+re-seeding. `--compare <old.json> [--threshold 15]` adds old, new and change per metric and flags
+what got worse. `--render <run.json> --findings <findings.json>` redraws the page with a written
+"what stands out" list (`[{title, number, cause, where, worth}]`). It never calls a model; worker
+reports are not measured, since workers here need a real repository.
 
 ## Phone
 
