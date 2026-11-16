@@ -7,6 +7,7 @@ import {
   type KinOrgId,
   KinPersonId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -79,6 +80,30 @@ const dueText = (row: RecordRow, zone: string) => {
   return `, due ${format.format(row.dueAt).replace(/,/g, "")}`;
 };
 
+const meetingAt = (row: RecordRow, zone: string) =>
+  row.dateAt === null
+    ? ""
+    : ` on ${new Intl.DateTimeFormat("en-GB", {
+        timeZone: zone,
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      })
+        .format(row.dateAt)
+        .replace(/,/g, "")}`;
+
+/** A meeting given to someone is theirs to attend, or, once held, on record: never a task to do. */
+const meetingLine = (agent: string, notice: AssignNotice, zone: string, now: number) => {
+  const { row } = notice;
+  const held = row.dateAt !== null && row.dateAt <= now;
+  return ended(
+    `${agent} ${held ? "recorded your meeting" : "added you to the meeting"} ${row.key} ${row.title}${meetingAt(row, zone)}`,
+  );
+};
+
 const line = (notice: AssignNotice, zone: string) => {
   const task = `${notice.row.key} ${notice.row.title}`;
   const why = notice.why === null ? "" : `: ${notice.why}`;
@@ -92,12 +117,19 @@ const line = (notice: AssignNotice, zone: string) => {
 const ended = (text: string) => (/[.!?…]["”’)]?$/.test(text) ? text : `${text}.`);
 
 /** One message for the person: a line when it is one task, else a list under one heading. */
-const bodyFor = (agent: string, notices: ReadonlyArray<AssignNotice>, zone: string) => {
+const bodyFor = (
+  agent: string,
+  notices: ReadonlyArray<AssignNotice>,
+  zone: string,
+  now: number,
+) => {
   const given = notices.filter((notice) => notice.kind === "given");
   const other = notices.filter((notice) => notice.kind !== "given");
   if (notices.length === 1)
     return given.length === 1
-      ? ended(`${agent} gave you ${line(given[0]!, zone)}`)
+      ? given[0]!.row.category === "meeting"
+        ? meetingLine(agent, given[0]!, zone, now)
+        : ended(`${agent} gave you ${line(given[0]!, zone)}`)
       : ended(
           other[0]!.by === undefined ? `${agent} ${line(other[0]!, zone)}` : line(other[0]!, zone),
         );
@@ -173,7 +205,12 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
     if (chatId === undefined) continue;
     const [profile] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone FROM kin_people
       WHERE org_id = ${turn.orgId} AND person_id = ${person}`;
-    const body = bodyFor(turn.by ?? agent.name, theirs, profile?.zone ?? fallbackZone);
+    const body = bodyFor(
+      turn.by ?? agent.name,
+      theirs,
+      profile?.zone ?? fallbackZone,
+      yield* Clock.currentTimeMillis,
+    );
     // The same lines from the same turn are one message, so a retried call posts nothing more.
     const messageId = KinMessageId.make(
       `kin-assign-${NodeCrypto.createHash("sha256")

@@ -366,6 +366,8 @@ export const CreateResult = Schema.Struct({
       key: Schema.String,
       title: Schema.String,
       created: Schema.Boolean,
+      /** A meeting whose start has passed: recorded as held, not booked. */
+      past: Schema.optional(Schema.Literal(true)),
       ...Marks.fields,
     }),
   ),
@@ -1463,7 +1465,17 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
       ...(source === undefined || team !== undefined ? {} : { source }),
     });
     if (created) notices.push(...movedNotices(undefined, stored));
-    results.push({ key: stored.key, title: stored.title, created, ...marksOf(lists, stored) });
+    const past =
+      stored.category === "meeting" &&
+      stored.dateAt !== null &&
+      stored.dateAt <= (yield* Clock.currentTimeMillis);
+    results.push({
+      key: stored.key,
+      title: stored.title,
+      created,
+      ...(past ? { past: true as const } : {}),
+      ...marksOf(lists, stored),
+    });
   }
   return { ...(yield* tell(lead, notices)), records: results };
 });

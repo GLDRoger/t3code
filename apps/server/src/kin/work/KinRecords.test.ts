@@ -2371,6 +2371,26 @@ it.effect(
         ],
       );
       assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-3" })).reason);
+      // Run 4: a meeting already held is recorded, one to come is attended: neither is a task.
+      yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
+      const meetings = [];
+      for (const at of ["2026-11-15T17:00+05:30", "2026-11-19T15:00+05:30"])
+        meetings.push(
+          ...(yield* LeadWork.create(scope, {
+            sourceEventId: "ask-event",
+            records: [{ title: `Invented review ${at}`, category: "meeting", owner: "Mate", at }],
+          })).records.map((one) => one.past ?? false),
+        );
+      assert.deepStrictEqual(meetings, [true, false]);
+      const [held, coming] = (yield* notices).slice(-2).map((row) => row.body);
+      assert.match(
+        held!,
+        /^Lead lead recorded your meeting W-\d+ Invented review .+ on Sun 15 Nov \d\d:\d\d\.$/u,
+      );
+      assert.match(
+        coming!,
+        /^Lead lead added you to the meeting W-\d+ Invented review .+ on Thu 19 Nov \d\d:\d\d\.$/u,
+      );
     }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );
 
