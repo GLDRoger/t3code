@@ -85,6 +85,29 @@ export const KinMessageRef = Schema.TaggedStruct("doc", {
 export type KinMessageRef = typeof KinMessageRef.Type;
 export const KIN_MESSAGE_REFS_CAP = 5;
 
+/** Where a name in a message goes: a chat, a teammate's profile, an entry by its key, or Settings. */
+export const KinMessageLinkTarget = Schema.Union([
+  Schema.TaggedStruct("chat", { chatId: TrimmedNonEmptyString }),
+  Schema.TaggedStruct("person", { personId: TrimmedNonEmptyString }),
+  Schema.TaggedStruct("record", {
+    key: KinRefKey,
+    kind: Schema.Literals(["task", "client", "project", "doc", "entry"]),
+  }),
+  Schema.TaggedStruct("settings", {}),
+]);
+export type KinMessageLinkTarget = typeof KinMessageLinkTarget.Type;
+/**
+ * Text in a message that names something this reader may open, worked out by the host for each
+ * reader. `note` is the entry's one line, such as "Logo files · Open".
+ */
+export const KinMessageLink = Schema.Struct({
+  text: KinTrimmedText,
+  to: KinMessageLinkTarget,
+  note: Schema.NullOr(KinText),
+});
+export type KinMessageLink = typeof KinMessageLink.Type;
+export const KIN_MESSAGE_LINKS_CAP = 24;
+
 export const KinChatKind = Schema.Literals(["direct", "team_group", "project_group", "router"]);
 export type KinChatKind = typeof KinChatKind.Type;
 export const KinRole = Schema.Literals(["owner", "member", "guest"]);
@@ -234,6 +257,10 @@ export const KinMessage = Schema.Struct({
   attachments: Schema.optional(Schema.Array(KinAttachment)),
   // Absent on a message that points at nothing.
   refs: Schema.optional(Schema.Array(KinMessageRef)),
+  // What this reader may open from the text; absent when it names nothing they can.
+  links: Schema.optional(Schema.Array(KinMessageLink)),
+  // An agent's check-in or weekly brief, drawn as one; absent on everything else.
+  form: Schema.optional(Schema.Literal("brief")),
   intent: Schema.NullOr(KinAgentIntent),
   mentions: Schema.Array(KinMemberId),
   replyTo: Schema.NullOr(KinMessageId),
@@ -373,7 +400,8 @@ export type KinSendCard = typeof KinSendCard.Type;
 export const KinChoiceCardState = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
   detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
-  options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
+  // An agent's kin_ask offers at most four; Kin's own cards, such as a statement's currency, up to eight.
+  options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
   /** A picture of what is asked about, such as a new logo: a file in this card's chat. */
   image: Schema.optionalKey(
     Schema.Struct({
@@ -385,6 +413,16 @@ export const KinChoiceCardState = Schema.Struct({
   send: Schema.optionalKey(KinSendCard),
   /** Set when a newer card for the same thing closed this one. */
   replaced: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * What the answer did, in the owner's words, set by the server on a card Kin asked itself: a
+   * past-tense title ("Money recorded") and what happened ("Receipt RCT/26-27/001 for ₹25,000…").
+   */
+  outcome: Schema.optionalKey(
+    Schema.Struct({
+      title: KinTrimmedText.check(Schema.isMaxLength(120)),
+      text: KinText.check(Schema.isMaxLength(600)),
+    }),
+  ),
   // The first answer settles the card.
   answer: Schema.NullOr(
     Schema.Struct({
@@ -397,6 +435,7 @@ export const KinChoiceCardState = Schema.Struct({
   ),
 });
 export type KinChoiceCardState = typeof KinChoiceCardState.Type;
+export type KinChoiceOutcome = NonNullable<KinChoiceCardState["outcome"]>;
 
 export const KinPresenceState = Schema.Literals([
   // Older servers only; clients show no line for it.
@@ -590,7 +629,14 @@ export const KinOrgsListResult = Schema.Struct({
       ),
     }),
   ),
-  me: Schema.Array(Schema.Struct({ orgId: KinOrgId, personId: KinPersonId })),
+  me: Schema.Array(
+    Schema.Struct({
+      orgId: KinOrgId,
+      personId: KinPersonId,
+      // Absent from a host older than briefs.
+      displayName: Schema.optional(Schema.String),
+    }),
+  ),
 });
 export type KinOrgsListResult = typeof KinOrgsListResult.Type;
 export const KinChatsSubscribeInput = Schema.Struct({ orgId: Schema.optional(KinOrgId) });

@@ -322,12 +322,7 @@ it.effect.each([true, false])(
         const toolNames = decodeToolList(
           yield* Effect.promise(() => HttpServerResponse.toWeb(toolList).text()),
         ).result.tools.map((tool) => tool.name);
-        assert.includeMembers(toolNames, [
-          "kin_chat_read",
-          "request_action",
-          "kin_delegate",
-          "kin_end",
-        ]);
+        assert.includeMembers(toolNames, ["kin_chat_read", "request_action", "kin_delegate"]);
         for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(toolNames, name);
         // Every tool a lead can call says what it may do where others read; a tool added later
@@ -337,8 +332,8 @@ it.effect.each([true, false])(
         assert.sameMembers(toolNames, Object.keys(OUTSIDE_TOOLS));
         for (const name of ["kin_connection_tools", "kin_connection_call", "kin_connection_offer"])
           assert.strictEqual(SHARED_TOOLS[name as keyof typeof SHARED_TOOLS], "refused");
-        // A page runs on every reader's device, so a turn others can read never posts one.
-        assert.strictEqual(SHARED_TOOLS.kin_visual, "refused");
+        // A page goes where a chart does; the gate checks its figures against every reader.
+        assert.strictEqual(SHARED_TOOLS.kin_visual, "allowed");
         assert.isFalse(
           yield* sharedToolAllowed(
             { orgId: person.orgId, agentId, wakeupId: "any" },

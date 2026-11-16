@@ -313,6 +313,23 @@ export async function click(
   return target.role;
 }
 
+/** Puts files in the composer, as the person picking them with "Attach files" would. */
+export async function attach(session: WebSession, paths: ReadonlyArray<string>) {
+  const { page } = session;
+  const files = paths.map((path) => NodePath.resolve(path));
+  for (const file of files)
+    if (!NodeFS.existsSync(file)) throw new VerifyError(`no file at ${file}`);
+  const button = page.getByRole("button", { name: "Attach files" });
+  if ((await button.count()) === 0)
+    throw new VerifyError("no Attach files button here; open a chat first");
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser", { timeout: 10_000 }),
+    button.first().click(),
+  ]);
+  await chooser.setFiles(files);
+  await settle(page);
+}
+
 /** Types into the named field, or the focused one, or the page's only text area. */
 export async function type(
   session: WebSession,
@@ -360,6 +377,31 @@ export async function waitFor(
   throw new VerifyError(
     `${options.gone ? "still showing" : "never showed"} "${text}" after ${options.timeoutMs / 1000}s; run \`snapshot\``,
   );
+}
+
+/** The window's size and light or dark, as a phone-width or wide screen would show the page. */
+export async function view(
+  session: WebSession,
+  options: {
+    readonly width: number;
+    readonly height: number;
+    readonly colorScheme: "dark" | "light" | null;
+  },
+) {
+  await session.page.setViewportSize({ width: options.width, height: options.height });
+  if (options.colorScheme !== null) {
+    await session.page.emulateMedia({ colorScheme: options.colorScheme });
+    // The app keeps its own appearance, read at load.
+    await session.page.evaluate(
+      (mode) =>
+        (
+          globalThis as unknown as { localStorage: { setItem(key: string, value: string): void } }
+        ).localStorage.setItem("t3code:theme-appearance-mode", mode),
+      options.colorScheme,
+    );
+    await session.page.reload();
+  }
+  await settle(session.page);
 }
 
 /** Screenshots only to an explicit path, never into the live install's tree. */

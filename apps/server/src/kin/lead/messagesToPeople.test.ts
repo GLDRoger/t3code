@@ -1,5 +1,4 @@
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
-import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { kinSecretsTest } from "./layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
@@ -81,7 +80,6 @@ const kinServices = Layer.unwrap(
       Team.layer,
       Layer.mock(KinWorkers)({}),
       Layer.mock(LeadMemory)({}),
-      Layer.mock(KinReplyBridge)({ silentEnd: () => Effect.succeed(false) }),
       repoReadsOff,
       pullRequestCareOff,
     ).pipe(Layer.provideMerge(Layer.succeedContext(services)));
@@ -163,7 +161,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       ] as const) {
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
           access, time_zone, work_hours_json)
-        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'UTC', ${allDay})`;
+        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'Asia/Kolkata', ${allDay})`;
         yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
           VALUES (${`${id}-session`}, ${orgId}, ${id}, 0)`;
       }
@@ -431,6 +429,70 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       const [run] = yield* sql<{ turns: number }>`SELECT agent_turns AS turns FROM kin_floor_runs
       WHERE org_id = ${orgId} AND chat_id = ${zoyasChat} ORDER BY opened_at DESC, rowid DESC LIMIT 1`;
       assert.strictEqual(run?.turns, 1);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a visual in a teammate's chat goes only when everyone there may see its figures", () =>
+  Effect.andThen(
+    TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
+    Effect.gen(function* () {
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      const identity = Context.get(services, KinIdentity);
+      const chats = Context.get(services, KinChatService);
+      const sql = yield* SqlClient.SqlClient;
+      yield* pairSession(AuthSessionId.make("owner"));
+      const [resolved] = yield* identity.resolve({
+        sessionId: AuthSessionId.make("owner"),
+        subject: "browser",
+        method: "browser-session-cookie",
+        scopes: AuthStandardClientScopes,
+      });
+      const owner = resolved!;
+      const { orgId } = owner;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access, time_zone)
+        VALUES ('zoya', ${orgId}, 'zoya', 'Zoya Sheikh', ${at}, 'member', 'UTC')`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 'lead', ${owner.personId}, ${at})`;
+      yield* identity.registerAgentThread({ orgId, agentId: chief, threadId });
+      const ownerChat = (yield* chats.createDirect(owner, { orgId, agentId: chief })).chatId;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+          worker_projects_json, owner_chat_id, domain)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 0, ${threadId}, '{}', '[]', ${ownerChat},
+          'chief-of-staff')`;
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, ${chief}, ${owner.personId}, 0)`;
+      const zoya = { _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") };
+      const zoyasChat = (yield* chats.createDirect(zoya, { orgId, agentId: chief })).chatId;
+      const says = Effect.fn("test.says")(function* (
+        who: typeof owner | typeof zoya,
+        chatId: KinChatId,
+        body: string,
+      ) {
+        const message: KinMessage = yield* chats.send(who, { chatId, body, clientMessageId: body });
+        return `event:${yield* startAgentWakeup({ orgId, agentId: chief, threadId, message })}`;
+      });
+      // An invoice only the owner sees: its sum is a figure Zoya may not read.
+      const asked = yield* says(owner, ownerChat, "Track invoices");
+      const setup = yield* call("record_create", {
+        sourceEventId: asked,
+        records: [{ list: "invoices", title: "Invented retainer", amount: "47,200" }],
+      });
+      assert.isTrue(setup.ok, JSON.stringify(setup.value));
+      const visual = (title: string, figure: string) =>
+        call("kin_visual", {
+          title,
+          html: `<div><b>${title}</b><p>${figure}</p></div>`,
+          height: 120,
+        });
+      yield* says(zoya, zoyasChat, "Show me my week as a picture");
+      // This fixture stores no files, so a page that passes every check stops at storing it.
+      const mine = yield* visual("Your week", "7 tasks done, 2 waiting");
+      assert.strictEqual(mine.value.message, "Attachments are unavailable.");
+      const hidden = yield* visual("This month", "47200 billed");
+      assert.isFalse(hidden.ok);
+      assert.match(String(hidden.value.message), /not everyone in this chat may see/);
     }).pipe(Effect.provide(layer)),
   ),
 );

@@ -75,7 +75,12 @@ import { HANDED_BACK_WORK, SHARED_TURN_LINE } from "../../apps/server/src/kin/le
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
-import { classifySegment, SILENT_END_REFUSAL } from "../../apps/server/src/kin/reply/classify.ts";
+import {
+  CAPTION_PROMPT,
+  classifySegment,
+  repeats,
+  RESCUE_PROMPT,
+} from "../../apps/server/src/kin/reply/classify.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
@@ -437,30 +442,34 @@ const CODEX_NAMES: Readonly<Record<string, string>> = {
   write_stdin: "write_stdin",
   web__run: "WebFetch",
 };
+/** What follows a text block, as Kin's bridge reads it (`classifySegment`). */
+const nextAfter = (blocks: ReadonlyArray<unknown>, index: number) => {
+  const following = blocks.slice(index + 1).find((next) => isText(next) || isToolUse(next));
+  return following === undefined ? "end" : isText(following) ? "text" : "tool";
+};
 /**
- * The text a chat shows from a turn's responses. Once a lead has posted a reply and called
- * kin_end, Kin drops any later text (KinReplyBridge `afterReply`), so a repeat is never seen.
+ * The text a chat shows from a turn's responses: every text block, status lines included, less
+ * one that only repeats the reply so far, which Kin's bridge drops (`repeats`).
  */
 export const shownText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) => {
+  const blocks = responses.flat();
   const said: Array<string> = [];
-  let replied = false;
-  let ended = false;
-  for (const content of responses)
-    content.forEach((block, i) => {
-      if (isToolUse(block) && normalizeToolName(block.name) === "kin_end") ended = true;
-      if (!isText(block) || (ended && replied)) return;
-      said.push(block.text);
-      const following = content.slice(i + 1).find((next) => isText(next) || isToolUse(next));
-      const next = isToolUse(following)
-        ? normalizeToolName(following.name) === "kin_end"
-          ? "end"
-          : "tool"
-        : following === undefined
-          ? "end"
-          : "text";
-      if (classifySegment(block.text, next) === "post") replied = true;
-    });
+  let reply = "";
+  blocks.forEach((block, index) => {
+    if (!isText(block) || (reply !== "" && repeats(block.text, reply))) return;
+    said.push(block.text);
+    if (classifySegment(block.text, nextAfter(blocks, index)) === "post")
+      reply = reply === "" ? block.text : `${reply}\n\n${block.text}`;
+  });
   return said.join("\n\n");
+};
+/** Whether any text block posts as a message: short text before a tool is a status line. */
+const postsText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) => {
+  const blocks = responses.flat();
+  return blocks.some(
+    (block, index) =>
+      isText(block) && classifySegment(block.text, nextAfter(blocks, index)) === "post",
+  );
 };
 export const normalizeToolName = (name: string) => {
   const bare = name.slice(name.lastIndexOf(".") + 1);
@@ -1725,21 +1734,35 @@ const ANSWERS_IN_CHAT = new Set([
   "doc_edit",
   "doc_rewrite",
 ]);
+// Cards that show a chart, visual or file: Kin asks once for a line saying what it is. A doc
+// tool shows its doc as a card only when asked to (`card`); otherwise it posts nothing.
+const SHOWS_ONLY = new Set(["kin_chart", "kin_visual", "kin_document", "kin_issue", "kin_receipt"]);
+const DOC_TOOLS = new Set(["doc_create", "doc_edit", "doc_rewrite"]);
 /**
- * Kin refuses a lead's kin_end while a person's message has no answer in the chat
- * (KinReplyBridge `silentEnd`): no posted text and no card or reaction, once per turn.
+ * What Kin asks a lead whose finished turn left a person's message without words
+ * (KinReplyBridge `complete`): the rescue prompt, the caption prompt when its only answer was a
+ * chart, visual or file, or undefined when the turn answered.
  */
-export const silentEnd = (sample: Pick<Sample, "testCase" | "responses">) =>
-  sample.testCase.setup.world?.kinLead === true &&
-  /BEGIN QUOTE: (?:owner|co-owner|member human|guest human) message/.test(sample.testCase.prompt) &&
-  classifySegment(shownText(sample.responses), "end") !== "post" &&
-  !sample.responses.some((content) =>
-    content.some((block) => isToolUse(block) && ANSWERS_IN_CHAT.has(normalizeToolName(block.name))),
-  ) &&
-  // Refused once only: a second silent kin_end ends the turn, and Kin's rescue answers.
-  sample.responses
+export const rescuePrompt = (sample: Pick<Sample, "testCase" | "responses">) => {
+  if (sample.testCase.setup.world?.kinLead !== true) return undefined;
+  if (
+    !/BEGIN QUOTE: (?:owner|co-owner|member human|guest human) message/.test(sample.testCase.prompt)
+  )
+    return undefined;
+  if (postsText(sample.responses)) return undefined;
+  const used = sample.responses
     .flat()
-    .filter((block) => isToolUse(block) && normalizeToolName(block.name) === "kin_end").length <= 1;
+    .filter(isToolUse)
+    .map((block) => ({
+      tool: normalizeToolName(block.name),
+      card: isRecord(block.input) && block.input.card === true,
+    }));
+  const shows = ({ tool, card }: (typeof used)[number]) =>
+    SHOWS_ONLY.has(tool) || (DOC_TOOLS.has(tool) && card);
+  if (used.some((one) => ANSWERS_IN_CHAT.has(one.tool) && !DOC_TOOLS.has(one.tool) && !shows(one)))
+    return undefined;
+  return used.some(shows) ? CAPTION_PROMPT : RESCUE_PROMPT;
+};
 
 /** The result for one tool call. */
 export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* (
@@ -1761,7 +1784,6 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
         : input;
   }
   const failed = (error: string): Block => ({ ...toolResult(call.id, error), is_error: true });
-  if (name === "kin_end" && silentEnd(sample)) return failed(SILENT_END_REFUSAL);
   if (!base.codex && !hasTool(tools, call.name)) {
     const error = `InputValidationError: ${call.name} is deferred. Load it with ToolSearch first.`;
     return failed(`<tool_use_error>${error}</tool_use_error>`);
@@ -2327,7 +2349,9 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   let finalText = "";
   // Codex's code-mode cells take more model calls, so a case's own budget grows for it too.
   const extra = isCodex(config.model) ? 4 : 0;
-  const maxSteps = testCase.maxSteps === undefined ? config.maxSteps : testCase.maxSteps + extra;
+  let maxSteps = testCase.maxSteps === undefined ? config.maxSteps : testCase.maxSteps + extra;
+  // Kin's rescue: a finished lead turn that owed words and said none is asked once, as a new turn.
+  let rescue: string | undefined;
   for (let step = 0; step < maxSteps; step++) {
     const response = input
       ? yield* callCodex(config, codexRequest(base, input))
@@ -2350,7 +2374,12 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     if (response.stop_reason !== "tool_use") {
       stopReason = response.stop_reason ?? "unknown";
       finalText = texts.join("\n\n");
-      break;
+      const asked = input || rescue !== undefined ? undefined : rescuePrompt(sample);
+      if (asked === undefined) break;
+      rescue = asked;
+      messages.push({ role: "user", content: [text(asked)] });
+      maxSteps = Math.max(maxSteps, step + 3);
+      continue;
     }
     if (failedEarly(testCase.expect, { calls, text: shown, stopReason }, pastedText(testCase))) {
       stopReason = "failed_early";
@@ -2432,6 +2461,8 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     text: shown,
     stopReason,
     finalText,
+    ...(rescue === undefined ? {} : { rescue }),
+    silent: rescuePrompt(sample) !== undefined,
     linked: [...sample.linked],
     ...(sample.devices ? { launchers: [...sample.devices.launchers] } : {}),
     usage,

@@ -123,8 +123,9 @@ export const SHARED_TOOLS = {
   kin_react: "allowed",
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",
-  // A page is code that runs on each reader's device: owner-only chats until it is reviewed.
-  kin_visual: "refused",
+  // Like a chart, in the sealed frame; its figures are checked against everyone behind the
+  // turn (`KinLevelGate.visual`).
+  kin_visual: "allowed",
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",
@@ -132,8 +133,6 @@ export const SHARED_TOOLS = {
   people_read: "allowed",
   // Saved only for the one person who asked, with their own rights.
   people_update: "allowed",
-  // Ends the turn; a shared turn's summary reaches no journal (`LeadMemory.end`).
-  kin_end: "allowed",
   kin_delegate: ownerDelegates,
   kin_follow_up: ownerAskedAboutWorkerHere,
   kin_worker_stop: ownerAskedAboutWorkerHere,

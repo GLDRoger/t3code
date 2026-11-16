@@ -130,6 +130,20 @@ export const KinPulseScope = Schema.Struct({
 });
 export type KinPulseScope = typeof KinPulseScope.Type;
 
+/** What a `limit`ed screen read leaves out, counted over every fact it would have sent. */
+export const KinPulseOutline = Schema.Struct({
+  /** Not handled by anyone: the Tasks badge. */
+  open: NonNegativeInt,
+  /** Of those, in the money family, and whether one of them is urgent. */
+  money: NonNegativeInt,
+  moneyUrgent: Schema.Boolean,
+  /** The record keys every fact is about, handled ones included. */
+  records: Schema.Array(Schema.String),
+  /** An invoice is overdue (an `invoice_overdue:` fact, handled or not). */
+  invoiceOverdue: Schema.Boolean,
+});
+export type KinPulseOutline = typeof KinPulseOutline.Type;
+
 export const KinPulseRead = Schema.Struct({
   asOf: CanonicalUtcTimestamp,
   /** Facts matching, before the cap. */
@@ -137,6 +151,13 @@ export const KinPulseRead = Schema.Struct({
   facts: Schema.Array(KinPulseFact),
 });
 export type KinPulseRead = typeof KinPulseRead.Type;
+
+/** `kin.pulse.read` for people's screens: `outline` comes with a `limit`. */
+export const KinPulseScreenRead = Schema.Struct({
+  ...KinPulseRead.fields,
+  outline: Schema.optional(KinPulseOutline),
+});
+export type KinPulseScreenRead = typeof KinPulseScreenRead.Type;
 
 export const KinPulseHandleAction = Schema.Literals(["got_it", "not_a_problem", "undo"]);
 export type KinPulseHandleAction = typeof KinPulseHandleAction.Type;
@@ -147,6 +168,13 @@ export const KinPulseListInput = Schema.Struct({
   orgId: KinOrgId,
   /** Also what someone has in hand or called not a problem, for the Handled list and its Undo. */
   includeHandled: Schema.optional(Schema.Boolean),
+  /**
+   * At most this many open facts, in the order Needs you shows them (urgent first, money last),
+   * then every handled one, with `outline` counting the rest. Absent: every fact, up to 200.
+   */
+  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+  /** Only facts about this project, client (by key) or family, as a screen about it shows them. */
+  scope: Schema.optional(KinPulseScope),
 });
 export type KinPulseListInput = typeof KinPulseListInput.Type;
 
@@ -282,7 +310,7 @@ export type KinCheckInActInput = typeof KinCheckInActInput.Type;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 export const KinPulseRpcs = [
-  Rpc.make("kin.pulse.read", { payload: KinPulseListInput, success: KinPulseRead, error }),
+  Rpc.make("kin.pulse.read", { payload: KinPulseListInput, success: KinPulseScreenRead, error }),
   Rpc.make("kin.pulse.handle", { payload: KinPulseHandleInput, success: KinPulseFact, error }),
   Rpc.make("kin.goals.list", { payload: KinGoalsInput, success: KinGoalsResult, error }),
   Rpc.make("kin.goals.save", { payload: KinGoalSaveInput, success: KinGoal, error }),

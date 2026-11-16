@@ -45,6 +45,8 @@ interface TurnScript {
   readonly reply?: string;
   /** Stays working this long before replying, so a person can watch the turn run. */
   readonly holdMs?: number;
+  /** Fails the prompt after its calls, as a provider error would: Kin's failure lines follow. */
+  readonly fail?: boolean;
 }
 
 const MARKER = /\[kv:([A-Za-z0-9_-]{4,64})\]/g;
@@ -106,10 +108,7 @@ function promptText(params: Record<string, unknown>): string {
 
 interface Turn {
   readonly reply: string;
-  /** Ends the turn the way a real agent does, after its reply: kin_end saves what it staged. */
-  readonly end: () => Promise<void>;
 }
-const noEnd = async () => {};
 
 /** kin-bench measures every prompt: with `<verify dir>/capture-prompts` present, each is kept with its tool list. */
 async function capture(server: McpServer | undefined, prompt: string) {
@@ -199,7 +198,7 @@ async function teamTurn(server: McpServer | undefined, prompt: string): Promise<
   const done = NodeFS.existsSync(logPath)
     ? NodeFS.readFileSync(logPath, "utf8").split("\n").filter(Boolean).length
     : 0;
-  if (server === undefined) return { reply: "No MCP server.", end: noEnd };
+  if (server === undefined) return { reply: "No MCP server." };
   const client = await mcpClient(server);
   const leads = (await client.call("kin_leads", {})) as {
     result?: { structuredContent?: { leads?: ReadonlyArray<{ name: string; you: boolean }> } };
@@ -210,23 +209,14 @@ async function teamTurn(server: McpServer | undefined, prompt: string): Promise<
     NodeFS.appendFileSync(logPath, `${JSON.stringify({ step: done, agent: me, ...entry })}\n`);
   if (step === undefined || step.agent !== me) {
     log({ did: "mismatch", expected: step?.agent ?? "no more steps" });
-    return {
-      reply: "Pass.",
-      end: async () => void (await client.call("kin_end", { summary: "pass" })),
-    };
+    return { reply: "Pass." };
   }
   if (step.pass === true) {
     log({ did: "passed" });
-    return {
-      reply: "Pass.",
-      end: async () => void (await client.call("kin_end", { summary: "pass" })),
-    };
+    return { reply: "Pass." };
   }
   log({ did: "ran", results: await callAll(client, step.calls ?? [], filler(prompt, prompt)) });
-  return {
-    reply: "Said.",
-    end: async () => void (await client.call("kin_end", { summary: "said" })),
-  };
+  return { reply: "Said." };
 }
 
 async function runTurn(server: McpServer | undefined, prompt: string): Promise<Turn> {
@@ -235,40 +225,40 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<T
   if (team !== undefined) return team;
   // The prompt may quote earlier messages; the newest marker is this turn's.
   const id = [...prompt.matchAll(MARKER)].at(-1)?.[1];
-  if (id === undefined) return { reply: "Noted.", end: noEnd };
+  // A check-in (Run now) answers with `<verify dir>/checkin-reply.md` once, to show a brief.
+  const brief = NodePath.join(verifyDir, "checkin-reply.md");
+  if (prompt.includes("This is a check-in") && NodeFS.existsSync(brief)) {
+    const reply = NodeFS.readFileSync(brief, "utf8");
+    NodeFS.rmSync(brief);
+    return { reply };
+  }
+  if (id === undefined) return { reply: "Noted." };
   const scriptPath = NodePath.join(verifyDir, "turns", `${id}.json`);
   const resultPath = NodePath.join(verifyDir, "turns", `${id}.result.json`);
   // A turn re-run after a restart must not repeat its tool calls.
-  if (NodeFS.existsSync(resultPath)) return { reply: "Done.", end: noEnd };
+  if (NodeFS.existsSync(resultPath)) return { reply: "Done." };
   let script: TurnScript;
   try {
     script = JSON.parse(NodeFS.readFileSync(scriptPath, "utf8")) as TurnScript;
   } catch {
-    return { reply: `No script for ${id}.`, end: noEnd };
+    return { reply: `No script for ${id}.` };
   }
   NodeFS.writeFileSync(NodePath.join(verifyDir, "turns", `${id}.prompt.txt`), prompt);
   // A real agent copies the event it answers and the chat it replies to from its prompt;
   // "$event" and "$chat" ask for those.
   const fill = filler(prompt.slice(0, prompt.lastIndexOf(`[kv:${id}]`)), prompt);
   const results: Array<unknown> = [];
-  let mcp: Awaited<ReturnType<typeof mcpClient>> | undefined;
   try {
     if (server === undefined) throw new Error("no MCP server in this session");
     const client = await mcpClient(server);
-    mcp = client;
     results.push(...(await callAll(client, script.calls ?? [], fill)));
   } catch (error) {
     results.push({ error: String(error) });
   }
   if (script.holdMs !== undefined) await new Promise((done) => setTimeout(done, script.holdMs));
   NodeFS.writeFileSync(resultPath, JSON.stringify({ results }, null, 2));
-  const ends = (script.calls ?? []).some((call) => call.name === "kin_end");
-  return {
-    reply: script.reply ?? "Done.",
-    end: async () => {
-      if (mcp !== undefined && !ends) await mcp.call("kin_end", { summary: `kin-verify ${id}` });
-    },
-  };
+  if (script.fail === true) throw new Error("kin-verify: this turn fails on purpose");
+  return { reply: script.reply ?? "Done." };
 }
 
 function main(): void {
@@ -316,7 +306,6 @@ function main(): void {
             },
           },
         });
-        await turn.end().catch(() => undefined);
         return { stopReason: "end_turn" };
       }
       case "session/close":

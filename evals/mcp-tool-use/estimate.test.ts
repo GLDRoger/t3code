@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 
 import { ASSUMED_SHAPE, caseProblems, sampleCost } from "./estimate.ts";
 
-const tools = new Set(["kin_relay", "record_create", "kin_end"]);
+const tools = new Set(["kin_relay", "record_create", "kin_journal"]);
 
 it("finds a regex that doesn't compile and a needed call to a tool the agent lacks", () => {
   expect(

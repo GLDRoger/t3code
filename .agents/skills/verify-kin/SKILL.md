@@ -53,6 +53,7 @@ kv as owner web click --name "Add task"    # exact name first; --role option, --
 kv as owner web type --name "What needs doing" "Check the logo files" --enter
 kv as zoya web wait "Check the logo files" # or --gone; 20 s by default
 kv as owner web screenshot /tmp/proof/new-task.png   # refuses any path under ~/.t3
+kv as owner web view --width 390 --dark       # phone width or wide, light or dark, for captures
 kv as dev rpc kin.work.list '{"project":"P-1"}'      # orgId is filled in
 kv tool finance money_summary '{}'                   # one real agent turn, no model
 kv tool chief kin_relay '{"to":"Zoya Sheikh","text":"…"}' --as-turn-of zoya
@@ -75,6 +76,8 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
   "calls": [...]}, {"agent": "Growth", "pass": true}]}`, in the order Kin must wake them. A woken
   agent that isn't the next step passes and logs a mismatch in `team-play.log.jsonl`, so a wrong
   turn order fails the script. `"$key"` in a later call is the record key an earlier one made.
+- A check-in's reply (Run now) is `<instance>/verify/checkin-reply.md` when that file exists; the
+  scripted agent posts it once and deletes it, to show a brief.
 - `clock` stops the server, rewrites stored times in one transaction and starts it again. The
   server's own clock is untouched; `set-date` moves times so that today reads as that date.
 - `db` opens the database read-only. Write through RPCs or tools, never SQL.
@@ -162,8 +165,10 @@ check the same facts through `as <person> rpc` while you do.
 `bash .agents/skills/verify-kin/scripts/card-gallery.sh <person>` makes every chat card in that
 person's chats with real scripted turns, about a minute: a long reply with a list, table, code and
 link, a question, a plan, a chart, a visual, a relay, a working line, a reaction, and for the owner
-and co-owner a check-in, a money chart, an invoice PDF, a send card and a receipt. It is a gallery to
-look at, not a pass/fail check; each line says what was made or why Kin refused it.
+and co-owner a check-in, a money chart, an invoice PDF, a send card and a receipt. It also makes a
+turn that couldn't start and one that stopped partway, three pictures in one message, and for the
+owner level a profile change, a nudge to Dev, a bank statement and a group with a mention. It is a
+gallery to look at, not a pass/fail check; each line says what was made or why Kin refused it.
 
 ## When it goes wrong
 

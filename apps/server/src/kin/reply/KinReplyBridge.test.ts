@@ -12,8 +12,6 @@ import {
   KinWakeupId,
   MessageId,
   NodeId,
-  EnvironmentId,
-  ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
@@ -41,15 +39,11 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
-import { McpSchema, McpServer } from "effect/ai";
 
 import {
   CLAUDE_PROVIDER,
   claudeThinkingItemId,
 } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
-import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
@@ -57,14 +51,6 @@ import { KinGroups } from "../chat/KinGroups.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, steerMessageId, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
-import { notConnectedLayer as repoReadsOff } from "../github/KinRepoReads.ts";
-import { notConnectedLayer as pullRequestCareOff } from "../github/PullRequestCare.ts";
-import { KinHandoff } from "../lead/Handoff.ts";
-import { KinTeam } from "../team/KinTeam.ts";
-import { LeadMemory } from "../lead/LeadMemory.ts";
-import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
-import { KinLeadToolkit } from "../lead/mcp/tools.ts";
-import { KinWorkers } from "../lead/Workers.ts";
 import {
   authorityLayer,
   startAgentWakeup,
@@ -73,7 +59,13 @@ import {
 import * as Kin from "../layer.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
-import { draftReplyText, SILENCE_MARKERS, stripTrailingSilenceMarker } from "./classify.ts";
+import {
+  CAPTION_PROMPT,
+  draftReplyText,
+  RESCUE_PROMPT,
+  SILENCE_MARKERS,
+  stripTrailingSilenceMarker,
+} from "./classify.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
 
@@ -93,6 +85,7 @@ type Fake = {
   items: ReadonlyArray<OrchestrationV2TurnItem>;
   rescueItems: ReadonlyArray<OrchestrationV2TurnItem>;
   rescues: number;
+  prompts: Array<string>;
 };
 
 // The lead thread as the bridge sees it: the real wake-up run, with turn items the test scripts.
@@ -118,9 +111,10 @@ const fakeThreads = (fake: Fake, wakeupId: KinWakeupId) =>
       return Layer.mock(ThreadManagement.ThreadManagementService)({
         streamDomainEvents: Stream.fromQueue(fake.live),
         getThreadProjection: () => projection,
-        sendToThread: () =>
+        sendToThread: (input) =>
           Effect.gen(function* () {
             fake.rescues++;
+            fake.prompts.push(input.text);
             const current = yield* projection;
             return {
               dispatch: { sequence: 0, storedEvents: [] },
@@ -315,6 +309,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
     items: [],
     rescueItems: [],
     rescues: 0,
+    prompts: [],
   };
   const context = yield* Layer.build(
     ReplyBridge.layer.pipe(
@@ -506,67 +501,71 @@ const steered = (
 });
 const githubAnswer =
   "GitHub access works now: GLDRoger/t3code has one open PR (#87, the live status change), its checks are green and it waits on one review. The last Actions run on kin passed. I cancelled the old reminder to retry GitHub, since you no longer need it. Tell me if you want me to watch #87.";
-const secondAnswer = `GitHub works now. I can read GLDRoger/t3code myself: ${"one open PR, green checks, ".repeat(20)}`;
 
+// A turn's reply is the text the lead writes, wherever it falls among its tool calls: one message
+// per request, never its thinking, and never the same answer twice.
 it.effect.each([
   {
-    name: "the reply, kin_end, then the same answer again",
+    name: "the reply, a tool, then the same answer again",
     items: (runId: RunId) => [
       tool("t1", 1, "mcp__kin__kin_github_repos", runId),
       thought("r1", 2, runId),
       tool("t2", 3, "mcp__kin__kin_github_prs", runId),
       thought("r2", 4, runId),
       tool("t3", 5, "mcp__kin__kin_cancel", runId),
-      tool("t4", 6, "mcp__kin__kin_github_runs", runId),
-      thought("r3", 7, runId),
-      tool("t5", 8, "mcp__kin__kin_journal", runId),
-      text("a", 9, githubAnswer, runId),
-      tool("end", 10, "mcp__kin__kin_end", runId),
-      text("b", 11, secondAnswer, runId),
+      text("a", 6, githubAnswer, runId),
+      tool("t5", 7, "mcp__kin__kin_journal", runId),
+      text("b", 8, githubAnswer, runId),
     ],
     expected: [githubAnswer],
   },
   {
-    name: "a short reply right before kin_end is the reply, not a status note",
+    name: "a short reply at the run's end is the reply, not a status note",
     items: (runId: RunId) => [
-      text("a", 1, "Done: deferred to Fri 9:00.", runId),
-      tool("end", 2, "mcp__kin__kin_end", runId),
-      text("b", 3, secondAnswer, runId),
+      tool("t1", 1, "mcp__kin__kin_defer", runId),
+      text("a", 2, "Done: deferred to Fri 9:00.", runId),
     ],
     expected: ["Done: deferred to Fri 9:00."],
   },
   {
-    name: "a long message, a tool, then the answer and kin_end, as one message",
+    name: "a long message, a tool, then more, as one message",
     items: (runId: RunId) => [
       text("a", 1, githubAnswer, runId),
       tool("t1", 2, "mcp__kin__kin_github_prs", runId),
       text("b", 3, "And #87 has a second approval now.", runId),
-      tool("end", 4, "mcp__kin__kin_end", runId),
     ],
     expected: [`${githubAnswer}\n\nAnd #87 has a second approval now.`],
   },
   {
-    name: "kin_end with nothing posted, then the reply",
+    name: "a status line, a tool, then the reply",
     items: (runId: RunId) => [
-      tool("t1", 1, "mcp__kin__kin_journal", runId),
-      tool("end", 2, "mcp__kin__kin_end", runId),
+      text("a", 1, "Checking CI", runId),
+      tool("t1", 2, "mcp__kin__kin_github_runs", runId),
+      text("b", 3, "CI is green on main.", runId),
+    ],
+    expected: ["CI is green on main."],
+  },
+  {
+    name: "thinking, then the reply",
+    items: (runId: RunId) => [
+      narration(1, runId),
+      tool("t1", 2, "mcp__kin__kin_journal", runId),
       text("a", 3, "CI is green on main.", runId),
     ],
     expected: ["CI is green on main."],
   },
   {
-    name: "a message steered in after kin_end gets its own answer, once",
+    name: "a message steered in after the reply gets its own answer, once",
     items: (runId: RunId, wakeupId: KinWakeupId) => [
       text("a", 1, "Apples, red and round.", runId),
-      tool("end", 2, "mcp__kin__kin_end", runId),
-      steered("s", 3, wakeupId, runId),
-      text("b", 4, "Pears, gold and sweet.", runId),
-      tool("end-again", 5, "mcp__kin__kin_end", runId),
-      text("c", 6, secondAnswer, runId),
+      steered("s", 2, wakeupId, runId),
+      text("b", 3, "Pears, gold and sweet.", runId),
+      tool("t1", 4, "mcp__kin__kin_journal", runId),
+      text("c", 5, "Pears, gold and sweet.", runId),
     ],
     expected: ["Apples, red and round.", "Pears, gold and sweet."],
   },
-])("a lead replies once: nothing posts after a reply and kin_end ($name)", ({ items, expected }) =>
+])("a turn's reply is the text it writes, posted once ($name)", ({ items, expected }) =>
   Effect.gen(function* () {
     const { fake, runId, complete, posted, wakeupId } = yield* setup({ ask: "Try now" });
     fake.items = items(runId, wakeupId);
@@ -673,47 +672,6 @@ it.effect.each([
         after,
       );
     }).pipe(Effect.provide(layer)),
-);
-
-it.effect("never streams a message the lead starts after its reply and kin_end", () =>
-  Effect.gen(function* () {
-    const { fake, runId, complete, posted, services, owner, chatId } = yield* setup({
-      ask: "Try now",
-    });
-    const all = yield* Context.get(services, KinChatHub).subscribeAll;
-    const answer = text("a", 1, githubAnswer, runId);
-    const end = tool("end", 2, "mcp__kin__kin_end", runId);
-    const again = text("b", 3, secondAnswer, runId);
-    const seen = yield* all.pipe(
-      Stream.filter((event) => event.type === "presence.updated" && event.presence !== null),
-      Stream.takeUntil(
-        (event) =>
-          event.type === "presence.updated" && event.presence?.label === "Setting a reminder",
-      ),
-      Stream.runCollect,
-      Effect.forkScoped,
-    );
-    // The running call after it is the sync point: by then the streamed text was handled.
-    const call = { ...tool("t", 4, "mcp__kin__kin_defer", runId), status: "running" as const };
-    for (const item of [answer, end, { ...again, streaming: true }, call])
-      yield* Queue.offer(fake.live, itemEvent(item));
-    const events = yield* Fiber.join(seen);
-    assert.deepStrictEqual(
-      (yield* Context.get(services, KinPresence).snapshot(owner.orgId, chatId)).drafts,
-      [],
-    );
-    assert.isFalse(
-      events.some(
-        (event) => event.type === "presence.updated" && event.presence?.state === "writing",
-      ),
-    );
-    fake.items = [answer, end, again];
-    yield* complete;
-    assert.deepStrictEqual(
-      (yield* posted).map((row) => row.body),
-      [githubAnswer],
-    );
-  }).pipe(Effect.provide(layer)),
 );
 
 // A turn built for the owner alone streams nothing more once a teammate can read its chat.
@@ -1137,6 +1095,53 @@ it.effect.each([
   }).pipe(Effect.provide(layer)),
 );
 
+// Sonnet 5.5 evals: 14 of 93 turns posted a chart, statement or file and no words. A card that
+// asks or shows its result answers; a chart or file alone gets one request for its line.
+it.effect.each([
+  { card: "question", rescue: [], prompts: [], expected: [] },
+  { card: "chart", rescue: ["Signups dipped midweek."], expected: ["Signups dipped midweek."] },
+  // No line came: the chart stands, and "didn't reply" under it would be false.
+  { card: "chart", rescue: [], expected: [] },
+] as const)("a card that only shows something asks once for its line ($card, $rescue)", (input) =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, identity, chats, owner, wakeupId, chatId, sql } = yield* setup({
+      ask: "How did signups go?",
+    });
+    const lead = Option.getOrThrow(
+      yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+    );
+    if (input.card === "question")
+      yield* chats.ask(lead, {
+        chatId,
+        clientMessageId: "which-week",
+        question: "This week or last?",
+        options: [{ label: "This week" }, { label: "Last week" }],
+      });
+    else
+      yield* chats.chart(lead, {
+        chatId,
+        clientMessageId: "signups",
+        intent: "answer",
+        chart: "bar",
+        title: "Signups",
+        unit: { kind: "count" },
+        labels: ["Mon", "Tue", "Wed"],
+        series: [{ name: "This week", values: [12, 9, 14] }],
+      });
+    fake.items = [narration(1, runId), tool("t", 2, "mcp__kin__kin_chart", runId)];
+    fake.rescueItems = input.rescue.map((body, n) => text(`r${n}`, 10 + n, body, rescueRunId));
+    yield* complete;
+    assert.deepStrictEqual(fake.prompts, input.card === "chart" ? [CAPTION_PROMPT] : []);
+    const said = yield* sql<{ line: string }>`SELECT author_kind || ':' || body AS line
+      FROM kin_messages WHERE chat_id = ${chatId} AND author_kind != 'human' AND body != ''
+      ORDER BY seq`;
+    assert.deepStrictEqual(
+      said.map((row) => row.line),
+      input.expected.map((body) => `agent:${body}`),
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "keeps a turn's reply to one message however many segments, live, with kin_chat_post bounded",
   () =>
@@ -1144,7 +1149,7 @@ it.effect(
       const { fake, runId, complete, posted, identity, chats, owner, wakeupId, chatId, services } =
         yield* setup({ ask: "Tell me everything" });
       const all = yield* Context.get(services, KinChatHub).subscribeAll;
-      const paragraph = (n: number) => `Part ${n}. ${"Detail ".repeat(40).trim()}`;
+      const paragraph = (n: number) => `Part ${n}. ${`Detail ${n} `.repeat(40).trim()}`;
       fake.items = Array.from({ length: 12 }, (_, n) => [
         text(`p${n}`, 2 * n + 1, paragraph(n), runId),
         tool(`t${n}`, 2 * n + 2, "mcp__kin__kin_journal", runId),
@@ -1519,7 +1524,7 @@ const WAKE_KINDS: Record<KinEvent["_tag"] | "hand-over", WakeCase> = {
 const reply = "Phase 2 is about three weeks: booking first, then reports.";
 // Run 4: Claude's summarised reasoning restating the answer, which its adapter shows as an
 // update (`ClaudeAdapterV2.test.ts` makes it from the same blocks). It posted in place of the
-// answer the model wrote after kin_end. Its id is the adapter's own, so a new format still skips.
+// answer the model wrote after it. Its id is the adapter's own, so a new format still skips.
 const narration = (ordinal: number, runId: RunId): OrchestrationV2TurnItem => ({
   ...text("narration", ordinal, "The Orbit invoice went out to Anita from hello@.", runId),
   nativeItemRef: {
@@ -1532,11 +1537,11 @@ it.effect.each(
   Object.entries(WAKE_KINDS).flatMap(([kind, wake]) =>
     (
       [
-        "reply then kin_end",
-        "kin_end then reply",
-        "kin_end only",
-        "reasoning, kin_end, then reply",
-        "reasoning and kin_end only",
+        "reply",
+        "a tool then the reply",
+        "a tool only",
+        "reasoning, a tool, then the reply",
+        "reasoning and a tool only",
       ] as const
     ).map((order) => ({
       kind,
@@ -1553,17 +1558,17 @@ it.effect.each(
         ...(wake.reaction === undefined ? {} : { reaction: wake.reaction }),
         ...(wake.event === undefined ? {} : { event: wake.event }),
       });
-      const end = tool("end", 2, "mcp__kin__kin_end", runId);
+      const call = tool("t", 2, "mcp__kin__kin_journal", runId);
       fake.items =
-        order === "reply then kin_end"
-          ? [text("a", 1, reply, runId), end]
-          : order === "kin_end then reply"
-            ? [{ ...end, ordinal: 1 }, text("a", 2, reply, runId)]
-            : order === "reasoning, kin_end, then reply"
-              ? [narration(1, runId), end, text("a", 3, reply, runId)]
-              : order === "reasoning and kin_end only"
-                ? [narration(1, runId), end]
-                : [{ ...end, ordinal: 1 }];
+        order === "reply"
+          ? [text("a", 1, reply, runId)]
+          : order === "a tool then the reply"
+            ? [{ ...call, ordinal: 1 }, text("a", 2, reply, runId)]
+            : order === "reasoning, a tool, then the reply"
+              ? [narration(1, runId), call, text("a", 3, reply, runId)]
+              : order === "reasoning and a tool only"
+                ? [narration(1, runId), call]
+                : [{ ...call, ordinal: 1 }];
       const replied = !order.endsWith("only");
       for (const item of fake.items) yield* Queue.offer(fake.live, itemEvent(item));
       yield* complete;
@@ -1575,7 +1580,7 @@ it.effect.each(
         said.map((row) => `${row.authorKind}:${row.body}`),
         replied ? [`agent:${reply}`] : wake.owed ? ["system:Ada didn't reply."] : [],
       );
-      assert.strictEqual(fake.rescues, !replied && wake.owed ? 1 : 0);
+      assert.deepStrictEqual(fake.prompts, !replied && wake.owed ? [RESCUE_PROMPT] : []);
     }).pipe(Effect.provide(layer)),
 );
 
@@ -1596,7 +1601,7 @@ it.effect.each(["hand-over", "record.changed", "worker.report", "github"] as con
         yield* sql`INSERT INTO kin_floor_notices (org_id, message_id, chat_id, agent_id, posted_at)
           VALUES (${owner.orgId}, ${`earlier-${n}`}, ${direct.chatId}, ${agentId}, 0)`;
       }
-      fake.items = [text("a", 1, reply, runId), tool("end", 2, "mcp__kin__kin_end", runId)];
+      fake.items = [text("a", 1, reply, runId)];
       yield* complete;
       const said = yield* sql<{ body: string; authorKind: string }>`
         SELECT body, author_kind AS "authorKind" FROM kin_messages
@@ -1625,143 +1630,5 @@ it.effect("a reply Kin refused is not an answer: the owner sees that none came",
     );
     // The rescue's text would be refused the same way.
     assert.strictEqual(fake.rescues, 0);
-  }).pipe(Effect.provide(layer)),
-);
-
-const endScope: McpInvocationScope = {
-  environmentId: EnvironmentId.make("environment"),
-  requestNamespace: "lead",
-  issuedAt: 0,
-  capabilities: new Set(),
-  client: undefined,
-  thread: {
-    threadId,
-    providerSessionId: "lead",
-    providerInstanceId: ProviderInstanceId.make("claude"),
-  },
-};
-const endClient = McpSchema.McpServerClient.of({
-  clientId: 1,
-  clientCapabilities: {},
-  clientInfo: { name: "test", version: "1" },
-  protocolVersion: "2025-06-18",
-  initializePayload: {
-    protocolVersion: "2025-06-18",
-    capabilities: {},
-    clientInfo: { name: "test", version: "1" },
-  },
-  getClient: Effect.die("unused"),
-});
-
-/** kin_end as the lead's provider calls it, answered by this wake-up's bridge. */
-const endTool = Effect.fn("test.endTool")(function* (
-  services: Effect.Success<ReturnType<typeof setup>>["services"],
-  bridge: ReplyBridge.KinReplyBridge["Service"],
-) {
-  const tools = yield* Layer.build(
-    McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers).pipe(
-      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.succeed(ReplyBridge.KinReplyBridge, bridge),
-          Layer.mock(LeadMemory)({ end: () => Effect.void }),
-          Layer.mock(KinWorkers)({}),
-          Layer.mock(KinHandoff)({}),
-          Layer.mock(KinTeam)({}),
-          repoReadsOff,
-          pullRequestCareOff,
-          Layer.mock(ThreadManagement.ThreadManagementService)({
-            getThreadShell: (id) =>
-              Effect.succeed({
-                ...liveThreadShell(id),
-                providerInstanceId: ProviderInstanceId.make("claude"),
-              }),
-          }),
-        ).pipe(Layer.provideMerge(Layer.succeedContext(services))),
-      ),
-    ),
-  );
-  const server = Context.get(tools, McpServer.McpServer);
-  return server.callTool({ name: "kin_end", arguments: { summary: "Answered the owner." } }).pipe(
-    Effect.provideService(McpInvocationContext, endScope),
-    Effect.provideService(KinIdentity, Context.get(services, KinIdentity)),
-    Effect.provideService(McpSchema.McpServerClient, endClient),
-    Effect.map((result) => ({
-      ok: result.isError !== true,
-      text: result.content.find((item) => item.type === "text")?.text ?? "",
-    })),
-  );
-});
-
-// Sonnet 5.5 evals (Nov 2026): 17 of 93 turns put the whole reply in thinking and called kin_end,
-// so the owner heard nothing. kin_end now refuses that end; turns that rightly end quietly don't.
-it.effect.each([
-  { name: "a question answered only in thinking", ask: "Did the deploy finish?", first: false },
-  // Refused once: a second silent end goes through, and the rescue asks for the reply.
-  {
-    name: "thinking again after the refusal",
-    ask: "Did the deploy finish?",
-    first: false,
-    silentAgain: true,
-  },
-  { name: "a reply written as text", ask: "Did the deploy finish?", first: true, said: true },
-  {
-    name: "thanks taken with a 👍",
-    ask: "Thanks, that's all for today.",
-    first: true,
-    react: true,
-  },
-])("kin_end refuses to end a turn that owes words and posted none: $name", (input) =>
-  Effect.gen(function* () {
-    const {
-      services,
-      bridge,
-      fake,
-      runId,
-      complete,
-      posted,
-      identity,
-      chats,
-      owner,
-      wakeupId,
-      message,
-      sql,
-    } = yield* setup({ ask: input.ask });
-    yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE agent_id = ${agentId}`;
-    const end = yield* endTool(services, bridge);
-    if (input.react === true) {
-      const lead = Option.getOrThrow(
-        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
-      );
-      yield* chats.react(lead, { messageId: message!.messageId, emoji: "👍", on: true });
-    }
-    const said = text("a", 2, "Yes, it finished at 4:10 pm.", runId);
-    const first = [thought("r", 1, runId), ...(input.said === true ? [said] : [])];
-    // The call reaches the server before its item reaches the bridge: it waits for the item.
-    const ending = yield* end.pipe(Effect.forkScoped);
-    for (const item of [...first, tool("end", 3, "mcp__kin__kin_end", runId)])
-      yield* Queue.offer(fake.live, itemEvent(item));
-    const answer = yield* Fiber.join(ending);
-    assert.strictEqual(answer.ok, input.first);
-    if (!input.first) {
-      assert.include(answer.text, ReplyBridge.SILENT_END_REFUSAL);
-      // The reply it then writes is a reply, not a status line before a tool.
-      const reply = text("b", 4, "Yes, it finished at 4:10 pm.", runId);
-      const again = yield* end.pipe(Effect.forkScoped);
-      const next = [
-        ...(input.silentAgain === true ? [thought("r2", 4, runId)] : [reply]),
-        tool("end2", 5, "mcp__kin__kin_end", runId),
-      ];
-      for (const item of next) yield* Queue.offer(fake.live, itemEvent(item));
-      assert.isTrue((yield* Fiber.join(again)).ok);
-    }
-    fake.items = [];
-    fake.rescueItems = [text("rescued", 10, "Yes, it finished at 4:10 pm.", rescueRunId)];
-    yield* complete;
-    assert.strictEqual(fake.rescues, input.silentAgain === true ? 1 : 0);
-    assert.deepStrictEqual(
-      (yield* posted).map((row) => row.body),
-      input.react === true ? [] : ["Yes, it finished at 4:10 pm."],
-    );
   }).pipe(Effect.provide(layer)),
 );

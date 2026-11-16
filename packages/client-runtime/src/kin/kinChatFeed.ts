@@ -27,7 +27,7 @@ import {
 import { kinTapAnswersChoice, kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
-import { kinSentences } from "./kinScreenState.ts";
+import { kinPlainTables, kinSentences } from "./kinScreenState.ts";
 import type { KinSynced } from "./kinStreams.ts";
 
 export const KIN_HISTORY_PAGE_SIZE = 50;
@@ -198,6 +198,8 @@ export function mergeKinFeed(live: KinChatState, earlier: KinChatState): KinChat
 export interface KinFeedViewer {
   readonly personId: KinPersonId | null;
   readonly agentNames: ReadonlyMap<string, string>;
+  /** The reader's first name, for a brief's greeting. */
+  readonly firstName?: string | null;
   /** Agents the host marks retired; absent reads as none. */
   readonly retiredAgents?: ReadonlySet<string>;
   /** People by member id, in a group whose members are loaded; a role stands in without it. */
@@ -595,7 +597,7 @@ const BARE_URL = /<?(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])>?/g;
 
 /** Markdown read aloud: link text without its address, no markers, one sentence per line. */
 export function kinPlainText(markdown: string): string {
-  return markdown
+  return kinPlainTables(markdown)
     .split("\n")
     .filter((line) => !/^\s*(```|~~~)/.test(line))
     .map((line) =>
@@ -789,6 +791,7 @@ export function kinFeedViewer(orgs: KinOrgsListResult | null, orgId: string | nu
   const me = orgs.me.find((entry) => entry.orgId === org?.orgId) ?? orgs.me[0];
   return {
     personId: me?.personId ?? null,
+    firstName: me?.displayName?.trim().split(/\s+/)[0] ?? null,
     agentNames: new Map(org?.agents.map((agent) => [agent.agentId, agent.displayName]) ?? []),
     retiredAgents: new Set(
       org?.agents.flatMap((agent) => (agent.retired ? [agent.agentId] : [])) ?? [],

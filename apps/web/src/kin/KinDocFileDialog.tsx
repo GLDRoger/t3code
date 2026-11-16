@@ -7,7 +7,7 @@ import {
   type KinDocFileDraft,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
-import { KIN_DOC_KINDS, type KinDocRow } from "@t3tools/contracts";
+import { KIN_DOC_KINDS, type KinDocListRow } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
@@ -42,7 +42,7 @@ const NO_PROJECT = "";
 export function KinDocFileDialog(
   props: KinWorkTarget & {
     readonly doc: Pick<
-      KinDocRow,
+      KinDocListRow,
       "key" | "rev" | "title" | "kind" | "company" | "party" | "project"
     >;
     readonly onClose: () => void;

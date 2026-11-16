@@ -16,6 +16,7 @@ import type { SupervisorConnectionState } from "../connection/model.ts";
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import type { KinSynced } from "./kinStreams.ts";
 import type { KinHost } from "./kinHost.ts";
+import { kinMessageGistMarkdown } from "./kinMessagePage.ts";
 import { kinTapText } from "./kinTap.ts";
 import type { KinInboxRow, KinInboxState } from "./kinInboxModel.ts";
 
@@ -231,9 +232,54 @@ export function kinAvatarView(
   return { kind: "agent", seed: `chat:${chat.chatId}` };
 }
 
+const TABLE_RULE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+/** A markdown table's lines as plain words: the rule line gone, a row's cells joined by commas. */
+export function kinPlainTables(markdown: string): string {
+  return markdown
+    .split("\n")
+    .filter((line) => !TABLE_RULE.test(line))
+    .map((line) =>
+      /^\s*\|.*\|\s*$/.test(line)
+        ? line
+            .trim()
+            .slice(1, -1)
+            .split("|")
+            .map((cell) => cell.trim())
+            .filter((cell) => cell !== "")
+            .join(", ")
+        : line,
+    )
+    .join("\n");
+}
+
+/**
+ * Whether a markdown table is wider than `chars` characters, as its widest cell per column plus
+ * each cell's padding: a phone bubble scrolls such a table sideways and says so beneath it.
+ */
+export function kinTableWiderThan(markdown: string, chars: number): boolean {
+  let widths: number[] = [];
+  for (const line of [...markdown.split("\n"), ""]) {
+    if (TABLE_RULE.test(line)) continue;
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      line
+        .trim()
+        .slice(1, -1)
+        .split("|")
+        .forEach((cell, index) => {
+          widths[index] = Math.max(widths[index] ?? 0, cell.trim().length + 3);
+        });
+      continue;
+    }
+    if (widths.reduce((sum, width) => sum + width, 0) > chars) return true;
+    widths = [];
+  }
+  return false;
+}
+
 /** Message markdown as one plain line. */
 export function kinPreviewText(body: string): string {
-  return body
+  return kinPlainTables(body)
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
     .replace(/```[^\s`]*/g, "")
@@ -252,7 +298,7 @@ function kinMessagePreview(last: KinChatSummary["lastMessage"]): string {
   // Hosts before the quiet-turn change posted their own bookkeeping as system rows.
   if (last.kind === "system" && last.widgetId?.startsWith("memory-changes:")) return "Saved a note";
   if (last.kind === "system" && last.widgetId?.startsWith("deferral:")) return "Set a reminder";
-  return kinPreviewText(last.body) || "Message";
+  return kinPreviewText(kinMessageGistMarkdown(last)) || "Message";
 }
 
 /** Whether the viewer's own membership mutes this chat's pushes right now. */

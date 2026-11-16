@@ -72,7 +72,8 @@ import EventReplied from "./migrations/K148_EventReplied.ts";
 import SendAccount from "./migrations/K149_SendAccount.ts";
 import PersonRemoved from "./migrations/K150_PersonRemoved.ts";
 import ToldAndHeld from "./migrations/K151_ToldAndHeld.ts";
-import TeamDiscussions from "./migrations/K152_TeamDiscussions.ts";
+import MessageForm from "./migrations/K152_MessageForm.ts";
+import TeamDiscussions from "./migrations/K153_TeamDiscussions.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -225,7 +226,8 @@ const loader = Migrator.fromRecord({
   "149_SendAccount": SendAccount,
   "150_PersonRemoved": PersonRemoved,
   "151_ToldAndHeld": ToldAndHeld,
-  "152_TeamDiscussions": TeamDiscussions,
+  "152_MessageForm": MessageForm,
+  "153_TeamDiscussions": TeamDiscussions,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

@@ -16,6 +16,7 @@ import {
   type KinWorkUpdateInput,
   calendarTimeMillis,
   isCalendarDay,
+  kinCompactWorkList,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -417,7 +418,7 @@ export const list = Effect.fn("KinWork.list")(function* (
         ),
       ]).pipe(workFailure)
     : new Set<string>();
-  return {
+  const answer = {
     records: shown.map(({ row, record: whole }): KinRecord => {
       const record = { ...whole, can: can(whole.recordId) };
       if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects);
@@ -430,6 +431,7 @@ export const list = Effect.fn("KinWork.list")(function* (
     asOf: iso(at),
     ...(totals === undefined ? {} : { totals: listTotals(totals) }),
   };
+  return input.acceptCompactRows === true ? kinCompactWorkList(answer) : answer;
 });
 
 const listTotals = ({ counted: _counted, groups, ...sums }: Totals) => ({

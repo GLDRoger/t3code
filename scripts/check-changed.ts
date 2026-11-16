@@ -183,6 +183,8 @@ export const comparisonBase = Effect.fn("checkChanged.comparisonBase")(function*
 
 // CI's lint and knip also read Astro components' frontmatter.
 const CODE = /\.(?:[cm]?[jt]sx?|astro)$/;
+const KIN_WIRE =
+  /^(apps\/server\/src\/kin\/|packages\/contracts\/src\/kin|packages\/client-runtime\/src\/kin\/)/;
 const TEST = /\.test\.[cm]?[jt]sx?$/;
 // CI runs the .github/scripts tests with `node --test`; vitest passes a failing node:test file.
 const NODE_TEST = /^\.github[/\\]scripts[/\\]/;
@@ -340,6 +342,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   for (const test of docReaderTests(files)) tests.add(test);
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
+  // Kin's wire budget reads the whole read path, so any Kin server, contract or client file moves it.
+  if (files.some((file) => KIN_WIRE.test(file)))
+    tests.add("apps/server/src/kin/wireBudget.test.ts");
   const { vitestTests, nodeTests } = splitTests(tests);
 
   // React Compiler coverage compiles every client source file, so run only the

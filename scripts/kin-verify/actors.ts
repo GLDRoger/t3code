@@ -163,6 +163,8 @@ export async function runTurn(
     readonly reply?: string;
     /** Seconds the agent stays working before it replies, to watch the turn run. */
     readonly holdSeconds?: number;
+    /** The turn fails after its calls instead of replying, as a model error would. */
+    readonly fail?: boolean;
     readonly timeoutMs?: number;
   },
 ): Promise<ReadonlyArray<{ name: string; response?: unknown; error?: string }>> {
@@ -176,6 +178,7 @@ export async function runTurn(
       calls: input.calls,
       reply: input.reply ?? "Done.",
       ...(input.holdSeconds === undefined ? {} : { holdMs: input.holdSeconds * 1000 }),
+      ...(input.fail === true ? { fail: true } : {}),
     }),
   );
   const rpc = await rpcAs(instance, input.person);
@@ -200,9 +203,9 @@ export async function runTurn(
       if (NodeFS.existsSync(resultPath)) {
         const replied = db
           .prepare(
-            `SELECT 1 FROM kin_messages WHERE chat_id = ? AND seq > ? AND author_kind = 'agent' LIMIT 1`,
+            `SELECT 1 FROM kin_messages WHERE chat_id = ? AND seq > ? AND (author_kind = 'agent' OR (? AND author_kind = 'system')) LIMIT 1`,
           )
-          .get(chatId, seq);
+          .get(chatId, seq, input.fail === true ? 1 : 0);
         if (replied !== undefined)
           return (JSON.parse(NodeFS.readFileSync(resultPath, "utf8")) as { results: [] }).results;
       }

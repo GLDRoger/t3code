@@ -11,7 +11,8 @@ import {
   type KinDocFileInput,
   KIN_DOC_KINDS,
   type KinDocKind,
-  type KinDocRow,
+  type KinDocLatestSlim,
+  type KinDocListRow,
   type KinDocSection,
   type KinDocVersion,
   type KinMessageRef,
@@ -216,7 +217,7 @@ export function kinDocChangeLine(change: Change, names: KinWorkNames, now: Date)
   };
 }
 
-const changeOf = (version: KinDocVersion): Change => ({
+const changeOf = (version: KinDocVersion | KinDocLatestSlim): Change => ({
   at: version.at,
   kind: version.kind,
   summary: version.summary,
@@ -282,11 +283,11 @@ export interface KinDocRowView {
   readonly accessibilityLabel: string;
 }
 
-export const kinDocKindOf = (row: Pick<KinDocRow, "kind">): KinDocKind => row.kind ?? "other";
-export const kinDocUnfiled = (row: Pick<KinDocRow, "party" | "project" | "company">) =>
+export const kinDocKindOf = (row: Pick<KinDocListRow, "kind">): KinDocKind => row.kind ?? "other";
+export const kinDocUnfiled = (row: Pick<KinDocListRow, "party" | "project" | "company">) =>
   row.party === undefined && row.project === undefined && row.company !== true;
 
-export function kinDocRow(row: KinDocRow, names: KinWorkNames, now: Date): KinDocRowView {
+export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): KinDocRowView {
   const { text } = kinDocChangeLine(changeOf(row.latest), names, now);
   const under =
     row.company === true
@@ -321,7 +322,7 @@ export interface KinDocHome {
   readonly id: string;
   readonly kind: "client" | "company" | "unfiled";
   readonly title: string;
-  readonly rows: ReadonlyArray<KinDocRow>;
+  readonly rows: ReadonlyArray<KinDocListRow>;
 }
 
 const NO_PARTY = "\u0000project";
@@ -332,17 +333,17 @@ const RECENT_MAX = 4;
  * the company's own, then the unfiled. Inside each, latest change first. `recent` is the last
  * few changed, shown above them once there are enough docs for them to be worth a strip.
  */
-export function kinDocLibrary(rows: ReadonlyArray<KinDocRow>): {
-  readonly recent: ReadonlyArray<KinDocRow>;
+export function kinDocLibrary(rows: ReadonlyArray<KinDocListRow>): {
+  readonly recent: ReadonlyArray<KinDocListRow>;
   readonly homes: ReadonlyArray<KinDocHome>;
   /** The company's playbooks, folded into one row until opened; by title. */
-  readonly playbooks: ReadonlyArray<KinDocRow>;
+  readonly playbooks: ReadonlyArray<KinDocListRow>;
 } {
   const latestFirst = [...rows].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const clients = new Map<string, { title: string; rows: Array<KinDocRow> }>();
-  const company: Array<KinDocRow> = [];
-  const unfiled: Array<KinDocRow> = [];
-  const playbooks: Array<KinDocRow> = [];
+  const clients = new Map<string, { title: string; rows: Array<KinDocListRow> }>();
+  const company: Array<KinDocListRow> = [];
+  const unfiled: Array<KinDocListRow> = [];
+  const playbooks: Array<KinDocListRow> = [];
   for (const row of latestFirst) {
     if (kinDocKindOf(row) === "playbook" && row.party === undefined && row.project === undefined)
       playbooks.push(row);
@@ -469,7 +470,7 @@ export interface KinDocFileDraft {
   readonly project: string | null;
 }
 export const kinDocFileDraft = (
-  row: Pick<KinDocRow, "kind" | "company" | "party" | "project">,
+  row: Pick<KinDocListRow, "kind" | "company" | "party" | "project">,
 ): KinDocFileDraft => ({
   kind: kinDocKindOf(row),
   home: row.company === true ? "company" : (row.party?.key ?? "none"),
@@ -477,7 +478,7 @@ export const kinDocFileDraft = (
 });
 export function kinDocFileInput(
   orgId: KinOrgId,
-  row: Pick<KinDocRow, "key" | "rev">,
+  row: Pick<KinDocListRow, "key" | "rev">,
   draft: KinDocFileDraft,
 ): KinDocFileInput {
   const company = draft.home === "company";
@@ -586,7 +587,7 @@ export const kinDocHasContents = (outline: ReadonlyArray<KinDocSection>) =>
 
 /** Why a doc is marked private, in words; null when the whole team may read it. */
 export const kinDocPrivacy = (
-  doc: Pick<KinDocRow, "sensitive" | "sensitiveInherited">,
+  doc: Pick<KinDocListRow, "sensitive" | "sensitiveInherited">,
 ): string | null =>
   doc.sensitive
     ? KIN_DOCS.private

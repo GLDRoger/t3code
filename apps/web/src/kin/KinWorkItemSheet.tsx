@@ -406,7 +406,7 @@ function KinWorkItem(
     <>
       <SheetHeader>
         <div className="flex flex-col gap-1 pe-8">
-          <SheetDescription>{view.heading}</SheetDescription>
+          <SheetDescription>{`${view.key} · ${view.heading}`}</SheetDescription>
           <SheetTitle>{view.title}</SheetTitle>
         </div>
       </SheetHeader>

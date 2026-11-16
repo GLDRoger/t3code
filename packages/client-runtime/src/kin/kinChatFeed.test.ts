@@ -284,6 +284,14 @@ describe("rows", () => {
     const rows = messageRows(
       [
         tap("choice", JSON.stringify({ actionId: "choose", text: 'Chose "Ship it" on "Ship?"' })),
+        tap(
+          "statement",
+          JSON.stringify({
+            widgetId: "kin-statement:st_1:abc",
+            actionId: "confirm",
+            text: 'Tapped "Confirm" on statement st_1. Recorded 1 payment on invoices.',
+          }),
+        ),
         tap("ship", JSON.stringify({ text: 'Chose "Ship it" on "Ship?"' })),
         tap(
           "reminder",

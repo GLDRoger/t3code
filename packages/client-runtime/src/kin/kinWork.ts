@@ -1152,7 +1152,8 @@ export function kinWorkItemView(
   return {
     key: item.key,
     rev: item.rev,
-    heading: category === null ? item.key : `${item.key} · ${category}`,
+    // A sheet's title: its key is a reference, never a title.
+    heading: category ?? "Task",
     title: item.title,
     state: item.state,
     status: row.status,

@@ -46,6 +46,13 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   such as a coding job, it says so and comes back in the chat when there's news.
 - **It works with what you can see.** An agent answering you sees only what you may see.
   When a member asks about money, it won't share figures they can't see.
+- **Long answers read like a page.** A short reply is a bubble. One with headings, a table or a
+  list of several things fills the chat's width, in sections you can fold; on the phone a long one
+  opens with **Read more**. A check-in arrives as a brief: a greeting, the date, then only the
+  sections that have something in them.
+- **Names open what they name.** An agent, a teammate, a client, a project, a task or a document
+  number such as INV-1 in a message is a link to it, when you may open it. Touch and hold one on
+  the phone, or hover on the web, to see its state first.
 - **It asks with cards.** A question with choices, a chart, or something to confirm comes as a card
   in the chat. Tapping an answer answers the agent; it is never an approval.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it

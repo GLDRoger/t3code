@@ -17,7 +17,7 @@ const pick = <T>(list: ReadonlyArray<T>, n: number) => list[n % list.length]!;
 
 /**
  * Plays a discussion with agents moving as `seeds` say: a refused message counts as a pass, as
- * kin_end without team_say would be. Returns what the rules must keep true.
+ * ending a turn without team_say would be. Returns what the rules must keep true.
  */
 const play = (seeds: ReadonlyArray<number>, decider: string) => {
   let d = Turns.opened({ openedBy: "social", decider, chair: "chief" });

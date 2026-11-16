@@ -17,6 +17,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { type FieldValue, isMoney, LISTS, type ListName, sensitiveFields } from "./lists.ts";
 import { DEFAULT_CURRENCY, isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
@@ -879,6 +880,7 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
         rev = rev + 1
       WHERE org_id = ${orgId} AND register_id = ${proposal.id}`;
   }
+  yield* (yield* KinRefreshObserver).touch(orgId, "workLists");
 });
 
 /**
