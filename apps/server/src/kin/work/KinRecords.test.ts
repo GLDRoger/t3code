@@ -29,6 +29,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -466,6 +468,7 @@ it.effect(
         "kin.work.projects",
         "kin.work.project",
         "kin.work.lists",
+        "kin.work.dates",
         "kin.work.money",
         "kin.work.summary",
         "kin.work.list",
@@ -2062,6 +2065,32 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     const named = yield* OwnerWork.get([mate], { orgId, key: priya.row.key });
     assert.strictEqual(named.title, "Invented Priya");
     assert.notInclude(JSON.stringify(named), "priya@acme");
+    // Run 4: Money counted a lead's coming-up dates, then refused to list them. One read, one
+    // rule: the list holds what the count counted, and not the owner's own dates.
+    const sql = yield* SqlClient.SqlClient;
+    const [project] = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
+      WHERE org_id = ${orgId} AND register_id = 'projects'`;
+    const now = yield* Clock.currentTimeMillis;
+    for (const [originKey, title, projectId] of [
+      ["their date", "Invented app review", project!.id],
+      ["owner date", "Invented rent renewal", undefined],
+    ] as const)
+      yield* records.create(orgId, ownerWrites, {
+        originKey,
+        title,
+        dueAt: now + 5 * 86_400_000,
+        owner: { _tag: "person", personId: ownerId },
+        ...(projectId === undefined ? {} : { projectId }),
+      });
+    const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+    const window = { orgId, from: iso(now), to: iso(now + 30 * 86_400_000), open: true };
+    const counted = (yield* OwnerMoney.money([mate], { orgId })).upcomingTotal;
+    const listed = yield* OwnerMoney.dates([mate], window);
+    assert.deepStrictEqual(
+      [counted, listed.rows.map((row) => row.record.title)],
+      [1, ["Invented app review"]],
+    );
+    assert.strictEqual((yield* OwnerMoney.dates([owner], window)).total, 2);
   }).pipe(Effect.provide(layer)),
 );
 

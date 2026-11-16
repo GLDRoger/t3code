@@ -66,6 +66,7 @@ const MEMBER = [
   "kin.widgets.act",
   "kin.work.assign",
   "kin.work.create",
+  "kin.work.dates",
   "kin.work.get",
   "kin.work.handBack",
   "kin.work.list",

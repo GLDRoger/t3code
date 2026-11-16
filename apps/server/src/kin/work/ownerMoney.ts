@@ -221,7 +221,8 @@ export const dates = Effect.fn("KinMoney.dates")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinDatesInput,
 ) {
-  yield* theOwner(people, input.orgId);
+  // The same reader and view as Money's count of them, so the list never refuses its count.
+  const team = yield* moneyReader(people, input.orgId);
   const from = yield* millis(input.from, "from");
   const to = yield* millis(input.to, "to");
   if (to <= from) return yield* invalid("to comes after from.");
@@ -229,7 +230,15 @@ export const dates = Effect.fn("KinMoney.dates")(function* (
   const now = yield* Clock.currentTimeMillis;
   const page = yield* datesView(
     input.orgId,
-    { from, to, lists: input.lists, open: input.open, offset, limit: input.limit },
+    {
+      from,
+      to,
+      lists: input.lists,
+      open: input.open,
+      offset,
+      limit: input.limit,
+      ...(team === undefined ? {} : { view: [team] }),
+    },
     now,
   );
   const next = offset + page.rows.length;
