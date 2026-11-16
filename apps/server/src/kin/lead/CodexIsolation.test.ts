@@ -1,18 +1,30 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinOrgId,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
+} from "@t3tools/contracts";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
 
+import { fullSessionRefusal } from "./AgentSession.ts";
 import * as ServerConfig from "../../config.ts";
 import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
-import { KinServer, type Services as KinServices } from "../KinServer.ts";
 import * as CodexIsolation from "./CodexIsolation.ts";
+import { ownerOnlyWakeup } from "./Audience.testkit.ts";
+import { SESSION_REFUSAL } from "./Audience.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
+import { KinServer, type Services as KinServices } from "../KinServer.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 
 type Sent = { readonly method: string; readonly params: Record<string, unknown> };
 
@@ -33,6 +45,7 @@ const recordingClient = (sent: Array<Sent>) =>
         sent.push({ method: `typed:${method}`, params });
         return {};
       }),
+    handleServerNotification: () => Effect.void,
   }) as unknown as CodexClient.CodexAppServerClient["Service"];
 
 const kinServer = Layer.succeed(KinServer, {
@@ -124,12 +137,12 @@ const session = (threadId: string, cwd: string, enabled = true) =>
   });
 
 it.effect(
-  "every Kin agent turn on Codex, shared or the owner's, runs with no environment, no network and only Kin's MCP endpoint",
+  "a Kin agent's turn others read runs on Codex with no environment, no network and only Kin's MCP endpoint",
   () =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
       const memory = `${stateDir}/kin/demo-a/memory-read`;
-      for (const threadId of ["kin-shared:finance", "kin:finance"]) {
+      for (const threadId of ["kin-shared:finance"]) {
         const sent = yield* session(threadId, memory);
         const [read, start, resume, turn] = sent;
         assert.deepStrictEqual(read, { method: "config/read", params: { cwd: memory } });
@@ -211,6 +224,280 @@ it.effect(
         ServerConfig.layerTest(process.cwd(), { prefix: "kin-codex-signing-" }).pipe(
           Layer.provideMerge(NodeServices.layer),
         ),
+      ),
+    ),
+);
+
+type Asked = (payload: unknown) => Effect.Effect<unknown>;
+
+it.effect(
+  "on one Codex app-server, opened by any thread, the owner's thread gets a full session, the shared one stays confined and others are untouched; Kin decides each command, patch, network call and sub-agent's ask from its own thread's turn",
+  () =>
+    Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const memory = `${stateDir}/kin/demo-a/memory-read`;
+      const sql = yield* SqlClient.SqlClient;
+      const orgId = KinOrgId.make("org-codex");
+      const agentId = KinAgentId.make("tech");
+      yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: "wake-codex" });
+      let decided = 0;
+      // The policy Kin builds (`AgentSession.sessionPolicyLayer`), with its tool folders stood in.
+      const services = Context.make(
+        KinAgentSessionPolicy,
+        KinAgentSessionPolicy.of({
+          refusal: (threadId) =>
+            Effect.sync(() => decided++).pipe(
+              Effect.andThen(fullSessionRefusal(threadId)),
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ),
+          delegated: () => Effect.succeed(false),
+          toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
+          agentName: () => Effect.succeed("Tech lead"),
+        }),
+      ) as Context.Context<KinServices>;
+      const sent: Array<Sent> = [];
+      const answers = new Map<string, Asked>();
+      const notified = new Map<string, Asked>();
+      const recorded = recordingClient(sent);
+      const client = {
+        ...recorded,
+        raw: {
+          request: (method: string, params: Record<string, unknown>) =>
+            recorded.raw.request(method, params).pipe(
+              Effect.map((answer) => {
+                if (method !== "thread/start") return answer;
+                const config = params.config as Record<string, unknown>;
+                const t3 = config["shell_environment_policy.set.T3CODE_THREAD_ID"];
+                const native = { "kin:tech": "native-owner", "kin-shared:tech": "native-shared" };
+                return { thread: { id: native[t3 as keyof typeof native] ?? "native-plain" } };
+              }),
+            ),
+        },
+        handleServerRequest: (method: string, handler: Asked) =>
+          Effect.sync(() => void answers.set(method, handler)),
+        handleServerNotification: (method: string, handler: Asked) =>
+          Effect.sync(() => void notified.set(method, handler)),
+      } as unknown as CodexClient.CodexAppServerClient["Service"];
+      const base = Layer.succeed(
+        CodexAdapterV2.CodexAppServerClientFactory,
+        CodexAdapterV2.CodexAppServerClientFactory.of({ open: () => Effect.succeed(client) }),
+      );
+      // T3's own handler: the ask is shown to a person in the thread.
+      const shownToAPerson: Asked = () => Effect.succeed("shown to a person");
+      // T3 marks each thread's shell with its own id (`codexThreadRuntimeParams`).
+      const startOf = (t3: string, cwd = memory) => ({
+        ...t3ThreadStart,
+        cwd,
+        config: { ...t3ThreadStart.config, "shell_environment_policy.set.T3CODE_THREAD_ID": t3 },
+      });
+      yield* Effect.gen(function* () {
+        const factory = yield* CodexAdapterV2.CodexAppServerClientFactory;
+        // Someone's ordinary T3 thread opens the instance's one process; Kin's threads join it.
+        const opened = yield* factory.open({
+          instanceId: ProviderInstanceId.make("codex"),
+          threadId: ThreadId.make("thread-plain"),
+          providerSessionId: ProviderSessionId.make("session"),
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: "/work/project",
+          },
+          settings: {} as never,
+          environment: { PATH: "/usr/bin" },
+        });
+        // What T3's adapter registers: each ask shown to a person in the thread.
+        for (const method of [
+          "item/commandExecution/requestApproval",
+          "item/fileChange/requestApproval",
+          "item/permissions/requestApproval",
+          "execCommandApproval",
+          "applyPatchApproval",
+          "item/tool/requestUserInput",
+        ])
+          yield* opened.handleServerRequest(method as never, shownToAPerson as never);
+        yield* opened.raw.request("thread/start", startOf("thread-plain", "/work/project"));
+        for (const t3 of ["kin:tech", "kin-shared:tech"])
+          yield* opened.raw.request("thread/start", startOf(t3));
+        for (const native of ["native-plain", "native-owner", "native-shared"])
+          yield* opened.raw.request("turn/start", { ...t3TurnStart, threadId: native });
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          CodexIsolation.codexClientFactory(base).pipe(
+            Layer.provide(
+              Layer.succeed(KinServer, {
+                taskCardUpdater: Layer.empty,
+                services: Option.some(services),
+                subscribeForViewer: Option.none(),
+              }),
+            ),
+            Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+          ),
+        ),
+      );
+      const [plainStart, ownerStart, sharedStart] = sent
+        .filter(({ method }) => method === "thread/start")
+        .map(({ params }) => params);
+      assert.deepStrictEqual(plainStart, startOf("thread-plain", "/work/project"));
+      assert.notProperty(ownerStart, "environments");
+      assert.strictEqual(ownerStart?.approvalPolicy, "untrusted");
+      assert.strictEqual(ownerStart?.approvalsReviewer, "user");
+      assert.strictEqual(ownerStart?.sandbox, "danger-full-access");
+      assert.strictEqual(ownerStart?.baseInstructions, CodexIsolation.codexFullSessionInstructions);
+      const config = ownerStart?.config as Record<string, unknown>;
+      for (const [key, value] of Object.entries(CodexIsolation.FULL_SESSION_CONFIG))
+        assert.deepStrictEqual(config[key], value, key);
+      // What can't ask stays off; the user's own servers too.
+      assert.strictEqual(config.web_search, "disabled");
+      assert.strictEqual(config["features.unified_exec"], false);
+      assert.strictEqual(config["tools.view_image"], false);
+      assert.strictEqual(config["mcp_servers.chrome.enabled"], false);
+      // The signing gh first on PATH and the env a Claude agent's session keeps, nothing else.
+      assert.strictEqual(
+        config["shell_environment_policy.set.PATH"],
+        `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
+      );
+      assert.strictEqual(config["shell_environment_policy.set.KIN_AGENT_NAME"], "Tech lead");
+      const kept = config["shell_environment_policy.include_only"] as ReadonlyArray<string>;
+      for (const name of ["PATH", "HOME", "KIN_AGENT_NAME", "T3CODE_THREAD_ID"])
+        assert.include(kept, name);
+      assert.notInclude(kept, "KIN_GITHUB_APP_ID");
+      // The shared thread on the same process: no environment, nothing asked, no shell note.
+      assert.deepStrictEqual(sharedStart?.environments, []);
+      assert.strictEqual(sharedStart?.approvalPolicy, "never");
+      assert.strictEqual(sharedStart?.sandbox, "read-only");
+      assert.strictEqual(sharedStart?.baseInstructions, CodexIsolation.codexInstructions);
+      const turns = sent
+        .filter(({ method }) => method === "turn/start")
+        .map(({ params }) => params);
+      assert.deepStrictEqual(turns, [
+        { ...t3TurnStart, threadId: "native-plain" },
+        {
+          threadId: "native-owner",
+          input: t3TurnStart.input,
+          approvalPolicy: "untrusted",
+          approvalsReviewer: "user",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        },
+        {
+          threadId: "native-shared",
+          input: t3TurnStart.input,
+          environments: [],
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
+        },
+      ]);
+
+      // A Codex sub-agent of the owner's thread starts on the same process.
+      yield* notified.get("thread/started")!({
+        thread: { id: "sub-agent", parentThreadId: "native-owner" },
+      });
+      const ask = (method: string, payload: object) => answers.get(method)!(payload);
+      const command = (text: string, thread = "native-owner") => ({
+        threadId: thread,
+        turnId: `turn-${thread}`,
+        itemId: "item",
+        startedAtMs: 0,
+        command: text,
+      });
+      const steers = () =>
+        sent.filter(({ method }) => method === "typed:turn/steer").map(({ params }) => params);
+      const curl = {
+        ...command("curl -s https://example.com"),
+        networkApprovalContext: { host: "example.com", protocol: "https" },
+      };
+      const patch = {
+        threadId: "native-owner",
+        turnId: "turn-native-owner",
+        itemId: "patch",
+        startedAtMs: 0,
+      };
+      const refusedWith = (text: string, thread = "native-owner") => ({
+        threadId: thread,
+        expectedTurnId: `turn-${thread}`,
+        input: [{ type: "text", text }],
+      });
+
+      // No running turn on the owner's thread, such as a run Kin hasn't adopted: refused.
+      assert.deepStrictEqual(
+        yield* ask("item/commandExecution/requestApproval", command("echo hi")),
+        { decision: "decline" },
+      );
+      assert.deepStrictEqual(steers(), [refusedWith(SESSION_REFUSAL.none)]);
+      // The owner's own turn: a command, a patch, a network call and a sub-agent's command run.
+      yield* sql`UPDATE kin_wakeups SET status = 'running', thread_id = 'kin:tech',
+        audience = 'owner_only' WHERE wakeup_id = 'wake-codex'`;
+      for (const [method, payload] of [
+        ["item/commandExecution/requestApproval", command("echo hi")],
+        ["item/fileChange/requestApproval", patch],
+        ["item/commandExecution/requestApproval", curl],
+        ["item/commandExecution/requestApproval", command("ls", "sub-agent")],
+      ] as const)
+        assert.deepStrictEqual(yield* ask(method, payload), { decision: "accept" }, method);
+      assert.deepStrictEqual(
+        yield* ask("execCommandApproval", { conversationId: "native-owner" }),
+        {
+          decision: "approved",
+        },
+      );
+      // Meanwhile the shared thread on the same process doesn't borrow the owner's turn.
+      assert.deepStrictEqual(
+        yield* ask("item/commandExecution/requestApproval", command("echo hi", "native-shared")),
+        { decision: "decline" },
+      );
+      assert.deepStrictEqual(steers().at(-1), refusedWith(SESSION_REFUSAL.none, "native-shared"));
+
+      // An ordinary thread's asks still reach a person, as T3 shows them.
+      assert.strictEqual(
+        yield* ask(
+          "item/commandExecution/requestApproval",
+          command("rm -rf build", "native-plain"),
+        ),
+        "shown to a person",
+      );
+      // Nothing more than the session already has is ever granted.
+      assert.deepStrictEqual(
+        yield* ask("item/permissions/requestApproval", { threadId: "native-owner" }),
+        {
+          permissions: {},
+        },
+      );
+      // Within the same turn the next call is decided again: outside text read, so refused.
+      yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+        VALUES (${orgId}, 'wake-codex', 0, 'conn_mail')`;
+      assert.deepStrictEqual(
+        yield* ask("item/commandExecution/requestApproval", command("echo hi")),
+        { decision: "decline" },
+      );
+      assert.deepStrictEqual(steers().at(-1), refusedWith(SESSION_REFUSAL.outside));
+      yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-codex'`;
+      // A teammate is now in the owner's chat: every kind of ask is refused with the session refusal.
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake-codex'`;
+      for (const [method, payload] of [
+        ["item/commandExecution/requestApproval", command("echo hi")],
+        ["item/fileChange/requestApproval", patch],
+        ["item/commandExecution/requestApproval", curl],
+        ["item/commandExecution/requestApproval", command("ls", "sub-agent")],
+      ] as const)
+        assert.deepStrictEqual(yield* ask(method, payload), { decision: "decline" }, method);
+      assert.deepStrictEqual(steers().slice(-4), [
+        refusedWith(SESSION_REFUSAL.shared),
+        refusedWith(SESSION_REFUSAL.shared),
+        refusedWith(SESSION_REFUSAL.shared),
+        refusedWith(SESSION_REFUSAL.shared, "sub-agent"),
+      ]);
+      assert.deepStrictEqual(yield* ask("applyPatchApproval", { conversationId: "native-owner" }), {
+        decision: { denied: { rejection: SESSION_REFUSAL.shared } },
+      });
+      // Every ask Kin could place was decided on its own; the rest keep T3's handler.
+      assert.strictEqual(decided, 13);
+      assert.strictEqual(answers.get("item/tool/requestUserInput"), shownToAPerson);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), { prefix: "kin-codex-full-" }),
+          KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
       ),
     ),
 );

@@ -99,7 +99,7 @@ export const tarProblem = (
 };
 
 const toolsRoot = (baseDir: string) => `${baseDir}/kin-tools`;
-/** The directories a worker's shell reads and finds on its PATH; one per pinned tool. */
+/** The directories an agent's shell reads and finds on its PATH; one per pinned tool. */
 export const toolDirectories = (baseDir: string) => [
   `${toolsRoot(baseDir)}/typst-${TYPST_VERSION}`,
 ];

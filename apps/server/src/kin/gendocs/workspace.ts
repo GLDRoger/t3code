@@ -18,10 +18,17 @@ import * as Semaphore from "effect/Semaphore";
 
 import { ServerConfig } from "../../config.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
-import { scrubbedEnv } from "../lead/workerPublish.ts";
 import { parseRecipe, type Recipe } from "./recipe.ts";
 import { STARTER_FILES } from "./starter.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+
+// Kin's git sees only the git and ssh settings it sets, none from the server's environment.
+const scrubbedEnv = (): NodeJS.ProcessEnv =>
+  Object.fromEntries(
+    Object.keys(process.env)
+      .filter((name) => /^(GIT_|SSH_)/i.test(name))
+      .map((name) => [name, undefined]),
+  );
 
 /**
  * The org's workspace: a git repository on this host holding its recipes, never pushed anywhere.
@@ -43,7 +50,7 @@ const forbiddenName =
 const recipeName = /^[a-z][a-z0-9-]{1,39}$/;
 
 /** Where document jobs' worktrees are; nothing else lives here. */
-export const documentWorktrees = (worktreesDir: string) => `${worktreesDir}/kin-documents`;
+const documentWorktrees = (worktreesDir: string) => `${worktreesDir}/kin-documents`;
 export const jobWorktree = (worktreesDir: string, workerId: KinWorkerId) =>
   `${documentWorktrees(worktreesDir)}/${workerId}`;
 const jobBranch = (workerId: KinWorkerId) => `kin/doc/${workerId}`;
@@ -61,7 +68,7 @@ export type Prepared = {
   readonly branch: string;
   readonly base: string;
 };
-/** A commit that last changed a recipe, and the worker whose job wrote it, from its trailer. */
+/** A commit that last changed a recipe, and the job that wrote it, from its trailer. */
 export type Revision = { readonly commit: string; readonly workerId: KinWorkerId | null };
 export type RecipeChange =
   | {
@@ -212,7 +219,7 @@ export const layer = Layer.effect(
     const lock = yield* Semaphore.make(1);
     const refresh = yield* KinRefreshObserver;
 
-    // A job's worktree is the worker's to write, `.git` file included, so git there always names
+    // A job's worktree is the agent's to write, `.git` file included, so git there always names
     // Kin's own git directory for it: nothing in the worktree chooses the repository or config.
     const git = (
       cwd: string,
@@ -270,7 +277,7 @@ export const layer = Layer.effect(
     const current = new Set<string>();
     /**
      * A starter recipe no one has changed is replaced by today's starter: workspaces made before
-     * Kin rendered documents itself held script recipes a worker ran.
+     * Kin rendered documents itself held script recipes another process ran.
      */
     const upgradeStarters = Effect.fn("KinWorkspace.upgradeStarters")(function* (root: string) {
       let changed = false;

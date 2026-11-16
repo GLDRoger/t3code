@@ -371,40 +371,6 @@ export const MemoryItemHead = Schema.Struct({
 });
 export type MemoryItemHead = typeof MemoryItemHead.Type;
 
-export const WorkerReport = Schema.Struct({
-  result: Schema.Literals(["done", "blocked", "needs_decision"]),
-  summary: Schema.String.check(Schema.isMaxLength(800)),
-  evidence: Schema.Array(
-    Schema.Struct({
-      kind: Schema.Literals([
-        "pr",
-        "commit",
-        "ci_run",
-        "test_output",
-        "screenshot",
-        "file",
-        "link",
-      ]),
-      ref: Schema.String,
-      note: Schema.optional(Schema.String),
-    }),
-  ),
-  openQuestions: Schema.Array(Schema.String),
-  memorySuggestions: Schema.Array(
-    Schema.Struct({
-      kind: MemoryItemKind,
-      title: Schema.String,
-      body: Schema.String,
-      links: Schema.Array(Schema.String),
-    }),
-  ),
-  misleadingMemory: Schema.Array(Schema.Struct({ itemId: KinMemoryItemId, why: Schema.String })),
-  parsed: Schema.Boolean,
-  /** Hosts the sandbox refused the worker's commands, from Claude Code's own record, not the worker. */
-  blockedHosts: Schema.optional(Schema.Array(Schema.String)),
-});
-export type WorkerReport = typeof WorkerReport.Type;
-
 export const KinDeferralCard = Schema.Struct({
   itemId: KinMemoryItemId,
   title: Schema.String,
@@ -496,46 +462,6 @@ export type KinScheduledTaskCardAction = (typeof KIN_SCHEDULED_TASK_CARD_ACTIONS
 export const kinScheduledTaskWidgetId = (orgId: string, itemId: string) =>
   `scheduled:${orgId}:${itemId}`;
 
-/**
- * Kin's card asking the owner to publish a finished worker's commit: drawn by the server from its
- * own git, never from model text except `pullRequestTitle`, which clients show quoted. `text` is
- * a fixed line, the first plain field older clients fall back to.
- */
-export const KIN_WORKER_PUBLISH_CARD = "worker_publish";
-export const KinWorkerPublishCard = Schema.Struct({
-  text: Schema.String,
-  workerId: KinWorkerId,
-  /** The commit this card publishes; a tap carries it, and only it publishes. */
-  sha: Schema.String,
-  repository: Schema.String,
-  why: Schema.Array(Schema.Literals(["public_repository", "visibility_unknown", "sensitive_work"])),
-  branch: Schema.String,
-  /** The lead's title for the pull request: untrusted. */
-  pullRequestTitle: Schema.String,
-  files: Schema.Array(
-    Schema.Struct({
-      path: Schema.String,
-      // Null for a binary file.
-      added: Schema.NullOr(Schema.Number),
-      removed: Schema.NullOr(Schema.Number),
-    }),
-  ),
-  moreFiles: Schema.Number,
-  status: Schema.Literals([
-    "waiting",
-    "publishing",
-    "published",
-    "declined",
-    "replaced",
-    "stopped",
-    "failed",
-  ]),
-  pullRequestUrl: Schema.optional(Schema.String),
-});
-export type KinWorkerPublishCard = typeof KinWorkerPublishCard.Type;
-export const KIN_WORKER_PUBLISH_CARD_ACTIONS = ["publish", "dont_publish"] as const;
-export type KinWorkerPublishCardAction = (typeof KIN_WORKER_PUBLISH_CARD_ACTIONS)[number];
-
 const EventBase = {
   orgId: KinOrgId,
   eventId: KinEventId,
@@ -564,6 +490,7 @@ export const KinRoutineSection = Schema.Literals([
   "review_requested",
   "ci_red",
   "objective_at_risk",
+  // Stuck tasks; the name predates delegated tasks and stays for cards already sent.
   "worker",
   "past_review",
   "done",
@@ -584,7 +511,7 @@ export const KinRoutineCard = Schema.Struct({
       title: Schema.String.check(Schema.isMaxLength(280)),
       note: Schema.optional(Schema.String.check(Schema.isMaxLength(280))),
       itemId: Schema.optional(KinMemoryItemId),
-      // Untrusted (memory and worker evidence): validate before opening.
+      // Untrusted (memory and GitHub): validate before opening.
       link: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
       // The existing card whose buttons act on this row, such as the item's deferral card.
       widgetId: Schema.optional(KinWidgetId),
@@ -779,16 +706,6 @@ export const KinEvent = Schema.Union([
     // Metadata the server read from connections the owner marked Read: still outside text.
     outside: Schema.optional(Schema.Array(KinPulseOutsideLine).check(Schema.isMaxLength(200))),
   }),
-  Schema.TaggedStruct("worker.report", {
-    ...EventBase,
-    workerId: KinWorkerId,
-    report: WorkerReport,
-    // From the worker's stored row, when it isn't the lead's owner chat: the chat its work was
-    // asked for in, where the lead answers. `origin` is where that was first asked, with the
-    // teammate who asked, as on a due deferral.
-    chatId: Schema.optional(KinChatId),
-    origin: Schema.optional(KinEventOrigin),
-  }),
   // Code enqueues it when someone else gives this lead an entry (`assigned`), when its owner
   // closes or takes back an open one it holds (`withdrawn`), or when whoever it gave one to gives
   // it back (`handed_back`, with their words as `note`). Its provenance is the human whose
@@ -801,7 +718,7 @@ export const KinEvent = Schema.Union([
     reason: Schema.Literals(["assigned", "withdrawn", "handed_back"]),
     note: Schema.optional(Schema.String.check(Schema.isMaxLength(280))),
     // Given by a teammate: their direct chat with the lead, where it reports, and `origin` naming
-    // them, so the turn is theirs and never the owner's. From stored rows, as a worker report's.
+    // them, so the turn is theirs and never the owner's. From stored rows.
     chatId: Schema.optional(KinChatId),
     origin: Schema.optional(KinEventOrigin),
   }),
@@ -839,10 +756,9 @@ export type KinEvent = typeof KinEvent.Type;
 
 const KinBudgetUnits = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 /**
- * The owner's daily limits, in budget units; null is no limit, which is the default. Coding
- * workers spend `workerUnits`. Agents' turns the owner asked for spend `leadUnits` less only what
- * the owner's own turns used, so teammates never use up the owner's share. Turns a teammate asked
- * for spend `teammateUnits` when it is set, else what is left of `leadUnits` after every turn.
+ * Daily limits in budget units; null is no limit. `workerUnits` (older wire name) caps delegated
+ * tasks. Owner-asked turns spend `leadUnits` less what the owner's own turns used; a teammate's
+ * turns spend `teammateUnits` when set, else what `leadUnits` has left after every turn.
  */
 export const KinBudgetLimits = Schema.Struct({
   leadUnits: Schema.NullOr(KinBudgetUnits),

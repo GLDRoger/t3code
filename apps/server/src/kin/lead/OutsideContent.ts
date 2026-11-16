@@ -68,10 +68,6 @@ export const OUTSIDE_TOOLS = {
   people_read: "allowed",
   // Outside text could rename someone or move their hours.
   people_update: "refused",
-  // Workers have a shell and the network: outside text could steer either.
-  kin_delegate: "refused",
-  kin_follow_up: "refused",
-  kin_worker_stop: "allowed",
   // The event each makes carries the turn's stamp, so the turn it starts reads as outside.
   kin_hand_off: "allowed",
   // A discussion wakes every agent on its question: outside text doesn't get to set one.
@@ -150,7 +146,7 @@ export const OUTSIDE_TOOLS = {
   social_draft: "allowed",
   social_week: "allowed",
   social_pack: "allowed",
-  // A delegated task, clone or browser is work outside text could steer, as a worker was.
+  // A delegated task, clone or browser is work outside text could steer.
   ...(Object.fromEntries(LEAD_T3_TOOLS.map((name) => [name, "refused" as const])) as Record<
     (typeof LEAD_T3_TOOLS)[number],
     "refused"

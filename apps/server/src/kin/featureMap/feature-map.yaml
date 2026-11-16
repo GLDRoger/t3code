@@ -144,16 +144,18 @@ features:
       - verification/kin/discussion/Discussion.tla
       - .agents/skills/verify-kin/scripts/team-room-discussion.sh
 
-  - id: coding-workers
-    name: An agent starts coding workers and follows up
+  - id: coding-tasks
+    name: An agent hands code to a delegated task, with its card in the chat
     tab: chats
-    web: [chat]
-    phone: [tab:chats, KinChat]
-    roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: Through the agent; what a worker may touch follows the asker's access.
-    tools: [kin_delegate, kin_follow_up, kin_worker_stop]
+    web: [chat, card:Task]
+    phone: [tab:chats, KinChat, card:Task]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      Through T3's delegate_task in an owner-level chat, under the daily limit for tasks; the agent
+      stops one with task_cancel. A teammate's coding request goes to the owner as a question.
     proof:
-      - apps/server/src/kin/lead/Workers.test.ts
+      - apps/server/src/kin/lead/DelegatedTasks.test.ts
+      - apps/server/src/kin/mcp/KinChatToolkit.test.ts
       - apps/server/src/kin/contract/delegateTask.kin-contract.test.ts
 
   - id: github
@@ -451,7 +453,7 @@ features:
       A lead may mark a task private and undo their own mark; others who see it read whose it
       is. Sharing with the team is owner-level.
     proof:
-      - apps/server/src/kin/lead/WorkIsolation.test.ts
+      - apps/server/src/kin/work/KinRecords.test.ts
       - .agents/skills/verify-kin/scripts/private-task-hidden.sh
       - .agents/skills/verify-kin/scripts/lead-undoes-only-me.sh
 

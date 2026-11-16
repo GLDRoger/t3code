@@ -181,8 +181,8 @@ const loginConnected = Effect.gen(function* () {
 
 /**
  * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
- * Shared threads list only what shared turns may run; T3 tools show only on an owner-only thread;
- * `kin_delegate` never shows, as longer work is a T3 delegated task. `KinToolGate` checks each call.
+ * Shared threads list only what shared turns may run; T3 tools show only on an owner-only thread.
+ * `KinToolGate` checks each call.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(function* (
   name: string,
@@ -193,7 +193,6 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
   if (isKinGitHubTool(name))
     return (yield* kinAppConfigured) || (LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected));
   if (isSocialTool(name)) return yield* onSocialSeat(threadId);
-  if (name === "kin_delegate") return false;
   if (!isT3Tool(name)) return true;
   return leadT3Tools.has(name) && !shared;
 });

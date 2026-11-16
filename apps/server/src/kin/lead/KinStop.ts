@@ -16,7 +16,6 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
   CommandId,
-  EnvironmentId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -43,8 +42,6 @@ import type * as Routines from "../triggers/routines.ts";
 import * as Queue from "./KinEventQueue.ts";
 import { hashedEventId } from "./eventIds.ts";
 import { isOrgOwner, isOrgPaused, STOP_REASON } from "./orgState.ts";
-import * as WorkerEnvironment from "./workerEnvironment.ts";
-import { workThreadPrefix } from "./workThread.ts";
 
 /** A claim that races a pause returns its events for this long, so a paused org does not spin. */
 export const PAUSE_POLL_INTERVAL_MS = 5_000;
@@ -449,7 +446,7 @@ const isLive = (run: OrchestrationV2Run) =>
 type ThreadRuns = Pick<OrchestrationV2ThreadProjection, "thread" | "runs">;
 const liveRun = (projection: ThreadRuns) => projection.runs.findLast(isLive);
 /** Interrupts the thread's live run and stops its delegated tasks; true when a run was live. */
-const stopThreadTree = Effect.fn("KinWorkers.stopThreadTree")(function* (
+const stopThreadTree = Effect.fn("KinStop.stopThreadTree")(function* (
   threads: ThreadManagement.ThreadManagementService["Service"],
   input: {
     readonly projection: ThreadRuns;
@@ -476,28 +473,24 @@ const stopThreadTree = Effect.fn("KinWorkers.stopThreadTree")(function* (
   return active !== undefined;
 });
 
-/**
- * The lead runtime's fan-out: lead, dream and local worker runs and their delegated tasks, the
- * worker server, then routines.
- */
 const isMissingThread = (error: { readonly _tag: string; readonly cause?: unknown }) =>
   error._tag === "OrchestratorProjectionError" &&
   typeof error.cause === "object" &&
   error.cause !== null &&
   (error.cause as { readonly _tag?: unknown })._tag === "ProjectionStoreThreadNotFoundError";
 
+/** The lead runtime's fan-out: agent and dream runs and their delegated tasks, then routines. */
 export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
   routines: Option.Option<Routines.KinRoutines["Service"]>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const threads = yield* ThreadManagement.ThreadManagementService;
-  const workers = yield* Effect.serviceOption(WorkerEnvironment.KinWorkerEnvironment);
   // Recovery keeps run ids across a restart, so a replay must not dedupe on a pre-crash receipt.
   const boot = (yield* Random.nextInt).toString(36);
   return {
     pause: Effect.fn("KinStop.fanOut.pause")(function* (orgId: KinOrgId, pausedAt: number) {
       const failed = (cause: unknown) => new KinStopFanOutError({ orgId, cause });
-      // Routines, lead runs and workers stop side by side: nothing remote can hold up the rest.
+      // Routines and agent runs stop side by side.
       const routinesPaused = Option.isSome(routines)
         ? Effect.exit(routines.value.pauseAll(orgId))
         : Effect.succeed(Exit.void);
@@ -506,9 +499,7 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
           SELECT thread_id AS "threadId" FROM kin_leads WHERE org_id = ${orgId} AND thread_id IS NOT NULL
           UNION SELECT thread_id FROM kin_dream_runs
             WHERE org_id = ${orgId} AND status = 'running' AND thread_id IS NOT NULL
-          UNION SELECT thread_id FROM kin_workers
-            WHERE org_id = ${orgId} AND ended_at IS NULL AND environment_id IS NULL
-              AND thread_id = ${workThreadPrefix} || worker_id
+          UNION SELECT thread_id FROM kin_agent_threads WHERE org_id = ${orgId} AND ended_at IS NULL
           ORDER BY 1`.pipe(Effect.mapError(failed), Effect.exit);
         if (Exit.isFailure(rows)) return [rows];
         return yield* Effect.forEach(
@@ -533,55 +524,11 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
           { concurrency: "unbounded" },
         );
       });
-      const workersStopped = Effect.gen(function* () {
-        // Every worker row still open, launched or not: a launch whose reply never came may
-        // still be running there.
-        const rows = yield* sql<{ workerId: string; threadId: string; environmentId: string }>`
-          SELECT worker_id AS "workerId", thread_id AS "threadId", environment_id AS "environmentId"
-          FROM kin_workers WHERE org_id = ${orgId} AND ended_at IS NULL
-            AND environment_id IS NOT NULL
-          ORDER BY worker_id`.pipe(Effect.mapError(failed), Effect.exit);
-        if (Exit.isFailure(rows)) return [rows];
-        if (Option.isNone(workers))
-          return rows.value.length === 0
-            ? []
-            : [Exit.fail(failed("Kin has no worker environment service here."))];
-        const env = workers.value;
-        if (Option.isNone(env.environmentId) && rows.value.length === 0) return [];
-        // Advisory: a server that still answers records each stop, so it doesn't carry the turn
-        // on when it starts again. What it answers changes nothing below.
-        yield* Effect.forEach(
-          rows.value.filter((row) => row.threadId !== `kin-worker-${row.workerId}`),
-          (row) =>
-            WorkerEnvironment.stopThere(env, {
-              environmentId: EnvironmentId.make(row.environmentId),
-              threadId: ThreadId.make(row.threadId),
-              key: `kin-stop:${row.workerId}:${pausedAt}:${boot}`,
-              reason: STOP_REASON,
-            }).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Kin's stop there went unanswered", {
-                  workerId: row.workerId,
-                  cause,
-                }),
-              ),
-            ),
-          { concurrency: "unbounded", discard: true },
-        );
-        // The pause itself: systemd stops the worker server, and its unit won't start again
-        // while any org is paused. Resume starts it.
-        return [yield* Effect.exit(env.stopServer)];
+      const [routineExit, leadExits] = yield* Effect.all([routinesPaused, leadsStopped], {
+        concurrency: "unbounded",
       });
-      const [routineExit, leadExits, workerExits] = yield* Effect.all(
-        [routinesPaused, leadsStopped, workersStopped],
-        { concurrency: "unbounded" },
-      );
       const failures: Array<Cause.Cause<unknown>> = [];
-      const exits: ReadonlyArray<Exit.Exit<unknown, unknown>> = [
-        routineExit,
-        ...leadExits,
-        ...workerExits,
-      ];
+      const exits: ReadonlyArray<Exit.Exit<unknown, unknown>> = [routineExit, ...leadExits];
       for (const exit of exits) if (Exit.isFailure(exit)) failures.push(exit.cause);
       if (failures.length > 0)
         return yield* failed(failures.reduce((all, cause) => Cause.combine(all, cause)));
@@ -616,13 +563,6 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
       return true;
     }),
     resume: Effect.fn("KinStop.fanOut.resume")(function* (orgId: KinOrgId) {
-      // The unit's start condition keeps it stopped while another org is still paused.
-      if (Option.isSome(workers) && Option.isSome(workers.value.environmentId))
-        yield* workers.value.startServer.pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Kin could not start the worker server", { orgId, cause }),
-          ),
-        );
       if (Option.isSome(routines))
         yield* routines.value
           .resumeAll(orgId)

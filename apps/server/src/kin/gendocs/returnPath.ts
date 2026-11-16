@@ -63,7 +63,7 @@ export type Refused = {
   readonly name: string;
   /** What was found, in plain words for the owner and the agent. */
   readonly reason: string;
-  /** For the worker only: how to make it so Kin takes it back. */
+  /** For the agent only: how to make it so Kin takes it back. */
   readonly retry?: string;
 };
 export type Returned = {
@@ -74,7 +74,7 @@ export type Returned = {
 const plainName = /^[A-Za-z0-9][A-Za-z0-9 ._()-]{0,99}$/;
 // A page reaches chat only as the agent's own kin_visual, under that turn's rules.
 const HTML_REFUSAL =
-  "a worker's HTML page doesn't come back as a file: make a PDF or a PNG of it, or the agent sends a page itself with kin_visual";
+  "an HTML page doesn't come back as a file: make a PDF or a PNG of it, or send the page itself with kin_visual";
 const megabytes = (bytes: number) => `${Math.round(bytes / (1024 * 1024))} MB`;
 
 /** `out/<name>` or a bare `<name>`; anything with another directory, `..` or a leading `/` is not. */
@@ -98,7 +98,7 @@ const utf8 = (bytes: Uint8Array): string | undefined => {
   }
 };
 
-/** How a worker makes a refused file again so Kin takes it; never shown to the owner. */
+/** How the agent makes a refused file again so Kin takes it; never shown to the owner. */
 const RETRY_HINTS: Partial<Record<Extension, string>> = {
   xlsx: "Kin takes back Office files with no macros, embedded objects or outside links, plain web and email hyperlinks aside: make it again without them, or return a PDF.",
   docx: "Kin takes back Office files with no macros, embedded objects or outside links, plain web and email hyperlinks aside: make it again without them, or return a PDF.",

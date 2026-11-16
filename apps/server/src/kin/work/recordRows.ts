@@ -182,7 +182,7 @@ const takesPayments = (sql: SqlClient.SqlClient) =>
       AND json_extract(g.definition_json, '$.payments') = 1))`;
 
 /**
- * The columns every read selects, with the derived ones: a running worker, the last PR, the client
+ * The columns every read selects, with the derived ones: an old worker run, the last PR, the client
  * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
  */
 /**

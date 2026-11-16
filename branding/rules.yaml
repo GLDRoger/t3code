@@ -627,16 +627,13 @@ leaks:
       leak: t3-home
       files: [apps/server/src/project/AgentSessionScanner.ts]
     - reason: >-
-        The Kin host runs the server from source with `--base-dir ~/.t3` (ops/kin/host), and the
-        worker environment keeps its state in the kin-worker user's ~/.t3 the same way. The host
-        scripts and the host CLI's hints read, pair and link those homes; all name the host's real
-        paths.
+        The Kin host runs the server from source with `--base-dir ~/.t3` (ops/kin/host). The host
+        scripts and the host CLI's hints read that home; all name the host's real paths.
       leak: t3-home
       files:
         - ops/kin/host/backup.sh
         - ops/kin/host/kin
         - ops/kin/host/kin-server.service
-        - ops/kin/host/kin-worker.sh
         - ops/kin/host/update.sh
         - apps/server/src/kin/cli/githubWebhook.ts
     - reason: Message attribution enum on the wire; peers and stored threads use this value.

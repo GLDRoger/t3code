@@ -27,7 +27,6 @@ import { KinTeam } from "../../team/KinTeam.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import { quote } from "../LeadPrompt.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
-import { KinWorkers } from "../Workers.ts";
 import { readPeople } from "../peopleRead.ts";
 import { updatePeople } from "../peopleUpdate.ts";
 import { updateAgent } from "../agentUpdate.ts";
@@ -56,21 +55,6 @@ const githubQuote = (value: unknown) => ({ quoted: quote("GitHub data (untrusted
 
 // Kin's service checks the persisted lead and wake-up, rather than T3 thread-control grants.
 export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
-  kin_delegate: McpToolAccess.actsAsCaller(
-    Effect.fn("KinLeadToolkit.delegate")(function* (input) {
-      return yield* (yield* KinWorkers).delegate(yield* McpInvocationContext, input);
-    }),
-  ),
-  kin_follow_up: McpToolAccess.actsAsCaller(
-    Effect.fn("KinLeadToolkit.followUp")(function* (input) {
-      return yield* (yield* KinWorkers).followUp(yield* McpInvocationContext, input);
-    }),
-  ),
-  kin_worker_stop: McpToolAccess.actsAsCaller(
-    Effect.fn("KinLeadToolkit.workerStop")(function* (input) {
-      return yield* (yield* KinWorkers).stop(yield* McpInvocationContext, input);
-    }),
-  ),
   kin_leads: McpToolAccess.reads(
     Effect.fn("KinLeadToolkit.leads")(function* () {
       return yield* (yield* KinHandoff).leads(yield* McpInvocationContext);

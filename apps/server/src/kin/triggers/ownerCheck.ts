@@ -6,7 +6,6 @@ import {
   KinOrgId,
   KinWidgetId,
   type MemoryItemHead,
-  WorkerReport,
   type KinWidget,
   KinChatId,
   KinOwnerCheckCard,
@@ -31,7 +30,9 @@ import * as Hub from "../chat/KinChatHub.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 
 const day = 86_400_000;
+// "misleading" came from worker reports; it stays decodable for cards already posted.
 const reasons = ["past_review", "misleading", "old_low_trust", "no_evidence"] as const;
+const ranked = ["past_review", "old_low_trust", "no_evidence"] as const;
 const Selection = Schema.Struct({ itemId: KinMemoryItemId, reason: Schema.Literals(reasons) });
 type Selection = typeof Selection.Type;
 const decodeCard = Schema.decodeUnknownEffect(KinOwnerCheckCard);
@@ -54,13 +55,11 @@ const decodeTap = Schema.decodeUnknownEffect(
     }),
   ),
 );
-const decodeReport = Schema.decodeUnknownEffect(Schema.fromJsonString(WorkerReport));
 const ordinal = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 export function pickOwnerCheckItems(
   orgId: KinOrgId,
   items: ReadonlyArray<MemoryItemHead & { readonly duplicate?: boolean }>,
-  misleading: ReadonlySet<string>,
   now: number,
 ): ReadonlyArray<Selection> {
   return items
@@ -76,15 +75,13 @@ export function pickOwnerCheckItems(
       const rank =
         review < now
           ? 0
-          : misleading.has(item.id)
+          : item.kind === "claim" &&
+              item.trust !== "owner" &&
+              memoryDateMillis(item.recorded_at) < now - 30 * day
             ? 1
-            : item.kind === "claim" &&
-                item.trust !== "owner" &&
-                memoryDateMillis(item.recorded_at) < now - 30 * day
+            : item.kind === "claim" && item.links.length === 0
               ? 2
-              : item.kind === "claim" && item.links.length === 0
-                ? 3
-                : -1;
+              : -1;
       return { item, review, rank };
     })
     .filter(({ rank }) => rank >= 0)
@@ -100,7 +97,7 @@ export function pickOwnerCheckItems(
       (row, index, rows) => rows.findIndex((other) => other.item.id === row.item.id) === index,
     )
     .slice(0, 5)
-    .map(({ item, rank }) => ({ itemId: item.id, reason: reasons[rank] ?? "no_evidence" }));
+    .map(({ item, rank }) => ({ itemId: item.id, reason: ranked[rank] ?? "no_evidence" }));
 }
 
 /** Verifies a claimed widget tap as the org owner's own action on an open card of `type`. */
@@ -206,19 +203,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         const items = yield* memory.query(orgId, { excludeInvalid: true });
-        const reports = yield* sql<{
-          report_json: string;
-        }>`SELECT report_json FROM kin_workers WHERE org_id = ${orgId} AND report_json IS NOT NULL AND ended_at >= ${now - 90 * day} ORDER BY ended_at, worker_id`.pipe(
-          Effect.mapError((cause) =>
-            isSqlError(cause) ? toPersistenceSqlError("OwnerCheck.select")(cause) : cause,
-          ),
-        );
-        const misleading = new Set<string>();
-        for (const row of reports) {
-          const report = yield* decodeReport(row.report_json);
-          for (const finding of report.misleadingMemory) misleading.add(finding.itemId);
-        }
-        return pickOwnerCheckItems(orgId, items, misleading, now);
+        return pickOwnerCheckItems(orgId, items, now);
       }),
     ),
   );

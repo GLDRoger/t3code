@@ -15,11 +15,8 @@ const KIN_VERIFY_SCRIPT_INSTANCE_ID = "kinVerifyScript";
 
 const decodeModel = Schema.decodeUnknownOption(Schema.fromJsonString(KinLead.fields.model));
 const encodeSelection = Schema.encodeSync(KinLead.fields.model);
-/** The stored model. `strong` and `cheap` are for Workers.ts alone; drop them when it is deleted. */
-export const encodeLeadModel = (model: ModelSelection) => {
-  const selection = encodeSelection(model);
-  return JSON.stringify({ ...selection, strong: selection, cheap: selection });
-};
+/** Rows from before K163 also carry `strong` and `cheap`; decoding ignores them. */
+export const encodeLeadModel = (model: ModelSelection) => JSON.stringify(encodeSelection(model));
 
 /** A dev server also runs leads on the scripted agent, so checks drive real turns for free. */
 export const isDevServer = Effect.serviceOption(ServerConfig).pipe(
@@ -50,7 +47,7 @@ export const nonClaudeLeadModel = (
   if (devServer && instanceId === KIN_VERIFY_SCRIPT_INSTANCE_ID && driver === "acpRegistry")
     return undefined;
   if (!kinAgentDriverAllowed(driver, settings.kinNonClaudeAgents))
-    return `Kin agents run only on Claude, and the model's instance ${instanceId} is ${driver === undefined ? "not a configured provider" : `a ${driver} instance`}. Workers may still use any provider.${driver === "codex" ? " To use Codex, turn on Agents on OpenAI models in Kin's Settings." : ""}`;
+    return `Kin agents run only on Claude, and the model's instance ${instanceId} is ${driver === undefined ? "not a configured provider" : `a ${driver} instance`}. Delegated tasks may still use any provider.${driver === "codex" ? " To use Codex, turn on Agents on OpenAI models in Kin's Settings." : ""}`;
   return undefined;
 };
 

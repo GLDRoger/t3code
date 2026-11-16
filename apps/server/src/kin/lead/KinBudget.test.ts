@@ -8,6 +8,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinWakeupId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -84,9 +85,9 @@ describe("KinBudget", () => {
           );
           assert.isTrue(admissions.every((a) => a.atLimit === (remaining === 0)));
         }
-        assert.isTrue(yield* budget.admitWorker(orgId));
+        assert.isTrue(yield* budget.admitTask(orgId));
         yield* sql`UPDATE kin_budget SET worker_units = 10 WHERE org_id = ${orgId}`;
-        assert.isFalse(yield* budget.admitWorker(orgId));
+        assert.isFalse(yield* budget.admitTask(orgId));
         yield* budget.notifyOwner(orgId, "org");
         yield* budget.notifyOwner(orgId, "org");
         assert.deepStrictEqual(
@@ -100,7 +101,7 @@ describe("KinBudget", () => {
         yield* budget.set(owner, { orgId, limits: { leadUnits: 200, workerUnits: 20 } });
         assert.isTrue((yield* budget.admit(orgId, "P3")).allowed);
         yield* budget.set(owner, { orgId, limits: { leadUnits: 0, workerUnits: 0 } });
-        assert.isFalse(yield* budget.admitWorker(orgId));
+        assert.isFalse(yield* budget.admitTask(orgId));
         assert.strictEqual(
           (yield* sql`SELECT message_id FROM kin_messages WHERE org_id = ${orgId} ORDER BY message_id`)
             .length,
@@ -160,6 +161,12 @@ describe("KinBudget", () => {
         assert.strictEqual(updated.units, 59.5);
         assert.deepStrictEqual(yield* budget.charge({ orgId, wakeupId, usage: full }), updated);
         assert.strictEqual((yield* budget.get(orgId)).leadUnits, 4);
+        // A delegated task's thread bills task units only, and only what it grew by.
+        const task = ThreadId.make("invented-task-thread");
+        const billed = yield* budget.chargeTask({ orgId, threadId: task, usage });
+        assert.deepStrictEqual(yield* budget.chargeTask({ orgId, threadId: task, usage }), billed);
+        yield* budget.chargeTask({ orgId, threadId: task, usage: full });
+        assert.include(yield* budget.get(orgId), { leadUnits: 4, workerUnits: 59.5 });
         assert.include(
           yield* budget
             .charge({ orgId: KinOrgId.make("foreign"), wakeupId, usage })
@@ -361,7 +368,7 @@ describe("KinBudget", () => {
           allowed: true,
           atLimit: false,
         });
-      assert.isTrue(yield* budget.admitWorker(orgId));
+      assert.isTrue(yield* budget.admitTask(orgId));
       assert.strictEqual(yield* budget.promptContext(orgId), "no daily limit");
       assert.deepStrictEqual(fresh.usual, Budget.USUAL_LIMITS);
       const touched: Array<string> = [];

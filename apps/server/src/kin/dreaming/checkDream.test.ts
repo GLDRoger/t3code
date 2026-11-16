@@ -9,7 +9,7 @@ import type { MaterialEntry } from "./material.ts";
 
 const orgId = KinOrgId.make("fixture-org");
 const ownerRef = "kin:chat:owner-chat:message:m1";
-const agentRef = "kin:event:report-1";
+const agentRef = "kin:event:github-1";
 const guestRef = "kin:chat:guest-chat:message:g1";
 const material: ReadonlyArray<MaterialEntry> = [
   {
@@ -22,7 +22,7 @@ const material: ReadonlyArray<MaterialEntry> = [
   },
   {
     ref: agentRef,
-    kind: "worker_report",
+    kind: "github",
     saidBy: "fixture-lead",
     trust: "agent",
     at: "2026-11-07T11:00:00.000Z",

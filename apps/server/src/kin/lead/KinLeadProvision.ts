@@ -458,8 +458,8 @@ const TrackedRow = Schema.Struct({
 const decodeTracked = Schema.decodeUnknownEffect(Schema.Array(TrackedRow));
 
 /**
- * What each lead has in hand, from stored rows: its running workers, the deferrals still waiting
- * to come due and the scheduled tasks still on. A deferral belongs to its chat's first-joined
+ * What each lead has in hand, from stored rows: its open Work, the deferrals still waiting to
+ * come due and the scheduled tasks still on. A deferral belongs to its chat's first-joined
  * lead, the one the trigger wakes for it (`orgLeads.liveLead`); a native schedule to its row's.
  */
 const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId) {
@@ -470,7 +470,7 @@ const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId
       WHERE m.org_id = w.org_id AND m.chat_id = w.chat_id AND m.principal_kind = 'agent'
         AND m.left_at IS NULL
       ORDER BY m.joined_at, m.agent_id LIMIT 1)`;
-  // Its open Work entries, any running worker not yet in Work, then its alarms.
+  // Its open Work entries, then its alarms.
   const rows = yield* sql`
     SELECT 'work' AS kind, e.title, e.due_at AS "dueAt", e.source_chat_id AS "chatId",
       e.owner_id AS "agentId",
@@ -478,12 +478,6 @@ const tracked = Effect.fn("KinLeadProvision.tracked")(function* (orgId: KinOrgId
       COALESCE(e.due_at, e.updated_at) AS at, e.key, e.state
     FROM kin_records e WHERE e.org_id = ${orgId} AND e.register_id = 'work'
       AND e.owner_kind = 'agent' AND e.state NOT IN ('done', 'dropped')
-    UNION ALL
-    SELECT 'work', COALESCE(k.title, 'Coding task'), NULL, k.chat_id, k.agent_id, 0, k.started_at,
-      NULL, NULL
-    FROM kin_workers k WHERE k.org_id = ${orgId} AND k.ended_at IS NULL
-      AND NOT EXISTS (SELECT 1 FROM kin_record_links l WHERE l.org_id = k.org_id
-        AND l.kind = 'worker' AND l.target = k.worker_id)
     UNION ALL
     SELECT CASE r.on_due WHEN 'remind' THEN 'reminder' ELSE 'follow_up' END,
       COALESCE(json_extract(w.state_json, '$.title'), ''), COALESCE(f.next_run_at, r.due_at),
@@ -736,7 +730,7 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
       const after = Effect.gen(function* () {
         if (Option.isSome(stop) && stopped.turns.length > 0)
           yield* stop.value.abortTurns(lead.orgId, stopped.turns);
-        // Wakes the runner, which ends its thread and sends its workers' stored stops.
+        // Wakes the runner, which ends its thread.
         if (Option.isSome(queue))
           yield* queue.value
             .expireAgent(lead.orgId, lead.agentId)
@@ -756,8 +750,8 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
 
 /**
  * Brings a retired lead back as it was: its chats, level, access and Work, and the timers and
- * schedules retiring paused. Its next turn starts a fresh thread. Workers it had stay stopped
- * and events that expired stay expired. Refused while another live lead has its name and domain.
+ * schedules retiring paused. Its next turn starts a fresh thread. Events that expired stay
+ * expired. Refused while another live lead has its name and domain.
  */
 export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
   readonly by: LeadActor;

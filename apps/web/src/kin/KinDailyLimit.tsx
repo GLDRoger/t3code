@@ -2,6 +2,7 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   KIN_DAILY_LIMIT,
   kinDailyLimitChoices,
+  kinDailyLimitUsed,
   kinDailyLimitWaiting,
 } from "@t3tools/client-runtime/kin/kinBudget";
 import * as Option from "effect/Option";
@@ -46,6 +47,7 @@ function DailyLimit(props: KinWorkTarget) {
   if (!canSet || AsyncResult.isFailure(result)) return null;
   const { choices, current } = kinDailyLimitChoices(budget);
   const waiting = kinDailyLimitWaiting(budget);
+  const used = kinDailyLimitUsed(budget);
   return (
     <SettingsRow
       title={KIN_DAILY_LIMIT.title}
@@ -80,6 +82,11 @@ function DailyLimit(props: KinWorkTarget) {
         </Select>
       }
     >
+      {used === null ? null : (
+        <p className="pt-2 text-xs text-muted-foreground">
+          {KIN_DAILY_LIMIT.used}: {used}
+        </p>
+      )}
       {waiting.length === 0 ? null : (
         <div className="pt-2 text-xs text-muted-foreground">
           <p className="font-medium text-foreground">{KIN_DAILY_LIMIT.waiting}</p>

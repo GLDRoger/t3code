@@ -17,7 +17,6 @@ import {
   type KinRecordSide,
   type KinRecordState,
   type KinWorkPrincipal,
-  type KinWorkerId,
   KinRecordId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -27,7 +26,6 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import type * as Scope from "effect/Scope";
 import type * as Statement from "effect/sql/Statement";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
@@ -42,7 +40,7 @@ import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { indexRecord } from "./searchIndex.ts";
-import { SensitiveRefusal, withdrawAttempts } from "./workerAttempts.ts";
+import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
   fieldList,
   checkFor,
@@ -221,17 +219,6 @@ export type QueryInput = {
   /** Only what every one of these people may see (`viewSees`). */
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- the owner-level primitive; person reads and writes reach it through ownerWork/leadWork, which set it.
   readonly view?: ReadonlyArray<KinPersonId>;
-};
-
-/** An entry the owner closed or took from a lead while it held it open, after that commits. */
-export type Withdrawal = {
-  readonly orgId: KinOrgId;
-  readonly agentId: KinAgentId;
-  readonly recordId: string;
-  readonly key: string;
-  readonly seq: number;
-  /** The lead's worker attempts open on the entry when it was withdrawn: the stop's whole reach. */
-  readonly workers: ReadonlyArray<{ readonly workerId: KinWorkerId; readonly startedAt: number }>;
 };
 
 const isChatError = Schema.is(KinChatError);
@@ -500,10 +487,6 @@ export class KinRecords extends Context.Service<
       orgId: KinOrgId,
       personIds: ReadonlyArray<string>,
     ) => Effect.Effect<void, KinChatError>;
-    /** The lead runtime stops a withdrawn entry's workers; the WS side has no thread services. */
-    readonly attachWithdrawals: (
-      onWithdrawn: (withdrawal: Withdrawal) => Effect.Effect<void>,
-    ) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/kin/work/KinRecords") {}
 
@@ -517,7 +500,6 @@ const make = Effect.gen(function* () {
   const choicesMoved = (orgId: KinOrgId, list: string) =>
     list === "clients" || list === "projects" ? refreshes.touch(orgId, "workChoices") : Effect.void;
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
-  let onWithdrawn: ((withdrawal: Withdrawal) => Effect.Effect<void>) | undefined;
 
   const failed = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
@@ -1629,11 +1611,9 @@ const make = Effect.gen(function* () {
           !isClosed(row.state) && (isClosed(state) || reassigned !== undefined)
             ? before.owner
             : undefined;
-        // Told only when the person is the lead's owner; then Kin, not the lead, stops its work.
-        if (
-          withdrawnFrom?._tag === "agent" &&
-          writer.actor._tag === "person" &&
-          (yield* wakeLead(
+        // Told only when the person is the lead's owner.
+        if (withdrawnFrom?._tag === "agent" && writer.actor._tag === "person")
+          yield* wakeLead(
             orgId,
             writer,
             row,
@@ -1642,34 +1622,7 @@ const make = Effect.gen(function* () {
             seq,
             now,
             "withdrawn",
-          ))
-        ) {
-          // The stop is recorded with the change, before anything is interrupted, so it holds
-          // against publishing and outlives a restart; it never reaches work started after.
-          const workers = yield* withdrawAttempts({
-            orgId,
-            agentId: withdrawnFrom.agentId,
-            recordId: row.recordId,
-            key: row.key,
-            seq,
-            at: now,
-          }).pipe(provideSql);
-          const withdrawal = {
-            orgId,
-            agentId: withdrawnFrom.agentId,
-            recordId: row.recordId,
-            key: row.key,
-            seq,
-            workers,
-          };
-          yield* sql.afterCommit(
-            Effect.suspend(() =>
-              onWithdrawn === undefined
-                ? Effect.logError("Kin has no lead runtime to stop withdrawn work", withdrawal)
-                : onWithdrawn(withdrawal),
-            ),
           );
-        }
         const updated = yield* byId(orgId, row.recordId).pipe(provideSql);
         if (updated === undefined) return yield* unavailable;
         if (!isClosed(row.state) && isClosed(updated.state))
@@ -2141,17 +2094,6 @@ const make = Effect.gen(function* () {
   });
 
   return KinRecords.of({
-    attachWithdrawals: Effect.fn("KinRecords.attachWithdrawals")(function* (next) {
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          onWithdrawn = next;
-        }),
-        () =>
-          Effect.sync(() => {
-            if (onWithdrawn === next) onWithdrawn = undefined;
-          }),
-      );
-    }),
     create,
     update,
     handBack,

@@ -6,14 +6,34 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
-import { KinServer } from "../KinServer.ts";
+import { KinServer, type Services } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { TURN_EVENT_TOOLS } from "../lead/eventIds.ts";
+import { KinBudget } from "../lead/KinBudget.ts";
 
-type Check = typeof toolAdmitted;
+type Check = (
+  turn: Parameters<typeof toolAdmitted>[0],
+  tool: string,
+  args: unknown,
+) => Effect.Effect<boolean, never, Services>;
+
+const TASK_LIMIT_REFUSAL =
+  "Today's limit for delegated tasks is reached, so no task starts until it resets at midnight; don't try again. Tell the owner, who can also raise it in Settings.";
+
+export const taskAdmitted: Check = Effect.fn("KinToolGate.taskAdmitted")(
+  function* (turn, tool) {
+    if (tool !== "delegate_task") return true;
+    return yield* (yield* KinBudget).admitTask(turn.orgId);
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin couldn't read the task limit; refusing", { cause }).pipe(
+      Effect.as(false),
+    ),
+  ),
+);
 
 /**
  * Runs `check` on the calling lead's running turn: no running lead turn admits nothing. The
@@ -35,7 +55,7 @@ const gate = (name: string, check: Check) =>
       ORDER BY started_at, wakeup_id LIMIT 1`;
       if (row === undefined) return false;
       return yield* check({ orgId, agentId, wakeupId: row.wakeupId }, tool, args).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideContext(kin.value.services.value),
       );
     },
     Effect.catchCause((cause) =>
@@ -85,11 +105,12 @@ const turnEvents = McpHttpServer.toolCallPrepare(
 /**
  * Every tool call on the Kin MCP endpoint passes here before its handler, whichever toolkit
  * registered it: nothing reaches the owner's context in a turn someone else can read
- * (`SharedTools`), and nothing outside text could steer runs once the turn has read some
- * (`OutsideContent`). Each refuses with its own line.
+ * (`SharedTools`), nothing outside text could steer runs once the turn has read some
+ * (`OutsideContent`), and no task starts past the owner's daily limit. Each refuses with its own line.
  */
 export const layer = Layer.mergeAll(
   turnEvents,
   McpHttpServer.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
   McpHttpServer.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
+  McpHttpServer.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
 );

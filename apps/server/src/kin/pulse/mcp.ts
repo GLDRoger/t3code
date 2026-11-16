@@ -42,7 +42,7 @@ export const PulseReadInput = Schema.Struct({
   }),
   family: Schema.optional(KinPulseFamily).annotate({
     description:
-      "work (tasks), money (invoices, quotes, renewals, budgets) or system (workers, held work).",
+      "work (tasks), money (invoices, quotes, renewals, budgets) or system (stuck tasks, held work).",
   }),
   includeHandled: Schema.optional(Schema.Boolean).annotate({
     description: "Also show facts someone already has in hand. Default false.",
@@ -221,7 +221,7 @@ export const KinPulseToolkit = Toolkit.make(
   Tool.make("pulse_read", {
     ...shared,
     description:
-      "What needs attention now, computed from Kin's records: late or stalled tasks, overdue invoices, unanswered quotes, renewals, budgets, failed workers; each fact with a key, its consequence and who should act. Use it, not memory, for what is late, overdue or due today. Read-only.",
+      "What needs attention now, computed from Kin's records: late or stalled tasks, overdue invoices, unanswered quotes, renewals, budgets, stuck tasks; each fact with a key, its consequence and who should act. Use it, not memory, for what is late, overdue or due today. Read-only.",
     parameters: PulseReadInput,
     success: KinPulseRead,
   }).annotate(McpSchema.EnabledWhen, enabled),
