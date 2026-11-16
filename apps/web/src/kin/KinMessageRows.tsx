@@ -27,9 +27,11 @@ import {
   type KinWidget,
 } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
-import { FileTextIcon, SmilePlusIcon } from "lucide-react";
+import { FileTextIcon, MessagesSquareIcon, ReplyIcon, SmilePlusIcon } from "lucide-react";
+import { useState } from "react";
 
 import ChatMarkdown from "../components/ChatMarkdown";
+import { FoldedMessageHeader } from "../components/chat/TimelineUserMessageRow";
 import { WorkGroupHeader } from "../components/chat/TimelineWorkGroupRows";
 import { Button } from "../components/ui/button";
 import { Menu, MenuCheckboxItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
@@ -40,6 +42,7 @@ import { KinMessageAttachments } from "./KinMessageAttachments";
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
 type FoldRow = Extract<KinFeedRow, { readonly type: "fold" }>;
+type RelayRow = Extract<KinFeedRow, { readonly type: "relay" }>;
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 export const formatKinMessageTime = (iso: string) => timeFormat.format(new Date(iso));
@@ -351,6 +354,82 @@ export function KinSystemRow(props: {
           Retry
         </Button>
       )}
+    </div>
+  );
+}
+
+/**
+ * One agent's words in another's chat. What it asked sits on the viewer's side, folded as T3
+ * folds a message one agent sent into another's thread; the answer comes back as a callout
+ * naming who answered, with a way to the discussion when a Team-room outcome is what came back.
+ */
+export function KinRelayRow(props: {
+  readonly row: RelayRow;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+  readonly teamRoomId: string | null;
+}) {
+  const { row } = props;
+  const [expanded, setExpanded] = useState(false);
+  const time = formatTime(row.message.createdAt);
+  if (row.relay === "sent_by") {
+    const summary = kinPlainText(row.message.body).split(/\r?\n/, 1)[0]?.trim() ?? "";
+    return (
+      <div className={cn(ROW, "pt-3", "items-end")}>
+        <div
+          role="article"
+          aria-label={`Sent by ${row.agentLabel}, ${time}: ${kinPlainText(row.message.body)}`}
+          className={cn(
+            "min-w-0 max-w-[85%] rounded-2xl bg-message text-sm text-message-foreground",
+            expanded && "w-full",
+          )}
+        >
+          <FoldedMessageHeader
+            icon={MessagesSquareIcon}
+            label={`Sent by ${row.agentLabel}`}
+            summary={summary}
+            expanded={expanded}
+            onToggle={() => setExpanded((value) => !value)}
+          />
+          {expanded ? (
+            <div className="max-h-96 overflow-auto px-3 pb-3">
+              <KinBody markdown={row.message.body} environmentId={props.environmentId} />
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+  const [line, ...rest] = row.message.body.split("\n");
+  const done = rest.join("\n").trim();
+  return (
+    <div className={cn(ROW, "pt-3", "items-start")}>
+      <div
+        role="article"
+        aria-label={`${row.agentLabel} replied, ${time}: ${kinPlainText(row.message.body)}`}
+        className="flex min-w-0 max-w-[85%] flex-col gap-1 rounded-2xl border border-border px-3.5 py-2 text-sm"
+      >
+        <p aria-hidden className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <ReplyIcon className="size-3.5 shrink-0" />
+          {row.agentLabel} replied
+          <span className="tabular-nums">· {time}</span>
+        </p>
+        <KinBody markdown={line ?? ""} environmentId={props.environmentId} />
+        {done === "" ? null : <p className="text-xs text-muted-foreground">{done}</p>}
+        {row.discussionId === null || props.teamRoomId === null ? null : (
+          <Link
+            to="/kin/$environmentId/$orgId/$chatId"
+            params={{
+              environmentId: props.environmentId,
+              orgId: props.orgId,
+              chatId: props.teamRoomId,
+            }}
+            className="self-start rounded-sm text-xs text-muted-foreground underline-offset-2 outline-none ring-ring hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-inset"
+          >
+            See how they got there
+          </Link>
+        )}
+      </div>
     </div>
   );
 }

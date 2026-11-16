@@ -6,7 +6,7 @@ import {
   type KinReactionEmoji,
   type KinWidget,
 } from "@t3tools/contracts";
-import { Pressable, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import type { FilePreviewSource } from "../../../components/ui/FilePreviewModal";
@@ -44,7 +44,10 @@ import {
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
-import { MessageAttachmentList } from "../../threads/ThreadFeed";
+import { AgentMessageFoldHeader, MessageAttachmentList } from "../../threads/ThreadFeed";
+import { useResolveClassNames } from "uniwind";
+import { SymbolView } from "../../../components/ui/AppSymbol";
+import { useState } from "react";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 import { KinAvatar } from "./KinAvatar";
 import { KinDocRefs } from "./KinDocRefs";
@@ -53,6 +56,7 @@ type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
 type DayRow = Extract<KinFeedRow, { readonly type: "day" }>;
 type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
+type RelayRow = Extract<KinFeedRow, { readonly type: "relay" }>;
 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 const formatTime = (iso: string) => timeFormat.format(new Date(iso));
@@ -387,6 +391,99 @@ export function KinSystemLine(props: {
           onPress={props.onRetry}
         />
       )}
+    </View>
+  );
+}
+
+/**
+ * One agent's words in another's chat. What it asked sits on the viewer's side, folded as the
+ * thread feed folds a message one agent sent into another's thread; the answer comes back as a
+ * callout naming who answered, with the way to the discussion when an outcome came back.
+ */
+export function KinRelayBubble(props: {
+  readonly row: RelayRow;
+  readonly environmentId: EnvironmentId;
+  /** Opens the Team room; null when there is none to open. */
+  readonly onOpenDiscussion: (() => void) | null;
+}) {
+  const { row } = props;
+  const [expanded, setExpanded] = useState(false);
+  const iconSubtleColor =
+    StyleSheet.flatten(useResolveClassNames("text-icon-subtle"))?.color ?? "gray";
+  const time = formatTime(row.message.createdAt);
+  const text = kinPlainText(row.message.body);
+  if (row.relay === "sent_by")
+    return (
+      <View className="items-end px-4 pt-3">
+        <View
+          className={cn(
+            OWN_WIDTH_CLASS_NAME,
+            "min-w-0 rounded-[20px] bg-user-bubble",
+            expanded && "w-[85%]",
+          )}
+        >
+          <AgentMessageFoldHeader
+            environmentId={props.environmentId}
+            label={`Sent by ${row.agentLabel}`}
+            summary={text.split(/\r?\n/, 1)[0]?.trim() ?? ""}
+            expanded={expanded}
+            onToggle={() => setExpanded((value) => !value)}
+            iconSubtleColor={iconSubtleColor}
+          />
+          {expanded ? (
+            <View className="px-3.5 pb-2.5">
+              <Text textRole="body" selectable className="text-user-bubble-foreground">
+                {text}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      </View>
+    );
+  const [line, ...rest] = text.split("\n");
+  const done = rest.join("\n").trim();
+  return (
+    <View className="items-start px-4 pt-3">
+      <View
+        accessible
+        accessibilityLabel={`${row.agentLabel} replied, ${time}: ${text}`}
+        className={cn(
+          OTHER_WIDTH_CLASS_NAME,
+          "gap-1 rounded-[20px] border border-separator px-4 py-2.5",
+        )}
+      >
+        <View className="flex-row items-center gap-1.5">
+          <SymbolView
+            name="arrow.uturn.backward"
+            size={12}
+            tintColorClassName="accent-icon-muted"
+            type="monochrome"
+          />
+          <Text textRole="caption" className="text-foreground-muted">
+            {row.agentLabel} replied · {time}
+          </Text>
+        </View>
+        <Text textRole="body" selectable className="text-foreground">
+          {line ?? ""}
+        </Text>
+        {done === "" ? null : (
+          <Text textRole="footnote" className="text-foreground-muted">
+            {done}
+          </Text>
+        )}
+        {row.discussionId === null || props.onOpenDiscussion === null ? null : (
+          <Pressable
+            accessibilityRole="link"
+            hitSlop={8}
+            className="min-h-8 justify-center self-start"
+            onPress={props.onOpenDiscussion}
+          >
+            <Text textRole="footnote" className="text-foreground-muted underline">
+              See how they got there
+            </Text>
+          </Pressable>
+        )}
+      </View>
     </View>
   );
 }
