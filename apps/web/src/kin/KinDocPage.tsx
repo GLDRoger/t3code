@@ -18,7 +18,7 @@ import {
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
-import { KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinDocDetail, KinRecordKey } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -264,15 +264,22 @@ export function KinDocPage(
       doc.sensitive ||
       doc.sensitiveInherited === true ? null : (
         <div className="mx-auto w-full max-w-3xl px-6 pt-3">
-          <KinWorkShareRow
-            environmentId={environmentId}
-            orgId={orgId}
-            itemKey={doc.key}
-            shared={doc.shared === true}
-            disabled={busy}
-            copy={KIN_DOC_SHARE}
-            onSettled={refresh}
-          />
+          {doc.company === true ? (
+            <div className="flex flex-col gap-0.5">
+              <p className="text-sm font-medium text-foreground">{KIN_DOC_COMPANY.label}</p>
+              <p className="text-xs text-muted-foreground">{KIN_DOC_COMPANY.note}</p>
+            </div>
+          ) : (
+            <KinWorkShareRow
+              environmentId={environmentId}
+              orgId={orgId}
+              itemKey={doc.key}
+              shared={doc.shared === true}
+              disabled={busy}
+              copy={KIN_DOC_SHARE}
+              onSettled={refresh}
+            />
+          )}
         </div>
       )}
       {filing && doc !== null ? (

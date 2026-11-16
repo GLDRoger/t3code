@@ -1,3 +1,4 @@
+import { kinLeadMessageable } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
@@ -755,9 +756,8 @@ function KinTeammateLead(props: {
   const access = useAtomValue(
     kinClient.leadAccess({ environmentId, input: { orgId: lead.orgId, agentId: lead.agentId } }),
   );
-  const people = Option.getOrNull(AsyncResult.value(access))?.people ?? null;
-  const allowed =
-    people === null ? null : people.some((person) => person.personId === props.personId);
+  const read = Option.getOrNull(AsyncResult.value(access));
+  const allowed = kinLeadMessageable(read, props.personId);
   return (
     <button
       type="button"
@@ -772,7 +772,7 @@ function KinTeammateLead(props: {
     >
       <span className="min-w-0 flex-1 truncate text-sm text-foreground">{lead.name}</span>
       <span className="shrink-0 text-xs text-muted-foreground">
-        {people === null && AsyncResult.isFailure(access) ? "" : kinTeammateLeadLine(allowed)}
+        {read === null && AsyncResult.isFailure(access) ? "" : kinTeammateLeadLine(allowed)}
       </span>
       <ChevronRightIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
     </button>

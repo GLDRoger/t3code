@@ -35,6 +35,7 @@ import * as Stop from "../lead/KinStop.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import { KinIdentity, KinIdentityConfig } from "../chat/KinIdentity.ts";
 import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import * as Records from "../work/KinRecords.ts";
 import * as People from "./KinPeople.ts";
 
 const database = layerKinAuthTest("kin-people-");
@@ -49,6 +50,8 @@ const identities = KinIdentity.layer.pipe(
   Layer.provideMerge(Repository.layer),
 );
 const layer = People.layer.pipe(
+  Layer.provideMerge(Records.layer),
+  Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(Hub.layer),
   Layer.provideMerge(identities),
   Layer.provideMerge(database),
@@ -416,7 +419,27 @@ it.effect(
         "not_allowed",
       );
 
+      // Model people: a co-owner who sees Money, holding a task the owner gave her.
+      yield* service.setPlaces(ownerSession, { orgId, personId, money: true });
+      yield* service.setAccess(ownerSession, { orgId, personId, access: "co_owner" });
+      const records = yield* Records.KinRecords;
+      const byOwner = {
+        actor: { _tag: "person" as const, personId: identity.owner.personId },
+        via: "owner" as const,
+        askedBy: identity.owner.personId,
+      };
+      const { row: task } = yield* records.create(orgId, byOwner, {
+        originKey: "people-model-task",
+        title: "Invented: draft the brief",
+        owner: { _tag: "person", personId },
+      });
+
       assert.isTrue((yield* service.removeAccess(ownerSession, { orgId, personId })).revoked);
+      const back = (yield* records.get(orgId, task.key))!;
+      assert.deepEqual(
+        [back.ownerKind, back.ownerId, back.state],
+        ["person", identity.owner.personId, "open"],
+      );
       for (const device of [first, second])
         assert.equal(
           (yield* sessions.verify(device.accessToken).pipe(Effect.result))._tag,
@@ -434,9 +457,16 @@ it.effect(
         list.people.map((held) => held.personId),
         personId,
       );
-      // The way back: a new link returns the same person.
-      const back = yield* service.accept({ secret: (yield* link()).secret });
-      assert.equal(back.person.personId, personId);
+      // The way back: a new link returns the same person, as a new joiner, never a co-owner.
+      const returned = yield* service.accept({ secret: (yield* link()).secret });
+      assert.equal(returned.person.personId, personId);
+      assert.equal(returned.person.access, "member");
+      assert.deepEqual(
+        (yield* service.list(ownerSession, orgId)).places?.find(
+          (one) => one?.personId === personId,
+        ),
+        { personId, clients: true, docs: true, money: false, leads: [] },
+      );
       assert.deepEqual(yield* joined(), [personId, other.person.personId].sort());
     }).pipe(Effect.provide(layer)),
 );

@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_GROUP_NAME_MAX,
+  KIN_GROUP_PEOPLE_NOTE,
   kinGroupNameCheck,
   kinGroupProblem,
 } from "@t3tools/client-runtime/kin/kinGroups";
@@ -270,10 +271,7 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
                           />
                         ))}
                       </ul>
-                      <p className="text-xs text-muted-foreground">
-                        People in a group can ask its agents to talk things through. Only you can
-                        have an agent start work.
-                      </p>
+                      <p className="text-xs text-muted-foreground">{KIN_GROUP_PEOPLE_NOTE}</p>
                     </fieldset>
                   )}
                   {leads.length === 0 && people.length === 0 ? (

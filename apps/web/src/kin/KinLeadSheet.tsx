@@ -9,6 +9,7 @@ import {
 import { kinRestoreCopy, kinRetiredWhen } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import {
   kinDomainLabel,
+  KIN_LEAD_EVERYONE,
   kinLeadAccessCandidates,
   kinLeadAccessChanged,
   kinLeadOwnerSeesLine,
@@ -344,9 +345,12 @@ function KinLeadAccess(props: {
   );
   const [removing, setRemoving] = useState<AccessPerson | null>(null);
   // What was last read stays up while a change is read again.
-  const allowed = Option.getOrNull(AsyncResult.value(access))?.people ?? null;
+  const read = Option.getOrNull(AsyncResult.value(access));
+  const allowed = read?.people ?? null;
+  // The team agent is everyone's: no one is added or removed there.
+  const everyone = read?.everyone === true;
   const candidates = kinLeadAccessCandidates(
-    Option.getOrNull(AsyncResult.value(people))?.people ?? [],
+    everyone ? [] : (Option.getOrNull(AsyncResult.value(people))?.people ?? []),
     allowed ?? [],
     props.personId,
   );
@@ -380,8 +384,10 @@ function KinLeadAccess(props: {
         <p className="text-sm text-muted-foreground">
           {AsyncResult.isFailure(access) ? "Couldn't load who can message it." : "Loading…"}
         </p>
-      ) : allowed.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Only you.</p>
+      ) : everyone || allowed.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          {everyone ? KIN_LEAD_EVERYONE : "Only you."}
+        </p>
       ) : (
         <ul className="flex flex-col gap-1">
           {allowed.map((person) => (
@@ -403,7 +409,7 @@ function KinLeadAccess(props: {
           ))}
         </ul>
       )}
-      {allowed === null || allowed.length === 0 ? null : (
+      {allowed === null || everyone || allowed.length === 0 ? null : (
         <p className="text-xs text-muted-foreground">
           {(lead.intro ?? "").trim() === ""
             ? "They see its name only. Add what teammates see in Edit agent."

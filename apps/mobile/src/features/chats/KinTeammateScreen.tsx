@@ -1,3 +1,4 @@
+import { kinLeadMessageable } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -406,16 +407,14 @@ function KinTeammateLead(props: {
   const access = useAtomValue(
     kinClient.leadAccess({ environmentId, input: { orgId: lead.orgId, agentId: lead.agentId } }),
   );
-  const people = Option.getOrNull(AsyncResult.value(access))?.people ?? null;
+  const read = Option.getOrNull(AsyncResult.value(access));
   return (
     <ListRow
       label={lead.name}
       detail={
-        people === null && AsyncResult.isFailure(access)
+        read === null && AsyncResult.isFailure(access)
           ? undefined
-          : kinTeammateLeadLine(
-              people === null ? null : people.some((held) => held.personId === props.personId),
-            )
+          : kinTeammateLeadLine(kinLeadMessageable(read, props.personId))
       }
       onPress={() =>
         navigation.navigate("KinLead", {
