@@ -62,6 +62,8 @@ export const OUTSIDE_TOOLS = {
   kin_visual: "allowed",
   kin_chat_read: "allowed",
   kin_leads: "allowed",
+  // Outside text could move an agent onto a costlier model.
+  agent_update: "refused",
   people_read: "allowed",
   // Outside text could rename someone or move their hours.
   people_update: "refused",
