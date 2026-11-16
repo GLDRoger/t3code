@@ -491,7 +491,7 @@ const make = Effect.gen(function* () {
         `${to.name} doesn't decide for others. Pass it to the owner, a co-owner or the project's lead.`,
       );
     if (!toOwnerSide) {
-      const why = yield* unreadableBy(ctx.orgId, to.personId, input.text).pipe(access);
+      const why = yield* unreadableBy(ctx.orgId, to.personId, input.text, asker).pipe(access);
       if (why !== undefined) return yield* refuse(`Not for ${to.name}: ${why}.`);
     }
     const [who] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people

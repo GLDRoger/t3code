@@ -80,7 +80,7 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
 instance.
 
 ```bash
-.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, all ten, down; ~6 min
+.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, all eleven, down; ~6 min
 .agents/skills/verify-kin/scripts/run-all.sh send-card-once private-task-hidden
 bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the running instance
 ```
@@ -97,6 +97,7 @@ bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the 
 | `checkin-new-agent`        | a new agent gets a check-in from the Settings dialog; Kin settings are owner-level; Run now wakes it |
 | `lead-adds-milestone`      | members see P-1's milestones and no Add; Dev, its lead, adds one and they see it                     |
 | `owner-money-forms`        | a goal, the coming-up dates, an advance set against INV-1 once; members are refused                  |
+| `private-client-unnamed`   | C-3 marked private: in Zoya's turn touch_log, record_get, records_query answer as for no client      |
 
 `node scripts/kin-release-check.ts` runs all ten with the models, property tests and UI fuzz before a release ([Releasing Kin](../../../docs/operations/kin-release.md)).
 

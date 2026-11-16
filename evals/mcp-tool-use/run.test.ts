@@ -27,6 +27,7 @@ import {
   pastedText,
   type SampleRun,
   shellOutput,
+  shownText,
   namedPathsLine,
   shellRequest,
   shellResponsesRequest,
@@ -237,6 +238,70 @@ const failed = (expect: Parameters<typeof gradeSample>[0], run: SampleRun) =>
   gradeSample(expect, run)
     .filter((check) => !check.pass)
     .map((check) => check.check);
+
+it("grades Kin calls as the agent made them and a card as its message", () => {
+  const call = (tool: string, input: unknown) => ({
+    step: 0,
+    tool,
+    input: normalizeToolInput(`mcp__t3-code__${tool}`, input),
+  });
+  const run = (calls: ReadonlyArray<ReturnType<typeof call>>, text = "") => ({
+    calls,
+    text,
+    stopReason: "end_turn",
+  });
+  const read = call("statement_read", {
+    sourceEventId: "event-1",
+    attachment: "a.pdf",
+    password: "lake4417",
+  });
+  assert.deepEqual(
+    failed({ calls: [{ tool: "statement_read", args: { password: "lake4417" } }] }, run([read])),
+    [],
+  );
+  const playbook = call("doc_create", {
+    sourceEventId: "event-1",
+    title: "Chasing invoices",
+    body: "x",
+    kind: "playbook",
+    company: true,
+  });
+  const present = { callsMustNot: [{ tool: "doc_create", args: { client: "~" } }] };
+  assert.deepEqual(failed(present, run([playbook])), []);
+  assert.lengthOf(
+    failed(present, run([call("doc_create", { ...(playbook.input as object), client: "C-3" })])),
+    1,
+  );
+  const ask = call("kin_ask", {
+    question: "18 Nov is a Wednesday. Which day?",
+    options: [{ label: "Tue 17" }, { label: "Wed 18" }],
+  });
+  assert.deepEqual(failed({ textMust: ["Wednesday"] }, run([ask])), []);
+  assert.lengthOf(failed({ textMustNot: ["Wednesday"] }, run([ask])), 0);
+});
+
+it("reads a Kin turn's text as the chat shows it, without a repeat after kin_end", () => {
+  const text = (value: string) => ({ type: "text", text: value });
+  const use = (name: string) => ({
+    type: "tool_use",
+    id: name,
+    name: `mcp__t3-code__${name}`,
+    input: {},
+  });
+  assert.equal(
+    shownText([
+      [text("Checking"), use("record_get")],
+      [text("Logged it."), use("kin_end")],
+      [text("Logged it.")],
+    ]),
+    "Checking\n\nLogged it.",
+  );
+  // Silence is no reply, so what follows kin_end still reaches the chat.
+  assert.equal(
+    shownText([[text("NO_REPLY"), use("kin_end")], [text("Done.")]]),
+    "NO_REPLY\n\nDone.",
+  );
+});
 
 it("passes a good run and names every rule a bad run breaks", () => {
   const expect = {

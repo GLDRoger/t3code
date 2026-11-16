@@ -55,9 +55,11 @@ type ReadInput = Parameters<KinChatService["Service"]["read"]>[1];
 export class KinLevelGate extends Context.Service<
   KinLevelGate,
   {
+    /** `bind` runs in the post's own transaction: what the message settles commits with it. */
     readonly post: (
       agent: AgentIdentity,
       input: PostInput,
+      bind?: (message: KinMessage) => Effect.Effect<void, SqlError.SqlError>,
     ) => Effect.Effect<KinMessage, KinChatError>;
     /**
      * A message written for one teammate, in their own direct chat with the lead. An owner-level
@@ -73,6 +75,7 @@ export class KinLevelGate extends Context.Service<
     readonly extend: (
       agent: AgentIdentity,
       input: Parameters<KinChatService["Service"]["extendReply"]>[1],
+      bind?: (message: KinMessage) => Effect.Effect<void, SqlError.SqlError>,
     ) => Effect.Effect<KinMessage, KinChatError>;
     readonly upsertWidget: (
       agent: AgentIdentity,
@@ -363,8 +366,15 @@ const make = Effect.gen(function* () {
 
   return KinLevelGate.of({
     read,
-    post: Effect.fn("KinLevelGate.post")((agent, input) =>
-      gated("gated post", agent, input.chatId, chat.send(agent, input)),
+    post: Effect.fn("KinLevelGate.post")((agent, input, bind) =>
+      gated(
+        "gated post",
+        agent,
+        input.chatId,
+        bind === undefined
+          ? chat.send(agent, input)
+          : chat.send(agent, input).pipe(Effect.tap(bind)),
+      ),
     ),
     // Words only: a file or a doc reference could carry what the text check can't read.
     postTo: Effect.fn("KinLevelGate.postTo")((agent, personId, input) =>
@@ -382,8 +392,15 @@ const make = Effect.gen(function* () {
         { personId, text: input.body },
       ),
     ),
-    extend: Effect.fn("KinLevelGate.extend")((agent, input) =>
-      gated("gated reply", agent, input.chatId, chat.extendReply(agent, input)),
+    extend: Effect.fn("KinLevelGate.extend")((agent, input, bind) =>
+      gated(
+        "gated reply",
+        agent,
+        input.chatId,
+        bind === undefined
+          ? chat.extendReply(agent, input)
+          : chat.extendReply(agent, input).pipe(Effect.tap(bind)),
+      ),
     ),
     upsertWidget: Effect.fn("KinLevelGate.upsertWidget")((agent, input) =>
       gated("gated widget upsert", agent, input.chatId, chat.upsertWidget(agent, input)),
