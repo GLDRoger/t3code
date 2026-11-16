@@ -238,7 +238,6 @@ const refId = Effect.fn("KinWork.refId")(function* (
   orgId: KinOrgId,
   key: string | null | undefined,
   list: "clients" | "projects",
-  read = false,
 ) {
   if (key === undefined) return undefined;
   if (viewer.teammate) {
@@ -246,15 +245,38 @@ const refId = Effect.fn("KinWork.refId")(function* (
       return yield* key === null ? ownerOnly : missing(key, list);
     const row = yield* (yield* KinRecords).get(orgId, key);
     if (row === undefined || row.registerId !== "projects") return yield* missing(key, list);
-    const { orgId: personOrg, personId } = viewer.person;
-    const on =
-      (yield* ledIds(viewer)).has(row.recordId) ||
-      (read && (yield* inProject(personOrg, personId, row.recordId).pipe(workFailure)));
-    if (!on) return yield* missing(key, list);
+    if (!(yield* ledIds(viewer)).has(row.recordId)) return yield* missing(key, list);
     return row.recordId;
   }
   if (key === null) return null;
   return (yield* inList(orgId, key, list)).recordId;
+});
+
+/**
+ * A client or project a list is filtered by. A teammate filters by any client they see and any
+ * project they are on; anything else matches nothing, the answer for one never there.
+ */
+const filterRef = Effect.fn("KinWork.filterRef")(function* (
+  viewer: Viewer,
+  orgId: KinOrgId,
+  key: string | null | undefined,
+  list: "clients" | "projects",
+) {
+  if (!viewer.teammate || key === undefined || key === null)
+    return { id: yield* refId({ ...viewer, teammate: false }, orgId, key, list), none: false };
+  const row = yield* (yield* KinRecords).get(orgId, key);
+  const { personId } = viewer.person;
+  const on =
+    row === undefined || row.registerId !== list
+      ? false
+      : list === "projects"
+        ? yield* inProject(orgId, personId, row.recordId).pipe(workFailure)
+        : (yield* teamVisible(orgId, personId, [row.recordId]).pipe(workFailure)).has(
+            row.recordId,
+          );
+  return on && row !== undefined
+    ? { id: row.recordId, none: false }
+    : { id: undefined, none: true };
 });
 
 /** The projects a teammate leads, read per request. */
@@ -317,8 +339,10 @@ export const list = Effect.fn("KinWork.list")(function* (
   const led = yield* ledIds(viewer);
   const records = yield* KinRecords;
   const cursor = yield* parseCursor(input.cursor);
-  const partyId = yield* refId(viewer, input.orgId, input.party, "clients");
-  const projectId = yield* refId(viewer, input.orgId, input.project, "projects", true);
+  const party = yield* filterRef(viewer, input.orgId, input.party, "clients");
+  const project = yield* filterRef(viewer, input.orgId, input.project, "projects");
+  const partyId = party.id;
+  const projectId = project.id;
   const at = cursor.at ?? (yield* Clock.currentTimeMillis);
   const limit = input.limit ?? 50;
   if (
@@ -360,7 +384,10 @@ export const list = Effect.fn("KinWork.list")(function* (
     ...(viewer.teammate ? { team: viewer.person.personId } : {}),
     at,
   };
-  const page = yield* records.query(input.orgId, { ...filter, offset: cursor.offset, limit });
+  const page =
+    party.none || project.none
+      ? { rows: [], total: 0, seq: yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure) }
+      : yield* records.query(input.orgId, { ...filter, offset: cursor.offset, limit });
   // The sums are of every match and the same on each page, so only the first page pays for them.
   const totals =
     input.totalsBy === undefined || input.cursor !== undefined

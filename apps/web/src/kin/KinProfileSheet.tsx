@@ -150,6 +150,7 @@ function KinProfileSheet(props: {
     viewerPersonId: viewer,
     ownerPersonId: held?.ownerPersonId ?? null,
     personId,
+    canEdit: profile?.canEdit,
   });
   const [editing, setEditing] = useState(false);
   const mine = viewer === personId;

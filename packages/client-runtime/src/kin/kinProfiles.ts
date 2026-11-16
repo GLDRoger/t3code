@@ -86,7 +86,10 @@ export function kinMayEditProfile(input: {
   readonly viewerPersonId: string | null;
   readonly ownerPersonId: string | null;
   readonly personId: string;
+  /** The host's word on it (`KinPersonProfile.canEdit`); older hosts don't send it. */
+  readonly canEdit?: boolean | undefined;
 }): boolean {
+  if (input.canEdit !== undefined) return input.canEdit;
   return (
     input.viewerPersonId !== null &&
     (input.viewerPersonId === input.personId || input.viewerPersonId === input.ownerPersonId)

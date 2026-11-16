@@ -78,6 +78,7 @@ function useTarget(params: KinProfileParams) {
         viewerPersonId: viewer,
         ownerPersonId: held?.ownerPersonId ?? null,
         personId,
+        canEdit: profile?.canEdit,
       }),
     runsWorkspace: held !== null && held.ownerPersonId === personId,
   };
