@@ -244,9 +244,26 @@ it.effect("connects groups only with a key limited to one profile, owner-level o
         ),
         /./,
       );
-      const own = yield* connectGroup(fake, { kind: "own" }, OWN);
+      // Two checks of one profile, for two groups, pass before either is saved; the second is refused.
+      const ownMade = fake.addProfile(OWN);
+      const ownCheck = yield* social.check(asOwner, {
+        orgId,
+        kind: "own",
+        key: Redacted.make(ownMade.key),
+      });
+      const northCheck = yield* social.check(asOwner, {
+        orgId,
+        kind: "client",
+        clientId: "rec_north",
+        key: Redacted.make(ownMade.key),
+      });
+      yield* social.connect(asOwner, { orgId, checkId: ownCheck.checkId });
+      assert.match(
+        yield* failure(social.connect(asOwner, { orgId, checkId: northCheck.checkId })),
+        /already connected as Our own/,
+      );
       assert.deepEqual(
-        own.check.accounts.map((one) => [one.platform, one.name]),
+        ownCheck.accounts.map((one) => [one.platform, one.name]),
         [
           ["instagram", "Invented Co"],
           ["linkedin", "Invented Co"],
@@ -289,6 +306,17 @@ it.effect("connects groups only with a key limited to one profile, owner-level o
       fake.expireKey(lumen.made.key);
       const after = yield* social.refresh(asOwner, { orgId, groupId: group.groupId });
       assert.isNotNull(after.groups.find((one) => one.groupId === group.groupId)?.problem);
+      // A new key for the client's row, as the row's form sends it: its group, no client named.
+      fake.expireKey(lumen.made.key, false);
+      const again = yield* social.check(asOwner, {
+        orgId,
+        kind: "client",
+        groupId: group.groupId,
+        key: Redacted.make(lumen.made.key),
+      });
+      assert.equal(again.label, "Lumen Studio");
+      const fixed = yield* social.connect(asOwner, { orgId, checkId: again.checkId });
+      assert.isNull(fixed.groups.find((one) => one.groupId === group.groupId)?.problem);
     }),
   );
 });
@@ -446,6 +474,12 @@ it.effect(
         WHERE post_id = ${ids[1]!}`;
         yield* social.runDue;
         assert.lengthOf(fake.load().posts, 5);
+        // And after Kin saved the service's id but not its state: read, not sent again.
+        yield* sql`UPDATE kin_social_posts SET state = 'scheduling' WHERE post_id = ${ids[0]!}`;
+        yield* social.runDue;
+        [card] = yield* weekCard;
+        assert.equal(card!.card.posts.find((post) => post.postId === ids[0])?.state, "scheduled");
+        assert.lengthOf(fake.load().posts, 5);
 
         // Undo before it goes out cancels it at the service.
         [card] = yield* weekCard;
@@ -498,6 +532,16 @@ it.effect(
         assert.equal(client!.card.posts[0]?.state, "failed");
         assert.match(client!.card.posts[0]?.reason ?? "", /earlier attempt may have reached/);
         assert.lengthOf(fake.load().posts, 4);
+
+        // An Undo still waiting when its time passed, for a post whose first attempt made nothing:
+        // finding that out never publishes it.
+        yield* sql`UPDATE kin_social_posts SET state = 'undoing', service_post_id = NULL,
+          attempt_at = ${clock - DAY}, confirmed_at = ${clock}, at_ms = ${clock - 60_000}
+          WHERE post_id = ${ids[4]!}`;
+        yield* social.runDue;
+        [card] = yield* weekCard;
+        assert.equal(card!.card.posts.find((post) => post.postId === ids[4])?.state, "cancelled");
+        assert.isFalse(fake.load().posts.some((post) => post.content === "Hiring a designer"));
       }),
     );
   },
