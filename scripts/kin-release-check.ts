@@ -151,7 +151,7 @@ interface Ran {
   readonly output: string;
 }
 /** Runs a command to completion, teeing its output to a log and returning it. */
-const run = (
+export const run = (
   log: string,
   command: string,
   args: string[],
@@ -168,18 +168,27 @@ const run = (
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    children.add(child.pid!);
+    if (child.pid !== undefined) children.add(child.pid);
     const take = (chunk: Buffer) => {
       output += chunk.toString();
-      out.write(chunk);
+      if (!out.writableEnded) out.write(chunk);
     };
     child.stdout.on("data", take);
     child.stderr.on("data", take);
-    child.on("close", (code) => {
-      children.delete(child.pid!);
+    let settled = false;
+    const settle = (code: number) => {
+      if (settled) return;
+      settled = true;
+      if (child.pid !== undefined) children.delete(child.pid);
       out.end();
-      resolve({ code: code ?? 1, output });
+      resolve({ code, output });
+    };
+    // A program that can't start (not on PATH, not executable) is a failed stage, not a crashed check.
+    child.on("error", (error) => {
+      take(Buffer.from(`${command}: ${error.message}\n`));
+      settle(127);
     });
+    child.on("close", (code) => settle(code ?? 1));
   });
 const children = new Set<number>();
 const stopChildren = () => {

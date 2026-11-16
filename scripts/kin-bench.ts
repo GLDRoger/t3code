@@ -750,6 +750,41 @@ async function main() {
         ]),
       );
     }
+    log("wire: the owner's socket drops and comes back, nothing changed");
+    {
+      const offline = (on: boolean) =>
+        probe.cdp.send("Network.emulateNetworkConditions", {
+          offline: on,
+          latency: 0,
+          downloadThroughput: -1,
+          uploadThroughput: -1,
+        });
+      const mark = probe.mark();
+      await offline(true);
+      await sleep(3000);
+      await offline(false);
+      await sleep(8000);
+      const row = probe.wire("reconnectIdle", mark);
+      wire.push(row);
+      // A reconnect that never happened would read as free: it has to subscribe again.
+      const resubscribed = (row.methods?.["kin.work.subscribe"] ?? 0) > 0;
+      metrics.push(
+        metric(
+          "wire",
+          "reconnect.bytes",
+          "Reconnect with nothing changed: KB in, owner",
+          "bytes",
+          [row.bytesIn],
+          resubscribed ? undefined : "no resubscribe seen",
+        ),
+        metric("wire", "reconnect.deflated", "Reconnect with nothing changed: deflated", "bytes", [
+          row.deflatedIn ?? 0,
+        ]),
+        metric("wire", "reconnect.requests", "Reconnect with nothing changed: requests", "count", [
+          Object.values(row.methods ?? {}).reduce((total, count) => total + count, 0),
+        ]),
+      );
+    }
     const cold = wire.find((row) => row.action === "coldLoad");
     if (cold !== undefined)
       metrics.push(

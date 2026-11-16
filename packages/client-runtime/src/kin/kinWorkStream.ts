@@ -1,10 +1,14 @@
 import {
+  kinApplyWorkCounts,
+  kinApplyWorkRow,
   kinRestoreWorkList,
+  kinWorkRowsStart,
   type EnvironmentId,
   type KinDocsListInput,
   type KinOrgId,
   type KinWorkEvent,
   type KinWorkListInput,
+  type KinWorkRows,
   type KinWorkSubscribeInput,
   type KinWorkSummary,
 } from "@t3tools/contracts";
@@ -14,7 +18,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import * as Stream from "effect/Stream";
 
 import type * as EnvironmentRegistry from "../connection/registry.ts";
-import { requestGuarded, subscribe } from "../rpc/index.ts";
+import { requestGuarded, subscribeDynamic } from "../rpc/index.ts";
 import { environmentSessionGenerationAtom } from "../state/runtime.ts";
 import { resubscribeWhenKinReturns, retryWhileKinUnavailable } from "./kinStreams.ts";
 import { kinWorkFailuresOf, kinWorkRefused } from "./kinWork.ts";
@@ -38,6 +42,11 @@ export interface KinWorkLive {
   readonly lists: Readonly<Record<string, number>>;
   /** The latest change number that named a task but not its list: an older host, or a label move. */
   readonly unlisted: number;
+  /**
+   * The tasks the host sent whole since the first number, for lists to apply without a read; null
+   * from an older host, which names changes only.
+   */
+  readonly rows: KinWorkRows | null;
 }
 
 export const KIN_WORK_LABEL = "kin:work";
@@ -153,7 +162,9 @@ export function createKinWorkRefreshTriggers<R, ER>(
         );
         const moved = held === null ? 0 : kinWorkListsMoved(held, lists);
         const topic = also === undefined ? "" : String(get(also(target)));
-        return `${get(environmentSessionGenerationAtom(runtime, environmentId))}:${moved}:${topic}`;
+        // A new epoch reads everything again, even where its number happens to match the old one.
+        const epoch = held?.rows?.epoch ?? 0;
+        return `${get(environmentSessionGenerationAtom(runtime, environmentId))}:${epoch}:${moved}:${topic}`;
       });
 }
 
@@ -177,9 +188,9 @@ export const KIN_WORK_RETRY = { _tag: "retry" } as const;
 export const KIN_WORK_READ_TIMEOUT = Duration.seconds(20);
 
 /**
- * The host's change numbers, each followed by one read of the counts. A number the held counts
- * already cover reads nothing, so a burst costs one read, and reconnecting costs none unless
- * something changed meanwhile. Fails only when the host refuses this viewer.
+ * Work as the host streams it: changed tasks whole, then the counts that moved. A host that only
+ * names changes gets one read of the counts per burst instead. Reconnecting resumes from the last
+ * number held, so nothing that stayed put is sent again. Fails only when the host refuses.
  */
 export function kinWorkLiveStream<E, R, RR = never>(
   input: KinWorkSubscribeInput,
@@ -187,29 +198,54 @@ export function kinWorkLiveStream<E, R, RR = never>(
   /** Each one reads the counts again, keeping what is held: the retry after a failed read. */
   retries: Stream.Stream<unknown, never, RR> = Stream.never,
 ) {
-  return kinWorkLiveFold(
-    Stream.merge(
-      resubscribeWhenKinReturns(
-        retryWhileKinUnavailable(subscribe("kin.work.subscribe", input)),
-        Stream.empty,
-        Stream.empty,
+  return Stream.suspend(() => {
+    const resume: KinWorkResume = { at: null };
+    return kinWorkLiveFold(
+      Stream.merge(
+        resubscribeWhenKinReturns(
+          retryWhileKinUnavailable(
+            subscribeDynamic("kin.work.subscribe", () =>
+              Effect.sync(() => ({
+                orgId: input.orgId,
+                acceptRows: true,
+                ...(resume.at === null
+                  ? {}
+                  : {
+                      afterSeq: resume.at.seq,
+                      ...(resume.at.team ? { afterTeam: true } : {}),
+                    }),
+              })),
+            ),
+          ),
+          Stream.empty,
+          Stream.empty,
+        ),
+        retries.pipe(Stream.map(() => KIN_WORK_RETRY)),
       ),
-      retries.pipe(Stream.map(() => KIN_WORK_RETRY)),
-    ),
-    () => readSummary(input),
-  );
+      () => readSummary(input),
+      { orgId: input.orgId, resume },
+    );
+  });
+}
+
+/** Where a new session picks the stream up: the last number the counts were current at. */
+export interface KinWorkResume {
+  at: { readonly seq: number; readonly team: boolean } | null;
 }
 
 /** `kinWorkLiveStream` over any source of changes and retries. */
 export function kinWorkLiveFold<E, R, EE, RR>(
   events: Stream.Stream<KinWorkEvent | typeof KIN_WORK_RETRY, EE, RR>,
   readSummary: () => Effect.Effect<KinWorkSummary, E, R>,
+  rowsOf?: { readonly orgId: KinOrgId; readonly resume?: KinWorkResume },
 ) {
   return Stream.suspend(() => {
     let held: KinWorkSummary | null = null;
     let first = true;
     let named = KIN_WORK_NOTHING_NAMED;
     let last: KinWorkLive | null = null;
+    let rows: KinWorkRows | null = null;
+    let epoch = 0;
     return events.pipe(
       Stream.mapEffect((event) =>
         Effect.gen(function* () {
@@ -222,19 +258,68 @@ export function kinWorkLiveFold<E, R, EE, RR>(
               unnamed: named.unnamed,
               lists: named.lists,
               unlisted: named.unlisted,
+              rows,
             }),
           ];
+          const resumeAt = (at: { readonly seq: number; readonly team?: true | undefined }) => {
+            if (rowsOf?.resume !== undefined)
+              rowsOf.resume.at = { seq: at.seq, team: at.team === true };
+          };
+          switch (event._tag) {
+            case "upsert":
+            case "removed": {
+              if (rowsOf === undefined) return NOTHING;
+              rows = kinApplyWorkRow(rows ?? kinWorkRowsStart(0, epoch), event, rowsOf.orgId);
+              const key = event._tag === "upsert" ? event.record.key : event.key;
+              named = kinWorkNote(named, { seq: event.seq, key, list: event.list });
+              // The burst's `counts` or `synchronized` follows and shows it all at once.
+              return NOTHING;
+            }
+            case "snapshot-required":
+              // The host can't say what changed: every list and read starts over, at a new epoch.
+              epoch += 1;
+              rows = kinWorkRowsStart(event.seq, epoch);
+              named = {
+                ...named,
+                latest: Math.max(named.latest ?? 0, event.seq),
+                unnamed: Math.max(named.unnamed, event.seq),
+              };
+              resumeAt(event);
+              return NOTHING;
+            case "synchronized": {
+              resumeAt(event);
+              rows ??= kinWorkRowsStart(event.seq, epoch);
+              named = { ...named, latest: Math.max(named.latest ?? 0, event.seq) };
+              const seq = Math.max(last?.seq ?? 0, event.seq);
+              return last !== null && last.seq === seq && last.rows === rows
+                ? NOTHING
+                : emit({ seq, summary: held, failed: last?.failed ?? false });
+            }
+            case "counts": {
+              resumeAt(event);
+              rows ??= kinWorkRowsStart(event.seq, epoch);
+              named = { ...named, latest: Math.max(named.latest ?? 0, event.seq) };
+              const next = kinApplyWorkCounts(held, event);
+              if (next !== null) {
+                held = next;
+                first = false;
+                return emit({ seq: event.seq, summary: next, failed: false });
+              }
+              // Moved counts with none held to move: only a read says where they stand.
+              break;
+            }
+          }
           // The host's own events are tagged `changed`, so only this tag means a retry.
           const retry = event._tag === "retry";
           if (retry && named.latest === null) return NOTHING;
           const seq = event._tag === "retry" ? (named.latest ?? 0) : event.seq;
           const before = named;
-          if (event._tag !== "retry") named = kinWorkNote(before, event);
+          if (event._tag === "changed") named = kinWorkNote(before, event);
           const news = named !== before;
           // Counts read during a burst already cover this number; only which task it was is new.
-          if (!retry && held !== null && held.seq >= seq)
+          if (event._tag === "changed" && held !== null && held.seq >= seq)
             return news && last !== null ? emit(last) : NOTHING;
-          if (!first && !retry) yield* Effect.sleep(KIN_WORK_SETTLE);
+          if (!first && event._tag === "changed") yield* Effect.sleep(KIN_WORK_SETTLE);
           first = false;
           // A dropped socket interrupts the read in flight, or leaves it pending. Either is a failed
           // read, not the stream's end, or the next session is never subscribed to.

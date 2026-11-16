@@ -22,7 +22,8 @@ import * as DreamIsolation from "../dreaming/DreamIsolation.ts";
 import { instructions } from "./instructions.ts";
 import * as LeadIsolation from "./LeadIsolation.ts";
 import { ownerOnlyWakeup } from "./Audience.testkit.ts";
-import { fullSessionAdmitted } from "./AgentSession.ts";
+import { delegatedFromLead, fullSessionRefusal } from "./AgentSession.ts";
+import { SESSION_REFUSAL } from "./Audience.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { KinServer, type Services as KinServices } from "../KinServer.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -240,8 +241,10 @@ it.effect(
         KinAgentSessionPolicy,
         KinAgentSessionPolicy.of({
           connected: () => Effect.sync(() => connected),
-          admitted: (threadId) =>
-            fullSessionAdmitted(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          refusal: (threadId) =>
+            fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          delegated: (threadId) =>
+            delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           ghDirectory: "/kin-home/kin-tools/gh-pinned",
         }),
       ) as Context.Context<KinServices>;
@@ -337,6 +340,177 @@ it.effect(
       Effect.provide(
         Layer.mergeAll(
           ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-full-" }),
+          KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);
+
+/** The reason the session's PreToolUse hooks deny a call with, or `undefined` when none does. */
+const hookDenial = async (
+  options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions | undefined,
+  tool_name: string,
+  tool_input: unknown,
+) => {
+  for (const matcher of options?.hooks?.PreToolUse ?? [])
+    for (const hook of matcher.hooks) {
+      const output = await hook(
+        {
+          hook_event_name: "PreToolUse",
+          session_id: "session",
+          transcript_path: "",
+          cwd: options?.cwd ?? "",
+          tool_name,
+          tool_input,
+          tool_use_id: "tool",
+        },
+        "tool",
+        { signal: new AbortController().signal },
+      );
+      if (
+        "hookSpecificOutput" in output &&
+        output.hookSpecificOutput?.hookEventName === "PreToolUse" &&
+        output.hookSpecificOutput.permissionDecision === "deny"
+      )
+        return output.hookSpecificOutput.permissionDecisionReason ?? "denied";
+    }
+  return undefined;
+};
+
+it.effect(
+  "a task delegated from the owner's turn has a shell exactly while that turn would; one from a teammate's turn never does",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const sql = yield* SqlClient.SqlClient;
+      // T3's Scratch folder for the task: outside Kin's state, so only its lineage marks it Kin's.
+      const scratch = yield* fs.makeTempDirectoryScoped();
+      const orgId = KinOrgId.make("org-delegated");
+      const agentId = KinAgentId.make("tech");
+      yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: "wake-owner" });
+      yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: "wake-mate" });
+      // The owner's turn delegated and is still waiting; a teammate's earlier turn did too.
+      yield* sql`UPDATE kin_wakeups SET thread_id = 'kin:tech', audience = 'owner_only',
+        run_id = 'run-owner', status = 'running' WHERE wakeup_id = 'wake-owner'`;
+      yield* sql`UPDATE kin_wakeups SET thread_id = 'kin:tech', audience = 'shared',
+        run_id = 'run-mate', started_at = -1 WHERE wakeup_id = 'wake-mate'`;
+      const link = (id: string, parent: string, run: string, child: string) =>
+        sql`INSERT INTO orchestration_v2_projection_subagents (subagent_id, thread_id, run_id,
+          parent_node_id, provider, child_thread_id, origin, status, updated_at, payload_json)
+          VALUES (${id}, ${parent}, ${run}, 'node', 'claudeAgent', ${child}, 'app_owned',
+            'running', '', '{}')`;
+      yield* link("task-owner", "kin:tech", "run-owner", "child-owner");
+      yield* link("task-grand", "child-owner", "run-child", "grandchild-owner");
+      yield* link("task-mate", "kin:tech", "run-mate", "child-mate");
+      yield* link("task-mate-grand", "child-mate", "run-mate-child", "grandchild-mate");
+      const services = Context.make(
+        KinAgentSessionPolicy,
+        KinAgentSessionPolicy.of({
+          connected: () => Effect.succeed(true),
+          refusal: (threadId) =>
+            fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          delegated: (threadId) =>
+            delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          ghDirectory: "/kin-home/kin-tools/gh-pinned",
+        }),
+      ) as Context.Context<KinServices>;
+      const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
+      const base = Layer.succeed(
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
+          allocateSessionId: Effect.succeed("session"),
+          open: (input) =>
+            Effect.sync(() => opened.push(input.options)).pipe(
+              Effect.andThen(Effect.die("unused session")),
+            ),
+          forkSession: () => Effect.die("unused fork"),
+          subagentLaunchToolUseId: () => Effect.die("unused lookup"),
+          assertComplete: Effect.void,
+        }),
+      );
+      const task = optionsAt(scratch, { PATH: "/usr/bin", HOME: "/home/kin" });
+      const open = (threadId: string) =>
+        Effect.gen(function* () {
+          const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
+          yield* runner
+            .open({
+              threadId: ThreadId.make(threadId),
+              providerSessionId: ProviderSessionId.make("session"),
+              options: task,
+            })
+            .pipe(Effect.exit);
+          return opened.at(-1);
+        }).pipe(
+          Effect.provide(
+            LeadIsolation.claudeQueryRunner(base).pipe(
+              Layer.provide(
+                Layer.succeed(KinServer, {
+                  taskCardUpdater: Layer.empty,
+                  services: Option.some(services),
+                  subscribeForViewer: Option.none(),
+                }),
+              ),
+              Layer.provide(
+                ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true })),
+              ),
+            ),
+          ),
+        );
+      const denial = (options: typeof task | undefined, tool: string, input: unknown) =>
+        Effect.promise(() => hookDenial(options, tool, input));
+      const shell = { command: "git clone https://github.com/invented/site && gh pr create" };
+
+      // Any other T3 thread opens untouched.
+      assert.strictEqual(yield* open("plain-thread"), task);
+
+      const child = yield* open("child-owner");
+      const grandchild = yield* open("grandchild-owner");
+      // T3's own prompt and tools, Kin's hook, and the pinned gh first, as the lead's turn has.
+      assert.strictEqual(child?.systemPrompt, task.systemPrompt);
+      assert.strictEqual(child?.tools, task.tools);
+      assert.strictEqual(child?.env?.PATH, "/kin-home/kin-tools/gh-pinned:/usr/bin");
+      assert.deepStrictEqual(child?.settingSources, []);
+      for (const session of [child, grandchild]) {
+        assert.isUndefined(yield* denial(session, "Bash", shell));
+        assert.isUndefined(yield* denial(session, "Agent", { prompt: "look" }));
+        assert.isUndefined(yield* denial(session, "mcp__t3__delegate_task", { task: "x" }));
+      }
+      // The asking turn finished: an owner-only turn's rule still holds for its task.
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'wake-owner'`;
+      assert.isUndefined(yield* denial(child, "Bash", shell));
+      // The turn read outside text: its tasks lose the shell and T3's tools with it.
+      yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+        VALUES (${orgId}, 'wake-owner', 0, 'conn_mail')`;
+      for (const session of [child, grandchild]) {
+        assert.strictEqual(yield* denial(session, "Bash", shell), SESSION_REFUSAL.outside);
+        assert.strictEqual(
+          yield* denial(session, "mcp__t3__delegate_task", { task: "x" }),
+          SESSION_REFUSAL.outside,
+        );
+      }
+      yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-owner'`;
+      // Someone else joined the chat: the turn is shared now, and so are its tasks.
+      yield* sql`UPDATE kin_wakeups SET aborted_at = 1 WHERE wakeup_id = 'wake-owner'`;
+      assert.strictEqual(yield* denial(grandchild, "Bash", shell), SESSION_REFUSAL.aborted);
+
+      // A teammate's turn: no child or grandchild ever gets a shell or T3's tools.
+      for (const threadId of ["child-mate", "grandchild-mate"]) {
+        const session = yield* open(threadId);
+        assert.strictEqual(yield* denial(session, "Bash", shell), SESSION_REFUSAL.shared);
+        assert.strictEqual(
+          yield* denial(session, "Edit", { file_path: "x" }),
+          SESSION_REFUSAL.shared,
+        );
+        assert.strictEqual(
+          yield* denial(session, "mcp__t3__t3_thread_launch", {}),
+          SESSION_REFUSAL.shared,
+        );
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-delegated-" }),
           KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
         ).pipe(Layer.provideMerge(NodeServices.layer)),
       ),

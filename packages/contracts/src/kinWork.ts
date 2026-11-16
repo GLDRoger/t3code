@@ -473,8 +473,20 @@ export type KinWorkSummary = typeof KinWorkSummary.Type;
  * viewer's own: a teammate's count only changes to tasks they could see, so compare a number only
  * with others from the same session (summary, list, entry and these events share one count).
  */
-export const KinWorkSubscribeInput = Schema.Struct({ orgId: KinOrgId });
+export const KinWorkSubscribeInput = Schema.Struct({
+  orgId: KinOrgId,
+  /**
+   * Send each change as the entry itself, as this viewer's `kin.work.list` shows it (`upsert`,
+   * `removed`), and the counts that moved (`counts`), in place of `changed`. An older host ignores it.
+   */
+  acceptRows: Schema.optional(Schema.Boolean),
+  /** With `acceptRows`: the `seq` of the last `counts` or `synchronized` held, to resume after it. */
+  afterSeq: Schema.optional(NonNegativeInt),
+  /** That number was a teammate's own (its event said `team`), not the company's. */
+  afterTeam: Schema.optional(Schema.Boolean),
+});
 export type KinWorkSubscribeInput = typeof KinWorkSubscribeInput.Type;
+const KinWorkOwnerCounts = Schema.Struct({ owner: KinWorkPrincipal, ...KinWorkCounts });
 export const KinWorkEvent = Schema.Union([
   Schema.TaggedStruct("changed", {
     seq: NonNegativeInt,
@@ -482,6 +494,50 @@ export const KinWorkEvent = Schema.Union([
     key: Schema.optional(KinRecordKey),
     /** The entry's list, so a client reads again only what that list can change. */
     list: Schema.optional(KinListId),
+  }),
+  // `acceptRows` only, numbered as `changed` is: a teammate's numbers count only what they see.
+  /** The entry as the viewer's list read shows it now; `fresh` when they could not see it before. */
+  Schema.TaggedStruct("upsert", {
+    seq: NonNegativeInt,
+    list: KinListId,
+    record: KinRecordCompact,
+    fresh: Schema.optional(Schema.Literal(true)),
+  }),
+  /** An entry the viewer held is gone from their sight; never sent for one they never saw. */
+  Schema.TaggedStruct("removed", {
+    seq: NonNegativeInt,
+    key: KinRecordKey,
+    list: Schema.optional(KinListId),
+  }),
+  /**
+   * The counts as `kin.work.summary` answers them at `seq`: the totals always, and of the rest only
+   * what moved since the last `counts` (`kinApplyWorkCounts`), all of it with `whole`.
+   */
+  Schema.TaggedStruct("counts", {
+    seq: NonNegativeInt,
+    /** `seq` is the viewer's own number, a teammate's; absent for the company's. */
+    team: Schema.optional(Schema.Literal(true)),
+    asOf: IsoDateTime,
+    ...KinWorkCounts,
+    closed: Schema.optional(NonNegativeInt),
+    whole: Schema.optional(Schema.Literal(true)),
+    owners: Schema.optional(Schema.Array(KinWorkOwnerCounts)),
+    ownersGone: Schema.optional(Schema.Array(KinWorkPrincipal)),
+    parties: KinWorkSummary.fields.parties,
+    projects: KinWorkSummary.fields.projects,
+  }),
+  /** Everything up to `seq` was sent and the counts held are current: the cursor to resume from. */
+  Schema.TaggedStruct("synchronized", {
+    seq: NonNegativeInt,
+    team: Schema.optional(Schema.Literal(true)),
+  }),
+  /**
+   * The gap can't be replayed, or what this viewer may see changed shape: drop every held row and
+   * read again. `seq` starts a new numbering, and may be lower than the last.
+   */
+  Schema.TaggedStruct("snapshot-required", {
+    seq: NonNegativeInt,
+    team: Schema.optional(Schema.Literal(true)),
   }),
 ]);
 export type KinWorkEvent = typeof KinWorkEvent.Type;

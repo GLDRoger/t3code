@@ -149,6 +149,7 @@ const leadOptions = (
  * An owner-only turn with GitHub connected (repos-rethink slice 3): Claude Code's own tools, as any
  * T3 thread has, with the pinned `gh` first on PATH. Its hook still asks per call: a turn others
  * can read, one that read outside text, or a run Kin hasn't adopted gets only the confined tools.
+ * A task the lead delegated (`lead: false`) gets the same, under T3's own system prompt.
  */
 const fullOptions = (
   options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
@@ -157,13 +158,14 @@ const fullOptions = (
     readonly auth: AuthSettings;
     readonly environment: NodeJS.ProcessEnv;
     readonly ghDirectory: string;
+    readonly lead: boolean;
   },
 ) => {
   const { settings, env } = options;
   const environment = sessionEnvironment(env ?? session.environment);
   const loading = toolLoading(options);
   return {
-    systemPrompt: leadSystemPrompt,
+    ...(session.lead ? { systemPrompt: leadSystemPrompt } : {}),
     strictMcpConfig: true,
     ...(loading.mcpServers === undefined ? {} : { mcpServers: loading.mcpServers }),
     hooks: withConfinementHook(options.hooks, session.hook),
@@ -220,7 +222,10 @@ export const claudeQueryRunner = <E, R>(
       );
       const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
       const run = Effect.runPromiseWith(context);
-      /** The full session's hook: built-ins while the turn admits them, else the confined set. */
+      /**
+       * The full session's hook: built-ins while the turn admits them, else the confined set and a
+       * line saying why. A delegated task's MCP tools are T3's, which no Kin gate guards.
+       */
       const fullHook = (
         threadId: ThreadId,
         confined: FileScope,
@@ -229,12 +234,21 @@ export const claudeQueryRunner = <E, R>(
         onFailure: "block",
         hooks: [
           async (input) => {
-            if (input.hook_event_name !== "PreToolUse" || input.tool_name.startsWith("mcp__"))
-              return {};
-            return (await run(sessions.admitted(threadId))) ||
+            if (input.hook_event_name !== "PreToolUse") return {};
+            if (input.tool_name.startsWith("mcp__") && confined.mcp !== false) return {};
+            const refusal = await run(sessions.refusal(threadId));
+            if (
+              refusal === undefined ||
               (await run(permits(confined, input.tool_name, input.tool_input)))
-              ? {}
-              : { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" } };
+            )
+              return {};
+            return {
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse",
+                permissionDecision: "deny",
+                permissionDecisionReason: refusal,
+              },
+            };
           },
         ],
       });
@@ -247,9 +261,33 @@ export const claudeQueryRunner = <E, R>(
             (within(kinDirectory, path.resolve(cwd)) ||
               within(yield* real(kinDirectory), yield* real(cwd)));
           const isDream = input.threadId.startsWith(dreamThreadPrefix);
-          if (!isKin) return yield* runner.open(input);
+          // A lead's delegated task runs wherever T3 put it, usually a Scratch folder.
+          const delegated =
+            !isDream && Option.isSome(policy) && (yield* policy.value.delegated(input.threadId));
+          if (!isKin && !delegated) return yield* runner.open(input);
           // Narrow, never widen: a dream's `[]` stays `[]` whichever wrapper runs first.
           const settingSources: Array<never> = [];
+          if (delegated && Option.isSome(policy)) {
+            const root = yield* confiner.root(cwd);
+            return yield* runner.open({
+              ...input,
+              options: {
+                ...input.options,
+                settingSources,
+                ...fullOptions(input.options, {
+                  hook: fullHook(
+                    input.threadId,
+                    { root, tools: leadTools, mcp: false },
+                    policy.value,
+                  ),
+                  auth: yield* confiner.ownerAuth(input.options.env),
+                  environment: yield* HostProcess.Environment,
+                  ghDirectory: policy.value.ghDirectory,
+                  lead: false,
+                }),
+              },
+            });
+          }
           // Dreams edit their own checkout; DreamIsolation confines them.
           if (isDream)
             return yield* runner.open({ ...input, options: { ...input.options, settingSources } });
@@ -275,6 +313,7 @@ export const claudeQueryRunner = <E, R>(
                   auth: yield* confiner.ownerAuth(input.options.env),
                   environment: yield* HostProcess.Environment,
                   ghDirectory: policy.value.ghDirectory,
+                  lead: true,
                 }),
               },
             });
