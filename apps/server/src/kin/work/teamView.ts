@@ -74,14 +74,13 @@ const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fra
     WHERE a.value = 'person:' || ${personId})`;
 
 /**
- * What a person who isn't owner-level may see, on every screen, count, search and turn of theirs.
- * A task they hold or attend, always. Unlabelled, a task they made or gave, or one shared or on a
- * project they're on; a doc of a project they lead, are on or hold work in. Their led project's
- * own entries and held tasks. Places they have switched on: Docs shows company and shared docs.
+ * What a non-owner-level person sees, on every screen, count, search and turn: a task they hold or
+ * attend, private or not. Unlabelled: what they made, gave or share, their projects' entries and
+ * docs (a private task is never its project lead's), and company docs with the Docs place on.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
-      OR ${attends(sql, personId)} OR (r.owner_kind = 'person' AND ${inLedProject(sql, personId)})
+      OR ${attends(sql, personId)}
       OR (r.sensitive = 0 AND ((r.created_by_kind = 'person' AND r.created_by_id = ${personId})
         OR r.assigned_by_person_id = ${personId}))))
   OR (r.register_id IN ('work', 'milestones') AND r.sensitive = 0
