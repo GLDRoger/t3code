@@ -23,6 +23,25 @@ const SYMBOLS: ReadonlyArray<readonly [RegExp, string]> = [
   [/€/gu, "EUR"],
   [/£/gu, "GBP"],
 ];
+// The symbols formatMoney writes that name one currency alone ("A$", "¥", "R$"), longest first
+// so "A$" is read before "$", so an amount Kin wrote reads back as the same amount.
+const WRITTEN: ReadonlyArray<readonly [RegExp, string]> = (() => {
+  const users = new Map<string, Array<string>>();
+  for (const code of CURRENCIES) {
+    const symbol = new Intl.NumberFormat("en", { style: "currency", currency: code })
+      .formatToParts(1)
+      .find((part) => part.type === "currency")?.value;
+    if (symbol !== undefined && symbol !== code)
+      users.set(symbol, [...(users.get(symbol) ?? []), code]);
+  }
+  return [...users]
+    .filter(([symbol, codes]) => codes.length === 1 && !/^[$€£₹]$/u.test(symbol))
+    .toSorted(([a], [b]) => b.length - a.length)
+    .map(([symbol, [code]]) => [
+      new RegExp(`(?<![\\p{L}])${RegExp.escape(symbol)}(?![\\p{L}])`, "gu"),
+      code!,
+    ]);
+})();
 const MULTIPLIERS: ReadonlyArray<readonly [RegExp, bigint]> = [
   [/\b(?:crores?|cr)\b/giu, 10_000_000n],
   [/\b(?:lakhs?|lacs?|lakh)\b/giu, 100_000n],
@@ -40,7 +59,7 @@ export const parseAmount = (
 ): { readonly money: KinMoney } | { readonly error: KinChatError } => {
   let rest = text.trim().replace(/\/-$/u, "");
   const named = new Set<string>();
-  for (const [pattern, code] of SYMBOLS)
+  for (const [pattern, code] of [...WRITTEN, ...SYMBOLS])
     rest = rest.replace(pattern, () => {
       named.add(code);
       return " ";
