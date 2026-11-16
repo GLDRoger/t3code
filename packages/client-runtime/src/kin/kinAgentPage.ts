@@ -123,6 +123,10 @@ export function kinAdvisedModels<M extends AdvisableModel>(models: ReadonlyArray
   });
 }
 
+/** Whether the model offers an effort control, so the advice has something to sit under. */
+export const kinHasEffort = (selection: ModelSelection, models: ReadonlyArray<AdvisableModel>) =>
+  reasoningOf(models, selection.model) !== undefined;
+
 /** Whether a chosen effort is below Medium or above High. An unset effort is not flagged. */
 export function kinEffortOffAdvice(
   selection: ModelSelection,

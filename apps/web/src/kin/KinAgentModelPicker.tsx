@@ -3,6 +3,7 @@ import {
   KIN_AGENT_EFFORT,
   kinAdvisedModels,
   kinEffortOffAdvice,
+  kinHasEffort,
   kinWithMediumEffort,
 } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { type EnvironmentId, isKinAgentDriver, type ModelSelection } from "@t3tools/contracts";
@@ -89,11 +90,15 @@ export function KinAgentModelPicker(props: {
           />
         )}
       </div>
-      <p
-        className={offAdvice ? "text-xs text-warning-foreground" : "text-xs text-muted-foreground"}
-      >
-        {KIN_AGENT_EFFORT.advice}
-      </p>
+      {entry === undefined || !kinHasEffort(selection, entry.models) ? null : (
+        <p
+          className={
+            offAdvice ? "text-xs text-warning-foreground" : "text-xs text-muted-foreground"
+          }
+        >
+          {KIN_AGENT_EFFORT.advice}
+        </p>
+      )}
     </div>
   );
 }

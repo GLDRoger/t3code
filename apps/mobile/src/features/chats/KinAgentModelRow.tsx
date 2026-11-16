@@ -3,6 +3,7 @@ import {
   KIN_AGENT_EFFORT,
   kinAdviseEffort,
   kinEffortOffAdvice,
+  kinHasEffort,
   kinWithMediumEffort,
 } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinLeadModelName } from "@t3tools/client-runtime/kin/kinLeadPresentation";
@@ -41,7 +42,9 @@ export function KinAgentEffortAdvice(props: {
   readonly value: ModelSelection;
   readonly options: ReadonlyArray<ModelOption>;
 }) {
-  const off = kinEffortOffAdvice(props.value, modelsOn(props.options, props.value));
+  const models = modelsOn(props.options, props.value);
+  if (!kinHasEffort(props.value, models)) return null;
+  const off = kinEffortOffAdvice(props.value, models);
   return (
     <Text
       textRole="footnote"
