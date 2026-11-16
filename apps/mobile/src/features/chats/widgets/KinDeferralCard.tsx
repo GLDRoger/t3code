@@ -132,7 +132,7 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
               key={action.id}
               label={action.label}
               accessibilityLabel={action.accessibilityLabel}
-              tone={action.tone}
+              tone="outline"
               size="compact"
               loading={pending === action.id}
               disabled={status?.holding === true || (pending !== null && pending !== action.id)}

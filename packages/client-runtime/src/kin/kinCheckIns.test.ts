@@ -7,7 +7,7 @@ describe("kinCheckInDays", () => {
     [[1, 2, 3, 4, 5], "Weekdays"],
     [[0, 1, 2, 3, 4, 5, 6], "Every day"],
     [[6, 0], "Weekends"],
-    [[1], "Mons"],
+    [[1], "Mondays"],
     [[0, 3, 1], "Mon, Wed, Sun"],
   ])("%j reads %s", (days, label) => {
     expect(kinCheckInDays(days)).toBe(label);

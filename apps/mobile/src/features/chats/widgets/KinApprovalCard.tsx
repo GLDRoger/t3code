@@ -62,7 +62,7 @@ export const KinApprovalCard = memo(function KinApprovalCard(props: {
         </Text>
         <View className="flex-row pt-1">
           <Button
-            tone="secondary"
+            tone="outline"
             size="compact"
             label="Retry"
             loading={result.waiting}
@@ -187,7 +187,7 @@ function OwnerCard(props: {
           {canDecline ? (
             <Button
               label="Decline"
-              tone="secondary"
+              tone="outline"
               loading={busy === "declining"}
               disabled={busy !== null || !card.decidable}
               onPress={() => void decide("declining")}
@@ -197,7 +197,7 @@ function OwnerCard(props: {
       ) : null}
       {failure?.reenrol === true ? (
         <View className="flex-row pt-1">
-          <Button tone="secondary" size="compact" label="Set up approvals" onPress={openSetup} />
+          <Button tone="outline" size="compact" label="Set up approvals" onPress={openSetup} />
         </View>
       ) : null}
     </CardBody>

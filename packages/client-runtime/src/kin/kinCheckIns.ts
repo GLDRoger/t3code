@@ -29,13 +29,13 @@ export const KIN_CHECK_INS = {
 
 /** Monday first, as a week reads; values are JavaScript's (0 is Sunday). */
 export const KIN_WEEKDAYS = [
-  { day: 1, short: "Mon" },
-  { day: 2, short: "Tue" },
-  { day: 3, short: "Wed" },
-  { day: 4, short: "Thu" },
-  { day: 5, short: "Fri" },
-  { day: 6, short: "Sat" },
-  { day: 0, short: "Sun" },
+  { day: 1, short: "Mon", long: "Monday" },
+  { day: 2, short: "Tue", long: "Tuesday" },
+  { day: 3, short: "Wed", long: "Wednesday" },
+  { day: 4, short: "Thu", long: "Thursday" },
+  { day: 5, short: "Fri", long: "Friday" },
+  { day: 6, short: "Sat", long: "Saturday" },
+  { day: 0, short: "Sun", long: "Sunday" },
 ] as const;
 
 const same = (days: ReadonlyArray<number>, want: ReadonlyArray<number>) =>
@@ -47,7 +47,7 @@ export function kinCheckInDays(days: ReadonlyArray<number>): string {
   if (same(days, [1, 2, 3, 4, 5])) return "Weekdays";
   if (same(days, [0, 6])) return "Weekends";
   const named = KIN_WEEKDAYS.filter(({ day }) => days.includes(day));
-  return named.length === 1 ? `${named[0]!.short}s` : named.map(({ short }) => short).join(", ");
+  return named.length === 1 ? `${named[0]!.long}s` : named.map(({ short }) => short).join(", ");
 }
 
 /** "Around 09:30 · Weekdays · Chief of staff": the row's one line. */

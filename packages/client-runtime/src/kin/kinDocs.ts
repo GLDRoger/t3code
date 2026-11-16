@@ -866,7 +866,8 @@ const snippetText = (snippet: string) =>
     .trim();
 
 export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
-  const snippet = snippetText(hit.snippet);
+  const text = snippetText(hit.snippet);
+  const snippet = text === hit.title ? "" : text;
   const section =
     hit.section === undefined || hit.section.id === "top"
       ? null

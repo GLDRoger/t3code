@@ -56,6 +56,8 @@ kv as owner web screenshot /tmp/proof/new-task.png   # refuses any path under ~/
 kv as dev rpc kin.work.list '{"project":"P-1"}'      # orgId is filled in
 kv tool finance money_summary '{}'                   # one real agent turn, no model
 kv tool chief kin_relay '{"to":"Zoya Sheikh","text":"…"}' --as-turn-of zoya
+kv tool chief people_read '{}' --reply "Checked." --hold 12   # stays working 12 s, to watch the status line
+kv mail expire hello@ambermill.example              # its sign-in stops working; --back restores it
 kv mail sent                                          # what the fake mailbox sent
 kv mail deliver --to hello@ambermill.example --from "Anita <anita@orbitdental.example>" --subject "Re: invoice" --body "Paid today"
 kv clock advance 3d                                   # every stored Kin time moves 3 days back
@@ -68,7 +70,7 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
 - `tool` sends `[kv:<id>]` as the person to the agent's direct chat. The real wake-up starts the
   scripted agent (`scripts/kin-verify/script-agent.ts`), which calls the tool on `/kin/mcp` with the
   turn's own credentials, so the gate, levels and posting rules all apply. `"$event"` in the JSON
-  becomes the turn's triggering event id; `sourceEventId` is added when the tool takes one.
+  becomes the turn's triggering event id; `"$chat"` the chat the turn replies to; `sourceEventId` is added when the tool takes one.
 - `clock` stops the server, rewrites stored times in one transaction and starts it again. The
   server's own clock is untouched; `set-date` moves times so that today reads as that date.
 - `db` opens the database read-only. Write through RPCs or tools, never SQL.
@@ -141,13 +143,21 @@ reports are not measured, since workers here need a real repository.
 The phone app is the same server. To look at it on a simulator or device:
 
 1. `vp run mobile:install ios` (or `android`) on the device host installs the dev client.
-2. `node scripts/kin-verify.ts phone metro` starts Metro for this checkout; `down` stops it.
+2. `node scripts/kin-verify.ts phone metro` starts Metro for this checkout; `down` stops it. It runs
+   the Kin-only app (`EXPO_PUBLIC_KIN_ONLY=1`); `--full-app` shows Kin inside the T3 Code shell.
 3. `node scripts/kin-verify.ts phone pair [--android] [--as zoya]` prints a `t3code-dev://` link.
    Open it on the device (see `test-t3-mobile` for the device tools). Without `--as` it pairs the
-   owner; with it, the link joins that person through a fresh invite.
+   owner; with it, the link joins that person through a fresh invite. To switch person, leave
+   first (Kin settings, Sign out or Leave): a phone with full access refuses a join link.
 
 `phone` does not tap the phone for you. Drive it with the device tools from `test-t3-mobile`, and
 check the same facts through `as <person> rpc` while you do.
+
+`bash .agents/skills/verify-kin/scripts/card-gallery.sh <person>` makes every chat card in that
+person's chats with real scripted turns, about a minute: a long reply with a list, table, code and
+link, a question, a plan, a chart, a visual, a relay, a working line, a reaction, and for the owner
+and co-owner a check-in, a money chart, an invoice PDF, a send card and a receipt. It is a gallery to
+look at, not a pass/fail check; each line says what was made or why Kin refused it.
 
 ## When it goes wrong
 

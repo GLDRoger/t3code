@@ -533,10 +533,13 @@ const make = Effect.gen(function* () {
         thread.endedAt !== null ||
         thread.agentId !== agent.agentId ||
         agent.ownerPersonId !== identity.ownerPersonId ||
-        !(identity.wakeupId !== undefined
-          ? yield* repo.wakeupRunning({ ...identity, wakeupId: identity.wakeupId })
-          : identity.caller !== undefined &&
-            (yield* repo.hasRunningWakeup({ ...identity, caller: identity.caller })))
+        !(
+          identity.hostPosted === true ||
+          (identity.wakeupId !== undefined
+            ? yield* repo.wakeupRunning({ ...identity, wakeupId: identity.wakeupId })
+            : identity.caller !== undefined &&
+              (yield* repo.hasRunningWakeup({ ...identity, caller: identity.caller })))
+        )
       )
         return yield* notAllowed;
     }
@@ -697,8 +700,10 @@ const make = Effect.gen(function* () {
       resolution: null,
     };
     if (yield* repo.addWaiting(item)) {
-      yield* hub.publish({ type: "waiting.updated", orgId: identity.orgId, item });
-      return item;
+      // As stored, so a card's row has its question.
+      const added = Option.getOrElse(yield* repo.getWaiting(item), () => item);
+      yield* hub.publish({ type: "waiting.updated", orgId: identity.orgId, item: added });
+      return added;
     }
     const existing = (yield* repo.listOpenWaiting({
       orgId: identity.orgId,
@@ -739,6 +744,9 @@ const make = Effect.gen(function* () {
       audience: input.forChat === true ? "chat" : yield* authorAudience(identity),
       caller: identity._tag === "agent" ? identity.caller : undefined,
       wakeupId: identity._tag === "agent" ? identity.wakeupId : undefined,
+      ...(identity._tag === "agent" && identity.hostPosted === true
+        ? { serverPosted: true as const }
+        : {}),
       chatId: input.chatId,
       messageId,
       author: authorFor(identity, member),
@@ -784,6 +792,16 @@ const make = Effect.gen(function* () {
       for (const item of yield* repo.listOpenWaiting(identity)) {
         if (item.chatId !== message.chatId || item.reason !== "question" || item.messageId === null)
           continue;
+        // A card still taking taps waits for its tap, such as a send card's Confirm.
+        if (item.widgetId !== null) {
+          const card = yield* repo.getWidget({ orgId: identity.orgId, widgetId: item.widgetId });
+          if (
+            Option.isSome(card) &&
+            card.value.closedAt === null &&
+            !ChoiceCard.choiceExpired(card.value, Date.parse(yield* now))
+          )
+            continue;
+        }
         const question = yield* requireRecord(
           repo.getMessage({ orgId: identity.orgId, messageId: item.messageId }),
         );
@@ -1200,7 +1218,11 @@ const make = Effect.gen(function* () {
         reason: "limit",
         message: "This wake-up has posted all it may in this chat.",
       });
-    const authorization = yield* floor.authorize(identity, chat, input.intent);
+    // Kin's own post is a notice the owner waits on: it never spends the running turn's grant.
+    const authorization =
+      identity.hostPosted === true
+        ? { runId: null, owed: true }
+        : yield* floor.authorize(identity, chat, input.intent);
     const message = yield* post(identity, member, {
       chatId: input.chatId,
       body: "",
@@ -2109,7 +2131,7 @@ const make = Effect.gen(function* () {
           threadId: thread.threadId,
           memberId: member.memberId,
         },
-        serverTaskCard: true,
+        serverPosted: true,
         body: "",
         intent: "answer",
         kind: "text",
