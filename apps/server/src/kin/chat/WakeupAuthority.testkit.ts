@@ -112,7 +112,8 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
   const previous = yield* sql<{
     wakeup_id: string;
     run_id: string | null;
-  }>`SELECT wakeup_id, run_id FROM kin_wakeups
+    thread_id: string | null;
+  }>`SELECT wakeup_id, run_id, thread_id FROM kin_wakeups
     WHERE org_id = ${input.orgId} AND status = 'running' ORDER BY wakeup_id`;
   for (const wakeup of previous) {
     yield* queue.finish({
@@ -120,13 +121,15 @@ export const startAgentWakeup = Effect.fn("test.startAgentWakeup")(function* (in
       wakeupId: KinWakeupId.make(wakeup.wakeup_id),
       status: "completed",
     });
-    const projection = yield* orchestrator.getThreadProjection(input.threadId);
+    // Each run on its own agent's thread: several agents take turns in one test.
+    const runThread = wakeup.thread_id === null ? input.threadId : ThreadId.make(wakeup.thread_id);
+    const projection = yield* orchestrator.getThreadProjection(runThread);
     const run = projection.runs.find((run) => run.id === wakeup.run_id);
     if (run !== undefined)
       yield* orchestrator.dispatch({
         type: "run.interrupt",
         commandId: CommandId.make(`interrupt:${wakeup.wakeup_id}`),
-        threadId: input.threadId,
+        threadId: runThread,
         runId: run.id,
       });
   }

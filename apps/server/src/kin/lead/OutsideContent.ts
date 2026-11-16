@@ -70,6 +70,10 @@ export const OUTSIDE_TOOLS = {
   kin_worker_stop: "allowed",
   // The event each makes carries the turn's stamp, so the turn it starts reads as outside.
   kin_hand_off: "allowed",
+  // A discussion wakes every agent on its question: outside text doesn't get to set one.
+  team_open: "refused",
+  // A turn's words, as kin_chat_post; the turns it wakes act only inside the company.
+  team_say: "allowed",
   // Carries only the person's stored message, never what the turn read.
   kin_take_private: "allowed",
   // Words to one person of the company, checked for what they may read.

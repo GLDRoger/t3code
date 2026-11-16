@@ -1,5 +1,6 @@
 import {
   KIN_COMPANY_CHAT_TEAM_ID,
+  KIN_TEAM_ROOM_TEAM_ID,
   type KinChatMembersResult,
   type KinChatSummary,
 } from "@t3tools/contracts";
@@ -28,6 +29,10 @@ export interface KinChatListRow {
   readonly retired: boolean;
   /** The company chat, everyone on the team in it: always first. */
   readonly company: boolean;
+  /** The agents' Team room: muted for good, after the company chat. */
+  readonly teamRoom: boolean;
+  /** Something new in the Team room: a quiet dot, never a count or a badge. */
+  readonly quietNew: boolean;
 }
 
 // A card posted without words has no body to preview, so its id's prefix says what it was.
@@ -77,12 +82,15 @@ export function kinChatListRows(
       fresh,
       retired,
       company: row.chat.teamId === KIN_COMPANY_CHAT_TEAM_ID,
+      teamRoom: row.chat.teamId === KIN_TEAM_ROOM_TEAM_ID,
+      quietNew: row.chat.fresh === true,
     };
   });
-  const live = rows.filter((row) => !row.retired && !row.company);
+  const live = rows.filter((row) => !row.retired && !row.company && !row.teamRoom);
   const settled = (row: KinChatListRow) => row.fresh && !row.needsYou && !row.working;
   return [
     ...rows.filter((row) => row.company),
+    ...rows.filter((row) => row.teamRoom),
     ...live.filter((row) => !settled(row)),
     ...live.filter(settled),
     ...rows.filter((row) => row.retired),
@@ -97,6 +105,7 @@ export function kinChatListRowLabel(row: KinChatListRow, time: (date: Date) => s
     row.retired && row.preview !== KIN_RETIRED_LABEL ? "Retired." : null,
     row.working ? "Working." : null,
     row.needsYou ? "Needs you." : null,
+    row.quietNew ? "New messages." : null,
   ]
     .filter((part) => part !== null)
     .join(" ");
