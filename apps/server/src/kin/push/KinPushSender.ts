@@ -30,7 +30,6 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
-import { ownerZone } from "../work/recordRows.ts";
 import { KinApnsTransport } from "./Apns.ts";
 import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
@@ -137,6 +136,7 @@ const kinPushCollapseId = (orgId: KinOrgId, chatId: KinChatId) =>
   `kin:${kinPushDeviceId(`${orgId}\u0000${chatId}`)}`;
 const decodeIds = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 const decodeState = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const UNPROMPTED_RING_GAP_MS = 30 * 60_000;
 const decodeQuietHours = Schema.decodeUnknownOption(
   Schema.fromJsonString(KinTriggerSettings.fields.quietHours),
 );
@@ -255,13 +255,30 @@ const make = Effect.gen(function* () {
 
   /** The hour of the owner's day, for a brief's greeting: check-ins are his. */
   const ownerHour = Effect.fn("KinPushSender.ownerHour")(function* (orgId: KinOrgId) {
-    const zone = yield* ownerZone(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    const zone = yield* cache.ownerTimeZone(orgId);
     const hour = new Intl.DateTimeFormat("en-GB", {
       hour: "numeric",
       hourCycle: "h23",
       timeZone: zone,
     }).format(yield* Clock.currentTimeMillis);
     return Number(hour);
+  });
+
+  /**
+   * Whether an unprompted post may ring `personId` now: at most once per half hour across every
+   * agent. One that may not still lands, silently. Claimed here, when the push is decided.
+   */
+  const mayRing = Effect.fn("KinPushSender.mayRing")(function* (
+    orgId: KinOrgId,
+    personId: KinPersonId,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const claimed = yield* sql`INSERT INTO kin_push_rings (org_id, person_id, rang_at)
+      VALUES (${orgId}, ${personId}, ${now})
+      ON CONFLICT (org_id, person_id) DO UPDATE SET rang_at = excluded.rang_at
+        WHERE kin_push_rings.rang_at <= ${now - UNPROMPTED_RING_GAP_MS}
+      RETURNING rang_at`;
+    return claimed.length > 0;
   });
 
   /** The Chats list's unread total, from the same read, so the icon and the list agree. */
@@ -366,7 +383,7 @@ const make = Effect.gen(function* () {
     // Reminders and scheduled runs come at the time the owner chose, so quiet hours let them ring.
     const quiet = row.owner_timed === 1 ? false : yield* quietNow(orgId);
     const people = yield* chatPeople(orgId, row.chat_id);
-    return {
+    const push: Push = {
       category: "kin.message",
       title: kinBannerTitle(chat, row.author_name),
       body: body || "New message",
@@ -392,7 +409,22 @@ const make = Effect.gen(function* () {
             }),
         )
         .map((person) => ({ personId: person.personId, silent: person.muted || quiet })),
-    } satisfies Push;
+    };
+    // A reply to them, or a time they chose, always rings; anything else from Kin or an agent
+    // rings at most once per half hour.
+    const recipients: Array<Recipient> = [];
+    for (const recipient of push.recipients)
+      recipients.push(
+        recipient.silent ||
+          row.author_kind === "human" ||
+          row.owner_timed === 1 ||
+          row.reply_author === recipient.personId ||
+          asked.has(recipient.personId) ||
+          (yield* mayRing(orgId, recipient.personId))
+          ? recipient
+          : { ...recipient, silent: true },
+      );
+    return { ...push, recipients } satisfies Push;
   });
 
   const widgetPush = Effect.fn("KinPushSender.widgetPush")(function* (

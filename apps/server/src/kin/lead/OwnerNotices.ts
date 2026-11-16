@@ -9,6 +9,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
+import { holdIfQuiet } from "../triggers/quietHold.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 
 /**
@@ -28,6 +29,16 @@ export const layer = Layer.effect(
           if (notice.owner === undefined) return;
           const lead = yield* liveLead(sql, notice.orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
           if (lead === undefined) return;
+          // A night job's line waits out his quiet hours, merged with any others held for him.
+          const held = yield* holdIfQuiet({
+            orgId: notice.orgId,
+            chatId: lead.ownerChatId,
+            personId: lead.ownerPersonId,
+            kind: "memory",
+            body: notice.owner,
+            audience: "owner",
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          if (held) return;
           const message = yield* chat.insertMessage({
             orgId: notice.orgId,
             chatId: lead.ownerChatId,

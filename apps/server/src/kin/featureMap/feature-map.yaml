@@ -663,11 +663,16 @@ features:
     phone: [SettingsKin, KinCheckInForm]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    note: Inside the app's Settings dialog the form opens as a dialog; in Kin's own settings, a sheet.
+    note: >-
+      Inside the app's Settings dialog the form opens as a dialog; in Kin's own settings, a sheet.
+      A check-in tells only what the owner hasn't been told; on the weekly brief's day the morning
+      check-in is the brief; one in quiet hours (22:00 to 07:00 unless set) waits for their end.
     proof:
       - apps/server/src/kin/pulse/checkIn.test.ts
+      - apps/server/src/kin/pulse/told.test.ts
       - packages/client-runtime/src/kin/kinCheckIns.test.ts
       - .agents/skills/verify-kin/scripts/checkin-new-agent.sh
+      - .agents/skills/verify-kin/scripts/told-once-quiet-hours.sh
 
   - id: connections
     name: Mail and tool connections

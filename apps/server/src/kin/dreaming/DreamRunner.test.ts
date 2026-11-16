@@ -781,7 +781,7 @@ it.live("while a dream runs, a second run is busy and drain fails only stale row
 );
 
 it.live(
-  "the owner hears once, on the third failed night in a row, and again only after a success",
+  "the log notes once, on the third failed night in a row, and again only after a success",
   () =>
     fixture(({ behave, notices, turns }) =>
       Effect.gen(function* () {
@@ -793,8 +793,8 @@ it.live(
         expect(notices).toEqual([]);
         expect((yield* night(10))._tag).toBe("failed");
         expect(notices).toHaveLength(1);
-        expect(notices[0]).toContain("Nothing is lost");
-        expect(notices[0]).not.toMatch(/dream|merge|branch|material/i);
+        // Operator log only: nothing is lost, so the owner's chat gets no line.
+        expect(notices[0]).toBe("Dream failed three nights in a row");
         // A failed night's material stays new, so each retry still runs.
         expect(turns).toHaveLength(3);
         expect((yield* night(11))._tag).toBe("failed");

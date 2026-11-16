@@ -92,8 +92,6 @@ const encodeDream = Schema.encodeEffect(Schema.fromJsonString(DreamJson));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const FAILED_NIGHTS_NOTICE = 3;
-const stuckNotice =
-  "I haven't been able to tidy my notes for three nights in a row. Nothing is lost, and I'll keep trying each night. If it doesn't clear up, let whoever looks after Kin for you know.";
 const emptyDream: DreamJson = { changes: [], merges: [], supersessions: [], contradictions: [] };
 const zoned = (ms: number, timeZone: string) => DateTime.makeZonedUnsafe(ms, { timeZone });
 
@@ -246,14 +244,10 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${orgId} AND status IN ('failed', 'succeeded')
       ORDER BY owner_date DESC LIMIT ${FAILED_NIGHTS_NOTICE + 1}`;
     const streak = recent.findIndex((row) => row.status !== "failed");
-    // Exactly the third failed night in a row: a longer streak was already told.
+    // Exactly the third failed night in a row: a longer streak was already told. Nothing is
+    // lost, so it is for whoever runs Kin, never a line in the owner's chat.
     if ((streak === -1 ? recent.length : streak) === FAILED_NIGHTS_NOTICE)
-      yield* notices.notify({
-        orgId,
-        branch,
-        reason: "Dream failed three nights in a row",
-        owner: stuckNotice,
-      });
+      yield* notices.notify({ orgId, branch, reason: "Dream failed three nights in a row" });
   });
 
   const prepareCheckout = Effect.fn("DreamRunner.prepareCheckout")(function* (

@@ -28,7 +28,6 @@ import * as Chat from "../chat/KinChatService.ts";
 import { memoryDateMillis } from "../memory/frontMatter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
-import { buildWeeklySection, renderWeekly } from "../pulse/weekly.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
 import {
   renderRoutine,
@@ -104,15 +103,6 @@ export class KinRoutineContent extends Context.Service<
       orgId: KinOrgId,
       agentId: KinAgentId,
     ) => Effect.Effect<string | null, KinRoutineContentError>;
-    /**
-     * The weekly check-in's figures, posted by Kin in the owner's chat before the lead's turn, so
-     * the lead adds judgement and never retypes a figure. Once per event; false with no live lead.
-     */
-    readonly weeklyFigures: (
-      orgId: KinOrgId,
-      agentId: KinAgentId,
-      eventId: string,
-    ) => Effect.Effect<boolean, KinRoutineContentError>;
   }
 >()("t3/kin/lead/RoutineContent/KinRoutineContent") {}
 
@@ -561,39 +551,7 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  const weeklyFigures = Effect.fn("KinRoutineContent.weeklyFigures")(
-    function* (orgId: KinOrgId, agentId: KinAgentId, eventId: string) {
-      const owner = yield* lead(orgId, agentId);
-      if (owner === undefined) return false;
-      const messageId = KinMessageId.make(`kin-weekly-${eventId}`);
-      if (Option.isSome(yield* repo.getMessage({ orgId, messageId }))) return true;
-      const week = yield* buildWeeklySection({ orgId, now: yield* Clock.currentTimeMillis }).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      );
-      yield* chat.notice({
-        orgId,
-        chatId: KinChatId.make(owner.chatId),
-        messageId,
-        audience: "owner",
-        body: renderWeekly(week),
-      });
-      return true;
-    },
-    (effect, orgId) =>
-      effect.pipe(
-        Effect.mapError(
-          (cause) =>
-            new KinRoutineContentError({
-              orgId,
-              cause: isSqlError(cause)
-                ? toPersistenceSqlError("KinRoutineContent.weeklyFigures")(cause)
-                : cause,
-            }),
-        ),
-      ),
-  );
-
-  return KinRoutineContent.of({ prepare, post, morningFacts, weeklyFigures });
+  return KinRoutineContent.of({ prepare, post, morningFacts });
 });
 
 export const layer = Layer.effect(KinRoutineContent, make).pipe(Layer.provide(MemoryCache.layer));
