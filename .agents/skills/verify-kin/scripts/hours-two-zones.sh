@@ -10,6 +10,8 @@ q() { kv db "$1" | tail -n +2 | tail -1; }
 ZOYA="$(q "select person_id from kin_people where display_name = 'Zoya Sheikh'")"
 ARJUN="$(q "select person_id from kin_people where display_name = 'Arjun Rao'")"
 HOURS='{"days":[0,1,2,3,4,5,6],"start":"10:00","end":"18:00"}'
+# A line to someone who wrote in that chat in the last 10 minutes answers them and never waits.
+kv clock advance 11m >/dev/null
 EVENING="$(zone_at 20)"
 NOON="$(zone_at 12)"
 kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"$EVENING\",\"workHours\":$HOURS}" >/dev/null

@@ -943,8 +943,10 @@ it.effect("a teammate's own reminder comes to them in their chat, never the owne
     const sql = yield* SqlClient.SqlClient;
     const repo = yield* Repository.KinChatRepository;
     const lead = KinAgentId.make(`lead-${orgId}`);
-    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-      VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+        time_zone)
+      VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z',
+        'America/New_York')`;
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
       VALUES ('teammate-direct', ${orgId}, 'direct', 0, '1970-01-01T00:00:00.000Z',
         ${`teammate:${lead}`})`;
@@ -974,6 +976,21 @@ it.effect("a teammate's own reminder comes to them in their chat, never the owne
     const woken = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
       AND json_extract(json, '$.subject.type') = 'reminder'`;
     assert.lengthOf(woken, 0);
+    // Theirs to snooze, to 9:00 tomorrow on their own clock.
+    yield* (yield* Chat.KinChatService).act(
+      { _tag: "person", orgId, personId: KinPersonId.make("teammate") },
+      {
+        widgetId: card.widgetId,
+        revision: card.revision,
+        actionId: "snooze_tomorrow",
+        value: "def-t",
+        clientActionId: "snooze-def-t",
+      },
+    );
+    assert.deepInclude((yield* reminderCard("def-t", dueAt)).state, {
+      status: "snoozed",
+      snoozedUntil: "2026-11-13T14:00:00.000Z",
+    });
   }).pipe(Effect.provide(layerFor([remind])));
 });
 

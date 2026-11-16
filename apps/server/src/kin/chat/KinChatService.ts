@@ -657,6 +657,16 @@ const make = Effect.gen(function* () {
       ))
     );
   });
+  const ownDirectChat = Effect.fn("KinChatService.ownDirectChat")(
+    function* (identity: PersonIdentity, chatId: KinChatId) {
+      const prefix = `${identity.personId}:`;
+      const rows = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${identity.orgId}
+        AND chat_id = ${chatId} AND kind = 'direct'
+        AND substr(direct_key, 1, ${prefix.length}) = ${prefix} LIMIT 1`;
+      return rows.length > 0;
+    },
+    Effect.mapError(toPersistenceSqlError("KinChatService.ownDirectChat")),
+  );
   /**
    * A generated doc's file is the owner's alone: the person whose agent's job made it, or who
    * asked. A file a doc's markdown shows is read by whoever reads Docs: the org's owner.
@@ -2550,12 +2560,14 @@ const make = Effect.gen(function* () {
         )
           return yield* invalidState;
       }
-      // Reminders and scheduled tasks act for the owner, so only the owner taps them.
+      // Reminders and scheduled tasks act for the owner, so only the owner taps them, except a
+      // reminder in someone's own direct chat: theirs to finish or snooze.
       if (
         (widget.type === "reminder" ||
           widget.type === "scheduled_task" ||
           widget.type === KIN_WORKER_PUBLISH_CARD) &&
-        !owning
+        !owning &&
+        !(widget.type === "reminder" && (yield* ownDirectChat(identity, widget.chatId)))
       )
         return yield* notAllowed;
       // Any writing member of the card's chat may undo; the other taps wait on the dispatcher.

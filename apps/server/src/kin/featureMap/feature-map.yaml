@@ -165,8 +165,13 @@ features:
     phone: [tab:chats, KinChat]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     tools: [kin_defer, kin_schedule, kin_cancel]
+    note: >-
+      Anyone sets their own reminders in their chat with an agent and gets them there; repeating
+      ones are the owner's and co-owners'.
     proof:
       - apps/server/src/kin/triggers/deferrals.test.ts
+      - apps/server/src/kin/lead/LeadMemory.shared.test.ts
+      - .agents/skills/verify-kin/scripts/teammate-reminder.sh
       - apps/server/src/kin/triggers/KinTriggerScheduler.test.ts
       - apps/server/src/kin/contract/scheduledTask.kin-contract.test.ts
 
