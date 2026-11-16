@@ -39,6 +39,7 @@ import { personMiss, personNamed } from "../people/personNamed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { relayPrefix } from "../reply/promises.ts";
 import { unreadableBy } from "../work/teamView.ts";
+import { TurnEvent } from "./eventIds.ts";
 
 export const LeadsResult = Schema.Struct({
   leads: Schema.Array(
@@ -60,9 +61,7 @@ export const HandOffInput = Schema.Struct({
     description:
       "What you are passing on, in the owner's terms, with anything useful you already found. The owner's own message goes along with it.",
   }),
-  sourceEventId: TrimmedNonEmptyString.annotate({
-    description: "The event of the owner's message, or of the check-in, you are passing on.",
-  }),
+  sourceEventId: TurnEvent,
   fact: Schema.optional(
     TrimmedNonEmptyString.check(Schema.isMaxLength(300)).annotate({
       description:
@@ -76,9 +75,7 @@ export const HandOffResult = Schema.Struct({
   passed: Schema.Literal(true),
 });
 export const TakePrivateInput = Schema.Struct({
-  sourceEventId: TrimmedNonEmptyString.annotate({
-    description: "The event of the person's own message in this group that you are taking private.",
-  }),
+  sourceEventId: TurnEvent,
   agent: Schema.optional(
     TrimmedNonEmptyString.check(Schema.isMaxLength(80)).annotate({
       description:
@@ -102,9 +99,7 @@ export const RelayInput = Schema.Struct({
     description:
       "From a teammate's chat: their request, in their words, with the task key. From the owner's chat: your message to the teammate, written for them.",
   }),
-  sourceEventId: TrimmedNonEmptyString.annotate({
-    description: "The event of the message this answers or passes on.",
-  }),
+  sourceEventId: TurnEvent,
 });
 export const RelayResult = Schema.Struct({
   to: Schema.String,

@@ -18,6 +18,8 @@ export const rules: Record<string, string> = {
   EveryMessageAnswered:
     "Every message you send ends in a reply or a plain failure line, never silence, even when the agent sent you a nudge or relay meanwhile.",
   LineClears: '"Working…" (the agent\'s line) always clears.',
+  EndNotSilent:
+    "An agent can't end its turn while your message still waits for words; it is told to write its reply.",
 };
 
 export const variants = [
@@ -45,6 +47,11 @@ export const variants = [
     name: "requeue-replied",
     breaks: "NeverTwo",
     what: "a restart puts a message that already has its reply back in the queue (the code before this change)",
+  },
+  {
+    name: "end-silent",
+    breaks: "EndNotSilent",
+    what: "kin_end ends a turn that posted nothing to a message waiting for words (the code before this change)",
   },
   {
     name: "line-stays",
@@ -86,6 +93,10 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "The agent uses a tool";
     case "LeadKeepsPromise":
       return "The agent posts the card or hand-over its reply promised";
+    case "LeadEnds":
+      return to.blind === true
+        ? "The agent ends its turn before Kin has seen the call"
+        : "The agent ends its turn";
     case "FloorCloses":
       return "The floor closes";
     case "RunCompletes":

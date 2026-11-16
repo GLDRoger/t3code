@@ -11,6 +11,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
 import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
+import { TURN_EVENT_TOOLS } from "../lead/eventIds.ts";
 
 type Check = typeof toolAdmitted;
 
@@ -43,12 +44,52 @@ const gate = (name: string, check: Check) =>
   );
 
 /**
+ * The event a call acts on, from the lead's running turn: a left-out one is the turn's latest
+ * message or tap, else its first event; a message id becomes its event. Anything else stays, and
+ * the tool refuses it as before. The call's arguments are filled in before they are decoded.
+ */
+const turnEvents = McpHttpServer.toolCallPrepare(
+  Effect.fn("KinToolGate.turnEvents")(
+    function* (name: string, args: Record<string, unknown>) {
+      if (!TURN_EVENT_TOOLS.has(name)) return;
+      const given = args.sourceEventId;
+      const kin = yield* Effect.serviceOption(KinServer);
+      if (Option.isNone(kin) || Option.isNone(kin.value.services)) return;
+      const identity = Context.get(kin.value.services.value, KinIdentity);
+      const sql = Context.get(kin.value.services.value, SqlClient.SqlClient);
+      const agent = yield* identity.resolveAgent(yield* McpInvocationContext).pipe(Effect.option);
+      if (Option.isNone(agent)) return;
+      const { orgId, agentId, threadId } = agent.value;
+      const events = yield* sql<{ eventId: string; messageId: string | null; asked: number }>`
+        SELECT e.event_id AS "eventId", json_extract(e.json, '$.messageId') AS "messageId",
+          e.tag IN ('chat.message', 'widget.action') AS asked
+        FROM kin_events e JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+        WHERE w.org_id = ${orgId} AND w.agent_id = ${agentId} AND w.thread_id = ${threadId}
+          AND w.status = 'running'
+        ORDER BY e.received_at, e.event_id`;
+      if (events.some((event) => event.eventId === given)) return;
+      const named = events.find((event) => event.messageId !== null && event.messageId === given);
+      const chosen =
+        named ??
+        (given === undefined
+          ? (events.findLast((event) => event.asked === 1) ?? events[0])
+          : undefined);
+      if (chosen !== undefined) args.sourceEventId = chosen.eventId;
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't fill a tool's event; the tool decides", { cause }),
+    ),
+  ),
+);
+
+/**
  * Every tool call on the Kin MCP endpoint passes here before its handler, whichever toolkit
  * registered it: nothing reaches the owner's context in a turn someone else can read
  * (`SharedTools`), and nothing outside text could steer runs once the turn has read some
  * (`OutsideContent`). Each refuses with its own line.
  */
 export const layer = Layer.mergeAll(
+  turnEvents,
   McpHttpServer.toolCallGate(gate("KinToolGate.admitted", toolAdmitted), SHARED_REFUSAL),
   McpHttpServer.toolCallGate(gate("KinToolGate.outside", outsideToolAllowed), OUTSIDE_REFUSAL),
 );

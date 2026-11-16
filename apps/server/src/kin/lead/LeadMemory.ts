@@ -66,6 +66,7 @@ import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
 import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { turnSensitive } from "../work/workerAttempts.ts";
+import { TurnEvent } from "./eventIds.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -110,7 +111,7 @@ export const WriteInput = Schema.Struct({
     body: text,
     sensitive: Schema.Boolean,
   }),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
   // Checked against that event's message, never trusted as sent (`MemoryWriter`).
   quote: Schema.optional(Schema.String.check(Schema.isMaxLength(QUOTE_MAX))),
   supersedes: Schema.optional(KinMemoryItemId),
@@ -121,7 +122,7 @@ export const DeferInput = Schema.Struct({
   due: deferDue,
   onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
   chatId: KinChatId,
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
   replaces: Schema.optional(KinMemoryItemId),
 });
 export const ScheduleInput = Schema.Struct({
@@ -131,7 +132,7 @@ export const ScheduleInput = Schema.Struct({
   at: MemoryItemEvery.fields.at,
   days: MemoryItemEvery.fields.days,
   chatId: KinChatId,
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
   replaces: Schema.optional(KinMemoryItemId),
   around: Schema.optional(Schema.Boolean).annotate({
     description:
@@ -144,12 +145,12 @@ export const ScheduleInput = Schema.Struct({
 });
 export const CancelInput = Schema.Struct({
   itemId: KinMemoryItemId,
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export const LabelInput = Schema.Struct({
   itemIds: Schema.Array(KinMemoryItemId).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
   sensitive: Schema.Boolean,
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export const JournalInput = Schema.Struct({
   saw: Schema.Array(text).check(Schema.isMaxLength(100)),
