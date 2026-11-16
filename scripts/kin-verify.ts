@@ -172,7 +172,7 @@ async function down(instance: Instance, wipe: boolean, quiet = false) {
   if (state !== undefined) {
     for (const pid of [...Object.values(state.chrome ?? {}), state.metro, state.pid])
       stopped += await stopTree(pid);
-    writeState(instance, { ...state, chrome: {}, metro: undefined } as typeof state);
+    writeState(instance, { ...state, chrome: {}, metro: undefined });
   }
   if (wipe) NodeFS.rmSync(instance.home, { recursive: true, force: true });
   if (!quiet) console.log(`down: stopped ${stopped} processes${wipe ? ", wiped state" : ""}`);

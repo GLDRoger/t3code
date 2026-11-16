@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - a dev CLI managing its own processes.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off globalFetch:off - a dev CLI managing its own processes.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -29,7 +29,7 @@ export interface InstanceState {
   readonly origin?: string;
   readonly web?: string;
   readonly chrome?: Record<string, number>;
-  readonly metro?: number;
+  readonly metro?: number | undefined;
 }
 
 export interface SeedState {

@@ -219,15 +219,28 @@ const CLICKABLE = [
   "combobox",
 ] as const;
 
+/** The little of the DOM `reachable` touches; these scripts don't compile against the DOM lib. */
+interface DomElement {
+  readonly offsetParent: unknown;
+  closest(selector: string): DomElement | null;
+  setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
+}
+
 /** Where a person can act: the topmost open dialog or sheet (it blocks the rest), else the page. */
 async function reachable(page: Page): Promise<Page | Locator> {
   // A dialog behind another is inert or aria-hidden; the one left is the one in front.
   const top = await page.evaluate(() => {
+    const document = (
+      globalThis as unknown as {
+        document: { querySelectorAll(selector: string): Iterable<DomElement> };
+      }
+    ).document;
     for (const marked of document.querySelectorAll("[data-kin-verify-top]"))
       marked.removeAttribute("data-kin-verify-top");
     const open = [...document.querySelectorAll("[role=dialog], [role=alertdialog]")].filter(
       (element) =>
-        (element as HTMLElement).offsetParent !== null &&
+        element.offsetParent !== null &&
         element.closest('[aria-hidden="true"], [inert], [data-base-ui-inert]') === null,
     );
     open.at(-1)?.setAttribute("data-kin-verify-top", "");

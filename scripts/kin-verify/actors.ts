@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - a dev CLI acting as seeded people.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off globalFetch:off - a dev CLI acting as seeded people.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";

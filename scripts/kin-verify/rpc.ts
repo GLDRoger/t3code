@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalTimers:off - a dev CLI speaking effect-rpc's JSON frames.
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalFetch:off extendsNativeError:off - a dev CLI speaking effect-rpc's JSON frames.
 import {
   AuthAccessTokenType,
   AuthEnvironmentBootstrapTokenType,

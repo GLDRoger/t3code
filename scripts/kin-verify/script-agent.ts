@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// @effect-diagnostics nodeBuiltinImport:off globalConsole:off - an ACP agent process, spoken over stdio.
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalFetch:off - an ACP agent process, spoken over stdio.
 /**
  * A Kin lead with no model, run by a dev server as the `kinVerifyScript` ACP instance. A prompt
  * with `[kv:<id>]` makes it call the tools in `<verify dir>/turns/<id>.json` on the session's real
@@ -15,6 +15,7 @@ interface JsonRpcMessage {
   readonly method?: string;
   readonly params?: Record<string, unknown>;
   readonly result?: unknown;
+  readonly error?: { readonly code: number; readonly message: string };
 }
 
 interface McpServer {
@@ -24,7 +25,9 @@ interface McpServer {
 }
 
 /** T3 gives ACP agents its MCP endpoint over HTTP, or as a stdio bridge whose env names it. */
-function endpointOf(server: McpServer): { url: string; authorization?: string } | undefined {
+function endpointOf(
+  server: McpServer,
+): { url: string; authorization?: string | undefined } | undefined {
   if (server.url !== undefined)
     return {
       url: server.url,
