@@ -29,6 +29,7 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
+import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
@@ -55,7 +56,7 @@ export const KIN_WORK_GONE = {
 };
 export const KIN_WORK_ITEM_FAILED = {
   title: "Couldn't load this task",
-  detail: "Check your connection to the server and try again.",
+  detail: KIN_CHECK_CONNECTION,
 };
 export const KIN_WORK_TITLE_MAX = 280;
 export const KIN_WORK_NOTES_MAX = 4_000;
@@ -754,7 +755,7 @@ export const KIN_WORK_HAND_BACK = {
   reasonLabel: "Why (optional)",
   reasonPlaceholder: "I'm on the release this week",
   confirm: "Hand back",
-  failed: "Couldn't hand it back. Try again.",
+  failed: "Couldn't hand it back.",
 } as const;
 
 export function kinWorkPrivacy(input: {
@@ -780,7 +781,7 @@ export const KIN_WORK_SHARE = {
   label: "Share with team",
   on: "Your teammates can see this task and follow it.",
   off: "Teammates see this only if they hold it, or it's in a project they lead or are on.",
-  failed: "Couldn't change who sees this. Try again.",
+  failed: "Couldn't change who sees this.",
 };
 
 /** Who sees a task: the people on it and its project, the whole team, or only the owner's side. */
@@ -794,7 +795,7 @@ export const KIN_WORK_MILESTONE = {
 
 export const KIN_WORK_AUDIENCE = {
   label: "Who can see this",
-  failed: "Couldn't change who sees this. Try again.",
+  failed: "Couldn't change who sees this.",
 } as const;
 
 /**
@@ -851,14 +852,14 @@ export const KIN_ENTRY_SHARE: typeof KIN_WORK_SHARE = {
   label: "Share with team",
   on: "Teammates who can see Money read its figures.",
   off: "Only the owner and co-owners see this, and the lead of its project.",
-  failed: "Couldn't change who sees this. Try again.",
+  failed: "Couldn't change who sees this.",
 };
 
 export const KIN_DOC_SHARE: typeof KIN_WORK_SHARE = {
   label: "Share with team",
   on: "Teammates who can see Docs read this one.",
   off: "Only the owner and co-owners see this doc, and the lead of its project.",
-  failed: "Couldn't change who sees this. Try again.",
+  failed: "Couldn't change who sees this.",
 };
 
 const CATEGORY_LABEL = {
@@ -1501,36 +1502,21 @@ export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
 
 // The owner's changes
 
-export const KIN_WORK_CHANGED =
-  "This changed while you were looking at it. Here is the latest, so check it and try again.";
-const KIN_WORK_NOT_SENT = "That didn't go through. Check your connection and try again.";
 const KIN_WORK_CLOSED_GIVE = "This task is closed. Reopen it before giving it to someone.";
 
 /** What the owner was doing when the host refused, where that changes what to say. */
 type Refused = "give" | "decline" | null;
 
-/** Why a change didn't go through, in words for the owner. */
+/** Why a change didn't go through, in words for the owner (`kinFailure`). */
 function problemOf(error: unknown, doing: Refused): string {
-  if (isAuthorizationError(error)) return "This device isn't allowed to change Work.";
-  if (!isKinChatError(error)) return KIN_WORK_NOT_SENT;
-  switch (error.reason) {
-    case "conflict":
-      return KIN_WORK_CHANGED;
-    case "not_found":
-      return "That isn't there any more. Someone may have left, or the task was removed.";
-    // The host says what is true for this person and task, in words meant for them.
-    case "not_allowed":
-      return error.message.trim() === "" ? "You can't change this task." : error.message;
-    case "unavailable":
-    case "disabled":
-      return "Kin isn't answering right now. Try again in a moment.";
-    case "invalid_state":
-      if (doing === "give") return KIN_WORK_CLOSED_GIVE;
-      if (doing === "decline") return "This is already one of your tasks. Drop it instead.";
-      return "That didn't go through. Check the details and try again.";
-    default:
-      return "That didn't go through. Check the details and try again.";
+  if (isKinChatError(error) && error.reason === "invalid_state") {
+    if (doing === "give") return KIN_WORK_CLOSED_GIVE;
+    if (doing === "decline") return "This is already one of your tasks. Drop it instead.";
   }
+  return kinFailureText(error, "That didn't go through.", {
+    gone: "That isn't there any more. Someone may have left, or the task was removed.",
+    device: "This device isn't allowed to change Work.",
+  });
 }
 
 type Sent<A> = Promise<AtomCommandResult<A, unknown>>;

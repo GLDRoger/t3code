@@ -19,7 +19,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { AtomCommandResult } from "../state/runtime.ts";
 import {
-  KIN_WORK_CHANGED,
   KIN_WORK_DEFAULT_FILTER,
   KIN_WORK_NO_DRAFT,
   createKinWorkActions,
@@ -38,6 +37,7 @@ import {
   kinWorkShown,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { KIN_CHANGED } from "./kinAnswers.ts";
 
 const orgId = KinOrgId.make("invented-org");
 const me = { _tag: "person", personId: KinPersonId.make("invented-owner") } as const;
@@ -633,7 +633,7 @@ describe("createKinWorkActions", () => {
     );
     expect(await h.made.give({ key: "W-1", rev: 3 }, lead)).toEqual({
       ok: false,
-      problem: KIN_WORK_CHANGED,
+      problem: KIN_CHANGED,
       changed: true,
     });
     expect(h.reread).toEqual(["W-1"]);

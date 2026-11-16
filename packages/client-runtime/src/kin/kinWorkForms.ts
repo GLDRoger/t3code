@@ -20,9 +20,9 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
+import { kinFailureText } from "./kinAnswers.ts";
 import {
   isKinChatError,
-  isKinWorkAuthorizationError,
   kinWorkFailuresOf,
   kinWorkRefused,
   type KinWorkRef,
@@ -438,7 +438,7 @@ const STILL_OPEN: Record<Noun, (name: string) => string> = {
     `${name} still has open tasks or projects. Finish them or move them to another client, then close.`,
   project: (name) =>
     `${name} still has open tasks. Finish them, drop them or move them to another project first.`,
-  contact: (name) => `${name} couldn't be changed. Check the details and try again.`,
+  contact: (name) => `${name} couldn't be changed. Check the details.`,
 };
 
 /** A refusal in words for the owner, with what he can do next. */
@@ -452,36 +452,29 @@ function kinWorkFormProblem(
     readonly own: KinRecordKey | null;
   },
 ): KinWorkFormProblem {
-  const failed = (text: string): KinWorkFormProblem => ({ kind: "failed", text });
-  if (isKinWorkAuthorizationError(error))
-    return failed("This device isn't allowed to change Work.");
-  if (!isKinChatError(error))
-    return failed("That didn't go through. Check your connection and try again.");
-  switch (error.reason) {
-    case "conflict": {
-      const existing = existingKey(error.message);
-      return existing !== null && existing !== about.own
-        ? {
-            kind: "duplicate",
-            text: `There's already a ${about.noun} called ${about.name.trim()}.`,
-            existing,
-          }
-        : { kind: "conflict", text: KIN_WORK_FORM_CHANGED };
-    }
-    case "invalid_state":
-      return /still has \d+ open/.test(error.message)
-        ? { kind: "open_work", text: STILL_OPEN[about.noun](about.name) }
-        : failed("That didn't go through. Check the details and try again.");
-    case "not_found":
-      return failed(`That ${about.noun} isn't there any more.`);
-    case "not_allowed":
-      return failed(error.message.trim() === "" ? "You can't change this." : error.message);
-    case "unavailable":
-    case "disabled":
-      return failed("Kin isn't answering right now. Try again in a moment.");
-    default:
-      return failed("That didn't go through. Check the details and try again.");
+  if (isKinChatError(error) && error.reason === "conflict") {
+    const existing = existingKey(error.message);
+    return existing !== null && existing !== about.own
+      ? {
+          kind: "duplicate",
+          text: `There's already a ${about.noun} called ${about.name.trim()}.`,
+          existing,
+        }
+      : { kind: "conflict", text: KIN_WORK_FORM_CHANGED };
   }
+  if (
+    isKinChatError(error) &&
+    error.reason === "invalid_state" &&
+    /still has \d+ open/.test(error.message)
+  )
+    return { kind: "open_work", text: STILL_OPEN[about.noun](about.name) };
+  return {
+    kind: "failed",
+    text: kinFailureText(error, "That didn't go through.", {
+      gone: `That ${about.noun} isn't there any more.`,
+      device: "This device isn't allowed to change Work.",
+    }),
+  };
 }
 
 type Sent<A> = Promise<AtomCommandResult<A, unknown>>;
