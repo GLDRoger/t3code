@@ -26,6 +26,11 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinLevels from "./KinLevels.ts";
 import * as RetiredActions from "../approvals/retiredActions.ts";
 import * as Provision from "./KinLeadProvision.ts";
+import { ownerLevelAgentPage, ownerLevelSetCharacter } from "./agentPage.ts";
+import { seedCharacters } from "./characters.ts";
+import * as KinRecords from "../work/KinRecords.ts";
+import { KinLevelGate } from "./LevelGate.ts";
+import * as KinEventQueue from "./KinEventQueue.ts";
 import { RETIRED_ACTION_REASON, RETIRED_WORKER_REASON } from "./Retirement.ts";
 
 const layer = Layer.merge(Provision.layer, RetiredActions.hostLayer).pipe(
@@ -896,6 +901,105 @@ describe("KinLeadProvision", () => {
       yield* Provision.retireOnHost(growth.agentId);
       assert.strictEqual(yield* refusal(edit({ name: "X" }, growth.agentId)), "retired");
     }).pipe(Effect.provide(paired)),
+  );
+  it.effect(
+    "changes an agent's models and the company default, pauses and resumes it, and refuses a teammate",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const tech = (yield* Provision.create(input(owner, []))).lead;
+        const sonnet = {
+          strong: { instanceId: ProviderInstanceId.make("work"), model: "claude-sonnet-4-6" },
+          cheap: { instanceId: ProviderInstanceId.make("work"), model: "claude-haiku-4-5" },
+        };
+        const edit = (
+          fields: Parameters<typeof Provision.update>[0]["fields"],
+          editor: Provision.LeadCreator = owner,
+        ) => Provision.update({ editor, orgId: tech.orgId, agentId: tech.agentId, fields });
+        assert.strictEqual((yield* edit({ models: sonnet })).model, "claude-sonnet-4-6");
+        // The runner reads this row at each wake-up, so the next turn runs on it.
+        const [row] = yield* sql<{ models: string }>`SELECT models_json AS models FROM kin_leads
+          WHERE org_id = ${tech.orgId} AND agent_id = ${tech.agentId}`;
+        assert.strictEqual(JSON.parse(row!.models).strong.model, "claude-sonnet-4-6");
+        const codex = {
+          ...sonnet,
+          strong: { instanceId: ProviderInstanceId.make("mine"), model: "gpt" },
+        };
+        assert.strictEqual(yield* refusal(edit({ models: codex })), "not_claude");
+
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('teammate', ${tech.orgId}, 'teammate', 'Teammate', '2026-11-09T00:00:00.000Z')`;
+        const teammate = { _tag: "person", personId: KinPersonId.make("teammate") } as const;
+        assert.strictEqual(yield* refusal(edit({ models: sonnet }, teammate)), "not_owner");
+        assert.strictEqual(
+          yield* refusal(Provision.agentDefaults(teammate, tech.orgId)),
+          "not_owner",
+        );
+        assert.strictEqual(
+          yield* refusal(Provision.setAgentDefaults(teammate, tech.orgId, sonnet)),
+          "not_owner",
+        );
+
+        // New agents start on the company default once it is chosen.
+        // Until one is chosen, new agents start on the first agent's.
+        assert.deepInclude(yield* Provision.agentDefaults(owner, tech.orgId), { chosen: false });
+        assert.strictEqual(
+          (yield* Provision.agentDefaults(owner, tech.orgId)).models?.strong.model,
+          "claude-sonnet-4-6",
+        );
+        yield* Provision.setAgentDefaults(owner, tech.orgId, sonnet);
+        const { models: _given, ...unnamed } = input(owner, []);
+        const growth = (yield* Provision.create({ ...unnamed, name: "Growth", domain: "growth" }))
+          .lead;
+        assert.strictEqual(growth.models.strong.model, "claude-sonnet-4-6");
+
+        const pause = (paused: boolean, by: Provision.LeadActor = owner) =>
+          Provision.setPaused({ by, orgId: tech.orgId, agentId: tech.agentId, paused });
+        assert.isDefined((yield* pause(true)).paused);
+        // Paused twice is still paused, and a teammate can't touch it.
+        assert.isDefined((yield* pause(true)).paused);
+        assert.strictEqual(yield* refusal(pause(false, teammate)), "not_found");
+        assert.isUndefined((yield* pause(false)).paused);
+      }).pipe(Effect.provide(paired)),
+  );
+  it.effect("shows an agent's page and keeps an edited character's old version", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const tech = (yield* Provision.create(input(owner, []))).lead;
+      yield* seedCharacters(tech.orgId);
+      const target = { by: owner, orgId: tech.orgId, agentId: tech.agentId };
+      const page = yield* ownerLevelAgentPage(target);
+      assert.strictEqual(page.models.strong.model, "claude-opus-4-6");
+      assert.deepStrictEqual(page.runsOn, page.models);
+      assert.isNull(page.modelNote);
+      assert.include(page.character?.body ?? "", "# Ada");
+      const edited = yield* ownerLevelSetCharacter({ ...target, body: "# Ada\n\nDry and exact." });
+      assert.strictEqual(edited.character?.body.trim(), "# Ada\n\nDry and exact.");
+      const versions = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_doc_versions v
+        JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
+        WHERE r.key = ${edited.character!.key}`;
+      assert.strictEqual(versions[0]!.n, 2);
+
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${tech.orgId}, 'teammate', 'Teammate', '2026-11-09T00:00:00.000Z')`;
+      const teammate = { _tag: "person", personId: KinPersonId.make("teammate") } as const;
+      assert.strictEqual(
+        yield* refusal(ownerLevelAgentPage({ ...target, by: teammate })),
+        "not_found",
+      );
+      assert.strictEqual(
+        yield* refusal(ownerLevelSetCharacter({ ...target, by: teammate, body: "Loud." })),
+        "not_found",
+      );
+    }).pipe(
+      Effect.provide(
+        KinRecords.layer.pipe(
+          Layer.provideMerge(Layer.mock(KinLevelGate)({})),
+          Layer.provideMerge(KinEventQueue.layer),
+          Layer.provideMerge(paired),
+        ),
+      ),
+    ),
   );
   it.effect(
     "lets only the owner choose who may message a lead, in a chat that is that person's own",

@@ -44,7 +44,7 @@ import {
 } from "./leadWork.ts";
 import { iso, type RecordRow } from "./recordRows.ts";
 import { search } from "./search.ts";
-import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
+import { KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
@@ -409,11 +409,64 @@ export const shown = Effect.fn("KinDocTools.shown")(function* (
   );
 });
 
+/**
+ * The one open project a doc the agent left unfiled is plainly for, among those everyone behind
+ * the turn sees: the project its linked entries are all in, the one its title names by key or
+ * full name, else its client's only open project. Anything less certain stays unfiled.
+ */
+const projectFor = Effect.fn("KinDocTools.projectFor")(function* (
+  lead: Lead,
+  input: typeof CreateInput.Type,
+  partyId: string | undefined,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const team = yield* viewOf(lead);
+  const projects = yield* sql<{
+    recordId: string;
+    key: string;
+    title: string;
+    partyId: string | null;
+  }>`
+    SELECT r.record_id AS "recordId", r.key, r.title, r.party_id AS "partyId" FROM kin_records r
+    WHERE r.org_id = ${lead.orgId} AND r.register_id = 'projects'
+      AND r.state NOT IN ('done', 'dropped')
+      AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
+    ORDER BY r.key LIMIT 500`;
+  const only = (rows: ReadonlyArray<{ readonly recordId: string }>) =>
+    rows.length === 1 ? rows[0]!.recordId : undefined;
+  if (input.links !== undefined && input.links.length > 0) {
+    const linked = yield* sql<{ projectId: string | null }>`SELECT DISTINCT
+        CASE WHEN r.register_id = 'projects' THEN r.record_id ELSE r.project_id END AS "projectId"
+      FROM kin_records r WHERE r.org_id = ${lead.orgId} AND r.key IN ${sql.in(input.links)}
+        AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
+      ORDER BY 1`;
+    const ids = new Set(linked.map((row) => row.projectId));
+    const found = only(projects.filter((row) => ids.has(row.recordId)));
+    if (found !== undefined && ids.size === 1) return found;
+  }
+  const title = input.title.toLowerCase();
+  const named = only(
+    projects.filter(
+      (row) =>
+        new RegExp(`\\b${row.key}\\b`, "i").test(input.title) ||
+        (row.title.length >= 4 && title.includes(row.title.toLowerCase())),
+    ),
+  );
+  if (named !== undefined) return named;
+  return partyId === undefined
+    ? undefined
+    : only(projects.filter((row) => row.partyId === partyId));
+});
+
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
   const context = yield* writeContext(lead, "doc_create", input);
   const owner = yield* resolveWho(lead, input.owner ?? "me");
   const partyId = yield* refOrNull(lead, input.client, "clients");
-  const projectId = yield* refOrNull(lead, input.project, "projects");
+  const projectId =
+    (yield* refOrNull(lead, input.project, "projects")) ??
+    (input.project === undefined && input.company !== true
+      ? yield* projectFor(lead, input, partyId ?? undefined)
+      : undefined);
   const written = yield* Docs.create(lead.orgId, context.writer, context.provenance, {
     title: input.title,
     body: input.body,

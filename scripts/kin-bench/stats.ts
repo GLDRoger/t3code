@@ -32,6 +32,8 @@ export interface PromptTurn {
   readonly systemTokens: number;
   readonly toolTokens: number;
   readonly toolCount: number;
+  /** Listed with `_meta` anthropic/alwaysLoad false: loaded through ToolSearch, not sent upfront. */
+  readonly deferredCount?: number;
   readonly totalTokens: number;
   /** System prompt, tools and the unchanged start of the turn prompt, over the total. */
   readonly cacheableShare: number;

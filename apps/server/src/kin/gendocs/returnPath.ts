@@ -9,16 +9,16 @@ import { officeProblem } from "./officeCheck.ts";
 import { svgProblem } from "./svgCheck.ts";
 
 /**
- * The one way a worker's file comes back: only names its report gave, read from `out/` itself,
- * each a regular file with one link, within the caps, whose leading bytes are its named type.
- * Nothing is executed or unpacked to disk: an Office file's directory and links are read in memory.
+ * How a made file is checked before Kin keeps it: a regular file with one link, within the caps,
+ * whose leading bytes are its named type. Nothing is executed or unpacked to disk: an Office
+ * file's directory and links are read in memory.
  */
 
 /**
  * A 60-page deck with a full-screen image per slide is about 60-90 MB as PPTX or PDF; a month's
  * pack is a handful of sheets. Past these, a job is almost surely wrong, and a phone pays for it.
  */
-export const RETURN_CAPS = {
+const RETURN_CAPS = {
   files: 20,
   fileBytes: 100 * 1024 * 1024,
   totalBytes: 200 * 1024 * 1024,
@@ -239,7 +239,11 @@ type Anchor = {
 };
 
 /** One named file, through a descriptor opened without following a link, on out/'s own device. */
-const readOne = (anchor: Anchor, name: string, budget: number): Promise<Read> =>
+const readOne = (
+  anchor: Pick<Anchor, "base"> & { readonly dev: number | undefined },
+  name: string,
+  budget: number,
+): Promise<Read> =>
   NodeFS.promises
     .open(
       NodePath.join(anchor.base, name),
@@ -251,7 +255,8 @@ const readOne = (anchor: Anchor, name: string, budget: number): Promise<Read> =>
           const info = await handle.stat();
           if (!info.isFile()) return { refused: "it isn't a regular file" };
           if (info.nlink !== 1) return { refused: "it has another link to it (a hard link)" };
-          if (info.dev !== anchor.dev) return { refused: "it isn't in out/" };
+          if (anchor.dev !== undefined && info.dev !== anchor.dev)
+            return { refused: "it isn't in out/" };
           if (info.size > budget) return { refused: `it's over the ${megabytes(budget)} cap` };
           const bytes = new Uint8Array(info.size);
           let offset = 0;
@@ -402,3 +407,48 @@ export const takeOutputs = Effect.fn("KinGenDocs.takeOutputs")(function* (input:
   }
   return { taken, refused } satisfies Returned;
 }, Effect.scoped);
+
+/**
+ * A file an agent made in its own session, by its path: a regular file, not a link, within the
+ * cap, with a plain name, whose leading bytes are its named type. `refused` says why in plain words.
+ */
+export const takeFile = Effect.fn("KinGenDocs.takeFile")(function* (
+  file: string,
+  fileBytes: number = RETURN_CAPS.fileBytes,
+) {
+  const name = NodePath.basename(file.trim());
+  const refuse = (reason: string, retry?: string): Refused => ({
+    name: name.slice(0, 120),
+    reason,
+    ...(retry === undefined ? {} : { retry }),
+  });
+  if (!NodePath.isAbsolute(file.trim())) return refuse("give its full path, from /");
+  if (!plainName.test(name))
+    return refuse(
+      "its name isn't plain: letters, digits, spaces, . _ - and brackets",
+      "Rename it, then give the new path.",
+    );
+  const extension = NodePath.extname(name).slice(1).toLowerCase();
+  if (extension === "html" || extension === "htm")
+    return refuse(
+      "an HTML page isn't kept as a file",
+      "Make a PDF or a PNG of it, or show the page in chat with kin_visual.",
+    );
+  if (!isExtension(extension))
+    return refuse(`.${extension || "(none)"} isn't a file type Kin keeps`);
+  const directory = NodePath.dirname(file.trim());
+  const read = yield* Effect.promise(() =>
+    readOne({ base: directory, dev: undefined }, name, fileBytes),
+  );
+  if ("refused" in read) return refuse(read.refused);
+  const mismatch = yield* Effect.promise(() => typeMismatch(extension, read.bytes));
+  if (mismatch !== undefined) return refuse(mismatch, RETRY_HINTS[extension]);
+  return {
+    name,
+    extension,
+    mimeType: MIME_TYPES[extension],
+    bytes: read.bytes,
+    sha256: NodeCrypto.createHash("sha256").update(read.bytes).digest("hex"),
+    pages: extension === "pdf" ? pdfPages(read.bytes) : null,
+  } satisfies Taken;
+});

@@ -400,9 +400,26 @@ describe("kinWorkItemView", () => {
     );
     // She may make it private; un-marking and sharing stay the owner's.
     expect(hers.choices.map((one) => one.id)).toEqual(["people", "me"]);
+    // Picking it reads "Only me" to her as to the owner.
+    expect(hers.choices.find((one) => one.id === "me")?.label).toBe("Only me");
     const marked = kinWorkAudience(at(true, false), lead, priyas);
     expect(marked.answer).toBe("Only Invented Owner, co-owners and whoever has it");
     expect(marked.choices).toEqual([]);
+    // Her own mark is hers to take off, and reads as hers; to anyone else, as kept to her.
+    const own = { ...lead, unmark: true };
+    const herMark = { ...at(true, false), markedBy: priya.personId };
+    expect(kinWorkAudience(herMark, own, priyas)).toMatchObject({
+      answer: "Only you, co-owners and whoever has it",
+      choices: [
+        { id: "people", label: "People on it" },
+        { id: "me", label: "Only me" },
+      ],
+    });
+    expect(
+      kinWorkAudience(herMark, owner, { ...names, owner: me.personId }).choices.find(
+        (one) => one.id === "me",
+      )?.label,
+    ).toBe("Only Priya");
     expect(kinWorkAudience(at(true, false), owner, { ...names, owner: me.personId }).answer).toBe(
       "Only you, co-owners and whoever has it",
     );
@@ -438,9 +455,7 @@ describe("a task on an older host", () => {
     expect(view.leadNote).toBe(
       "Tech lead is retired, so nobody is working on this. Give it to someone else, or restore Tech lead.",
     );
-    expect(kinWorkRow(record({ owner: lead }), retired, now).line).toBe(
-      "Tech lead (retired) · W-1",
-    );
+    expect(kinWorkRow(record({ owner: lead }), retired, now).line).toBe("Tech lead (retired)");
     expect(kinWorkRow(record({ owner: lead }), names, now).ownerRetired).toBe(false);
   });
 });
@@ -529,10 +544,15 @@ describe("kinWorkRow", () => {
       title: "Invented Foods",
     } as const;
     const owed = record({ party, side: "theirs" });
-    expect(kinWorkRow(owed, names, now).line).toBe("They owe this · Invented Foods · You · W-1");
+    // Who has it leads, so a narrow row that cuts the end off never loses it; the key is gone.
+    expect(kinWorkRow(owed, names, now)).toMatchObject({
+      holder: "You",
+      detail: "Invented Foods · They owe this",
+      line: "You · Invented Foods · They owe this",
+    });
     expect(kinWorkRow(owed, names, now, { party: party, project: null }).about).toBeNull();
     // A host from before clients sends none of it: the row and the ways in show nothing new.
-    expect(kinWorkRow(record(), names, now).line).toBe("You · W-1");
+    expect(kinWorkRow(record(), names, now).line).toBe("You");
     expect(kinWorkHostClients(null)).toBe(false);
   });
 });

@@ -338,6 +338,7 @@ export const projects = Effect.fn("KinCrm.projects")(function* (
     readonly partyId?: string | undefined;
     readonly state?: KinProjectState | undefined;
     readonly text?: string | undefined;
+    readonly person?: string | undefined;
     readonly cursor?: string | undefined;
     readonly limit?: number | undefined;
   },
@@ -356,6 +357,13 @@ export const projects = Effect.fn("KinCrm.projects")(function* (
     ...(input.text === undefined || input.text.trim() === ""
       ? []
       : [sql`instr(lower(p.title), ${input.text.trim().toLowerCase()}) > 0`]),
+    ...(input.person === undefined
+      ? []
+      : [
+          sql`((p.owner_kind = 'person' AND p.owner_id = ${input.person})
+            OR EXISTS (SELECT 1 FROM json_each(p.fields_json, '$.members') m
+              WHERE m.value = 'person:' || ${input.person}))`,
+        ]),
   ];
   const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM kin_records p
     WHERE ${sql.and([sql`p.org_id = ${orgId}`, sql`p.register_id = 'projects'`, ...where])}`;

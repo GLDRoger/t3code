@@ -29,6 +29,7 @@ import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { useBarOverlap } from "../../../components/ui/useBarInset";
 import { cn } from "../../../lib/cn";
 import { useKinHostAt } from "../state/useKinHost";
+import { KinAvatar } from "./KinAvatar";
 import { KinWorkStateSymbol } from "./KinWorkStateSymbol";
 
 type Bar = React.ComponentProps<typeof AppBar>;
@@ -157,9 +158,26 @@ export function KinWorkTaskRow(props: {
             <Text textRole="body" numberOfLines={2} className="text-foreground">
               {row.title}
             </Text>
-            <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
-              {row.line}
-            </Text>
+            {/* Who has it never gives way: the rest of the line cuts off before it does. */}
+            <View className="min-w-0 flex-row items-center gap-1.5">
+              <KinAvatar avatar={row.ownerAvatar} size="mini" />
+              <Text
+                textRole="footnote"
+                numberOfLines={1}
+                className="max-w-[60%] shrink-0 text-foreground"
+              >
+                {row.holder}
+              </Text>
+              {row.detail === "" ? null : (
+                <Text
+                  textRole="footnote"
+                  numberOfLines={1}
+                  className="min-w-0 shrink text-foreground-muted"
+                >
+                  {`· ${row.detail}`}
+                </Text>
+              )}
+            </View>
           </View>
           {row.late ? (
             <Text textRole="footnote" className="font-t3-medium text-danger-foreground">

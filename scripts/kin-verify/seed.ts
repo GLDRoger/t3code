@@ -395,6 +395,7 @@ export async function seedTurns(instance: Instance, name: SeedName) {
         arguments: {
           title: "Lumen Grove booking app: brief",
           kind: "spec",
+          client: "Lumen Grove Clinics",
           sourceEventId: "$event",
           body: "## Goal\nPatients book, move and cancel clinic appointments from their phone.\n\n## Scope\nBooking flow, reminders by SMS, a staff view.\n",
         },

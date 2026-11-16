@@ -6,7 +6,6 @@ import {
   AuthSessionId,
   AuthStandardClientScopes,
   EnvironmentId,
-  EventId,
   KinChatError,
   KinAgentId,
   KinChatId,
@@ -21,7 +20,6 @@ import {
   KinWidgetId,
   KIN_WORKER_PUBLISH_CARD,
   type KinWorkerPublishCard,
-  NodeId,
   OrchestratorMcpFailure,
   ProjectId,
   ProviderDriverKind,
@@ -31,7 +29,6 @@ import {
   type KinEvent,
   type KinTaskCardState,
   type OrchestrationV2RunStatus,
-  type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -893,8 +890,7 @@ const run = <A, E>(
           Layer.mock(Workspace.KinWorkspace)({}),
           Layer.mock(Toolchain.KinToolchain)({}),
           Layer.mock(KinAgentSessionPolicy)({
-            connected: () => Effect.sync(() => github.connected),
-            ghDirectory: "/invented/gh",
+            toolDirectories: ["/invented/gh"],
           }),
         ),
       ),
@@ -974,30 +970,6 @@ const settled = (
   orgId: KinOrgId,
   workerId: KinWorkerId,
 ) => tracker.track(orgId, workerId).pipe(Effect.flatMap(Fiber.join));
-const subagent = (input: {
-  readonly threadId: ThreadId;
-  readonly origin: "app_owned" | "provider_native";
-}): OrchestrationV2Subagent => ({
-  id: NodeId.make(`child:${input.origin}:${input.threadId}`),
-  threadId: input.threadId,
-  runId: null,
-  parentNodeId: NodeId.make("root"),
-  origin: input.origin,
-  createdBy: "agent",
-  driver: ProviderDriverKind.make("codex"),
-  providerInstanceId: codex.instanceId,
-  providerThreadId: null,
-  childThreadId: null,
-  nativeTaskRef: null,
-  prompt: "stray",
-  title: null,
-  model: null,
-  status: "running",
-  result: null,
-  startedAt: null,
-  completedAt: null,
-  updatedAt: DateTime.makeUnsafe(0),
-});
 const queued = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
   sql<{
     json: string;
@@ -2995,43 +2967,6 @@ it.effect(
           lost.summary,
           "Kin can no longer reach this worker. The worker's thread is gone from the worker environment.",
         );
-      }).pipe(Effect.scoped),
-    ),
-);
-
-it.effect(
-  "an app-owned delegate_task child on a lead thread is stopped unless GitHub is connected",
-  () =>
-    run(({ ctx, stopped, github, tracker }) =>
-      Effect.gen(function* () {
-        const registry = yield* Registry.KinLeadRegistry;
-        yield* registry.register(leadThread, {
-          orgId: ctx.orgId,
-          agentId: leadId,
-          wakeupId: KinWakeupId.make("wake"),
-          level: "L2",
-        });
-        const updated = (origin: "app_owned" | "provider_native", threadId: ThreadId) => ({
-          sequence: 11,
-          commandId: null,
-          event: {
-            type: "subagent.updated" as const,
-            id: EventId.make(`event:${origin}:${threadId}`),
-            threadId,
-            occurredAt: DateTime.makeUnsafe(0),
-            payload: subagent({ threadId, origin }),
-          },
-        });
-        github.connected = true;
-        yield* tracker.process(updated("app_owned", leadThread));
-        assert.deepStrictEqual(stopped, [], "with GitHub connected, delegate_task is the way");
-        github.connected = false;
-        yield* tracker.process(updated("provider_native", leadThread));
-        yield* tracker.process(updated("app_owned", ThreadId.make("ordinary")));
-        assert.deepStrictEqual(stopped, []);
-        yield* tracker.process(updated("app_owned", leadThread));
-        yield* tracker.process(updated("app_owned", leadThread));
-        assert.deepStrictEqual(stopped, [leadThread]);
       }).pipe(Effect.scoped),
     ),
 );

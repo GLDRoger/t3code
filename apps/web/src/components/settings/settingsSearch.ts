@@ -463,13 +463,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
-    id: "kin-start-list",
-    kinOnly: true,
-    title: "Open to",
-    to: "/settings/general",
-    searchTerms: ["kin chats coding threads start launch open first default list switch"],
-  },
-  {
     id: "project-grouping",
     title: "Project grouping",
     to: "/settings/general",
@@ -1266,6 +1259,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Time zone",
     to: "/settings/company",
     searchTerms: ["kin timezone zone check-ins due dates hours clock"],
+  },
+  {
+    id: "kin-agents",
+    title: "Agents",
+    to: "/settings/company",
+    searchTerms: ["kin agents model character personality pause retire new agents default"],
   },
   {
     id: "kin-daily-limit",

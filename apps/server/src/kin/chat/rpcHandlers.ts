@@ -1,5 +1,5 @@
 import { sessionUploadOwner } from "../../assets/AttachmentUpload.ts";
-import { KinChatAndBudgetRpcs, KinChatError } from "@t3tools/contracts";
+import { KinChatAndBudgetRpcs, KinChatError, type KinLeadRetireInput } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -11,6 +11,8 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
+import { ownerLevelAgentPage, ownerLevelSetCharacter } from "../lead/agentPage.ts";
+import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { seedCharacters } from "../lead/characters.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { KinStop } from "../lead/KinStop.ts";
@@ -60,6 +62,17 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
   const kin = yield* Effect.serviceOption(KinServer);
   // The host's settings name each model's provider driver; Kin's own layers don't carry them.
   const settings = yield* Effect.serviceOption(ServerSettingsService);
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
+  // What checks or reads an agent's models: the host's settings, and its providers when known.
+  const withHostModels = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Option.isNone(settings)
+      ? Effect.fail(unavailable)
+      : effect.pipe(
+          Effect.provideService(ServerSettingsService, settings.value),
+          Option.isSome(providerRegistry)
+            ? Effect.provideService(ProviderRegistry, providerRegistry.value)
+            : (self) => self,
+        );
   const services = Effect.gen(function* () {
     if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
     return {
@@ -105,6 +118,23 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     const { identity, chat } = yield* services;
     return { chat, people: yield* identity.resolve(session) };
   });
+  const setLeadPaused = (input: KinLeadRetireInput, paused: boolean) =>
+    services.pipe(
+      Effect.flatMap(() =>
+        Effect.gen(function* () {
+          if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+          return yield* LeadProvision.setPaused({
+            ...input,
+            paused,
+            by: { _tag: "session", session },
+          }).pipe(Effect.provideContext(kin.value.services.value));
+        }),
+      ),
+      Effect.mapError(toLeadError),
+      Effect.tapError(logInfra),
+      Effect.mapError(mapError),
+      Effect.catchDefect(defect),
+    );
   let openChats = 0;
   return rpcs.of({
     "kin.budget.get": (input) =>
@@ -374,7 +404,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               orgId,
               agentId,
               fields,
-            }).pipe(Effect.provideContext(kin.value.services.value));
+            }).pipe(withHostModels, Effect.provideContext(kin.value.services.value));
           }),
         ),
         Effect.mapError(toLeadError),
@@ -409,6 +439,73 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               by: { _tag: "session", session },
             }).pipe(Effect.provideContext(kin.value.services.value));
             return result.profile;
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.page": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* ownerLevelAgentPage({ ...input, by: { _tag: "session", session } }).pipe(
+              withHostModels,
+              Effect.provideContext(kin.value.services.value),
+            );
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.character.set": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* ownerLevelSetCharacter({
+              ...input,
+              by: { _tag: "session", session },
+            }).pipe(withHostModels, Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.pause": (input) => setLeadPaused(input, true),
+    "kin.lead.resume": (input) => setLeadPaused(input, false),
+    "kin.agents.defaults": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.agentDefaults(
+              { _tag: "session", session },
+              input.orgId,
+            ).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.agents.defaults.set": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.setAgentDefaults(
+              { _tag: "session", session },
+              input.orgId,
+              input.models,
+            ).pipe(withHostModels, Effect.provideContext(kin.value.services.value));
           }),
         ),
         Effect.mapError(toLeadError),

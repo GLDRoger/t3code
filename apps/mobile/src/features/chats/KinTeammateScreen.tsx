@@ -22,6 +22,7 @@ import {
   type KinPersonId,
   type KinPersonPlaceSwitches,
   type KinPersonPlaces,
+  type KinRecordKey,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -30,6 +31,11 @@ import { useState } from "react";
 import { KIN_PROFILE_COPY } from "@t3tools/client-runtime/kin/kinProfiles";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import {
+  KIN_PROJECT_PEOPLE,
+  KIN_TEAMMATE_PROJECTS,
+  kinTeammateProjects,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
 import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -38,12 +44,16 @@ import { AppText as Text } from "../../components/ui/AppText";
 import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
+import { IconButton } from "../../components/ui/IconButton";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
+import { Menu } from "../../components/ui/Menu";
+import { cn } from "../../lib/cn";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
@@ -427,7 +437,7 @@ function KinTeammateLead(props: {
   );
 }
 
-/** A member's places beyond Tasks, and the projects they lead (set on each project's page). */
+/** A member's places beyond Tasks, and the projects they are on. */
 function KinTeammatePlaces(props: {
   readonly target: KinTeamTarget;
   readonly personId: KinPersonId;
@@ -479,31 +489,100 @@ function KinTeammatePlaces(props: {
           </View>
         ))}
       </ListSection>
-      <ListSection
-        title="Projects they lead"
-        footer={
-          places.leads.length === 0
-            ? "Make them a project's lead on that project's page."
-            : undefined
-        }
-      >
-        {places.leads.length === 0 ? (
-          <View className="px-4 py-3">
-            <Text textRole="body" className="text-foreground-muted">
-              None.
-            </Text>
-          </View>
-        ) : (
-          places.leads.map((project, index) => (
-            <View
-              key={project.recordId}
-              className={index === 0 ? undefined : "border-t border-border-subtle"}
-            >
-              <ListRowLayout label={project.title} />
-            </View>
-          ))
-        )}
-      </ListSection>
+      <KinTeammateProjects target={target} personId={personId} />
     </>
+  );
+}
+
+/** The projects a member is on, and the way to put them on one or take them off. */
+function KinTeammateProjects(props: {
+  readonly target: KinTeamTarget;
+  readonly personId: KinPersonId;
+}) {
+  const navigation = useNavigation();
+  const { personId } = props;
+  const { environmentId, orgId } = props.target;
+  const query = kinClient.teammateProjects({ environmentId, input: { orgId, person: personId } });
+  const result = useAtomValue(query);
+  const canChange = useAtomValue(kinClient.workProjectPeople.permissionAtom(environmentId));
+  const people = useAtomCommand(kinClient.workProjectPeople, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const read = Option.getOrNull(AsyncResult.value(result));
+  const view = read === null ? null : kinTeammateProjects(personId, read.theirs, read.open);
+  const change = async (key: KinRecordKey, on: boolean) => {
+    setBusy(true);
+    setProblem(null);
+    const who = [{ _tag: "person" as const, personId }];
+    const outcome = await people({
+      environmentId,
+      input: { orgId, key, ...(on ? { add: who } : { remove: who }) },
+    });
+    if (AsyncResult.isFailure(outcome))
+      setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_PROJECT_PEOPLE.failed));
+    appAtomRegistry.refresh(query);
+    setBusy(false);
+  };
+  return (
+    <ListSection
+      title={KIN_TEAMMATE_PROJECTS.title}
+      footer={problem ?? KIN_TEAMMATE_PROJECTS.leadHint}
+    >
+      {view === null ? (
+        <View className="items-center py-4">
+          <AppActivityIndicator />
+        </View>
+      ) : view.rows.length === 0 ? (
+        <View className="px-4 py-3">
+          <Text textRole="body" className="text-foreground-muted">
+            {KIN_TEAMMATE_PROJECTS.none}
+          </Text>
+        </View>
+      ) : (
+        view.rows.map((row, index) => (
+          <View
+            key={row.key}
+            className={cn("flex-row items-center", index > 0 && "border-t border-border-subtle")}
+          >
+            <View className="min-w-0 flex-1">
+              <ListRow
+                label={row.title}
+                detail={row.line}
+                onPress={() =>
+                  navigation.navigate("KinProject", { environmentId, orgId, project: row.key })
+                }
+              />
+            </View>
+            {canChange && row.removable ? (
+              <View className="pr-2">
+                <IconButton
+                  icon="xmark"
+                  accessibilityLabel={KIN_TEAMMATE_PROJECTS.remove(row.title)}
+                  disabled={busy}
+                  onPress={() => void change(row.key, false)}
+                />
+              </View>
+            ) : null}
+          </View>
+        ))
+      )}
+      {view === null || !canChange || view.addable.length === 0 ? null : (
+        <View className="border-t border-border-subtle">
+          <Menu
+            title={KIN_TEAMMATE_PROJECTS.add}
+            accessibilityLabel={KIN_TEAMMATE_PROJECTS.add}
+            actions={view.addable.map((row) => ({ id: row.key, title: row.title }))}
+            onPressAction={({ nativeEvent }) => {
+              const row = view.addable.find((one) => one.key === nativeEvent.event);
+              if (row !== undefined && !busy) void change(row.key, true);
+            }}
+          >
+            <View pointerEvents="none">
+              <ListRowLayout icon="plus" label={KIN_TEAMMATE_PROJECTS.add} disabled={busy} />
+            </View>
+          </Menu>
+        </View>
+      )}
+    </ListSection>
   );
 }

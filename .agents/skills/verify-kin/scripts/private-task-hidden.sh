@@ -2,8 +2,14 @@
 # The owner marks W-6 "Only me"; the project's lead and members find it nowhere: Tasks, the project page (which loads for each) and its count, search, pulse.
 source "$(dirname "$0")/lib.sh"
 TITLE="Beta release to two pilot clinics"
-# A task each of them holds in P-1.
-holds() { case "$1" in dev) echo W-4 ;; zoya) echo W-1 ;; arjun) echo W-5 ;; esac; }
+# A task each of them holds in P-1, by title: rows show who has it, not the key.
+holds() {
+  case "$1" in
+    dev) echo "Set up the appointments API" ;;
+    zoya) echo "Design the booking flow screens" ;;
+    arjun) echo "SMS reminder integration" ;;
+  esac
+}
 kv as owner web open "tasks?task=W-6" >/dev/null
 kv as owner web click --name "Who can see this" >/dev/null
 kv as owner web click --name "Only me" --role menuitemradio >/dev/null
@@ -19,7 +25,7 @@ for person in dev zoya arjun; do
   expect_not_in "$page" "W-6" "$person's project page shows its key"
   # A page that failed to load hides everything: each must list a task this person holds.
   expect_not_in "$page" "Couldn't load Work" "$person's project page can't load its tasks"
-  expect_in "$page" "· $(holds "$person")" "$person's project page doesn't list their own task"
+  expect_in "$page" "$(holds "$person")" "$person's project page doesn't list their own task"
   expect_not_in "$(kv as "$person" rpc kin.search "{\"text\":\"Beta release\"}")" "W-6" "$person's search finds it"
   expect_not_in "$(kv as "$person" rpc kin.pulse.read)" "W-6" "$person's pulse names it"
 done
