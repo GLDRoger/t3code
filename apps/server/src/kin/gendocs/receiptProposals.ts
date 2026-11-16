@@ -11,7 +11,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
-import { ownerZone } from "../work/recordRows.ts";
+import { endOfDay, ownerZone } from "../work/recordRows.ts";
 import { recordReceipt } from "./receipts.ts";
 
 /**
@@ -56,6 +56,25 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
         : yield* records.getById(orgId, entry.partyId);
   const against =
     request.against === undefined ? undefined : yield* records.get(orgId, request.against);
+  const sql = yield* SqlClient.SqlClient;
+  const advance = request.advance;
+  // Kin can't tell two advances apart: the same sum from the same client on the same day already
+  // on the books is shown, and one recorded after the card was drawn makes its Confirm refuse.
+  const sameAdvances =
+    advance === undefined
+      ? []
+      : yield* sql<{ key: string; number: string | null }>`SELECT r.key, n.number
+          FROM kin_records r
+          LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
+          LEFT JOIN kin_record_payments pay ON pay.org_id = r.org_id
+            AND pay.payment_id = json_extract(r.fields_json, '$.payment')
+          WHERE r.org_id = ${orgId} AND r.register_id = 'receipts' AND r.state <> 'dropped'
+            AND r.party_id IS ${client?.recordId ?? null}
+            AND r.amount_minor = ${advance.amount.minor} AND r.currency = ${advance.amount.currency}
+            AND r.date_at = ${endOfDay(advance.receivedOn, zone)}
+            AND (json_extract(r.fields_json, '$.payment') IS NULL
+              OR (pay.payment_id IS NOT NULL AND pay.voided_at IS NULL))
+          ORDER BY r.key`;
   const amount =
     request.advance?.amount ??
     (entry?.amountMinor == null || entry.currency === null
@@ -70,7 +89,17 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
     against:
       against === undefined
         ? null
-        : { key: against.key, title: against.title, rev: against.rev, paid: against.paid },
+        : {
+            key: against.key,
+            title: against.title,
+            rev: against.rev,
+            paid: against.paid,
+            total:
+              against.amountMinor === null || against.currency === null
+                ? null
+                : { minor: against.amountMinor, currency: against.currency },
+          },
+    recorded: sameAdvances,
   };
 });
 export type Snapshot = Effect.Success<ReturnType<typeof snapshotOf>>;
@@ -92,12 +121,22 @@ export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
     request.mode === undefined ? undefined : `by ${request.mode}`,
     request.reference === undefined ? undefined : `ref ${request.reference}`,
   ].filter((one) => one !== undefined);
+  const against = snapshot.against;
   return [
-    `Client: ${snapshot.client === null ? "none named" : `${snapshot.client.title} (${snapshot.client.key})`}`,
+    `Client: ${snapshot.client === null ? "none named" : snapshot.client.title}`,
     `Amount: ${snapshot.amount === null ? "none given" : formatMoney(snapshot.amount)}`,
     `Received on: ${snapshot.receivedOn === null ? "no day given" : dayText(snapshot.receivedOn)}`,
-    ...(snapshot.entry === null ? [] : [`Receipt entry: ${snapshot.entry.key}`]),
-    `Set against: ${snapshot.against === null ? "no invoice; it stays an advance" : `${snapshot.against.title} (${snapshot.against.key})`}`,
+    ...(snapshot.recorded.length === 0 || snapshot.amount === null
+      ? []
+      : [
+          `Already recorded: ${formatMoney(snapshot.amount)}${snapshot.client === null ? "" : ` from ${snapshot.client.title}`}${snapshot.receivedOn === null ? "" : ` on ${dayText(snapshot.receivedOn)}`} (${snapshot.recorded.map((one) => one.number ?? "receipt not numbered yet").join(", ")}). Confirm only if this is another payment.`,
+        ]),
+    `Set against: ${against === null ? "no invoice; it stays an advance" : against.title}`,
+    ...(against?.total == null
+      ? []
+      : [
+          `Already received on it: ${formatMoney({ minor: against.paid, currency: against.total.currency })} of ${formatMoney(against.total)}`,
+        ]),
     ...(note.length === 0 ? [] : [`Agent's note: ${note.join(", ")}`]),
   ];
 };
