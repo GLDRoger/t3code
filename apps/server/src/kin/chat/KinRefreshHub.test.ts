@@ -104,7 +104,7 @@ describe("KinRefreshHub", () => {
   );
 
   it.effect(
-    "tells a teammate only about their own lead list, people, the time zone, list definitions and what needs attention, never the owner's reads",
+    "tells a teammate only about their own lead list, people, the time zone, the lists she sees and what needs attention, never the owner's reads",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -149,6 +149,14 @@ describe("KinRefreshHub", () => {
           leads: start.leads,
         });
         assert.deepInclude(yield* Queue.take(ownerSees), { leads: (start.leads ?? 0) + 1 });
+        // A list definition she sees no entry of, such as a money list the owner renamed.
+        yield* sql.withTransaction(
+          (yield* RefreshHub.KinRefreshObserver).touch(me.orgId, "workLists"),
+        );
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.deepInclude(yield* Queue.take(ownerSees), {
+          workLists: (start.workLists ?? 0) + 1,
+        });
 
         // Priya may now message Finance: her list changed, so hers is the next thing she hears.
         yield* Provision.allow({

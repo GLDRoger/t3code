@@ -101,7 +101,8 @@ expect_in "$relayed" "07:00 their time" "the agent wasn't told when it reaches h
 [[ "$(q "select count(*) from kin_held_posts where body = '$RELAY' and delivered_at is null")" == 1 ]] ||
   fail "the relay wasn't held"
 # Zoya's phone: a push that rings shows the text, a silent one only the device.
-relay_pushes() { kv push sent | rg -c "/${TOKEN:0:6}" || echo 0; }
+# Her open browser reads the relay at once, which resets the badge with a "chat cleared" push of its own.
+relay_pushes() { kv push sent | awk -v t="/${TOKEN:0:6}" 'index($0, t) && !/chat cleared/ { n++ } END { print n + 0 }'; }
 [[ "$(relay_pushes)" == 0 ]] || fail "the held relay pushed Zoya at night"
 
 # Quiet hours end (stored times move back; the server restarts): it runs, once. The server's own
