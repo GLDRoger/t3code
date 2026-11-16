@@ -756,6 +756,11 @@ export function kinSeqToMarkRead(input: {
   return input.latestSeq;
 }
 
+/** What a chat has left to mark read: the Team room shows no count, but its "new" dot clears on read. */
+export const kinUnreadToMark = (
+  summary: { readonly unread: number; readonly fresh?: boolean | undefined } | undefined,
+) => (summary === undefined ? null : summary.fresh === true ? 1 : summary.unread);
+
 /** Whether a refused mark may be retried: the reader came back online or back to the chat. */
 export const kinMarkReadRearms = (
   was: { readonly connected: boolean; readonly focused: boolean },

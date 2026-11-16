@@ -13,6 +13,7 @@ import {
   kinFeedViewer,
   kinMarkReadRearms,
   kinSeqToMarkRead,
+  kinUnreadToMark,
   kinUnseenCount,
   latestKinSeq,
   mergeKinFeed,
@@ -395,7 +396,7 @@ export function KinChatView(props: {
             isGroup ? { ...viewer, memberNames: kinMemberNames(group?.members ?? null) } : viewer
           }
           mentionable={mentionable}
-          unread={summary?.unread ?? null}
+          unread={kinUnreadToMark(summary)}
           presence={presence}
           stopLead={
             summary === undefined || ownedAgentId === null || !canInterrupt || retiredName !== null

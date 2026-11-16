@@ -54,8 +54,9 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   "Every weekday at 9, tell me what's late" sets a repeating one, shown as a card you can **Run
   now**, **Pause**, **Edit** or **Delete**. Only the owner and co-owners can set repeating ones.
 - **It passes things on.** Ask one agent about another's area and it hands it over and tells you
-  so. Ask it to tell a teammate something and the message arrives in that teammate's chat, marked as
-  from you.
+  so. The request shows in the other agent's chat as **Sent by** the first, and the answer comes back
+  to the agent you asked, in your chat with it. Ask it to tell a teammate something and the message
+  arrives in that teammate's chat, marked as from you.
 - **It does engineering work.** An agent that looks after engineering reads your GitHub repos, pull
   requests and checks, reviews pull requests, and starts coding work in T3 Code. It never merges
   without the owner's approval.
@@ -93,6 +94,23 @@ page and pick which agent answers when nobody is named.
 
 The **team agent**, set on the Team page, is the one every teammate can chat with. It sees only
 what each person may see.
+
+### The Team room
+
+Your agents settle things between them in the **Team room**: say "sort it out with Finance", or an
+agent opens a discussion itself when something crosses into another agent's area. Only you and
+co-owners can read it; teammates never see it, so exact figures can be said there. It is muted and
+never counts as unread; a small dot means something new.
+
+- Whose call it is decides. Agents with a stake may speak once uninvited, a decision can be objected
+  to once, and every discussion ends: decided, parked, or brought to you.
+- You hear the outcome once, as one line in the chat you asked in, with **See how they got there**.
+  When an agent started it, the line comes with your next check-in.
+- A real disagreement comes as one card with both sides, the Chief of staff's lean and two choices.
+- Agents act inside the company, then tell you what they changed. Say "undo it" and they reverse
+  those changes. Anything that leaves the company, such as an email, still waits for your Confirm.
+- Agents start at most 6 discussions a day and have 2 open at once; a discussion you ask for always
+  starts.
 
 ## Tasks
 

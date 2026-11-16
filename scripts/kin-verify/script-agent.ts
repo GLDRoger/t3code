@@ -121,8 +121,118 @@ async function capture(server: McpServer | undefined, prompt: string) {
   NodeFS.writeFileSync(NodePath.join(dir, `${name}.json`), JSON.stringify({ prompt, tools }));
 }
 
+/** "$event" and "$chat" become the event the turn answers and the chat it replies to. */
+function filler(before: string, prompt: string) {
+  const eventId = [...before.matchAll(/"event"\s*:\s*"([^"]+)"/g)].at(-1)?.[1];
+  const chatId = /Your reply goes to chat "([^"]+)"/.exec(prompt)?.[1];
+  const fill = (value: unknown): unknown =>
+    value === "$event"
+      ? eventId
+      : value === "$chat"
+        ? chatId
+        : Array.isArray(value)
+          ? value.map(fill)
+          : typeof value === "object" && value !== null
+            ? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, fill(entry)]))
+            : value;
+  return fill;
+}
+
+type Call = { readonly name: string; readonly arguments?: unknown };
+
+async function callAll(
+  client: Awaited<ReturnType<typeof mcpClient>>,
+  calls: ReadonlyArray<Call>,
+  fill: (value: unknown) => unknown,
+) {
+  const listed = (await client.list()) as {
+    result?: { tools?: ReadonlyArray<{ name: string; inputSchema?: { properties?: object } }> };
+  };
+  // Most Kin tools take the event the turn answers, which a real agent copies from its prompt.
+  const takesEvent = new Set(
+    (listed.result?.tools ?? [])
+      .filter((tool) => Object.hasOwn(tool.inputSchema?.properties ?? {}, "sourceEventId"))
+      .map((tool) => tool.name),
+  );
+  const results: Array<{ name: string; response: unknown }> = [];
+  // "$key" in a later call's text is the first record key an earlier call answered with.
+  let key: string | undefined;
+  const withKey = (value: unknown): unknown =>
+    typeof value === "string"
+      ? value.replaceAll("$key", key ?? "$key")
+      : Array.isArray(value)
+        ? value.map(withKey)
+        : typeof value === "object" && value !== null
+          ? Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, withKey(entry)]))
+          : value;
+  for (const call of calls) {
+    const args = (call.arguments ?? {}) as Record<string, unknown>;
+    const withEvent =
+      takesEvent.has(call.name) && args.sourceEventId === undefined
+        ? { ...args, sourceEventId: "$event" }
+        : args;
+    const response =
+      call.name === "tools/list" ? listed : await client.call(call.name, withKey(fill(withEvent)));
+    key ??= /"key"\s*:\s*"([A-Z]+-\d+)"/.exec(JSON.stringify(response))?.[1];
+    results.push({ name: call.name, response });
+  }
+  return results;
+}
+
+/**
+ * A Team-room discussion played from `<verify dir>/team-play.json`: `{steps: [{agent, calls} |
+ * {agent, pass: true}]}` in the order Kin should wake them. Each Team-room turn takes the next
+ * step: run its calls if the step is this agent's, else pass and log a mismatch, so a wrong turn
+ * order fails the script instead of drifting. `team-play.log.jsonl` gets one line per turn.
+ */
+async function teamTurn(server: McpServer | undefined, prompt: string): Promise<Turn | undefined> {
+  const playPath = NodePath.join(verifyDir, "team-play.json");
+  if (!/Team room turn/.test(prompt) || !NodeFS.existsSync(playPath)) return undefined;
+  const play = JSON.parse(NodeFS.readFileSync(playPath, "utf8")) as {
+    steps: ReadonlyArray<{
+      agent: string;
+      pass?: boolean;
+      calls?: ReadonlyArray<Call>;
+    }>;
+  };
+  const logPath = NodePath.join(verifyDir, "team-play.log.jsonl");
+  const done = NodeFS.existsSync(logPath)
+    ? NodeFS.readFileSync(logPath, "utf8").split("\n").filter(Boolean).length
+    : 0;
+  if (server === undefined) return { reply: "No MCP server.", end: noEnd };
+  const client = await mcpClient(server);
+  const leads = (await client.call("kin_leads", {})) as {
+    result?: { structuredContent?: { leads?: ReadonlyArray<{ name: string; you: boolean }> } };
+  };
+  const me = leads.result?.structuredContent?.leads?.find((lead) => lead.you)?.name ?? "unknown";
+  const step = play.steps[done];
+  const log = (entry: object) =>
+    NodeFS.appendFileSync(logPath, `${JSON.stringify({ step: done, agent: me, ...entry })}\n`);
+  if (step === undefined || step.agent !== me) {
+    log({ did: "mismatch", expected: step?.agent ?? "no more steps" });
+    return {
+      reply: "Pass.",
+      end: async () => void (await client.call("kin_end", { summary: "pass" })),
+    };
+  }
+  if (step.pass === true) {
+    log({ did: "passed" });
+    return {
+      reply: "Pass.",
+      end: async () => void (await client.call("kin_end", { summary: "pass" })),
+    };
+  }
+  log({ did: "ran", results: await callAll(client, step.calls ?? [], filler(prompt, prompt)) });
+  return {
+    reply: "Said.",
+    end: async () => void (await client.call("kin_end", { summary: "said" })),
+  };
+}
+
 async function runTurn(server: McpServer | undefined, prompt: string): Promise<Turn> {
   await capture(server, prompt).catch(() => undefined);
+  const team = await teamTurn(server, prompt);
+  if (team !== undefined) return team;
   // The prompt may quote earlier messages; the newest marker is this turn's.
   const id = [...prompt.matchAll(MARKER)].at(-1)?.[1];
   if (id === undefined) return { reply: "Noted.", end: noEnd };
@@ -139,46 +249,14 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<T
   NodeFS.writeFileSync(NodePath.join(verifyDir, "turns", `${id}.prompt.txt`), prompt);
   // A real agent copies the event it answers and the chat it replies to from its prompt;
   // "$event" and "$chat" ask for those.
-  const before = prompt.slice(0, prompt.lastIndexOf(`[kv:${id}]`));
-  const eventId = [...before.matchAll(/"event"\s*:\s*"([^"]+)"/g)].at(-1)?.[1];
-  const chatId = /Your reply goes to chat "([^"]+)"/.exec(prompt)?.[1];
-  const fill = (value: unknown): unknown =>
-    value === "$event"
-      ? eventId
-      : value === "$chat"
-        ? chatId
-        : Array.isArray(value)
-          ? value.map(fill)
-          : typeof value === "object" && value !== null
-            ? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, fill(entry)]))
-            : value;
+  const fill = filler(prompt.slice(0, prompt.lastIndexOf(`[kv:${id}]`)), prompt);
   const results: Array<unknown> = [];
   let mcp: Awaited<ReturnType<typeof mcpClient>> | undefined;
   try {
     if (server === undefined) throw new Error("no MCP server in this session");
     const client = await mcpClient(server);
     mcp = client;
-    const listed = (await client.list()) as {
-      result?: { tools?: ReadonlyArray<{ name: string; inputSchema?: { properties?: object } }> };
-    };
-    // Most Kin tools take the event the turn answers, which a real agent copies from its prompt.
-    const takesEvent = new Set(
-      (listed.result?.tools ?? [])
-        .filter((tool) => Object.hasOwn(tool.inputSchema?.properties ?? {}, "sourceEventId"))
-        .map((tool) => tool.name),
-    );
-    for (const call of script.calls ?? []) {
-      const args = (call.arguments ?? {}) as Record<string, unknown>;
-      const withEvent =
-        takesEvent.has(call.name) && args.sourceEventId === undefined
-          ? { ...args, sourceEventId: "$event" }
-          : args;
-      results.push({
-        name: call.name,
-        response:
-          call.name === "tools/list" ? listed : await client.call(call.name, fill(withEvent)),
-      });
-    }
+    results.push(...(await callAll(client, script.calls ?? [], fill)));
   } catch (error) {
     results.push({ error: String(error) });
   }

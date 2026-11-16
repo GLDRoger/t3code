@@ -69,6 +69,21 @@ features:
       - apps/server/src/kin/contract/relay.kin-contract.test.ts
       - .agents/skills/verify-kin/scripts/relay-owner-to-member.sh
       - .agents/skills/verify-kin/scripts/member-request-to-owner.sh
+      - .agents/skills/verify-kin/scripts/team-room-discussion.sh
+
+  - id: team-room
+    name: Agents settle something in the Team room and tell the owner once
+    tab: chats
+    web: [home, chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [team_open, team_say]
+    note: Teammates never read the room, whoever its members are. The outcome line's link opens it.
+    proof:
+      - apps/server/src/kin/team/KinTeam.test.ts
+      - apps/server/src/kin/team/turns.property.test.ts
+      - verification/kin/discussion/Discussion.tla
+      - .agents/skills/verify-kin/scripts/team-room-discussion.sh
 
   - id: coding-workers
     name: An agent starts coding workers and follows up

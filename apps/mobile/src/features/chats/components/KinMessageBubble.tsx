@@ -440,37 +440,44 @@ export function KinRelayBubble(props: {
         </View>
       </View>
     );
-  const [line, ...rest] = text.split("\n");
-  const done = rest.join("\n").trim();
+  // The outcome is the first line; "Done: …" follows. Split before plain text joins the lines.
+  const [line = "", ...rest] = row.message.body.split("\n");
+  const outcome = kinPlainText(line);
+  const done = kinPlainText(rest.join("\n")).trim();
   return (
     <View className="items-start px-4 pt-3">
       <View
-        accessible
-        accessibilityLabel={`${row.agentLabel} replied, ${time}: ${text}`}
         className={cn(
           OTHER_WIDTH_CLASS_NAME,
           "gap-1 rounded-[20px] border border-separator px-4 py-2.5",
         )}
       >
-        <View className="flex-row items-center gap-1.5">
-          <SymbolView
-            name="arrow.uturn.backward"
-            size={12}
-            tintColorClassName="accent-icon-muted"
-            type="monochrome"
-          />
-          <Text textRole="caption" className="text-foreground-muted">
-            {row.agentLabel} replied · {time}
+        {/* One element for the words, so the link below stays its own for VoiceOver. */}
+        <View
+          accessible
+          accessibilityLabel={`${row.agentLabel} replied, ${time}: ${outcome}${done === "" ? "" : ` ${done}`}`}
+          className="gap-1"
+        >
+          <View className="flex-row items-center gap-1.5">
+            <SymbolView
+              name="arrow.uturn.backward"
+              size={12}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
+            />
+            <Text textRole="caption" className="text-foreground-muted">
+              {row.agentLabel} replied · {time}
+            </Text>
+          </View>
+          <Text textRole="body" selectable className="text-foreground">
+            {outcome}
           </Text>
+          {done === "" ? null : (
+            <Text textRole="footnote" className="text-foreground-muted">
+              {done}
+            </Text>
+          )}
         </View>
-        <Text textRole="body" selectable className="text-foreground">
-          {line ?? ""}
-        </Text>
-        {done === "" ? null : (
-          <Text textRole="footnote" className="text-foreground-muted">
-            {done}
-          </Text>
-        )}
         {row.discussionId === null || props.onOpenDiscussion === null ? null : (
           <Pressable
             accessibilityRole="link"

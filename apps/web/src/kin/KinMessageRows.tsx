@@ -424,7 +424,7 @@ export function KinRelayRow(props: {
               orgId: props.orgId,
               chatId: props.teamRoomId,
             }}
-            className="self-start rounded-sm text-xs text-muted-foreground underline-offset-2 outline-none ring-ring hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-inset"
+            className="self-start rounded-sm text-xs text-foreground underline underline-offset-2 outline-none ring-ring hover:text-primary focus-visible:ring-2 focus-visible:ring-inset"
           >
             See how they got there
           </Link>

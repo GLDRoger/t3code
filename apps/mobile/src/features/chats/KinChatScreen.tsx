@@ -113,6 +113,7 @@ import {
   kinMarkReadRearms,
   kinRowSeq,
   kinSeqToMarkRead,
+  kinUnreadToMark,
   kinUnseenCount,
   latestKinSeq,
   mergeKinFeed,
@@ -368,7 +369,7 @@ function KinLiveChat(props: {
               )
         }
         agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
-        unread={summary?.unread ?? null}
+        unread={kinUnreadToMark(summary)}
         teamRoomId={teamRoomId}
         mute={
           environmentId === null || chatId === null || summary === undefined || !canMute

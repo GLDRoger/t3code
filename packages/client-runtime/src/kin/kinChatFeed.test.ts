@@ -32,6 +32,7 @@ import {
   kinMarkReadRearms,
   kinRowSeq,
   kinSeqToMarkRead,
+  kinUnreadToMark,
   kinUnseenCount,
   mergeKinFeed,
   type KinFeedRow,
@@ -840,6 +841,11 @@ describe("kinSeqToMarkRead", () => {
     ["marks before the inbox has counted unread", { ...base, unread: null }, 9],
     ["doesn't resend a seq the host refused", { ...base, attemptedSeq: 9 }, null],
     ["sends a seq that arrived after a refusal", { ...base, attemptedSeq: 7 }, 9],
+    [
+      "clears the Team room's new dot, which shows no count",
+      { ...base, unread: kinUnreadToMark({ unread: 0, fresh: true }) },
+      9,
+    ],
   ] as const)("%s", (_name, input, seq) => {
     expect(kinSeqToMarkRead(input)).toBe(seq);
   });
