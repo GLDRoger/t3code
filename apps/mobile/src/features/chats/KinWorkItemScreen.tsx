@@ -39,6 +39,8 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { TextInput, View } from "react-native";
 
+import { useState } from "react";
+
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
 import type { AppSymbolName } from "../../components/ui/AppSymbol";
@@ -63,6 +65,7 @@ import { KinAvatar } from "./components/KinAvatar";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { KinWorkDueRow, KinWorkPlaceRow, KinWorkStatusRow } from "./components/KinWorkTaskMenus";
 import { KinListEntryBody } from "./KinListEntry";
+import { KinMakeDocumentStep, type KinMakeStep } from "./KinInvoice";
 import { KinWorkTaskRow } from "./components/KinWorkPieces";
 import { KinWorkAudienceRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
@@ -178,6 +181,8 @@ function KinWorkItemBody(props: ItemTarget) {
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const place = useKinWorkPlace(environmentId);
   const work = useKinWork(props);
+  // Make invoice and Make its PDF are a step of this sheet, never a sheet over it.
+  const [making, setMaking] = useState<KinMakeStep | null>(null);
   // An older server has no clients or projects: the task shows as it always did.
   const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
   const choices = useKinWorkChoices(props, hostClients && canChange);
@@ -216,12 +221,22 @@ function KinWorkItemBody(props: ItemTarget) {
   }
   const { item } = state;
   const { orgs, people, joined, invited, names } = directory;
+  if (item.list !== undefined && making !== null)
+    return (
+      <KinMakeDocumentStep
+        {...props}
+        {...making}
+        itemKey={item.key}
+        onBack={() => setMaking(null)}
+      />
+    );
   if (item.list !== undefined) {
     const read = kinWorkItemView(item, names, now, KIN_RECORD_CHANGES_CAP, place);
     return (
       <Frame title={item.title} onClose={close}>
         <KinListEntryBody
           {...props}
+          onMake={setMaking}
           item={item}
           view={read}
           directory={directory}

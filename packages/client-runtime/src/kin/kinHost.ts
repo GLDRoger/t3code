@@ -231,21 +231,33 @@ export function kinHostIdToSave(host: KinHost): EnvironmentId | null {
 }
 
 /**
- * The one line a stand-in host shows wherever Kin's list or a chat is, so nobody reads or writes
- * to another host's Kin without seeing whose it is; null on the usual host. Computers are named
- * only to the owner or a co-owner: a machine's name is the owner's, not a teammate's to read.
+ * The line a stand-in host shows, so nobody writes to another host's Kin unawares; null when the
+ * usual host shows or never named this person. Computers are named only to owner level.
  */
 export function kinStandInLine(
   host: KinHost,
   labelOf: (environmentId: EnvironmentId) => string | null,
   ownerLevel: boolean,
-): { readonly message: string; readonly usual: EnvironmentId } | null {
+  usualDirectory: KinOrgsListResult | null,
+): {
+  readonly message: string;
+  readonly usual: EnvironmentId;
+  readonly shown: EnvironmentId;
+} | null {
   // Switched off here on purpose: the person knows, and nothing is wrong.
   if (host._tag !== "host" || host.standInFor === undefined || host.usualOff) return null;
+  if (usualDirectory === null || usualDirectory.me.length === 0) return null;
   const label = (environmentId: EnvironmentId) => (ownerLevel ? labelOf(environmentId) : null);
   const shown = label(host.environmentId) ?? "another computer";
   const named = label(host.standInFor);
   // Two machines can share a name; then only "usual" tells them apart.
   const usual = named === null || named === shown ? "Your usual computer" : named;
-  return { message: `Showing ${shown}. ${usual} can't be reached.`, usual: host.standInFor };
+  return {
+    message: `Showing ${shown}. ${usual} can't be reached.`,
+    usual: host.standInFor,
+    shown: host.environmentId,
+  };
 }
+
+/** The action that makes the computer standing in the usual one, so the line goes for good. */
+export const KIN_USE_THIS_HOST = "Use this one";

@@ -108,10 +108,11 @@ export function KinInvoiceActions(
     /** The invoice's client, to edit when Make invoice needs a detail of theirs. */
     readonly party: { readonly key: string; readonly title: string } | null;
     readonly currency?: string;
+    /** Opens Make invoice as the entry sheet's next step. */
+    readonly onMake: (step: KinMakeStep) => void;
   },
 ) {
-  const navigation = useNavigation();
-  const { environmentId, orgId, invoice, actions, itemKey } = props;
+  const { environmentId, invoice, actions, itemKey } = props;
   const can = kinInvoiceActions(invoice, props.def, {
     render: useAtomValue(kinClient.docRender.permissionAtom(environmentId)),
     issue: useAtomValue(kinClient.workIssue.permissionAtom(environmentId)),
@@ -142,14 +143,10 @@ export function KinInvoiceActions(
           label={KIN_INVOICES.makeInvoice}
           disabled={busy}
           onPress={() =>
-            navigation.navigate("KinMakeDocument", {
-              environmentId,
-              orgId,
-              task: itemKey,
-              ...(props.currency === undefined ? {} : { currency: props.currency }),
-              ...(props.party === null
-                ? {}
-                : { party: props.party.key, partyName: props.party.title }),
+            props.onMake({
+              list: INVOICES,
+              currency: props.currency ?? "INR",
+              party: props.party,
             })
           }
         />
@@ -447,52 +444,23 @@ const targetOf = (params: { readonly environmentId: string; readonly orgId: stri
   return environmentId === null || orgId === null ? null : { environmentId, orgId };
 };
 
-export type KinMakeDocumentParams = {
-  readonly environmentId: string;
-  readonly orgId: string;
-  readonly task: string;
-  /** The invoice's client key and name, to edit when a detail of theirs is missing. */
-  readonly party?: string;
-  readonly partyName?: string;
-  /** The list whose templates make it: invoices unless said. */
-  readonly list?: string;
+/** What Make invoice or Make its PDF makes, and for whom: a step of the entry's sheet. */
+export interface KinMakeStep {
+  /** The list whose templates make it. */
+  readonly list: string;
   /** The entry's currency: every line is in it. */
-  readonly currency?: string;
-};
-
-/** Pick a template, see the PDF as it would be made, then file it. */
-export function KinMakeDocumentScreen({ route }: StaticScreenProps<KinMakeDocumentParams>) {
-  const navigation = useNavigation();
-  const target = targetOf(route.params);
-  const key = Option.getOrNull(decodeKey(route.params.task));
-  if (target === null || key === null)
-    return (
-      <KinWorkFrame title={KIN_INVOICES.makeInvoice} onClose={() => navigation.goBack()}>
-        <EmptyState variant="plain" {...KIN_LISTS.entry.gone} />
-      </KinWorkFrame>
-    );
-  const party =
-    route.params.party === undefined
-      ? null
-      : { key: route.params.party, title: route.params.partyName ?? route.params.party };
-  return (
-    <MakeDocument
-      {...target}
-      itemKey={key}
-      party={party}
-      list={route.params.list ?? INVOICES}
-      currency={route.params.currency ?? "INR"}
-    />
-  );
+  readonly currency: string;
+  /** The invoice's client, to edit when a detail of theirs is missing. */
+  readonly party: { readonly key: string; readonly title: string } | null;
 }
 
-function MakeDocument(
-  props: KinWorkTarget & {
-    readonly itemKey: KinRecordKey;
-    readonly party: { readonly key: string; readonly title: string } | null;
-    readonly list: string;
-    readonly currency: string;
-  },
+/**
+ * Pick a template, see the PDF as it would be made, then file it: the entry's sheet turns into
+ * this form, with Back to the entry, never a second sheet over it.
+ */
+export function KinMakeDocumentStep(
+  props: KinWorkTarget &
+    KinMakeStep & { readonly itemKey: KinRecordKey; readonly onBack: () => void },
 ) {
   const navigation = useNavigation();
   const actions = useKinMoneyActions(props);
@@ -530,11 +498,11 @@ function MakeDocument(
     readonly mimeType: string;
   } | null>(null);
   const [requestId] = useState(uuidv4);
-  const close = () => navigation.goBack();
+  const close = props.onBack;
   const title = props.list === INVOICES ? KIN_INVOICES.makeInvoice : KIN_INVOICES.makePdf;
   if (!allowed)
     return (
-      <KinWorkFrame title={title} onClose={close}>
+      <KinWorkFrame title={title} onBack={close} guardBack>
         <EmptyState variant="plain" {...KIN_LISTS.onlyOwner} />
       </KinWorkFrame>
     );
@@ -563,7 +531,8 @@ function MakeDocument(
   return (
     <KinWorkFrame
       title={title}
-      onClose={close}
+      onBack={close}
+      guardBack
       confirm={
         recipe === null
           ? undefined

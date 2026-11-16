@@ -10,7 +10,7 @@ import {
   kinScheduledTaskCardView,
 } from "./kinCardPresentation.ts";
 import {
-  kinChoiceAnswerText,
+  kinChoiceOutcomeSentence,
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
@@ -333,19 +333,26 @@ describe("choice cards", () => {
       });
     const tapped = answer("tap", null);
     expect(kinChoicePhase(tapped, posted + 48 * 60 * 60 * 1000)).toBe("answered");
-    expect(kinChoiceAnswerText(tapped.answer!, "owner" as never)).toBe("You chose “Ship it”");
-    expect(kinChoiceAnswerText(tapped.answer!, null)).toBe("Chose “Ship it”");
-    expect(kinChoiceAnswerText(answer("reaction", "👍").answer!, "owner" as never)).toBe(
-      "You chose “Ship it” with 👍",
-    );
-    expect(kinChoiceAnswered(tapped, "owner" as never, null)).toEqual({
-      text: "You chose “Ship it”",
+    // An agent's card says what the choice means, in the chooser's words, not which button.
+    expect(kinChoiceAnswered(tapped, "owner" as never, null)).toEqual({ text: "Shipping it." });
+    expect(kinChoiceAnswered(answer("reaction", "👍"), null, null)).toEqual({
+      text: "Shipping it.",
     });
     const open = answer("tap", null);
-    expect(kinChoiceAnswered({ ...open, answer: null }, null, "Ship it")).toEqual({
-      text: "You chose “Ship it”",
+    expect(kinChoiceAnswered({ ...open, answer: null }, null, "Go ahead")).toEqual({
+      text: "Going ahead.",
     });
     expect(kinChoiceAnswered({ ...open, answer: null }, null, null)).toBeNull();
+    for (const [label, mine, theirs] of [
+      ["Go ahead", "Going ahead.", "Going ahead."],
+      ["Let me change it", "You'll change it.", "They'll change it."],
+      ["Not now", "Not now.", "Not now."],
+      ["yes!", "Yes.", "Yes."],
+      ["Send it to Anita", "Sending it to Anita.", "Sending it to Anita."],
+    ] as const) {
+      expect(kinChoiceOutcomeSentence(label, true)).toBe(mine);
+      expect(kinChoiceOutcomeSentence(label, false)).toBe(theirs);
+    }
     const sent = { ...tapped, send: { outcome: { tone: "ok", text: "Sent" } } } as never;
     expect(kinChoiceAnswered(sent, "owner" as never, null)).toEqual({ text: null });
   });

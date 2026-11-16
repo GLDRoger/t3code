@@ -1,4 +1,4 @@
-import { useRouter } from "@tanstack/react-router";
+import { type RouterHistory, useLocation, useRouter } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DAY_LABELS,
@@ -67,24 +67,63 @@ const kinProfileSheetAtom = Atom.make<KinProfileTarget | null>(null).pipe(
   Atom.withLabel("kin:profile-sheet"),
 );
 
+declare module "@tanstack/react-router" {
+  interface HistoryState {
+    /** The profile sheet was opened on this page, so closing it is one step back. */
+    kinProfilePushed?: boolean;
+  }
+}
+
+// The profile lives in the address, as New task and Search do, so Back closes only the sheet.
+const PROFILE_PARAM = "profile";
+let kinHistory: RouterHistory | null = null;
+
 /** Opens someone's profile over whatever is on screen: the Team list, a chat, the chat list. */
-export const openKinProfile = (target: KinProfileTarget) =>
+export const openKinProfile = (target: KinProfileTarget) => {
   appAtomRegistry.set(kinProfileSheetAtom, target);
+  if (kinHistory === null) return;
+  const { pathname, search, hash, state } = kinHistory.location;
+  const params = new URLSearchParams(search);
+  const already = params.has(PROFILE_PARAM);
+  params.set(PROFILE_PARAM, target.personId);
+  const href = `${pathname}?${params.toString()}${hash}`;
+  // From one profile to another keeps the one step back to the page underneath.
+  if (already) kinHistory.replace(href, state);
+  else kinHistory.push(href, { ...state, kinProfilePushed: true });
+};
 
 export function KinProfileSheetHost() {
   const target = useAtomValue(kinProfileSheetAtom);
   const router = useRouter();
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the sheet isn't in the address, so any navigation, Back included, closes it rather than leaving it over another screen
-  useEffect(
-    () => router.history.subscribe(() => appAtomRegistry.set(kinProfileSheetAtom, null)),
-    [router],
-  );
-  if (target === null) return null;
+  const shown = useLocation({
+    select: (location) => new URLSearchParams(location.searchStr).get(PROFILE_PARAM),
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the router's history to `openKinProfile`, which runs from handlers outside React
+  useEffect(() => {
+    kinHistory = router.history;
+    return () => {
+      kinHistory = null;
+    };
+  }, [router]);
+  if (target === null || shown !== target.personId) return null;
+  const close = () => {
+    const { history } = router;
+    if (history.location.state.kinProfilePushed === true) return history.back();
+    const params = new URLSearchParams(history.location.search);
+    params.delete(PROFILE_PARAM);
+    const rest = params.toString();
+    history.replace(
+      `${history.location.pathname}${rest === "" ? "" : `?${rest}`}${history.location.hash}`,
+      {
+        ...history.location.state,
+      },
+    );
+  };
   return (
     <KinProfileSheet
       key={`${target.environmentId}:${target.personId}`}
       target={target}
-      onClose={() => appAtomRegistry.set(kinProfileSheetAtom, null)}
+      onClose={close}
     />
   );
 }

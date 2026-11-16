@@ -63,6 +63,9 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
 - **Names open what they name.** An agent, a teammate, a client, a project, a task or a document
   number such as INV-1 in a message is a link to it, when you may open it. Touch and hold one on
   the phone, or hover on the web, to see its state first.
+- **Attach files.** Anyone in the company can attach pictures, PDFs and documents in a chat they
+  can write in: their chat with an agent, a chat with a teammate, or a group they are in. Only
+  people in that chat can open them, and an agent reads them with the access of whoever sent them.
 - **It asks with cards.** A question with choices, a chart, or something to confirm comes as a card
   in the chat. Tapping an answer answers the agent; it is never an approval.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
