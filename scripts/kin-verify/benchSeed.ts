@@ -220,6 +220,21 @@ async function assignSome(instance: Instance) {
   }
 }
 
+/** Waits until no wake-up runs, so the next message starts a turn of its own. */
+export async function quiet(instance: Instance) {
+  for (let waited = 0; waited < 120_000; waited += 500) {
+    const db = database(instance);
+    const running = (
+      db.prepare(`SELECT COUNT(*) AS n FROM kin_wakeups WHERE status = 'running'`).get() as {
+        n: number;
+      }
+    ).n;
+    db.close();
+    if (running === 0) return sleep(1000);
+    await sleep(500);
+  }
+}
+
 /** A scripted turn of `agent` answering a message in a group that mentions it. */
 async function groupTurn(
   instance: Instance,
@@ -325,6 +340,7 @@ async function longChat(instance: Instance) {
         chatId: group.chatId,
         principal: { _tag: "agent", agentId: chief.agentId },
       })) as { memberId: string };
+      await quiet(instance);
       const turn = await groupTurn(instance, group.chatId, member.memberId, [
         chartCall(round),
         askCall(round),
@@ -368,16 +384,25 @@ async function docs() {
 /** The bench seed's parts that need the lead runner: docs, cards and the long group. */
 export async function benchTurns(instance: Instance) {
   for (const batch of await docs()) {
-    const results = await runTurn(instance, {
-      agent: "chief",
-      person: "owner",
-      calls: batch,
-      reply: "Filed.",
-      timeoutMs: 300_000,
-    });
-    const failed = results.find(
-      (one) => one.error !== undefined || JSON.stringify(one.response).includes('"isError":true'),
-    );
+    // A message sent while a wake-up runs joins it, and its tools then name the wrong event:
+    // wait for quiet, and redo once from the first call that failed.
+    let calls = batch;
+    let failed: unknown;
+    for (let attempt = 0; attempt < 2 && calls.length > 0; attempt++) {
+      await quiet(instance);
+      const results = await runTurn(instance, {
+        agent: "chief",
+        person: "owner",
+        calls,
+        reply: "Filed.",
+        timeoutMs: 300_000,
+      });
+      const at = results.findIndex(
+        (one) => one.error !== undefined || JSON.stringify(one.response).includes('"isError":true'),
+      );
+      failed = at === -1 ? undefined : results[at];
+      calls = at === -1 ? [] : calls.slice(at);
+    }
     if (failed !== undefined)
       throw new VerifyError(`bench: doc_create failed: ${JSON.stringify(failed).slice(0, 300)}`);
   }

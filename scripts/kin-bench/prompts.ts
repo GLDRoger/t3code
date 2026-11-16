@@ -6,10 +6,10 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import { agentOf, database, directChat, rpcAs, runTurn } from "../kin-verify/actors.ts";
+import { agentOf, directChat, rpcAs, runTurn } from "../kin-verify/actors.ts";
 import { type Instance, ORG, ROOT, readSeed, sleep } from "../kin-verify/instance.ts";
 import { mailDeliver } from "../kin-verify/ops.ts";
-import { BENCH } from "../kin-verify/benchSeed.ts";
+import { BENCH, quiet } from "../kin-verify/benchSeed.ts";
 import { type PromptSection, type PromptTurn, tokensOf } from "./stats.ts";
 
 interface Captured {
@@ -160,21 +160,6 @@ async function groupTurn(instance: Instance, text: string) {
     };
   } finally {
     owner.close();
-  }
-}
-
-/** Waits until no wake-up runs, so the next message starts a turn of its own. */
-async function quiet(instance: Instance) {
-  for (let waited = 0; waited < 120_000; waited += 500) {
-    const db = database(instance);
-    const running = (
-      db.prepare(`SELECT COUNT(*) AS n FROM kin_wakeups WHERE status = 'running'`).get() as {
-        n: number;
-      }
-    ).n;
-    db.close();
-    if (running === 0) return sleep(1000);
-    await sleep(500);
   }
 }
 

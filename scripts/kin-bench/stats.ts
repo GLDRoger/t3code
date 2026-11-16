@@ -45,6 +45,7 @@ export interface Chatter {
     readonly bytesIn: number;
     readonly framesOut: number;
     readonly requestsOut: number;
+    readonly methods: Record<string, number>;
   }>;
 }
 
@@ -55,6 +56,8 @@ export interface WireRow {
   readonly framesOut: number;
   readonly bytesOut: number;
   readonly largest: number;
+  /** The reads the client sent during the action, by RPC name. */
+  readonly methods?: Record<string, number>;
 }
 
 export interface BenchResult {

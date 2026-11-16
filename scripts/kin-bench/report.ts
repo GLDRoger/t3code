@@ -35,12 +35,13 @@ export function compareLines(
           ? 0
           : 100
         : ((metric.median - previous.median) / previous.median) * 100;
-    // A few milliseconds either way is noise, not a regression.
-    const small = metric.unit === "ms" && Math.abs(metric.median - previous.median) < 5;
+    // A few milliseconds, a fraction of a CPU point or one count either way is noise.
+    const floor = { ms: 5, percent: 1, count: 1, MB: 10, bytes: 1024, tokens: 50 }[metric.unit];
+    const small = Math.abs(metric.median - previous.median) < floor;
     return [
       {
         key: metric.key,
-        label: metric.label,
+        label: labelOf(metric),
         unit: metric.unit,
         old: previous.median,
         now: metric.median,
@@ -75,8 +76,27 @@ const LABELS: Record<string, string> = {
   dockClients: "Open Clients",
   dockDocs: "Open Docs",
   taskSheet: "Open a task",
+  typing40Keys: "Typing 40 keys",
+  scrollLongChat: "Scrolling the long chat",
+  idle30sList: "30 s idle on the Chats list",
+  idle30sChat: "30 s idle in the long chat",
 };
-export const labelOf = (metric: Metric) => LABELS[metric.key] ?? metric.label;
+export const labelOf = (metric: Pick<Metric, "key" | "label">) =>
+  LABELS[metric.key] ?? metric.label;
+
+/** Which reads the clients sent back after a change, summed over everyone. */
+const requested = (one: BenchResult["chatter"][number]) => {
+  const total = new Map<string, number>();
+  for (const client of one.clients)
+    for (const [method, count] of Object.entries(client.methods ?? {}))
+      total.set(method, (total.get(method) ?? 0) + count);
+  return total.size === 0
+    ? ""
+    : ` · asked again: ${[...total]
+        .sort((a, b) => b[1] - a[1])
+        .map(([method, count]) => `${method} ×${count}`)
+        .join(", ")}`;
+};
 
 export function renderMarkdown(
   result: BenchResult,
@@ -111,12 +131,16 @@ export function renderMarkdown(
   lines.push(
     "## Wire per action",
     "",
-    "| Action | Frames in | KB in | Frames out | KB out | Largest |",
-    "| --- | ---: | ---: | ---: | ---: | ---: |",
+    "| Action | Frames in | KB in | Frames out | KB out | Largest | Reads sent |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
   );
   for (const row of result.wire)
     lines.push(
-      `| ${row.action} | ${row.framesIn} | ${(row.bytesIn / 1024).toFixed(1)} | ${row.framesOut} | ${(row.bytesOut / 1024).toFixed(1)} | ${formatValue(row.largest, "bytes")} |`,
+      `| ${row.action} | ${row.framesIn} | ${(row.bytesIn / 1024).toFixed(1)} | ${row.framesOut} | ${(row.bytesOut / 1024).toFixed(1)} | ${formatValue(row.largest, "bytes")} | ${Object.entries(
+        row.methods ?? {},
+      )
+        .map(([method, count]) => `${method} ×${count}`)
+        .join(", ")} |`,
     );
   lines.push(
     "",
@@ -129,7 +153,7 @@ export function renderMarkdown(
     const sum = (key: "framesIn" | "bytesIn" | "requestsOut") =>
       one.clients.reduce((total, client) => total + client[key], 0);
     lines.push(
-      `| ${one.change} | ${sum("framesIn")} | ${(sum("bytesIn") / 1024).toFixed(1)} | ${sum("requestsOut")} | ${one.clients.map((client) => `${client.person} ${client.framesIn}/${client.requestsOut}`).join(", ")} |`,
+      `| ${one.change} | ${sum("framesIn")} | ${(sum("bytesIn") / 1024).toFixed(1)} | ${sum("requestsOut")} | ${one.clients.map((client) => `${client.person} ${client.framesIn}/${client.requestsOut}`).join(", ")}${requested(one)} |`,
     );
   }
   lines.push(
@@ -295,7 +319,7 @@ export function renderHtml(
     result.wire
       .filter((row) => row.bytesIn > 0)
       .map((row) => ({
-        label: row.action,
+        label: LABELS[row.action] ?? row.action,
         value: row.bytesIn,
         text: `${formatValue(row.bytesIn, "bytes")} in · ${row.framesIn} frames · largest ${formatValue(row.largest, "bytes")}`,
         ...(row.bytesIn > 1_048_576
@@ -319,16 +343,14 @@ export function renderHtml(
   );
   const reached = result.prompts.turns.filter((turn) => turn.reached);
   const maxTotal = Math.max(1, ...reached.map((turn) => turn.totalTokens));
-  const names = [
-    ...new Set(
-      reached.flatMap((turn) =>
-        [...turn.sections]
-          .sort((a, b) => b.tokens - a.tokens)
-          .slice(0, 5)
-          .map((one) => one.name),
-      ),
-    ),
-  ].slice(0, 6);
+  // The parts that weigh most across all turns get their own colour; the rest share grey.
+  const weight = new Map<string, number>();
+  for (const turn of reached)
+    for (const one of turn.sections) weight.set(one.name, (weight.get(one.name) ?? 0) + one.tokens);
+  const names = [...weight]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 7)
+    .map(([name]) => name);
   const colorOf = (name: string) =>
     name === "System prompt"
       ? "var(--sys)"
@@ -410,20 +432,20 @@ section{border-top:1px solid var(--line);padding-top:4px}
 .tick{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--fg);opacity:.55}
 .stack{display:flex;overflow:hidden;background:none}.stack span{height:100%}
 .legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--muted);margin:6px 0 10px}.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
-table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left}td.num{text-align:right;font-variant-numeric:tabular-nums}tr.worse td{color:var(--bad);font-weight:600}
-.findings li{margin:0 0 12px}.findings p{margin:3px 0}.worth{color:var(--muted)}.pill{font-size:12px;border:1px solid var(--line);border-radius:10px;padding:1px 8px;margin-left:4px}
+table{border-collapse:collapse;width:100%;font-size:13px}@media (max-width:640px){table{display:block;overflow-x:auto}}code,.asked{overflow-wrap:anywhere}td,th{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left}td.num{text-align:right;font-variant-numeric:tabular-nums}tr.worse td{color:var(--bad);font-weight:600}
+.asked{font-size:12px;color:var(--muted);padding-left:18px}.findings li{margin:0 0 12px}.findings p{margin:3px 0}.worth{color:var(--muted)}.pill{font-size:12px;border:1px solid var(--line);border-radius:10px;padding:1px 8px;margin-left:4px}
 code{font-size:12px}
 @media (max-width:640px){.bars .row{grid-template-columns:1fr;gap:2px}}
 </style></head><body>
 <h1>Kin benchmark</h1>
-<p class="meta">Commit ${escape(result.commit.slice(0, 10))} · ${escape(result.at.slice(0, 16).replace("T", " "))} UTC · ${result.runs} runs per action · one run takes ${Math.round(result.durationS / 60)} min · invented company: ${result.seed.messagesInLongChat} messages in one chat, ${result.seed.tasks} tasks, ${result.seed.clients} clients, ${result.seed.docs} docs, ${result.seed.invoices + result.seed.expenses} money entries</p>
+<p class="meta">Commit ${escape(result.commit.slice(0, 10))} · ${escape(result.at.slice(0, 16).replace("T", " "))} UTC · ${result.runs} runs per action · one run takes ${Math.round(result.durationS / 60)} min · invented company: ${result.seed.messagesInLongChat} messages in one chat, ${result.seed.tasks} tasks, ${result.seed.clients} clients, ${result.seed.docs} docs, ${(result.seed.invoices ?? 0) + (result.seed.expenses ?? 0)} money entries</p>
 ${stands}
 <section><h2>How fast the web app answers</h2><p class="meta">Median bar, p90 tick. Amber over 0.3 s, red over 1 s.</p>${webTimes}
 <table><tr><th>How it feels</th><th>Median</th><th>p90</th><th></th></tr>${feelTable}</table></section>
 <section><h2>Server</h2><p class="meta">Time to answer one request from the owner on this data. Amber over 50 ms, red over 200 ms.</p>${server}
 <table>${serverOther.map((one) => `<tr><td>${escape(one.label)}</td><td class="num">${formatValue(one.median, one.unit)}</td></tr>`).join("")}</table></section>
 <section><h2>Data over the connection</h2><p class="meta">What the owner's browser received for each action.</p>${wire}
-<h2>One change, every connected person</h2><p class="meta">Five people's browsers open; one change made; what all five received in the next 5 s.</p>${chatter}</section>
+<h2>One change, every connected person</h2><p class="meta">Five people's browsers open; one change made; what all five received in the next 5 s.</p>${chatter}<ul class="asked">${result.chatter.map((one) => `<li><b>${escape(one.change)}</b>${escape(requested(one) || " · nothing asked again")}</li>`).join("")}</ul></section>
 <section><h2>What an agent reads each turn</h2><p class="meta">Tokens per turn kind, split by part. ${escape(result.prompts.method)}</p><div class="legend">${legend}</div><div class="bars">${stacked}</div>${missing === "" ? "" : `<p class="meta">Not measured:</p><ul>${missing}</ul>`}
 <h2>Largest tool descriptions</h2>${tools}</section>
 ${compare}

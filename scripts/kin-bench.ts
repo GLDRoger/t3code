@@ -392,6 +392,7 @@ async function main() {
           .catch(() => undefined);
         throw new Error(
           `${key}: "${until}" never showed in ${scope} (screenshot in ${instance.meta}): ${(error as Error).message.split("\n")[0]}`,
+          { cause: error },
         );
       }
       await sleep(400);
@@ -419,6 +420,10 @@ async function main() {
         startupCss = assets
           .filter((one) => one.type === "Stylesheet")
           .reduce((sum, one) => sum + one.bytes, 0);
+        const largest = assets.toSorted((a, b) => b.bytes - a.bytes).slice(0, 5);
+        notes.push(
+          `Startup loads ${assets.filter((one) => one.type === "Script").length} scripts; largest: ${largest.map((one) => `${one.url.split("/").pop()} ${Math.round(one.bytes / 1024)} KB`).join(", ")}.`,
+        );
       }
       await record("openLongChatCold", () => link(/^Studio floor, group/), BENCH.lastLine);
       await record("switchChat", () => link(/^Chief of staff, agent/), chiefLast);
@@ -594,6 +599,13 @@ async function main() {
               .reduce((sum, frame) => sum + frame.bytes, 0),
             framesOut: frames.filter((frame) => frame.dir === "out" && frame.bytes > 20).length,
             requestsOut: frames.filter((frame) => frame.request).length,
+            methods: Object.fromEntries(
+              [
+                ...new Set(
+                  frames.flatMap((frame) => (frame.method === undefined ? [] : [frame.method])),
+                ),
+              ].map((method) => [method, frames.filter((frame) => frame.method === method).length]),
+            ),
           };
         }),
       });

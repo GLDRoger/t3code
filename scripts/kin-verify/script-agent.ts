@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalFetch:off - an ACP agent process, spoken over stdio.
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalFetch:off globalDate:off - an ACP agent process, spoken over stdio.
 /**
  * A Kin lead with no model, run by a dev server as the `kinVerifyScript` ACP instance. A prompt
  * with `[kv:<id>]` makes it call the tools in `<verify dir>/turns/<id>.json` on the session's real

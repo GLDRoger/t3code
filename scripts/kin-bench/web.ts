@@ -13,12 +13,19 @@ interface Frame {
   readonly bytes: number;
   readonly at: number;
   readonly request: boolean;
+  /** The RPC a request frame calls, such as kin.work.list. */
+  readonly method?: string;
 }
+
+const methodOf = (payload: string) => {
+  const tag = /"_tag":"Request".*?"tag":"([^"]+)"/.exec(payload)?.[1];
+  return tag === undefined ? {} : { method: tag };
+};
 
 /** Every WebSocket frame and script/style byte this page moves, from Chrome's own network log. */
 export class Probe {
   readonly frames: Array<Frame> = [];
-  readonly assets = new Map<string, { type: string; bytes: number; decoded: number }>();
+  readonly assets = new Map<string, { type: string; bytes: number; url: string }>();
   readonly page: Page;
   readonly cdp: CDPSession;
   private constructor(page: Page, cdp: CDPSession) {
@@ -31,12 +38,18 @@ export class Probe {
     const probe = new Probe(page, cdp);
     await cdp.send("Network.enable");
     await cdp.send("Performance.enable");
-    const types = new Map<string, string>();
-    cdp.on("Network.responseReceived", (event) => types.set(event.requestId, event.type));
+    const types = new Map<string, { type: string; url: string }>();
+    cdp.on("Network.responseReceived", (event) =>
+      types.set(event.requestId, { type: event.type, url: event.response.url }),
+    );
     cdp.on("Network.loadingFinished", (event) => {
-      const type = types.get(event.requestId);
-      if (type === "Script" || type === "Stylesheet")
-        probe.assets.set(event.requestId, { type, bytes: event.encodedDataLength, decoded: 0 });
+      const seen = types.get(event.requestId);
+      if (seen?.type === "Script" || seen?.type === "Stylesheet")
+        probe.assets.set(event.requestId, {
+          type: seen.type,
+          url: seen.url,
+          bytes: event.encodedDataLength,
+        });
     });
     cdp.on("Network.webSocketFrameReceived", (event) =>
       probe.frames.push({
@@ -52,6 +65,7 @@ export class Probe {
         bytes: Buffer.byteLength(event.response.payloadData),
         at: performance.now(),
         request: event.response.payloadData.includes('"_tag":"Request"'),
+        ...methodOf(event.response.payloadData),
       }),
     );
     return probe;
@@ -72,6 +86,10 @@ export class Probe {
       framesOut: frames.filter((one) => one.dir === "out" && one.bytes > 20).length,
       bytesOut: sum("out"),
       largest: Math.max(0, ...frames.filter((one) => one.dir === "in").map((one) => one.bytes)),
+      methods: frames.reduce<Record<string, number>>((count, one) => {
+        if (one.method !== undefined) count[one.method] = (count[one.method] ?? 0) + 1;
+        return count;
+      }, {}),
     };
   }
 
