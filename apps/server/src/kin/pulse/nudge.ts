@@ -90,11 +90,13 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
   readonly factKey: string;
   readonly text: string;
   readonly chatFor: (personId: KinPersonId) => Effect.Effect<KinChatId, KinChatError>;
+  /** Writes it now, or holds it until `notBefore` or their quiet hours end: then when it posts. */
   readonly post: (
     chatId: KinChatId,
     clientMessageId: string,
     personId: KinPersonId,
-  ) => Effect.Effect<void, KinChatError>;
+    notBefore: number | undefined,
+  ) => Effect.Effect<{ readonly at: number; readonly zone: string } | undefined, KinChatError>;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, at } = input;
@@ -132,15 +134,13 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
       `${person.name} can't see that fact, or it no longer needs attention. Nudge only about their own open Work; tell the owner about anything else.`,
     );
   const zone = person.timeZone ?? (yield* ownerZone(orgId));
-  if (!inHoursAt(person, zone, at)) {
-    const starts = nextInHours(person, zone, at);
+  // Outside their hours it is held until they start, and counts for that day.
+  const starts = inHoursAt(person, zone, at) ? undefined : nextInHours(person, zone, at);
+  if (!inHoursAt(person, zone, at) && starts === undefined)
     return yield* refuse(
-      starts === undefined
-        ? `${person.name} is outside their working hours. Leave it for the next check-in in their hours.`
-        : `${person.name} is outside their working hours and starts at ${iso(starts)}. To ask them then, set kin_defer (onDue "ask", due ${iso(starts)}) in your chat with the owner and nudge them when it wakes you; don't say you will without it.`,
+      `${person.name} is outside their working hours. Leave it for the next check-in in their hours.`,
     );
-  }
-  const day = dayIn(at, zone);
+  const day = dayIn(starts ?? at, zone);
   const [last] = yield* sql<{ day: string; chatId: string; factKey: string; sentAt: number }>`
     SELECT day, chat_id AS "chatId", fact_key AS "factKey", sent_at AS "sentAt"
     FROM kin_pulse_nudges WHERE org_id = ${orgId} AND person_id = ${personId}
@@ -165,11 +165,13 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
     ON CONFLICT (org_id, person_id, day) DO NOTHING RETURNING day`;
   if (claimed.length === 0)
     return yield* refuse(`${person.name} was already nudged today. One nudge a day: leave it.`);
-  yield* input.post(chatId, `${NUDGE_PREFIX}${personId}:${day}`, personId).pipe(
-    Effect.tapError(() =>
-      sql`DELETE FROM kin_pulse_nudges
+  const held = yield* input
+    .post(chatId, `${NUDGE_PREFIX}${personId}:${day}`, personId, starts)
+    .pipe(
+      Effect.tapError(() =>
+        sql`DELETE FROM kin_pulse_nudges
           WHERE org_id = ${orgId} AND person_id = ${personId} AND day = ${day}`.pipe(Effect.ignore),
-    ),
-  );
-  return { person: person.name, chatId, day };
+      ),
+    );
+  return { person: person.name, chatId, day, held };
 });

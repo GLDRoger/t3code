@@ -1,4 +1,10 @@
-import { KinChatId, KinMessageId, type KinOrgId, type KinPersonId } from "@t3tools/contracts";
+import {
+  type KinAgentId,
+  KinChatId,
+  KinMessageId,
+  type KinOrgId,
+  type KinPersonId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -24,10 +30,13 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
     kind: string;
     body: string;
     audience: WriteAudience;
-  }>`SELECT hold_id AS "holdId", chat_id AS "chatId", person_id AS "personId", kind, body, audience
+    agentId: KinAgentId | null;
+    waits: number;
+  }>`SELECT hold_id AS "holdId", chat_id AS "chatId", person_id AS "personId", kind, body, audience,
+      agent_id AS "agentId", waits
     FROM kin_held_posts
     WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
-    ORDER BY held_at, hold_id`;
+    ORDER BY held_at, rowid`;
   const groups = new Map<string, Array<(typeof rows)[number]>>();
   for (const row of rows)
     groups.set(`${row.chatId}\0${row.personId}\0${row.kind}`, [
@@ -44,20 +53,34 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
         WHERE org_id = ${orgId} AND hold_id IN ${sql.in(group.map((row) => row.holdId))}`;
       continue;
     }
-    yield* sql.withTransaction(
-      Effect.gen(function* () {
-        yield* chat.notice({
-          orgId,
-          chatId: KinChatId.make(first.chatId),
-          messageId: KinMessageId.make(`kin-held:${first.holdId}`),
-          audience: first.audience,
-          body: [...new Set(group.map((row) => row.body))].join("\n\n"),
-        });
-        yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
+    // One that can't post (they left the chat) stays held and doesn't block the others.
+    const sent = yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* chat.notice({
+            orgId,
+            chatId: KinChatId.make(first.chatId),
+            messageId: KinMessageId.make(`kin-held:${first.holdId}`),
+            audience: first.audience,
+            body: [...new Set(group.map((row) => row.body))].join("\n\n"),
+            ...(first.agentId === null ? {} : { from: first.agentId }),
+            ...(first.waits === 1 ? { waitingFor: first.personId } : {}),
+          });
+          yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
           WHERE org_id = ${orgId} AND hold_id IN ${sql.in(group.map((row) => row.holdId))}`;
-      }),
-    );
-    posted += 1;
+        }),
+      )
+      .pipe(
+        Effect.as(true),
+        Effect.catch((cause) =>
+          Effect.logWarning("Kin held line not delivered", {
+            orgId,
+            holdId: first.holdId,
+            cause,
+          }).pipe(Effect.as(false)),
+        ),
+      );
+    if (sent) posted += 1;
   }
   return posted;
 });

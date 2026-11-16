@@ -83,7 +83,6 @@ import * as Publish from "./workerPublish.ts";
 import * as Toolchain from "../gendocs/toolchain.ts";
 import * as Workspace from "../gendocs/workspace.ts";
 import * as Workers from "./Workers.ts";
-import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import * as Tracker from "./WorkerTracker.ts";
 import { LOCAL_BUILD_ONLY, LOCAL_DIRECT_ONLY } from "./localWorkers.ts";
 import * as WorkNetwork from "./workNetwork.ts";
@@ -806,8 +805,6 @@ const run = <A, E>(
     readonly remote: FakeWorkers;
     readonly local: FakeLocal;
     readonly stopped: Array<ThreadId>;
-    /** Whether the owner's GitHub is connected on this host. */
-    readonly github: { connected: boolean };
     readonly workers: Workers.KinWorkers["Service"];
     readonly tracker: Tracker.WorkerTracker["Service"];
     /** This run's own server state directory. */
@@ -833,7 +830,6 @@ const run = <A, E>(
     const remote = fakeWorkers();
     const local = fakeLocal();
     const stopped: Array<ThreadId> = [];
-    const github = { connected: false };
     const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
       stopDelegatedTasks: (input) =>
         Effect.sync(() => {
@@ -892,10 +888,6 @@ const run = <A, E>(
           // Document jobs have their own tests (`gendocs/`); these workers never make one.
           Layer.mock(Workspace.KinWorkspace)({}),
           Layer.mock(Toolchain.KinToolchain)({}),
-          Layer.mock(KinAgentSessionPolicy)({
-            connected: () => Effect.sync(() => github.connected),
-            ghDirectory: "/invented/gh",
-          }),
         ),
       ),
       Layer.provide(Layer.succeedContext(ctx.services)),
@@ -927,7 +919,6 @@ const run = <A, E>(
         remote,
         local,
         stopped,
-        github,
         workers: Context.get(first.built, Workers.KinWorkers),
         tracker: Context.get(first.built, Tracker.WorkerTracker),
         stateDir,
@@ -2999,41 +2990,35 @@ it.effect(
     ),
 );
 
-it.effect(
-  "an app-owned delegate_task child on a lead thread is stopped unless GitHub is connected",
-  () =>
-    run(({ ctx, stopped, github, tracker }) =>
-      Effect.gen(function* () {
-        const registry = yield* Registry.KinLeadRegistry;
-        yield* registry.register(leadThread, {
-          orgId: ctx.orgId,
-          agentId: leadId,
-          wakeupId: KinWakeupId.make("wake"),
-          level: "L2",
-        });
-        const updated = (origin: "app_owned" | "provider_native", threadId: ThreadId) => ({
-          sequence: 11,
-          commandId: null,
-          event: {
-            type: "subagent.updated" as const,
-            id: EventId.make(`event:${origin}:${threadId}`),
-            threadId,
-            occurredAt: DateTime.makeUnsafe(0),
-            payload: subagent({ threadId, origin }),
-          },
-        });
-        github.connected = true;
-        yield* tracker.process(updated("app_owned", leadThread));
-        assert.deepStrictEqual(stopped, [], "with GitHub connected, delegate_task is the way");
-        github.connected = false;
-        yield* tracker.process(updated("provider_native", leadThread));
-        yield* tracker.process(updated("app_owned", ThreadId.make("ordinary")));
-        assert.deepStrictEqual(stopped, []);
-        yield* tracker.process(updated("app_owned", leadThread));
-        yield* tracker.process(updated("app_owned", leadThread));
-        assert.deepStrictEqual(stopped, [leadThread]);
-      }).pipe(Effect.scoped),
-    ),
+it.effect("an app-owned delegate_task child on a lead thread is stopped", () =>
+  run(({ ctx, stopped, tracker }) =>
+    Effect.gen(function* () {
+      const registry = yield* Registry.KinLeadRegistry;
+      yield* registry.register(leadThread, {
+        orgId: ctx.orgId,
+        agentId: leadId,
+        wakeupId: KinWakeupId.make("wake"),
+        level: "L2",
+      });
+      const updated = (origin: "app_owned" | "provider_native", threadId: ThreadId) => ({
+        sequence: 11,
+        commandId: null,
+        event: {
+          type: "subagent.updated" as const,
+          id: EventId.make(`event:${origin}:${threadId}`),
+          threadId,
+          occurredAt: DateTime.makeUnsafe(0),
+          payload: subagent({ threadId, origin }),
+        },
+      });
+      yield* tracker.process(updated("provider_native", leadThread));
+      yield* tracker.process(updated("app_owned", ThreadId.make("ordinary")));
+      assert.deepStrictEqual(stopped, []);
+      yield* tracker.process(updated("app_owned", leadThread));
+      yield* tracker.process(updated("app_owned", leadThread));
+      assert.deepStrictEqual(stopped, [leadThread]);
+    }).pipe(Effect.scoped),
+  ),
 );
 
 it.effect(
@@ -4254,7 +4239,7 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
       [
         59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
         82, 83, 84, 85, 86, 87, 88, 106, 107, 110, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139,
-        140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152,
+        140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153,
       ],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);

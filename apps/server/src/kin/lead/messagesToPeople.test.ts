@@ -43,6 +43,7 @@ import * as Handoff from "./Handoff.ts";
 import { LeadMemory } from "./LeadMemory.ts";
 import { handlers as leadHandlers } from "./mcp/handlers.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
+import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { KinWorkers } from "./Workers.ts";
 
 const chief = KinAgentId.make("chief");
@@ -127,14 +128,22 @@ const rowsIn = (sql: SqlClient.SqlClient, orgId: KinOrgId, chatId: KinChatId) =>
   sql<{ author: string; body: string }>`SELECT author_kind AS author, body FROM kin_messages
     WHERE org_id = ${orgId} AND chat_id = ${chatId} ORDER BY seq`;
 
-// Ambermill, run 4 (16 Nov 2026): every kin_relay from the owner's chat to a teammate was
-// refused by the floor ("The intent or grant is invalid", or not granted in an empty chat); only
-// check-in nudges arrived. Each route a message to a person takes, by the tool call the agent
-// makes, through the level gate, the chat service and the floor into the stored chat.
-it.effect("every route a message to a person takes arrives in their chat", () =>
-  // Monday 16 November 2026, 11:30 in India, set before Kin's schedules start.
+type Phase = "day" | "night" | "urgent";
+// Everyone here is on UTC, and quiet hours are 22:00 to 07:00.
+const START: Record<Phase, number> = {
+  day: Date.UTC(2026, 10, 16, 12),
+  night: Date.UTC(2026, 10, 15, 23, 30),
+  urgent: Date.UTC(2026, 10, 15, 23, 30),
+};
+const MORNING = Date.UTC(2026, 10, 16, 7);
+
+// Ambermill, run 4 (16 Nov 2026): kin_relay to a teammate was refused by the floor, and later in
+// their quiet hours. Each route a message to a person takes, by the agent's tool call, through
+// the gate, the chat service and the floor into their chat; in quiet hours, held until 07:00.
+const routes = (phase: Phase) =>
+  // Set before Kin's schedules start. Each route waits 11 minutes, so none answers a fresh message.
   Effect.andThen(
-    TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
+    TestClock.setTime(START[phase]),
     Effect.gen(function* () {
       const kin = yield* Kin.KinServer;
       const services = Option.getOrThrow(kin.services);
@@ -150,6 +159,14 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       });
       const owner = resolved!;
       const { orgId } = owner;
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:30', '18:30', '03:00',
+          0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
+        ON CONFLICT (org_id) DO UPDATE SET time_zone = 'UTC'`;
+      const later = TestClock.adjust("11 minutes");
+      const urgent = phase === "urgent" ? { urgent: "Invented: the client demo is at 08:00" } : {};
+      /** A relay as the agent sends it, a while after what it answers. */
+      const relay = (args: Record<string, unknown>) =>
+        Effect.andThen(later, call("kin_relay", { ...args, ...urgent }));
       yield* sql`UPDATE kin_people SET display_name = 'Rhea Kapoor' WHERE person_id = ${owner.personId}`;
       const allDay = '{"days":[0,1,2,3,4,5,6],"start":"00:00","end":"23:59"}';
       for (const [id, name, access] of [
@@ -159,7 +176,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       ] as const) {
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
           access, time_zone, work_hours_json)
-        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'Asia/Kolkata', ${allDay})`;
+        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'UTC', ${allDay})`;
         yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
           VALUES (${`${id}-session`}, ${orgId}, ${id}, 0)`;
       }
@@ -226,21 +243,36 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       const devsChat = yield* direct("dev");
 
       const outcomes: Array<readonly [string, string]> = [];
+      const held: Array<{ route: string; chatId: KinChatId; author: string; body: string }> = [];
+      const copies = (chatId: KinChatId, expected: { author: string; body: string }) =>
+        rowsIn(sql, orgId, chatId).pipe(
+          Effect.map(
+            (rows) =>
+              rows.filter(
+                (row) => row.author === expected.author && row.body.includes(expected.body),
+              ).length,
+          ),
+        );
+      /** It is in their chat now; or nothing is, it waits in the store, and the agent was told 07:00. */
       const arrived = Effect.fn("test.arrived")(function* (
         route: string,
-        result: { ok: boolean; value: unknown },
+        result: { ok: boolean; value: Record<string, unknown> },
         chatId: KinChatId,
         expected: { author: string; body: string },
       ) {
         const last = yield* lastIn(chatId);
-        outcomes.push([
-          route,
-          !result.ok
-            ? `refused: ${JSON.stringify(result.value)}`
-            : last?.author === expected.author && last.body.includes(expected.body)
-              ? "arrived"
-              : `missing: ${JSON.stringify(last)}`,
-        ]);
+        if (!result.ok) return outcomes.push([route, `refused: ${JSON.stringify(result.value)}`]);
+        if (last?.author === expected.author && last.body.includes(expected.body))
+          return outcomes.push([route, "arrived"]);
+        const [waiting] = yield* sql`SELECT 1 FROM kin_held_posts WHERE org_id = ${orgId}
+          AND chat_id = ${chatId} AND delivered_at IS NULL AND instr(body, ${expected.body}) > 0`;
+        const note = result.value.note;
+        if (waiting === undefined || (yield* copies(chatId, expected)) > 0)
+          return outcomes.push([route, `missing: ${JSON.stringify(last)}`]);
+        if (typeof note === "string" && !note.includes("07:00 their time"))
+          return outcomes.push([route, `held, but the agent was told: ${note}`]);
+        held.push({ route, chatId, ...expected });
+        return outcomes.push([route, "held"]);
       });
 
       // Owner's chat → a teammate whose chat with the agent is empty.
@@ -248,7 +280,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       const ask = yield* says(owner, ownerChat, "Ask Dev whether the booking app is on track.");
       yield* arrived(
         "owner's chat → teammate, empty chat",
-        yield* call("kin_relay", {
+        yield* relay({
           to: "Dev",
           text: "Is the Lumen Grove booking app on track for the 30 Nov review?",
           sourceEventId: (yield* sql<{ messageId: string }>`SELECT json_extract(json, '$.messageId')
@@ -263,7 +295,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       yield* replies(zoyasChat, "I've sent this to Rhea and will tell you what she decides.");
       yield* arrived(
         "teammate → owner",
-        yield* call("kin_relay", {
+        yield* relay({
           to: "Rhea Kapoor",
           text: "Can the booking flow copy move a week?",
           sourceEventId: zoyaAsks,
@@ -275,7 +307,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       yield* call("record_update", { key: task, sourceEventId: answer, due: "2026-12-18" });
       yield* arrived(
         "owner's answer → the teammate who asked, agent spoke last",
-        yield* call("kin_relay", {
+        yield* relay({
           to: "Zoya",
           text: "Rhea says yes: the booking flow copy is now due 18 December.",
           sourceEventId: answer,
@@ -288,7 +320,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       const toLead = yield* says(person("zoya"), zoyasChat, "Can Dev review my copy first?");
       yield* arrived(
         "teammate → project lead",
-        yield* call("kin_relay", {
+        yield* relay({
           to: "Dev Kulkarni",
           text: "Could you review the booking flow copy before it ships?",
           sourceEventId: toLead,
@@ -307,7 +339,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       const meeting = yield* says(owner, ownerChat, "Ask Zoya how the meeting went.");
       yield* arrived(
         "owner's chat → teammate, her reply pending",
-        yield* call("kin_relay", {
+        yield* relay({
           to: "Zoya Sheikh",
           text: "How did yesterday's booking-flow review with Lumen Grove go?",
           sourceEventId: meeting,
@@ -331,7 +363,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       const coOwner = yield* says(person("meera"), meerasChat, "Tell Dev the client call moved.");
       yield* arrived(
         "co-owner's chat → teammate",
-        yield* call("kin_relay", {
+        yield* relay({
           to: "Dev",
           text: "The Lumen Grove call moved to Thursday at 3 pm.",
           sourceEventId: coOwner,
@@ -359,6 +391,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
         }),
       });
       const pulse = yield* call("pulse_read", {});
+      yield* later;
       const late = (pulse.value.facts as ReadonlyArray<{ key: string }>).find((fact) =>
         fact.key.startsWith("task_late"),
       );
@@ -375,7 +408,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       );
       yield* arrived(
         "check-in relay → teammate",
-        yield* call("kin_relay", {
+        yield* relay({
           to: "Dev Kulkarni",
           text: "Morning: the booking app review is Thursday.",
           sourceEventId: `event:${checkIn}`,
@@ -386,6 +419,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
 
       // Assignment and hand-back notices: Kin's own rows, in the person's chat with the agent.
       const give = yield* says(owner, ownerChat, "Give the copy task to Dev.");
+      yield* later;
       yield* arrived(
         "assignment notice → new holder",
         yield* call("record_assign", {
@@ -399,6 +433,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       yield* sql`UPDATE kin_records SET assigned_by_person_id = ${owner.personId}, assigned_by_agent_id = NULL
         WHERE org_id = ${orgId} AND key = ${task}`;
       const handBack = yield* says(person("dev"), devsChat, "I can't take the copy task.");
+      yield* later;
       yield* arrived(
         "hand-back notice → who gave it",
         yield* call("record_hand_back", {
@@ -410,24 +445,96 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
         { author: "system", body: `Dev Kulkarni handed ${task} Booking flow copy back` },
       );
 
-      assert.deepStrictEqual(outcomes, [
-        ["owner's chat → teammate, empty chat", "arrived"],
-        ["teammate → owner", "arrived"],
-        ["owner's answer → the teammate who asked, agent spoke last", "arrived"],
-        ["teammate → project lead", "arrived"],
-        ["owner's chat → teammate, her reply pending", "arrived"],
-        ["the teammate's own reply after a relay", "arrived"],
-        ["co-owner's chat → teammate", "arrived"],
-        ["check-in nudge → teammate", "arrived"],
-        ["check-in relay → teammate", "arrived"],
-        ["assignment notice → new holder", "arrived"],
-        ["hand-back notice → who gave it", "arrived"],
-      ]);
       // A message to a person never takes a chat's floor: the agent answered Zoya twice, once each.
       const [run] = yield* sql<{ turns: number }>`SELECT agent_turns AS turns FROM kin_floor_runs
       WHERE org_id = ${orgId} AND chat_id = ${zoyasChat} ORDER BY opened_at DESC, rowid DESC LIMIT 1`;
       assert.strictEqual(run?.turns, 1);
+
+      // Whatever the hour, a relay answering what she wrote a few minutes ago goes now.
+      yield* chats.send(person("zoya"), {
+        chatId: zoyasChat,
+        body: "Is Thursday's review still on?",
+        clientMessageId: "review-on",
+      });
+      yield* TestClock.adjust("5 minutes");
+      const fresh = yield* says(owner, ownerChat, "Tell Zoya the review is still on.");
+      yield* arrived(
+        "a relay answering her message from 5 minutes ago",
+        yield* call("kin_relay", {
+          to: "Zoya",
+          text: "Yes, Thursday's review is still on.",
+          sourceEventId: fresh,
+        }),
+        zoyasChat,
+        { author: "agent", body: "still on" },
+      );
+
+      // 07:00: each held message is in its chat once, Dev's in the order they were sent.
+      yield* TestClock.setTime(MORNING + 60_000);
+      yield* deliverHeld(orgId, chats);
+      assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
+      for (const one of held)
+        outcomes.push([
+          one.route,
+          (yield* copies(one.chatId, one)) === 1 ? "arrived at 07:00, once" : "not delivered once",
+        ]);
+      const devs = yield* rowsIn(sql, orgId, devsChat);
+      const order = held
+        .filter((one) => one.chatId === devsChat)
+        .map((one) => devs.findIndex((row) => row.body.includes(one.body)));
+      assert.deepStrictEqual(
+        order,
+        order.toSorted((a, b) => a - b),
+      );
+
+      return outcomes;
     }).pipe(Effect.provide(layer)),
+  );
+
+const ROUTES = [
+  "owner's chat → teammate, empty chat",
+  "teammate → owner",
+  "owner's answer → the teammate who asked, agent spoke last",
+  "teammate → project lead",
+  "owner's chat → teammate, her reply pending",
+  "the teammate's own reply after a relay",
+  "co-owner's chat → teammate",
+  "check-in nudge → teammate",
+  "check-in relay → teammate",
+  "assignment notice → new holder",
+  "hand-back notice → who gave it",
+  "a relay answering her message from 5 minutes ago",
+];
+/** Every route, `now` arriving at once and the rest held, then each of those delivered at 07:00. */
+const expected = (now: ReadonlyArray<string>): Array<readonly [string, string]> => [
+  ...ROUTES.map((route) => [route, now.includes(route) ? "arrived" : "held"] as const),
+  ...ROUTES.filter((route) => !now.includes(route)).map(
+    (route) => [route, "arrived at 07:00, once"] as const,
+  ),
+];
+const ANSWERS = ["the teammate's own reply after a relay", ROUTES[11]!];
+
+it.effect("every route a message to a person takes arrives in their chat", () =>
+  Effect.map(routes("day"), (outcomes) => assert.deepStrictEqual(outcomes, expected(ROUTES))),
+);
+
+it.effect("in their quiet hours every route is held and arrives at 07:00, once", () =>
+  Effect.map(routes("night"), (outcomes) => assert.deepStrictEqual(outcomes, expected(ANSWERS))),
+);
+
+it.effect("an urgent relay arrives in their quiet hours; nudges and notices wait", () =>
+  Effect.map(routes("urgent"), (outcomes) =>
+    assert.deepStrictEqual(
+      outcomes,
+      expected(
+        ROUTES.filter(
+          (route) =>
+            !["check-in nudge → teammate", "assignment notice → new holder", ROUTES[10]].includes(
+              route,
+            ),
+        ),
+      ),
+    ),
   ),
 );
 
