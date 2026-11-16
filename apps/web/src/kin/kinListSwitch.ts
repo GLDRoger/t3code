@@ -1,7 +1,6 @@
 import {
   kinInboxAttention,
   kinOtherList,
-  kinStartListFor,
   NO_KIN_LIST_ATTENTION,
   type KinList,
   type KinListAttention,
@@ -15,7 +14,6 @@ import type { AnyRouter } from "@tanstack/react-router";
 import { Atom, type AtomRegistry } from "effect/reactivity";
 
 import { isAppModalPage, mainAppReturnHref } from "../components/sidebar/mainAppLocation";
-import { ensureClientSettingsHydrated, getClientSettings } from "../hooks/useSettings";
 import { registerCommands } from "../shortcuts/dispatcher";
 import { environmentPresentations } from "../state/presentation";
 import { environmentThreadShells } from "../state/threads";
@@ -24,22 +22,10 @@ import { KIN_PLACE_PATH } from "./kinPlaces";
 import type { KinWorkTarget } from "./useKinWork";
 import { hasSavedKinHost, kinHostAtom } from "./useKinHost";
 
-const LAST_LIST_STORAGE_KEY = "t3code:kin:lastList";
-
 export function kinListAt(pathname: string): KinList {
   return pathname === "/kin" || pathname.startsWith("/kin/") ? "kin" : "threads";
 }
 
-function readLastList(): KinList | null {
-  try {
-    const value = window.localStorage.getItem(LAST_LIST_STORAGE_KEY);
-    return value === "kin" || value === "threads" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-let lastUsed: KinList | null = typeof window === "undefined" ? null : readLastList();
 let lastKinHref: string | null = null;
 let listBehindModal: KinList = "threads";
 // The chat last open, for Chats on a wide window; null before one has been.
@@ -73,16 +59,6 @@ export function kinListShownAt(pathname: string): KinList {
   return isAppModalPage(pathname) ? listBehindModal : kinListAt(pathname);
 }
 
-function recordList(list: KinList) {
-  if (list === lastUsed) return;
-  lastUsed = list;
-  try {
-    window.localStorage.setItem(LAST_LIST_STORAGE_KEY, list);
-  } catch {
-    // Storage can be full or blocked; the next launch falls back to threads.
-  }
-}
-
 /** Where the mark leads from `current`: the other list, back where you left it. */
 export function kinListSwitchHref(current: KinList): string {
   return kinOtherList(current) === "kin" ? (lastKinHref ?? "/kin") : mainAppReturnHref();
@@ -103,7 +79,7 @@ const settledKinHostAtom = Atom.make((get): KinHost => {
 }).pipe(Atom.withLabel("kin:host-settled"));
 
 /**
- * Remembers the last list and Kin chat, and opens a fresh launch to the list the setting picks.
+ * Remembers the last Kin page and chat, and opens a fresh launch to Kin while a host runs it.
  * Only a launch at `/` is redirected; a deep link or a reload keeps its page.
  */
 export function startKinListTracking(
@@ -120,7 +96,6 @@ export function startKinListTracking(
     const page = pathname.split("/")[4];
     if (page !== undefined && !KIN_NOT_CHAT.has(page) && pathname.split("/").length === 5)
       lastKinChatId = page;
-    recordList(list);
   };
   record();
   const stopRecording = router.subscribe("onResolved", record);
@@ -128,14 +103,7 @@ export function startKinListTracking(
   let stopBounce = () => {};
   let cancelled = false;
   const openStartList = async () => {
-    await ensureClientSettingsHydrated().catch(() => undefined);
     if (cancelled || router.state.location.pathname !== "/") return;
-    const start = kinStartListFor({
-      setting: getClientSettings().kinStartList,
-      lastUsed,
-      kinSeen: true,
-    });
-    if (start !== "kin") return;
     await router.navigate({ to: "/kin", replace: true });
     if (cancelled) return;
     // The saved host may have turned Kin off since; then the launch belongs on threads.
@@ -192,7 +160,9 @@ export function registerKinListCommands(
   );
   const stopSwitch = registerCommands({
     "kin.switchList": (event) => {
+      // Kin doesn't offer the coding threads, so the shortcut only leads back into Kin.
       if (registry.get(kinHostAtom)._tag !== "host") return false;
+      if (kinListShownAt(router.state.location.pathname) === "kin") return false;
       event.preventDefault();
       event.stopPropagation();
       if (event.repeat) return;

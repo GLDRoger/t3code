@@ -221,21 +221,21 @@ export const KinPulseToolkit = Toolkit.make(
   Tool.make("pulse_read", {
     ...shared,
     description:
-      "What needs attention now, computed by Kin from its records: late or stalled tasks, overdue invoices, unanswered quotes, renewals, budgets, failed workers. Each fact has a key, a consequence line and who should act. Use it for any question about what is late, overdue or needs someone today, instead of memory. Read-only.",
+      "What needs attention now, computed from Kin's records: late or stalled tasks, overdue invoices, unanswered quotes, renewals, budgets, failed workers; each fact with a key, its consequence and who should act. Use it, not memory, for what is late, overdue or due today. Read-only.",
     parameters: PulseReadInput,
     success: KinPulseRead,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("pulse_handle", {
     ...shared,
     description:
-      "Mark a pulse fact as in hand (got_it, optionally until a date) or not a problem, so it stops coming back; undo takes that back. Use it once you have acted on a fact or decided it needs nothing.",
+      "Once you have acted on a pulse fact or decided it needs nothing: mark it got_it (optionally until a date) or not a problem so it stops coming back; undo takes that back.",
     parameters: PulseHandleInput,
     success: KinPulseFact,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("pulse_nudge", {
     ...shared,
     description:
-      "Nudge a teammate about one of their open Work facts: Kin posts your one line in their own chat with you. Only with a concrete consequence (a date missed, someone blocked, a client waiting). At most one a day per person, and refused while your last nudge to them is unanswered: then replan, take it over or tell the owner. Owner-only turns.",
+      "Nudge a teammate about one of their open Work facts: Kin posts your one line in their chat with you. Only with a concrete consequence (a date missed, someone blocked, a client waiting). Refused while your last nudge to them is unanswered: then replan, take it over or tell the owner.",
     parameters: PulseNudgeInput,
     success: PulseNudgeResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

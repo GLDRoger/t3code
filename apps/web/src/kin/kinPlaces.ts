@@ -1,5 +1,5 @@
 import { kinInMoney } from "@t3tools/client-runtime/kin/kinMoney";
-import { KinDocSectionId, KinListId, KinRecordKey } from "@t3tools/contracts";
+import { KinAgentId, KinDocSectionId, KinListId, KinRecordKey } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import type { KinDocWhere } from "./KinDocPage";
@@ -43,6 +43,21 @@ export interface KinPlaceSearch {
 }
 
 export type KinPlaceDialog = "new" | "search";
+
+/** An agent's page, open over whatever Kin page is under it. */
+export interface KinAgentSearch {
+  agent?: KinAgentId;
+}
+
+const isAgent = Schema.is(KinAgentId);
+export const validateKinAgentSearch = (raw: Record<string, unknown>): KinAgentSearch =>
+  isAgent(raw.agent) ? { agent: raw.agent } : {};
+
+/** The address with an agent's page open over it; Settings closes as it opens. */
+export const withKinAgentPage = <T extends object>(search: T, agent: KinAgentId) => {
+  const { settings: _closed, ...rest } = search as T & { readonly settings?: unknown };
+  return { ...rest, agent };
+};
 
 const isKey = Schema.is(KinRecordKey);
 const isList = Schema.is(KinListId);

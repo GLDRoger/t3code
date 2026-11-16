@@ -7,12 +7,13 @@ import {
   KinEventId,
   KinMemberId,
   KinMessageId,
+  KinPersonId,
   KinWakeupId,
+  ThreadId,
   TrimmedNonEmptyString,
   type KinAuthor,
   type KinChat,
   type KinOrgId,
-  type KinPersonId,
   type KinPrincipal,
 } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
@@ -42,6 +43,8 @@ import { CHIEF_OF_STAFF_DOMAIN } from "../lead/orgLeads.ts";
 import { ownerLevel, ownerLevelPeople } from "../people/KinAccess.ts";
 import { dayIn } from "../work/money.ts";
 import { owedInvoices, ownerZone, startOfDay } from "../work/recordRows.ts";
+import { personQuietUntil } from "../triggers/quietHold.ts";
+import { changesIn } from "../lead/undoSection.ts";
 import { stakeholders } from "./stakes.ts";
 import { TEAM_ROOM_MUTED, TEAM_ROOM_TITLE, teamRoomOf } from "./teamRoom.ts";
 import * as Turns from "./turns.ts";
@@ -97,14 +100,6 @@ export const TeamSayInput = Schema.Struct({
       description: "With end: the one line the owner reads, saying what was decided.",
     }),
   ),
-  did: Schema.optional(
-    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(160)))
-      .check(Schema.isMaxLength(10))
-      .annotate({
-        description:
-          'With decide: what you already changed inside the company, one per line with its key, such as "Task W-4 for Social". "Undo it" reverses these.',
-      }),
-  ),
   positions: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -152,13 +147,26 @@ type Row = {
   readonly askChatId: KinChatId | null;
   readonly askAgentId: KinAgentId | null;
   readonly outcome: string | null;
-  readonly did: ReadonlyArray<string>;
+  /** A disagreement card an agent-started discussion holds for the owner's next note. */
+  readonly card: HeldCard | null;
   readonly lastAt: number;
   readonly toldAt: number | null;
   readonly d: Turns.Discussion;
   readonly turn: StoredTurn | null;
 };
 
+const HeldCard = Schema.Struct({
+  chatId: KinChatId,
+  agentId: KinAgentId,
+  ownerPersonId: KinPersonId,
+  threadId: ThreadId,
+  question: Schema.String,
+  detail: Schema.String,
+  options: Schema.Array(Schema.String),
+});
+type HeldCard = typeof HeldCard.Type;
+const decodeCard = Schema.decodeUnknownOption(Schema.fromJsonString(HeldCard));
+const encodeCard = Schema.encodeSync(Schema.fromJsonString(HeldCard));
 const Json = Schema.fromJsonString(Schema.Unknown);
 const decodeJson = Schema.decodeUnknownSync(Json);
 const encodeJson = Schema.encodeSync(Json);
@@ -328,7 +336,7 @@ const make = Effect.gen(function* () {
       state: Turns.DiscussionState;
       final: number;
       outcome: string | null;
-      did: string;
+      card: string | null;
       messages: number;
       units: number;
       objectionUsed: number;
@@ -343,7 +351,7 @@ const make = Effect.gen(function* () {
     }>`SELECT discussion_id AS "discussionId", chat_id AS "chatId", topic, question, widened,
         decider_agent_id AS decider, opened_by_agent_id AS "openedBy", origin,
         ask_chat_id AS "askChatId", ask_agent_id AS "askAgentId", state, final, outcome,
-        did_json AS did, messages, units, objection_used AS "objectionUsed",
+        card_json AS card, messages, units, objection_used AS "objectionUsed",
         after_objection AS "afterObjection", pending_json AS pending, turn_json AS turn,
         offers_json AS offers, speakers_json AS speakers, chaired, last_at AS "lastAt",
         told_at AS "toldAt"
@@ -361,7 +369,7 @@ const make = Effect.gen(function* () {
       askChatId: row.askChatId,
       askAgentId: row.askAgentId,
       outcome: row.outcome,
-      did: decodeJson(row.did) as ReadonlyArray<string>,
+      card: row.card === null ? null : Option.getOrNull(decodeCard(row.card)),
       lastAt: row.lastAt,
       toldAt: row.toldAt,
       turn,
@@ -438,7 +446,7 @@ const make = Effect.gen(function* () {
       readonly said?: boolean;
       readonly question?: string;
       readonly outcome?: string;
-      readonly did?: ReadonlyArray<string>;
+      readonly card?: HeldCard;
       readonly lastAt?: number;
     } = {},
   ) {
@@ -453,7 +461,8 @@ const make = Effect.gen(function* () {
     if (d.turn !== null) turn = sameTurn ? row.turn : { ...d.turn, eventId: null, said: false };
     yield* sql`UPDATE kin_discussions SET state = ${d.state}, final = ${d.final ? 1 : 0},
         question = ${changes.question ?? row.question}, widened = ${d.widened ? 1 : 0},
-        outcome = ${changes.outcome ?? row.outcome}, did_json = ${encodeJson(changes.did ?? row.did)},
+        outcome = ${changes.outcome ?? row.outcome},
+        card_json = ${changes.card === undefined ? (row.card === null ? null : encodeCard(row.card)) : encodeCard(changes.card)},
         messages = ${d.messages}, units = ${d.units}, objection_used = ${d.objectionUsed ? 1 : 0},
         after_objection = ${d.afterObjection}, pending_json = ${encodeJson(d.pending)},
         turn_json = ${turn === null ? null : encodeJson(turn)}, offers_json = ${encodeJson(d.offers)},
@@ -470,31 +479,51 @@ const make = Effect.gen(function* () {
     if (d.final) yield* tell(orgId, row.discussionId);
   });
 
+  /** Posts a disagreement card in the Chief of staff's chat with the owner: two taps. */
+  const postCard = (orgId: KinOrgId, discussionId: string, card: HeldCard) =>
+    chat.ask(
+      {
+        _tag: "agent",
+        orgId,
+        agentId: card.agentId,
+        ownerPersonId: card.ownerPersonId,
+        threadId: card.threadId,
+        hostPosted: true,
+      },
+      {
+        chatId: card.chatId,
+        clientMessageId: `kin-team-bring:${discussionId}`,
+        question: card.question,
+        detail: card.detail,
+        options: card.options.map((label) => ({ label, kind: undefined })),
+      },
+    );
+
   /**
-   * The owner hears an ended discussion once. Asked by him: the answer comes back to the agent he
-   * asked as a quiet callout naming who it came from, and that agent tells him in one line. Started
-   * by the agents: it waits for the Chief of staff's next note (`pulse/senses/team.ts`).
-   */
-  /**
-   * The outcome as one line in the opener's chat with the owner, with its link, once. His own
-   * request hears it at once and rings; an agent-started one is held until his next check-in runs
-   * (`deliverHeld`). A disagreement is told by its card, posted when it is brought.
+   * The owner hears an ended discussion once. His own request hears it at once and rings, as one
+   * line in the opener's chat with what changed and a link. One the agents started waits for his
+   * next note: the check-in that runs next, or the sweep's first pass outside his quiet hours when
+   * no check-in is set (`deliverHeld`). A disagreement is told by its card, held the same way.
    */
   const tell = Effect.fn("KinTeam.tell")(function* (
     orgId: KinOrgId,
     discussionId: string,
-    when: "final" | "check-in" = "final",
+    when: "final" | "check-in" | "note" = "final",
   ) {
     const row = yield* read(orgId, discussionId);
     if (row === undefined || !row.d.final) return;
     if (row.askChatId === null) return;
-    const card = row.d.state === "escalated";
-    if (when === "final" && row.origin !== "owner" && !card) return;
+    if (when === "final" && row.origin !== "owner") return;
     const claimed =
       yield* sql`UPDATE kin_discussions SET told_at = ${yield* Clock.currentTimeMillis}
       WHERE org_id = ${orgId} AND discussion_id = ${discussionId} AND told_at IS NULL
       RETURNING discussion_id`;
-    if (claimed.length === 0 || card) return;
+    if (claimed.length === 0) return;
+    // His own request's card went out when it was brought; only a held one is stored.
+    if (row.d.state === "escalated") {
+      if (row.card !== null) yield* postCard(orgId, discussionId, row.card);
+      return;
+    }
     const last = yield* latest(orgId, row);
     const from =
       last?.author._tag === "agent" ? last.author.agentId : KinAgentId.make(row.d.decider);
@@ -502,26 +531,38 @@ const make = Effect.gen(function* () {
       row.d.state === "parked"
         ? `Parked: ${row.outcome ?? "the agents couldn't settle it, and nothing changed."}`
         : (row.outcome ?? "Decided.");
+    // What it changed, by name, from the record of changes: the same list "undo it" reads.
+    const changed = new Map<string, string>();
+    for (const change of (yield* changesIn(orgId, discussionId).pipe(access)).toReversed())
+      if (!changed.has(change.key) || change.kind === "created")
+        changed.set(
+          change.key,
+          `${change.title.replace(/\s+/g, " ").trim()} (${change.kind === "created" ? "new" : "changed"})`,
+        );
     yield* chat.notice({
       orgId,
       chatId: row.askChatId,
       audience: "owner",
       messageId: KinMessageId.make(`kin-team-back:${hash(`${orgId}:${discussionId}`)}`),
-      body: [oneLine(said), ...(row.did.length > 0 ? [`Done: ${row.did.join("; ")}`] : [])].join(
-        "\n",
-      ),
+      body: [
+        oneLine(said),
+        ...(changed.size > 0 ? [`Done: ${[...changed.values()].slice(0, 6).join("; ")}`] : []),
+      ].join("\n"),
       relay: { kind: "reply_from", agentId: from },
       discussionId: row.discussionId,
-      ...(when === "final" ? {} : { silent: true as const }),
+      ...(when === "check-in" ? { silent: true as const } : {}),
     });
   });
 
-  /** Agent-started outcomes not yet told, told beside the check-in that just ran. */
-  const deliverHeld = Effect.fn("KinTeam.deliverHeld")(function* (orgId: KinOrgId) {
+  /** Agent-started outcomes and cards not yet told, told at the owner's note time. */
+  const deliverHeld = Effect.fn("KinTeam.deliverHeld")(function* (
+    orgId: KinOrgId,
+    when: "check-in" | "note",
+  ) {
     const held = yield* sql<{ discussionId: string }>`SELECT discussion_id AS "discussionId"
       FROM kin_discussions WHERE org_id = ${orgId} AND final = 1 AND told_at IS NULL
         AND origin = 'agent' ORDER BY ended_at, discussion_id`;
-    for (const { discussionId } of held) yield* tell(orgId, discussionId, "check-in");
+    for (const { discussionId } of held) yield* tell(orgId, discussionId, when);
   });
 
   const nameOf = (all: ReadonlyArray<Agent>, agentId: string | undefined) =>
@@ -815,31 +856,30 @@ const make = Effect.gen(function* () {
           lastAt: now,
           ...(input.widen === undefined ? {} : { question: oneLine(input.widen) }),
           ...(input.outcome === undefined ? {} : { outcome: oneLine(input.outcome) }),
-          ...(input.did === undefined ? {} : { did: input.did.map(oneLine) }),
         });
         if (end === "bring" && input.positions !== undefined && input.options !== undefined) {
           const chair = all.find((agent) => agent.agentId === row.d.chair);
-          if (chair !== undefined)
-            yield* chat.ask(
-              {
-                _tag: "agent",
-                orgId: ctx.orgId,
-                agentId: ctx.agentId,
-                ownerPersonId: ctx.ownerPersonId,
-                threadId: ctx.threadId,
-                hostPosted: true,
-              },
-              {
-                chatId: chair.ownerChatId,
-                clientMessageId: `kin-team-bring:${row.discussionId}`,
-                question: (input.outcome ?? row.topic).slice(0, 240),
-                detail: [
-                  ...input.positions.map((p) => `${p.agent}: ${oneLine(p.position)}`),
-                  `I lean: ${oneLine(input.lean ?? "")}`,
-                ].join("\n"),
-                options: input.options.map((label) => ({ label, kind: undefined })),
-              },
-            );
+          const card: HeldCard | undefined =
+            chair === undefined
+              ? undefined
+              : {
+                  chatId: chair.ownerChatId,
+                  agentId: ctx.agentId,
+                  ownerPersonId: ctx.ownerPersonId,
+                  threadId: ctx.threadId,
+                  question: (input.outcome ?? row.topic).slice(0, 240),
+                  detail: [
+                    ...input.positions.map((p) => `${p.agent}: ${oneLine(p.position)}`),
+                    `I lean: ${oneLine(input.lean ?? "")}`,
+                  ].join("\n"),
+                  options: input.options,
+                };
+          // His own request asks him now; one the agents started waits for his next note.
+          if (card !== undefined && row.origin === "owner")
+            yield* postCard(ctx.orgId, row.discussionId, card);
+          else if (card !== undefined)
+            yield* sql`UPDATE kin_discussions SET card_json = ${encodeCard(card)}
+              WHERE org_id = ${ctx.orgId} AND discussion_id = ${row.discussionId}`;
         }
         return {
           discussion: row.discussionId,
@@ -884,7 +924,7 @@ const make = Effect.gen(function* () {
       const checkIn = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
         AND wakeup_id = ${input.wakeupId} AND tag = 'pulse'
         AND json_extract(json, '$.checkIn') IS NOT NULL LIMIT 1`;
-      if (checkIn.length > 0) yield* sql.withTransaction(deliverHeld(input.orgId));
+      if (checkIn.length > 0) yield* sql.withTransaction(deliverHeld(input.orgId, "check-in"));
       for (const { discussionId } of held)
         yield* sql.withTransaction(
           Effect.gen(function* () {
@@ -917,6 +957,25 @@ const make = Effect.gen(function* () {
               Effect.logWarning("Kin Team room upkeep failed", { orgId, cause }),
             ),
           );
+      // With no check-in set, the next note is the first pass outside the owner's quiet hours.
+      const held = yield* sql<{ orgId: KinOrgId; owner: KinPersonId }>`SELECT DISTINCT
+          d.org_id AS "orgId", a.owner_person_id AS owner FROM kin_discussions d
+        JOIN kin_agents a ON a.org_id = d.org_id AND a.agent_id = d.opened_by_agent_id
+        WHERE d.final = 1 AND d.told_at IS NULL AND d.origin = 'agent'
+          AND NOT EXISTS (SELECT 1 FROM kin_schedules s JOIN scheduled_tasks t ON t.task_id = s.task_id
+            JOIN kin_agents o ON o.org_id = s.org_id AND o.agent_id = s.agent_id
+            WHERE s.org_id = d.org_id AND o.owner_person_id = a.owner_person_id AND s.check_in = 1
+              AND s.deleted_at IS NULL AND t.enabled = 1)
+        ORDER BY d.org_id`;
+      for (const { orgId, owner } of held)
+        if ((yield* personQuietUntil(orgId, owner, now).pipe(access)) === undefined)
+          yield* sql
+            .withTransaction(deliverHeld(orgId, "note"))
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin held Team-room outcome not told", { orgId, cause }),
+              ),
+            );
       const rows = yield* sql<{
         orgId: KinOrgId;
         discussionId: string;

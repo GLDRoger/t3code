@@ -380,7 +380,10 @@ export async function capturePrompts(
           other.some((one) => one.name === section.name && one.text === section.text),
         ),
     }));
-    const own = captured.tools?.result?.tools ?? [];
+    const listed = captured.tools?.result?.tools ?? [];
+    const deferred = (tool: Record<string, unknown>) =>
+      (tool._meta as Record<string, unknown> | undefined)?.["anthropic/alwaysLoad"] === false;
+    const own = listed.filter((tool) => !deferred(tool));
     const toolTokens = own.reduce((sum, tool) => sum + tokensOf(facing(tool)), 0);
     const turnTokens = tokensOf(text);
     // Caching is by prefix: the longest start this prompt shares with another of the same agent.
@@ -397,6 +400,7 @@ export async function capturePrompts(
       systemTokens,
       toolTokens,
       toolCount: own.length,
+      deferredCount: listed.length - own.length,
       totalTokens: total,
       cacheableShare: total === 0 ? 0 : (systemTokens + toolTokens + prefix) / total,
     };

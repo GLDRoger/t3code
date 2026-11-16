@@ -1262,9 +1262,7 @@ it.effect(
       // Taken away: she reads what was said and can add nothing, and can't start over.
       assert.deepStrictEqual(
         yield* owner["kin.lead.access.revoke"]({ ...lead, personId: priyaId }),
-        {
-          people: [],
-        },
+        { everyone: false, people: [] },
       );
       assert.include(yield* send(priya, chat.chatId, "hers-2").pipe(Effect.flip), {
         reason: "not_allowed",

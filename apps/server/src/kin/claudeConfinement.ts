@@ -114,6 +114,8 @@ export const permits = Effect.fn("KinClaudeConfinement.permits")(function* (
   input: unknown,
 ) {
   if (tool.startsWith("mcp__")) return scope.mcp !== false;
+  // Loads deferred MCP schemas; it reads no file.
+  if (tool === "ToolSearch") return scope.mcp !== false;
   const root = scope.root;
   if (root === undefined || !scope.tools.includes(tool)) return false;
   // The OS sandbox judges what a command reaches; this keeps every command inside it, in front.

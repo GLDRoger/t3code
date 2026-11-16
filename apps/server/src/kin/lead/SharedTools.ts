@@ -134,6 +134,8 @@ export const SHARED_TOOLS = {
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",
+  // An agent's model is the owner's call, made in the owner's own chat.
+  agent_update: "refused",
   // What everyone in the org sees on profiles; workload only in the owner's own turns.
   people_read: "allowed",
   // Saved only for the one person who asked, with their own rights.
@@ -226,6 +228,21 @@ export const SHARED_TOOLS = {
   // A shell's worth of reach as the owner, on his GitHub login (`AgentSession`).
   ...t3ToolsRefused,
 } satisfies Record<string, SharedToolPolicy>;
+
+/**
+ * Whether a shared thread lists `name`. Its turns are never owner-only (`effectiveAudience`), so a
+ * tool refused there, or one without a line, can't succeed in any of them.
+ */
+export const listedOnSharedThread = (name: string) => {
+  const policy: SharedToolPolicy | undefined = Object.hasOwn(SHARED_TOOLS, name)
+    ? SHARED_TOOLS[name as keyof typeof SHARED_TOOLS]
+    : undefined;
+  return (policy !== undefined && policy !== "refused") || STILL_LISTED_WHEN_SHARED.has(name);
+};
+
+// A teammate asks for reminders (eval kin-owed-teammate-time-from-profile) though the gate refuses
+// them in shared turns; listed as before until that is decided.
+const STILL_LISTED_WHEN_SHARED: ReadonlySet<string> = new Set(["kin_defer"]);
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */
 export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(

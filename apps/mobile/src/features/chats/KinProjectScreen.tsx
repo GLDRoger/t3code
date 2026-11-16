@@ -54,6 +54,7 @@ import { KinWorkHealthWord } from "./KinWorkLists";
 import { KinWorkTaskList } from "./KinWorkScreen";
 import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
+import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import {
@@ -292,6 +293,21 @@ function KinProjectBody(
                 disabled: busy || view.privacy.inherited,
                 onChange: (sensitive) => void change({ sensitive }),
               }}
+              people={
+                <KinProjectPeopleSection
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  view={view}
+                  onChanged={props.onRefresh}
+                  onAdd={() =>
+                    navigation.navigate("KinProjectPeople", {
+                      environmentId,
+                      orgId,
+                      project: view.key,
+                    })
+                  }
+                />
+              }
               docs={
                 <KinDocsUnder
                   environmentId={environmentId}
@@ -344,6 +360,8 @@ function KinProjectSummary(props: {
   };
   /** The docs linked to the project. */
   readonly docs: ReactNode;
+  /** Who is on it, and the ways to change that. */
+  readonly people: ReactNode;
 }) {
   const { view } = props;
   const { party } = view;
@@ -499,16 +517,7 @@ function KinProjectSummary(props: {
           })}
         </KinFoldSection>
       )}
-      {view.people.length === 0 ? null : (
-        <KinFoldSection
-          title={KIN_PROJECTS.people}
-          summary={count(view.people.length, "person", "people")}
-        >
-          {view.people.map((row) => (
-            <ListRowLayout key={row.key} label={row.name} description={row.line} />
-          ))}
-        </KinFoldSection>
-      )}
+      {props.people}
       {view.meetings.length === 0 ? null : (
         <KinFoldSection
           title={KIN_PROJECTS.meetings}

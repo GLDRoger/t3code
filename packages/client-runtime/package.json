@@ -571,6 +571,10 @@
       "types": "./src/kin/kinMessagePage.ts",
       "default": "./src/kin/kinMessagePage.ts"
     },
+    "./kin/kinAgentPage": {
+      "types": "./src/kin/kinAgentPage.ts",
+      "default": "./src/kin/kinAgentPage.ts"
+    },
     "./kin/kinAgentRetire": {
       "types": "./src/kin/kinAgentRetire.ts",
       "default": "./src/kin/kinAgentRetire.ts"
@@ -762,6 +766,10 @@
     "./kin/kinWorkList": {
       "types": "./src/kin/kinWorkList.ts",
       "default": "./src/kin/kinWorkList.ts"
+    },
+    "./kin/kinWorkGroups": {
+      "types": "./src/kin/kinWorkGroups.ts",
+      "default": "./src/kin/kinWorkGroups.ts"
     },
     "./kin/kinWorkClients": {
       "types": "./src/kin/kinWorkClients.ts",

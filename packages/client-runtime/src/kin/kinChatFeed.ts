@@ -8,6 +8,7 @@ import {
   type KinMessage,
   type KinOrgsListResult,
   type KinPersonId,
+  type KinRecordKey,
   type KinWidget,
 } from "@t3tools/contracts";
 import { KIN_VISUAL_FILE_SCHEME } from "@t3tools/shared/kinVisual";
@@ -236,6 +237,8 @@ export type KinFeedRow =
       readonly text: string;
       /** The viewer's message to send again when the lead didn't answer it; null offers nothing. */
       readonly retry: string | null;
+      /** The task or project a hand-off notice is about, to open from the line; null for none. */
+      readonly open: KinNoticeOpen | null;
     }
   /**
    * One agent's words in another's chat (`relay`). `sent_by`: what one agent asked another, on
@@ -282,6 +285,29 @@ const isSystem = (message: KinMessage) =>
   message.kind === "system" || message.author._tag === "system";
 
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
+
+/** What a notice opens: a task ("W-7", "M-2") or a project ("P-2"). */
+export type KinNoticeOpen = {
+  readonly key: KinRecordKey;
+  readonly kind: "task" | "project";
+  readonly label: string;
+};
+// The host's notices of a task or project that came to someone (`assignNotices.ts`).
+const HANDED = "kin-assign-";
+const NOTICE_KEY = /\b([A-Z]{1,4})-(\d{1,6})\b/;
+/** The one entry a hand-off notice names, to open from it; a list of several opens none. */
+const kinNoticeOpen = (message: Pick<KinMessage, "messageId" | "body">) => {
+  if (!message.messageId.startsWith(HANDED) || message.body.includes("\n")) return null;
+  const found = NOTICE_KEY.exec(message.body);
+  if (found === null) return null;
+  const key: KinRecordKey = `${found[1]}-${found[2]}`;
+  const project = found[1] === "P";
+  return {
+    key,
+    kind: project ? "project" : "task",
+    label: project ? "Open project" : "Open task",
+  } satisfies KinNoticeOpen;
+};
 
 // The host's notices for a reply that never came (KinReplyBridge); their ids carry the wake-up.
 const RETRY_NOTICES = ["kin-no-reply:", "kin-partway:", "kin-retrying:", "kin-failed:"];
@@ -456,6 +482,7 @@ export function buildKinFeedRows(
         // The client offers Retry, so the host's "send it again" ask is dropped.
         text: notice ? message.body.replace(RETRY_HINT, "") : message.body,
         retry,
+        open: kinNoticeOpen(message),
       });
       previousAuthor = null;
       return;

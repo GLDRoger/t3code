@@ -13,7 +13,16 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
  * backdrop returns to the page that opened it. Keyboard guards that skip dialogs exempt
  * `[data-app-modal]`, because these pages own their shortcuts.
  */
-export function AppRouteModal({ label, children }: { label: string; children: ReactNode }) {
+export function AppRouteModal({
+  label,
+  onClose,
+  children,
+}: {
+  label: string;
+  /** For a modal whose address is a search param over the page: drop the param instead. */
+  onClose?: () => void;
+  children: ReactNode;
+}) {
   const closeAppModal = useCloseAppModal();
   const [open, setOpen] = useState(true);
   // Text selection that ends on the backdrop is not a dismissal.
@@ -40,7 +49,7 @@ export function AppRouteModal({ label, children }: { label: string; children: Re
         setOpen(false);
       }}
       onOpenChangeComplete={(nextOpen) => {
-        if (!nextOpen) void closeAppModal();
+        if (!nextOpen) void (onClose ?? closeAppModal)();
       }}
     >
       <DialogPrimitive.Portal>

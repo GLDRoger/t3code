@@ -681,14 +681,14 @@ it("lists link tools only while a case turns the beta on, and sends chips as T3 
   assert.include(prompt?.text, "environmentId: environment-vps");
 });
 
-it("gives a Kin lead Claude Code's tools and T3's lead tools only while GitHub is connected", () => {
-  const names = (kinGitHub: boolean) =>
+it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with the owner's session", () => {
+  const names = (kinSession: boolean) =>
     buildBase(template, {
       model: "claude-sonnet-5-5",
       keepUserInstructions: false,
       kinAgent: true,
       kinLead: true,
-      kinGitHub,
+      kinSession,
     }).nativeTools.map((tool) => tool.name);
   const [before, after] = [names(false), names(true)];
   assert.include(before, "mcp__t3-code__kin_delegate");
@@ -3074,9 +3074,9 @@ it("OWN-03 passes a reported conflict and fails reuse or close of the owner's se
   assert.isNotEmpty(failed(c.expect, trace("", "Saved /tmp/proof/settings.png.")));
 });
 
-it("leaves errored samples out of pass rates and lists them in the summary", () => {
+it("leaves errored samples out of pass rates and counts cases pass, within margin and fail", () => {
   const usage = { input: 10, output: 0, cacheWrite: 0, cacheRead: 0 };
-  const row = (id: string, pass: boolean, error?: string) => ({
+  const row = (id: string, pass: boolean, error?: string, withinMargin?: boolean) => ({
     id,
     kind: "bad" as const,
     pattern: "device",
@@ -3085,18 +3085,39 @@ it("leaves errored samples out of pass rates and lists them in the summary", () 
     usage,
     shellUsage: usage,
     ...(error === undefined ? {} : { error }),
+    ...(withinMargin === undefined ? {} : { withinMargin }),
   });
   const summary = summarize(
-    [row("A", true), row("A", false, "Model API 429"), row("B", false, "Model API 429")],
-    { header: "run", shellModel: "claude-haiku-5-5", model: "claude-sonnet-5-5" },
+    [
+      row("A", true),
+      row("A", false, "Model API 429"),
+      row("B", false, "Model API 429"),
+      // A voice case: 2 of 3 is enough, so losing one sample passes within margin.
+      ...[true, true, false].map((pass) => row("V", pass)),
+      // Without a margin setting a lost sample still passes; a sample within margin does not.
+      ...[true, true, false].map((pass) => row("W", pass)),
+      ...[true, true].map((pass, index) => row("M", pass, undefined, index === 0)),
+      ...[true, false, false].map((pass) => row("F", pass)),
+    ],
+    {
+      header: "run",
+      shellModel: "claude-haiku-5-5",
+      model: "claude-sonnet-5-5",
+      margins: new Map([["V", { passes: 2, of: 3 }]]),
+    },
     new Map([["A", 0.5]]),
   );
-  assert.include(summary, "- Pass: 100% of 1 samples.");
+  assert.include(summary, "- Pass: 67% of 12 samples (7 pass, 1 within margin, 4 fail).");
+  assert.include(summary, "- Cases: 2 pass, 2 pass within margin, 1 fail.");
   assert.include(summary, "- Errored: A ×1, B ×1.");
-  assert.include(summary, "| A | 100% of 1, 1 errored | 50% | 50 pts |");
+  assert.include(summary, "| A | 100% of 1, 1 errored: pass | 50% | 50 pts |");
   assert.include(summary, "| B | - of 0, 1 errored | new | |");
-  // Errored samples' tokens still count: 3 rows of 10 input tokens each.
-  assert.include(summary, "input 30");
+  assert.include(summary, "| V | 67% of 3: pass within margin |");
+  assert.include(summary, "| W | 67% of 3: pass |");
+  assert.include(summary, "| M | 100% of 2, 1 within margin: pass within margin |");
+  assert.include(summary, "| F | 33% of 3: FAIL |");
+  // Errored samples' tokens still count: 14 rows of 10 input tokens each.
+  assert.include(summary, "input 140");
 });
 
 it.each(["couldn't", "couldn’t", "can’t"])(
