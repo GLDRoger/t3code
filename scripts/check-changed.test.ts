@@ -354,6 +354,7 @@ function launcherFixture() {
     "scripts/check-changed.ts",
     "scripts/check-changed-command.ts",
     "scripts/kin-branch-checks.ts",
+    "scripts/kin-model.ts",
     ".github/scripts/ci-changes.cjs",
   ]) {
     write(file, NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8"));
