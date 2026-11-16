@@ -59,6 +59,8 @@ import {
 import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
+import { KIN_DEFERRED_TOOLS } from "../../apps/server/src/kin/lead/deferredTools.ts";
+import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statementTools.ts";
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
@@ -72,13 +74,26 @@ import {
   WORK_RULE,
 } from "../../apps/server/src/kin/work/workPrompt.ts";
 import { OWNER_DECLINED, WAITING_FOR_OWNER } from "../../apps/server/src/kin/lead/workerBrief.ts";
-import { HANDED_BACK_WORK, SHARED_TURN_LINE } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
+import {
+  HANDED_BACK_WORK,
+  REPLY_SHAPE,
+  SHARED_TURN_LINE,
+} from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
 import { UNDO_RULE } from "../../apps/server/src/kin/lead/undoSection.ts";
 import { defaultCharacterFor } from "../../apps/server/src/kin/lead/characterDefaults.ts";
 import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/characters.ts";
+import {
+  CaseMargin,
+  caseState,
+  type Check,
+  Limits,
+  limitChecks,
+  sampleState,
+  type State,
+} from "./margin.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import {
   CAPTION_PROMPT,
@@ -250,6 +265,8 @@ const McpToolUseExpect = Schema.Struct({
   /** Case-sensitive regexes on the agent's visible text. */
   textMust: Schema.optional(Schema.Array(Schema.String)),
   textMustNot: Schema.optional(Schema.Array(Schema.String)),
+  /** Counts on the agent's visible text, graded pass, within margin or fail. See margin.ts. */
+  limits: Schema.optional(Limits),
   /** Case-sensitive regexes on the final answer: the last response's text, once the turn ended. */
   finalTextMust: Schema.optional(Schema.Array(Schema.String)),
   /** Each entry matches a PR URL linked at the end, as `args` values match. */
@@ -364,6 +381,8 @@ export const McpToolUseCase = Schema.Struct({
   /** Records for the context chips `prompt` links, projected as T3 sends them. */
   promptContext: Schema.optional(Schema.Struct({ records: Schema.Array(ComposerContextRecord) })),
   expect: McpToolUseExpect,
+  /** How many samples must pass for the case to pass. See margin.ts. */
+  margin: Schema.optional(CaseMargin),
   /** Model calls this case may need. Overrides `--max-steps`. */
   maxSteps: Schema.optional(Schema.Number),
   source: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
@@ -579,9 +598,12 @@ const visibleT3Tools = (options: {
   readonly kinAgent?: boolean;
   readonly kinLead?: boolean;
   readonly kinGitHub?: boolean;
+  readonly kinShared?: boolean;
 }) =>
   t3Tools.filter(
     (tool) =>
+      // A turn others read runs on a shared thread, which lists only what it may run (AgentSession).
+      !(options.kinShared === true && !listedOnSharedThread(tool.name.slice(T3_PREFIX.length))) &&
       (options.kinAgent === true || options.kinLead === true
         ? // The owner's GitHub connected: T3's lead tools join and kin_delegate goes (AgentSession).
           (options.kinGitHub === true
@@ -726,6 +748,7 @@ export const buildBase = (
     readonly kinAgent?: boolean;
     readonly kinLead?: boolean;
     readonly kinGitHub?: boolean;
+    readonly kinShared?: boolean;
     /** A native subagent starts from its task: T3 appends nothing to its system prompt. */
     readonly nativeSubagent?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
@@ -788,13 +811,21 @@ export const buildBase = (
     date: /Today's date is ([\d-]+)/.exec(reminders.join("\n"))?.[1],
   };
   // LeadIsolation: a lead's instructions are its whole system prompt, its only native tools are
-  // the read-only ones, and every Kin tool loads upfront. With GitHub connected, an owner-only
-  // turn has Claude Code's own tools too.
-  if (options.kinLead === true)
+  // the read-only ones, and Kin tools load upfront except the few deferred behind ToolSearch.
+  // With GitHub connected, an owner-only turn has Claude Code's own tools too.
+  if (options.kinLead === true) {
+    const deferredKin = t3.filter((tool) =>
+      KIN_DEFERRED_TOOLS.has(tool.name.slice(T3_PREFIX.length)),
+    );
+    const header = DEFERRED_LIST.exec(joined)?.[1];
+    const toolSearch = template.tools.filter((tool) => tool.name.endsWith("ToolSearch"));
     return {
       model,
       system: [text(kinLeadInstructions)],
-      reminders: [],
+      reminders:
+        deferredKin.length > 0 && header !== undefined
+          ? [text(`${header}${deferredKin.map((tool) => tool.name).join("\n")}\n`)]
+          : [],
       gitStatusAt: undefined,
       environment,
       nativeTools: [
@@ -806,11 +837,13 @@ export const buildBase = (
               ...nativeDeferred.map((name): ApiTool => ({ name, ...nativeSchema(name) })),
             ]
           : template.tools.filter((tool) => leadTools.includes(tool.name))),
-        ...t3,
+        ...(deferredKin.length > 0 ? toolSearch : []),
+        ...t3.filter((tool) => !deferredKin.includes(tool)),
       ],
       t3,
-      deferred: [],
+      deferred: deferredKin,
     };
+  }
   return {
     model,
     system: system.map(text),
@@ -846,6 +879,7 @@ const buildCodexBase = (
     readonly kinAgent?: boolean;
     readonly kinLead?: boolean;
     readonly kinGitHub?: boolean;
+    readonly kinShared?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
     readonly deviceAccess?: boolean;
   },
@@ -1027,7 +1061,14 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
   return {
     testCase,
     base,
-    tools: [...base.nativeTools],
+    // A Kin tool an earlier turn of the thread loaded through ToolSearch is still loaded.
+    tools: [
+      ...base.nativeTools,
+      ...base.deferred.filter((tool) => {
+        const bare = tool.name.replace(T3_PREFIX, "");
+        return KIN_DEFERRED_TOOLS.has(bare) && priorCalls.some((call) => call.tool === bare);
+      }),
+    ],
     repo: testCase.setup.world?.repo ?? "acme/app",
     shell,
     shellUsage: emptyUsage(),
@@ -1146,6 +1187,7 @@ const fillKinRules = (prompt: string) =>
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
     .replaceAll("{{TEAM_RULES}}", kinTeamRules)
+    .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
@@ -2005,7 +2047,7 @@ const withPage = (tool: string, input: unknown, files: ReadonlyMap<string, strin
 
 /** `pasted` is the thread's user text (`pastedText`), for request_secret's `value`. */
 export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun, pasted = "") => {
-  const checks: Array<{ readonly check: string; readonly pass: boolean }> = [];
+  const checks: Array<Check> = [];
   const add = (check: string, pass: boolean) => checks.push({ check, pass });
   const written = scriptsBefore(run.calls, true);
   // A refused page call showed nothing, so it neither previews nor renders, and no file stands in
@@ -2102,6 +2144,7 @@ export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun, pa
   ].join("\n\n");
   for (const p of expect.textMust ?? []) add(`textMust /${p}/`, test(p, shown));
   for (const p of expect.textMustNot ?? []) add(`textMustNot /${p}/`, !test(p, run.text));
+  checks.push(...limitChecks(expect.limits, run.text));
   for (const p of expect.finalTextMust ?? [])
     add(`finalTextMust /${p}/`, run.stopReason === "end_turn" && test(p, run.finalText ?? ""));
   const isLinked = (url: string) => (run.linked ?? []).some((at) => matches(url, at));
@@ -2118,7 +2161,7 @@ export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun, pa
 
 // Checks that can only go from pass to fail as a sample goes on.
 const SETTLED =
-  /^(?:(?:notCalls|callsMustNot|shellMustNot|maxCalls|textMustNot) |secret\.(?:chatAsk|askTools|values|fileUse|noCardDemand|afterDecline) )/;
+  /^(?:(?:notCalls|callsMustNot|shellMustNot|maxCalls|textMustNot|limits) |secret\.(?:chatAsk|askTools|values|fileUse|noCardDemand|afterDecline) )/;
 /** True once the sample has failed for good, so the rest of it cannot change the result. */
 export const failedEarly = (expect: McpToolUseCase["expect"], run: SampleRun, pasted = "") =>
   gradeSample(
@@ -2553,6 +2596,8 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
 type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   readonly role: string;
   readonly pass: boolean;
+  /** Passed, but some check only within margin. */
+  readonly withinMargin?: boolean;
   /** Set when the sample could not run to the end, even after retries. It is not graded. */
   readonly error?: string;
   readonly usage: Usage;
@@ -2565,6 +2610,22 @@ const passRate = (
 ) => {
   const finished = rows.filter((row) => row.error === undefined);
   return finished.filter((row) => row.pass).length / finished.length;
+};
+const rowState = (row: { readonly pass: boolean; readonly withinMargin?: boolean | undefined }) =>
+  row.withinMargin === true ? "margin" : row.pass ? "pass" : "fail";
+/** A case's state from its finished samples. */
+const rowsState = (
+  rows: ReadonlyArray<{
+    readonly pass: boolean;
+    readonly withinMargin?: boolean | undefined;
+    readonly error?: string | undefined;
+  }>,
+  margin: CaseMargin | undefined,
+) => caseState(rows.filter((row) => row.error === undefined).map(rowState), margin);
+const STATE_LABEL: Record<State, string> = {
+  pass: "pass",
+  margin: "pass within margin",
+  fail: "FAIL",
 };
 const percent = (rate: number) => (Number.isNaN(rate) ? "-" : `${Math.round(rate * 100)}%`);
 const groups = <A>(rows: ReadonlyArray<A>, key: (row: A) => string) =>
@@ -2579,10 +2640,17 @@ const spend = (usages: ReadonlyArray<Usage>, model: ShellModel | undefined) => {
   return { cost, tokens: USAGE_KEYS.map((key) => `${key} ${total(key)}`).join(", ") };
 };
 
+const caseKey = (row: ResultRow) => row.id;
 /** Markdown report. With a baseline, each case shows its earlier pass rate and the change. */
 export const summarize = (
   rows: Array<ResultRow>,
-  options: { readonly header: string; readonly shellModel: ShellModel; readonly model: Model },
+  options: {
+    readonly header: string;
+    readonly shellModel: ShellModel;
+    readonly model: Model;
+    /** Cases' `margin` settings, by id. */
+    readonly margins?: ReadonlyMap<string, CaseMargin>;
+  },
   before?: Map<string, number>,
 ) => {
   const codex = isCodex(options.model);
@@ -2595,6 +2663,13 @@ export const summarize = (
     options.shellModel,
   );
   const cost = agent.cost + shell.cost;
+  const byCase = groups(rows, (row) => row.id).map(
+    ([id, members]) => [id, rowsState(members, options.margins?.get(id))] as const,
+  );
+  const states = new Map(byCase);
+  const caseCount = (state: State) => byCase.filter(([, at]) => at === state).length;
+  const sampleCount = (state: State) =>
+    rows.filter((row) => row.error === undefined && rowState(row) === state).length;
   const table = (title: string, key: (row: ResultRow) => string, compare = false) => [
     `## ${title}\n`,
     compare ? "| Group | Pass | Baseline | Delta |" : "| Group | Pass |",
@@ -2607,7 +2682,9 @@ export const summarize = (
         was === undefined
           ? "new | |"
           : `${percent(was)} | ${Number.isNaN(now) ? "" : `${Math.round((now - was) * 100)} pts`} |`;
-      const pass = `${percent(now)} of ${members.length - errored}${errored > 0 ? `, ${errored} errored` : ""}`;
+      const margin = members.filter((row) => row.withinMargin === true).length;
+      const state = key === caseKey ? states.get(group) : undefined;
+      const pass = `${percent(now)} of ${members.length - errored}${margin > 0 ? `, ${margin} within margin` : ""}${errored > 0 ? `, ${errored} errored` : ""}${state === undefined ? "" : `: ${STATE_LABEL[state]}`}`;
       return `| ${group} | ${pass} |${compare ? ` ${delta}` : ""}`;
     }),
     "",
@@ -2624,7 +2701,8 @@ export const summarize = (
   return [
     "# MCP tool-use eval\n",
     `- ${options.header}`,
-    `- Pass: ${percent(passRate(rows))} of ${finished} samples.`,
+    `- Pass: ${percent(passRate(rows))} of ${finished} samples (${sampleCount("pass")} pass, ${sampleCount("margin")} within margin, ${sampleCount("fail")} fail).`,
+    `- Cases: ${caseCount("pass")} pass, ${caseCount("margin")} pass within margin, ${caseCount("fail")} fail.`,
     ...(errors.length > 0 ? [errorNote] : []),
     codex
       ? "- Cost: the agent is not priced. `vibeproxy` in `~/.codex/config.toml` may use a subscription or bill an API key per token; agent tokens are below."
@@ -2638,7 +2716,7 @@ export const summarize = (
       : [identityNote]),
     ...(rows.some((row) => row.role === "native-subagent") ? [nativeNote] : []),
     "",
-    ...table("Cases", (row) => row.id, before !== undefined),
+    ...table("Cases", caseKey, before !== undefined),
     ...table("By kind", (row) => row.kind),
     ...table("By pattern", (row) => row.pattern),
   ].join("\n");
@@ -2798,6 +2876,7 @@ const main = Effect.gen(function* () {
     kinAgent = false,
     kinLead = false,
     kinGitHub = false,
+    kinShared = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     codex
       ? decodeCodexCapture(template).pipe(
@@ -2811,6 +2890,7 @@ const main = Effect.gen(function* () {
               kinAgent,
               kinLead,
               kinGitHub,
+              kinShared,
               deviceAccess,
             }),
           ),
@@ -2826,6 +2906,7 @@ const main = Effect.gen(function* () {
               kinAgent,
               kinLead,
               kinGitHub,
+              kinShared,
               deviceAccess,
             });
             return role === "native-subagent"
@@ -2836,21 +2917,17 @@ const main = Effect.gen(function* () {
           }),
         );
   // Codex has no native subagents; its cases with that role run as top-level threads.
-  const baseKey = ({ setup }: McpToolUseCase) =>
-    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinGitHub === true}`;
+  // A Kin turn others read carries Kin's shared-turn line, as the server's prompt does.
+  const baseKey = ({ setup, prompt }: McpToolUseCase) =>
+    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinGitHub === true}:${prompt.includes("{{SHARED_TURN}}")}`;
   const base = yield* buildFor("top", true, false);
-  const bases = new Map<string, Base>([["top:true:false:false:false:false", base]]);
+  const bases = new Map<string, Base>([["top:true:false:false:false:false:false", base]]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
     if (bases.has(key)) continue;
-    const [role = "top", access, links, kinAgent, kinLead, kinGitHub] = key.split(":") as [
-      McpToolUseCase["setup"]["role"],
-      string,
-      string,
-      string,
-      string,
-      string,
-    ];
+    const [role = "top", access, links, kinAgent, kinLead, kinGitHub, kinShared] = key.split(
+      ":",
+    ) as [McpToolUseCase["setup"]["role"], string, string, string, string, string, string];
     bases.set(
       key,
       yield* buildFor(
@@ -2860,6 +2937,7 @@ const main = Effect.gen(function* () {
         kinAgent === "true",
         kinLead === "true",
         kinGitHub === "true",
+        kinShared === "true",
       ),
     );
   }
@@ -2986,9 +3064,11 @@ const main = Effect.gen(function* () {
         onSuccess: ({ sample, rubric }) => {
           const checks = [...gradeSample(testCase.expect, sample, pastedText(testCase)), ...rubric];
           const { secret } = testCase.expect;
+          const state = sampleState(checks);
           return {
             ...identity,
-            pass: checks.every((check) => check.pass),
+            pass: state !== "fail",
+            ...(state === "margin" ? { withinMargin: true } : {}),
             checks,
             // Not graded: how the agent handled a secret it needed, for a person reading the run.
             ...(secret ? { secret: secretDiagnostics(sample, secret) } : {}),
@@ -2997,7 +3077,7 @@ const main = Effect.gen(function* () {
         },
       }),
       Effect.tap((row) =>
-        Effect.log(`${row.id}: ${"error" in row ? "ERROR" : row.pass ? "pass" : "FAIL"}`),
+        Effect.log(`${row.id}: ${"error" in row ? "ERROR" : STATE_LABEL[rowState(row)]}`),
       ),
     );
   };
@@ -3025,7 +3105,12 @@ const main = Effect.gen(function* () {
         Effect.flatMap((caseRows) => {
           rows.push(...caseRows);
           // A case whose samples all errored has no rate, so it is no regression either.
-          if (!stopEarly || !passedBefore(testCase.id) || !(passRate(caseRows) <= 0.5)) {
+          // Moving from pass to pass within margin is no regression; failing is.
+          if (
+            !stopEarly ||
+            !passedBefore(testCase.id) ||
+            rowsState(caseRows, testCase.margin) !== "fail"
+          ) {
             return Effect.void;
           }
           regressions.push(testCase.id);
@@ -3049,6 +3134,11 @@ const main = Effect.gen(function* () {
       header: [header, t3ContextReport(flags.model), ...stopped].join("\n"),
       shellModel: config.shellModel,
       model: config.model,
+      margins: new Map(
+        selected.flatMap((testCase) =>
+          testCase.margin === undefined ? [] : [[testCase.id, testCase.margin] as const],
+        ),
+      ),
     },
     flags.baseline === undefined ? undefined : baseline,
   );
