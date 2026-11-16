@@ -447,7 +447,8 @@ const say = (view: View, result: RuleResult) => {
 
 const mermaidText = (text: string) =>
   text
-    .replace(/[":;#{}]/g, "")
+    .replace(/[:;]/g, ",")
+    .replace(/["#{}]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -525,8 +526,12 @@ const main = async (args: ReadonlyArray<string>) => {
   if (args.includes("--variants")) {
     let missed = 0;
     for (const variant of view.variants) {
-      const results = await checkRules(model, variant.name);
-      const caught = results.find((one) => one.rule === variant.breaks);
+      const { verdict, ms } = await runTlc(
+        model,
+        configWith(model.config, [variant.breaks], variant.name),
+        false,
+      );
+      const caught: RuleResult = { rule: variant.breaks, verdict, ms };
       const ok =
         caught !== undefined && caught.verdict._tag !== "pass" && caught.verdict._tag !== "error";
       if (!ok) missed++;
