@@ -21,6 +21,7 @@ VARIABLES
   tapLate,   \* Confirm landed while a newer card for the same invoice already showed
   oldFile,   \* Confirm landed after the invoice was re-made
   job,       \* the after-tap fiber (work/cardAnswers.ts afterTap): lost on restart
+  owes,      \* kin_connection_asks.owes_card: set with the failure, cleared once the new card binds
   went,      \* times the provider accepted this card's mail
   wentDoc,   \* the file version that went
   pending,   \* askFor posted this card and has not yet replaced the older ones
@@ -28,8 +29,8 @@ VARIABLES
   account,   \* the mail connection's sign-in
   asks, restarts, remakes, expiries, errors
 
-vars == <<card, text, doc, why, next, by, tapLate, oldFile, job, went, wentDoc, pending, latestDoc,
-          account, asks, restarts, remakes, expiries, errors>>
+vars == <<card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
+          latestDoc, account, asks, restarts, remakes, expiries, errors>>
 
 Free == {c \in Cards : card[c] = "none"}
 \* The bound: at most two kinds of trouble in one run, each at most once.
@@ -47,6 +48,7 @@ Init ==
   /\ tapLate = [c \in Cards |-> FALSE]
   /\ oldFile = [c \in Cards |-> FALSE]
   /\ job = [c \in Cards |-> "idle"]
+  /\ owes = [c \in Cards |-> FALSE]
   /\ went = [c \in Cards |-> 0]
   /\ wentDoc = [c \in Cards |-> 0]
   /\ pending = None
@@ -74,7 +76,7 @@ AgentAsks ==
                  /\ next' = [o \in Cards |-> IF o \in Olds(c) THEN c ELSE next[o]]
                  /\ pending' = None
   /\ asks' = asks + 1
-  /\ UNCHANGED <<by, tapLate, oldFile, job, went, wentDoc, latestDoc, account, restarts,
+  /\ UNCHANGED <<by, tapLate, oldFile, job, owes, went, wentDoc, latestDoc, account, restarts,
                  remakes, expiries, errors>>
 
 (* Only in the variant "replace-after-post", as the code was before: a later statement. *)
@@ -84,8 +86,8 @@ AgentReplacesOlder ==
   /\ why' = [o \in Cards |-> IF o \in Olds(pending) THEN "replaced" ELSE why[o]]
   /\ next' = [o \in Cards |-> IF o \in Olds(pending) THEN pending ELSE next[o]]
   /\ pending' = None
-  /\ UNCHANGED <<text, doc, by, tapLate, oldFile, job, went, wentDoc, latestDoc, account, asks, restarts,
-                 remakes, expiries, errors>>
+  /\ UNCHANGED <<text, doc, by, tapLate, oldFile, job, owes, went, wentDoc, latestDoc, account, asks,
+                 restarts, remakes, expiries, errors>>
 
 NewerShowing(c) == \E n \in Cards : card[n] # "none" /\ text[n] > text[c]
 
@@ -105,6 +107,7 @@ TapConfirm(p, c) ==
                     /\ card' = [card EXCEPT ![c] = "stale"]
                     /\ why' = [why EXCEPT ![c] = "doc"]
                     /\ job' = [job EXCEPT ![c] = "fresh"]
+                    /\ owes' = [owes EXCEPT ![c] = TRUE]
                     /\ UNCHANGED <<text, doc, next, by, tapLate, oldFile, went, wentDoc, pending, latestDoc,
                                    account, asks, restarts, remakes, expiries, errors>>
                  \/ /\ account = "ok" /\ (doc[c] = latestDoc \/ Broken = "no-file-check")
@@ -113,14 +116,14 @@ TapConfirm(p, c) ==
                     /\ tapLate' = [tapLate EXCEPT ![c] = tapLate[c] \/ NewerShowing(c)]
                     /\ oldFile' = [oldFile EXCEPT ![c] = oldFile[c] \/ doc[c] # latestDoc]
                     /\ job' = [job EXCEPT ![c] = "queued"]
-                    /\ UNCHANGED <<text, doc, why, next, went, wentDoc, pending, latestDoc, account,
+                    /\ UNCHANGED <<text, doc, why, next, owes, went, wentDoc, pending, latestDoc, account,
                                    asks, restarts, remakes, expiries, errors>>
 
 TapCancel(p, c) ==
   /\ card[c] = "open" /\ p \in OwnerLevel
   /\ card' = [card EXCEPT ![c] = "declined"]
-  /\ UNCHANGED <<text, doc, why, next, by, tapLate, oldFile, job, went, wentDoc, pending, latestDoc,
-                 account, asks, restarts, remakes, expiries, errors>>
+  /\ UNCHANGED <<text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
+                 latestDoc, account, asks, restarts, remakes, expiries, errors>>
 
 (* sendAsk: only an ask in 'sending'; withSignIn calls the provider with the card's own files
    (Sending.ts sendMail, filesOf by attachmentId and sha256). *)
@@ -138,23 +141,28 @@ ProviderSends(c) ==
         /\ job' = [job EXCEPT ![c] = "error"]
         /\ errors' = errors + 1
         /\ UNCHANGED <<went, wentDoc>>
-  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, pending, latestDoc, account, asks,
-                 restarts, remakes, expiries>>
+  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, owes, pending, latestDoc, account,
+                 asks, restarts, remakes, expiries>>
 
-(* sendAsk's finish: sent, or failed with the same mail returned for a fresh card. *)
+(* sendAsk's finish: sent, or failed with the same mail returned for a fresh card; owes_card is set
+   in the same UPDATE as the failure. *)
 SendRecorded(c) ==
   /\ job[c] \in {"went", "signin", "error"}
   /\ card' = [card EXCEPT ![c] = IF job[c] = "went" THEN "sent" ELSE "failed"]
   /\ why' = [why EXCEPT ![c] = IF job[c] = "went" THEN "" ELSE job[c]]
   /\ job' = [job EXCEPT ![c] = IF job[c] = "went" \/ (job[c] = "error" /\ Broken = "error-loses-mail")
                                 THEN "idle" ELSE "fresh"]
+  /\ owes' = [owes EXCEPT ![c] = job'[c] = "fresh"]
   /\ UNCHANGED <<text, doc, next, by, tapLate, oldFile, went, wentDoc, pending, latestDoc, account, asks,
                  restarts, remakes, expiries, errors>>
 
 Newer(c) == {n \in Cards : card[n] # "none" /\ text[n] > text[c]}
 
 (* cardAnswers.ts showOutcome: freshAsk inserts the same mail with the current files and chat.ask
-   posts it, unless the agent asked for this mail again since (superseded): then that card stands. *)
+   posts it, unless the agent asked for this mail again since (superseded): then that card stands.
+   Either way the failed ask owes no card any more (bind, or freshAsk on superseded). chat.ask is
+   idempotent on its clientMessageId, so a restart between posting and binding re-binds the same
+   card rather than posting a second one. *)
 FreshCard(c) ==
   /\ job[c] = "fresh"
   /\ IF Newer(c) # {} /\ Broken # "copy-beside-correction"
@@ -167,18 +175,21 @@ FreshCard(c) ==
                  /\ doc' = [doc EXCEPT ![n] = latestDoc]
                  /\ next' = [next EXCEPT ![c] = n]
   /\ job' = [job EXCEPT ![c] = "idle"]
+  /\ owes' = [owes EXCEPT ![c] = FALSE]
   /\ UNCHANGED <<why, by, tapLate, oldFile, went, wentDoc, pending, latestDoc, account, asks, restarts,
                  remakes, expiries, errors>>
 
 (* The server stops and starts: forked after-tap fibers are gone; every row stays. layer.ts then
-   runs resumeInterruptedSends for asks still sending from before the start. *)
+   runs resumeInterruptedSends for asks still sending from before the start, and for failed asks
+   that still owe their new card (interruptedSends, owes_card). *)
 Restart ==
   /\ restarts < 1 /\ Calm
   /\ restarts' = restarts + 1
-  /\ job' = [c \in Cards |-> IF card[c] = "sending" /\ Broken # "no-resume" THEN "recover" ELSE "idle"]
+  /\ job' = [c \in Cards |-> IF card[c] = "sending" /\ Broken # "no-resume" THEN "recover"
+                            ELSE IF owes[c] /\ Broken # "no-owed-card" THEN "fresh" ELSE "idle"]
   /\ pending' = None
-  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, went, wentDoc, latestDoc, account, asks,
-                 remakes, expiries, errors>>
+  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, owes, went, wentDoc, latestDoc,
+                 account, asks, remakes, expiries, errors>>
 
 (* interruptedSends: failed, "may or may not have gone", the same mail on a fresh card. *)
 Recovered(c) ==
@@ -186,25 +197,26 @@ Recovered(c) ==
   /\ card' = [card EXCEPT ![c] = "failed"]
   /\ why' = [why EXCEPT ![c] = "restart"]
   /\ job' = [job EXCEPT ![c] = "fresh"]
+  /\ owes' = [owes EXCEPT ![c] = TRUE]
   /\ UNCHANGED <<text, doc, next, by, tapLate, oldFile, went, wentDoc, pending, latestDoc, account, asks,
                  restarts, remakes, expiries, errors>>
 
 SignInExpires ==
   /\ account = "ok" /\ expiries < 1 /\ Calm
   /\ account' = "expired" /\ expiries' = expiries + 1
-  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, job, went, wentDoc, pending, latestDoc,
-                 asks, restarts, remakes, errors>>
+  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
+                 latestDoc, asks, restarts, remakes, errors>>
 
 SignInAgain ==
   /\ account = "expired" /\ account' = "ok"
-  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, job, went, wentDoc, pending, latestDoc,
-                 asks, restarts, remakes, expiries, errors>>
+  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
+                 latestDoc, asks, restarts, remakes, expiries, errors>>
 
 InvoiceRemade ==
   /\ remakes < 1 /\ Calm
   /\ latestDoc' = latestDoc + 1 /\ remakes' = remakes + 1
-  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, job, went, wentDoc, pending, account,
-                 asks, restarts, expiries, errors>>
+  /\ UNCHANGED <<card, text, doc, why, next, by, tapLate, oldFile, job, owes, went, wentDoc, pending,
+                 account, asks, restarts, expiries, errors>>
 
 Next ==
   \/ AgentAsks \/ AgentReplacesOlder

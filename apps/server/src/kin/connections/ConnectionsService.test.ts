@@ -1870,10 +1870,15 @@ describe("KinConnections sending", () => {
           assert.strictEqual(stale?._tag, "stale");
           if (stale?._tag !== "stale" || stale.fresh === undefined) return assert.fail("not stale");
           assert.include(stale.reason, "changed since this card was made");
-          const fresh = yield* connections.freshAsk(orgId, stale.fresh, 2);
+          // Kin restarts before the fresh card posts: at start the same mail is owed its card.
+          const [owed] = yield* connections.interruptedSends(orgId, 10);
+          if (owed?.fresh === undefined) return assert.fail("the mail is on no card");
+          assert.deepInclude(owed, { widgetId: cards[0]!.widgetId, state: "failed" });
+          const fresh = yield* connections.freshAsk(orgId, owed.fresh, 2);
           if (fresh === undefined) return assert.fail("no fresh card");
           assert.strictEqual(fresh.card.send.attachments[0]!.bytes, PDF(2).length);
           yield* fresh.bind("w-fresh");
+          assert.lengthOf(yield* connections.interruptedSends(orgId, 10), 0);
           const again = yield* answer("w-fresh", ownerId, true);
           assert.strictEqual(again?._tag, "send");
           yield* connections.sendAsk(orgId, again!.askId);
