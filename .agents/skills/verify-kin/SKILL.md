@@ -55,6 +55,7 @@ kv as zoya web wait "Check the logo files" # or --gone; 20 s by default
 kv as owner web screenshot /tmp/proof/new-task.png   # refuses any path under ~/.t3
 kv as owner web view --width 390 --dark       # phone width or wide, light or dark, for captures
 kv as dev rpc kin.work.list '{"project":"P-1"}'      # orgId is filled in
+kv as meera wire kin.work.create '{"clientRequestId":"x","title":"Plan"}' --watch owner,zoya --find Plan  # what each open page got
 kv tool finance money_summary '{}'                   # one real agent turn, no model
 kv tool chief kin_relay '{"to":"Zoya Sheikh","text":"…"}' --as-turn-of zoya
 kv tool chief people_read '{}' --reply "Checked." --hold 12   # stays working 12 s, to watch the status line
@@ -85,7 +86,7 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
 instance.
 
 ```bash
-.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, all twelve, down; ~11 min
+.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, all thirteen, down; ~13 min
 .agents/skills/verify-kin/scripts/run-all.sh send-card-once private-task-hidden
 bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the running instance
 ```
@@ -104,6 +105,7 @@ bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the 
 | `owner-money-forms`        | a goal, the coming-up dates, an advance set against INV-1 once; members are refused                                                                          |
 | `private-client-unnamed`   | C-3 marked private: in Zoya's turn touch_log, record_get, records_query answer as for no client                                                              |
 | `told-once-quiet-hours`    | a late task is told once, an unchanged one starts no turn, a change is told; at 23:00 a check-in waits for quiet hours to end, survives a restart, runs once |
+| `work-change-five-people`  | five people with Tasks open: a new task, its assignment and its return reach each page as the task itself or nothing, with no Work read                      |
 
 `node scripts/kin-release-check.ts` runs all ten with the models, property tests and UI fuzz before a release ([Releasing Kin](../../../docs/operations/kin-release.md)).
 
