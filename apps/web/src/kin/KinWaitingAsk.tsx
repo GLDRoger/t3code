@@ -32,17 +32,18 @@ export function KinWaitingAsk(props: {
   const [pending, setPending] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const press = async (optionId: string) => {
-    actions.current ??= createKinCardActions<KinWaitingAskView["target"], string>({
-      newId: randomUUID,
-      toInput: kinChoiceActInput,
-      failureNotice: kinChoiceFailureNotice,
-      post: async (input) => {
-        const result = await post({ environmentId, input });
-        return AsyncResult.isFailure(result)
-          ? { ok: false, cause: squashAtomCommandFailure(result) }
-          : { ok: true };
-      },
-    });
+    if (actions.current === null)
+      actions.current = createKinCardActions<KinWaitingAskView["target"], string>({
+        newId: randomUUID,
+        toInput: kinChoiceActInput,
+        failureNotice: kinChoiceFailureNotice,
+        post: async (input) => {
+          const result = await post({ environmentId, input });
+          return AsyncResult.isFailure(result)
+            ? { ok: false, cause: squashAtomCommandFailure(result) }
+            : { ok: true };
+        },
+      });
     const outcome = await actions.current(ask.target, optionId, () => {
       setPending(optionId);
       setProblem(null);
