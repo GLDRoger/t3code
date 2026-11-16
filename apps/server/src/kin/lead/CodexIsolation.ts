@@ -12,10 +12,13 @@ import * as Schema from "effect/Schema";
 
 import { ServerConfig } from "../../config.ts";
 import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import { AGENT_THREAD_ENV } from "../../preview/PortScanner.ts";
+import { sessionVariablePatterns } from "../claudeConfinement.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../KinEnabled.ts";
 import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts";
 import { instructions } from "./instructions.ts";
+import { SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { GH_SIGN_FOLDER } from "./LeadIsolation.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { isWorkThread } from "./workThread.ts";
@@ -54,18 +57,33 @@ export const CONFINED_CONFIG: Readonly<Record<string, Json>> = {
   "context_management.experimental_mode": false,
 };
 
-/** Kin's instructions are the whole system prompt, as on Claude, plus what this session lacks. */
-const CODEX_PROVIDER_NOTE =
-  "This session has no shell, files or web: act only through your tools, and don't try those.";
-export const codexInstructions = `${instructions}\n\n${CODEX_PROVIDER_NOTE}`;
-
 /**
- * A Kin thread on Codex, in any chat: no execution environment (shell, patches and images fail),
- * a read-only sandbox with no network behind it, nothing asked, and only T3's MCP servers, whose
- * calls Kin's gate checks. There is never a shell, so a turn others read, one that read outside
- * text, or one someone joined can't reach one either; Codex has no per-call hook to take it away.
+ * An owner-only thread's Codex tools: its shell and patches, each of which Codex asks Kin about
+ * first (`fullSessionThreadParams`). What runs without asking stays off: hosted web search, image
+ * viewing, and unified exec, whose open sessions would take later stdin unasked.
  */
-const confinedThreadParams = (params: Params, userServers: ReadonlyArray<string>) => {
+export const FULL_SESSION_CONFIG: Readonly<Record<string, Json>> = {
+  ...CONFINED_CONFIG,
+  include_apply_patch_tool: true,
+  "features.shell_tool": true,
+  // A Codex sub-agent inherits the turn's approval policy and sandbox (codex-cli 0.169), so its
+  // commands and patches ask Kin on this same connection.
+  "agents.enabled": true,
+};
+
+/** GPT agents rarely ask with a card or make the Confirm card (evals, Nov 2026). */
+const CODEX_NOTE =
+  "When a decision is the owner's, ask with kin_ask and the default you'll take, not in prose. Anything leaving the company (mail, a payment, a post) goes only through the tool that makes its Confirm card: call it, never just draft it in the chat.";
+const CONFINED_NOTE =
+  "This session has no shell, files or web: act only through your tools, and don't try those.";
+const FULL_SESSION_NOTE =
+  "Your shell and file edits run as the owner, and Kin checks each one as it runs: in a chat others read, or once the turn has read outside content, it's refused with a line saying why. Web search is off; fetch a page with curl.";
+/** Kin's instructions are the whole system prompt, as on Claude, plus what this session has. */
+export const codexInstructions = `${instructions}\n\n${CONFINED_NOTE}\n${CODEX_NOTE}`;
+export const codexFullSessionInstructions = `${instructions}\n\n${FULL_SESSION_NOTE}\n${CODEX_NOTE}`;
+
+/** T3's MCP servers, calls approved (Kin's gate checks each); the user's own servers off by name. */
+const kinServersOnly = (params: Params, userServers: ReadonlyArray<string>) => {
   const config = { ...(params.config as Readonly<Record<string, Json>> | null | undefined) };
   for (const name of T3_SERVERS) {
     const server = config[`mcp_servers.${name}`];
@@ -76,16 +94,63 @@ const confinedThreadParams = (params: Params, userServers: ReadonlyArray<string>
   const disabled = userServers
     .filter((name) => !T3_SERVERS.includes(name))
     .map((name) => [`mcp_servers.${name}.enabled`, false] as const);
-  return {
-    ...params,
-    baseInstructions: codexInstructions,
-    developerInstructions: null,
-    environments: [],
-    approvalPolicy: "never",
-    sandbox: "read-only",
-    config: { ...config, ...CONFINED_CONFIG, ...Object.fromEntries(disabled) },
-  };
+  return { ...config, ...Object.fromEntries(disabled) };
 };
+
+/**
+ * A Kin thread others read, or any with no session policy: no execution environment (shell,
+ * patches and images fail), a read-only sandbox with no network behind it, nothing asked, and only
+ * T3's MCP servers. There is never a shell, so no turn on it can reach one.
+ */
+const confinedThreadParams = (params: Params, userServers: ReadonlyArray<string>) => ({
+  ...params,
+  baseInstructions: codexInstructions,
+  developerInstructions: null,
+  environments: [],
+  approvalPolicy: "never",
+  sandbox: "read-only",
+  config: { ...kinServersOnly(params, userServers), ...CONFINED_CONFIG },
+});
+
+type Shell = { readonly path: string; readonly agentName: string | undefined };
+
+/** The env a Claude agent's session gets (`sessionEnvironment`), the signing `gh` first on PATH. */
+const shellEnvironment = (shell: Shell) => ({
+  "shell_environment_policy.inherit": "all",
+  "shell_environment_policy.include_only": [
+    ...sessionVariablePatterns,
+    "KIN_AGENT_NAME",
+    AGENT_THREAD_ENV,
+  ],
+  "shell_environment_policy.set.PATH": shell.path,
+  ...(shell.agentName === undefined
+    ? {}
+    : { "shell_environment_policy.set.KIN_AGENT_NAME": shell.agentName }),
+});
+
+/**
+ * An owner-only thread: Codex's shell and patches with full access, as a Claude lead's Bash has,
+ * and `untrusted` approval, under which Codex asks before every command and patch (no read-only
+ * shortcut in codex-cli 0.169). Kin answers each ask from the turn as it is then
+ * (`kinApprovals`); the guardian reviewer never does.
+ */
+const fullSessionThreadParams = (
+  params: Params,
+  userServers: ReadonlyArray<string>,
+  shell: Shell,
+) => ({
+  ...params,
+  baseInstructions: codexFullSessionInstructions,
+  developerInstructions: null,
+  approvalPolicy: "untrusted",
+  approvalsReviewer: "user",
+  sandbox: "danger-full-access",
+  config: {
+    ...kinServersOnly(params, userServers),
+    ...FULL_SESSION_CONFIG,
+    ...shellEnvironment(shell),
+  },
+});
 
 /**
  * T3 sends full access on every turn; a Kin turn keeps the thread's confinement instead. T3's
@@ -98,11 +163,16 @@ const confinedTurnParams = ({ additionalContext: _t3Guidance, ...params }: Param
   sandboxPolicy: { type: "readOnly", networkAccess: false },
 });
 
+/** The owner-only turn keeps its thread's asking; T3's thread guidance goes, as on Claude. */
+const fullSessionTurnParams = ({ additionalContext: _t3Guidance, ...params }: Params) => ({
+  ...params,
+  approvalPolicy: "untrusted",
+  approvalsReviewer: "user",
+  sandboxPolicy: { type: "dangerFullAccess" },
+});
+
 /** A task a lead delegated posts on GitHub through Kin's signing `gh` (`ghSign.ts`), as on Claude. */
-const signedShellParams = (
-  params: Params,
-  sign: { readonly path: string; readonly agentName: string | undefined },
-) => ({
+const signedShellParams = (params: Params, sign: Shell) => ({
   ...params,
   config: {
     ...(params.config as Readonly<Record<string, Json>> | null | undefined),
@@ -173,10 +243,69 @@ const rewriting = (
   };
 };
 
+type Answers = {
+  readonly [M in CodexRpc.ServerRequestMethod]?: (
+    payload: CodexRpc.ServerRequestParamsByMethod[M],
+  ) => Effect.Effect<CodexRpc.ServerRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
+};
+
+/**
+ * Kin answers Codex's asks on a Kin thread itself, never showing them to anyone: the Claude hook's
+ * decision (`fullSessionRefusal`) for the turn as it is at that call, never "for the session".
+ * Codex's decline carries no reason, so the refusal's words reach the model as a steer into the
+ * turn that asked.
+ */
+const kinApprovals = (client: Client, refusal: Effect.Effect<string | undefined>): Answers => {
+  const decided = (asked: { readonly threadId: string; readonly turnId: string }) =>
+    refusal.pipe(
+      Effect.tap((why) =>
+        why === undefined
+          ? Effect.void
+          : client
+              .request("turn/steer", {
+                threadId: asked.threadId,
+                expectedTurnId: asked.turnId,
+                input: [{ type: "text", text: why }],
+              })
+              .pipe(Effect.ignore),
+      ),
+    );
+  const legacy = () =>
+    refusal.pipe(
+      Effect.map((why) => ({
+        decision: why === undefined ? ("approved" as const) : { denied: { rejection: why } },
+      })),
+    );
+  return {
+    "item/commandExecution/requestApproval": (asked) =>
+      decided(asked).pipe(
+        Effect.map((why) => ({ decision: why === undefined ? "accept" : "decline" })),
+      ),
+    "item/fileChange/requestApproval": (asked) =>
+      decided(asked).pipe(
+        Effect.map((why) => ({ decision: why === undefined ? "accept" : "decline" })),
+      ),
+    // Full access already holds what an admitted call needs; nothing more is ever granted.
+    "item/permissions/requestApproval": () => Effect.succeed({ permissions: {} }),
+    execCommandApproval: legacy,
+    applyPatchApproval: legacy,
+  };
+};
+
+const answering = (client: Client, answers: Answers): Client => ({
+  ...client,
+  handleServerRequest: ((method: CodexRpc.ServerRequestMethod, handler: unknown) =>
+    client.handleServerRequest(
+      method,
+      (answers[method] ?? handler) as never,
+    )) as Client["handleServerRequest"],
+});
+
 /**
  * Kin's seam on T3's Codex adapter, as `LeadIsolation.claudeQueryRunner` is on Claude's: an agent's
- * thread runs confined (`confinedThreadParams`); a task delegated from a lead's thread gets the
- * signing `gh`. Every other Codex session passes through untouched.
+ * owner-only thread gets a full session whose every command and patch Kin decides; a thread others
+ * read runs confined; a task delegated from a lead's thread gets the signing `gh`. Every other
+ * Codex session passes through untouched.
  */
 export const codexClientFactory = <E, R>(
   base: Layer.Layer<CodexAdapterV2.CodexAppServerClientFactory, E, R>,
@@ -211,6 +340,21 @@ export const codexClientFactory = <E, R>(
             cwd !== undefined &&
             (within(kinDirectory, path.resolve(cwd)) ||
               within(yield* real(kinDirectory), yield* real(cwd)));
+          const signing = Effect.fn("KinCodexIsolation.signing")(function* (
+            sessions: KinAgentSessionPolicy["Service"],
+          ) {
+            const signed: Shell = {
+              path: [
+                path.join(kinDirectory, GH_SIGN_FOLDER),
+                ...sessions.toolDirectories,
+                input.environment.PATH,
+              ]
+                .filter(Boolean)
+                .join(":"),
+              agentName: yield* sessions.agentName(threadId),
+            };
+            return signed;
+          });
           if (isKin) {
             let userServers: ReadonlyArray<string> | undefined;
             const servers = Effect.gen(function* () {
@@ -220,27 +364,36 @@ export const codexClientFactory = <E, R>(
               userServers = Object.keys(read.config.mcp_servers ?? {});
               return userServers;
             });
-            return rewriting(client, (method, params) =>
+            if (Option.isNone(policy) || threadId.startsWith(SHARED_THREAD_PREFIX)) {
+              const confined = Option.isNone(policy)
+                ? client
+                : answering(client, kinApprovals(client, policy.value.refusal(threadId)));
+              return rewriting(confined, (method, params) =>
+                method === "turn/start"
+                  ? Effect.succeed(confinedTurnParams(params))
+                  : method === "thread/inject_items"
+                    ? Effect.succeed(withoutT3Guidance(params))
+                    : THREAD_METHODS.has(method)
+                      ? servers.pipe(Effect.map((names) => confinedThreadParams(params, names)))
+                      : Effect.succeed(params),
+              );
+            }
+            const shell = yield* signing(policy.value);
+            const asked = answering(client, kinApprovals(client, policy.value.refusal(threadId)));
+            return rewriting(asked, (method, params) =>
               method === "turn/start"
-                ? Effect.succeed(confinedTurnParams(params))
+                ? Effect.succeed(fullSessionTurnParams(params))
                 : method === "thread/inject_items"
                   ? Effect.succeed(withoutT3Guidance(params))
                   : THREAD_METHODS.has(method)
-                    ? servers.pipe(Effect.map((names) => confinedThreadParams(params, names)))
+                    ? servers.pipe(
+                        Effect.map((names) => fullSessionThreadParams(params, names, shell)),
+                      )
                     : Effect.succeed(params),
             );
           }
           if (Option.isNone(policy) || !(yield* policy.value.delegated(threadId))) return client;
-          const sign = {
-            path: [
-              path.join(kinDirectory, GH_SIGN_FOLDER),
-              ...policy.value.toolDirectories,
-              input.environment.PATH,
-            ]
-              .filter(Boolean)
-              .join(":"),
-            agentName: yield* policy.value.agentName(threadId),
-          };
+          const sign = yield* signing(policy.value);
           return rewriting(client, (method, params) =>
             Effect.succeed(THREAD_METHODS.has(method) ? signedShellParams(params, sign) : params),
           );
