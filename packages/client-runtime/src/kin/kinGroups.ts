@@ -1,5 +1,4 @@
 import {
-  EnvironmentAuthorizationError,
   KIN_GROUP_TITLE_MAX_LENGTH,
   KinChatError,
   type KinAgentId,
@@ -11,6 +10,7 @@ import * as Schema from "effect/Schema";
 
 import { KIN_RETIRED_LABEL } from "./kinAgentRetire.ts";
 import { kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
+import { kinFailureText } from "./kinAnswers.ts";
 
 const NO_AGENTS: ReadonlySet<string> = new Set();
 
@@ -32,26 +32,16 @@ export function kinGroupNameCheck(
 }
 
 const isChatError = Schema.is(KinChatError);
-const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
 /** Why a group change didn't happen, in the owner's words. `doing` reads "rename this group". */
 export function kinGroupProblem(error: unknown, doing: string): string {
-  if (isAuthorizationError(error)) return `This device isn't allowed to ${doing}.`;
-  if (!isChatError(error)) return `Couldn't ${doing}. Check your connection and try again.`;
-  switch (error.reason) {
-    case "not_allowed":
-      return `Only the group's owner can ${doing}.`;
-    case "not_found":
-      return "That group, agent or person is no longer here.";
-    case "limit":
-      return "This group is full.";
-    case "unavailable":
-      return `Couldn't ${doing} right now. Try again in a moment.`;
-    case "disabled":
-      return "Kin is turned off on this server.";
-    default:
-      return error.message.length > 0 ? error.message : `Couldn't ${doing}.`;
-  }
+  if (isChatError(error) && error.reason === "limit") return "This group is full.";
+  if (isChatError(error) && error.reason === "disabled") return "Kin is turned off on this server.";
+  return kinFailureText(error, `Couldn't ${doing}.`, {
+    refused: `Only the group's owner can ${doing}.`,
+    gone: "That group, agent or person is no longer here.",
+    device: `This device isn't allowed to ${doing}.`,
+  });
 }
 
 export interface KinGroupMemberView {

@@ -1,3 +1,4 @@
+import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
 import {
@@ -55,6 +56,7 @@ import { useKinDocsList, useKinDocsLive, useKinDocsUnder, useKinSearch } from ".
 import { useKinAskAgent, useKinLists } from "./state/useKinMoney";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 
 /** A doc as a row that opens it: its name, its kind and last change, and where it is filed. */
 function KinDocRowButton(props: {
@@ -196,12 +198,7 @@ export function KinSearchHits(props: {
   const { state } = props;
   if (state.hits === null) {
     return state.failed ? (
-      <EmptyState
-        variant="plain"
-        title="Couldn't search"
-        detail="Check your connection to the server and try again."
-        action={<Button tone="secondary" label="Try again" onPress={props.onRetry} />}
-      />
+      <KinLoadFailed title={KIN_SEARCH.failed} cause={state.failed.cause} onRetry={props.onRetry} />
     ) : (
       <KinWorkLoading label="Searching" />
     );
@@ -212,7 +209,10 @@ export function KinSearchHits(props: {
     <View className={cn(state.loading && "opacity-60")}>
       {state.failed ? (
         <View className="px-4 pb-2">
-          <Notice tone="danger" message={KIN_SEARCH.failed} />
+          <Notice
+            tone="danger"
+            message={kinFailureText(state.failed.cause, `${KIN_SEARCH.failed}.`)}
+          />
         </View>
       ) : null}
       {state.hits.map(kinSearchHit).map((hit) => (
@@ -569,11 +569,10 @@ export function KinDocsList(
               ) : state.loading ? (
                 <KinWorkLoading label={KIN_DOCS.loading} />
               ) : state.failed !== null ? (
-                <EmptyState
-                  variant="plain"
+                <KinLoadFailed
                   title={KIN_DOCS.loadFailed}
-                  detail="Check your connection to the server and try again."
-                  action={<Button tone="secondary" label="Try again" onPress={list.refresh} />}
+                  cause={state.failed}
+                  onRetry={list.refresh}
                 />
               ) : passages ? null : searching || !everything ? (
                 <EmptyState variant="plain" {...KIN_DOCS.noMatch} />
@@ -594,7 +593,7 @@ export function KinDocsList(
                   <Notice
                     tone="danger"
                     message={KIN_DOCS.loadFailed}
-                    action={{ label: "Try again", onPress: list.refresh }}
+                    action={{ label: KIN_RETRY, onPress: list.refresh }}
                   />
                 </View>
               ) : null}
@@ -606,7 +605,7 @@ export function KinDocsList(
                   <Button
                     tone="secondary"
                     size="compact"
-                    label={state.moreFailed ? "Try again" : "Show more"}
+                    label={state.moreFailed ? KIN_RETRY : "Show more"}
                     loading={state.loadingMore}
                     disabled={state.loadingMore}
                     onPress={() => void list.loadMore()}

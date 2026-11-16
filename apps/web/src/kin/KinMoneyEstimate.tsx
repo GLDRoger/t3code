@@ -35,6 +35,7 @@ import { kinClient } from "./kinClient";
 import { kinHostConnected } from "./useKinHost";
 import { useKinCompanyProfile } from "./useKinMoney";
 import type { KinWorkTarget } from "./useKinWork";
+import { KinLoadFailed } from "./KinWorkParts";
 
 /** "about ₹x" in a quieter style; a click says what rate and day it is from. */
 export function KinEstimateText(props: {
@@ -143,16 +144,11 @@ export function KinRatesDialog(
                 <Skeleton className="h-4 w-1/2" />
               </div>
             ) : (
-              <div className="flex flex-col items-start gap-3">
-                <Alert variant="error">
-                  <AlertDescription>
-                    Couldn't load the rates. Check your connection.
-                  </AlertDescription>
-                </Alert>
-                <Button size="sm" variant="outline" onClick={profile.refresh}>
-                  Retry
-                </Button>
-              </div>
+              <KinLoadFailed
+                what={"Couldn't load the rates"}
+                cause={state._tag === "failed" ? state.cause : null}
+                onRetry={profile.refresh}
+              />
             )}
           </DialogPanel>
         )}

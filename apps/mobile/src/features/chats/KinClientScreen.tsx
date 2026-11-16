@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { KIN_WORK_ONLY_OWNER, kinWorkHostEdits } from "@t3tools/client-runtime/kin/kinWork";
@@ -134,7 +135,7 @@ function KinClientStates(props: ClientTarget) {
         <EmptyState
           variant="plain"
           {...KIN_CLIENT_FAILED}
-          action={<Button tone="secondary" label="Try again" onPress={refresh} />}
+          action={<Button tone="secondary" label={KIN_RETRY} onPress={refresh} />}
         />
       )}
     </KinWorkFrame>
@@ -548,7 +549,7 @@ function KinClientBody(
                   <Button
                     tone="secondary"
                     size="compact"
-                    label="Try again"
+                    label={KIN_RETRY}
                     onPress={history.list.refresh}
                   />
                 </View>
@@ -567,7 +568,7 @@ function KinClientBody(
                   <Button
                     tone="secondary"
                     size="compact"
-                    label={history.state.moreFailed ? "Try again" : KIN_CLIENTS.earlier}
+                    label={history.state.moreFailed ? KIN_RETRY : KIN_CLIENTS.earlier}
                     loading={history.state.loadingMore}
                     disabled={history.state.loadingMore}
                     onPress={() => void history.list.loadMore()}

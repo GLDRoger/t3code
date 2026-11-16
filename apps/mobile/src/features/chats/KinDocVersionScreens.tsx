@@ -1,3 +1,4 @@
+import { KIN_RETRY, KIN_CHECK_CONNECTION } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
@@ -115,11 +116,11 @@ function KinDocChanges(
       <EmptyState
         variant="plain"
         title="Couldn't load the changes"
-        detail="Check your connection to the server and try again."
+        detail={KIN_CHECK_CONNECTION}
         action={
           <Button
             tone="secondary"
-            label="Try again"
+            label={KIN_RETRY}
             onPress={() => appAtomRegistry.refresh(atom)}
           />
         }
@@ -273,8 +274,8 @@ function KinDocHistory(props: KinWorkTarget & { readonly docKey: KinRecordKey })
         <EmptyState
           variant="plain"
           title="Couldn't load the history"
-          detail="Check your connection to the server and try again."
-          action={<Button tone="secondary" label="Try again" onPress={list.refresh} />}
+          detail={KIN_CHECK_CONNECTION}
+          action={<Button tone="secondary" label={KIN_RETRY} onPress={list.refresh} />}
         />
       ) : (
         <ListSection>
@@ -325,7 +326,7 @@ function KinDocHistory(props: KinWorkTarget & { readonly docKey: KinRecordKey })
         <Button
           tone="secondary"
           size="compact"
-          label={state.moreFailed ? "Try again" : "Show earlier versions"}
+          label={state.moreFailed ? KIN_RETRY : "Show earlier versions"}
           loading={state.loadingMore}
           disabled={state.loadingMore}
           onPress={() => void list.loadMore()}

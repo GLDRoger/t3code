@@ -1,3 +1,4 @@
+import { KIN_BUSY } from "./kinAnswers.ts";
 import { describe, expect, it } from "@effect/vitest";
 import {
   KinChatError,
@@ -62,6 +63,12 @@ describe("kinTeamView", () => {
       ["Tomas", "no_access", "i-tomas"],
     ]);
     expect(kinTeamEntrySummary(list, owner)).toBe("1 teammate, 1 hasn't joined yet");
+    // A co-owner's count holds the owner too: every row the Team page lists besides their own.
+    const asMira = {
+      ...list,
+      people: [{ ...person(owner, "Olu"), access: "owner" as const }, person(mira, "Mira")],
+    };
+    expect(kinTeamEntrySummary(asMira, mira)).toBe("1 teammate, 1 hasn't joined yet");
     expect(
       kinTeamEntrySummary({ people: [person(owner, "Olu")], joined: [], invites: [] }, owner),
     ).toBe("Add the people you work with");
@@ -218,9 +225,7 @@ describe("createKinTeamActions", () => {
     expect(offline.calls).not.toContain("create:Anouk:new");
     // The row comes back: the old link still works.
     expect(states(offline.edits())).toContainEqual(["Anouk", "invited", "i-new"]);
-    expect(offline.edits().problem).toBe(
-      "Couldn't cancel this invite right now. Try again in a moment.",
-    );
+    expect(offline.edits().problem).toBe(`Couldn't cancel this invite. ${KIN_BUSY}`);
   });
 
   it("says the earlier link is gone when the replacement could not be made", async () => {
@@ -232,8 +237,7 @@ describe("createKinTeamActions", () => {
     });
     expect(result).toEqual({
       ok: false,
-      problem:
-        "Couldn't make this link right now. Try again in a moment. The earlier link was stopped.",
+      problem: `Couldn't make this link. ${KIN_BUSY} The earlier link was stopped.`,
     });
   });
 

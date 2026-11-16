@@ -1,3 +1,5 @@
+import { KIN_CHECK_CONNECTION } from "@t3tools/client-runtime/kin/kinAnswers";
+
 // `lib/attachmentUpload.ts` throws this when a draft's file is gone; retrying can't help, so say it.
 const LOST_FILE = /^'.+' is no longer available\. Attach the image again\.$/;
 
@@ -20,6 +22,6 @@ export function kinAttachmentFailure(
   const still = kinds.length === 1 ? "It's" : "They're";
   return {
     title: `Couldn't send ${what}`,
-    message: lost ?? `Check the connection and try again. ${still} still in the message box.`,
+    message: lost ?? `${KIN_CHECK_CONNECTION} ${still} still in the message box.`,
   };
 }

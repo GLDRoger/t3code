@@ -9,7 +9,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_WORK_COPY,
-  KIN_WORK_STATE_CHOICES,
+  kinWorkStatusOffer,
   type KinWorkAction,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import { View } from "react-native";
@@ -26,39 +26,47 @@ const NO_DATE = "due";
 /** Where the task stands, other than done: started, waiting on someone, or not worth doing. */
 export function KinWorkStatusRow(props: {
   readonly view: KinWorkItemView;
+  /** What the host takes (`kinWorkStatusOffer`). */
+  readonly offer: ReturnType<typeof kinWorkStatusOffer>;
   /** Everyone it could be waiting on. */
   readonly people: ReadonlyArray<KinWorkAssignee>;
   readonly disabled: boolean;
   readonly onAct: (action: KinWorkAction) => void;
 }) {
-  const { view, people } = props;
+  const { view, people, offer } = props;
   return (
     <Menu
       title={KIN_WORK_COPY.status}
       accessibilityRole="button"
       accessibilityLabel={`${KIN_WORK_COPY.status}: ${view.status}. Change`}
       actions={[
-        ...KIN_WORK_STATE_CHOICES.map((choice) => ({
+        ...offer.states.map((choice) => ({
           id: choice.state,
           title: choice.label,
           state: view.state === choice.state ? ("on" as const) : ("off" as const),
         })),
-        {
-          id: "waiting-on",
-          title: KIN_WORK_COPY.waitingOn,
-          subactions: [
-            ...people.map((to) => ({
-              id: `${WAITING}${to.key}`,
-              title: to.name,
-              state: to.current ? ("on" as const) : ("off" as const),
-              ...(to.invited
-                ? { subtitle: KIN_WORK_ASSIGN.invited, attributes: { disabled: true } }
-                : {}),
-            })),
-            { id: NOBODY, title: KIN_WORK_COPY.waitingOnNobody },
-          ],
-        },
-        { id: "dropped", title: KIN_WORK_COPY.drop, attributes: { destructive: true } },
+        ...(!offer.waiting
+          ? []
+          : [
+              {
+                id: "waiting-on",
+                title: KIN_WORK_COPY.waitingOn,
+                subactions: [
+                  ...people.map((to) => ({
+                    id: `${WAITING}${to.key}`,
+                    title: to.name,
+                    state: to.current ? ("on" as const) : ("off" as const),
+                    ...(to.invited
+                      ? { subtitle: KIN_WORK_ASSIGN.invited, attributes: { disabled: true } }
+                      : {}),
+                  })),
+                  { id: NOBODY, title: KIN_WORK_COPY.waitingOnNobody },
+                ],
+              },
+            ]),
+        ...(!offer.drop
+          ? []
+          : [{ id: "dropped", title: KIN_WORK_COPY.drop, attributes: { destructive: true } }]),
       ]}
       onPressAction={({ nativeEvent: { event } }) => {
         if (props.disabled) return;
@@ -139,6 +147,8 @@ export function KinWorkPlaceRow(props: {
   readonly choices: ReadonlyArray<KinWorkRef>;
   readonly disabled: boolean;
   readonly onPick: (ref: KinWorkRef | null) => void;
+  /** Whether "None" is offered: the host may let a value change but not be cleared. */
+  readonly clearable?: boolean;
   readonly onOpen?: () => void;
   readonly side?: {
     readonly value: "ours" | "theirs";
@@ -166,7 +176,15 @@ export function KinWorkPlaceRow(props: {
           title: choice.title,
           state: choice.key === held?.key ? ("on" as const) : ("off" as const),
         })),
-        { id: NONE, title: props.none, state: held === null ? ("on" as const) : ("off" as const) },
+        ...(props.clearable === false && held !== null
+          ? []
+          : [
+              {
+                id: NONE,
+                title: props.none,
+                state: held === null ? ("on" as const) : ("off" as const),
+              },
+            ]),
         ...(held === null || side === undefined
           ? []
           : [

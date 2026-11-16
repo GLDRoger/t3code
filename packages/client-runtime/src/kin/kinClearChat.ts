@@ -2,7 +2,7 @@ import type { KinChat, KinChatMember } from "@t3tools/contracts";
 
 export const KIN_CLEAR_CHAT_ACTION = "Clear chat";
 export const KIN_CLEAR_CHAT_TITLE = "Clear this chat?";
-export const KIN_CLEAR_CHAT_FAILED = "Couldn't clear this chat. Try again.";
+export const KIN_CLEAR_CHAT_FAILED = "Couldn't clear this chat.";
 
 export const KIN_CLEAR_CHAT_DONE = "Chat cleared";
 

@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   KIN_CONNECTIONS_COPY as COPY,
@@ -169,7 +170,7 @@ function ConnectionsList(props: Target) {
             <div className="flex items-center justify-between gap-3 px-4 py-3">
               <p className="text-sm text-destructive-foreground">{COPY.loadFailed}</p>
               <Button size="xs" variant="outline" onClick={reload}>
-                Try again
+                {KIN_RETRY}
               </Button>
             </div>
           ) : (

@@ -1,5 +1,4 @@
 import { useAtomValue } from "@effect/atom-react";
-import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import {
   KIN_FIELD_FILES_MAX,
@@ -86,7 +85,6 @@ import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import { KinNotesVersions } from "./KinConfirm";
 import { KinEntryFilePicker, KinEntryPick, KinEntryText } from "./KinWorkEntryEdit";
 import { KinWorkPrivateMark, KinWorkSection as Section } from "./KinWorkParts";
-import { connectionAtomRuntime } from "../connection/runtime";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
@@ -518,13 +516,10 @@ export function KinListEntry(
   const agent = useKinAskAgent(props);
   const mayUpdate = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const ownerLevel = useKinOwnerLevel(environmentId);
-  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
-  // A project's lead drafts its entries' words and figures; state, files and the rest are the owner's.
-  const leads =
-    item.project !== undefined &&
-    (me?.leads ?? []).some((project) => project.key === item.project?.key);
-  const canChange = mayUpdate && ownerLevel;
-  const canDraft = mayUpdate && (ownerLevel || leads);
+  // A project's lead drafts its entries' words and figures (`can.edit`); state, files and the
+  // rest are owner-level, which the host says by letting this reader set its client.
+  const canChange = mayUpdate && view.can.party;
+  const canDraft = mayUpdate && view.can.edit;
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const [paying, setPaying] = useState(false);
   const [takingBack, setTakingBack] = useState<string | null>(null);
@@ -902,7 +897,7 @@ export function KinListEntry(
               {KIN_LISTS.entry.private}
             </p>
           ) : null}
-          {ownerLevel && item.list !== "bank_transactions" ? (
+          {view.can.share ? (
             <KinWorkShareRow
               environmentId={environmentId}
               orgId={props.orgId}

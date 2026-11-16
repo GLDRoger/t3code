@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { kinStandInLine } from "@t3tools/client-runtime/kin/kinHost";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -34,7 +35,7 @@ export function KinStandInLine(props: {
     <p role="status" className={props.className}>
       {line.message}{" "}
       <Button size="xs" variant="link" onClick={() => void retry(line.usual)}>
-        Try again
+        {KIN_RETRY}
       </Button>
     </p>
   );

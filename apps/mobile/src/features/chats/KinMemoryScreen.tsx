@@ -1,3 +1,5 @@
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -48,6 +50,7 @@ import { ListRow } from "../../components/ui/ListRow";
 import { KinListBanner } from "./components/KinListBanner";
 import { KinFoldSection } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 
 export type KinMemoryParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -183,17 +186,10 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
     />
   ) : list === null || view === null ? (
     AsyncResult.isFailure(result) ? (
-      <EmptyState
-        variant="plain"
+      <KinLoadFailed
         title={KIN_MEMORY_LOAD_FAILED}
-        detail="Check your connection to the server and try again."
-        action={
-          <Button
-            tone="secondary"
-            label="Try again"
-            onPress={() => appAtomRegistry.refresh(listAtom)}
-          />
-        }
+        cause={result}
+        onRetry={() => appAtomRegistry.refresh(listAtom)}
       />
     ) : (
       <View
@@ -321,22 +317,23 @@ function KinMemoryForgotten(props: KinMemoryTarget & { readonly onRestored: () =
   const result = useAtomValue(forgottenAtom);
   const restore = useAtomCommand(kinClient.memoryRestore, { reportFailure: false });
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const items = Option.getOrNull(AsyncResult.value(result))?.items ?? null;
   if (items === null) return null;
   const bringBack = async (itemId: KinMemoryItemId) => {
     setBusy(true);
-    setFailed(false);
+    setFailed(null);
     const outcome = await restore({ environmentId, input: { orgId, itemId } });
     setBusy(false);
     if (AsyncResult.isSuccess(outcome)) {
       appAtomRegistry.refresh(forgottenAtom);
       props.onRestored();
-    } else setFailed(true);
+    } else
+      setFailed(kinFailureText(squashAtomCommandFailure(outcome), KIN_MEMORY_FORGOTTEN.failed));
   };
   return (
     <View className="gap-2">
-      {failed ? <ErrorBanner message={KIN_MEMORY_FORGOTTEN.failed} /> : null}
+      {failed ? <ErrorBanner message={failed} /> : null}
       <KinFoldSection
         title={KIN_MEMORY_FORGOTTEN.title}
         summary={KIN_MEMORY_FORGOTTEN.count(items.length)}

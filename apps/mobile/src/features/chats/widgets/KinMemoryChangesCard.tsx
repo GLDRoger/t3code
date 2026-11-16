@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -75,7 +76,7 @@ export const KinMemoryChangesCard = memo(function KinMemoryChangesCard(props: {
                 <Button
                   size="compact"
                   tone="text"
-                  label={failure === null ? "Undo" : "Try again"}
+                  label={failure === null ? "Undo" : KIN_RETRY}
                   accessibilityLabel={`Undo: ${item.line}`}
                   loading={pending === item.itemId}
                   disabled={pending !== null && pending !== item.itemId}

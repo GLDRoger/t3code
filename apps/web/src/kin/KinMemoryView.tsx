@@ -1,3 +1,5 @@
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_MEMORY_EMPTY,
@@ -316,18 +318,19 @@ function KinMemoryForgotten(props: KinMemoryTarget & { readonly onRestored: () =
   const result = useAtomValue(forgottenAtom);
   const restore = useAtomCommand(kinClient.memoryRestore, { reportFailure: false });
   const [busy, setBusy] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const items = Option.getOrNull(AsyncResult.value(result))?.items ?? null;
   if (items === null) return null;
   const bringBack = async (itemId: KinMemoryItemId) => {
     setBusy(itemId);
-    setFailed(false);
+    setFailed(null);
     const outcome = await restore({ environmentId, input: { orgId, itemId } });
     setBusy(null);
     if (AsyncResult.isSuccess(outcome)) {
       appAtomRegistry.refresh(forgottenAtom);
       props.onRestored();
-    } else setFailed(true);
+    } else
+      setFailed(kinFailureText(squashAtomCommandFailure(outcome), KIN_MEMORY_FORGOTTEN.failed));
   };
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pt-6">
@@ -337,7 +340,7 @@ function KinMemoryForgotten(props: KinMemoryTarget & { readonly onRestored: () =
       >
         {failed ? (
           <Alert variant="error">
-            <AlertDescription>{KIN_MEMORY_FORGOTTEN.failed}</AlertDescription>
+            <AlertDescription>{failed}</AlertDescription>
           </Alert>
         ) : null}
         <ul className="flex flex-col">

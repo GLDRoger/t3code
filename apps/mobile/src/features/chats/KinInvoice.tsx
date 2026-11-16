@@ -46,6 +46,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { KinLoadFailed, KinLoadFailedRow } from "./components/KinLoadFailed";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
@@ -582,11 +583,10 @@ function MakeDocument(
       {state._tag === "loading" ? (
         <KinWorkLoading label="Loading templates" />
       ) : state._tag !== "ready" ? (
-        <EmptyState
-          variant="plain"
+        <KinLoadFailed
           title="Couldn't load your templates"
-          detail="Check your connection and try again."
-          action={<Button tone="secondary" label="Try again" onPress={recipes.refresh} />}
+          cause={state._tag === "failed" ? state.cause : null}
+          onRetry={recipes.refresh}
         />
       ) : recipe === null ? (
         <EmptyState
@@ -723,7 +723,11 @@ export function KinReceiptsSection(props: KinWorkTarget & { readonly seq: number
       {state._tag === "loading" ? (
         <KinWorkLoading label="Loading receipts" />
       ) : state._tag !== "ready" ? (
-        <ListActionRow label="Couldn't load receipts. Try again" tone="danger" onPress={refresh} />
+        <KinLoadFailedRow
+          title="Couldn't load receipts"
+          cause={state._tag === "failed" ? state.cause : null}
+          onRetry={refresh}
+        />
       ) : receipts.length === 0 ? (
         <Text textRole="body" className="px-4 py-3 text-foreground-muted">
           {KIN_RECEIPTS.empty}
@@ -970,6 +974,7 @@ function ApplyReceipt(
   const [held, setHeld] = useState<{
     readonly attempt: number;
     readonly invoices: ReadonlyArray<KinRecord> | null;
+    readonly cause: unknown;
   } | null>(null);
   const [requestId] = useState(uuidv4);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the client's open invoices from the host when the sheet opens or Try again is pressed
@@ -991,6 +996,7 @@ function ApplyReceipt(
           setHeld({
             attempt,
             invoices: AsyncResult.isSuccess(result) ? result.value.records : null,
+            cause: result,
           });
       });
     return () => {
@@ -1008,17 +1014,10 @@ function ApplyReceipt(
       {invoices === undefined ? (
         <KinWorkLoading label="Loading invoices" />
       ) : invoices === null ? (
-        <EmptyState
-          variant="plain"
+        <KinLoadFailed
           title="Couldn't load invoices"
-          detail="Check your connection and try again."
-          action={
-            <Button
-              tone="secondary"
-              label="Try again"
-              onPress={() => setAttempt((count) => count + 1)}
-            />
-          }
+          cause={held?.cause}
+          onRetry={() => setAttempt((count) => count + 1)}
         />
       ) : invoices.length === 0 ? (
         <EmptyState variant="plain" title="No open invoice" detail={KIN_RECEIPTS.noInvoices} />

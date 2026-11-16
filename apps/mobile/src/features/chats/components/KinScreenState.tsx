@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_ONLY } from "../../../lib/kinOnly";
 import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED } from "../kinOnlyCopy";
 import { useAtomValue } from "@effect/atom-react";
@@ -92,7 +93,7 @@ export function KinScreenState(props: {
         <EmptyState
           variant="plain"
           title="Your team's Kin isn't available"
-          detail="Try again in a bit. If it stays this way, ask your team whether something changed."
+          detail="It may be restarting. If it stays this way, ask your team whether something changed."
         />
       ) : (
         <EmptyState
@@ -214,7 +215,7 @@ export function useKinStandIn(environmentId?: EnvironmentId) {
   if (environmentId !== undefined && environmentId !== host.environmentId) return null;
   return {
     message: status === "failed" ? `${line.message} Still no answer.` : line.message,
-    action: reconnect === null ? null : status === "pending" ? "Trying…" : "Try again",
+    action: reconnect === null ? null : status === "pending" ? "Trying…" : KIN_RETRY,
     onPress: status === "pending" ? null : reconnect,
   };
 }
