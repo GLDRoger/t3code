@@ -171,6 +171,23 @@ export const KinDocRow = Schema.Struct({
 });
 export type KinDocRow = typeof KinDocRow.Type;
 
+/** A list row's latest version as `acceptSlimLatest` sends it: what the row's line says. */
+export const KinDocLatestSlim = Schema.Struct({
+  version: PositiveInt,
+  at: IsoDateTime,
+  kind: KinDocVersionKind,
+  summary: KinText,
+  provenance: Schema.Struct({ by: KinWorkActor }),
+});
+export type KinDocLatestSlim = typeof KinDocLatestSlim.Type;
+
+/** A row of `kin.docs.list`: the full latest version unless the client asked for the slim one. */
+export const KinDocListRow = Schema.Struct({
+  ...KinDocRow.fields,
+  latest: Schema.Union([KinDocVersion, KinDocLatestSlim]),
+});
+export type KinDocListRow = typeof KinDocListRow.Type;
+
 /** A doc at one version, for the reader and its contents sheet. */
 /**
  * What one `kin_chart` or `kin_visual` block of a doc's body draws, in the order the blocks
@@ -222,12 +239,16 @@ export const KinDocsListInput = Schema.Struct({
   home: Schema.optional(Schema.Literals(["company", "unfiled"])),
   /** `false` leaves out files made from a recipe, `true` lists only them; absent lists both. */
   files: Schema.optional(Schema.Boolean),
+  /** Only docs changed at or after this time; `total` then counts those. */
+  changedSince: Schema.optional(IsoDateTime),
+  /** Rows carry `KinDocLatestSlim`; the full version stays on `kin.docs.get`. */
+  acceptSlimLatest: Schema.optional(Schema.Boolean),
   cursor: Schema.optional(PageCursor),
   limit: Schema.optional(PageLimit),
 });
 export type KinDocsListInput = typeof KinDocsListInput.Type;
 export const KinDocsListResult = Schema.Struct({
-  docs: Schema.Array(KinDocRow),
+  docs: Schema.Array(KinDocListRow),
   total: NonNegativeInt,
   nextCursor: Schema.NullOr(Schema.String),
   seq: NonNegativeInt,

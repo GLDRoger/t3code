@@ -59,8 +59,22 @@ const noCompanyAtom: Atom.Atom<AsyncResult.AsyncResult<KinCompanyProfile, unknow
 
 const listsAtom = ({ environmentId, orgId }: KinWorkTarget, archived: boolean) =>
   kinClient.workLists({ environmentId, input: archived ? { orgId, archived: true } : { orgId } });
-const moneyAtom = ({ environmentId, orgId }: KinWorkTarget) =>
-  kinClient.workMoney({ environmentId, input: { orgId } });
+/**
+ * `line`: a line of what is owed, which no task moves. `screen`: Money itself, whose coming-up count
+ * counts tasks too. `rows`: Money for a viewer who can't open Dates, so it draws the coming-up rows.
+ */
+export type KinMoneyUse = "line" | "screen" | "rows";
+const moneyAtom = ({ environmentId, orgId }: KinWorkTarget, use: KinMoneyUse) =>
+  use === "line"
+    ? kinClient.workOwed({ environmentId, input: { orgId, upcomingRows: false } })
+    : kinClient.workMoney({
+        environmentId,
+        input: use === "rows" ? { orgId } : { orgId, upcomingRows: false },
+      });
+const refreshMoney = (target: KinWorkTarget) => {
+  for (const use of ["line", "screen", "rows"] as const)
+    appAtomRegistry.refresh(moneyAtom(target, use));
+};
 
 const refreshKinLists = (target: KinWorkTarget) => {
   appAtomRegistry.refresh(listsAtom(target, false));
@@ -96,8 +110,11 @@ export const kinListsOf = (handle: KinListsHandle): ReadonlyArray<KinListDefinit
   handle.state._tag === "ready" ? handle.state.value.lists : [];
 
 /** The Money summary, kept current by Work's changes (`kinWorkRefreshOn`). */
-export function useKinMoneySummary(target: KinWorkTarget, options: { readonly enabled: boolean }) {
-  const atom = moneyAtom(target);
+export function useKinMoneySummary(
+  target: KinWorkTarget,
+  options: { readonly enabled: boolean; readonly use?: KinMoneyUse },
+) {
+  const atom = moneyAtom(target, options.use ?? "line");
   const state = kinWorkReadState(useAtomValue(options.enabled ? atom : noMoneyAtom));
   return { state, refresh: () => appAtomRegistry.refresh(atom) };
 }
@@ -263,7 +280,7 @@ export function useKinEntryChanges({ environmentId, orgId }: KinWorkTarget, key:
     setBusy(false);
     // The entry is read again either way: the answer, or what it became meanwhile.
     appAtomRegistry.refresh(item);
-    appAtomRegistry.refresh(moneyAtom({ environmentId, orgId }));
+    refreshMoney({ environmentId, orgId });
     return outcome;
   };
   const shown = async <A>(send: () => Promise<AsyncResult.AsyncResult<A, unknown>>) => {
@@ -451,7 +468,7 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
   const reread = (key?: KinRecordKey) => {
     if (key !== undefined)
       appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } }));
-    appAtomRegistry.refresh(moneyAtom({ environmentId, orgId }));
+    refreshMoney({ environmentId, orgId });
     appAtomRegistry.refresh(kinClient.receipts({ environmentId, input: { orgId } }));
   };
   const run = async <A>(

@@ -27,6 +27,11 @@ const COUNT_WINDOWED_STREAMS: ReadonlySet<string> = new Set([
   WS_METHODS.subscribeServerConfig,
   ORCHESTRATION_V2_WS_METHODS.subscribeShell,
   ORCHESTRATION_V2_WS_METHODS.subscribeThread,
+  "kin.chat.subscribe",
+  "kin.chats.subscribe",
+  "kin.work.subscribe",
+  "kin.docs.subscribe",
+  "kin.refreshes.subscribe",
 ]);
 
 interface Window {

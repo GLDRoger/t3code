@@ -3,6 +3,7 @@ import {
   type KinOrgId,
   type KinPulseHandleInput,
   type KinPulseListInput,
+  kinPulsePage,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -58,7 +59,10 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
     limit: SCREEN_CAP,
   }).pipe(Effect.catchTags({ SqlError: unavailableOn }));
   // Screens show the consequence, which already says the measure; agents' reads keep it.
-  return { ...read, facts: read.facts.map(({ measure: _measure, ...fact }) => fact) };
+  const facts = read.facts.map(({ measure: _measure, ...fact }) => fact);
+  return input.limit === undefined
+    ? { ...read, facts }
+    : { ...read, ...kinPulsePage(facts, input.limit) };
 });
 
 export const handle = Effect.fn("KinPulsePeople.handle")(function* (

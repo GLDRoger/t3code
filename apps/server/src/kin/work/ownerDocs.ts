@@ -22,6 +22,7 @@ import {
   KinRecordId,
   KinRecordKey,
   type KinSearchInput,
+  kinSlimDocRow,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -188,6 +189,9 @@ export const list = Effect.fn("KinDocs.list")(
                   WHERE w.org_id = r.org_id AND w.record_id = r.record_id)
                 AND instr(lower(v.body), ${text}) > 0))`,
           ]),
+      ...(input.changedSince === undefined
+        ? []
+        : [sql`r.updated_at >= ${Date.parse(input.changedSince)}`]),
     ]);
     const limit = input.limit ?? 50;
     const [count] = yield* sql<{
@@ -206,7 +210,9 @@ export const list = Effect.fn("KinDocs.list")(
     return {
       docs: rows.flatMap((row) => {
         const version = latest.get(row.recordId);
-        return version === undefined ? [] : [Docs.toDocRow(row, version, now)];
+        if (version === undefined) return [];
+        const doc = Docs.toDocRow(row, version, now);
+        return [input.acceptSlimLatest === true ? kinSlimDocRow(doc) : doc];
       }),
       total: count?.total ?? 0,
       nextCursor: next < (count?.total ?? 0) ? `o:${next}` : null,

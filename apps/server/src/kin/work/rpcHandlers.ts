@@ -7,6 +7,7 @@ import {
   KinRefreshRpcs,
   KinStatementRpcs,
   KinWorkRpcs,
+  kinCompactWorkList,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -89,7 +90,8 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
         return yield* call((people) => Work.summary(people, input));
       }),
       "kin.work.list": Effect.fn("KinWork.rpc.list")(function* (input) {
-        return yield* call((people) => Work.list(people, input));
+        const list = yield* call((people) => Work.list(people, input));
+        return input.acceptCompactRows === true ? kinCompactWorkList(list) : list;
       }),
       "kin.work.get": Effect.fn("KinWork.rpc.get")(function* (input) {
         return yield* call((people) => Work.get(people, input));

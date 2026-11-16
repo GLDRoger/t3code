@@ -131,12 +131,12 @@ export function renderMarkdown(
   lines.push(
     "## Wire per action",
     "",
-    "| Action | Frames in | KB in | Frames out | KB out | Largest | Reads sent |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+    "| Action | Frames in | KB in | KB in, deflated | Frames out | KB out | Largest | Reads sent |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
   );
   for (const row of result.wire)
     lines.push(
-      `| ${row.action} | ${row.framesIn} | ${(row.bytesIn / 1024).toFixed(1)} | ${row.framesOut} | ${(row.bytesOut / 1024).toFixed(1)} | ${formatValue(row.largest, "bytes")} | ${Object.entries(
+      `| ${row.action} | ${row.framesIn} | ${(row.bytesIn / 1024).toFixed(1)} | ${row.deflatedIn === undefined ? "" : (row.deflatedIn / 1024).toFixed(1)} | ${row.framesOut} | ${(row.bytesOut / 1024).toFixed(1)} | ${formatValue(row.largest, "bytes")} | ${Object.entries(
         row.methods ?? {},
       )
         .map(([method, count]) => `${method} ×${count}`)
@@ -146,14 +146,14 @@ export function renderMarkdown(
     "",
     "## Refresh chatter (5 s after one change, every connected person)",
     "",
-    "| Change | Frames in (all) | KB in (all) | Requests sent (all) | Per person |",
-    "| --- | ---: | ---: | ---: | --- |",
+    "| Change | Frames in (all) | KB in (all) | KB in, deflated (all) | Requests sent (all) | Per person |",
+    "| --- | ---: | ---: | ---: | ---: | --- |",
   );
   for (const one of result.chatter) {
-    const sum = (key: "framesIn" | "bytesIn" | "requestsOut") =>
-      one.clients.reduce((total, client) => total + client[key], 0);
+    const sum = (key: "framesIn" | "bytesIn" | "requestsOut" | "deflatedIn") =>
+      one.clients.reduce((total, client) => total + (client[key] ?? 0), 0);
     lines.push(
-      `| ${one.change} | ${sum("framesIn")} | ${(sum("bytesIn") / 1024).toFixed(1)} | ${sum("requestsOut")} | ${one.clients.map((client) => `${client.person} ${client.framesIn}/${client.requestsOut}`).join(", ")}${requested(one)} |`,
+      `| ${one.change} | ${sum("framesIn")} | ${(sum("bytesIn") / 1024).toFixed(1)} | ${(sum("deflatedIn") / 1024).toFixed(1)} | ${sum("requestsOut")} | ${one.clients.map((client) => `${client.person} ${client.framesIn}/${client.requestsOut}`).join(", ")}${requested(one)} |`,
     );
   }
   lines.push(

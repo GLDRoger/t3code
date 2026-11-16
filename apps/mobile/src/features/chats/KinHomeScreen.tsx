@@ -163,7 +163,7 @@ function KinHomeTabs(props: {
 
 /** The dock, with what needs attention counted on Tasks. */
 function KinBadgedDock(props: KinWorkTarget & KinDockProps) {
-  const badge = kinAttentionBadge(kinAttentionCount(useKinAttention(props)));
+  const badge = kinAttentionBadge(kinAttentionCount(useKinAttention(props, true, true)));
   return (
     <KinDock
       tabs={props.tabs}

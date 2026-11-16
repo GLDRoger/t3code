@@ -243,9 +243,11 @@ export const onKinDirectChatsChange =
               const key = direct
                 .map((chat) => `${chat.chatId}:${chat.members.map((m) => m.role).join(",")}`)
                 .join("|");
+              // The cache giving way to the first live view is no change: the reads that
+              // depend on it are being made fresh beside it.
               if (seen !== null && seen !== key)
                 reread(environmentId, [...new Set(direct.map((chat) => chat.orgId))]);
-              seen = key;
+              seen = view.live ? key : null;
             }),
           ),
         );

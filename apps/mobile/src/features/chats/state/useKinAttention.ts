@@ -1,7 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
-import { kinAttentionProblem, kinAttentionShown } from "@t3tools/client-runtime/kin/kinAttention";
+import {
+  KIN_NEEDS_YOU_PAGE,
+  kinAttentionProblem,
+  kinAttentionShown,
+} from "@t3tools/client-runtime/kin/kinAttention";
 import { kinWorkAgent } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -9,7 +13,7 @@ import type {
   KinGoalSaveInput,
   KinGoalsResult,
   KinPulseHandleAction,
-  KinPulseRead,
+  KinPulseScreenRead,
   KinDay,
 } from "@t3tools/contracts";
 import { useNavigation } from "@react-navigation/native";
@@ -26,7 +30,7 @@ import { kinClient } from "./kinClient";
 import { useRereadOnChange } from "./useKinMoney";
 import { kinWorkLiveAtom, type KinWorkTarget } from "./useKinWork";
 
-const noAttentionAtom: Atom.Atom<AsyncResult.AsyncResult<KinPulseRead, unknown>> = Atom.make(
+const noAttentionAtom: Atom.Atom<AsyncResult.AsyncResult<KinPulseScreenRead, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
 const noLiveAtom: Atom.Atom<AsyncResult.AsyncResult<{ readonly seq: number }, unknown>> = Atom.make(
@@ -36,8 +40,14 @@ const noGoalsAtom: Atom.Atom<AsyncResult.AsyncResult<KinGoalsResult, unknown>> =
   AsyncResult.initial(),
 );
 
-const attentionAtom = ({ environmentId, orgId }: KinWorkTarget) =>
-  kinClient.attention({ environmentId, input: { orgId, includeHandled: true } });
+/** `paged`: the first open facts Needs you shows, and counts of the rest (`outline`). */
+const attentionAtom = ({ environmentId, orgId }: KinWorkTarget, paged = false) =>
+  kinClient.attention({
+    environmentId,
+    input: paged
+      ? { orgId, includeHandled: true, limit: KIN_NEEDS_YOU_PAGE }
+      : { orgId, includeHandled: true },
+  });
 /** Facts answered on this device, hidden until the live read says where they stand now. */
 const answeredAtom = Atom.family((_target: string) =>
   Atom.make<ReadonlyArray<string>>([]).pipe(Atom.keepAlive),
@@ -50,8 +60,8 @@ const answeredOf = ({ environmentId, orgId }: KinWorkTarget) =>
  * that topic for any change to what it senses, which is all an owner-level viewer is shown. A
  * member's view also turns on what is shared with them, so theirs is read again on Work's changes.
  */
-export function useKinAttention(target: KinWorkTarget, enabled = true) {
-  const atom = enabled ? attentionAtom(target) : noAttentionAtom;
+export function useKinAttention(target: KinWorkTarget, enabled = true, paged = false) {
+  const atom = enabled ? attentionAtom(target, paged) : noAttentionAtom;
   const state = kinWorkReadState(useAtomValue(atom));
   const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, target.environmentId));
   const reads =
@@ -92,6 +102,7 @@ export function useKinAttentionHandle(target: KinWorkTarget) {
       });
       setBusy(null);
       appAtomRegistry.refresh(attentionAtom(target));
+      appAtomRegistry.refresh(attentionAtom(target, true));
       const problem = kinAttentionProblem(
         AsyncResult.isSuccess(outcome) ? null : squashAtomCommandFailure(outcome),
       );
