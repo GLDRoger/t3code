@@ -36,6 +36,16 @@ features:
       - apps/server/src/kin/chat/KinChatService.test.ts
       - apps/server/src/kin/lead/ChatWake.test.ts
 
+  - id: chat-attachments
+    name: Attach pictures, PDFs and documents in a chat
+    tab: chats
+    web: [home, chat, button:Attach files]
+    phone: [tab:chats, KinChat, button:Attach]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    proof:
+      - apps/server/src/kin/chat/KinChatService.test.ts
+      - .agents/skills/verify-kin/scripts/member-attaches-file.sh
+
   - id: chat-character
     name: Each agent's own voice, and "undo it"
     tab: chats
@@ -402,8 +412,9 @@ features:
   - id: make-document
     name: Make an invoice, quote or receipt PDF
     tab: money
-    web: [money, "?list", "?task", dialog:Make its PDF]
-    phone: [tab:money, KinList, KinWorkItem, KinMakeDocument]
+    # A step of the entry's sheet: the sheet turns into the form, with Back to the entry.
+    web: [money, "?list", "?task", button:Make its PDF]
+    phone: [tab:money, KinList, KinWorkItem, button:Make invoice]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [kin_document, kin_recipes, kin_issue, kin_recipe_undo]
