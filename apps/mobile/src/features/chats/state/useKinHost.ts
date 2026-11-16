@@ -102,3 +102,8 @@ export function useKinHost(): KinHost {
   }, [toSave, saved, save]);
   return host;
 }
+
+/** Makes the computer standing in the usual one, so Kin opens there first from now on. */
+export function useKinHostChooser(): (environmentId: EnvironmentId) => void {
+  return useAtomSet(saveKinHostAtom);
+}
