@@ -4,6 +4,8 @@ import * as NodeModule from "node:module";
 import * as NodeURL from "node:url";
 import * as NodePath from "node:path";
 
+import { PLACES } from "./roles.ts";
+
 const [baseDir, origin] = process.argv.slice(2);
 if (!baseDir || !origin) throw new Error("usage: seed.ts <baseDir> <origin>");
 const serverDir = NodePath.resolve(import.meta.dirname, "../../../apps/server");
@@ -31,9 +33,9 @@ const dayAt = (day: string) => `${day}T12:00:00.000Z`;
 // Roles the fuzzer walks as. `places` are the dock places a member is given.
 const PEOPLE = [
   { role: "coowner", name: "Arjun Mehta", access: "co_owner" },
-  { role: "lead", name: "Dev Iyer", access: "member", places: { clients: true, docs: true } },
-  { role: "member", name: "Zoya Sheikh", access: "member", places: { clients: false, docs: true } },
-  { role: "member2", name: "Kabir Rao", access: "member", places: { clients: true, docs: true } },
+  { role: "lead", name: "Dev Iyer", access: "member", places: PLACES.lead },
+  { role: "member", name: "Zoya Sheikh", access: "member", places: PLACES.member },
+  { role: "member2", name: "Kabir Rao", access: "member", places: PLACES.member2 },
 ] as const;
 
 const program = Effect.gen(function* () {

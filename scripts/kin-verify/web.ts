@@ -178,6 +178,8 @@ export async function openWeb(
 export function routeUrl(session: WebSession, route: string): string {
   if (/^https?:\/\//.test(route)) return route;
   if (route.startsWith("/")) return `${session.web}${route}`;
+  // The feature map's `home`: Kin with no chat open, not a chat called "home".
+  if (route === "home") return `${session.web}/kin`;
   return `${session.base}/${route}`;
 }
 

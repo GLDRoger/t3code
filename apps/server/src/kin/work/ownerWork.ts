@@ -65,6 +65,7 @@ import {
   teamDetail,
   teamKeys,
   teamRecord,
+  teamRecordIn,
   personSees,
   placesOf,
   teamSeesKey,
@@ -409,10 +410,17 @@ export const list = Effect.fn("KinWork.list")(function* (
     input.orgId,
     shown.map(({ row, record }) => ({ ...record, registerId: row.registerId })),
   );
+  const projects = viewer.teammate
+    ? yield* teamVisible(input.orgId, viewer.person.personId, [
+        ...new Set(
+          shown.flatMap(({ record }) => (record.project ? [record.project.recordId] : [])),
+        ),
+      ]).pipe(workFailure)
+    : new Set<string>();
   return {
     records: shown.map(({ row, record: whole }): KinRecord => {
       const record = { ...whole, can: can(whole.recordId) };
-      if (viewer.teammate && plainTask(row, led)) return teamRecord(record);
+      if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects);
       const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
       return Object.keys(fields).length === 0 ? record : { ...record, fields };
     }),

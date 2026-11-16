@@ -47,7 +47,7 @@ milestone M-1, goal G-1, brief D-7. Dates are relative to today. `people` prints
 
 ```bash
 kv() { node scripts/kin-verify.ts "$@"; }
-kv as zoya web open tasks                  # tasks | money | clients?client=C-1 | chat:chief | /settings/check-ins
+kv as zoya web open tasks                  # home | tasks | money | clients?client=C-1 | chat:chief | /settings/check-ins
 kv as zoya web snapshot                    # the front sheet or dialog, else the main area; --full for the page
 kv as owner web click --name "Add task"    # exact name first; --role option, --nth 2, --within "<card>"
 kv as owner web type --name "What needs doing" "Check the logo files" --enter

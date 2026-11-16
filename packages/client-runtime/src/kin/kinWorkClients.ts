@@ -69,6 +69,8 @@ export const KIN_CLIENTS = {
   contacts: "Contacts",
   addContact: "Add contact",
   noContacts: "No one yet. Add who you deal with there.",
+  /** For someone who can't add contacts. */
+  noContactsYet: "No contacts yet.",
   projects: "Projects",
   noProjects: "No projects for them yet.",
   terms: "Terms",

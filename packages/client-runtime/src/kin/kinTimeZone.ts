@@ -4,7 +4,8 @@ import type { Atom, AtomRegistry } from "effect/reactivity";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
 import { createKinRpcCommand } from "./kinAccess.ts";
 
-const sameZone = (a: string, b: string) => {
+/** Whether two zone names are one zone: `Asia/Calcutta` is `Asia/Kolkata`. */
+export const kinSameTimeZone = (a: string, b: string) => {
   try {
     return canonicalTimeZone(a) === canonicalTimeZone(b);
   } catch {
@@ -52,7 +53,8 @@ export function createKinOwnerTimeZoneSync<R, ER>(
         )
         .then((stored) => {
           if (stored?._tag !== "Success") return;
-          if (stored.value.fromHost !== true && sameZone(stored.value.timeZone, device)) return;
+          if (stored.value.fromHost !== true && kinSameTimeZone(stored.value.timeZone, device))
+            return;
           return set.run(registry, { environmentId, input: { orgId, timeZone: device } });
         });
     }

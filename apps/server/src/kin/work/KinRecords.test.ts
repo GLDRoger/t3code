@@ -1626,6 +1626,28 @@ it.effect(
       assert.isFalse(yield* KinLevels.ownerAlone(woken));
       // L1: talk only, as a teammate's own messages get.
       assert.strictEqual(yield* KinLevels.originCap(woken), "L1");
+      // It reads Work as they do: the owner's private task is no task at all, by list or key.
+      assert.deepInclude(yield* turnPeople(woken), { people: [mateId], askers: [mateId] });
+      const hidden = yield* ownerTask("owner only", { sensitive: true });
+      const scope = scopeOf(lead);
+      assert.deepStrictEqual(
+        keysOf(yield* LeadWork.query(scope, {})),
+        keysOf(yield* OwnerWork.list([mate], { orgId })),
+      );
+      assert.notInclude(keysOf(yield* LeadWork.query(scope, {})), hidden.key);
+      assert.include(yield* Effect.flip(LeadWork.get(scope, { key: hidden.key })), {
+        reason: "not_found",
+      });
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.update(scope, {
+            key: hidden.key,
+            sourceEventId: JSON.parse(event!.json).eventId,
+            state: "done",
+          }),
+        ),
+        { reason: "not_found" },
+      );
       // It counts as one of their turns today, and one still queued is dropped with their access.
       assert.include(yield* LeadAccess.recentTurns({ orgId, personId: mateId, now: 0 }), {
         turns: 1,
@@ -1659,6 +1681,37 @@ it.effect(
       assert.include(yield* OwnerWork.get([mate], { orgId, key: given.key }), { state: "done" });
       assert.lengthOf(yield* assignedEvents, 2);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a task a teammate holds and gives an agent wakes it in their chat, at their view", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* mateMayMessage;
+    const sql = yield* SqlClient.SqlClient;
+    const theirs = yield* ownerTask("theirs", { owner: { _tag: "person", personId: mateId } });
+    const hidden = yield* ownerTask("owner only", { sensitive: true });
+    yield* OwnerWork.assign([mate], { orgId, key: theirs.key, to: toLead });
+    const [event] = yield* assignedEvents;
+    assert.deepInclude(JSON.parse(event!.json), {
+      provenance: { _tag: "human", personId: mateId, memberId: "mate-chat-mate" },
+      chatId: "mate-chat",
+    });
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+        status, event_ids)
+      VALUES ('mate-wake', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running', '[]')`;
+    yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = 'mate-wake'
+      WHERE tag = 'record.changed'`;
+    const woken = { orgId, agentId: lead, wakeupId: "mate-wake" };
+    assert.strictEqual(yield* turnAudience(woken), "shared");
+    assert.strictEqual(yield* KinLevels.originCap(woken), "L1");
+    assert.include(yield* Effect.flip(LeadWork.get(scopeOf(lead), { key: hidden.key })), {
+      reason: "not_found",
+    });
+    assert.deepStrictEqual(
+      keysOf(yield* LeadWork.query(scopeOf(lead), {})),
+      keysOf(yield* OwnerWork.list([mate], { orgId })),
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 const decodeEvent = Schema.decodeUnknownSync(KinEvent);
@@ -2089,6 +2142,44 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
     );
     assert.strictEqual((yield* OwnerMoney.dates([owner], window)).total, 2);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a member finds the projects they are on: in the list, its count and the client page",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const records = yield* KinRecords.KinRecords;
+      const client = (yield* records.create(orgId, ownerWrites, {
+        list: "clients",
+        originKey: "client",
+        title: "Invented Acme",
+        owner: { _tag: "person", personId: ownerId },
+      })).row;
+      const project = (title: string, extra: Partial<KinRecords.CreateInput> = {}) =>
+        records.create(orgId, ownerWrites, {
+          list: "projects",
+          originKey: title,
+          title: `Invented ${title}`,
+          owner: { _tag: "person", personId: ownerId },
+          partyId: client.recordId,
+          ...extra,
+        });
+      const on = (yield* project("app", { fields: { members: [`person:${mateId}`] } })).row;
+      yield* project("api");
+      yield* project("pricing", { fields: { members: [`person:${mateId}`] }, sensitive: true });
+      yield* places(1, 0, 0);
+      const listed = yield* OwnerClients.projects([mate], { orgId });
+      assert.deepStrictEqual([listed.projects.map((one) => one.key), listed.total], [[on.key], 1]);
+      const page = yield* OwnerClients.party([mate], { orgId, key: client.key });
+      assert.deepStrictEqual(
+        page.projects.map((one) => one.key),
+        [on.key],
+      );
+      // The page a list row opens: the same project, without what only its lead reads.
+      const opened = yield* OwnerClients.project([mate], { orgId, key: on.key });
+      assert.strictEqual(opened.project.key, on.key);
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect(
