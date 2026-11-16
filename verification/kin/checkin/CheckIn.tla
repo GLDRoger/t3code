@@ -34,7 +34,7 @@ VARIABLES
   taskShown, \* the member, who holds the task, still sees it
   jumps, outages
 
-vars == <<clock, up, slot, moved, nextRun, queued, offset, woke, wokeAt, dueAt, ran, dueAt, ran, upInWindow, fact, heldBy,
+vars == <<clock, up, slot, moved, nextRun, queued, offset, woke, wokeAt, dueAt, ran, upInWindow, fact, heldBy,
           told, skipped, taskShown, jumps, outages>>
 
 DayOf(c) == c \div Day
