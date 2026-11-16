@@ -47,52 +47,72 @@ export const keysIn = (body: string): ReadonlyArray<string> => [
   ...new Set([...linkableText(body).matchAll(KEY)].map((match) => match[1]!)),
 ];
 
+// A printed document number has a digit and a separator: INV/26-27/004, PO-2026-17.
+const NUMBER = /(?<![\p{L}\p{N}/-])([\p{L}\p{N}]+(?:[/-][\p{L}\p{N}]+)+)(?![\p{L}\p{N}/-])/gu;
+
+/** What in a message could be a printed number, for looking those up and no others. */
+const numbersIn = (body: string): ReadonlyArray<string> =>
+  [...linkableText(body).matchAll(NUMBER)]
+    .map((match) => match[1]!)
+    .filter((token) => /\d/.test(token));
+
+const around = (pattern: string, flags: string) =>
+  new RegExp(`(?<![\\p{L}\\p{N}])${pattern}(?![\\p{L}\\p{N}])`, flags);
+
 /**
  * What a message names among `names` and `keys`, by exact spelling: keys (INV-1) and printed
- * numbers (INV/26-27/004) of entries, and whole names of agents, people, clients and projects, case and all ("Finance", not "finance"), longest
- * first, each once. An agent also matches as "<name> chat" in any case.
+ * numbers (INV/26-27/004) of entries, and whole names of agents, people, clients and projects,
+ * case and all ("Finance", not "finance"), longest first, each once. An agent also matches as
+ * "<name> chat" in any case. Built once for a batch; its patterns run only where a name appears.
  */
-export function matchLinks(
-  body: string,
+export function linkMatcher(
   names: ReadonlyArray<LinkName>,
   keys: ReadonlyMap<string, Omit<KinMessageLink, "text">>,
   settings: boolean,
-): ReadonlyArray<KinMessageLink> {
-  const text = linkableText(body);
-  const found: Array<KinMessageLink & { readonly at: number }> = [];
-  const taken: Array<readonly [number, number]> = [];
-  const free = (at: number, end: number) => taken.every(([from, to]) => end <= from || at >= to);
-  const add = (at: number, written: string, link: Omit<KinMessageLink, "text">) => {
-    const end = at + written.length;
-    if (!free(at, end) || found.some((one) => one.text === written)) return false;
-    taken.push([at, end]);
-    found.push({ ...link, text: written, at });
-    return true;
-  };
-  // The first place it is written that a longer name hasn't taken.
-  const addFirst = (pattern: RegExp, link: Omit<KinMessageLink, "text">) => {
-    for (const match of text.matchAll(pattern))
-      if (add(match.index, body.slice(match.index, match.index + match[0].length), link)) return;
-  };
+) {
   const usable = names
     .filter((one) => one.name.trim().length >= MIN_NAME)
-    .toSorted((a, b) => b.name.length - a.name.length);
-  for (const one of usable) {
-    const around = (pattern: string, flags: string) =>
-      new RegExp(`(?<![\\p{L}\\p{N}])${pattern}(?![\\p{L}\\p{N}])`, flags);
-    const link = { to: one.to, note: one.note };
-    if (one.chat === true) addFirst(around(`${escape(one.name)}\\s+chat`, "giu"), link);
-    addFirst(around(escape(one.name), "gu"), link);
-  }
-  for (const match of text.matchAll(KEY)) {
-    const link = keys.get(match[1]!);
-    if (link !== undefined) add(match.index, match[1]!, link);
-  }
-  if (settings) addFirst(SETTINGS, { to: { _tag: "settings" }, note: null });
-  return found
-    .toSorted((a, b) => a.at - b.at)
-    .slice(0, KIN_MESSAGE_LINKS_CAP)
-    .map(({ at: _at, ...link }) => link);
+    .sort((a, b) => b.name.length - a.name.length)
+    .map((one) => ({
+      name: one.name,
+      lower: one.name.toLowerCase(),
+      link: { to: one.to, note: one.note },
+      exact: around(escape(one.name), "gu"),
+      chat: one.chat === true ? around(`${escape(one.name)}\\s+chat`, "giu") : null,
+    }));
+  return (body: string): ReadonlyArray<KinMessageLink> => {
+    const text = linkableText(body);
+    const lower = text.toLowerCase();
+    const found: Array<KinMessageLink & { readonly at: number }> = [];
+    const taken: Array<readonly [number, number]> = [];
+    const free = (at: number, end: number) => taken.every(([from, to]) => end <= from || at >= to);
+    const add = (at: number, written: string, link: Omit<KinMessageLink, "text">) => {
+      const end = at + written.length;
+      if (!free(at, end) || found.some((one) => one.text === written)) return false;
+      taken.push([at, end]);
+      found.push({ ...link, text: written, at });
+      return true;
+    };
+    // The first place it is written that a longer name hasn't taken.
+    const addFirst = (pattern: RegExp, link: Omit<KinMessageLink, "text">) => {
+      for (const match of text.matchAll(pattern))
+        if (add(match.index, body.slice(match.index, match.index + match[0].length), link)) return;
+    };
+    for (const one of usable) {
+      if (!lower.includes(one.lower)) continue;
+      if (one.chat !== null) addFirst(one.chat, one.link);
+      if (text.includes(one.name)) addFirst(one.exact, one.link);
+    }
+    for (const match of text.matchAll(KEY)) {
+      const link = keys.get(match[1]!);
+      if (link !== undefined) add(match.index, match[1]!, link);
+    }
+    if (settings) addFirst(SETTINGS, { to: { _tag: "settings" }, note: null });
+    return found
+      .sort((a, b) => a.at - b.at)
+      .slice(0, KIN_MESSAGE_LINKS_CAP)
+      .map(({ at: _at, ...link }) => link);
+  };
 }
 
 const STATE_WORDS: Record<string, string> = {
@@ -127,6 +147,7 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   personId: KinPersonId,
   viewer: KinViewer,
   keys: ReadonlyArray<string>,
+  numbers: ReadonlyArray<string>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   // Their own direct chats with agents: the chat a name like "Finance" opens.
@@ -148,17 +169,21 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
     WHERE r.org_id = ${orgId} AND r.register_id IN ('clients', 'projects')
       AND r.state <> 'dropped' AND ${seenBy(sql, viewer)}`;
   // A document's own number, such as INV/26-27/004, as it is printed and mailed.
-  const numbered = yield* sql<{
-    key: string;
-    title: string;
-    register: string;
-    state: string;
-    number: string;
-  }>`SELECT
-      r.key, r.title, r.register_id AS register, r.state,
-      json_extract(r.fields_json, '$.number') AS number FROM kin_records r
-    WHERE r.org_id = ${orgId} AND json_extract(r.fields_json, '$.number') IS NOT NULL
-      AND ${seenBy(sql, viewer)}`;
+  const numbered =
+    numbers.length === 0
+      ? []
+      : yield* sql<{
+          key: string;
+          title: string;
+          register: string;
+          state: string;
+          number: string;
+        }>`SELECT
+            r.key, r.title, r.register_id AS register, r.state,
+            json_extract(r.fields_json, '$.number') AS number FROM kin_records r
+          WHERE r.org_id = ${orgId} AND json_extract(r.fields_json, '$.number') IS NOT NULL
+            AND json_extract(r.fields_json, '$.number') IN ${sql.in(numbers)}
+            AND ${seenBy(sql, viewer)}`;
   const keyed =
     keys.length === 0
       ? []
@@ -218,10 +243,12 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
   const owner = yield* ownerLevel(orgId, reader.personId);
   const viewer = owner ? KIN_OWNER_LEVEL : viewerOfPeople([reader.personId]);
   const keys = [...new Set(texts.flatMap((message) => keysIn(message.body)))];
-  const sources = yield* linkSources(orgId, reader.personId, viewer, keys);
+  const numbers = [...new Set(texts.flatMap((message) => numbersIn(message.body)))].slice(0, 500);
+  const sources = yield* linkSources(orgId, reader.personId, viewer, keys, numbers);
+  const match = linkMatcher(sources.names, sources.keys, owner);
   return messages.map((message) => {
     if (message.kind !== "text" || message.status === "deleted") return message;
-    const links = matchLinks(message.body, sources.names, sources.keys, owner);
+    const links = match(message.body);
     return links.length === 0 ? message : { ...message, links };
   });
 });

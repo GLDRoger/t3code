@@ -14,7 +14,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { keysIn, matchLinks, withLinks, type LinkName } from "./messageLinks.ts";
+import { keysIn, linkMatcher, withLinks, type LinkName } from "./messageLinks.ts";
 
 // Invented company, people and records only.
 const orgId = KinOrgId.make("org");
@@ -47,7 +47,10 @@ const invoice = {
   note: "INV-1",
 };
 
-describe("matchLinks", () => {
+const matchLinks = (body: string, ...matcher: Parameters<typeof linkMatcher>) =>
+  linkMatcher(...matcher)(body);
+
+describe("linkMatcher", () => {
   it("links exact names and document numbers once each, and nothing in code or links", () => {
     const body = [
       "Talk to Finance about INV-1 and the Orbit Dental retainer.",

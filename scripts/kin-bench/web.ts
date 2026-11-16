@@ -107,7 +107,13 @@ const VISIBLE = ({ text, scope }: { text: string; scope: string }) => {
   if (root === null) return false;
   const walker = doc.createTreeWalker(root, 4);
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (!node.data.includes(text)) continue;
+    // A message's names are links, so its text can span several nodes in one paragraph.
+    const piece = node.data.trim();
+    const inBlock =
+      piece !== "" &&
+      text.includes(piece) &&
+      node.parentElement?.closest("p, li, td, h1, h2, h3, h4")?.textContent?.includes(text);
+    if (!node.data.includes(text) && !inBlock) continue;
     const box = node.parentElement?.getBoundingClientRect();
     if (box !== undefined && box.height > 0 && box.bottom > 0 && box.top < height) return true;
   }

@@ -596,6 +596,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_record_payments_record" },
           { name: "idx_kin_records_date" },
           { name: "idx_kin_records_due" },
+          { name: "idx_kin_records_number" },
           { name: "idx_kin_records_owner" },
           { name: "idx_kin_records_party" },
           { name: "idx_kin_records_project" },
