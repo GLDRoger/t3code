@@ -57,9 +57,16 @@ it.effect("a promise to tell someone stands only when the turn told them", () =>
     assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
     yield* say(3, "I'll ask Ishaan whether 1 February works.");
     assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
-    // The relay that carried it keeps the promise.
+    // The relay that carried it keeps the promise, held through his quiet hours or posted.
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
       VALUES ('owner-chat', ${orgId}, 'direct', 'ishaan:chief', 0, ${at})`;
+    yield* sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind, body,
+        audience, held_at, deliver_at, waits)
+      VALUES ('held', ${orgId}, 'owner-chat', 'ishaan', ${`${relayPrefix("wake")}ishaan`},
+        'Zoya Sheikh asked', 'chat', ${Date.parse(at)}, ${Date.parse(at) + 3_600_000}, 1)`;
+    assert.isUndefined(yield* unkeptPromise(wake));
+    yield* sql`DELETE FROM kin_held_posts`;
+    assert.strictEqual(yield* unkeptPromise(wake), "Ishaan");
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role,
         kind, body, mentions_json, status, created_at)
       VALUES (${`${relayPrefix("wake")}ishaan`}, ${orgId}, 'owner-chat', 1, 'system', 'member',

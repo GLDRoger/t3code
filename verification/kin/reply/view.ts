@@ -7,19 +7,21 @@ const first = (vars: Vars, name: string) => list(vars[name])[0];
 export const title = "Your message to an agent, and what comes back";
 
 export const guide =
-  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes, thinks, sends you a message for someone else (a nudge or relay), its turn ends or fails, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, three tries at starting, one restart, and a floor that can close; it follows your first message. “Working…” shows while the agent works on it and clears when the turn ends.";
+  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes, writes the same answer again, posts a chart, thinks, sends you a message for someone else (a nudge or relay), its turn ends or fails, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, three tries at starting, one restart, and a floor that can close; it follows your first message. “Working…” shows while the agent works on it and clears when the turn ends.";
 
 export const rules: Record<string, string> = {
   NeverTwo: "Each message you send gets at most one reply or one plain failure line, never two.",
   NoteOnlyForBrokenPromise:
     "After a reply, a failure adds at most one short line, and only to name something the reply promised that did not happen.",
   NeverReasoning: "The agent's private reasoning never shows up as its reply.",
+  SaidOnce:
+    "The agent's reply says its answer once, even when it writes the answer again after using a tool.",
   RelayLands: "A nudge or relay the agent sends you always lands in your chat, whatever the floor.",
+  AskedBeforeSilence:
+    "When an agent's turn ends without the words your message waited for (it only thought them, or only posted a chart or file), it is asked for them once.",
   EveryMessageAnswered:
-    "Every message you send ends in a reply or a plain failure line, never silence, even when the agent sent you a nudge or relay meanwhile.",
+    "Every message you send ends in a reply, a plain failure line, or a chart or file whose agent was asked for its line, never silence, even when the agent sent you a nudge or relay meanwhile.",
   LineClears: '"Working…" (the agent\'s line) always clears.',
-  EndNotSilent:
-    "An agent can't end its turn while your message still waits for words; it is told to write its reply.",
 };
 
 export const variants = [
@@ -49,9 +51,19 @@ export const variants = [
     what: "a restart puts a message that already has its reply back in the queue (the code before this change)",
   },
   {
-    name: "end-silent",
-    breaks: "EndNotSilent",
-    what: "kin_end ends a turn that posted nothing to a message waiting for words (the code before this change)",
+    name: "repeat-posted",
+    breaks: "SaidOnce",
+    what: "an answer written again after a tool call extends the reply (no `repeats` check)",
+  },
+  {
+    name: "chart-is-answer",
+    breaks: "AskedBeforeSilence",
+    what: "a chart or file alone counts as the reply, so nobody asks for its line (the code before this change)",
+  },
+  {
+    name: "no-rescue",
+    breaks: "AskedBeforeSilence",
+    what: "a turn that ends owing words goes straight to “didn't reply” without asking",
   },
   {
     name: "line-stays",
@@ -85,6 +97,10 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "Your next message joins the running turn";
     case "LeadReplies":
       return "The agent replies";
+    case "LeadRepeats":
+      return "The agent writes its answer again after using a tool";
+    case "LeadShows":
+      return "The agent posts a chart or file and says nothing";
     case "LeadThinks":
       return "The agent thinks";
     case "LeadNudgesAsker":
@@ -93,18 +109,16 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "The agent uses a tool";
     case "LeadKeepsPromise":
       return "The agent posts the card or hand-over its reply promised";
-    case "LeadEnds":
-      return to.blind === true
-        ? "The agent ends its turn before Kin has seen the call"
-        : "The agent ends its turn";
     case "FloorCloses":
       return "The floor closes";
     case "RunCompletes":
       return Number(first(to, "fails")) > Number(first(from, "fails"))
-        ? "The turn ends with no reply: “didn't reply”"
+        ? "The turn ends; asked once more, no reply: “didn't reply”"
         : Number(first(to, "replies")) > Number(first(from, "replies"))
           ? "The turn ends; asked once more, the agent replies"
-          : "The turn ends";
+          : first(to, "asked") === true && first(from, "asked") !== true
+            ? "The turn ends; asked for a line, the agent leaves its chart as it is"
+            : "The turn ends";
     case "RunFails":
       if (Number(first(to, "notes")) > Number(first(from, "notes")))
         return "The turn fails before what the reply promised: one line names it";

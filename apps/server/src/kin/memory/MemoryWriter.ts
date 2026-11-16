@@ -58,7 +58,6 @@ import { retireLabels } from "./sensitivity.ts";
 import * as MemoryLander from "./MemoryLander.ts";
 import { MemoryPullRequests } from "./MemoryPullRequests.ts";
 
-export const LEAD_ENDED_WITHOUT_KIN_END = "Agent ended without calling kin_end.";
 export const RESTART_JOURNAL_LINE =
   "Kin restarted during this turn; what was noted before the restart may not have been saved.";
 const FINISHED_KEPT = 1_000;
@@ -347,8 +346,8 @@ const make = Effect.gen(function* () {
   };
   const sessions = new Map<string, SessionState>();
   const sessionKey = (orgId: KinOrgId, wakeupId: string) => `${orgId}\u0000${wakeupId}`;
-  // Wake-ups this process already committed: a late write for one (a second kin_end,
-  // text streamed after it) finds no session, and that is not a restart. Oldest go first.
+  // Wake-ups this process already committed: a late write for one (text streamed after the
+  // commit) finds no session, and that is not a restart. Oldest go first.
   const finished = new Set<string>();
   const finish = (orgId: KinOrgId, wakeupId: string) => {
     const key = sessionKey(orgId, wakeupId);
@@ -520,7 +519,7 @@ const make = Effect.gen(function* () {
           orgId,
           branch: `wakeup:${wakeupId}`,
           reason:
-            "Staged changes and kin_end summary were lost on restart; tool receipts do not prove those changes were committed.",
+            "Staged changes were lost on restart; tool receipts do not prove those changes were committed.",
           owner: RESTART_OWNER_NOTICE,
         });
       }
@@ -1053,14 +1052,7 @@ const make = Effect.gen(function* () {
           // Its journal is already written: lines that come after it have nowhere to go.
           const key = sessionKey(orgId, wakeupId);
           if (finished.has(key) && !sessions.has(key)) return;
-          const { ctx, state } = yield* session(orgId, wakeupId);
-          if (lines.length === 1 && lines[0] === LEAD_ENDED_WITHOUT_KIN_END) {
-            const { writer } = yield* validate(orgId);
-            const branch =
-              ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
-            const head = yield* branchHead(orgId, writer, branch);
-            if ((yield* ownCommit(orgId, writer, head, ctx)) !== undefined) return;
-          }
+          const { state } = yield* session(orgId, wakeupId);
           state.lines.push(...lines);
         }),
       ),

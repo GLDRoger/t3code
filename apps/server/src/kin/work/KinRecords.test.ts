@@ -2364,6 +2364,10 @@ it.effect(
       yield* mateMayMessage;
       yield* turn();
       const sql = yield* SqlClient.SqlClient;
+      // 16:00 on the company's clock, outside quiet hours: what she is told arrives now.
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'America/Los_Angeles', '08:30',
+          '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
+        ON CONFLICT (org_id) DO UPDATE SET time_zone = 'America/Los_Angeles'`;
       const scope = scopeOf("lead");
       // G03: the owner's turn has seen a price; what it writes is still not private for that.
       yield* sensitiveShown({ orgId, wakeupId: "wake" });

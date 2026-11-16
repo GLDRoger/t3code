@@ -1,4 +1,3 @@
-import { KinReplyBridge } from "../../reply/KinReplyBridge.ts";
 import {
   KinChatError,
   KinMessageId,
@@ -210,7 +209,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_journal", {
     ...shared,
     description:
-      "Note something worth keeping that is in neither the chat nor memory: what you saw, did and skipped. Skip it on ordinary replies; kin_end's summary already records the turn. Observations, never approvals.",
+      "Note something worth keeping that is in neither the chat nor memory: what you saw, did and skipped. Skip it on ordinary replies: the chat already records them. Observations, never approvals.",
     parameters: Lead.JournalInput,
     success: Schema.Void,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -251,14 +250,5 @@ export const KinLeadToolkit = Toolkit.make(
       "Link a GitHub issue or pull request (its URL, in a connected repo) to a Work entry by key. A task made from an issue gets its issue this way; a teammate's PR linked to a task closes it when the PR merges, and the merge closes the task's linked issues too. A closed issue closes its tasks.",
     parameters: PullRequestCare.LinkInput,
     success: PullRequestCare.LinkResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
-  Tool.make("kin_end", {
-    ...shared,
-    // It reads the turn to refuse ending one that owes words and posted none.
-    dependencies: [...shared.dependencies, KinIdentity, SqlClient.SqlClient, KinReplyBridge],
-    description:
-      "Finish the turn with a one-line summary, then stop. Call it after your reply and write nothing after it: your reply is the text you wrote before this call. Memory staged this turn is saved once the turn ends. Does not approve actions or change authority.",
-    parameters: Lead.EndInput,
-    success: Schema.Void,
   }).annotate(McpSchema.EnabledWhen, enabled),
 );
