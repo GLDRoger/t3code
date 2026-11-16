@@ -14,12 +14,10 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { WriteAudience } from "../chat/KinChatRepository.ts";
-import * as Memory from "../memory/Memory.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS, type KinQuietHours } from "./quietHours.ts";
 
 const MINUTE = 60_000;
-const decodeQuiet = Schema.decodeUnknownOption(KinTriggerSettings.fields.quietHours);
 const decodeJsonQuiet = Schema.decodeUnknownOption(
   Schema.fromJsonString(KinTriggerSettings.fields.quietHours),
 );
@@ -43,8 +41,8 @@ const quietEndsAt = (now: number, zone: string, hours: KinQuietHours) => {
 };
 
 /**
- * A person's quiet hours at `now`, on their own clock: their profile's hours, else the company's
- * setting, else 22:00 to 08:00.
+ * A person's quiet hours at `now`, on their own clock: the company's setting, else 22:00 to
+ * 07:00. Profile hours are left out: reading Memory here would run inside callers' transactions.
  */
 const personQuiet = Effect.fn("KinQuiet.person")(function* (
   orgId: KinOrgId,
@@ -53,29 +51,17 @@ const personQuiet = Effect.fn("KinQuiet.person")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   // The owner's clock is the company's (`ownerZone`); anyone else's is their own.
-  const [person] = yield* sql<{ handle: string; zone: string | null; owner: number }>`
-    SELECT handle, time_zone AS zone, EXISTS (SELECT 1 FROM kin_agents a
+  const [person] = yield* sql<{ zone: string | null; owner: number }>`
+    SELECT time_zone AS zone, EXISTS (SELECT 1 FROM kin_agents a
         WHERE a.org_id = p.org_id AND a.owner_person_id = p.person_id) AS owner
     FROM kin_people p WHERE org_id = ${orgId} AND person_id = ${personId} ORDER BY person_id`;
   const [settings] = yield* sql<{ hours: string }>`SELECT quiet_hours_json AS hours
     FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;
-  const memory = yield* Effect.serviceOption(Memory.Memory);
-  const profile =
-    Option.isSome(memory) && person !== undefined
-      ? (yield* memory.value
-          .query(orgId, { kind: "person", excludeInvalid: true })
-          .pipe(Effect.orElseSucceed(() => []))).find(
-          (item) => !item.duplicate && item.path === `people/${person.handle}.md`,
-        )
-      : undefined;
-  const hours = Option.getOrElse(
-    Option.orElse(decodeQuiet(profile?.quiet_hours), () => decodeJsonQuiet(settings?.hours)),
-    () => KIN_DEFAULT_QUIET_HOURS,
-  );
+  const hours = Option.getOrElse(decodeJsonQuiet(settings?.hours), () => KIN_DEFAULT_QUIET_HOURS);
   const zone =
     person?.owner === 1
       ? yield* ownerZone(orgId)
-      : (validZone(profile?.tz) ?? validZone(person?.zone) ?? (yield* ownerZone(orgId)));
+      : (validZone(person?.zone) ?? (yield* ownerZone(orgId)));
   return { quiet: isQuiet(now, zone, hours), endsAt: quietEndsAt(now, zone, hours) };
 });
 

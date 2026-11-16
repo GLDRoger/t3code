@@ -728,6 +728,12 @@ it.effect(
         const held = yield* Effect.flip(handoff.relay(scopeFor(chief), answer, postTo));
         assert.include(held.message, "quiet hours until 1970-01-01T01:00:00.000Z");
         assert.lengthOf(sent, 1);
+        // Marked urgent, with its reason, it goes now.
+        yield* Effect.exit(
+          handoff.relay(scopeFor(chief), { ...answer, urgent: "Invented site is down" }, postTo),
+        );
+        assert.lengthOf(sent, 2);
+        sent.pop();
         yield* sql`UPDATE kin_trigger_settings SET quiet_hours_json = '{"from":"22:00","to":"08:00"}'`;
         const toOwner = yield* Effect.flip(
           handoff.relay(scopeFor(chief), { ...answer, to: me!.name }, postTo),

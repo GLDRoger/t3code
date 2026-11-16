@@ -82,24 +82,25 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
 instance.
 
 ```bash
-.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, all eleven, down; ~6 min
+.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, all twelve, down; ~11 min
 .agents/skills/verify-kin/scripts/run-all.sh send-card-once private-task-hidden
 bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the running instance
 ```
 
-| Script                     | Proves                                                                                               |
-| -------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `assign-member-sees`       | owner's New task sheet gives Zoya a task; it is in her Tasks and her chat, not Arjun's               |
-| `relay-owner-to-member`    | `kin_relay` in the owner's turn lands in Zoya's chat only                                            |
-| `member-request-to-owner`  | `kin_relay` in Zoya's turn lands in the owner's chat, attributed to her                              |
-| `private-task-hidden`      | "Only me" hides W-6 from the lead and members: Tasks, project page and count, search, pulse          |
-| `member-no-money`          | 12 screens each for two members show no amount, invoice or quote                                     |
-| `send-card-once`           | one Confirm on a send card sends exactly one mail; a second confirm is refused                       |
-| `overdue-invoice-reminder` | INV-1's overdue fact reaches the owner only; the reminder is a reply in the invoice's thread         |
-| `checkin-new-agent`        | a new agent gets a check-in from the Settings dialog; Kin settings are owner-level; Run now wakes it |
-| `lead-adds-milestone`      | members see P-1's milestones and no Add; Dev, its lead, adds one and they see it                     |
-| `owner-money-forms`        | a goal, the coming-up dates, an advance set against INV-1 once; members are refused                  |
-| `private-client-unnamed`   | C-3 marked private: in Zoya's turn touch_log, record_get, records_query answer as for no client      |
+| Script                     | Proves                                                                                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `assign-member-sees`       | owner's New task sheet gives Zoya a task; it is in her Tasks and her chat, not Arjun's                                                                       |
+| `relay-owner-to-member`    | `kin_relay` in the owner's turn lands in Zoya's chat only                                                                                                    |
+| `member-request-to-owner`  | `kin_relay` in Zoya's turn lands in the owner's chat, attributed to her                                                                                      |
+| `private-task-hidden`      | "Only me" hides W-6 from the lead and members: Tasks, project page and count, search, pulse                                                                  |
+| `member-no-money`          | 12 screens each for two members show no amount, invoice or quote                                                                                             |
+| `send-card-once`           | one Confirm on a send card sends exactly one mail; a second confirm is refused                                                                               |
+| `overdue-invoice-reminder` | INV-1's overdue fact reaches the owner only; the reminder is a reply in the invoice's thread                                                                 |
+| `checkin-new-agent`        | a new agent gets a check-in from the Settings dialog; Kin settings are owner-level; Run now wakes it                                                         |
+| `lead-adds-milestone`      | members see P-1's milestones and no Add; Dev, its lead, adds one and they see it                                                                             |
+| `owner-money-forms`        | a goal, the coming-up dates, an advance set against INV-1 once; members are refused                                                                          |
+| `private-client-unnamed`   | C-3 marked private: in Zoya's turn touch_log, record_get, records_query answer as for no client                                                              |
+| `told-once-quiet-hours`    | a late task is told once, an unchanged one starts no turn, a change is told; at 23:00 a check-in waits for quiet hours to end, survives a restart, runs once |
 
 `node scripts/kin-release-check.ts` runs all ten with the models, property tests and UI fuzz before a release ([Releasing Kin](../../../docs/operations/kin-release.md)).
 

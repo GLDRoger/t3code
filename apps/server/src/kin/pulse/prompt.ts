@@ -11,7 +11,7 @@ import { teamHoursNow } from "./nudge.ts";
 export const PULSE_RULE =
   "What needs attention, as Kin computed it from its own records just now. Act on a fact when that moves something forward; otherwise leave it. Call pulse_handle once one is in hand or is not a problem. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
 export const CHECK_IN_PULSE_RULE =
-  "Check-in: below are only facts the owner hasn't been told as they stand now (new, changed or due today). Tell each once, leading with what you did or will do; one in hand (inHand) with who and until when. What he was told and hasn't changed is left out: don't recall it.";
+  "Check-in: below are only facts the owner hasn't been told as they stand now (new, changed or due today). Tell him each in your reply, once, leading with what you did or will do; one in hand (inHand) with who and until when. What he was told and hasn't changed is left out: don't recall it.";
 const SECTION_CAP = 30;
 const CHECK_IN_CAP = 200;
 

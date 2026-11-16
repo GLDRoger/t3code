@@ -316,6 +316,8 @@ const shortHash = (text: string) =>
 
 /** What each org's last tick sensed, hashed: the server's own memory, gone on restart. */
 const lastSensed = new Map<KinOrgId, string>();
+/** Facts that can't wait for the morning: they wake their agent whatever the hour. */
+const URGENT_SENSES = new Set<KinPulseFact["sense"]>(["client_waiting_on_us"]);
 
 /**
  * Stores what is true now, clears what stopped being true, and wakes each fact's agent once for
@@ -377,10 +379,12 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
               factKeys: [fact.key],
               ...(needsJudgement([fact]) ? { strong: true } : {}),
             }),
-            // Nobody asked: it waits out the owner's quiet hours.
-            yield* agentQuietUntil(orgId, fact.actor.agentId, at).pipe(
-              Effect.map((notBefore) => (notBefore === undefined ? undefined : { notBefore })),
-            ),
+            // Nobody asked: it waits out the owner's quiet hours, unless a client is waiting on us.
+            URGENT_SENSES.has(fact.sense)
+              ? undefined
+              : yield* agentQuietUntil(orgId, fact.actor.agentId, at).pipe(
+                  Effect.map((notBefore) => (notBefore === undefined ? undefined : { notBefore })),
+                ),
           )
           .pipe(
             Effect.as(true),

@@ -106,6 +106,12 @@ export const RelayInput = Schema.Struct({
   sourceEventId: TrimmedNonEmptyString.annotate({
     description: "The event of the message this answers or passes on.",
   }),
+  urgent: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
+      description:
+        "Only when it can't wait for their quiet hours to end: why, in a few words. Logged; it skips quiet hours and rings them.",
+    }),
+  ),
 });
 export const RelayResult = Schema.Struct({
   to: Schema.String,
@@ -472,7 +478,16 @@ const make = Effect.gen(function* () {
       // Their quiet hours hold anything they didn't just ask for: it goes when they start.
       const now = yield* Clock.currentTimeMillis;
       const quietUntil = yield* personQuietUntil(ctx.orgId, to.personId, now).pipe(access);
-      if (quietUntil !== undefined) {
+      if (input.urgent !== undefined) {
+        // The agent's stated reason is the escape: logged, and it rings whatever rang before.
+        yield* Effect.logInfo("Kin urgent relay", {
+          orgId: ctx.orgId,
+          agentId: ctx.agentId,
+          to: to.personId,
+          reason: input.urgent,
+        });
+        yield* sql`DELETE FROM kin_push_rings WHERE org_id = ${ctx.orgId} AND person_id = ${to.personId}`;
+      } else if (quietUntil !== undefined) {
         const [asked] = yield* sql`SELECT 1 FROM kin_messages
           WHERE org_id = ${ctx.orgId} AND chat_id = ${direct.chatId}
             AND author_person_id = ${to.personId}
