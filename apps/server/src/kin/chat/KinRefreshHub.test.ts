@@ -229,7 +229,10 @@ describe("KinRefreshHub", () => {
           leads: (start.leads ?? 0) + 1,
           workChoices: (start.workChoices ?? 0) + 2,
         });
-        assert.deepStrictEqual(yield* Queue.take(work), { seq: created.seq + 1 });
+        const announced = yield* Queue.take(work);
+        assert.strictEqual(announced.seq, created.seq + 1);
+        // Everyone's own number moves too, so a viewer who resumes later reads again.
+        assert.deepStrictEqual([...(announced.team?.keys() ?? [])], [me.personId]);
         const someone = { ...me, personId: KinPersonId.make("someone") };
         assert.include(
           yield* announceRefreshes([someone], {
