@@ -1,4 +1,5 @@
 import type { KinAgentId, KinOrgId, ThreadId } from "@t3tools/contracts";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -23,6 +24,7 @@ import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { aborted, effectiveAudience, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
+import { SHARED_TOOLS } from "./SharedTools.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 
 const leadT3Tools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
@@ -75,15 +77,38 @@ export const fullSessionAdmitted = Effect.fn("KinAgentSession.fullSessionAdmitte
 );
 
 /**
- * What the Kin endpoint lists and lets a session call. A T3 tool shows only on a thread whose turns
- * only the owner reads, while GitHub is connected; `kin_delegate` shows only while it isn't. The
- * gate (`KinToolGate`) still checks each call against the running turn.
+ * A shared thread's turns are never owner-only (`effectiveAudience`), so a tool the gate refuses
+ * there, or one without a line, can't succeed in any of them: listing it only costs tokens.
+ */
+const refusedWhenShared = (name: string) => {
+  const policy: string | undefined = Object.hasOwn(SHARED_TOOLS, name)
+    ? (SHARED_TOOLS[name as keyof typeof SHARED_TOOLS] as string)
+    : undefined;
+  return policy === undefined || policy === "refused";
+};
+
+/** Kin's GitHub tools answer only "not connected" without the Kin App (`layer.ts` `repoReads`). */
+const isKinGitHubTool = (name: string) => name.startsWith("kin_github_");
+const kinAppConfigured = Config.option(Config.String("KIN_GITHUB_APP_ID")).pipe(
+  Effect.map(Option.isSome),
+  Effect.orElseSucceed(() => false),
+);
+
+/**
+ * What the Kin endpoint lists and lets a session call, decided per thread so the list stays the
+ * same on every turn of it (the provider caches the prefix). A shared thread lists only what a
+ * shared turn may run. A T3 tool shows only on a thread whose turns only the owner reads, while
+ * GitHub is connected; `kin_delegate` shows only while it isn't. The gate (`KinToolGate`) still
+ * checks each call against the running turn.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(
   function* (name: string, threadId: ThreadId) {
+    const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
+    if (shared && refusedWhenShared(name)) return false;
+    if (isKinGitHubTool(name)) return yield* kinAppConfigured;
     const t3 = isT3Tool(name);
     if (!t3 && name !== "kin_delegate") return true;
-    if (t3 && (!leadT3Tools.has(name) || threadId.startsWith(SHARED_THREAD_PREFIX))) return false;
+    if (t3 && !leadT3Tools.has(name)) return false;
     const kin = yield* KinServer;
     if (Option.isNone(kin.services)) return false;
     const connected = yield* githubConnected.pipe(

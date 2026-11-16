@@ -54,7 +54,8 @@ kin-bench --render <run.json> [--findings <json>] [--compare <old.json>]   re-re
   <out>/baseline-<commit>.json, .md and report.html, then stops everything it started.
   --runs        samples per web action (default 5; server reads take 4x as many)
   --compare     an earlier JSON: each metric's old, new and change; worse past --threshold (default 15) is flagged
-  --reuse       keep an already seeded bench instance instead of seeding from cold`;
+  --reuse       keep an already seeded bench instance instead of seeding from cold
+  --only prompts  capture the agent prompts and tool lists only: no web build, server timing or walk`;
 
 const CHATS = `[aria-label="Kin chats"]`;
 const log = (line: string) => console.log(`kin-bench: ${line}`);
@@ -256,7 +257,8 @@ async function main() {
     );
   }
 
-  if (get("build") !== "skip") {
+  const promptsOnly = get("only") === "prompts";
+  if (get("build") !== "skip" && !promptsOnly) {
     log("building the web client (production bundle)");
     const built = NodeChildProcess.spawnSync("vp", ["run", "build"], {
       cwd: NodePath.join(ROOT, "apps", "web"),
@@ -306,6 +308,64 @@ async function main() {
             systemTokens: 0,
           }
         : await capturePrompts(instance, log);
+
+    const save = (
+      captured: typeof prompts,
+      seed: typeof seedCounts,
+      durationS: number,
+      wireRows: Array<WireRow>,
+      chatterRows: Array<Chatter>,
+    ) => {
+      for (const turn of captured.turns.filter((one) => one.reached))
+        metrics.push(
+          metric("prompt", `tokens.${turn.kind}`, `${turn.kind}: total tokens`, "tokens", [
+            turn.totalTokens,
+          ]),
+        );
+      const result: BenchResult = {
+        commit,
+        at: new Date().toISOString(),
+        seed,
+        runs,
+        durationS,
+        metrics,
+        wire: wireRows,
+        chatter: chatterRows,
+        prompts: {
+          method:
+            "tokens ≈ UTF-8 bytes / 4. The repo has no tokenizer; its context budgets (agentContextBudget.json) count bytes. Turn prompts are the Kin part of what the scripted agent received; the system prompt is Kin's instructions (what a Claude lead gets); tools are name, description and input schema as listed on the turn's MCP endpoint.",
+          systemTokens: captured.systemTokens,
+          tools: captured.tools,
+          toolListBytes: captured.toolListBytes,
+          turns: captured.turns,
+        },
+        notes,
+      };
+      NodeFS.mkdirSync(out, { recursive: true });
+      const base = NodePath.join(out, `baseline-${commit.slice(0, 10)}`);
+      NodeFS.writeFileSync(`${base}.json`, `${JSON.stringify(result, null, 2)}\n`);
+      const compareFile = get("compare");
+      const previous = compareFile === undefined ? undefined : readJson<BenchResult>(compareFile);
+      const comparison =
+        previous === undefined
+          ? undefined
+          : compareLines(previous, result, Number(get("threshold") ?? "15"));
+      NodeFS.writeFileSync(`${base}.md`, renderMarkdown(result, comparison, findings));
+      NodeFS.writeFileSync(
+        NodePath.join(out, "report.html"),
+        renderHtml(result, comparison, findings),
+      );
+      log(
+        `wrote ${base}.json, ${base}.md and ${NodePath.join(out, "report.html")} in ${result.durationS} s`,
+      );
+      if (comparison !== undefined)
+        for (const line of comparison.filter((one) => one.worse))
+          log(
+            `WORSE ${line.label}: ${line.old} → ${line.now} (${line.change > 0 ? "+" : ""}${line.change.toFixed(0)}%)`,
+          );
+    };
+    if (promptsOnly)
+      return save(prompts, seedCounts, Math.round((performance.now() - began) / 1000), [], []);
 
     log("server start-up (production build), 3 starts");
     const starts: Array<number> = [];
@@ -705,54 +765,13 @@ async function main() {
     metrics.push(metric("server", "rssStart", "Server memory after start", "MB", [rssStart]));
     metrics.push(metric("server", "rssWalk", "Server memory after the walk", "MB", [rssWalk]));
 
-    for (const turn of prompts.turns.filter((one) => one.reached))
-      metrics.push(
-        metric("prompt", `tokens.${turn.kind}`, `${turn.kind}: total tokens`, "tokens", [
-          turn.totalTokens,
-        ]),
-      );
-
-    const result: BenchResult = {
-      commit,
-      at: new Date().toISOString(),
-      seed: seedCounts,
-      runs,
-      durationS: Math.round((performance.now() - began) / 1000),
-      metrics,
+    save(
+      prompts,
+      seedCounts,
+      Math.round((performance.now() - began) / 1000),
       wire,
       chatter,
-      prompts: {
-        method:
-          "tokens ≈ UTF-8 bytes / 4. The repo has no tokenizer; its context budgets (agentContextBudget.json) count bytes. Turn prompts are the Kin part of what the scripted agent received; the system prompt is Kin's instructions (what a Claude lead gets); tools are name, description and input schema as listed on the turn's MCP endpoint.",
-        systemTokens: prompts.systemTokens,
-        tools: prompts.tools,
-        toolListBytes: prompts.toolListBytes,
-        turns: prompts.turns,
-      },
-      notes,
-    };
-    NodeFS.mkdirSync(out, { recursive: true });
-    const base = NodePath.join(out, `baseline-${commit.slice(0, 10)}`);
-    NodeFS.writeFileSync(`${base}.json`, `${JSON.stringify(result, null, 2)}\n`);
-    const compareFile = get("compare");
-    const previous = compareFile === undefined ? undefined : readJson<BenchResult>(compareFile);
-    const comparison =
-      previous === undefined
-        ? undefined
-        : compareLines(previous, result, Number(get("threshold") ?? "15"));
-    NodeFS.writeFileSync(`${base}.md`, renderMarkdown(result, comparison, findings));
-    NodeFS.writeFileSync(
-      NodePath.join(out, "report.html"),
-      renderHtml(result, comparison, findings),
     );
-    log(
-      `wrote ${base}.json, ${base}.md and ${NodePath.join(out, "report.html")} in ${result.durationS} s`,
-    );
-    if (comparison !== undefined)
-      for (const line of comparison.filter((one) => one.worse))
-        log(
-          `WORSE ${line.label}: ${line.old} → ${line.now} (${line.change > 0 ? "+" : ""}${line.change.toFixed(0)}%)`,
-        );
   } finally {
     log("stopping what it started");
     try {
