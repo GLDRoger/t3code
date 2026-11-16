@@ -12,7 +12,7 @@ const call = (toolName: string) =>
   toolLabel({ type: "dynamic_tool", toolName: `mcp__kin__${toolName}` } as OrchestrationV2TurnItem);
 
 it("gives every lead tool a status a person would say, never Kin's own vocabulary", () => {
-  const silent = ["kin_react", "kin_journal", "kin_end"];
+  const silent = ["kin_react", "kin_journal"];
   const labels = Object.keys(KinLeadToolkit.tools).map((name) => [name, call(name)] as const);
   expect(labels.filter(([, label]) => label === null).map(([name]) => name)).toEqual(silent);
   // A tool the table forgot reads as the generic line: add its own words instead.
