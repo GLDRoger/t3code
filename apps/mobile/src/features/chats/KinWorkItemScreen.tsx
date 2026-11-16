@@ -151,7 +151,7 @@ function KinWorkItemGate(props: ItemTarget) {
   // A teammate who follows a link asks the host nothing.
   if (!allowed) {
     return (
-      <Frame title={props.itemKey} onClose={() => navigation.goBack()}>
+      <Frame title="Task" onClose={() => navigation.goBack()}>
         <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
       </Frame>
     );
@@ -186,7 +186,7 @@ function KinWorkItemBody(props: ItemTarget) {
 
   if (state._tag !== "ready") {
     return (
-      <Frame title={itemKey} onClose={close}>
+      <Frame title="Task" onClose={close}>
         {state._tag === "loading" ? (
           <View
             className="items-center py-12"
@@ -219,7 +219,7 @@ function KinWorkItemBody(props: ItemTarget) {
   if (item.list !== undefined) {
     const read = kinWorkItemView(item, names, now, KIN_RECORD_CHANGES_CAP, place);
     return (
-      <Frame title={`${item.key}`} onClose={close}>
+      <Frame title={item.title} onClose={close}>
         <KinListEntryBody
           {...props}
           item={item}

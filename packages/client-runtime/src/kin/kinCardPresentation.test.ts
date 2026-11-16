@@ -14,6 +14,7 @@ import {
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinQuotedInZone,
   kinThreadDate,
 } from "./kinChoicePresentation.ts";
 import { formatKinTime } from "./kinScreenState.ts";
@@ -244,6 +245,15 @@ describe("choice cards", () => {
     expect(kinThreadDate("1970-01-01T00:00:00.001Z", now)).toBeNull();
     expect(kinThreadDate("sometime last week", now)).toBeNull();
     expect(kinThreadDate(null, now)).toBeNull();
+    // The quote under a reply names the same date the way a person reads it, not the header.
+    const raw = "Mon, 16 Nov 2026 06:49:41 +0000";
+    const quoted = kinQuotedInZone(
+      `On ${raw}, Anita <anita@orbitdental.example> wrote:\n> Paid`,
+      raw,
+    );
+    expect(quoted).not.toContain("+0000");
+    expect(quoted).toMatch(/^On .*2026 at .*, Anita <anita@orbitdental\.example> wrote:\n> Paid$/);
+    expect(kinQuotedInZone("On someday, Anita wrote:", "someday")).toBe("On someday, Anita wrote:");
   });
 
   const posted = Date.parse("2026-11-08T09:00:00.000Z");

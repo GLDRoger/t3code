@@ -94,6 +94,24 @@ export function kinThreadDate(raw: string | null, now: Date = new Date()): strin
     : formatKinTime(at, now);
 }
 
+/**
+ * The quote's "On <date>, <who> wrote:" line as a person reads it, in the reader's zone: the
+ * provider gives the raw header date, the same one as the thread box's.
+ */
+export function kinQuotedInZone(quoted: string, raw: string | null): string {
+  if (raw === null || !quoted.startsWith(`On ${raw}, `)) return quoted;
+  const at = new Date(raw.trim());
+  if (Number.isNaN(at.getTime()) || at.getTime() < Date.UTC(1995, 0, 1)) return quoted;
+  const day = at.toLocaleDateString(undefined, {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  const time = at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `On ${day} at ${time}, ${quoted.slice(`On ${raw}, `.length)}`;
+}
+
 function kinSendView(send: KinSendCard, now: Date): KinSendView {
   // Cards from before accounts carry only the account, in `from`.
   const account = send.account === undefined ? send.from : send.account;
@@ -139,7 +157,7 @@ function kinSendView(send: KinSendCard, now: Date): KinSendView {
         ? null
         : { ...send.thread, date: kinThreadDate(send.thread.date, now) },
     body: send.body,
-    quoted: send.quoted ?? null,
+    quoted: send.quoted == null ? null : kinQuotedInZone(send.quoted, send.thread?.date ?? null),
     fromChoices: choices.map((choice) => ({
       id: choice.id,
       label: fromLabel(choice.address, choice.name),
