@@ -1,10 +1,11 @@
-import { Outlet, useSearch } from "@tanstack/react-router";
+import { Outlet } from "@tanstack/react-router";
 
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
+import { KinAgentPageHost } from "./KinAgentPage";
 import { KinChatList } from "./KinChatList";
 import { KinGroupDialogHost } from "./KinGroupDialog";
 import { KinLeadDialogHost } from "./KinLeadDialog";
@@ -12,7 +13,7 @@ import { KinNewLeadButton } from "./KinNewLeadButton";
 import { startKinOutbox } from "./kinOutbox";
 import { KinPicturesHost } from "./kinPictures";
 import { KinProfileSheetHost } from "./KinProfileSheet";
-import { KinSettingsButton, KinSettingsFromApp } from "./KinSettingsView";
+import { KinSettingsButton, KinSettingsModalHost } from "./KinSettingsView";
 import { KinDock } from "./KinNav";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useKinHost } from "./useKinHost";
@@ -25,9 +26,11 @@ export function KinPage() {
       <Outlet />
       <KinDockHost />
       <KinLeadDialogHost />
+      <KinAgentPageHost />
       <KinGroupDialogHost />
       <KinPicturesHost />
       <KinProfileSheetHost />
+      <KinSettingsModalHost />
     </SidebarInset>
   );
 }
@@ -45,13 +48,6 @@ function KinDockHost() {
  * a wide one already shows it in the sidebar.
  */
 export function KinNoChat() {
-  const { settings } = useSearch({ from: "/_chat/kin/" });
-  if (settings !== undefined)
-    return (
-      <div className="flex min-h-0 flex-1">
-        <KinSettingsFromApp slug={settings} />
-      </div>
-    );
   return (
     <>
       <WorkspacePageHeader electron={isElectron}>

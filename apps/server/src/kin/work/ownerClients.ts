@@ -8,6 +8,7 @@ import {
   type KinPartyUpdateInput,
   type KinProjectCreateInput,
   type KinProjectPageInput,
+  type KinProjectPeopleInput,
   type KinProjectsInput,
   type KinProjectUpdateInput,
   type KinTouchLogInput,
@@ -20,14 +21,25 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError, type SqlError } from "effect/sql/SqlError";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Crm from "./crm.ts";
 import { KinRecords, requestHashOf, type Patch } from "./KinRecords.ts";
-import { type FieldValue, type ListName } from "./lists.ts";
-import { dueMillis, found, inList, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
-import { principalText } from "./projectSpine.ts";
+import { fieldList, parseFields, type FieldValue, type ListName } from "./lists.ts";
+import {
+  asViewer,
+  dueMillis,
+  found,
+  inList,
+  ownerWriter,
+  tellMoved,
+  theOwner,
+  viewerOf,
+  writerOf,
+} from "./ownerWork.ts";
+import { principalOfText, principalText } from "./projectSpine.ts";
 import { iso, notFound, type RecordRow, unavailable } from "./recordRows.ts";
 import {
   KIN_OWNER_LEVEL,
@@ -211,7 +223,11 @@ export const project = Effect.fn("KinWork.project")(function* (
     yield* unseen(viewer, row, input);
   }
   const { now, seq } = yield* asOf(input.orgId, viewer);
-  return yield* read(Crm.projectPage(row, now, seq, viewer));
+  const page = yield* read(Crm.projectPage(row, now, seq, viewer));
+  // Its people are the owner's, a co-owner's and its lead's to change (`teamGuard`).
+  const leads =
+    row.ownerKind === "person" && row.ownerId === person.person.personId && row.sensitive === 0;
+  return { ...page, can: { people: !person.teammate || leads } };
 });
 
 /** `s:<seq>`: the next page is everything older than the last line shown. */
@@ -417,6 +433,74 @@ const spineFields = (input: KinProjectCreateInput | KinProjectUpdateInput) => ({
   members: input.members?.map(principalText),
 });
 
+const PEOPLE_REFUSED = new KinChatError({
+  reason: "not_allowed",
+  message: "Only the owner, a co-owner or the project's lead changes who is on it.",
+});
+
+/**
+ * Puts people and agents on a project or takes them off: the owner, a co-owner, or the project's
+ * lead (`teamGuard` decides inside the write). Whoever is added is told once in their chat.
+ */
+export const projectPeople = Effect.fn("KinWork.projectPeople")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinProjectPeopleInput,
+) {
+  const viewer = yield* viewerOf(people, input.orgId);
+  const records = yield* KinRecords;
+  const sql = yield* SqlClient.SqlClient;
+  const add = input.add ?? [];
+  const known = yield* read(
+    Effect.forEach(add, (who) =>
+      who._tag === "person"
+        ? sql`SELECT 1 FROM kin_people WHERE org_id = ${input.orgId}
+            AND person_id = ${who.personId}`
+        : sql`SELECT 1 FROM kin_agents WHERE org_id = ${input.orgId}
+            AND agent_id = ${who.agentId} AND retired_at IS NULL`,
+    ),
+  );
+  if (known.some((rows) => rows.length === 0))
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "Someone you picked isn't on the team any more.",
+    });
+  const { before, after } = yield* asViewer(
+    viewer,
+    Effect.gen(function* () {
+      const before = yield* inList(input.orgId, input.key, "projects");
+      const gone = new Set((input.remove ?? []).map(principalText));
+      const now = fieldList(parseFields(before.fieldsJson), "members");
+      const next = [...now, ...add.map(principalText)].filter(
+        (text, at, all) => !gone.has(text) && all.indexOf(text) === at,
+      );
+      if (next.length === now.length && next.every((text, at) => text === now[at]))
+        return { before, after: before };
+      const after = yield* records
+        .update(input.orgId, writerOf(viewer), input.key, { fields: { members: next } }, before.rev)
+        .pipe(
+          Effect.mapError((error) =>
+            viewer.teammate && error.reason === "not_allowed" ? PEOPLE_REFUSED : error,
+          ),
+        );
+      return { before, after };
+    }),
+  ).pipe(
+    // A project they can't see answers as one that isn't there, in the same words.
+    Effect.mapError((error) =>
+      viewer.teammate && error.reason === "not_found" ? notFound(input.key) : error,
+    ),
+  );
+  yield* tellMoved(viewer.person, before, after);
+  return {
+    key: after.key,
+    rev: after.rev,
+    members: fieldList(parseFields(after.fieldsJson), "members").flatMap((text) => {
+      const who = principalOfText(text);
+      return who === null ? [] : [who];
+    }),
+  };
+});
+
 export const createProject = Effect.fn("KinWork.createProject")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinProjectCreateInput,
@@ -435,6 +519,7 @@ export const createProject = Effect.fn("KinWork.createProject")(function* (
     ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
     fields: fieldsOf({ repos: input.repos, ...spineFields(input) }),
   });
+  yield* tellMoved(person, undefined, row);
   return yield* projectOut(row);
 });
 
@@ -449,6 +534,7 @@ export const updateProject = Effect.fn("KinWork.updateProject")(function* (
       : input.party === null
         ? null
         : (yield* inList(input.orgId, input.party, "clients")).recordId;
+  const before = yield* inList(input.orgId, input.key, "projects");
   const row = yield* saved(
     person,
     input.orgId,
@@ -468,6 +554,7 @@ export const updateProject = Effect.fn("KinWork.updateProject")(function* (
     },
     input.rev,
   );
+  yield* tellMoved(person, before, row);
   return yield* projectOut(row);
 });
 

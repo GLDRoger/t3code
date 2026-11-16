@@ -49,8 +49,14 @@ import {
   createKinWorkList,
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
+import {
+  kinWorkGroupWithin,
+  kinWorkGroups,
+  kinWorkGroupsShown,
+  type KinWorkGroupItem,
+} from "@t3tools/client-runtime/kin/kinWorkGroups";
 import { kinWorkListsMoved, type KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import { EnvironmentId, KinOrgId, KinRecordKey } from "@t3tools/contracts";
+import { EnvironmentId, KinOrgId, KinRecordKey, type KinRecord } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
@@ -75,6 +81,7 @@ import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { KinDocsList, KinSearchHits } from "./KinDocsList";
 import { KinNeedsYou } from "./KinNeedsYou";
+import { KinAvatar } from "./components/KinAvatar";
 import { KinClientsList } from "./KinWorkLists";
 import { KinMoneyArea } from "./KinWorkMoney";
 import { KinListBanner } from "./components/KinListBanner";
@@ -428,8 +435,16 @@ export function KinWorkTaskList(
     showsNeedsYou ? names.me : null,
     props.stale ? null : kinWorkListsMoved(live, ["work"]),
   );
-  const rows = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null).map((record) =>
-    kinWorkRow(record, names, now, filter),
+  const beside = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null);
+  // The plain list reads by whom each task waits on; a filtered one stays one list.
+  const items: ReadonlyArray<KinWorkGroupItem<KinRecord>> =
+    props.within === undefined && kinWorkGroupsShown(filter, names.me)
+      ? kinWorkGroups(beside, names)
+      : beside.map((record) => ({ type: "task", key: record.key, record, section: null }));
+  const rows: ReadonlyArray<KinWorkListItem> = items.map((item) =>
+    item.type === "task"
+      ? { ...item, row: kinWorkRow(item.record, names, now, kinWorkGroupWithin(item, filter)) }
+      : item,
   );
   const nothing = kinWorkNothing(filter, names);
   // Needs you shows the rest, so the count says how many are loaded in all.
@@ -505,8 +520,9 @@ export function KinWorkTaskList(
       />
       <ScreenContent surface="screen">
         {/* Hundreds of tasks stay cheap: only the rows in view mount. */}
-        <LegendList<KinWorkRowView>
+        <LegendList<KinWorkListItem>
           renderScrollComponent={NativeScrollView}
+          getItemType={(item) => item.type}
           className="flex-1"
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
@@ -642,19 +658,48 @@ export function KinWorkTaskList(
               ) : null}
             </>
           }
-          renderItem={({ item: row }) => (
-            <KinWorkTaskRow
-              row={row}
-              saving={changed.pending[row.key] !== undefined}
-              onPress={() => openRecord("KinWorkItem", { environmentId, orgId, task: row.key })}
-              onAct={canChange ? (action) => act(row.key, action) : null}
-            />
-          )}
+          renderItem={({ item }) =>
+            item.type === "section" ? (
+              <View className="flex-row items-baseline gap-2 px-5 pt-5 pb-1">
+                <Text textRole="headline" numberOfLines={1} className="shrink text-foreground">
+                  {item.title}
+                </Text>
+                <Text textRole="footnote" className="text-foreground-muted">
+                  {item.count}
+                </Text>
+              </View>
+            ) : item.type === "who" ? (
+              <View className="flex-row items-center gap-2 px-5 pt-2 pb-0.5">
+                <KinAvatar avatar={item.avatar} size="mini" />
+                <Text
+                  textRole="footnote"
+                  numberOfLines={1}
+                  className="shrink text-foreground-muted"
+                >
+                  {item.name}
+                </Text>
+              </View>
+            ) : (
+              <KinWorkTaskRow
+                row={item.row}
+                saving={changed.pending[item.key] !== undefined}
+                onPress={() => openRecord("KinWorkItem", { environmentId, orgId, task: item.key })}
+                onAct={canChange ? (action) => act(item.key, action) : null}
+              />
+            )
+          }
         />
       </ScreenContent>
     </View>
   );
 }
+
+/** A line of the list: a part's heading, whom a run waits on, or a task with its row. */
+type KinWorkListItem =
+  | Exclude<KinWorkGroupItem<KinRecord>, { readonly type: "task" }>
+  | (Extract<KinWorkGroupItem<KinRecord>, { readonly type: "task" }> & {
+      readonly row: KinWorkRowView;
+    });
 
 /** Tasks' one filter: what state, whose client or project, and who has it. */
 function kinWorkFilterMenu(props: {

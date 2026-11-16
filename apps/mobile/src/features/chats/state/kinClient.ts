@@ -30,6 +30,8 @@ import {
   type KinPeopleListInput,
   type KinChatId,
   type KinChatsSubscribeInput,
+  type KinAgentDefaultsInput,
+  type KinAgentPageInput,
   type KinLeadAccessInput,
   type KinBudgetGetInput,
   type KinCheckInsInput,
@@ -46,6 +48,7 @@ import {
   type KinOwnerTimeZoneGetInput,
   type KinPushWatchInput,
   type KinOrgId,
+  type KinPersonId,
   type KinPartyPageInput,
   type KinProjectPageInput,
   type KinWorkGetInput,
@@ -186,6 +189,16 @@ const leadAccessRead = createKinRpcCommand(connectionAtomRuntime, {
   tag: "kin.lead.access.list",
 });
 const readLeadAccess = guardedRead(leadAccessRead);
+const agentPageRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:agent-page:read",
+  tag: "kin.lead.page",
+});
+const readAgentPage = guardedRead(agentPageRead);
+const agentDefaultsRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:agent-defaults:read",
+  tag: "kin.agents.defaults",
+});
+const readAgentDefaults = guardedRead(agentDefaultsRead);
 const membersRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:chat-members:read",
   tag: KIN_CHAT_WS_METHODS.chatMembers,
@@ -549,6 +562,43 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
   }),
   /** Who besides the owner may message one of the owner's leads. */
+  /** One agent's whole page, for owner-level people. */
+  agentPage: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:agent-page",
+    execute: Effect.fn("KinClient.agentPage")(function* (input: KinAgentPageInput) {
+      return yield* readAgentPage(input);
+    }),
+    staleTimeMs: 15_000,
+    refreshTrigger: kinRefreshOn("leads"),
+  }),
+  agentDefaults: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:agent-defaults",
+    execute: Effect.fn("KinClient.agentDefaults")(function* (input: KinAgentDefaultsInput) {
+      return yield* readAgentDefaults(input);
+    }),
+    staleTimeMs: 15_000,
+    refreshTrigger: kinRefreshOn("leads"),
+  }),
+  characterSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:character",
+    tag: "kin.lead.character.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
+  agentDefaultsSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:agent-defaults:set",
+    tag: "kin.agents.defaults.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+  }),
+  leadPause: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:pause",
+    tag: "kin.lead.pause",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
+  leadResume: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:resume",
+    tag: "kin.lead.resume",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
   leadAccess: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:lead-access",
     execute: Effect.fn("KinClient.leadAccess")(function* (input: KinLeadAccessInput) {
@@ -1049,6 +1099,25 @@ export const kinClient = {
     // Clients shows each project's task counts from these rows, so any change can move them.
     refreshTrigger: kinWorkRefreshOn("any", kinRefreshOn("workChoices")),
   }),
+  /** One teammate's open projects, and the open projects they could be put on, by name. */
+  teammateProjects: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:teammate-projects",
+    execute: Effect.fn("KinClient.teammateProjects")(function* (input: {
+      readonly orgId: KinOrgId;
+      readonly person: KinPersonId;
+    }) {
+      const [theirs, open] = yield* Effect.all(
+        [
+          readWorkProjects({ orgId: input.orgId, person: input.person, limit: 100 }),
+          readWorkProjects({ orgId: input.orgId, limit: 100 }),
+        ],
+        { concurrency: 2 },
+      );
+      return { theirs: theirs.projects, open: open.projects };
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinWorkRefreshOn(["projects"], kinRefreshOn("workChoices")),
+  }),
   workClientCreate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:client:create",
     tag: "kin.work.createParty",
@@ -1084,6 +1153,11 @@ export const kinClient = {
   workProjectUpdate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:project:update",
     tag: "kin.work.updateProject",
+  }),
+  /** Who is on a project; the owner, a co-owner or its lead (the page's `can.people`). */
+  workProjectPeople: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:project:people",
+    tag: "kin.work.projectPeople",
   }),
   workCreate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:create",

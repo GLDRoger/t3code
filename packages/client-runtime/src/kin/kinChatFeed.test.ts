@@ -420,7 +420,23 @@ describe("rows", () => {
         { ...asked, messageId: "again" as KinMessage["messageId"], seq: 8 },
       ]),
     ).toMatchObject([{ text: "Tech lead didn't reply.", retry: null }]);
-    expect(systemRows([notice(6, "kin-no-reply:w1")])).toMatchObject([{ retry: null }]);
+    expect(systemRows([notice(6, "kin-no-reply:w1")])).toMatchObject([{ retry: null, open: null }]);
+    // A hand-off notice opens the one task or project it names; a list of several opens none.
+    const handed = (seq: number, body: string) => ({
+      ...notice(seq, `kin-assign-${seq}`),
+      body,
+    });
+    expect(
+      systemRows([
+        handed(9, "Rhea Kapoor added you to P-2 Invented Orbit retainer."),
+        handed(10, "Rhea Kapoor gave you W-7 Invented logo files, due Fri 20 Nov."),
+        handed(11, "Rhea Kapoor gave you 2 tasks:\n• W-8 Invented a\n• W-9 Invented b"),
+      ]).map((row) => (row.type === "system" ? row.open : undefined)),
+    ).toEqual([
+      { key: "P-2", kind: "project", label: "Open project" },
+      { key: "W-7", kind: "task", label: "Open task" },
+      null,
+    ]);
     // A picture with no words can't be resent by its words.
     expect(systemRows([{ ...asked, body: "" }, notice(6, "kin-failed:w1")])).toMatchObject([
       { retry: null },

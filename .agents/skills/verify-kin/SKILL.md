@@ -114,6 +114,7 @@ bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the 
 | `github-delegated-task`    | GitHub connected: the owner's turn clones a repo and a delegated task opens a PR in its own worktree; one reply; Zoya's turn is refused and offered to the owner                                                                                                                                          |
 | `member-attaches-file`     | Zoya attaches a PDF in her chat and fetches it; Arjun, Dev, Meera and the owner, outside that chat, get not-found by its id or a case-folded one                                                                                                                                                          |     |
 | `work-change-five-people`  | five people with Tasks open: a new task, its assignment and its return reach each page as the task itself or nothing, with no Work read                                                                                                                                                                   |
+| `agent-page`               | Finance's model changes from its page and by chat, the next turn runs on it and a non-Claude one is refused; its character is saved and restored; paused and resumed; retired and restored; Zoya gets neither the page nor a change                                                                       |
 | `open-questions`           | Finance asks with a default and a day; Chief of staff asking the same is refused; the day passes, the default is taken once with one line and "undo it" reverses it; a question with no safe default is raised once, then waits in Waiting on you                                                         |
 
 `node scripts/kin-release-check.ts` runs all ten with the models, property tests and UI fuzz before a release ([Releasing Kin](../../../docs/operations/kin-release.md)).
@@ -148,7 +149,8 @@ at a busy year's size (a 2,000-message group with chart and choice cards, 500 ta
 
 It writes `baseline-<commit>.json`, `.md` and `report.html`, then stops everything with `down`.
 A run takes about 15 minutes; `--runs <n>` sets samples per action (default 5), `--reuse` skips
-re-seeding. `--compare <old.json> [--threshold 15]` adds old, new and change per metric and flags
+re-seeding, and `--only prompts` captures just the prompts and tool lists (about 4 minutes). A tool
+listed as deferred (`_meta` anthropic/alwaysLoad false) counts apart from the upfront ones. `--compare <old.json> [--threshold 15]` adds old, new and change per metric and flags
 what got worse. `--render <run.json> --findings <findings.json>` redraws the page with a written
 "what stands out" list (`[{title, number, cause, where, worth}]`). It never calls a model; worker
 reports are not measured, since workers here need a real repository.

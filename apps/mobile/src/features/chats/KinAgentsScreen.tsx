@@ -6,10 +6,14 @@ import {
   kinAgentGroups,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
-import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import { EnvironmentId, KinOrgId, type KinAgentModels } from "@t3tools/contracts";
+import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
+import { useState } from "react";
 import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -22,6 +26,8 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { kinClient } from "./state/kinClient";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { KinAgentModelRow, useKinAgentModelOptions } from "./KinAgentModelRow";
 import { kinRetiredWhenNow, useKinAgentRetire } from "./state/useKinAgentRetire";
 
 export type KinAgentsParams = { readonly environmentId: string; readonly orgId: string };
@@ -127,7 +133,11 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
               icon="sparkles"
               label={agent.name}
               description={kinDomainLabel(agent.domain)}
-              {...(agent.working ? { detail: "Working" } : {})}
+              {...(agent.paused !== undefined
+                ? { detail: "Paused" }
+                : agent.working
+                  ? { detail: "Working" }
+                  : {})}
               onPress={() =>
                 navigation.navigate("KinLead", { environmentId, orgId, agentId: agent.agentId })
               }
@@ -135,6 +145,9 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
           ))}
         </ListSection>
       )}
+      {canAdd && agents !== null && agents.length > 0 ? (
+        <KinAgentDefaults environmentId={environmentId} orgId={orgId} />
+      ) : null}
       {retired.length === 0 ? null : (
         <ListSection
           title={KIN_RETIRED_LABEL}
@@ -154,5 +167,54 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
         </ListSection>
       )}
     </KinAgentsFrame>
+  );
+}
+
+/** The models new agents start on; each agent's own are on its page. */
+function KinAgentDefaults(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  const { environmentId, orgId } = props;
+  const defaultsAtom = kinClient.agentDefaults({ environmentId, input: { orgId } });
+  const defaults = Option.getOrNull(AsyncResult.value(useAtomValue(defaultsAtom)));
+  const options = useKinAgentModelOptions(environmentId);
+  const save = useAtomCommand(kinClient.agentDefaultsSet, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const base = defaults?.models ?? null;
+  if (base === null) return null;
+  const choose = (models: KinAgentModels) => {
+    setBusy(true);
+    void save({ environmentId, input: { orgId, models } }).then((outcome) => {
+      setBusy(false);
+      setProblem(
+        AsyncResult.isFailure(outcome)
+          ? kinFailureText(squashAtomCommandFailure(outcome), "Couldn't save that.")
+          : null,
+      );
+      appAtomRegistry.refresh(defaultsAtom);
+    });
+  };
+  return (
+    <ListSection
+      title={KIN_AGENT_PAGE.defaults}
+      footer={
+        problem ??
+        `${KIN_AGENT_PAGE.defaultsDetail}${defaults?.chosen === false ? " Until you choose, they start on your first agent's." : ""}`
+      }
+    >
+      {(["strong", "cheap"] as const).map((role, index) => (
+        <KinAgentModelRow
+          key={role}
+          label={KIN_AGENT_PAGE[role]}
+          value={base[role]}
+          options={options}
+          disabled={busy}
+          borderTop={index > 0}
+          onPick={(selection) => choose({ ...base, [role]: selection })}
+        />
+      ))}
+    </ListSection>
   );
 }

@@ -1474,8 +1474,8 @@ const make = Effect.gen(function* () {
         Effect.fn("KinChatService.org")(function* (identity) {
           const org = yield* requireRecord(repo.getOrg(identity));
           const agents = yield* repo.listAgents(identity);
-          // Only the agents this person owns (the owner owns every one), may message, or shares
-          // a chat with: a teammate does not learn the rest exist.
+          // The agents this person owns (the owner owns every one), may message, or shares a chat
+          // with; the rest only by name, so a task's holder is never "an agent".
           const visible = yield* sql<{ agentId: string }>`SELECT a.agent_id AS "agentId"
             FROM kin_agents a WHERE a.org_id = ${identity.orgId} AND (
               a.owner_person_id = ${identity.personId}
@@ -1490,15 +1490,15 @@ const make = Effect.gen(function* () {
             Effect.map((rows) => new Set(rows.map((row) => row.agentId))),
             Effect.mapError(toPersistenceSqlError("KinChatService.org")),
           );
+          const named = ({ agentId, displayName, retiredAt }: (typeof agents)[number]) => ({
+            agentId,
+            displayName,
+            retired: retiredAt !== null,
+          });
           return {
             ...org,
-            agents: agents
-              .filter(({ agentId }) => visible.has(agentId))
-              .map(({ agentId, displayName, retiredAt }) => ({
-                agentId,
-                displayName,
-                retired: retiredAt !== null,
-              })),
+            agents: agents.filter(({ agentId }) => visible.has(agentId)).map(named),
+            otherAgents: agents.filter(({ agentId }) => !visible.has(agentId)).map(named),
           };
         }),
       );

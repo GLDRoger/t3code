@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# A brand-new agent gets a check-in from the app's old Settings address, which opens Kin's Settings ›
-# Check-ins; that page lists it for the owner level only, and Run now wakes it once.
+# A brand-new agent gets a check-in from the app's old Settings address, which opens Kin's Settings
+# modal on Check-ins over the chats; it lists it for the owner level only, and Run now wakes it once.
 source "$(dirname "$0")/lib.sh"
 AGENT="Ops $RUN"
 MODEL='{"instanceId":"kinVerifyScript","model":"script"}'
 created="$(kv as owner rpc kin.lead.create "{\"name\":\"$AGENT\",\"domain\":\"ops-$RUN\",\"charter\":\"Keeps vendors and the office running.\",\"models\":{\"strong\":$MODEL,\"cheap\":$MODEL}}")"
 agent_id="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).agentId)' "$created")"
 kv as owner web open /settings/check-ins >/dev/null
+kv as owner web wait "Add check-in" >/dev/null || fail "the old Check-ins address didn't open Settings on Check-ins"
+[[ "$(kv as owner web snapshot | head -1)" == "# /kin?settings=check-ins" ]] ||
+  fail "the old Check-ins address didn't open Settings as a modal over the chats"
 kv as owner web click --name "Add check-in" >/dev/null
 kv as owner web type --name Name "Round $RUN" >/dev/null
 kv as owner web click --name Agent >/dev/null
@@ -15,11 +18,11 @@ kv as owner web click --name "Save check-in" >/dev/null
 kv as owner web wait "Round $RUN" >/dev/null || fail "the new check-in isn't listed"
 expect_in "$(kv as owner web snapshot)" "· $AGENT" "the check-in doesn't name the new agent"
 for person in owner meera; do
-  kv as "$person" web open settings/check-ins >/dev/null
+  kv as "$person" web open "/kin?settings=check-ins" >/dev/null
   kv as "$person" web wait "Round $RUN" >/dev/null || fail "$person's Settings › Check-ins don't list the check-in"
 done
-# A member's Settings is hers alone: the address of Check-ins lands on her profile.
-kv as zoya web open settings/check-ins >/dev/null
+# A member's Settings is hers alone: the address of Check-ins opens it on her profile.
+kv as zoya web open "/kin?settings=check-ins" >/dev/null
 kv as zoya web wait "Edit profile" >/dev/null || fail "Zoya's Settings didn't land on her profile"
 member="$(kv as zoya web snapshot)"
 expect_not_in "$member" "Check-ins" "Zoya's Settings offer the company's Check-ins"

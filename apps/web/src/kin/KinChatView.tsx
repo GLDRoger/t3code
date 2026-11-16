@@ -876,6 +876,11 @@ function KinChatFeed(props: {
           <KinSystemRow
             body={item.text}
             onRetry={retry === null || pending.length > 0 ? null : () => void sendText(retry)}
+            open={
+              item.open === null
+                ? null
+                : { target: item.open, environmentId: props.environmentId, orgId: props.orgId }
+            }
           />
         );
       }

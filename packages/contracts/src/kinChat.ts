@@ -646,6 +646,19 @@ export const KinOrgsListResult = Schema.Struct({
           retired: Schema.Boolean,
         }),
       ),
+      /**
+       * The company's other agents, by name only: everyone on the team may know who holds a task,
+       * not message them. Absent from older hosts.
+       */
+      otherAgents: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            agentId: KinAgentId,
+            displayName: Schema.String,
+            retired: Schema.Boolean,
+          }),
+        ),
+      ),
     }),
   ),
   me: Schema.Array(

@@ -359,7 +359,11 @@ function main(): void {
     process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
   const models = {
     currentModelId: "script",
-    availableModels: [{ modelId: "script", name: "Script (kin-verify)" }],
+    availableModels: [
+      { modelId: "script", name: "Script (kin-verify)" },
+      // A second model, so a check can switch an agent's model and see the next turn use it.
+      { modelId: "script-b", name: "Script B (kin-verify)" },
+    ],
   };
   const handle = async (message: JsonRpcMessage): Promise<unknown> => {
     const params = message.params ?? {};

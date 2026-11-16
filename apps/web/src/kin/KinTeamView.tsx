@@ -3,6 +3,11 @@ import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
+  KIN_PROJECT_PEOPLE,
+  KIN_TEAMMATE_PROJECTS,
+  kinTeammateProjects,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
+import {
   KIN_TEAM_ADD,
   KIN_TEAM_EMPTY,
   KIN_TEAM_LOAD_FAILED,
@@ -34,11 +39,12 @@ import type {
   KinPersonId,
   KinPersonPlaceSwitches,
   KinPersonPlaces,
+  KinRecordKey,
 } from "@t3tools/contracts";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { ChevronRightIcon, UserPlusIcon } from "lucide-react";
+import { ChevronRightIcon, UserPlusIcon, XIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import {
@@ -53,6 +59,13 @@ import {
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { Radio, RadioGroup } from "../components/ui/radio-group";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 import {
   Empty,
   EmptyContent,
@@ -444,6 +457,14 @@ function KinTeammateSheet(props: {
               orgId={props.orgId}
             />
           )}
+          {teammate.personId === null ? null : (
+            <KinTeammateProjects
+              personId={teammate.personId}
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+              onOpen={props.onClose}
+            />
+          )}
           <Section title="Agents">
             {teammate.personId === null ? (
               <p className="text-sm text-muted-foreground">
@@ -579,7 +600,107 @@ function KinTeammateSheet(props: {
   );
 }
 
-/** A member's places beyond Tasks, and the projects they lead (set on each project's page). */
+/**
+ * The projects a teammate is on or leads, each a way to its page; the owner puts them on one or
+ * takes them off here as on the project's own page (`kin.work.projectPeople`).
+ */
+function KinTeammateProjects(props: {
+  readonly personId: KinPersonId;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly onOpen: () => void;
+}) {
+  const { personId, environmentId, orgId } = props;
+  const result = useAtomValue(
+    kinClient.teammateProjects({ environmentId, input: { orgId, person: personId } }),
+  );
+  const people = useAtomCommand(kinClient.workProjectPeople, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const read = Option.getOrNull(AsyncResult.value(result));
+  const view = read === null ? null : kinTeammateProjects(personId, read.theirs, read.open);
+  const change = async (key: KinRecordKey, on: boolean) => {
+    setBusy(true);
+    setProblem(null);
+    const who = { _tag: "person" as const, personId };
+    const outcome = await people({
+      environmentId,
+      input: { orgId, key, ...(on ? { add: [who] } : { remove: [who] }) },
+    });
+    if (AsyncResult.isFailure(outcome))
+      setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_PROJECT_PEOPLE.failed));
+    appAtomRegistry.refresh(
+      kinClient.teammateProjects({ environmentId, input: { orgId, person: personId } }),
+    );
+    setBusy(false);
+  };
+  return (
+    <Section title={KIN_TEAMMATE_PROJECTS.title}>
+      {view === null ? (
+        <Skeleton className="h-9 w-full" />
+      ) : view.rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{KIN_TEAMMATE_PROJECTS.none}</p>
+      ) : (
+        <ul className="-mx-2 flex flex-col">
+          {view.rows.map((row) => (
+            <li key={row.key} className="flex min-h-10 items-center gap-2">
+              <Link
+                to="/kin/$environmentId/$orgId/tasks"
+                params={{ environmentId, orgId }}
+                search={{ project: row.key }}
+                onClick={props.onOpen}
+                className="flex min-w-0 flex-1 items-baseline gap-2 rounded-md px-2 py-1.5 outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+              >
+                <span className="min-w-0 truncate text-sm text-foreground">{row.title}</span>
+                <span className="shrink-0 text-xs text-muted-foreground">{row.line}</span>
+              </Link>
+              {row.removable ? (
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  disabled={busy}
+                  aria-label={KIN_TEAMMATE_PROJECTS.remove(row.title)}
+                  title={KIN_TEAMMATE_PROJECTS.remove(row.title)}
+                  onClick={() => void change(row.key, false)}
+                >
+                  <XIcon />
+                </Button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      {view === null || view.addable.length === 0 ? null : (
+        <Select
+          value=""
+          disabled={busy}
+          onValueChange={(key) => {
+            if (typeof key === "string" && key !== "") void change(key, true);
+          }}
+        >
+          <SelectTrigger className="w-full min-w-0" aria-label={KIN_TEAMMATE_PROJECTS.add}>
+            <SelectValue>{KIN_TEAMMATE_PROJECTS.add}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup alignItemWithTrigger={false}>
+            {view.addable.map((row) => (
+              <SelectItem key={row.key} value={row.key}>
+                {row.title}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      )}
+      <p className="text-xs text-muted-foreground">{KIN_TEAMMATE_PROJECTS.leadHint}</p>
+      {problem === null ? null : (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {problem}
+        </p>
+      )}
+    </Section>
+  );
+}
+
+/** A member's places beyond Tasks (the projects they lead are under Projects). */
 function KinTeammatePlaces(props: {
   readonly places: KinPersonPlaces;
   readonly personId: KinPersonId;
@@ -629,21 +750,6 @@ function KinTeammatePlaces(props: {
           <p role="alert" className="text-xs text-destructive-foreground">
             {problem}
           </p>
-        )}
-      </Section>
-      <Section title="Projects they lead">
-        {places.leads.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            None. Make them a project's lead on that project's page.
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-1">
-            {places.leads.map((project) => (
-              <li key={project.recordId} className="truncate text-sm text-foreground">
-                {project.title}
-              </li>
-            ))}
-          </ul>
         )}
       </Section>
     </>
