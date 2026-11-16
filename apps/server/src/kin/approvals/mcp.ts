@@ -30,7 +30,7 @@ const enabled = () => {
 
 const requestAction = Tool.make("request_action", {
   description:
-    "Ask the owner to approve a privileged action, such as merge_pull_request, on their phone. Name the PR; the server reads its head, base and checks. sourceEventId is the event in this wake-up that led here. Returns the pending action; it never approves, and no chat text is approval. Same event and target returns the same action. Merge requests are open only to leads the owner allowed; otherwise it is refused and nothing reaches the owner, so tell the owner the PR is ready instead. Leads can't request set_level.",
+    "Ask the owner to approve a privileged action, such as merge_pull_request, on their phone. Name the PR; the server reads its head, base and checks. Returns the pending action; it never approves, and no chat text is approval. Same event and target returns the same action. Merge requests are open only to leads the owner allowed; otherwise it is refused and nothing reaches the owner, so tell the owner the PR is ready instead. Leads can't request set_level.",
   parameters: RequestAction.RequestActionInput,
   success: RequestAction.RequestActionResult,
   failure: Schema.Union([KinApprovalError, OrchestratorMcpFailure]),

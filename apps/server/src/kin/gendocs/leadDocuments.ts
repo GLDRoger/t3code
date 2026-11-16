@@ -34,6 +34,7 @@ import { createsMoney, makeReceipt } from "./receipts.ts";
 import { defaultRecipes } from "./recipeDefaults.ts";
 import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
 import { KinWorkspace } from "./workspace.ts";
+import { TurnEvent } from "../lead/eventIds.ts";
 
 /**
  * `kin_recipes`, `kin_issue`, `kin_recipe_undo`, `kin_receipt`, and `kin_document` with a recipe,
@@ -222,13 +223,13 @@ export const IssueInput = Schema.Struct({
     description:
       "Take a void back: it is owed again with the number it had, or paid if its payments cover it.",
   }),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export const IssueResult = Schema.Struct({
   entry: Schema.String,
   number: Schema.NullOr(Schema.String),
   state: Schema.String,
-  /** False when it already had its number: asking again changes nothing. */
+  /** False when it already had its number. */
   issued: Schema.Boolean,
   /** Its documents, made again with the number, each a new version of the same doc. */
   documents: Schema.Array(
@@ -237,7 +238,24 @@ export const IssueResult = Schema.Struct({
   problems: Schema.Array(Schema.String),
   /** Said plainly when its number follows entries dated after it: tell the owner. */
   notice: Schema.optional(Schema.String),
+  /** What happened, in a line: the agent has nothing to check. */
+  next: Schema.optional(Schema.String),
 });
+
+/** What issuing did, so an agent asking again trusts it instead of re-checking. */
+const issuedLine = (
+  number: string,
+  issued: boolean,
+  remade: { readonly documents: ReadonlyArray<unknown>; readonly problems: ReadonlyArray<unknown> },
+) => {
+  const as = `${issued ? "Issued" : "Already issued"} as ${number}.`;
+  if (remade.documents.length > 0)
+    return `${as} Its documents were made again with the number and posted in this chat. Tell the owner the number.`;
+  if (remade.problems.length > 0) return `${as} Its documents couldn't be made: see problems.`;
+  return issued
+    ? as
+    : `${as} Its documents already carry the number; there is nothing more to make.`;
+};
 
 export const issue = leadTool("KinDocuments.issue", (lead, input: typeof IssueInput.Type) =>
   Effect.gen(function* () {
@@ -281,6 +299,9 @@ export const issue = leadTool("KinDocuments.issue", (lead, input: typeof IssueIn
       })),
       problems: remade.problems,
       ...("notice" in result && result.notice !== undefined ? { notice: result.notice } : {}),
+      ...(input.void === true || input.unvoid === true || result.number === null
+        ? {}
+        : { next: issuedLine(result.number, result.issued, remade) }),
     };
   }),
 );
@@ -289,7 +310,7 @@ export const UndoInput = Schema.Struct({
   recipe: TrimmedNonEmptyString.check(Schema.isPattern(/^[a-z][a-z0-9-]{1,39}$/)).annotate({
     description: "The recipe whose last change to undo. Undo again to redo it.",
   }),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export const UndoResult = Schema.Struct({
   recipe: Schema.String,
@@ -346,7 +367,7 @@ export const ReceiptInput = Schema.Struct({
   towards: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(300))),
   mode: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(40))),
   reference: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 const ReceiptMade = Schema.Struct({
   status: Schema.Literal("made"),

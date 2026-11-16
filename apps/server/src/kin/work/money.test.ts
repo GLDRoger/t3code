@@ -2101,7 +2101,8 @@ describe("the company profile", () => {
 
         const proposed = yield* LeadMoney.profile(scope, {
           sourceEventId: sent,
-          set: { logo: "att-1-0", brand: { primaryColor: "#0A5C8F" } },
+          // Named as its message shows it, not by id.
+          set: { logo: "logo.png", brand: { primaryColor: "#0A5C8F" } },
         });
         assert.deepStrictEqual(proposed.proposed, [
           "Logo: none → logo.png (PNG, 400 × 120 px, 1 KB)",

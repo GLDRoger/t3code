@@ -31,6 +31,7 @@ import { gitHubAnswer, gitHubRequest, repoPath } from "./githubRest.ts";
 import { KinGitHubApp } from "./KinGitHubApp.ts";
 import type { KinGitHubPermissionSet } from "./KinGitHubPermissions.ts";
 import { NOT_CONNECTED } from "./KinRepoReads.ts";
+import { TurnEvent } from "../lead/eventIds.ts";
 
 const githubItem = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(issues|pull)\/([1-9][0-9]*)\/?$/i;
 /** A GitHub issue or PR URL as `{ repo, kind, number }`; anything else is undefined. */
@@ -58,7 +59,7 @@ export const ReviewInput = Schema.Struct({
   proposal: Schema.optional(TrimmedNonEmptyString).annotate({
     description: "A proposal this tool returned earlier: posts it once the owner confirmed.",
   }),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export const ReviewResult = Schema.Struct({
   status: Schema.Literals(["posted", "proposed", "waiting", "declined"]),
@@ -71,7 +72,7 @@ export const LinkInput = Schema.Struct({
   url: TrimmedNonEmptyString.annotate({
     description: "A GitHub issue or pull request URL in a connected repo.",
   }),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export const LinkResult = Schema.Struct({ entry: Schema.String, linked: Schema.String });
 

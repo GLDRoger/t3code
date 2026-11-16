@@ -544,6 +544,13 @@ describe("KinPushSender", () => {
         );
       }
 
+      // Another unprompted line for Priya inside half an hour lands without ringing; after it, rings.
+      apns.sent.length = 0;
+      const again = yield* postMessage(sql, fin, "posted", { mentions: ["m_priya"] });
+      yield* notify({ _tag: "message", orgId, messageId: again });
+      assert.deepStrictEqual(alerts(apns.sent), [undefined]);
+      yield* TestClock.adjust("31 minutes");
+
       apns.sent.length = 0;
       const mention = yield* postMessage(sql, fin, "posted", {
         mentions: ["m_priya"],

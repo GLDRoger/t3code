@@ -66,6 +66,7 @@ import {
   listOrPreset,
   unknownList,
 } from "./registers.ts";
+import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The lead tools for lists and money. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -136,7 +137,7 @@ const StateNames = Schema.Struct({
 });
 
 export const DefineInput = Schema.Struct({
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
   proposal: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(40))).annotate({
     description: "A proposal this tool returned in an earlier turn: creates exactly that.",
   }),
@@ -312,7 +313,7 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
 export const define = leadTool("KinWorkTools.define", runDefine);
 
 export const PaymentInput = Schema.Struct({
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
   key: KinRecordKey.annotate({ description: "The invoice, such as INV-4." }),
   amount: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
     description:
@@ -492,7 +493,7 @@ const runMoneyQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof Mon
 export const moneyQuery = leadTool("KinWorkTools.moneyQuery", runMoneyQuery);
 
 export const BudgetInput = Schema.Struct({
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
   category: Schema.optional(Label).annotate({
     description: "One of the expenses list's categories.",
   }),

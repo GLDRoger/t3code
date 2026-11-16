@@ -24,6 +24,9 @@ it.effect(
       yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Org', ${at})`;
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
       VALUES ('owner', ${orgId}, 'owner', 'Owner', ${at})`;
+      // The test clock reads midnight UTC; quiet hours elsewhere keep this about routing.
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '08:30', '18:30',
+        '03:00', 0, 1, '09:00', '{"from":"12:00","to":"13:00"}')`;
       // Tech lead was placed first; the Chief of staff still gets the notice.
       for (const [agent, domain, created] of [
         ["tech", "engineering", "2026-11-01T00:00:00.000Z"],
