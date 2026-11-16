@@ -787,7 +787,7 @@ export const buildBase = (
               ...template.tools.filter(
                 (tool) => !isT3Name(tool.name) && !tool.name.endsWith("ToolSearch"),
               ),
-              ...nativeDeferred.map((name) => ({ name, ...nativeSchema(name) })),
+              ...nativeDeferred.map((name): ApiTool => ({ name, ...nativeSchema(name) })),
             ]
           : template.tools.filter((tool) => leadTools.includes(tool.name))),
         ...t3,
