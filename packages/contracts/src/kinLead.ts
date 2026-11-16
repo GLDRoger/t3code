@@ -4,6 +4,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import {
+  MessageId,
+  NodeId,
   NonNegativeInt,
   ProjectId,
   ScheduledTaskId,
@@ -690,6 +692,15 @@ export const KinEvent = Schema.Union([
     // them, so the turn is theirs and never the owner's. From stored rows, as a worker report's.
     chatId: Schema.optional(KinChatId),
     origin: Schema.optional(KinEventOrigin),
+  }),
+  // T3's notice on a lead's thread that tasks it delegated ended (`TaskWake.ts`). The wake-up
+  // takes over the run T3 started for it, so the reply lands once in `chatId`.
+  Schema.TaggedStruct("task.finished", {
+    ...EventBase,
+    threadId: ThreadId,
+    messageId: MessageId,
+    taskIds: Schema.Array(NodeId).check(Schema.isMaxLength(50)),
+    chatId: KinChatId,
   }),
   Schema.TaggedStruct("action.resolved", {
     ...EventBase,

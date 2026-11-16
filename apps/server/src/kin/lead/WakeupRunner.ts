@@ -35,6 +35,7 @@ import * as ThreadManagementService from "../../orchestration-v2/ThreadManagemen
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { noticeState } from "./TaskWake.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
 import * as Floor from "../floor/KinFloor.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -732,7 +733,11 @@ const make = Effect.gen(function* () {
         const busy = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
           WHERE thread_id = ${record.threadId}
             AND status IN ${sql.in(["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES])} LIMIT 1`;
-        if (unfinished.length > 0 || busy.length > 0) {
+        // A run T3 started for a finished task is the one thing a wake-up claims into: it takes it.
+        const notice = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
+          AND agent_id = ${agentId} AND tag = 'task.finished' AND state = 'queued'
+          AND json_extract(json, '$.threadId') = ${record.threadId} LIMIT 1`;
+        if ((unfinished.length > 0 || busy.length > 0) && notice.length === 0) {
           yield* Effect.raceFirst(yield* queue.changes(orgId), threadActivity(orgId)).pipe(
             Effect.timeoutOrElse({ duration: 60_000, orElse: () => Effect.void }),
           );
@@ -788,6 +793,26 @@ const make = Effect.gen(function* () {
             );
             if (notClaude !== undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: notClaude });
+            // T3 starts the run that answers a finished task at once: own it before the slow
+            // preparation below, so its first tool calls already find their turn.
+            for (const event of events) {
+              if (event._tag !== "task.finished" || row.runId !== null) continue;
+              const state = noticeState(
+                yield* threads.getThreadRecords(event.threadId, ["messages", "runs"]),
+                event.messageId,
+              );
+              if (state._tag !== "live") continue;
+              row = { ...row, threadId: event.threadId, runId: state.run.id };
+              yield* sql`UPDATE kin_wakeups SET thread_id = ${event.threadId}, run_id = ${state.run.id}
+                WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId}
+                  AND status = 'running'`;
+              yield* registry.register(event.threadId, {
+                orgId,
+                agentId,
+                wakeupId,
+                level: current.level,
+              });
+            }
             const admitted = yield* admitEvents(orgId, agentId, events);
             const cheapOnly = admitted.cheapOnly;
             for (const group of admitted.held) {
@@ -840,6 +865,18 @@ const make = Effect.gen(function* () {
                   ? routines.value.isEnabled(orgId, event.routine)
                   : Effect.succeed(true),
               );
+            // A finished-task notice T3 steered into a turn already going was answered there.
+            events = yield* Effect.filter(events, (event) =>
+              event._tag === "task.finished"
+                ? threads
+                    .getThreadRecords(event.threadId, ["messages", "runs"])
+                    .pipe(
+                      Effect.map(
+                        (records) => noticeState(records, event.messageId)._tag !== "seen",
+                      ),
+                    )
+                : Effect.succeed(true),
+            );
             if (events.length === 0) {
               yield* queue.finish({ orgId, wakeupId, status: "completed" });
               return;
@@ -1061,7 +1098,14 @@ const make = Effect.gen(function* () {
               WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
               }),
             );
-            yield* registry.register(threadId, { orgId, agentId, wakeupId, level: current.level });
+            // A finished task's run may already be this wake-up's (above).
+            if (registry.lookup(threadId)?.wakeupId !== wakeupId)
+              yield* registry.register(threadId, {
+                orgId,
+                agentId,
+                wakeupId,
+                level: current.level,
+              });
             if (Option.isSome(bridge))
               yield* bridge.value.begin({
                 orgId,
@@ -1071,39 +1115,79 @@ const make = Effect.gen(function* () {
                 startedAt: row.startedAt,
                 attachments: attachments.length > 0,
               });
+            // T3 already started the run that answers a finished task here: this wake-up owns it.
+            const finished = events.flatMap((event) =>
+              event._tag === "task.finished" && event.threadId === threadId ? [event] : [],
+            );
+            const taken =
+              existingThreadId === null || finished.length === 0
+                ? undefined
+                : yield* threads.getThreadRecords(threadId, ["messages", "runs"]).pipe(
+                    Effect.map((records) =>
+                      finished
+                        .map((event) => noticeState(records, event.messageId))
+                        .flatMap((state) => (state._tag === "live" ? [state.run] : []))
+                        .at(0),
+                    ),
+                  );
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(KinIdentity.wakeupMessageId(wakeupId));
             const sent =
-              existingThreadId === null
-                ? (yield* launch.launch({
-                    commandId,
-                    threadId,
-                    projectId: project.id,
-                    title: current.name,
-                    modelSelection,
-                    runtimeMode: "full-access",
-                    interactionMode: "default",
-                    workspaceStrategy: { type: "root" },
-                    initialMessage: { messageId, text, attachments },
-                    createdBy: "system",
-                    creationSource: "server",
-                  })).projection
-                : (yield* threads.sendToThread({
-                    commandId,
-                    projectId: project.id,
-                    threadId,
-                    messageId,
-                    text,
-                    attachments,
-                    mode: "queue",
-                    freshContext: true,
-                    modelSelection,
-                    createdBy: "system",
-                    creationSource: "server",
-                  })).projection;
-            const run = sent.runs.findLast((run) => run.userMessageId === messageId);
+              taken !== undefined
+                ? undefined
+                : existingThreadId === null
+                  ? (yield* launch.launch({
+                      commandId,
+                      threadId,
+                      projectId: project.id,
+                      title: current.name,
+                      modelSelection,
+                      runtimeMode: "full-access",
+                      interactionMode: "default",
+                      workspaceStrategy: { type: "root" },
+                      initialMessage: { messageId, text, attachments },
+                      createdBy: "system",
+                      creationSource: "server",
+                    })).projection
+                  : (yield* threads.sendToThread({
+                      commandId,
+                      projectId: project.id,
+                      threadId,
+                      messageId,
+                      text,
+                      attachments,
+                      mode: "queue",
+                      freshContext: true,
+                      modelSelection,
+                      createdBy: "system",
+                      creationSource: "server",
+                    })).projection;
+            const run = taken ?? sent?.runs.findLast((run) => run.userMessageId === messageId);
             if (run === undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: "missing_run" });
+            // Anything else this wake-up answers goes into that run as its first steer.
+            if (taken !== undefined && events.some((event) => event._tag !== "task.finished")) {
+              if (Option.isSome(bridge))
+                yield* bridge.value.steered(orgId, wakeupId, {
+                  n: 1,
+                  eventIds: events.map((event) => event.eventId),
+                });
+              const send = (mode: "steer" | "queue") =>
+                threads.sendToThread({
+                  commandId: CommandId.make(`kin-steer:${wakeupId}:1:${mode}`),
+                  projectId: project.id,
+                  threadId,
+                  messageId: MessageId.make(KinIdentity.steerMessageId(wakeupId, 1)),
+                  text,
+                  attachments,
+                  mode,
+                  createdBy: "system",
+                  creationSource: "server",
+                });
+              yield* send("steer").pipe(
+                Effect.catchTags({ ThreadManagementNoSteerableRunError: () => send("queue") }),
+              );
+            }
             row = { ...row, runId: run.id };
             yield* sql`UPDATE kin_wakeups SET run_id = ${run.id}, launched_at = ${yield* Clock.currentTimeMillis}
               WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;

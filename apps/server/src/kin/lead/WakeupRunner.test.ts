@@ -1518,6 +1518,117 @@ describe("WakeupRunner", () => {
     }).pipe(provideDeterministicTestRuntime),
   );
 
+  it.effect.each([
+    ["takes over T3's run for a finished task instead of starting its own", true],
+    ["answers a finished task whose run already ended in a turn of its own", false],
+  ] as const)("%s", ([, live]) =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let turns = 0;
+      const calls: Array<string> = [];
+      let check: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
+      // The lead's first turn runs freely; the turn for T3's notice waits while `live`, then
+      // calls a Kin tool as the agent would once its wake-up owns it.
+      const onTurn = ({ threadId }: { readonly threadId: ThreadId }) =>
+        Effect.suspend(() =>
+          ++turns === 2 && live
+            ? Deferred.succeed(started, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.andThen(check(threadId)),
+              )
+            : Effect.void,
+        );
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const services = yield* Effect.context<
+          KinIdentity.KinIdentity | McpSessionRegistry.McpSessionRegistry
+        >();
+        check = (threadId) =>
+          resolveAgent(threadId).pipe(
+            Effect.provideContext(services),
+            Effect.match({
+              onFailure: (error) => calls.push(error.message),
+              onSuccess: () => calls.push("allowed"),
+            }),
+          );
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sql = yield* SqlClient.SqlClient;
+        yield* queue.enqueue(yield* ownerSays("ask"));
+        yield* Fiber.join(yield* run());
+        const [first] = yield* sql<{ threadId: string }>`
+          SELECT thread_id AS "threadId" FROM kin_wakeups`;
+        const threadId = ThreadId.make(first!.threadId);
+        const projectId = (yield* threads.getThreadProjection(threadId)).thread.projectId;
+        // What T3 sends a parent when a task it delegated ends (`ProviderContinuationService`).
+        const notice = MessageId.make("delegated-completion:1");
+        const sent = yield* threads.sendToThread({
+          commandId: CommandId.make("delegated-completion"),
+          projectId,
+          threadId,
+          messageId: notice,
+          text: "Delegated task task-1 reached a terminal state.",
+          attachments: [],
+          mode: "queue",
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        if (live) yield* Deferred.await(started);
+        else
+          yield* threads.waitForThread({
+            projectId,
+            threadId,
+            runId: sent.run.id,
+            timeoutMs: 60_000,
+          });
+        yield* queue.enqueue(
+          decodeEvent({
+            _tag: "task.finished",
+            orgId,
+            agentId,
+            eventId: "task-finished",
+            receivedAt: "2026-11-08T00:00:01.000Z",
+            dedupeKey: notice,
+            provenance: { _tag: "system" },
+            threadId,
+            messageId: notice,
+            taskIds: ["task-1"],
+            chatId: "owner-chat",
+          }),
+        );
+        const fiber = yield* run();
+        if (live) yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(fiber);
+        const wakeups = yield* sql<{ wakeupId: string; runId: string; status: string }>`
+          SELECT wakeup_id AS "wakeupId", run_id AS "runId", status FROM kin_wakeups
+          ORDER BY started_at, wakeup_id`;
+        assert.deepStrictEqual(
+          wakeups.map((row) => row.status),
+          ["completed", "completed"],
+        );
+        const runs = (yield* threads.getThreadProjection(threadId)).runs.toSorted(
+          (a, b) => a.ordinal - b.ordinal,
+        );
+        assert.deepStrictEqual(
+          runs.map((entry) => entry.userMessageId),
+          [
+            KinIdentity.wakeupMessageId(KinWakeupId.make(wakeups[0]!.wakeupId)),
+            notice,
+            ...(live ? [] : [KinIdentity.wakeupMessageId(KinWakeupId.make(wakeups[1]!.wakeupId))]),
+          ],
+        );
+        assert.strictEqual(wakeups[1]!.runId, live ? sent.run.id : runs[2]!.id);
+        // Before Kin took it over, the run's Kin calls were refused; after, they are the agent's.
+        assert.deepStrictEqual(calls, live ? ["allowed"] : []);
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM kin_events WHERE event_id = 'task-finished'`,
+          [{ state: "done" }],
+        );
+      }).pipe(Effect.scoped, Effect.provide(harness({ onTurn })));
+    }).pipe(provideDeterministicTestRuntime),
+  );
+
   it.effect("answers a steer the provider rejects once, in a run the same wake-up adopts", () =>
     Effect.gen(function* () {
       const holdRunning = yield* Deferred.make<void>();

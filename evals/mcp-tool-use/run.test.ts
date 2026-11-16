@@ -681,6 +681,30 @@ it("lists link tools only while a case turns the beta on, and sends chips as T3 
   assert.include(prompt?.text, "environmentId: environment-vps");
 });
 
+it("gives a Kin lead Claude Code's tools and T3's lead tools only while GitHub is connected", () => {
+  const names = (kinGitHub: boolean) =>
+    buildBase(template, {
+      model: "claude-sonnet-5-5",
+      keepUserInstructions: false,
+      kinAgent: true,
+      kinLead: true,
+      kinGitHub,
+    }).nativeTools.map((tool) => tool.name);
+  const [before, after] = [names(false), names(true)];
+  assert.include(before, "mcp__t3-code__kin_delegate");
+  assert.notInclude(before, "mcp__t3-code__delegate_task");
+  assert.isFalse(before.some((name) => name.endsWith("Bash")));
+  assert.notInclude(after, "mcp__t3-code__kin_delegate");
+  for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
+    assert.include(after, name);
+  for (const name of ["Bash"])
+    assert.isTrue(
+      after.some((tool) => tool.endsWith(name)),
+      name,
+    );
+  assert.notInclude(after, "mcp__t3-code__schedule_task");
+});
+
 it("replays earlier capability results with the model under test as the caller", () => {
   const base = buildBase(template, { model: "claude-opus-5-5", keepUserInstructions: false });
   const capabilities = {

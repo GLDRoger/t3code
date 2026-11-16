@@ -1266,6 +1266,13 @@ export const toolCallGate = <R>(
   );
 
 /**
+ * Which tools the server this joins lists and lets a request call; a hidden one answers as if it
+ * weren't registered. `visible` sees the tool name and the request's services.
+ */
+export const toolVisibility = <R>(visible: (name: string) => Effect.Effect<boolean, never, R>) =>
+  McpServer.visibility(({ target }) => visible(target), { global: true });
+
+/**
  * Runs `prepare` on every tool call's raw arguments before they are decoded, whichever toolkit
  * registered the tool; it may fill in a field the server knows better than the caller.
  */

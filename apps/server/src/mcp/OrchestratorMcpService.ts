@@ -2438,13 +2438,14 @@ const make = Effect.gen(function* () {
           : readTask(scope, taskId, false, true);
       }
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
-      if (
-        input.target?.projectId !== undefined &&
-        input.target.projectId !== parent.thread.projectId
-      ) {
+      const otherProjectId =
+        input.target?.projectId !== undefined && input.target.projectId !== parent.thread.projectId
+          ? input.target.projectId
+          : undefined;
+      if (otherProjectId !== undefined && input.isolation !== "worktree") {
         return yield* failure(
           "invalid_request",
-          "A local task runs in this thread's project. Omit target.projectId, or pass target.environmentId to run it in that environment's project.",
+          'A task in another project needs its own checkout there. Pass isolation "worktree", or omit target.projectId.',
         );
       }
       const parentRun = parent.runs
@@ -2469,7 +2470,11 @@ const make = Effect.gen(function* () {
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
       const target = yield* resolveTargetRechecking({
-        parent,
+        // Provider enablement is the child's project's.
+        parent:
+          otherProjectId === undefined
+            ? parent
+            : { ...parent, thread: { ...parent.thread, projectId: otherProjectId } },
         target: input.target,
         providers,
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
@@ -2484,7 +2489,19 @@ const make = Effect.gen(function* () {
         input.interactionMode,
       );
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
-      if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
+      if (
+        input.isolation === "worktree" &&
+        !isRetryOfAcceptedDelegation &&
+        otherProjectId !== undefined
+      ) {
+        // Another repository shares no commit with the parent: start from its default branch.
+        const project = yield* requireProject(otherProjectId);
+        workspaceStrategy = {
+          type: "worktree",
+          baseRef: yield* resolveScheduledTaskBaseRef(project.workspaceRoot),
+          startFromOrigin: true,
+        };
+      } else if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
         const project = yield* requireProject(parent.thread.projectId);
         const base = yield* gitDriver
           .resolveCommit({
@@ -2525,6 +2542,7 @@ const make = Effect.gen(function* () {
           parentThreadId: scope.thread.threadId,
           parentRunId: parentRun.id,
           parentNodeId: parentRun.rootNodeId,
+          ...(otherProjectId === undefined ? {} : { projectId: otherProjectId }),
           task: taskPrompt(input),
           ...(input.title === undefined ? {} : { title: input.title }),
           modelSelection: target.modelSelection,

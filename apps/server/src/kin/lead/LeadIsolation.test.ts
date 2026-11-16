@@ -1,6 +1,15 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinOrgId,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -12,6 +21,12 @@ import { hookAllows, kinSecretVariables } from "../claudeConfinement.testkit.ts"
 import * as DreamIsolation from "../dreaming/DreamIsolation.ts";
 import { instructions } from "./instructions.ts";
 import * as LeadIsolation from "./LeadIsolation.ts";
+import { ownerOnlyWakeup } from "./Audience.testkit.ts";
+import { fullSessionAdmitted } from "./AgentSession.ts";
+import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
+import { KinServer, type Services as KinServices } from "../KinServer.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 
 const optionsAt = (cwd: string, environment: NodeJS.ProcessEnv = { PATH: "/usr/bin" }) =>
   ClaudeAdapterV2.makeClaudeQueryOptions({
@@ -196,6 +211,127 @@ it.effect.each([
         ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-isolation-" }).pipe(
           Layer.provideMerge(NodeServices.layer),
         ),
+      ),
+    ),
+);
+
+it.effect(
+  "with GitHub connected, the owner's own turns get Claude Code's tools while the turn admits them",
+  () =>
+    Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const memory = `${stateDir}/kin/demo-a/memory-read`;
+      yield* fs.makeDirectory(memory, { recursive: true });
+      yield* fs.writeFileString(`${memory}/notes.md`, "x");
+      const sql = yield* SqlClient.SqlClient;
+      const orgId = KinOrgId.make("org-full");
+      const agentId = KinAgentId.make("tech");
+      yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: "wake-full" });
+      let connected = true;
+      // The policy Kin builds (`AgentSession.sessionPolicyLayer`), with GitHub's login stood in.
+      const services = Context.make(
+        KinAgentSessionPolicy,
+        KinAgentSessionPolicy.of({
+          connected: () => Effect.sync(() => connected),
+          admitted: (threadId) =>
+            fullSessionAdmitted(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+          ghDirectory: "/kin-home/kin-tools/gh-pinned",
+        }),
+      ) as Context.Context<KinServices>;
+      const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
+      const base = Layer.succeed(
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
+        ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
+          allocateSessionId: Effect.succeed("session"),
+          open: (input) =>
+            Effect.sync(() => opened.push(input.options)).pipe(
+              Effect.andThen(Effect.die("unused session")),
+            ),
+          forkSession: () => Effect.die("unused fork"),
+          subagentLaunchToolUseId: () => Effect.die("unused lookup"),
+          assertComplete: Effect.void,
+        }),
+      );
+      const lead = optionsAt(memory, { PATH: "/usr/bin", HOME: "/home/kin" });
+      const open = (threadId: string) =>
+        Effect.gen(function* () {
+          const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
+          yield* runner
+            .open({
+              threadId: ThreadId.make(threadId),
+              providerSessionId: ProviderSessionId.make("session"),
+              options: lead,
+            })
+            .pipe(Effect.exit);
+          return opened.at(-1);
+        }).pipe(
+          Effect.provide(
+            LeadIsolation.claudeQueryRunner(base).pipe(
+              Layer.provide(
+                Layer.succeed(KinServer, {
+                  taskCardUpdater: Layer.empty,
+                  services: Option.some(services),
+                  subscribeForViewer: Option.none(),
+                }),
+              ),
+              Layer.provide(
+                ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true })),
+              ),
+            ),
+          ),
+        );
+      const full = yield* open("kin:tech");
+      // Claude Code's own tools, no deny rules, the pinned gh first on PATH.
+      assert.strictEqual(full?.tools, lead.tools);
+      assert.deepStrictEqual(full?.disallowedTools ?? [], lead.disallowedTools ?? []);
+      assert.strictEqual(full?.env?.PATH, "/kin-home/kin-tools/gh-pinned:/usr/bin");
+      assert.deepStrictEqual(full?.settingSources, []);
+      assert.deepStrictEqual(full?.systemPrompt, {
+        type: "custom",
+        prompt: instructions,
+        snapshot: false,
+      });
+      const allows = (tool: string, input: unknown) =>
+        Effect.promise(() => hookAllows(full, tool, input));
+      const shell = { command: "gh pr list" };
+      // No running turn on the thread, such as a run Kin hasn't adopted: only the confined set.
+      assert.isFalse(yield* allows("Bash", shell));
+      assert.isTrue(yield* allows("Read", { file_path: "notes.md" }));
+      yield* sql`UPDATE kin_wakeups SET status = 'running', thread_id = 'kin:tech',
+        audience = 'owner_only' WHERE wakeup_id = 'wake-full'`;
+      assert.isTrue(yield* allows("Bash", shell));
+      assert.isTrue(yield* allows("Edit", { file_path: "/work/x/README.md" }));
+      assert.isTrue(yield* allows("WebFetch", { url: "https://example.com" }));
+      assert.isTrue(yield* allows("Agent", { prompt: "look" }));
+      // Once the turn read a connected service's text, the shell is gone for the rest of it.
+      yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+        VALUES (${orgId}, 'wake-full', 0, 'conn_mail')`;
+      assert.isFalse(yield* allows("Bash", shell));
+      assert.isFalse(yield* allows("Read", { file_path: "/etc/passwd" }));
+      assert.isTrue(yield* allows("Read", { file_path: "notes.md" }));
+      yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-full'`;
+      // Someone else joined the chat it answers: aborted, and nothing more runs.
+      yield* sql`UPDATE kin_wakeups SET aborted_at = 1 WHERE wakeup_id = 'wake-full'`;
+      assert.isFalse(yield* allows("Bash", shell));
+      yield* sql`UPDATE kin_wakeups SET aborted_at = NULL, audience = 'shared'
+        WHERE wakeup_id = 'wake-full'`;
+      assert.isFalse(yield* allows("Bash", shell));
+      // A turn others read never gets the full session, connected or not.
+      const shared = yield* open("kin-shared:tech");
+      assert.deepStrictEqual(shared?.tools, []);
+      // GitHub not connected: the old confined session.
+      connected = false;
+      const confined = yield* open("kin:tech");
+      assert.deepStrictEqual(confined?.tools, LeadIsolation.leadTools);
+      assert.include(confined?.disallowedTools ?? [], "Bash");
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-full-" }),
+          KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
       ),
     ),
 );

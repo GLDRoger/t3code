@@ -747,6 +747,19 @@ features:
       - apps/server/src/kin/connections/ghTool.test.ts
       - packages/client-runtime/src/kin/kinGitHub.test.ts
 
+  - id: github-work
+    name: The agent works on GitHub as the owner, through delegated tasks
+    tab: chats
+    web: [chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: With GitHub connected, in turns only the owner or a co-owner can read; a finished task gets one reply.
+    proof:
+      - apps/server/src/kin/lead/LeadIsolation.test.ts
+      - apps/server/src/kin/lead/TaskWake.test.ts
+      - apps/server/src/kin/lead/WakeupRunner.test.ts
+      - .agents/skills/verify-kin/scripts/github-delegated-task.sh
+
   - id: team
     name: The team
     tab: settings
