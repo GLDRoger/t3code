@@ -236,6 +236,42 @@ it.effect(
         assert.deepInclude(passed!.event.provenance, { _tag: "agent", agentId: chief });
         assert.lengthOf(yield* passedOn(sql, orgId, KinAgentId.make("theirs")), 0);
         assert.lengthOf(yield* systemRows(sql, orgId, ctx.chiefChat), 0);
+
+        // Tech lead's wake-up takes it and answers in its chat: the answer comes back to the
+        // Chief of staff, shown as from Tech lead in its chat with the owner, and wakes it, once.
+        yield* sql`UPDATE kin_events SET wakeup_id = 'tech-wake', state = 'claimed'
+          WHERE org_id = ${orgId} AND event_id = ${passed!.event.eventId}`;
+        const [member] = yield* sql<{ id: string }>`SELECT member_id AS id FROM kin_chat_members
+          WHERE org_id = ${orgId} AND chat_id = ${ctx.techChat} AND agent_id = ${tech}`;
+        yield* sql`UPDATE kin_chats SET last_seq = last_seq + 1
+          WHERE org_id = ${orgId} AND chat_id = ${ctx.techChat}`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_agent_id, author_owner_person_id, author_thread_id, author_member_id,
+            author_role, kind, body, mentions_json, status, created_at)
+          SELECT 'tech-answer', ${orgId}, ${ctx.techChat}, last_seq, 'agent', ${tech},
+            ${ctx.owner.personId}, 'tech-thread', ${member!.id}, 'member', 'text',
+            'A flaky e2e test on main; I reran it and it passes.', '[]', 'posted', ${at}
+          FROM kin_chats WHERE org_id = ${orgId} AND chat_id = ${ctx.techChat}`;
+        const done = { orgId, agentId: tech, wakeupId: "tech-wake" };
+        yield* handoff.reportBack(done);
+        yield* handoff.reportBack(done);
+        const back = yield* sql<{ body: string; relay: string; silent: number }>`SELECT body,
+            relay_json AS relay, silent FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${ctx.chiefChat} AND relay_json IS NOT NULL`;
+        assert.deepStrictEqual(back, [
+          {
+            body: "A flaky e2e test on main; I reran it and it passes.",
+            relay: JSON.stringify({ kind: "reply_from", agentId: tech }),
+            silent: 1,
+          },
+        ]);
+        const woke = yield* sql<{ json: string }>`SELECT json FROM kin_events
+          WHERE org_id = ${orgId} AND agent_id = ${chief} AND dedupe_key LIKE 'handoff-back:%'`;
+        assert.lengthOf(woke, 1);
+        assert.deepInclude(JSON.parse(woke[0]!.json).origin, {
+          agentId: chief,
+          chatId: ctx.chiefChat,
+        });
       }),
     ),
 );
