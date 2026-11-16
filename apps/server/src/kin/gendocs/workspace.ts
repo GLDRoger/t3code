@@ -46,7 +46,7 @@ const recipeName = /^[a-z][a-z0-9-]{1,39}$/;
 export const documentWorktrees = (worktreesDir: string) => `${worktreesDir}/kin-documents`;
 export const jobWorktree = (worktreesDir: string, workerId: KinWorkerId) =>
   `${documentWorktrees(worktreesDir)}/${workerId}`;
-export const jobBranch = (workerId: KinWorkerId) => `kin/doc/${workerId}`;
+const jobBranch = (workerId: KinWorkerId) => `kin/doc/${workerId}`;
 
 const SHOWN_FILE = /\.(?:png|jpe?g|gif|webp|svg|pdf)$/i;
 export type StoredRecipe = Recipe & {

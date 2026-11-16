@@ -463,13 +463,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
   },
   {
-    id: "kin-start-list",
-    kinOnly: true,
-    title: "Open to",
-    to: "/settings/general",
-    searchTerms: ["kin chats coding threads start launch open first default list switch"],
-  },
-  {
     id: "project-grouping",
     title: "Project grouping",
     to: "/settings/general",

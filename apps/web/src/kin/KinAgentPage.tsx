@@ -56,7 +56,7 @@ import { prefillKinDraft } from "./KinChatView";
 import { kinClient, refreshKinAgents } from "./kinClient";
 import { KinAgentSection, KinLeadAccess } from "./KinLeadAccess";
 import { kinLeadFormAtom } from "./kinLeadForm";
-import { KIN_PLACE_PATH } from "./kinPlaces";
+import { KIN_PLACE_PATH, withKinAgentPage } from "./kinPlaces";
 import { KinLoadFailed } from "./KinWorkParts";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
@@ -76,7 +76,7 @@ export function useOpenKinAgentPage() {
   const params = useParams({ strict: false });
   return (target: KinAgentPageTarget & { readonly chatId: KinChatId }) =>
     params.environmentId === target.environmentId && params.orgId === target.orgId
-      ? navigate({ to: ".", search: (prev) => ({ ...prev, agent: target.agentId }) })
+      ? navigate({ to: ".", search: (prev) => withKinAgentPage(prev, target.agentId) })
       : navigate({
           to: "/kin/$environmentId/$orgId/$chatId",
           params: {

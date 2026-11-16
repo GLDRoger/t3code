@@ -15,8 +15,6 @@ import {
   OrchestratorMcpFailure,
   type OrchestrationV2RunStatus,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-  type OrchestrationV2StoredEvent,
-  type OrchestrationV2Subagent,
   ModelSelection,
   ProjectId,
   ThreadId,
@@ -44,21 +42,17 @@ import { FORWARDED_WAIT_CHUNK_MS } from "../../peer/PeerForwarding.ts";
 import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
-import { OrchestrationEventStore } from "../../persistence/OrchestrationEventStore.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository, type WriteAudience } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { freezeMovedCard, workerChat } from "./ChatSharing.ts";
-import * as Writer from "../memory/MemoryWriter.ts";
 import { remoteTaskCardState } from "../widgets/taskCard.ts";
 import * as PublishCard from "../widgets/workerPublishCard.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
-import { KinLeadRegistry } from "./KinLeadRegistry.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
-import { CONTINUED, KinDocCollector } from "../gendocs/DocJobs.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
 import { takeOutputs } from "../gendocs/returnPath.ts";
 import { MAX_SCREENSHOTS, OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
@@ -71,7 +65,6 @@ import { KinRecords, type Withdrawal } from "../work/KinRecords.ts";
 import * as Attempts from "../work/workerAttempts.ts";
 import { workerEnded } from "../work/workerEntries.ts";
 import { ownsAgent } from "../people/KinAccess.ts";
-import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 
 export const endedStatuses = new Set<OrchestrationV2RunStatus>([
   "completed",
@@ -259,17 +252,9 @@ const decodeSelection = Schema.decodeUnknownEffect(Schema.fromJsonString(ModelSe
 /** The launch's request id there: a retry with it returns the thread the first one started. */
 export const launchRequestId = (workerId: KinWorkerId) => `kin-worker:${workerId}`;
 
-type StrayError =
-  | Effect.Error<
-      ReturnType<ThreadManagement.ThreadManagementService["Service"]["stopDelegatedTasks"]>
-    >
-  | Effect.Error<ReturnType<Writer.MemoryWriter["Service"]["appendJournal"]>>;
-
 export class WorkerTracker extends Context.Service<
   WorkerTracker,
   {
-    /** The stray-delegation guard for one stored `subagent.updated` event. */
-    readonly process: (stored: OrchestrationV2StoredEvent) => Effect.Effect<void, StrayError>;
     /**
      * Follows a worker's thread in its environment until the latest run there settles, then
      * reports it. One follower per worker: asked again while it runs, it looks once more before
@@ -311,21 +296,16 @@ export class WorkerTracker extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const orchestrator = yield* OrchestratorV2;
-  const events = yield* OrchestrationEventStore;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const queue = yield* KinEventQueue;
   const records = yield* KinRecords;
   const chat = yield* KinChatService;
-  const registry = yield* KinLeadRegistry;
   const env = yield* WorkerEnvironment.KinWorkerEnvironment;
-  const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const publisher = yield* Effect.serviceOption(Publish.KinWorkerPublish);
-  const documents = yield* Effect.serviceOption(KinDocCollector);
   const renderer = yield* Effect.serviceOption(KinDocRenderer);
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
   const environment = yield* Effect.serviceOption(ServerEnvironment);
-  const sessions = yield* Effect.serviceOption(KinAgentSessionPolicy);
   const projects = yield* ProjectService.ProjectService;
   const { stateDir } = yield* ServerConfig;
   const fs = yield* FileSystem.FileSystem;
@@ -589,8 +569,6 @@ const make = Effect.gen(function* () {
     // Whether or not this run's row was still the attempt's, a stopped attempt owes the owner this.
     if (yield* stopRequested(worker)) yield* settleSoon(attemptOf(worker));
     if (recorded === undefined) return false;
-    // However a document job ended, its worktree and inputs go now.
-    if (Option.isSome(documents)) yield* documents.value.cleanup(worker.orgId, worker.workerId);
     yield* endPublishCard(attemptOf(worker));
     yield* releaseHosts(stateDir, worker.workerId).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -1208,25 +1186,7 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => []),
       ),
     );
-    // A document job's result is the files Kin takes back, never a commit or a pull request.
-    const filed = Option.isSome(documents)
-      ? yield* documents.value.collect(worker, status === "completed", report)
-      : undefined;
-    // Kin sent a recipe writer back to work: that next run's end reports instead.
-    if (filed === CONTINUED) return false;
-    if (filed === undefined)
-      yield* postScreenshots(worker, projection.thread.worktreePath, run.id, report);
-    if (filed !== undefined)
-      return yield* settleRun(worker, {
-        runId: run.id,
-        status,
-        endedAt:
-          run.completedAt === null
-            ? yield* Clock.currentTimeMillis
-            : DateTime.toEpochMillis(run.completedAt),
-        report: filed,
-        published: undefined,
-      });
+    yield* postScreenshots(worker, projection.thread.worktreePath, run.id, report);
     const project =
       status === "completed" && worker.kind === "build"
         ? Option.getOrUndefined(yield* projects.getById(worker.projectId))
@@ -1609,29 +1569,6 @@ const make = Effect.gen(function* () {
       : Effect.void;
   }).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(followers));
 
-  const strays = new Set<string>();
-  const strayDelegation = Effect.fn("WorkerTracker.strayDelegation")(function* (
-    subagent: OrchestrationV2Subagent,
-  ) {
-    if (subagent.origin !== "app_owned" || strays.has(subagent.id)) return;
-    const lead = registry.lookup(subagent.threadId);
-    if (lead === undefined) return;
-    // With GitHub connected, delegate_task is how an agent starts longer work.
-    if (Option.isSome(sessions) && (yield* sessions.value.connected())) return;
-    strays.add(subagent.id);
-    yield* threads.stopDelegatedTasks({
-      threadId: subagent.threadId,
-      commandId: CommandId.make(`kin-stray:${subagent.id}`),
-      reason: "Kin agents start workers only through kin_delegate.",
-    });
-    if (Option.isSome(writer))
-      yield* writer.value.appendJournal(lead.orgId, lead.wakeupId, [
-        "Did: Kin stopped a delegate_task the agent started; workers start only through kin_delegate.",
-      ]);
-  });
-  const process: WorkerTracker["Service"]["process"] = (stored) =>
-    stored.event.type === "subagent.updated" ? strayDelegation(stored.event.payload) : Effect.void;
-
   // Rows from before K032 name no environment, so there is nothing there to look for.
   const failUnplaced = sql`UPDATE kin_workers SET status = 'failed', ended_at = ${bootedAt}
     WHERE org_id IN (SELECT org_id FROM kin_leads GROUP BY org_id)
@@ -1646,31 +1583,6 @@ const make = Effect.gen(function* () {
 
   const start = Effect.gen(function* () {
     const retry = yield* WorkerTrackerRetry;
-    const latest = yield* events.latestAgentSequence().pipe(Effect.retry(retry));
-    let after = latest;
-    yield* Effect.suspend(() =>
-      orchestrator
-        .streamStoredEventsFrom({ eventType: "subagent.updated", afterSequence: after })
-        .pipe(
-          Stream.runForEach((stored) =>
-            process(stored).pipe(
-              Effect.retry({ schedule: retry, times: 7 }),
-              Effect.ignoreCause({ log: true }),
-              Effect.andThen(
-                Effect.sync(() => {
-                  after = Math.max(after, stored.sequence);
-                }),
-              ),
-            ),
-          ),
-        ),
-    ).pipe(
-      Effect.tapCause((cause) =>
-        Effect.logWarning("Kin stray-delegation guard stream failed; resuming", { cause }),
-      ),
-      Effect.retry(retry),
-      Effect.forkScoped,
-    );
     yield* failUnplaced.pipe(Effect.retry(retry));
     // Stops stored before a restart and never sent go now, before any follower runs.
     for (const key of yield* inSql(Attempts.pendingStops()).pipe(Effect.retry(retry)))
@@ -1678,14 +1590,13 @@ const make = Effect.gen(function* () {
     // Stopped attempts that died before saying what reached GitHub say it now.
     for (const key of yield* inSql(Attempts.unsettledStops()).pipe(Effect.retry(retry)))
       yield* settleSoon(key);
-    if (Option.isSome(documents)) yield* documents.value.sweep;
     for (const row of yield* openWorkers.pipe(Effect.retry(retry)))
       yield* track(KinOrgId.make(row.orgId), KinWorkerId.make(row.workerId));
   }).pipe(
     Effect.catchCause((cause) => Effect.logError("Kin worker tracker unavailable", { cause })),
   );
 
-  return WorkerTracker.of({ process, track, stop, launch, start });
+  return WorkerTracker.of({ track, stop, launch, start });
 });
 
 export const layer = Layer.effect(WorkerTracker, make);

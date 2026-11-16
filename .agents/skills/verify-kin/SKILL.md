@@ -148,7 +148,8 @@ at a busy year's size (a 2,000-message group with chart and choice cards, 500 ta
 
 It writes `baseline-<commit>.json`, `.md` and `report.html`, then stops everything with `down`.
 A run takes about 15 minutes; `--runs <n>` sets samples per action (default 5), `--reuse` skips
-re-seeding. `--compare <old.json> [--threshold 15]` adds old, new and change per metric and flags
+re-seeding, and `--only prompts` captures just the prompts and tool lists (about 4 minutes). A tool
+listed as deferred (`_meta` anthropic/alwaysLoad false) counts apart from the upfront ones. `--compare <old.json> [--threshold 15]` adds old, new and change per metric and flags
 what got worse. `--render <run.json> --findings <findings.json>` redraws the page with a written
 "what stands out" list (`[{title, number, cause, where, worth}]`). It never calls a model; worker
 reports are not measured, since workers here need a real repository.

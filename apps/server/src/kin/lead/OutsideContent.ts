@@ -47,7 +47,7 @@ const closedRead: Condition = Effect.fnUntraced(function* (turn, args) {
   return rows.length === 1 && rows[0]!.openWorld === 0;
 });
 
-/** A recipe's file is made by Kin in the call; without one, or to write a recipe, a worker is. */
+/** A recipe's file is made by Kin in the call; a file the agent made, or a recipe it writes, is not. */
 const recipeOnly: Condition = (_turn, args) =>
   Effect.succeed(
     typeof field(args, "recipe") === "string" && field(args, "writeRecipe") === undefined,

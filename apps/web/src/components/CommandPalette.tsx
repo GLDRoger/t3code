@@ -53,7 +53,7 @@ import {
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
-import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate, useRouter } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
   BugIcon,
@@ -119,7 +119,8 @@ import { useKinPaletteHits } from "../kin/useKinDocs";
 import { useKinPaletteAgents, useOpenKinAgentPage } from "../kin/KinAgentPage";
 import { useKinHost } from "../kin/useKinHost";
 import { useKinListSwitch } from "../kin/useKinListSwitch";
-import { kinDestinationLink, kinShownDestinationsAtom } from "../kin/kinListSwitch";
+import { kinDestinationLink, kinListShownAt, kinShownDestinationsAtom } from "../kin/kinListSwitch";
+import { openKinSettings } from "../kin/kinSettingsAddress";
 import { KIN_DESTINATION_NAMES } from "@t3tools/client-runtime/kin/kinNavigation";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";
@@ -437,6 +438,8 @@ function OpenCommandPaletteDialog(props: {
 }) {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
+  const inKin = kinListShownAt(pathname) === "kin";
+  const router = useRouter();
   const kinListSwitch = useKinListSwitch();
   const kinShown = useAtomValue(kinShownDestinationsAtom);
   const kinNewLead = kinNewLeadTarget(useKinHost());
@@ -1725,7 +1728,8 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  if (kinListSwitch !== null) {
+  // Only the way back into Kin: Kin itself doesn't offer the coding threads.
+  if (kinListSwitch !== null && kinListSwitch.current === "threads") {
     actionItems.push({
       kind: "action",
       value: "action:kin-switch-list",
@@ -1903,10 +1907,7 @@ function OpenCommandPaletteDialog(props: {
       title: "What your agents remember",
       icon: <BrainIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
-        await navigate({
-          to: "/kin/$environmentId/$orgId/memory",
-          params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-        });
+        openKinSettings(router.history, "memory");
       },
     });
   }
@@ -1919,10 +1920,7 @@ function OpenCommandPaletteDialog(props: {
       title: "Team: add or invite a teammate",
       icon: <UsersIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
-        await navigate({
-          to: "/kin/$environmentId/$orgId/team",
-          params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-        });
+        openKinSettings(router.history, "team");
       },
     });
   }
@@ -1949,7 +1947,8 @@ function OpenCommandPaletteDialog(props: {
     title: "Open settings",
     icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
     run: async () => {
-      await navigate({ to: "/settings" });
+      if (inKin) openKinSettings(router.history);
+      else await navigate({ to: "/settings" });
     },
   });
 
@@ -2009,7 +2008,21 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
+  // Kin doesn't offer T3's coding threads, projects or app settings: only its own commands.
+  const shownActionItems = inKin
+    ? actionItems.filter(
+        (item) =>
+          (item.value.startsWith("action:kin-") && item.value !== "action:kin-switch-list") ||
+          item.value === "action:settings" ||
+          item.value.startsWith("action:workspace-focus:") ||
+          item === changeThemeItem ||
+          item === changeAppearanceItem,
+      )
+    : actionItems;
+  const rootGroups = buildRootGroups({
+    actionItems: shownActionItems,
+    recentThreadItems: inKin ? [] : recentThreadItems,
+  });
   // Every setting goes to the palette's own matcher, so settings get the same
   // word starts and typo tolerance as threads.
   const settingsSearchItems: CommandPaletteActionItem[] = settingsForThisPlatform(
@@ -2068,12 +2081,12 @@ function OpenCommandPaletteDialog(props: {
       ? {
           allOptions: {
             rootGroups,
-            nestedItems: buildNestedSearchItems(actionItems, deferredQuery),
+            nestedItems: buildNestedSearchItems(shownActionItems, deferredQuery),
           },
         }
       : {}),
-    projectSearchItems: projectSearchItems,
-    settingsSearchItems,
+    projectSearchItems: inKin ? [] : projectSearchItems,
+    settingsSearchItems: inKin ? [] : settingsSearchItems,
     kinItems:
       kinNewLead === null || currentView !== null
         ? []
@@ -2114,7 +2127,7 @@ function OpenCommandPaletteDialog(props: {
             };
           }),
     threadSearchItems:
-      isLinkedThreadSearch && linkedThreadSearch?.linkedThreads
+      isLinkedThreadSearch && linkedThreadSearch?.linkedThreads && !inKin
         ? buildLinkedThreadActionItems({
             ...linkedThreadSearch.linkedThreads,
             threads: visibleLinkedThreads(
@@ -2133,8 +2146,10 @@ function OpenCommandPaletteDialog(props: {
               });
             },
           })
-        : allThreadItems,
-    threadMessageItems: isLinkedThreadSearch ? [] : threadMessageItems,
+        : inKin
+          ? []
+          : allThreadItems,
+    threadMessageItems: isLinkedThreadSearch || inKin ? [] : threadMessageItems,
     now: searchNow,
   });
 

@@ -12,7 +12,7 @@ import {
   type EnvironmentId,
   type KinMessageLink,
 } from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import { ChevronDownIcon } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
 
@@ -20,6 +20,7 @@ import ChatMarkdown, { type ChatMarkdownContextReference } from "../components/C
 import { cn } from "../lib/utils";
 import { openKinProfile } from "./KinProfileSheet";
 import { KIN_PLACE_PATH } from "./kinPlaces";
+import { openKinSettings } from "./kinSettingsAddress";
 import { kinProfileRequestAtom } from "./kinTeamForm";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 
@@ -34,6 +35,7 @@ function KinInAppLink(props: Where & { readonly link: KinMessageLink; readonly l
   const params = { environmentId: props.environmentId, orgId: props.orgId };
   const title = link.note ?? undefined;
   const to = link.to;
+  const router = useRouter();
   switch (to._tag) {
     case "chat":
       return (
@@ -52,9 +54,13 @@ function KinInAppLink(props: Where & { readonly link: KinMessageLink; readonly l
       );
     case "settings":
       return (
-        <Link to="/kin/$environmentId/$orgId/settings" params={params}>
+        <button
+          type="button"
+          className="text-info-foreground hover:underline focus-visible:underline outline-none"
+          onClick={() => openKinSettings(router.history)}
+        >
           {label}
-        </Link>
+        </button>
       );
     case "person":
       return (
