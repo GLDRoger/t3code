@@ -384,7 +384,10 @@ function KinClientBody(
           : { footer: KIN_CLIENTS.detailsPrivate })}
       >
         {view.contacts.length === 0 ? (
-          <ListRowLayout label={KIN_CLIENTS.noContacts} disabled />
+          <ListRowLayout
+            label={canChange ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+            disabled
+          />
         ) : (
           view.contacts.map((contact) => (
             <KinContactRows

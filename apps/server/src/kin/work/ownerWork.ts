@@ -40,7 +40,7 @@ import {
 import { fieldList, LISTS, type ListName, parseFields } from "./lists.ts";
 import { milestoneLinks } from "./projectSpine.ts";
 import { isBuiltIn, listDef, unknownList } from "./registers.ts";
-import { movedNotices, tellPeople } from "./assignNotices.ts";
+import { type AssignNotice, movedNotices, tellPeople } from "./assignNotices.ts";
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
 import {
   endOfDay,
@@ -65,6 +65,7 @@ import {
   teamDetail,
   teamKeys,
   teamRecord,
+  teamRecordIn,
   personSees,
   placesOf,
   teamSeesKey,
@@ -409,10 +410,17 @@ export const list = Effect.fn("KinWork.list")(function* (
     input.orgId,
     shown.map(({ row, record }) => ({ ...record, registerId: row.registerId })),
   );
+  const projects = viewer.teammate
+    ? yield* teamVisible(input.orgId, viewer.person.personId, [
+        ...new Set(
+          shown.flatMap(({ record }) => (record.project ? [record.project.recordId] : [])),
+        ),
+      ]).pipe(workFailure)
+    : new Set<string>();
   return {
     records: shown.map(({ row, record: whole }): KinRecord => {
       const record = { ...whole, can: can(whole.recordId) };
-      if (viewer.teammate && plainTask(row, led)) return teamRecord(record);
+      if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects);
       const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
       return Object.keys(fields).length === 0 ? record : { ...record, fields };
     }),
@@ -736,12 +744,14 @@ export const assign = Effect.fn("KinWork.assign")(function* (
  * Someone gives or takes a task on their own screen: its holders hear it as they would from an
  * agent, from the team agent's chat. The write already committed, so a failed message fails nothing.
  */
-const tellMoved = Effect.fn("KinWork.tellMoved")(
-  function* (person: PersonIdentity, before: RecordRow | undefined, after: RecordRow | undefined) {
-    if (after === undefined) return;
-    const notices = movedNotices(before, after).filter(
-      (notice) => notice.personId !== person.personId,
-    );
+const tellMoved = (
+  person: PersonIdentity,
+  before: RecordRow | undefined,
+  after: RecordRow | undefined,
+) => (after === undefined ? Effect.void : tellOnScreen(person, after, movedNotices(before, after)));
+const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
+  function* (person: PersonIdentity, after: RecordRow, all: ReadonlyArray<AssignNotice>) {
+    const notices = all.filter((notice) => notice.personId !== person.personId);
     if (notices.length === 0) return;
     const agentId = yield* theTeamAgent(person.orgId);
     if (agentId === null) return;
@@ -775,7 +785,13 @@ export const handBack = Effect.fn("KinWork.handBack")(function* (
     viewer,
     records.handBack(input.orgId, writerOf(viewer), input.key, holder, input.note ?? null),
   );
-  return { key: row.key, to: toRecord(row, yield* Clock.currentTimeMillis).owner };
+  const to = toRecord(row, yield* Clock.currentTimeMillis).owner;
+  // An agent it goes back to is woken by the write; a person hears it from the team agent.
+  if (to._tag === "person")
+    yield* tellOnScreen(viewer.person, row, [
+      { personId: to.personId, kind: "returned", row, why: input.note ?? null },
+    ]);
+  return { key: row.key, to };
 });
 
 export const update = Effect.fn("KinWork.update")(function* (

@@ -2,7 +2,7 @@
 import "../chat/KinChatService.ts";
 import { assert, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { KinChatError, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KinChatError, KinOrgId, KinPersonId, KinRecordId } from "@t3tools/contracts";
 import * as Arbitrary from "effect/Arbitrary";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
@@ -18,6 +18,8 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
+import { formatMoney, formatMoneyPlain } from "./money.ts";
+import * as OwnerWork from "./ownerWork.ts";
 import { search } from "./search.ts";
 import { listDef } from "./registers.ts";
 import { personSees, teamCan, unreadableBy, viewerOfPeople } from "./teamView.ts";
@@ -357,6 +359,67 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
             });
             for (const hit of hits)
               assert.isTrue(sees.has(hit.recordId), `${viewer} finds ${hit.key}`);
+          }
+        }
+      }),
+  );
+
+  // Every entry carries an amount no other value has; one she may not see must appear nowhere.
+  const canary = (index: number) => 98_765_400_017 + index * 10_301;
+  const canaryTexts = (minor: number) => [
+    String(minor),
+    (minor / 100).toFixed(2),
+    formatMoney({ minor, currency: "INR" }),
+    formatMoneyPlain({ minor, currency: "INR" }),
+  ];
+  const leaks = (payload: unknown, minor: number): boolean => {
+    if (typeof payload === "number") return payload === minor || payload === minor / 100;
+    if (typeof payload === "string")
+      return canaryTexts(minor).some((text) => payload.includes(text));
+    if (Array.isArray(payload)) return payload.some((one) => leaks(one, minor));
+    if (payload !== null && typeof payload === "object")
+      return Object.values(payload).some((one) => leaks(one, minor));
+    return false;
+  };
+  it.effect.prop(
+    "no payload a teammate reads carries the amount of an entry she may not see",
+    [world],
+    ([w]) =>
+      Effect.gen(function* () {
+        yield* install(w);
+        const sql = yield* SqlClient.SqlClient;
+        const rows = rowsOf(w);
+        for (const [index, row] of rows.entries())
+          yield* sql`UPDATE kin_records SET amount_minor = ${canary(index)}, currency = 'INR'
+            WHERE org_id = ${orgId} AND record_id = ${row.id}`;
+        for (const viewer of MEMBERS) {
+          const personId = KinPersonId.make(viewer);
+          const people = [{ _tag: "person" as const, orgId, personId }];
+          const sees = yield* seen(viewer);
+          const payloads: Array<unknown> = [
+            yield* OwnerWork.summary(people, { orgId }),
+            ...(yield* Effect.forEach(LISTS, (list) =>
+              Effect.result(OwnerWork.list(people, { orgId, list, limit: 100 })),
+            )),
+            ...(yield* Effect.forEach(rows, (row) =>
+              Effect.result(OwnerWork.get(people, { orgId, recordId: KinRecordId.make(row.id) })),
+            )),
+          ];
+          for (const word of ["plan", "fix", "call", "client", "project", "98765"])
+            payloads.push(
+              yield* search(orgId, {
+                text: word,
+                limit: 50,
+                viewer: "team",
+                scope: viewerOfPeople([personId]),
+                closed: true,
+              }),
+            );
+          for (const [index, row] of rows.entries()) {
+            if (sees.has(row.id)) continue;
+            const minor = canary(index);
+            for (const payload of payloads)
+              assert.isFalse(leaks(payload, minor), `${viewer} reads ${row.id}'s amount`);
           }
         }
       }),

@@ -8,6 +8,7 @@ import { searchableSetting } from "../components/settings/settingsSearch";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { Button } from "../components/ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { isElectron } from "../env";
 import { isChatOnlySession } from "../environments/primary";
 import { KinCompanyProfileSettings } from "./KinCompanyProfile";
@@ -46,6 +47,55 @@ function OwnerLevelSettingsButton(props: {
     >
       <SettingsIcon />
     </Button>
+  );
+}
+
+/**
+ * Where a teammate lands after following a link into Settings, which their session has none of:
+ * owner-level people get Kin's own settings; members are told plainly whose they are.
+ */
+export function KinOwnerSettingsNotice() {
+  const target = kinNewLeadTarget(useKinHost());
+  return target === null ? (
+    <SettingsNotice ownerLevel={false} target={null} />
+  ) : (
+    <OwnerLevelNotice environmentId={target.environmentId} orgId={target.orgId} />
+  );
+}
+
+function OwnerLevelNotice(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  return <SettingsNotice ownerLevel={useKinOwnerLevel(props.environmentId)} target={props} />;
+}
+
+function SettingsNotice(props: {
+  readonly ownerLevel: boolean;
+  readonly target: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId } | null;
+}) {
+  const { target } = props;
+  return (
+    <Empty size="compact">
+      <EmptyHeader>
+        <EmptyTitle>
+          {props.ownerLevel ? "Kin's settings are here" : "These settings are the owner's"}
+        </EmptyTitle>
+        <EmptyDescription>
+          {props.ownerLevel && target !== null ? (
+            <Link
+              to="/kin/$environmentId/$orgId/settings"
+              params={target}
+              className="text-foreground underline underline-offset-4"
+            >
+              Open {KIN_SETTINGS_TITLE}
+            </Link>
+          ) : (
+            "Only the owner and co-owners change them. Ask one of them if something should change."
+          )}
+        </EmptyDescription>
+      </EmptyHeader>
+    </Empty>
   );
 }
 

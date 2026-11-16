@@ -317,8 +317,11 @@ features:
     tab: money
     web: [money]
     phone: [tab:money]
-    roles: { owner: both, co_owner: both, lead: both, member: none }
-    note: A lead reaches Money for the projects they lead; members never see an amount.
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A lead reaches Money for the projects they lead. A member reaches it read-only once the owner
+      turns on Can see Money on their teammate sheet, and then sees only what is shared with the
+      team; without it, no amount.
     tools: [money_summary, money_query]
     proof:
       - apps/server/src/kin/work/money.test.ts
@@ -438,7 +441,7 @@ features:
   - id: search
     name: Search everything
     tab: money
-    web: [money, dialog:Search Work]
+    web: [money, "?open"]
     phone: [tab:money, KinSearch]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
