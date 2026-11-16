@@ -1,0 +1,186 @@
+import * as DateTime from "effect/DateTime";
+
+/** The company sits together 10:30 to 19:30: a question's day ends at 19:30, a raise comes at 10:30. */
+const DAY_ENDS = { hour: 19, minute: 30 } as const;
+const MORNING = { hour: 10, minute: 30 } as const;
+const WEEKDAYS: ReadonlyArray<number> = [1, 2, 3, 4, 5];
+const HOUR_MS = 60 * 60_000;
+const DAY_MS = 24 * HOUR_MS;
+/** A day the asker names is at least this far off, and at most a month. */
+const SOONEST_MS = HOUR_MS;
+const LATEST_MS = 31 * DAY_MS;
+
+const partsIn = (ms: number, zone: string) =>
+  DateTime.toParts(DateTime.makeZonedUnsafe(ms, { timeZone: zone }));
+const wallTime = (
+  day: { readonly year: number; readonly month: number; readonly day: number },
+  at: { readonly hour: number; readonly minute: number },
+  zone: string,
+) =>
+  DateTime.toEpochMillis(
+    DateTime.makeZonedUnsafe(
+      { year: day.year, month: day.month, day: day.day, hour: at.hour, minute: at.minute },
+      { timeZone: zone, adjustForTimeZone: true },
+    ),
+  );
+
+/**
+ * The first `at` on a working day strictly after `after`, on the person's clock. Their own work
+ * days when set, else Monday to Friday.
+ */
+const nextWorkingAt = (
+  after: number,
+  zone: string,
+  at: { readonly hour: number; readonly minute: number },
+  days: ReadonlyArray<number> | undefined,
+) => {
+  const working = days === undefined || days.length === 0 ? WEEKDAYS : days;
+  // Noon steps from day to day without a daylight-saving change skipping or repeating one.
+  const start = partsIn(after, zone);
+  let noon = wallTime(start, { hour: 12, minute: 0 }, zone);
+  for (let step = 0; step < 15; step++, noon += DAY_MS) {
+    const day = partsIn(noon, zone);
+    const candidate = wallTime(day, at, zone);
+    if (candidate > after && working.includes(day.weekDay)) return candidate;
+  }
+  return after + DAY_MS;
+};
+
+const endOfToday = (now: number, zone: string) =>
+  Math.max(now, wallTime(partsIn(now, zone), DAY_ENDS, zone));
+
+/** The day a question is answered by when the asker names none: the end of the next working day. */
+export const defaultDue = (now: number, zone: string, days?: ReadonlyArray<number>) =>
+  nextWorkingAt(endOfToday(now, zone), zone, DAY_ENDS, days);
+
+/** A `YYYY-MM-DD` the asker named, as 19:30 that day on the person's clock; why not, when it can't be. */
+export const namedDue = (
+  by: string,
+  now: number,
+  zone: string,
+): { readonly at: number } | { readonly refused: string } => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(by.trim());
+  const at =
+    match === null
+      ? Number.NaN
+      : wallTime(
+          { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) },
+          DAY_ENDS,
+          zone,
+        );
+  if (!Number.isFinite(at) || at < now + SOONEST_MS || at > now + LATEST_MS)
+    return {
+      refused:
+        "by is the day you'll take your default, YYYY-MM-DD, from today to a month out; leave it out for the end of their next working day.",
+    };
+  return { at };
+};
+
+/** When a question with no safe default is raised once more: the next working morning after its day. */
+export const raiseAt = (due: number, zone: string, days?: ReadonlyArray<number>) =>
+  nextWorkingAt(due, zone, MORNING, days);
+
+const STOP = new Set(
+  "a an the to for of on in at by with and or should shall i we you me my our us it its them they this that these those please can could will would do does did be is are was were if about any some let".split(
+    " ",
+  ),
+);
+const stem = (word: string) =>
+  word.length > 5 && word.endsWith("ing")
+    ? word.slice(0, -3)
+    : word.length > 4 && word.endsWith("ed")
+      ? word.slice(0, -2)
+      : word.length > 3 && word.endsWith("s") && !word.endsWith("ss")
+        ? word.slice(0, -1)
+        : word;
+
+/** An asker's intent in a stable form: "Draft the payment reminders" and "draft payment reminder" match. */
+export const normaliseIntent = (intent: string | undefined) =>
+  [
+    ...new Set(
+      (intent ?? "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .split(" ")
+        .filter((word) => word !== "" && !STOP.has(word))
+        .map(stem),
+    ),
+  ]
+    .toSorted()
+    .slice(0, 12)
+    .join(" ");
+
+/** The records a question is about, as their keys (INV-8, C-2); anything else is dropped. */
+export const normaliseAbout = (about: ReadonlyArray<string> | undefined) =>
+  [
+    ...new Set(
+      (about ?? [])
+        .map((key) => key.trim().toUpperCase())
+        .filter((key) => /^[A-Z]{1,6}-\d{1,6}$/.test(key)),
+    ),
+  ]
+    .toSorted()
+    .slice(0, 8);
+
+/**
+ * Whether a new ask repeats an open one: the same person, the same intent and at least one record
+ * in common. Without an intent or records on both, Kin can't tell, so it lets the ask through.
+ */
+export const repeats = (
+  asked: { readonly intent: string; readonly about: ReadonlyArray<string> },
+  open: { readonly intent: string; readonly about: ReadonlyArray<string> },
+) =>
+  asked.intent !== "" &&
+  asked.intent === open.intent &&
+  asked.about.length > 0 &&
+  asked.about.some((key) => open.about.includes(key));
+
+/** Words for doing something that leaves the company or moves money: such a default is never taken. */
+const LEAVES =
+  /\b(send|sends|sending|sent|post|posts|posting|publish|publishing|tweet|pay|pays|paying|paid|transfer|refund|wire|charge|submit|reply to (the )?client)\b/i;
+
+/**
+ * Whether Kin may take `label` on its own at the day: never when the asker said "none", and never
+ * when the default, or a bare yes's question, reads as sending something out or moving money.
+ */
+export const safeDefault = (label: string | null, question: string) => {
+  if (label === null) return false;
+  const bare = label.trim().split(/\s+/).length <= 3;
+  return !LEAVES.test(label) && !(bare && LEAVES.test(question));
+};
+
+/** "today", "tomorrow", "on Wednesday", "on Wed 3 Dec", "yesterday", "on Monday" (past), on `zone`'s clock. */
+export const dayWord = (at: number, now: number, zone: string) => {
+  const day = (ms: number) =>
+    DateTime.formatIsoDate(DateTime.makeZonedUnsafe(ms, { timeZone: zone }));
+  const diff = Math.round((Date.parse(day(at)) - Date.parse(day(now))) / DAY_MS);
+  if (diff === 0) return "today";
+  if (diff === 1) return "tomorrow";
+  if (diff === -1) return "yesterday";
+  const format = (options: Intl.DateTimeFormatOptions) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: zone, ...options }).format(at).replace(/,/g, "");
+  return Math.abs(diff) <= 6
+    ? `on ${format({ weekday: "long" })}`
+    : `on ${format({ weekday: "short", day: "numeric", month: "short" })}`;
+};
+
+/**
+ * The question a reply ends on, when its last line ends with a question mark: that sentence.
+ * Best effort: a question in the middle of a reply, or "let me know if…", isn't caught.
+ */
+export const endingQuestion = (body: string) => {
+  const last = body
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .findLast((line) => line !== "");
+  if (last === undefined) return undefined;
+  const bare = last.replace(/[\s"'”’)*_]+$/u, "");
+  if (!bare.endsWith("?")) return undefined;
+  const sentence =
+    bare
+      .split(/(?<=[.!?])\s+/)
+      .at(-1)
+      ?.trim() ?? bare;
+  return sentence.length < 6 ? undefined : sentence;
+};

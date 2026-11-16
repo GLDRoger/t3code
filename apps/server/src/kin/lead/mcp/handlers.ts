@@ -3,9 +3,12 @@ import * as NodeCrypto from "node:crypto";
 import { KinChatError, KinWakeupId } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { KinRepoReads } from "../../github/KinRepoReads.ts";
@@ -15,6 +18,10 @@ import { KinPullRequestCare } from "../../github/PullRequestCare.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
 import { laneFor } from "../../reply/KinReplyBridge.ts";
+import { KinChatService } from "../../chat/KinChatService.ts";
+import { KinServer } from "../../KinServer.ts";
+import * as Questions from "../../questions/openQuestions.ts";
+import * as ChoiceCard from "../../widgets/choiceCard.ts";
 import { KinHandoff } from "../Handoff.ts";
 import { KinTeam } from "../../team/KinTeam.ts";
 import { KinLevelGate } from "../LevelGate.ts";
@@ -123,15 +130,81 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
       // An identical call in the same wake-up is a retry and returns the same card.
       const key = NodeCrypto.createHash("sha256").update(stableStringify(input)).digest("hex");
+      const { default: chosen, by, about, intent, ...card } = input;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* Clock.currentTimeMillis;
+      const chatId = lane.value.chatId;
+      // A refused repeat posts nothing; an allowed one is stored in its card's own transaction.
+      const plan = yield* Questions.planAsk({
+        orgId: lead.orgId,
+        agentId: lead.agentId,
+        chatId,
+        key: `${wakeupId}:${key}`,
+        question: card.question,
+        labels: card.options.map((option) => option.label),
+        default: chosen,
+        by,
+        about,
+        intent,
+        now,
+      });
       const result = yield* (yield* KinLevelGate).ask(
         { ...lead, wakeupId },
         {
-          ...input,
-          chatId: lane.value.chatId,
+          ...card,
+          ...(plan === undefined ? {} : { untilAnswered: true as const }),
+          chatId,
           clientMessageId: `kin-ask:${wakeupId}:${key.slice(0, 32)}`,
         },
+        plan === undefined
+          ? undefined
+          : (widget) =>
+              Questions.recordAsk(plan, {
+                widgetId: widget.widgetId,
+                options: ChoiceCard.choiceCardState(card).options,
+              }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
-      return { widgetId: result.widgetId, messageId: result.messageId };
+      return plan === undefined
+        ? { widgetId: result.widgetId, messageId: result.messageId }
+        : {
+            widgetId: result.widgetId,
+            messageId: result.messageId,
+            question: plan.questionId,
+            by: DateTime.formatIso(DateTime.makeUnsafe(plan.dueAt)),
+          };
+    }, Effect.mapError(failure)),
+  ),
+  kin_ask_close: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.askClose")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const wakeupId = KinWakeupId.make(lead.wakeupId);
+      const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
+      const row = yield* Questions.readQuestion(lead.orgId, input.question);
+      const asked =
+        row === undefined || Option.isNone(lane)
+          ? undefined
+          : yield* Questions.personOfChat(lead.orgId, lane.value.chatId);
+      // Only its asker, or a turn in a chat with the person it was put to, closes a question.
+      if (row === undefined || (row.agentId !== lead.agentId && asked !== row.personId))
+        return yield* new KinChatError({
+          reason: "not_found",
+          message: "No such open question. Your seat lists the open ones.",
+        });
+      const services = Option.getOrThrow((yield* KinServer).services);
+      const closed = yield* (yield* SqlClient.SqlClient).withTransaction(
+        Questions.closeQuestion(
+          {
+            orgId: lead.orgId,
+            agentId: lead.agentId,
+            questionId: row.questionId,
+            outcome: input.outcome,
+            answer: input.answer,
+            now: yield* Clock.currentTimeMillis,
+          },
+          Context.get(services, KinChatService),
+        ),
+      );
+      return { question: closed.questionId, state: closed.state };
     }, Effect.mapError(failure)),
   ),
   kin_chart: McpToolAccess.actsAsCaller(
