@@ -1,7 +1,14 @@
-import { KinListId, KinRecordKey } from "@t3tools/contracts";
+import { KinAgentId, KinListId, KinRecordKey } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinPlaceOfWork, kinRecordOf, kinSearchOf, validateKinPlaceSearch } from "./kinPlaces";
+import {
+  kinPlaceOfWork,
+  kinRecordOf,
+  kinSearchOf,
+  validateKinAgentSearch,
+  validateKinPlaceSearch,
+  withKinAgentPage,
+} from "./kinPlaces";
 
 const key = KinRecordKey.make("T-12");
 const party = KinRecordKey.make("C-3");
@@ -57,5 +64,15 @@ describe("place addresses", () => {
         open: "sheet",
       }),
     ).toEqual({});
+  });
+
+  it("opens an agent's page over the place and closes Settings", () => {
+    const agent = KinAgentId.make("lead-finance");
+    expect(validateKinAgentSearch({ agent: "lead-finance" })).toEqual({ agent });
+    expect(validateKinAgentSearch({ agent: "" })).toEqual({});
+    expect(withKinAgentPage({ task: key, settings: "agents" }, agent)).toEqual({
+      task: key,
+      agent,
+    });
   });
 });

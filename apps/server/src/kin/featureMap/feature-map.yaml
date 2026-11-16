@@ -238,15 +238,25 @@ features:
     proof: [apps/server/src/kin/chat/KinGroups.test.ts]
 
   - id: agent-details
-    name: An agent's card, who may message it, retire and restore
+    name: An agent's page, who may message it, retire and restore
     tab: chats
     web: [chat, sheet:Agent]
-    phone: [tab:chats, KinChat, KinLead]
+    phone: [tab:chats, KinChat, KinLead, KinAgentCharacter]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    tools: [kin_leads]
+    note: >-
+      The owner and co-owners see and change everything on it: model and effort, character with its
+      history, check-ins, access, pause and resume, retire and restore. Leads and members get a short
+      read-only card. New agents start on the company default model (Settings, Agents); a
+      model this server no longer has falls back to it and the page says so. Also opens from an
+      agent's name in a message, Settings, Agents, and the command palette.
+    tools: [kin_leads, agent_update]
     proof:
       - packages/client-runtime/src/kin/kinAgentRetire.test.ts
+      - packages/client-runtime/src/kin/kinAgentPage.test.ts
       - apps/server/src/kin/lead/KinStop.test.ts
+      - apps/server/src/kin/lead/KinLeadProvision.test.ts
+      - apps/server/src/kin/lead/leadModels.test.ts
+      - .agents/skills/verify-kin/scripts/agent-page.sh
 
   - id: agent-create
     name: Create or edit an agent
@@ -428,7 +438,7 @@ features:
     tools: [kin_document, kin_recipes, kin_issue, kin_recipe_undo]
     proof:
       - apps/server/src/kin/gendocs/render.test.ts
-      - apps/server/src/kin/gendocs/DocJobs.test.ts
+      - apps/server/src/kin/gendocs/documents.test.ts
       - packages/client-runtime/src/kin/kinInvoices.test.ts
 
   - id: receipt
@@ -449,7 +459,7 @@ features:
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof:
-      - apps/server/src/kin/gendocs/DocJobs.test.ts
+      - apps/server/src/kin/gendocs/documents.test.ts
       - .agents/skills/verify-kin/scripts/owner-money-forms.sh
 
   - id: budget
@@ -686,19 +696,18 @@ features:
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof: [packages/client-runtime/src/kin/kinLists.test.ts]
 
-  # ── Settings (the gear on Chats) ───────────────────────────────────────────────────────────
+  # ── Settings (the gear at the bottom left on web, on Chats on the phone) ──────────────────
   - id: kin-settings
     name: Kin settings
     tab: settings
     web: [settings]
     phone: [SettingsKin]
-    roles: { owner: both, co_owner: both, lead: phone, member: phone }
+    roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
-      On web the gear shows only to the owner level in a chat-only session; the owner's app has
-      Settings pages instead. A lead's or member's phone settings are their profile (on web, the
-      name in the sidebar), this phone's notifications, appearance and leaving the team: the
-      browser and the web app already hold those, so web adds no entry. A teammate who follows
-      the link is told these settings are the owner's.
+      On web Settings is a modal over the open page (`?settings=<section>`), from the gear at the
+      bottom left of the sidebar, or on Chats in a narrow window. Everyone has You; the owner
+      level adds Company; the owner on Kin's computer adds This computer. A section someone can't
+      open shows their profile.
     proof: [.agents/skills/verify-kin/scripts/checkin-new-agent.sh]
 
   - id: company
@@ -732,7 +741,7 @@ features:
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     note: >-
-      Inside the app's Settings dialog the form opens as a dialog; in Kin's own settings, a sheet.
+      Settings is a modal, so on web the form opens as a dialog over it; on the phone, a sheet.
       A check-in tells only what the owner hasn't been told; on the weekly brief's day the morning
       check-in is the brief; one in quiet hours (22:00 to 07:00 unless set) waits for their end.
     proof:
@@ -863,8 +872,8 @@ features:
       - packages/client-runtime/src/kin/kinJoin.test.ts
 
 unlisted:
-  "web:team": Old address; opens Settings → Team.
-  "web:memory": Old address; opens Settings → Memory.
+  "web:team": Old address; opens the Settings modal on Team.
+  "web:memory": Old address; opens the Settings modal on Memory.
   "web:settings/approvals": The app's old address; opens Kin's Settings → Approvals.
   "web:settings/company": The app's old address; opens Kin's Settings → Company details.
   "web:settings/check-ins": The app's old address; opens Kin's Settings → Check-ins.

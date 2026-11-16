@@ -330,6 +330,13 @@ describe("KinEventQueue", () => {
         (yield* queue.readyLeads(orgId)).map((lead) => lead.agentId),
         ["lead-a2", "lead-a"],
       );
+      // A paused agent's events wait in the queue; resuming makes it ready again.
+      yield* sql`UPDATE kin_agents SET paused_at = '2026-11-07T00:00:00.000Z' WHERE agent_id = 'lead-a2'`;
+      assert.deepStrictEqual(
+        (yield* queue.readyLeads(orgId)).map((lead) => lead.agentId),
+        ["lead-a"],
+      );
+      yield* sql`UPDATE kin_agents SET paused_at = NULL WHERE agent_id = 'lead-a2'`;
       const changed = yield* queue.changes(orgId);
       const signal = yield* changed.pipe(Effect.forkChild);
       yield* sql`UPDATE kin_agents SET retired_at = '2026-11-07T00:00:00.000Z' WHERE agent_id = 'lead-a2'`;

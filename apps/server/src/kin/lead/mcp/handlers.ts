@@ -20,6 +20,7 @@ import { LeadMemory, resolveLead } from "../LeadMemory.ts";
 import { KinWorkers } from "../Workers.ts";
 import { readPeople } from "../peopleRead.ts";
 import { updatePeople } from "../peopleUpdate.ts";
+import { updateAgent } from "../agentUpdate.ts";
 import { KinLeadToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -75,6 +76,13 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       yield* admitted(lead, "people_update", input);
       return yield* updatePeople(lead, input);
+    }, Effect.mapError(failure)),
+  ),
+  agent_update: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.agentUpdate")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      yield* admitted(lead, "agent_update", input);
+      return yield* updateAgent(lead, input);
     }, Effect.mapError(failure)),
   ),
   kin_hand_off: McpToolAccess.actsAsCaller(

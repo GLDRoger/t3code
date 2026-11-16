@@ -6,7 +6,6 @@ import {
   AuthSessionId,
   AuthStandardClientScopes,
   EnvironmentId,
-  EventId,
   KinChatError,
   KinAgentId,
   KinChatId,
@@ -21,7 +20,6 @@ import {
   KinWidgetId,
   KIN_WORKER_PUBLISH_CARD,
   type KinWorkerPublishCard,
-  NodeId,
   OrchestratorMcpFailure,
   ProjectId,
   ProviderDriverKind,
@@ -31,7 +29,6 @@ import {
   type KinEvent,
   type KinTaskCardState,
   type OrchestrationV2RunStatus,
-  type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -893,8 +890,7 @@ const run = <A, E>(
           Layer.mock(Workspace.KinWorkspace)({}),
           Layer.mock(Toolchain.KinToolchain)({}),
           Layer.mock(KinAgentSessionPolicy)({
-            connected: () => Effect.sync(() => github.connected),
-            ghDirectory: "/invented/gh",
+            toolDirectories: ["/invented/gh"],
           }),
         ),
       ),
@@ -974,30 +970,6 @@ const settled = (
   orgId: KinOrgId,
   workerId: KinWorkerId,
 ) => tracker.track(orgId, workerId).pipe(Effect.flatMap(Fiber.join));
-const subagent = (input: {
-  readonly threadId: ThreadId;
-  readonly origin: "app_owned" | "provider_native";
-}): OrchestrationV2Subagent => ({
-  id: NodeId.make(`child:${input.origin}:${input.threadId}`),
-  threadId: input.threadId,
-  runId: null,
-  parentNodeId: NodeId.make("root"),
-  origin: input.origin,
-  createdBy: "agent",
-  driver: ProviderDriverKind.make("codex"),
-  providerInstanceId: codex.instanceId,
-  providerThreadId: null,
-  childThreadId: null,
-  nativeTaskRef: null,
-  prompt: "stray",
-  title: null,
-  model: null,
-  status: "running",
-  result: null,
-  startedAt: null,
-  completedAt: null,
-  updatedAt: DateTime.makeUnsafe(0),
-});
 const queued = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
   sql<{
     json: string;
@@ -3000,43 +2972,6 @@ it.effect(
 );
 
 it.effect(
-  "an app-owned delegate_task child on a lead thread is stopped unless GitHub is connected",
-  () =>
-    run(({ ctx, stopped, github, tracker }) =>
-      Effect.gen(function* () {
-        const registry = yield* Registry.KinLeadRegistry;
-        yield* registry.register(leadThread, {
-          orgId: ctx.orgId,
-          agentId: leadId,
-          wakeupId: KinWakeupId.make("wake"),
-          level: "L2",
-        });
-        const updated = (origin: "app_owned" | "provider_native", threadId: ThreadId) => ({
-          sequence: 11,
-          commandId: null,
-          event: {
-            type: "subagent.updated" as const,
-            id: EventId.make(`event:${origin}:${threadId}`),
-            threadId,
-            occurredAt: DateTime.makeUnsafe(0),
-            payload: subagent({ threadId, origin }),
-          },
-        });
-        github.connected = true;
-        yield* tracker.process(updated("app_owned", leadThread));
-        assert.deepStrictEqual(stopped, [], "with GitHub connected, delegate_task is the way");
-        github.connected = false;
-        yield* tracker.process(updated("provider_native", leadThread));
-        yield* tracker.process(updated("app_owned", ThreadId.make("ordinary")));
-        assert.deepStrictEqual(stopped, []);
-        yield* tracker.process(updated("app_owned", leadThread));
-        yield* tracker.process(updated("app_owned", leadThread));
-        assert.deepStrictEqual(stopped, [leadThread]);
-      }).pipe(Effect.scoped),
-    ),
-);
-
-it.effect(
   "with no worker environment, kin_delegate starts a worker thread on this server, in its own worktree, with one card",
   () =>
     run(({ ctx, remote, local, workers }) =>
@@ -4254,7 +4189,7 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
       [
         59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
         82, 83, 84, 85, 86, 87, 88, 106, 107, 110, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139,
-        140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156,
+        140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157,
       ],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);

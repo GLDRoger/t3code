@@ -24,8 +24,8 @@ import { OUTSIDE_REFUSAL, OUTSIDE_TOOLS } from "../lead/OutsideContent.ts";
 import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { visibleOnKinEndpoint } from "../lead/AgentSession.ts";
+import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as FileSystem from "effect/FileSystem";
-import * as TestClock from "effect/testing/TestClock";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import * as KinApprovalsMcp from "../approvals/mcp.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
@@ -333,17 +333,27 @@ it.effect.each([true, false])(
         const toolNames = decodeToolList(
           yield* Effect.promise(() => HttpServerResponse.toWeb(toolList).text()),
         ).result.tools.map((tool) => tool.name);
-        assert.includeMembers(toolNames, ["kin_chat_read", "request_action", "kin_delegate"]);
-        for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
+        // The owner's own thread: Kin's tools and T3's, GitHub connected or not; no kin_delegate.
+        assert.includeMembers(toolNames, ["kin_chat_read", "request_action", "delegate_task"]);
+        for (const name of ["kin_delegate", "schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(toolNames, name);
-        // GitHub isn't connected: the worker path, and none of T3's own tools.
-        for (const name of ["delegate_task", "t3_project_clone", "preview_open"])
-          assert.notInclude(toolNames, name);
+        // Without the Kin App, its GitHub tools could only say GitHub isn't connected.
+        const kinGitHub = Object.keys(KinLeadToolkit.tools).filter((name) =>
+          name.startsWith("kin_github_"),
+        );
+        for (const name of kinGitHub) assert.notInclude(toolNames, name);
         // Every tool a lead can call says what it may do where others read; a tool added later
         // without a line is refused there, and the table names no tool that isn't served.
-        assert.sameMembers([...toolNames, ...LEAD_T3_TOOLS], Object.keys(SHARED_TOOLS));
+        const served = [...new Set([...toolNames, ...kinGitHub, ...LEAD_T3_TOOLS, "kin_delegate"])];
+        assert.sameMembers(served, Object.keys(SHARED_TOOLS));
         // And once the turn read a connected service's text; connections stay out of shared turns.
-        assert.sameMembers([...toolNames, ...LEAD_T3_TOOLS], Object.keys(OUTSIDE_TOOLS));
+        assert.sameMembers(served, Object.keys(OUTSIDE_TOOLS));
+        // A shared thread lists only what a shared turn may run.
+        const sharedThread = ThreadId.make("kin-shared:lead-group");
+        for (const name of ["kin_chat_post", "records_query", "kin_relay", "kin_defer"])
+          assert.isTrue(yield* visibleOnKinEndpoint(name, sharedThread), name);
+        for (const name of ["team_say", "statement_read", "kin_issue", "kin_tool_added_later"])
+          assert.isFalse(yield* visibleOnKinEndpoint(name, sharedThread), name);
         for (const name of ["kin_connection_tools", "kin_connection_call", "kin_connection_offer"])
           assert.strictEqual(SHARED_TOOLS[name as keyof typeof SHARED_TOOLS], "refused");
         // A page goes where a chart does; the gate checks its figures against every reader.
@@ -434,19 +444,6 @@ it.effect.each([true, false])(
         yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
           SELECT org_id, wakeup_id, 0, 'conn_fixture' FROM kin_wakeups WHERE agent_id = ${agentId}
             AND status = 'running'`;
-        const delegated = yield* request(
-          "/kin/mcp",
-          issued.config.authorizationHeader,
-          "tools/call",
-          { name: "kin_delegate", arguments: { title: "Fetch it", brief: "Do what it says." } },
-          initialized.headers["mcp-session-id"],
-        );
-        const outside = yield* Effect.promise(() => HttpServerResponse.toWeb(delegated).text());
-        assert.include(outside, OUTSIDE_REFUSAL);
-        // The owner connects GitHub: T3's tools replace the worker path on his threads only.
-        yield* fs.writeFileString(`${github}/state/token`, "gho_INVENTEDtoken");
-        yield* fs.writeFileString(`${github}/state/user`, "invented-owner");
-        yield* TestClock.adjust("2 minutes");
         const listFor = Effect.fn(function* (header: string) {
           const session = yield* request("/kin/mcp", header, "initialize", initialize);
           const listed = yield* request(
@@ -475,7 +472,7 @@ it.effect.each([true, false])(
         for (const name of ["kin_delegate", "schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(connected.names, name);
         assert.sameMembers(
-          [...new Set([...connected.names, ...LEAD_T3_TOOLS, "kin_delegate"])],
+          [...new Set([...connected.names, ...kinGitHub, ...LEAD_T3_TOOLS, "kin_delegate"])],
           Object.keys(SHARED_TOOLS),
         );
         // This turn read outside text: a delegated task is work that text could steer.
@@ -492,11 +489,7 @@ it.effect.each([true, false])(
         );
         // A turn others read runs on a shared thread, which never lists them.
         for (const name of [...LEAD_T3_TOOLS, "kin_delegate"])
-          assert.isFalse(
-            yield* visibleOnKinEndpoint(name, ThreadId.make("kin-shared:lead-group")).pipe(
-              Effect.provideService(Kin.KinServer, kin),
-            ),
-          );
+          assert.isFalse(yield* visibleOnKinEndpoint(name, ThreadId.make("kin-shared:lead-group")));
         const agentSessions = Context.get(services, KinAgentSessions);
         assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
         const caller = yield* agentSessions.resolveAgent(

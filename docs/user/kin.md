@@ -7,13 +7,15 @@ keep Tasks, Money, Clients and Docs current for you.
 Kin has five places: **Chats**, **Tasks**, **Money**, **Clients** and **Docs**. On the phone they
 are the dock; on the web and the desktop app they sit at the top of the sidebar, and become the same
 dock at the bottom of a narrow window. `⌘1` to `⌘5` (`Ctrl` on Windows and Linux) open them.
-**Settings** is the gear on Chats. What you see in each depends on your place in the team; see
-[Who sees and does what](#who-sees-and-does-what). If you run Kin's computer, **Code** under the
-five opens T3 Code's coding threads.
+**Settings** is the gear at the bottom left on the web and the desktop app, and the gear on Chats on
+the phone and in a narrow window. It opens over whatever you're looking at; close it to carry on
+where you were. What you see in each depends on your place in the team; see
+[Who sees and does what](#who-sees-and-does-what).
 
 Settings has **You** (your profile and appearance) for everyone, and for the owner and co-owners
 **Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
-computer Kin runs on, **This computer** holds the app's own settings, such as providers and models.
+computer Kin runs on, **This computer** holds the app's own settings, such as providers and models,
+and how much of each provider's usage your agents have spent.
 
 ## Getting started
 
@@ -89,6 +91,28 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   without the owner's approval.
 
 **Waiting on you** in Chats collects what needs your answer.
+
+### An agent's page
+
+Tap an agent's name at the top of its chat, or in any message, to open its page. It's also under
+**Settings → Agents** and in the command palette. The owner and co-owners can change
+everything there; anyone else sees a short card with what the agent looks after and a way to
+message it.
+
+- **Model.** Each agent runs on a Claude model: a stronger one for your messages and urgent work,
+  a cheaper one for the rest. A change applies from its next reply. You can also say it in a
+  chat: "run Finance on Sonnet". New agents start on the company default, set under
+  **Settings → Agents**. If a model goes away from your server, the agent runs on the
+  default and its page says so. The page also shows what the agent has spent this month.
+- **Character.** Read it, **Edit** it, open its **History** to bring an older one back, or **Ask it
+  to rewrite itself**, which starts a message in its chat for you to finish.
+- **Pause** stops an agent taking turns until you **Resume** it; messages and check-ins wait.
+  **Retire agent** removes it from Chats, and **Restore** brings it back with its history.
+- The page also shows its check-ins and quiet hours, who may message it, what it can reach, its
+  playbooks in **Docs**, and the tasks it has open.
+
+When you create an agent, choose its model and write its character there, or tick **Write one for
+me** and the Chief of staff drafts one with you.
 
 ### What an agent never does without you
 
