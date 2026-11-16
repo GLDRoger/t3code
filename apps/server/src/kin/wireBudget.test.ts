@@ -38,6 +38,7 @@ import * as Clients from "./work/ownerClients.ts";
 import * as OwnerDocs from "./work/ownerDocs.ts";
 import * as Money from "./work/ownerMoney.ts";
 import * as Work from "./work/ownerWork.ts";
+import * as WorkStream from "./work/workStream.ts";
 
 // What Kin's hot reads send each kind of person, on a deterministic invented company. Like
 // AgentContextBudget.test.ts, kinWireBudget.json must equal the measurement, so an answer that
@@ -431,6 +432,66 @@ const oneChange = Effect.fn("KinWireBudget.oneChange")(function* (
   return measured;
 });
 
+/**
+ * The same two changes on the row stream (`acceptRows`): what each viewer's session sends for the
+ * task made and then given away, and what a reconnect with nothing changed costs. Ticks are fed to
+ * each session one change at a time, as the live stream's window would.
+ */
+const rowsChange = Effect.fn("KinWireBudget.rowsChange")(function* () {
+  const records = yield* KinRecords.KinRecords;
+  const pull = yield* Stream.toPull(records.changes(orgId));
+  const opening = (yield* pull)[0]!.seq;
+  const measured: Record<string, number> = {};
+  const bytesOf = (items: ReadonlyArray<KinWorkEvent>) =>
+    items.reduce((sum, item) => sum + wireBytes(SCHEMAS.subscribe, item), 0);
+  const sessions = yield* Effect.forEach(VIEWERS, ([name, personId]) =>
+    Effect.gen(function* () {
+      const session = yield* WorkStream.makeWorkStream(as(personId), { orgId, acceptRows: true });
+      const start = yield* session.start(opening);
+      measured[`rows.${name}.open.bytes`] = bytesOf(start);
+      return { name, personId, session };
+    }),
+  );
+  const cursors = new Map<string, { seq: number; team: boolean }>();
+  const feed = Effect.fn("KinWireBudget.feed")(function* (change: string, key: string) {
+    const ticks: Array<KinRecords.Tick> = [];
+    while (!ticks.some((tick) => tick.key === key)) ticks.push(...(yield* pull));
+    for (const { name, session } of sessions) {
+      const items = yield* session.batch(ticks.flatMap((tick) => session.pendingOf(tick)));
+      measured[`rows.${name}.${change}.items`] = items.length;
+      measured[`rows.${name}.${change}.bytes`] = bytesOf(items);
+      const last = items.at(-1);
+      if (last?._tag === "counts" || last?._tag === "synchronized")
+        cursors.set(name, { seq: last.seq, team: last.team === true });
+    }
+  });
+  const made = yield* Work.create(as(coOwnerId), {
+    orgId,
+    clientRequestId: "wire-budget-row-task",
+    title: "Invented: send the venue the floor plan",
+  });
+  yield* feed("create", made.key);
+  yield* Work.assign(as(ownerId), {
+    orgId,
+    key: made.key,
+    to: { _tag: "person", personId: memberId },
+  });
+  yield* feed("assign", made.key);
+  for (const { name, personId } of sessions) {
+    const at = cursors.get(name)!;
+    const session = yield* WorkStream.makeWorkStream(as(personId), {
+      orgId,
+      acceptRows: true,
+      afterSeq: at.seq,
+      ...(at.team ? { afterTeam: true } : {}),
+    });
+    measured[`rows.${name}.resume.bytes`] = bytesOf(
+      yield* session.start(yield* records.seq(orgId)),
+    );
+  }
+  return measured;
+});
+
 withLayer(layer)("Kin wire budget", (it) => {
   it.effect("hot reads and one change's stream match kinWireBudget.json", () =>
     Effect.gen(function* () {
@@ -457,6 +518,7 @@ withLayer(layer)("Kin wire budget", (it) => {
         rereadBytes.set(name, reread);
       }
       Object.assign(measured, yield* oneChange(rereadBytes));
+      Object.assign(measured, yield* Effect.scoped(rowsChange()));
 
       expect(over, `Unpaged Kin reads over ${UNPAGED_CEILING} bytes: page them.`).toEqual([]);
       expect(

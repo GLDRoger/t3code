@@ -338,7 +338,6 @@ export const list = Effect.fn("KinWork.list")(function* (
       input.paidTo !== undefined)
   )
     return yield* ownerOnly;
-  const led = yield* ledIds(viewer);
   const records = yield* KinRecords;
   const cursor = yield* parseCursor(input.cursor);
   const party = yield* filterRef(viewer, input.orgId, input.party, "clients");
@@ -405,26 +404,8 @@ export const list = Effect.fn("KinWork.list")(function* (
           true,
         );
   const next = cursor.offset + page.rows.length;
-  const shown = page.rows.map((row) => ({ row, record: toRecord(row, at) }));
-  const can = yield* cansOf(
-    viewer,
-    input.orgId,
-    shown.map(({ row, record }) => ({ ...record, registerId: row.registerId })),
-  );
-  const projects = viewer.teammate
-    ? yield* teamVisible(input.orgId, viewer.person.personId, [
-        ...new Set(
-          shown.flatMap(({ record }) => (record.project ? [record.project.recordId] : [])),
-        ),
-      ]).pipe(workFailure)
-    : new Set<string>();
   const answer = {
-    records: shown.map(({ row, record: whole }): KinRecord => {
-      const record = { ...whole, can: can(whole.recordId) };
-      if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects);
-      const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
-      return Object.keys(fields).length === 0 ? record : { ...record, fields };
-    }),
+    records: yield* shownRecords(viewer, input.orgId, page.rows, at),
     total: page.total,
     nextCursor: next < page.total ? `o:${next}:${at}` : null,
     seq: page.seq,
@@ -432,6 +413,38 @@ export const list = Effect.fn("KinWork.list")(function* (
     ...(totals === undefined ? {} : { totals: listTotals(totals) }),
   };
   return input.acceptCompactRows === true ? kinCompactWorkList(answer) : answer;
+});
+
+/**
+ * Entries as `list` shows them to this viewer, `late` judged at `at`: what they may do to each,
+ * and for a teammate only what `teamRecordIn` keeps. The live stream sends rows built here too.
+ */
+export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
+  viewer: Viewer,
+  orgId: KinOrgId,
+  rows: ReadonlyArray<RecordRow>,
+  at: number,
+) {
+  const led = yield* ledIds(viewer);
+  const shown = rows.map((row) => ({ row, record: toRecord(row, at) }));
+  const can = yield* cansOf(
+    viewer,
+    orgId,
+    shown.map(({ row, record }) => ({ ...record, registerId: row.registerId })),
+  );
+  const projects = viewer.teammate
+    ? yield* teamVisible(orgId, viewer.person.personId, [
+        ...new Set(
+          shown.flatMap(({ record }) => (record.project ? [record.project.recordId] : [])),
+        ),
+      ]).pipe(workFailure)
+    : new Set<string>();
+  return shown.map(({ row, record: whole }): KinRecord => {
+    const record = { ...whole, can: can(whole.recordId) };
+    if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects);
+    const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
+    return Object.keys(fields).length === 0 ? record : { ...record, fields };
+  });
 });
 
 const listTotals = ({ counted: _counted, groups, ...sums }: Totals) => ({
