@@ -1,4 +1,4 @@
-import type { ThreadId } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -18,7 +18,7 @@ import { KinServer } from "../KinServer.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../KinEnabled.ts";
 import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts";
 import { instructions } from "./instructions.ts";
-import { SHARED_THREAD_PREFIX } from "./Audience.ts";
+import { SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { GH_SIGN_FOLDER } from "./LeadIsolation.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { isWorkThread } from "./workThread.ts";
@@ -215,10 +215,15 @@ const rewriting = (
     method: string,
     params: Params,
   ) => Effect.Effect<Params, CodexErrors.CodexAppServerError>,
+  answered: (method: string, params: Params, answer: unknown) => void = () => {},
 ): Client => {
   const raw = (method: string, params: unknown) =>
     rewrite(method, (params ?? {}) as Params).pipe(
-      Effect.flatMap((rewritten) => client.raw.request(method, rewritten)),
+      Effect.flatMap((rewritten) =>
+        client.raw
+          .request(method, rewritten)
+          .pipe(Effect.tap((answer) => Effect.sync(() => answered(method, rewritten, answer)))),
+      ),
     );
   return {
     ...client,
@@ -251,13 +256,16 @@ type Answers = {
 
 /**
  * Kin answers Codex's asks on a Kin thread itself, never showing them to anyone: the Claude hook's
- * decision (`fullSessionRefusal`) for the turn as it is at that call, never "for the session".
- * Codex's decline carries no reason, so the refusal's words reach the model as a steer into the
- * turn that asked.
+ * decision (`fullSessionRefusal`) for the asking thread's turn as it is at that call, never "for
+ * the session". Codex's decline carries no reason, so the refusal's words reach the model as a
+ * steer into the turn that asked.
  */
-const kinApprovals = (client: Client, refusal: Effect.Effect<string | undefined>): Answers => {
+const kinApprovals = (
+  client: Client,
+  refusal: (nativeThreadId: string) => Effect.Effect<string | undefined>,
+): Answers => {
   const decided = (asked: { readonly threadId: string; readonly turnId: string }) =>
-    refusal.pipe(
+    refusal(asked.threadId).pipe(
       Effect.tap((why) =>
         why === undefined
           ? Effect.void
@@ -270,8 +278,8 @@ const kinApprovals = (client: Client, refusal: Effect.Effect<string | undefined>
               .pipe(Effect.ignore),
       ),
     );
-  const legacy = () =>
-    refusal.pipe(
+  const legacy = (asked: { readonly conversationId: string }) =>
+    refusal(asked.conversationId).pipe(
       Effect.map((why) => ({
         decision: why === undefined ? ("approved" as const) : { denied: { rejection: why } },
       })),
@@ -342,6 +350,7 @@ export const codexClientFactory = <E, R>(
               within(yield* real(kinDirectory), yield* real(cwd)));
           const signing = Effect.fn("KinCodexIsolation.signing")(function* (
             sessions: KinAgentSessionPolicy["Service"],
+            thread: ThreadId,
           ) {
             const signed: Shell = {
               path: [
@@ -351,7 +360,7 @@ export const codexClientFactory = <E, R>(
               ]
                 .filter(Boolean)
                 .join(":"),
-              agentName: yield* sessions.agentName(threadId),
+              agentName: yield* sessions.agentName(thread),
             };
             return signed;
           });
@@ -364,36 +373,71 @@ export const codexClientFactory = <E, R>(
               userServers = Object.keys(read.config.mcp_servers ?? {});
               return userServers;
             });
-            if (Option.isNone(policy) || threadId.startsWith(SHARED_THREAD_PREFIX)) {
-              const confined = Option.isNone(policy)
-                ? client
-                : answering(client, kinApprovals(client, policy.value.refusal(threadId)));
-              return rewriting(confined, (method, params) =>
-                method === "turn/start"
-                  ? Effect.succeed(confinedTurnParams(params))
-                  : method === "thread/inject_items"
-                    ? Effect.succeed(withoutT3Guidance(params))
-                    : THREAD_METHODS.has(method)
-                      ? servers.pipe(Effect.map((names) => confinedThreadParams(params, names)))
-                      : Effect.succeed(params),
-              );
-            }
-            const shell = yield* signing(policy.value);
-            const asked = answering(client, kinApprovals(client, policy.value.refusal(threadId)));
-            return rewriting(asked, (method, params) =>
-              method === "turn/start"
-                ? Effect.succeed(fullSessionTurnParams(params))
-                : method === "thread/inject_items"
-                  ? Effect.succeed(withoutT3Guidance(params))
-                  : THREAD_METHODS.has(method)
-                    ? servers.pipe(
-                        Effect.map((names) => fullSessionThreadParams(params, names, shell)),
-                      )
-                    : Effect.succeed(params),
+            // One app-server serves several of the lead's threads, an owner's and a shared one
+            // among them, so each native thread answers to the T3 thread that started it.
+            const governing = new Map<string, ThreadId>();
+            yield* client.handleServerNotification("thread/started", ({ thread }) =>
+              Effect.sync(() => {
+                const parent = thread.parentThreadId
+                  ? governing.get(thread.parentThreadId)
+                  : undefined;
+                if (parent !== undefined) governing.set(thread.id, parent);
+              }),
             );
+            const t3Thread = (params: Params) => {
+              const config = params.config as Readonly<Record<string, unknown>> | null | undefined;
+              const id = config?.[`shell_environment_policy.set.${AGENT_THREAD_ENV}`];
+              return typeof id === "string" ? ThreadId.make(id) : threadId;
+            };
+            const full = (thread: ThreadId | undefined): thread is ThreadId =>
+              thread !== undefined &&
+              Option.isSome(policy) &&
+              !thread.startsWith(SHARED_THREAD_PREFIX);
+            const rewritten = rewriting(
+              Option.isNone(policy)
+                ? client
+                : answering(
+                    client,
+                    kinApprovals(client, (native) => {
+                      const thread = governing.get(native);
+                      return thread === undefined
+                        ? Effect.succeed(SESSION_REFUSAL.none)
+                        : policy.value.refusal(thread);
+                    }),
+                  ),
+              (method, params) => {
+                if (method === "turn/start")
+                  return Effect.succeed(
+                    full(governing.get(String(params.threadId)))
+                      ? fullSessionTurnParams(params)
+                      : confinedTurnParams(params),
+                  );
+                if (method === "thread/inject_items")
+                  return Effect.succeed(withoutT3Guidance(params));
+                if (!THREAD_METHODS.has(method)) return Effect.succeed(params);
+                const thread = t3Thread(params);
+                if (typeof params.threadId === "string") governing.set(params.threadId, thread);
+                return Effect.gen(function* () {
+                  const names = yield* servers;
+                  if (!full(thread) || Option.isNone(policy))
+                    return confinedThreadParams(params, names);
+                  return fullSessionThreadParams(
+                    params,
+                    names,
+                    yield* signing(policy.value, thread),
+                  );
+                });
+              },
+              (method, params, answer) => {
+                const native = (answer as { thread?: { id?: unknown } } | null)?.thread?.id;
+                if (THREAD_METHODS.has(method) && typeof native === "string")
+                  governing.set(native, t3Thread(params));
+              },
+            );
+            return rewritten;
           }
           if (Option.isNone(policy) || !(yield* policy.value.delegated(threadId))) return client;
-          const sign = yield* signing(policy.value);
+          const sign = yield* signing(policy.value, threadId);
           return rewriting(client, (method, params) =>
             Effect.succeed(THREAD_METHODS.has(method) ? signedShellParams(params, sign) : params),
           );

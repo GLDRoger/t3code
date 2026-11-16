@@ -15,8 +15,10 @@ import { DeferralSnapshot, deferralTriggerId } from "../triggers/deferrals.ts";
 import { ownerZone } from "../work/recordRows.ts";
 
 const decodeCard = Schema.decodeUnknownEffect(KinReminderCard);
-const decodeSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(DeferralSnapshot));
-const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(DeferralSnapshot));
+// Suspended: `deferrals.ts` reaches this module through the chat service, mid-load.
+const SnapshotJson = Schema.fromJsonString(Schema.suspend(() => DeferralSnapshot));
+const decodeSnapshot = Schema.decodeUnknownEffect(SnapshotJson);
+const encodeSnapshot = Schema.encodeEffect(SnapshotJson);
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 

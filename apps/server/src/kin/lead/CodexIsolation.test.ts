@@ -45,6 +45,7 @@ const recordingClient = (sent: Array<Sent>) =>
         sent.push({ method: `typed:${method}`, params });
         return {};
       }),
+    handleServerNotification: () => Effect.void,
   }) as unknown as CodexClient.CodexAppServerClient["Service"];
 
 const kinServer = Layer.succeed(KinServer, {
@@ -227,10 +228,10 @@ it.effect(
     ),
 );
 
-type Asked = (payload: unknown) => Effect.Effect<unknown, unknown>;
+type Asked = (payload: unknown) => Effect.Effect<unknown>;
 
 it.effect(
-  "an owner-only Codex thread gets a full session, and Kin decides each command, patch, network call and sub-agent's ask from the turn as it is then",
+  "on one Codex app-server, the owner's thread gets a full session and the shared one stays confined; Kin decides each command, patch, network call and sub-agent's ask from its own thread's turn",
   () =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -256,19 +257,40 @@ it.effect(
       ) as Context.Context<KinServices>;
       const sent: Array<Sent> = [];
       const answers = new Map<string, Asked>();
+      const notified = new Map<string, Asked>();
       const recorded = recordingClient(sent);
       const client = {
         ...recorded,
+        raw: {
+          request: (method: string, params: Record<string, unknown>) =>
+            recorded.raw.request(method, params).pipe(
+              Effect.map((answer) => {
+                if (method !== "thread/start") return answer;
+                const config = params.config as Record<string, unknown>;
+                const t3 = config["shell_environment_policy.set.T3CODE_THREAD_ID"];
+                return { thread: { id: t3 === "kin:tech" ? "native-owner" : "native-shared" } };
+              }),
+            ),
+        },
         handleServerRequest: (method: string, handler: Asked) =>
           Effect.sync(() => void answers.set(method, handler)),
+        handleServerNotification: (method: string, handler: Asked) =>
+          Effect.sync(() => void notified.set(method, handler)),
       } as unknown as CodexClient.CodexAppServerClient["Service"];
       const base = Layer.succeed(
         CodexAdapterV2.CodexAppServerClientFactory,
         CodexAdapterV2.CodexAppServerClientFactory.of({ open: () => Effect.succeed(client) }),
       );
       const shownToAPerson: Asked = () => Effect.die("an ask on a Kin thread reached a person");
+      // T3 marks each thread's shell with its own id (`codexThreadRuntimeParams`).
+      const startOf = (t3: string) => ({
+        ...t3ThreadStart,
+        cwd: memory,
+        config: { ...t3ThreadStart.config, "shell_environment_policy.set.T3CODE_THREAD_ID": t3 },
+      });
       yield* Effect.gen(function* () {
         const factory = yield* CodexAdapterV2.CodexAppServerClientFactory;
+        // The process opens for the owner's thread; the shared thread arrives on it later.
         const opened = yield* factory.open({
           instanceId: ProviderInstanceId.make("codex"),
           threadId: ThreadId.make("kin:tech"),
@@ -287,8 +309,10 @@ it.effect(
           "item/tool/requestUserInput",
         ])
           yield* opened.handleServerRequest(method as never, shownToAPerson as never);
-        yield* opened.raw.request("thread/start", { ...t3ThreadStart, cwd: memory });
-        yield* opened.raw.request("turn/start", t3TurnStart);
+        for (const t3 of ["kin:tech", "kin-shared:tech"])
+          yield* opened.raw.request("thread/start", startOf(t3));
+        for (const native of ["native-owner", "native-shared"])
+          yield* opened.raw.request("turn/start", { ...t3TurnStart, threadId: native });
       }).pipe(
         Effect.scoped,
         Effect.provide(
@@ -304,13 +328,15 @@ it.effect(
           ),
         ),
       );
-      const start = sent.find(({ method }) => method === "thread/start")!.params;
-      assert.notProperty(start, "environments");
-      assert.strictEqual(start.approvalPolicy, "untrusted");
-      assert.strictEqual(start.approvalsReviewer, "user");
-      assert.strictEqual(start.sandbox, "danger-full-access");
-      assert.strictEqual(start.baseInstructions, CodexIsolation.codexFullSessionInstructions);
-      const config = start.config as Record<string, unknown>;
+      const [ownerStart, sharedStart] = sent
+        .filter(({ method }) => method === "thread/start")
+        .map(({ params }) => params);
+      assert.notProperty(ownerStart, "environments");
+      assert.strictEqual(ownerStart?.approvalPolicy, "untrusted");
+      assert.strictEqual(ownerStart?.approvalsReviewer, "user");
+      assert.strictEqual(ownerStart?.sandbox, "danger-full-access");
+      assert.strictEqual(ownerStart?.baseInstructions, CodexIsolation.codexFullSessionInstructions);
+      const config = ownerStart?.config as Record<string, unknown>;
       for (const [key, value] of Object.entries(CodexIsolation.FULL_SESSION_CONFIG))
         assert.deepStrictEqual(config[key], value, key);
       // What can't ask stays off; the user's own servers too.
@@ -328,16 +354,37 @@ it.effect(
       for (const name of ["PATH", "HOME", "KIN_AGENT_NAME", "T3CODE_THREAD_ID"])
         assert.include(kept, name);
       assert.notInclude(kept, "KIN_GITHUB_APP_ID");
-      assert.deepStrictEqual(sent.find(({ method }) => method === "turn/start")?.params, {
-        threadId: "native",
-        input: t3TurnStart.input,
-        approvalPolicy: "untrusted",
-        approvalsReviewer: "user",
-        sandboxPolicy: { type: "dangerFullAccess" },
-      });
+      // The shared thread on the same process: no environment, nothing asked, no shell note.
+      assert.deepStrictEqual(sharedStart?.environments, []);
+      assert.strictEqual(sharedStart?.approvalPolicy, "never");
+      assert.strictEqual(sharedStart?.sandbox, "read-only");
+      assert.strictEqual(sharedStart?.baseInstructions, CodexIsolation.codexInstructions);
+      const turns = sent
+        .filter(({ method }) => method === "turn/start")
+        .map(({ params }) => params);
+      assert.deepStrictEqual(turns, [
+        {
+          threadId: "native-owner",
+          input: t3TurnStart.input,
+          approvalPolicy: "untrusted",
+          approvalsReviewer: "user",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        },
+        {
+          threadId: "native-shared",
+          input: t3TurnStart.input,
+          environments: [],
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
+        },
+      ]);
 
+      // A Codex sub-agent of the owner's thread starts on the same process.
+      yield* notified.get("thread/started")!({
+        thread: { id: "sub-agent", parentThreadId: "native-owner" },
+      });
       const ask = (method: string, payload: object) => answers.get(method)!(payload);
-      const command = (text: string, thread = "native") => ({
+      const command = (text: string, thread = "native-owner") => ({
         threadId: thread,
         turnId: `turn-${thread}`,
         itemId: "item",
@@ -350,22 +397,24 @@ it.effect(
         ...command("curl -s https://example.com"),
         networkApprovalContext: { host: "example.com", protocol: "https" },
       };
-      const patch = { threadId: "native", turnId: "turn-native", itemId: "patch", startedAtMs: 0 };
+      const patch = {
+        threadId: "native-owner",
+        turnId: "turn-native-owner",
+        itemId: "patch",
+        startedAtMs: 0,
+      };
+      const refusedWith = (text: string, thread = "native-owner") => ({
+        threadId: thread,
+        expectedTurnId: `turn-${thread}`,
+        input: [{ type: "text", text }],
+      });
 
-      // No running turn on the thread, such as a run Kin hasn't adopted: refused.
+      // No running turn on the owner's thread, such as a run Kin hasn't adopted: refused.
       assert.deepStrictEqual(
         yield* ask("item/commandExecution/requestApproval", command("echo hi")),
-        {
-          decision: "decline",
-        },
+        { decision: "decline" },
       );
-      assert.deepStrictEqual(steers(), [
-        {
-          threadId: "native",
-          expectedTurnId: "turn-native",
-          input: [{ type: "text", text: SESSION_REFUSAL.none }],
-        },
-      ]);
+      assert.deepStrictEqual(steers(), [refusedWith(SESSION_REFUSAL.none)]);
       // The owner's own turn: a command, a patch, a network call and a sub-agent's command run.
       yield* sql`UPDATE kin_wakeups SET status = 'running', thread_id = 'kin:tech',
         audience = 'owner_only' WHERE wakeup_id = 'wake-codex'`;
@@ -376,9 +425,24 @@ it.effect(
         ["item/commandExecution/requestApproval", command("ls", "sub-agent")],
       ] as const)
         assert.deepStrictEqual(yield* ask(method, payload), { decision: "accept" }, method);
-      assert.deepStrictEqual(yield* ask("execCommandApproval", { conversationId: "native" }), {
-        decision: "approved",
-      });
+      assert.deepStrictEqual(
+        yield* ask("execCommandApproval", { conversationId: "native-owner" }),
+        {
+          decision: "approved",
+        },
+      );
+      // Meanwhile the shared thread on the same process doesn't borrow the owner's turn, and a
+      // thread Kin can't place is refused too.
+      assert.deepStrictEqual(
+        yield* ask("item/commandExecution/requestApproval", command("echo hi", "native-shared")),
+        { decision: "decline" },
+      );
+      assert.deepStrictEqual(steers().at(-1), refusedWith(SESSION_REFUSAL.none, "native-shared"));
+      assert.deepStrictEqual(
+        yield* ask("item/commandExecution/requestApproval", command("echo hi", "stranger")),
+        { decision: "decline" },
+      );
+      assert.deepStrictEqual(steers().at(-1), refusedWith(SESSION_REFUSAL.none, "stranger"));
       // Nothing more than the session already has is ever granted.
       assert.deepStrictEqual(yield* ask("item/permissions/requestApproval", {}), {
         permissions: {},
@@ -388,17 +452,11 @@ it.effect(
         VALUES (${orgId}, 'wake-codex', 0, 'conn_mail')`;
       assert.deepStrictEqual(
         yield* ask("item/commandExecution/requestApproval", command("echo hi")),
-        {
-          decision: "decline",
-        },
+        { decision: "decline" },
       );
-      assert.deepStrictEqual(steers().at(-1), {
-        threadId: "native",
-        expectedTurnId: "turn-native",
-        input: [{ type: "text", text: SESSION_REFUSAL.outside }],
-      });
+      assert.deepStrictEqual(steers().at(-1), refusedWith(SESSION_REFUSAL.outside));
       yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-codex'`;
-      // A teammate is now in the chat: every kind of ask is refused with the session refusal.
+      // A teammate is now in the owner's chat: every kind of ask is refused with the session refusal.
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake-codex'`;
       for (const [method, payload] of [
         ["item/commandExecution/requestApproval", command("echo hi")],
@@ -407,22 +465,17 @@ it.effect(
         ["item/commandExecution/requestApproval", command("ls", "sub-agent")],
       ] as const)
         assert.deepStrictEqual(yield* ask(method, payload), { decision: "decline" }, method);
-      assert.deepStrictEqual(
-        steers()
-          .slice(-4)
-          .map(({ threadId, input }) => [threadId, input]),
-        [
-          ["native", [{ type: "text", text: SESSION_REFUSAL.shared }]],
-          ["native", [{ type: "text", text: SESSION_REFUSAL.shared }]],
-          ["native", [{ type: "text", text: SESSION_REFUSAL.shared }]],
-          ["sub-agent", [{ type: "text", text: SESSION_REFUSAL.shared }]],
-        ],
-      );
-      assert.deepStrictEqual(yield* ask("applyPatchApproval", { conversationId: "native" }), {
+      assert.deepStrictEqual(steers().slice(-4), [
+        refusedWith(SESSION_REFUSAL.shared),
+        refusedWith(SESSION_REFUSAL.shared),
+        refusedWith(SESSION_REFUSAL.shared),
+        refusedWith(SESSION_REFUSAL.shared, "sub-agent"),
+      ]);
+      assert.deepStrictEqual(yield* ask("applyPatchApproval", { conversationId: "native-owner" }), {
         decision: { denied: { rejection: SESSION_REFUSAL.shared } },
       });
-      // Every ask was decided on its own; asks Kin doesn't answer keep T3's handler.
-      assert.strictEqual(decided, 14);
+      // Every ask Kin could place was decided on its own; the rest keep T3's handler.
+      assert.strictEqual(decided, 13);
       assert.strictEqual(answers.get("item/tool/requestUserInput"), shownToAPerson);
     }).pipe(
       Effect.provide(
