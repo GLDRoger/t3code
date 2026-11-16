@@ -55,6 +55,7 @@ import { scrollToSettingsTarget } from "./settingsLayout";
 import {
   searchSettings,
   revealSettingsSearchTarget,
+  KIN_MOVED_SETTINGS_PATHS,
   KIN_ONLY_SETTINGS_PATHS,
   SETTINGS_NAV_GROUPS,
   SETTINGS_SECTION_LABELS,
@@ -151,6 +152,8 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
     paths: group.paths.filter(
       (path) =>
         (hasKinHost || !KIN_ONLY_SETTINGS_PATHS.has(path)) &&
+        // With Kin on, its pages live in Kin's Settings (the gear on Chats), not here too.
+        !(hasKinHost && KIN_MOVED_SETTINGS_PATHS.has(path)) &&
         !(overKin && path === "/settings/scheduled-tasks"),
     ),
   }));

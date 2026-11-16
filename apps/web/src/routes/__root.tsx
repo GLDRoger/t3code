@@ -100,7 +100,9 @@ export const Route = createRootRoute({
     ) {
       throw redirect({
         to: "/kin",
-        search: location.pathname.startsWith("/settings") ? { settings: "owner" } : {},
+        search: location.pathname.startsWith("/settings")
+          ? { settings: location.pathname.split("/")[2] || "general" }
+          : {},
         replace: true,
       });
     }
