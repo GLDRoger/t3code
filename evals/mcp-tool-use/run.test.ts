@@ -27,6 +27,7 @@ import {
   pastedText,
   type SampleRun,
   shellOutput,
+  shownText,
   namedPathsLine,
   shellRequest,
   shellResponsesRequest,
@@ -277,6 +278,29 @@ it("grades Kin calls as the agent made them and a card as its message", () => {
   });
   assert.deepEqual(failed({ textMust: ["Wednesday"] }, run([ask])), []);
   assert.lengthOf(failed({ textMustNot: ["Wednesday"] }, run([ask])), 0);
+});
+
+it("reads a Kin turn's text as the chat shows it, without a repeat after kin_end", () => {
+  const text = (value: string) => ({ type: "text", text: value });
+  const use = (name: string) => ({
+    type: "tool_use",
+    id: name,
+    name: `mcp__t3-code__${name}`,
+    input: {},
+  });
+  assert.equal(
+    shownText([
+      [text("Checking"), use("record_get")],
+      [text("Logged it."), use("kin_end")],
+      [text("Logged it.")],
+    ]),
+    "Checking\n\nLogged it.",
+  );
+  // Silence is no reply, so what follows kin_end still reaches the chat.
+  assert.equal(
+    shownText([[text("NO_REPLY"), use("kin_end")], [text("Done.")]]),
+    "NO_REPLY\n\nDone.",
+  );
 });
 
 it("passes a good run and names every rule a bad run breaks", () => {

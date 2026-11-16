@@ -10,7 +10,7 @@ import * as NodeURL from "node:url";
 import * as NodeUtil from "node:util";
 import * as Schema from "effect/Schema";
 
-import { gradeSample, McpToolUseCase, pastedText } from "./run.ts";
+import { gradeSample, McpToolUseCase, pastedText, shownText } from "./run.ts";
 
 const { values, positionals } = NodeUtil.parseArgs({
   allowPositionals: true,
@@ -36,7 +36,14 @@ for (const file of positionals) {
     const row = JSON.parse(line);
     const testCase = cases.get(row.id);
     if (testCase === undefined || row.error !== undefined) continue;
-    const failed = gradeSample(testCase.expect, row, pastedText(testCase)).filter(
+    // Claude rows carry their responses, so their text is read again as the chat shows it.
+    const responses = Array.isArray(row.transcript)
+      ? row.transcript.flatMap((message: { role?: string; content?: unknown }) =>
+          message.role === "assistant" && Array.isArray(message.content) ? [message.content] : [],
+        )
+      : [];
+    const graded = responses.length === 0 ? row : { ...row, text: shownText(responses) };
+    const failed = gradeSample(testCase.expect, graded, pastedText(testCase)).filter(
       (check) => !check.pass,
     );
     const cut = failed.length === 0 && row.stopReason === "failed_early";
