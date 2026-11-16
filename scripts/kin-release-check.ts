@@ -411,7 +411,11 @@ const migrate = async (ctx: Context): Promise<Finding[] | string> => {
   try {
     await kv(ctx, "migrate", instance, "down", "--wipe");
     NodeFS.cpSync(fixture, home, { recursive: true });
-    NodeFS.rmSync(NodePath.join(home, "verify", "state.json"), { force: true });
+    NodeFS.rmSync(NodePath.join(home, "verify", "instance.json"), { force: true });
+    // People sign in again through the new build rather than trusting cookies an older one set.
+    const chrome = NodePath.join(home, "verify", "chrome");
+    for (const person of NodeFS.existsSync(chrome) ? NodeFS.readdirSync(chrome) : [])
+      NodeFS.rmSync(NodePath.join(chrome, person, "kin-verify-signed-in"), { force: true });
     const started = await kv(ctx, "migrate", instance, "up");
     if (started.code !== 0)
       return [
