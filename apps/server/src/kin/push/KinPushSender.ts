@@ -13,7 +13,13 @@ import type {
   KinPushToken,
   KinWidgetId,
 } from "@t3tools/contracts";
-import { KinTriggerSettings, kinGreeting, kinPageGist, kinPageShape } from "@t3tools/contracts";
+import {
+  KinTriggerSettings,
+  kinGreeting,
+  kinIsBrief,
+  kinPageGist,
+  kinPageShape,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -370,7 +376,7 @@ const make = Effect.gen(function* () {
     // its own (a chart, a doc) is seen in the chat and rings nobody.
     if (row === undefined || row.awaits_card === 1) return undefined;
     const body = kinPushBody(
-      row.form === "brief"
+      kinIsBrief(row.body, row.form)
         ? `${kinGreeting(yield* ownerHour(orgId))} · ${kinPageGist(row.body)}`
         : kinPageShape(row.body) === "page"
           ? kinPageGist(row.body)

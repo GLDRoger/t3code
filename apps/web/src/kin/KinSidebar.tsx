@@ -3,6 +3,7 @@ import { SidebarContent, SidebarGroup } from "../components/ui/sidebar";
 import { isElectron } from "../env";
 import { isChatOnlySession } from "../environments/primary";
 import { KinChatList } from "./KinChatList";
+import { KinNav } from "./KinNav";
 import { KinNewLeadButton } from "./KinNewLeadButton";
 import { KinSettingsButton } from "./KinSettingsView";
 
@@ -11,6 +12,7 @@ export function KinSidebar() {
   return (
     <>
       <SidebarChromeHeader isElectron={isElectron} />
+      <KinNav />
       <SidebarContent
         className="min-h-full"
         fixedHeader={

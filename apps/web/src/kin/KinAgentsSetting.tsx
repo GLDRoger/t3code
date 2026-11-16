@@ -39,6 +39,16 @@ function OwnerLevelAgents(props: KinWorkTarget) {
   );
 }
 
+/** The models new agents start on; the owner and co-owners change it. */
+export function KinAgentDefaultsSetting(props: KinWorkTarget) {
+  if (!useKinOwnerLevel(props.environmentId)) return null;
+  return (
+    <SettingsSection {...searchableSetting("kin-agents")}>
+      <CompanyDefault {...props} />
+    </SettingsSection>
+  );
+}
+
 function CompanyDefault(props: KinWorkTarget) {
   const { environmentId, orgId } = props;
   const defaultsAtom = kinClient.agentDefaults({ environmentId, input: { orgId } });

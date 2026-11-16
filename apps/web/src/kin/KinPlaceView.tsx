@@ -23,7 +23,6 @@ import {
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { KinOrgId, type EnvironmentId, type KinRecordKey } from "@t3tools/contracts";
 import {
-  Link,
   useChildMatches,
   useLocation,
   useNavigate,
@@ -292,17 +291,8 @@ function KinPlaceView({
 
   const header = (
     <WorkspacePageHeader electron={isElectron}>
-      {record === null || wide ? (
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          aria-label="Back to chats"
-          className="md:hidden"
-          render={<Link to="/kin" />}
-        >
-          <ArrowLeftIcon />
-        </Button>
-      ) : (
+      {/* A place is a destination of the dock on a narrow window, so only a record has a Back. */}
+      {record === null || wide ? null : (
         <Button
           size="icon-sm"
           variant="ghost"

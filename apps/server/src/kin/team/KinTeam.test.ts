@@ -315,13 +315,22 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
         to: ["Finance"],
       });
       assert.isTrue(raise.ok, JSON.stringify(raise.value));
-      yield* wake("finance");
+      // Finance's deciding turn raises the budget: Kin's record of changes, not its own list.
+      const deciding = yield* passedTurn(sql, orgId, "finance", yield* wake("finance"));
+      yield* sql`INSERT OR IGNORE INTO kin_registers (org_id, register_id, name, key_prefix,
+          built_in, created_at) VALUES (${orgId}, 'work', 'Work', 'W', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'w-budget', 'work', 'W-90', 'Raise the expo print budget to ₹15,200',
+          'agent', 'finance', 0, 'agent', 'w-budget', 0, 0)`;
+      yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
+          via, kind, fields_json, wakeup_id)
+        VALUES (${orgId}, 'w-budget', 1, 0, 'agent', 'finance', 'lead', 'created', '{}', ${deciding})`;
       const decided = yield* callAs("finance", "team_say", {
         text: "Raise the print budget to ₹15,200 and print 400.",
         intent: "decision",
         end: "decide",
         outcome: "Print 400 brochures for the Kochi expo; print budget raised to ₹15,200.",
-        did: ["BUD-2 expo print budget ₹12,000 → ₹15,200"],
       });
       assert.isTrue(decided.ok, JSON.stringify(decided.value));
       const objector = JSON.parse((yield* discussion(sql, orgId)).turn!) as {
@@ -345,7 +354,6 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
           end: "decide",
           outcome:
             "Print 400 brochures for the Kochi expo, printer booked for Thursday; budget ₹15,200.",
-          did: ["BUD-2 expo print budget ₹12,000 → ₹15,200"],
         });
         if (!said.ok) {
           yield* (yield* Team.KinTeam).wakeupEnded({
@@ -365,7 +373,8 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
       );
       assert.lengthOf(told, 1);
       assert.match(told[0]!.body, /^Print 400 brochures for the Kochi expo/);
-      assert.include(told[0]!.body, "Done: BUD-2 expo print budget ₹12,000 → ₹15,200");
+      assert.include(told[0]!.body, "Done: Raise the expo print budget to ₹15,200 (new)");
+      assert.notMatch(told[0]!.body, /\bW-90\b/);
       assert.strictEqual(told[0]!.silent, 0);
       assert.strictEqual(JSON.parse(told[0]!.relay!).kind, "reply_from");
 
@@ -435,8 +444,9 @@ const passedTurn = Effect.fn("test.passedTurn")(function* (
 });
 
 // Agents start at most two at once and six a day; one started by an agent waits for the owner's
-// next check-in to be told, and then is told once, silently, beside it.
-it.effect("an agent-started discussion is capped, held, and told beside the next check-in", () =>
+// next check-in to be told, and then is told once, silently, beside it. Its disagreement card
+// waits too, and with no check-in set the sweep brings it outside his quiet hours.
+it.effect("an agent-started discussion is capped, held, and told at the owner's next note", () =>
   Effect.andThen(
     TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
     Effect.gen(function* () {
@@ -504,6 +514,35 @@ it.effect("an agent-started discussion is capped, held, and told beside the next
       assert.lengthOf(told, 1);
       assert.match(told[0]!.body, /^Parked: Stand size waits for the floor plan/);
       assert.strictEqual(told[0]!.silent, 1);
+
+      // The second comes to a disagreement: its card waits, then the sweep posts it, once.
+      const [second] = yield* sql<{ id: string }>`SELECT discussion_id AS id FROM kin_discussions
+        WHERE org_id = ${orgId} AND final = 0 ORDER BY created_at LIMIT 1`;
+      yield* sql`UPDATE kin_discussions SET state = 'closing',
+          turn_json = json_object('agentId', 'chief', 'kind', 'closing', 'eventId', NULL,
+            'said', json('false'))
+        WHERE org_id = ${orgId} AND discussion_id = ${second!.id}`;
+      yield* wake("chief");
+      const brought = yield* callAs("chief", "team_say", {
+        discussion: second!.id,
+        text: "This one is Rhea's: the budget.",
+        intent: "decision",
+        end: "bring",
+        outcome: "Growth and Finance split on the Kochi hotel.",
+        positions: [
+          { agent: "Growth", position: "The expo hotel: walk to the stand." },
+          { agent: "Finance", position: "The cheaper one across town." },
+        ],
+        lean: "The cheaper one; the stand opens at ten.",
+        options: ["Expo hotel", "Across town"],
+      });
+      assert.isTrue(brought.ok, JSON.stringify(brought.value));
+      const cards = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
+        WHERE org_id = ${orgId} AND chat_id = ${chatOf("chief")} AND type = 'choice'`;
+      assert.strictEqual((yield* cards)[0]!.n, 0);
+      yield* team.sweep();
+      yield* team.sweep();
+      assert.strictEqual((yield* cards)[0]!.n, 1);
     }).pipe(Effect.provide(layer)),
   ),
 );

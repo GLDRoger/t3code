@@ -69,8 +69,8 @@ function PermittedNewLeadButton(props: { readonly target: KinLeadFormTarget }) {
             onClick={() => {
               appAtomRegistry.set(kinTeamAddRequestAtom, true);
               void navigate({
-                to: "/kin/$environmentId/$orgId/team",
-                params: { environmentId, orgId },
+                to: "/kin/$environmentId/$orgId/settings/$page",
+                params: { environmentId, orgId, page: "team" },
               });
             }}
           >
