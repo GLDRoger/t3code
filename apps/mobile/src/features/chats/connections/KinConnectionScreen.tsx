@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -106,7 +107,7 @@ function ConnectionRecord(props: {
               <Notice
                 tone="danger"
                 message="Couldn't load this connection"
-                action={{ label: "Try again", onPress: reload }}
+                action={{ label: KIN_RETRY, onPress: reload }}
               />
             ) : (
               <AppActivityIndicator />

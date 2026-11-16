@@ -14,8 +14,8 @@ import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../components/ui/AppBar";
-import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -97,17 +97,10 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
     <KinAgentsFrame onAdd={add}>
       {agents === null ? (
         AsyncResult.isFailure(result) ? (
-          <EmptyState
-            variant="plain"
+          <KinLoadFailed
             title="Couldn't load your agents"
-            detail="Check that this phone can reach your Kin, then try again."
-            action={
-              <Button
-                tone="secondary"
-                label="Try again"
-                onPress={() => appAtomRegistry.refresh(atom)}
-              />
-            }
+            cause={result}
+            onRetry={() => appAtomRegistry.refresh(atom)}
           />
         ) : (
           <View

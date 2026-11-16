@@ -43,7 +43,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { KinMoneyActionNotice } from "./KinInvoice";
-import { KinWorkSection } from "./KinWorkParts";
+import { KinWorkSection, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinMoneyActions, useKinRates, useKinReceipts } from "./useKinMoney";
@@ -106,14 +106,12 @@ export function KinReceiptsSection(
           <Skeleton className="h-4 w-2/5" />
         </div>
       ) : state._tag !== "ready" ? (
-        <div className="flex flex-col items-start gap-2 px-2">
-          <Alert variant="error">
-            <AlertDescription>{KIN_RECEIPTS.loadFailed}. Check your connection.</AlertDescription>
-          </Alert>
-          <Button size="sm" variant="outline" onClick={refresh}>
-            Retry
-          </Button>
-        </div>
+        <KinLoadFailed
+          what={KIN_RECEIPTS.loadFailed}
+          cause={state._tag === "failed" ? state.cause : null}
+          onRetry={refresh}
+          className="px-2"
+        />
       ) : receipts.length === 0 ? (
         <p className="px-2 text-sm text-muted-foreground">{KIN_RECEIPTS.empty}</p>
       ) : (

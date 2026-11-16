@@ -127,7 +127,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
         listOf(row.registerId),
       ),
       title: row.title,
-      snippet: row.snippet.trim() === "" ? row.title : row.snippet,
+      snippet: ((said) => (said === "" ? row.title : said))(withoutIds(row.snippet)),
       ...(section === undefined || section.id === "top"
         ? {}
         : { section: { id: section.id, title: section.title } }),
@@ -138,6 +138,13 @@ export const search = Effect.fn("KinSearch.search")(function* (
   });
   return { hits, indexed };
 });
+
+/** A snippet indexed before members' ids were left out of the index, without them. */
+const withoutIds = (snippet: string) =>
+  snippet
+    .replace(/\[?\s*"(?:person|agent):[^"]*"(?:\s*,\s*"(?:person|agent):[^"]*")*\s*\]?/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 
 /** Without FTS5: every word somewhere in the same text, newest first. */
 const scan = Effect.fnUntraced(function* (

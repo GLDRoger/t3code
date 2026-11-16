@@ -130,7 +130,7 @@ export function kinChatGoneCopy(reason: "left" | KinChatClosedReason): {
     default:
       return {
         title: "This chat isn't available",
-        detail: "Kin couldn't open this chat. Go back to your chats and try again.",
+        detail: "Kin couldn't open this chat. Go back to your chats and open it again.",
       };
   }
 }

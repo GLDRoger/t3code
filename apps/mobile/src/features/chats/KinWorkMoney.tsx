@@ -60,6 +60,7 @@ import {
 } from "./state/useKinMoney";
 import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinChart } from "./widgets/KinChart";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 
 type Shared = KinWorkTarget & {
   readonly live: KinWorkLive;
@@ -395,11 +396,10 @@ export function KinMoneyArea(props: Shared) {
         ) : state._tag === "refused" ? (
           <EmptyState variant="plain" {...KIN_MONEY.onlyOwner} />
         ) : (
-          <EmptyState
-            variant="plain"
+          <KinLoadFailed
             title={KIN_MONEY.loadFailed}
-            detail="Check your connection to the server and try again."
-            action={<Button tone="secondary" label="Try again" onPress={money.refresh} />}
+            cause={state._tag === "failed" ? state.cause : null}
+            onRetry={money.refresh}
           />
         )}
       </AreaFrame>

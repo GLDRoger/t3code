@@ -29,6 +29,8 @@ import { SettingsSection } from "../settings/components/SettingsSection";
 import { KinWorkLoading, KinWorkTextField } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { kinClient } from "./state/kinClient";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 interface Target {
   readonly environmentId: EnvironmentId;
@@ -167,7 +169,8 @@ function CheckInForm(
     const done = await outcome;
     setSaving(false);
     props.refresh();
-    if (AsyncResult.isFailure(done)) setProblem(KIN_CHECK_INS.failed);
+    if (AsyncResult.isFailure(done))
+      setProblem(kinFailureText(squashAtomCommandFailure(done), KIN_CHECK_INS.failed));
     else if (close) navigation.goBack();
   };
   const tap = (action: KinCheckInActInput["action"]) => {

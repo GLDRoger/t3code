@@ -20,7 +20,7 @@ export const KIN_CHECK_INS = {
   agent: "Agent",
   time: "Time",
   days: "Days",
-  failed: "Couldn't change the check-in. Try again.",
+  failed: "Couldn't change the check-in.",
   unreadable: "Couldn't load check-ins.",
   newTitle: "Check-in",
   newWhat:

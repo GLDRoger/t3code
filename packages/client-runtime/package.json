@@ -567,6 +567,10 @@
       "types": "./src/kin/kinAgentRetire.ts",
       "default": "./src/kin/kinAgentRetire.ts"
     },
+    "./kin/kinAnswers": {
+      "types": "./src/kin/kinAnswers.ts",
+      "default": "./src/kin/kinAnswers.ts"
+    },
     "./kin/kinAttention": {
       "types": "./src/kin/kinAttention.ts",
       "default": "./src/kin/kinAttention.ts"

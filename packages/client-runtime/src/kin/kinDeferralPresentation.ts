@@ -1,3 +1,4 @@
+import { kinFailureText } from "./kinAnswers.ts";
 import {
   KinChatError,
   KinDeferralCard,
@@ -15,7 +16,7 @@ import { kinSentences } from "./kinScreenState.ts";
 export const KIN_STALE_CARD_TEXT = "This card changed. Check it again.";
 export const KIN_SENT_CARD_TEXT = "Sent. Your agent will update this card.";
 export const KIN_CHANGE_SENT_TEXT = "Sent. Your agent will ask what to change.";
-export const KIN_SEND_FAILED_TEXT = "Couldn't send that. Try again.";
+export const KIN_SEND_FAILED_TEXT = "Couldn't send that.";
 const KIN_UNDONE_TEXT = "Undone. Kin won't act on this.";
 export const KIN_UNDO_TOO_LATE_TEXT = "Too late to undo: Kin already acted on this.";
 
@@ -374,7 +375,8 @@ export function kinActionFailureNotice(
   cause: unknown,
   actionId?: KinDeferralActionId,
 ): KinCardNotice {
-  if (!isKinChatError(cause)) return { kind: "error", text: KIN_SEND_FAILED_TEXT };
+  if (!isKinChatError(cause))
+    return { kind: "error", text: kinFailureText(cause, KIN_SEND_FAILED_TEXT) };
   if (actionId === "undo" && cause.reason === "invalid_state")
     return { kind: "stale", text: KIN_UNDO_TOO_LATE_TEXT };
   switch (cause.reason) {
@@ -388,14 +390,14 @@ export function kinActionFailureNotice(
     case "invalid_state":
       return { kind: "error", text: "This card can't take that answer any more." };
     default:
-      return { kind: "error", text: KIN_SEND_FAILED_TEXT };
+      return { kind: "error", text: kinFailureText(cause, KIN_SEND_FAILED_TEXT) };
   }
 }
 
 /** Why the host may refuse [Start now] (TRIG-8's `Deferrals.act`), in the owner's words. */
 export const KIN_START_NOW_REFUSALS = {
   stopped: "Starts are paused for now. Ask your agent in the chat.",
-  workers_blocked: "Kin can't start new work right now. Try again soon.",
+  workers_blocked: "Kin can't start new work right now. Ask your agent in the chat.",
   below_l2: "Your agent can't start work from here. Ask it in the chat.",
 } as const satisfies Record<string, string>;
 

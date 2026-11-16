@@ -1,3 +1,4 @@
+import { KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_WORK_PRIVATE } from "@t3tools/client-runtime/kin/kinWork";
 import type {
   KinHealthView,
@@ -41,6 +42,7 @@ import {
   MenuTrigger,
 } from "../components/ui/menu";
 import { Skeleton } from "../components/ui/skeleton";
+import { cn } from "../lib/utils";
 
 /**
  * A titled block of a task, client or project, with an optional action beside the title. With
@@ -134,6 +136,33 @@ export function KinWorkNotice(props: {
       </EmptyHeader>
       {props.action === undefined ? null : <EmptyContent>{props.action}</EmptyContent>}
     </Empty>
+  );
+}
+
+/**
+ * A read that failed, said as `kinFailure` says it: a Retry only when the request got no answer
+ * or Kin is busy, else the host's reason with nothing to retry.
+ */
+export function KinLoadFailed(props: {
+  /** What failed, as a heading: "Couldn't load this list". */
+  readonly what: string;
+  /** The failure: an error, a Cause or a failed AsyncResult; unknown reads as the connection. */
+  readonly cause: unknown;
+  readonly onRetry: () => void;
+  readonly className?: string;
+}) {
+  const failure = kinFailure(props.cause, `${props.what}.`);
+  return (
+    <div className={cn("flex flex-col items-start gap-3", props.className)}>
+      <Alert variant={failure.kind === "gone" ? "info" : "error"}>
+        <AlertDescription>{failure.text}</AlertDescription>
+      </Alert>
+      {failure.retry ? (
+        <Button size="sm" variant="outline" onClick={props.onRetry}>
+          {KIN_RETRY}
+        </Button>
+      ) : null}
+    </div>
   );
 }
 

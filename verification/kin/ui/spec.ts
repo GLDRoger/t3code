@@ -54,12 +54,10 @@ const screen = extract((state) => {
     url.pathname.endsWith("/tasks") && !url.search && !searched && !/Clear filter/.test(mainText);
   // Rows follow "Filter" directly; a chosen filter ("Late", "Due this week") sits between them.
   const listed = onTasks ? after(/^Filter$/) : null;
-  // "Handled (n)" folds away nudges set aside with "I've got it"; some may be open tasks.
+  // "Handled (n)" holds nudges set aside with "I've got it"; some may be open tasks, and open or
+  // folded, those rows name no task key, so the list below never counts them.
   const handledAt = lines.findIndex((l) => /^Handled \(\d+\)$/.test(l));
-  const handledHidden =
-    handledAt !== -1 && lines[handledAt + 1] === "Filter"
-      ? Number(/\d+/.exec(lines[handledAt])![0])
-      : 0;
+  const handledHidden = handledAt === -1 ? 0 : Number(/\d+/.exec(lines[handledAt])![0]);
   // A task under "Needs you" is not repeated in the rows below the filter.
   const keysIn = (ls: string[]) =>
     new Set(ls.flatMap((l) => [...l.matchAll(/(?:^|· )(W-\d+)\b/g)].map((m) => m[1])));
@@ -140,6 +138,25 @@ export const noGoneRecord = never(/isn['’]t here any ?more|no longer exists|no
 export const noSomethingWrong = never(/Something went wrong|Unexpected error/i);
 export const noNotAvailable = never(
   /Not available|You don['’]t have access|not allowed|Only whoever holds|or gave it to them, can/i,
+);
+
+// An enabled control is one the host lets through: a tap never brings up a refusal that wasn't on
+// the screen before it.
+const REFUSAL =
+  /You can['’]t do that here|isn['’]t allowed to|can['’]t change (?:it|this)|Only (?:the owner|whoever|the person who)[^.\n]* can/i;
+export const enabledNeverRefused = always(() => {
+  const before = shown();
+  if (REFUSAL.test(before)) return true;
+  return next(() => {
+    if (!clicked(lastAction.current)) return true;
+    const answered = () => !REFUSAL.test(shown());
+    return answered() && next(() => answered() && next(answered));
+  });
+});
+// Only a request that got no answer blames the connection; the walk's server is always up, so a
+// refusal or something gone must never read as one.
+export const noConnectionBlame = never(
+  /check (?:your|the) connection|can['’]t reach your|isn['’]t answering right now/i,
 );
 export const noBlankScreen = always(
   now(() => screen.current?.mainBlank === true).implies(
