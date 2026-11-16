@@ -24,7 +24,7 @@ import {
   splitTests,
   type Step,
 } from "./check-changed.ts";
-import { modelsFor } from "./kin-model.ts";
+import { MODEL_COVERS, modelsFor } from "./kin-model.ts";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 
 const GiB = 1024 ** 3;
@@ -50,15 +50,7 @@ describe("check:changed", () => {
       "checkin",
     ]);
     assert.deepStrictEqual(modelsFor(["verification/kin/checkin/CheckIn.tla"]), ["checkin"]);
-    assert.deepStrictEqual(modelsFor(["scripts/kin-model.ts"]), [
-      "send",
-      "reply",
-      "checkin",
-      "money",
-      "people",
-      "tasks",
-      "discussion",
-    ]);
+    assert.deepStrictEqual(modelsFor(["scripts/kin-model.ts"]), Object.keys(MODEL_COVERS));
     assert.deepStrictEqual(
       modelsFor(["apps/server/src/kin/work/money.ts", "docs/kin/RULES.md"]),
       [],
