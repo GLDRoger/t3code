@@ -14,7 +14,14 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { keysIn, linkMatcher, withLinks, type LinkName } from "./messageLinks.ts";
+import {
+  encodeNames,
+  keysIn,
+  linkMatcher,
+  nameKeys,
+  withLinks,
+  type LinkName,
+} from "./messageLinks.ts";
 
 // Invented company, people and records only.
 const orgId = KinOrgId.make("org");
@@ -183,5 +190,41 @@ it.effect("links for each reader only what they may open; a hidden client leaves
     // Agents read the words as written.
     const agent = yield* withLinks(orgId, { _tag: "agent", agentId: "finance" as never }, [said]);
     assert.isUndefined(agent[0]!.links);
+
+    // An agent's keys reach people as names: the printed number, else the title, linked still.
+    const named = yield* nameKeys(
+      orgId,
+      "finance-chat",
+      "Moved W-1 to Arjun; INV-1 goes out today. `W-1` in code, INV/26-27/004 as printed.",
+    );
+    assert.strictEqual(
+      named.body,
+      "Moved Logo files to Arjun; INV/26-27/004 goes out today. `W-1` in code, INV/26-27/004 as printed.",
+    );
+    assert.deepStrictEqual(named.names, [{ text: "Logo files", key: "W-1" }]);
+    assert.strictEqual(
+      (yield* nameKeys(orgId, "finance-chat", "Logo files (W-1) moved.")).body,
+      "Logo files moved.",
+    );
+    // Where Zoya reads, the private client's key stays a key: its name would tell her more.
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES ('zoya-chat', ${orgId}, 'direct', 'zoya:finance', 0, ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        agent_id, role, joined_at)
+      VALUES ('zoya-in-zoya', ${orgId}, 'zoya-chat', 'person', ${mateId}, NULL, 'member', ${at})`;
+    assert.strictEqual(
+      (yield* nameKeys(orgId, "zoya-chat", "C-3 waits on W-1.")).body,
+      "C-3 waits on Logo files.",
+    );
+    yield* sql`INSERT INTO kin_message_names (org_id, message_id, names_json)
+      VALUES (${orgId}, 'm-named', ${encodeNames(named.names)})`;
+    const [read] = yield* withLinks(orgId, { _tag: "person", personId: ownerId }, [
+      { ...message(named.body), messageId: KinMessageId.make("m-named") },
+    ]);
+    assert.deepStrictEqual(read!.links?.find((link) => link.text === "Logo files")?.to, {
+      _tag: "record",
+      key: "W-1",
+      kind: "task",
+    });
   }).pipe(Effect.provide(layer)),
 );

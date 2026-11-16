@@ -68,6 +68,7 @@ import { uuidv4 } from "../../lib/uuid";
 import { MessageAttachmentList } from "../threads/ThreadFeed";
 import {
   KinInvoiceActions,
+  type KinMakeStep,
   KinInvoiceDocuments,
   KinInvoiceFigures,
   KinInvoiceSent,
@@ -240,6 +241,8 @@ export function KinListEntryBody(
     readonly now: Date;
     readonly links: React.ReactNode;
     readonly history: React.ReactNode;
+    /** Make invoice and Make its PDF turn the sheet into their form. */
+    readonly onMake: (step: KinMakeStep) => void;
   },
 ) {
   const navigation = useNavigation();
@@ -396,6 +399,7 @@ export function KinListEntryBody(
           busy={busy}
           canChange={canChange}
           onState={(state) => void changes.update(item.rev, { state })}
+          onMakePdf={props.onMake}
         />
       ) : !canChange ? null : (
         <View className="gap-2">
@@ -437,6 +441,7 @@ export function KinListEntryBody(
           busy={busy}
           party={item.party ?? null}
           currency={item.amount?.currency ?? def?.currency ?? "INR"}
+          onMake={props.onMake}
         />
       )}
       <KinMoneyActionNotice actions={money} />

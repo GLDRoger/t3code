@@ -72,7 +72,11 @@ import {
   WORK_RULE,
 } from "../../apps/server/src/kin/work/workPrompt.ts";
 import { OWNER_DECLINED, WAITING_FOR_OWNER } from "../../apps/server/src/kin/lead/workerBrief.ts";
-import { HANDED_BACK_WORK, SHARED_TURN_LINE } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
+import {
+  HANDED_BACK_WORK,
+  REPLY_SHAPE,
+  SHARED_TURN_LINE,
+} from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
@@ -1146,6 +1150,7 @@ const fillKinRules = (prompt: string) =>
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
     .replaceAll("{{TEAM_RULES}}", kinTeamRules)
+    .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
