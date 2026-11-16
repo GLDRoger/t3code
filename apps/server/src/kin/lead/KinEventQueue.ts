@@ -159,6 +159,8 @@ export class KinEventQueue extends Context.Service<
     >;
     readonly reconsiderBudget: (orgId: KinOrgId) => Effect.Effect<void, PersistenceSqlError>;
     readonly changes: (orgId: KinOrgId) => Effect.Effect<Effect.Effect<void>>;
+    /** Ends when work is queued for an org no one awaits `changes` of yet: a brand-new company. */
+    readonly unwatched: Effect.Effect<Effect.Effect<void>>;
     /** Every lead with queued events, earliest first; a lead is claimable once `readyAt` passes. */
     readonly readyLeads: (
       orgId: KinOrgId,
@@ -251,9 +253,14 @@ const make = Effect.gen(function* () {
     return gate;
   };
 
+  let unwatchedWork = Deferred.makeUnsafe<void>();
   const notify = Effect.fn("KinEventQueue.notify")(function* (orgId: KinOrgId) {
     const entry = organizations.get(orgId);
-    if (entry === undefined) return;
+    if (entry === undefined) {
+      const signal = unwatchedWork;
+      unwatchedWork = Deferred.makeUnsafe<void>();
+      return yield* Deferred.succeed(signal, undefined);
+    }
     const changed = entry.changed;
     entry.changed = Deferred.makeUnsafe<void>();
     yield* Deferred.succeed(changed, undefined);
@@ -767,6 +774,7 @@ const make = Effect.gen(function* () {
   const changes = Effect.fn("KinEventQueue.changes")((orgId: KinOrgId) =>
     Effect.sync(() => Deferred.await(organization(orgId).changed)),
   );
+  const unwatched = Effect.sync(() => Deferred.await(unwatchedWork));
   const expireAgent = Effect.fn("KinEventQueue.expireAgent")(
     function* (orgId: KinOrgId, agentId: KinAgentId) {
       yield* sql.withTransaction(
@@ -833,6 +841,7 @@ const make = Effect.gen(function* () {
     finish,
     requeueUnfinished,
     changes,
+    unwatched,
     expireAgent,
     readyLeads,
   });

@@ -9,7 +9,8 @@ if [[ "${1:-}" == "--instance" ]]; then INSTANCE=$2; shift 2; fi
 kv() { node "$ROOT/scripts/kin-verify.ts" --instance "$INSTANCE" "$@"; }
 SCRIPTS=("$@")
 [[ ${#SCRIPTS[@]} -eq 0 ]] && SCRIPTS=(assign-member-sees relay-owner-to-member member-request-to-owner
-  private-task-hidden member-no-money send-card-once overdue-invoice-reminder checkin-new-agent)
+  private-task-hidden member-no-money send-card-once overdue-invoice-reminder checkin-new-agent
+  lead-adds-milestone owner-money-forms)
 trap 'kv down >/dev/null' EXIT
 started=$SECONDS
 kv up --fresh || exit 1

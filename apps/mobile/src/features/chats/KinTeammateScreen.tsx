@@ -26,6 +26,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
+import { KIN_PROFILE_COPY } from "@t3tools/client-runtime/kin/kinProfiles";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { View } from "react-native";
 
@@ -236,6 +237,18 @@ function KinTeammateDetails(props: {
               navigation.navigate("KinProfile", { ...props.target, personId });
             }}
           />
+          {/* Their page is the record: the owner edits their profile in a sheet on it. */}
+          {props.viewer === "owner" ? (
+            <ListActionRow
+              icon="pencil"
+              label={KIN_PROFILE_COPY.edit}
+              onPress={() => {
+                const { personId } = teammate;
+                if (personId === null) return;
+                navigation.navigate("KinProfileEdit", { ...props.target, personId });
+              }}
+            />
+          ) : null}
         </ListSection>
       )}
       {kinTeammateKindEditable(teammate, props.viewer) ? (

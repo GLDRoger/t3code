@@ -230,6 +230,12 @@ describe("createKinWorkPageWatch", () => {
     here.watch.changed({ changed: { "W-77": 11 }, unnamed: 0 }, here.page);
     await Promise.resolve();
     expect([here.rereads(), here.asked()]).toEqual([1, 1]);
+
+    // A lead or member can't read the history: their page is read again rather than left behind.
+    const teammate = watching(null);
+    teammate.watch.changed({ changed: { "W-77": 11 }, unnamed: 0 }, teammate.page);
+    await Promise.resolve();
+    expect([teammate.rereads(), teammate.asked()]).toEqual([1, 1]);
   });
 });
 

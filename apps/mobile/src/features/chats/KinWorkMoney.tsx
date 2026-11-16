@@ -169,17 +169,23 @@ function AreaFrame(props: {
         title={KIN_WORK_HOME.places.money}
         refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
         {...(tab === null ? { onBack: () => navigation.goBack() } : {})}
-        {...(agent === null
-          ? {}
-          : {
-              actions: [
+        actions={[
+          // Money has no list to filter, so its search finds anything, like the web's.
+          {
+            accessibilityLabel: KIN_WORK_HOME.search,
+            icon: "magnifyingglass",
+            onPress: () => navigation.navigate("KinSearch", base),
+          },
+          ...(agent === null
+            ? []
+            : [
                 {
                   accessibilityLabel: `Ask ${agent.name}`,
-                  icon: "bubble.left",
+                  icon: "bubble.left" as const,
                   onPress: () => agent.ask(kinWorkAskDraft("money")),
                 },
-              ],
-            })}
+              ]),
+        ]}
         {...(addItems.length === 0
           ? {}
           : { menus: [{ title: KIN_WORK_HOME.add, icon: "plus", items: addItems }] })}
