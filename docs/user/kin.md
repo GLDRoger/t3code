@@ -186,14 +186,18 @@ never counts as unread; a small dot means something new.
 
 ## Tasks
 
-Tasks holds everything someone owes someone. **Needs you** at the top is what wants your attention
-first: late or stuck work, quiet clients, projects with nothing moving. Choose **I've got it** when
-you're handling one.
+Tasks holds everything someone owes someone. Everyone's list reads the same way, so you can tell at
+a glance what waits on whom: **On me** is what you have to do; **On others** is what waits on a
+teammate, under each person; **On agents** is what an agent has; then everything else, by project.
+Each task says who has it first, agents by name, then when it's due and its project.
 
-Below it, everyone's list reads the same way, so you can tell at a glance what waits on whom:
-**On me** is what you have to do; **On others** is what waits on a teammate, under each person;
-**On agents** is what an agent has; then everything else, by project. Each task says who has it
-first, agents by name, then when it's due and its project.
+**On me** starts with what can't wait, each marked **Late**, **Due today** or **Stuck**. For
+teammates, the Tasks badge counts your late and due-today tasks.
+
+The owner and co-owners also see **Needs attention** at the top, for what wants attention across
+the company: other people's late or stuck work, quiet clients, projects with nothing moving. Each
+task shows in one place only, so your own stay under On me. Choose **I've got it** when you're
+handling one. When nothing needs attention, the section isn't there.
 
 - **New task** gives a task a title, a due day and someone to do it. Ask an agent instead and it
   writes the task for you.
@@ -213,7 +217,7 @@ the figures in the quote or the invoice.
 
 Clients lists each client and their projects, with when you last spoke to them and what's next.
 On a client, add contacts and **Log contact** after a call or meeting. If nothing is logged for a
-while, the client shows up under Needs you.
+while, the client shows up under Needs attention.
 
 A project has a lead, a target day, milestones and its tasks. Its page says whether it's on track,
 what's late or stuck, and who's on it. The owner, co-owners and the project's lead add milestones;

@@ -2,11 +2,14 @@ import type { KinRecord, KinWorkPrincipal } from "@t3tools/contracts";
 
 import {
   kinWorkAvatar,
+  kinWorkClosed,
   kinWorkName,
   kinWorkPrincipalKey,
   type KinWorkFilter,
+  type KinWorkMark,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinTasksBlock } from "./kinAttention.ts";
 import type { KinAvatarView } from "./kinScreenState.ts";
 
 /** What Tasks says over each part of the list, the same on web and phone. */
@@ -41,6 +44,8 @@ export type KinWorkGroupItem<R extends KinRecord> =
       readonly record: R;
       /** The part it is under; under its project's heading the row needn't name the project. */
       readonly section: KinWorkGroupKind | null;
+      /** Under "On me", why it leads: late, due today or stuck. */
+      readonly mark?: KinWorkMark;
     };
 
 /** What a task's row needn't repeat under its heading (`kinWorkRow`'s `within`). */
@@ -93,13 +98,28 @@ const whereOf = (record: KinRecord, names: KinWorkNames): Where => {
   };
 };
 
+const dayEndMs = (now: Date) =>
+  new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - 1;
+
+/** Why one of your tasks leads "On me": late, then due by the end of today, then stuck waiting. */
+function kinWorkMark(record: KinRecord, now: Date): KinWorkMark | null {
+  if (kinWorkClosed(record.state)) return null;
+  if (record.late) return "late";
+  if (record.dueAt !== null && Date.parse(record.dueAt) <= dayEndMs(now)) return "today";
+  return record.state === "waiting" ? "stuck" : null;
+}
+
+const MARK_ORDER: Record<KinWorkMark, number> = { late: 0, today: 1, stuck: 2 };
+
 /**
  * Tasks as one reader reads them: On me, On others and On agents, each by whom it waits on, then
- * the rest by project. The rows are the ones the list already holds, in its own order.
+ * the rest by project. The rows are the ones the list already holds, in its own order, except that
+ * On me leads with what is late, due today or stuck, each marked.
  */
 export function kinWorkGroups<R extends KinRecord>(
   records: ReadonlyArray<R>,
   names: KinWorkNames,
+  now: Date,
 ): ReadonlyArray<KinWorkGroupItem<R>> {
   const mine: Array<R> = [];
   const waits = { others: new Map<string, Array<R>>(), agents: new Map<string, Array<R>>() };
@@ -129,7 +149,19 @@ export function kinWorkGroups<R extends KinRecord>(
     if (count > 0) items.push({ type: "section", key: `section:${key}`, kind, title, count });
   };
   section("mine", "mine", KIN_WORK_GROUPS.mine, mine.length);
-  tasks(mine, "mine");
+  const marked = mine.map((record) => ({ record, mark: kinWorkMark(record, now) }));
+  marked.sort(
+    (a, b) =>
+      (a.mark === null ? 3 : MARK_ORDER[a.mark]) - (b.mark === null ? 3 : MARK_ORDER[b.mark]),
+  );
+  for (const { record, mark } of marked)
+    items.push({
+      type: "task",
+      key: record.key,
+      record,
+      section: "mine",
+      ...(mark === null ? {} : { mark }),
+    });
   for (const kind of ["others", "agents"] as const) {
     const held = [...waits[kind]].map(([key, rows]) => ({
       key,
@@ -168,4 +200,40 @@ export function kinWorkGroups<R extends KinRecord>(
     tasks(project.records, "project");
   }
   return items;
+}
+
+/**
+ * The top of Tasks and the list under it, each task under one heading: yours stay in "On me" and
+ * leave the owner's block; a task the block shows leaves the list below. Null `block` for anyone
+ * but the owner and a co-owner, and whenever it would be empty.
+ */
+export function kinTasksTop<R extends KinRecord>(
+  input: Omit<Parameters<typeof kinTasksBlock>[0], "onMe"> & {
+    readonly records: ReadonlyArray<R>;
+    readonly names: KinWorkNames;
+    readonly now: Date;
+  },
+): {
+  readonly block: ReturnType<typeof kinTasksBlock>;
+  readonly items: ReadonlyArray<KinWorkGroupItem<R>>;
+} {
+  const { records, names, now } = input;
+  const onMe = new Set(
+    records.filter((record) => whereOf(record, names).kind === "mine").map((record) => record.key),
+  );
+  const block = kinTasksBlock({ ...input, onMe });
+  const inBlock = new Set<string>([
+    ...(block?.attention ?? []).flatMap((row) =>
+      row.open.type === "record" ? [row.open.key] : [],
+    ),
+    ...(block?.needs ?? []).flatMap((row) => (row.open.type === "task" ? [row.open.key] : [])),
+  ]);
+  return {
+    block,
+    items: kinWorkGroups(
+      inBlock.size === 0 ? records : records.filter((record) => !inBlock.has(record.key)),
+      names,
+      now,
+    ),
+  };
 }

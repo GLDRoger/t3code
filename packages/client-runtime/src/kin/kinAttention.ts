@@ -335,6 +335,46 @@ export function kinNeedsYouBeside(
   );
 }
 
+/**
+ * The block over Tasks, the owner's and a co-owner's only: company-wide things, never a task the
+ * list already shows under "On me", which carries its own mark. Null when nothing is in it.
+ */
+export function kinTasksBlock(input: {
+  readonly ownerLevel: boolean;
+  /** The keys the list shows under "On me". */
+  readonly onMe: ReadonlySet<string>;
+  readonly attention: ReadonlyArray<KinAttentionRow>;
+  readonly needs: ReadonlyArray<KinNeedsYouRow>;
+  /** Open facts past the page read, counted by the host. */
+  readonly hidden: number;
+  /** Answered rows, kept for their Undo until the read lets them go. */
+  readonly handled: number;
+}): {
+  readonly attention: ReadonlyArray<KinAttentionRow>;
+  readonly needs: ReadonlyArray<KinNeedsYouRow>;
+  readonly total: number;
+} | null {
+  if (!input.ownerLevel) return null;
+  const attention = input.attention.filter(
+    (row) => !(row.open.type === "record" && input.onMe.has(row.open.key)),
+  );
+  const needs = input.needs.filter(
+    (row) => !(row.open.type === "task" && input.onMe.has(row.open.key)),
+  );
+  if (attention.length === 0 && needs.length === 0 && input.handled === 0) return null;
+  return { attention, needs, total: attention.length + needs.length + input.hidden };
+}
+
+/**
+ * The badge on Tasks, each thing once: for the owner and a co-owner what needs attention; for
+ * anyone else their own late and due-today tasks, the ones "On me" marks.
+ */
+export const kinTasksBadgeCount = (input: {
+  readonly ownerLevel: boolean;
+  readonly attention: KinPulseScreenRead | null;
+  readonly mineDue: ReadonlyArray<unknown> | null;
+}) => (input.ownerLevel ? kinAttentionCount(input.attention) : (input.mineDue?.length ?? 0));
+
 const pad = (value: number) => String(value).padStart(2, "0");
 const dayOf = (date: Date) =>
   `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;

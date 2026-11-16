@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
-import { kinAttentionBadge, kinAttentionCount } from "@t3tools/client-runtime/kin/kinAttention";
+import { kinAttentionBadge, kinTasksBadgeCount } from "@t3tools/client-runtime/kin/kinAttention";
+import { kinWorkListsMoved } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
   KIN_DESTINATION_NAMES,
   kinDestinations,
@@ -40,7 +41,8 @@ import { useKinDocsLive } from "./useKinDocs";
 import { useKinHost } from "./useKinHost";
 import { useKinMoneySummary } from "./useKinMoney";
 import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
-import { useKinWork, type KinWorkTarget } from "./useKinWork";
+import { useKinMyDueTasks } from "./useKinPlaces";
+import { useKinWork, useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
 const ICON: Record<KinDestination, LucideIcon> = {
   chats: MessagesSquareIcon,
@@ -64,7 +66,14 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
   const ownerLevel = useKinOwnerLevel(target.environmentId);
   const reaches = useKinPlaceReach(target.environmentId);
   const unread = useAtomValue(kinInboxUnreadAtom(target.environmentId));
-  const attention = useKinAttention(target, work._tag !== "refused", true);
+  const attention = useKinAttention(target, ownerLevel && work._tag !== "refused", true);
+  // Anyone else's badge counts their own late and due-today tasks, the ones "On me" marks.
+  const directory = useKinWorkDirectory(target, ready && !ownerLevel);
+  const mineDue = useKinMyDueTasks(
+    target,
+    ready && !ownerLevel ? directory.names.me : null,
+    ready && !work.stale ? kinWorkListsMoved(work.live, ["work"]) : null,
+  );
   const destinations = kinDestinations({
     work: work._tag !== "refused",
     ownerLevel,
@@ -90,7 +99,7 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
       destination === "chats"
         ? kinAttentionBadge(unread)
         : destination === "tasks"
-          ? kinAttentionBadge(kinAttentionCount(attention))
+          ? kinAttentionBadge(kinTasksBadgeCount({ ownerLevel, attention, mineDue }))
           : null,
   }));
 }

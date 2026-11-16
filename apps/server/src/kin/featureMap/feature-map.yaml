@@ -337,10 +337,13 @@ features:
   - id: pulse
     name: Needs attention (the pulse)
     tab: tasks
-    web: [tasks, section:Needs you]
-    phone: [tab:tasks, section:Needs you]
+    web: [tasks, section:Needs attention]
+    phone: [tab:tasks, section:Needs attention]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: Money facts reach only the owner level.
+    note: >-
+      Money facts reach only the owner level. Tasks shows the block only to the owner level, never
+      empty and never with a task On me holds; a lead or member gets their own late, due-today and
+      stuck tasks marked at the top of On me, which the Tasks badge counts.
     tools: [pulse_read, pulse_handle, pulse_nudge]
     proof:
       - apps/server/src/kin/pulse/KinPulse.test.ts

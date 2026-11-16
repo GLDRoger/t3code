@@ -504,6 +504,27 @@ export interface KinWorkRowView {
   /** `holder` and `detail` on one line: "Priya · Due Fri 14 Nov · In progress · Acme". */
   readonly line: string;
   readonly accessibilityLabel: string;
+  /** The mark beside the row: "Late" anywhere, and on your own tasks "Due today" or "Stuck". */
+  readonly mark: KinWorkMark | null;
+}
+
+/** Why one of your own tasks leads "On me": shown on the task, not as a second list. */
+export type KinWorkMark = "late" | "today" | "stuck";
+
+export const KIN_WORK_MARKS: Record<KinWorkMark, string> = {
+  late: "Late",
+  today: "Due today",
+  stuck: "Stuck",
+};
+
+/** The row with its "On me" mark, which its label also says. */
+export function kinWorkRowMarked(row: KinWorkRowView, mark: KinWorkMark | null): KinWorkRowView {
+  if (mark === null || mark === row.mark) return row;
+  return {
+    ...row,
+    mark,
+    accessibilityLabel: `${row.accessibilityLabel}. ${KIN_WORK_MARKS[mark]}`,
+  };
 }
 
 export const kinWorkClosed = (state: KinRecordState) => state === "done" || state === "dropped";
@@ -576,6 +597,7 @@ export function kinWorkRow(
     accessibilityLabel: [record.title, ...parts, record.late ? "Late" : null]
       .filter((part) => part !== null)
       .join(". "),
+    mark: record.late ? "late" : null,
   };
 }
 
