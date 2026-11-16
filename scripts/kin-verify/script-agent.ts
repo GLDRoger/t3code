@@ -43,6 +43,8 @@ function endpointOf(
 interface TurnScript {
   readonly calls?: ReadonlyArray<{ readonly name: string; readonly arguments?: unknown }>;
   readonly reply?: string;
+  /** Stays working this long before replying, so a person can watch the turn run. */
+  readonly holdMs?: number;
 }
 
 const MARKER = /\[kv:([A-Za-z0-9_-]{4,64})\]/g;
@@ -169,6 +171,7 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<T
   } catch (error) {
     results.push({ error: String(error) });
   }
+  if (script.holdMs !== undefined) await new Promise((done) => setTimeout(done, script.holdMs));
   NodeFS.writeFileSync(resultPath, JSON.stringify({ results }, null, 2));
   const ends = (script.calls ?? []).some((call) => call.name === "kin_end");
   return {
