@@ -33,7 +33,9 @@ const screen = extract((state) => {
   ).length;
   const url = new URL(state.window.location.href);
   // Counts the app states, beside the rows it lists for the same thing (null where not on screen).
-  const mainText = inKin ? ((main as HTMLElement | null)?.innerText ?? "") : "";
+  // Settings is a modal over the page while the address names a section; its text is the screen's.
+  const shown = url.searchParams.has("settings") ? doc.querySelector("[data-app-modal]") : main;
+  const mainText = inKin ? ((shown as HTMLElement | null)?.innerText ?? "") : "";
   const lines = mainText
     .split("\n")
     .map((l) => l.trim())
@@ -65,7 +67,7 @@ const screen = extract((state) => {
     listed && /· W-\d+$/.test(listed[1] ?? "")
       ? keysIn([...(after(/^Needs you$/) ?? []), ...listed]).size
       : null;
-  const onTeam = url.pathname.endsWith("/team");
+  const onTeam = url.searchParams.get("settings") === "team";
   const teamLines = onTeam ? after(/^One chat with everyone/) : null;
   const teamOthers = teamLines ? teamLines.length / 2 - 1 : null;
   const onDates = url.searchParams.has("dates");
