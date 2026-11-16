@@ -464,7 +464,15 @@ export default defineConfig({
         // A person's read applies `personSees` through a required `KinViewer`; docs/kin/RULES.md.
         files: ["apps/server/src/kin/**"],
         excludeFiles: ["**/*.{test,testkit}.ts"],
-        rules: { "t3code/kin-viewer-scoped-reads": "error" },
+        rules: {
+          "t3code/kin-viewer-scoped-reads": "error",
+          "t3code/kin-owner-level": "error",
+        },
+      },
+      {
+        // The one place that answers "may act as owner" and "is the owner himself".
+        files: ["apps/server/src/kin/people/KinAccess.ts"],
+        rules: { "t3code/kin-owner-level": "off" },
       },
       {
         files: [

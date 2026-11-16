@@ -30,7 +30,7 @@ import { sourceControlDefinitions } from "../../sourceControl/sourceControlDefin
 import type { AgentIdentity } from "../chat/KinIdentity.ts";
 import { SHARED_REFUSAL, effectiveAudience } from "../lead/Audience.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { mayActAsOwner } from "../people/KinAccess.ts";
 import * as Audit from "./Audit.ts";
 import * as PendingActions from "./PendingActions.ts";
 
@@ -230,11 +230,9 @@ const make = Effect.gen(function* () {
       const role = rows[0]?.role ?? ("none" as const);
       if (role === "none") return role;
       // This lead's own owner or a co-owner counts as owner; anyone else in the chat is a member.
-      const level =
-        author.personId === agent.ownerPersonId ||
-        (yield* ownerLevel(event.orgId, author.personId).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        ));
+      const level = yield* mayActAsOwner(event.orgId, author.personId, {
+        personId: agent.ownerPersonId,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
       return level ? ("owner" as const) : role === "owner" ? ("member" as const) : role;
     },
     Effect.mapError(toPersistenceSqlError("KinRequestAction.roleOf")),

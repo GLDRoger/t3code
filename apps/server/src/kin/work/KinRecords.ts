@@ -38,7 +38,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { indexRecord } from "./searchIndex.ts";
@@ -683,13 +683,12 @@ const make = Effect.gen(function* () {
       WHERE l.org_id = ${orgId} AND l.agent_id = ${to.agentId} AND a.retired_at IS NULL
       ORDER BY m.member_id LIMIT 1`;
     if (lead === undefined) return false;
-    const teammate =
-      lead.ownerPersonId === assignedBy
-        ? undefined
-        : reason !== "withdrawn"
-          ? yield* teammateWake(orgId, writer, to.agentId, assignedBy, now)
-          : undefined;
-    if (lead.ownerPersonId !== assignedBy && teammate === undefined) return false;
+    const teammate = ownsAgent(lead, assignedBy)
+      ? undefined
+      : reason !== "withdrawn"
+        ? yield* teammateWake(orgId, writer, to.agentId, assignedBy, now)
+        : undefined;
+    if (!ownsAgent(lead, assignedBy) && teammate === undefined) return false;
     const key = `record-${reason}:${row.recordId}:${seq}`;
     return yield* queue
       .enqueue({

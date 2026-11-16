@@ -28,7 +28,7 @@ import { buildTeamIndex } from "../memory/buildIndex.ts";
 import { reaches, reaching, shareable, storedLabels } from "../memory/sensitivity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { PRIVATE_DOC, sensitiveDocs } from "../chat/privateDocs.ts";
-import { accessSql, ownerLevel, ownerLevelPeople } from "../people/KinAccess.ts";
+import { accessSql, isOwnerHimself, ownerLevel, ownerLevelPeople } from "../people/KinAccess.ts";
 import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
 import { historyFloor } from "../chat/sharing.ts";
 
@@ -697,7 +697,7 @@ export class KinLeadPrompt extends Context.Service<
         const ownerName = nameOf(ownerPersonId);
         const ownerUnnamed = ownerName === "" || ownerName === UNSET_OWNER_NAME;
         const named = [...asked].toSorted().map((personId) => {
-          if (personId === ownerPersonId)
+          if (ownerPersonId !== undefined && isOwnerHimself({ personId: ownerPersonId }, personId))
             return ownerUnnamed
               ? "the owner, whose name Kin doesn't know yet"
               : `the owner, ${encoded(ownerName)}`;
