@@ -647,7 +647,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       ...(groups.length === 0
         ? {
             notConnected:
-              "No social accounts are connected. Draft anyway, and make a ready-to-post pack (social_pack) for each post.",
+              "No social accounts are connected. Plan the week anyway: make each post a ready-to-post pack with social_pack.",
           }
         : {}),
     };

@@ -44,7 +44,7 @@ export const isSocialTool = (name: string) =>
   (SOCIAL_TOOL_NAMES as ReadonlyArray<string>).includes(name);
 
 /** Social's own tools: read, draft, put the week on a card, and packs for what Kin can't post. */
-const KinSocialToolkit = Toolkit.make(
+export const KinSocialToolkit = Toolkit.make(
   Tool.make("social_read", {
     ...shared,
     description:
