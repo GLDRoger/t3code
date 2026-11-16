@@ -149,7 +149,7 @@ describe("matchModel", () => {
   it("says what it has when the words name nothing offered", () => {
     assert.match(
       String(matchModel(providers, "gpt", undefined, current)),
-      /offers agents no model called gpt/,
+      /no Claude model called gpt/,
     );
     assert.match(String(matchModel(providers, "sonnet", "turbo", current)), /no turbo effort/);
   });
