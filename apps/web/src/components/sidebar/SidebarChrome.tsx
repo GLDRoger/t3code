@@ -35,7 +35,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
 import { kinListAt } from "../../kin/kinListSwitch";
 import { isChatOnlySession } from "../../environments/primary";
-import { useKinListSwitch, type KinListSwitch } from "../../kin/useKinListSwitch";
+import { useKinListSwitch } from "../../kin/useKinListSwitch";
 import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarThreadUndoNotice } from "./SidebarThreadUndoNotice";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
@@ -179,67 +179,21 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
       </span>
     );
   }
+  // With Kin on, the mark names the area you're in; the destinations above the list move between them.
   if (kinSwitch !== null) {
     return (
-      <SidebarBrandSwitch className={className} kinSwitch={kinSwitch} onBackdrop={onBackdrop} />
+      <span className={cn(className, "flex")}>
+        <SidebarBrandMark
+          onBackdrop={onBackdrop}
+          product={kinSwitch.current === "kin" ? "Kin" : "Code"}
+        />
+      </span>
     );
   }
   return (
     <Link aria-label="T3 Code home" className={cn(className, "hidden md:flex")} to="/">
       <SidebarBrandMark onBackdrop={onBackdrop} />
     </Link>
-  );
-}
-
-const KIN_SWITCH_DOT_CLASS_NAME = { waiting: "bg-warning", unread: "bg-success" } as const;
-
-/** With Kin on, the mark switches lists, so it stays on narrow windows too. */
-function SidebarBrandSwitch({
-  className,
-  kinSwitch,
-  onBackdrop,
-}: {
-  className: string;
-  kinSwitch: KinListSwitch;
-  onBackdrop: boolean;
-}) {
-  const keybindings = useAtomValue(primaryServerKeybindingsAtom);
-  const shortcutLabel = shortcutLabelForCommand(keybindings, "kin.switchList");
-  const { isMobile, setOpenMobile } = useSidebar();
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <button
-            type="button"
-            aria-label={kinSwitch.accessibilityLabel}
-            className={cn(className, "flex gap-1.5 [-webkit-app-region:no-drag]")}
-            onClick={() => {
-              if (isMobile) setOpenMobile(false);
-              kinSwitch.switchList();
-            }}
-          />
-        }
-      >
-        <SidebarBrandMark
-          onBackdrop={onBackdrop}
-          product={kinSwitch.current === "kin" ? "Kin" : "Code"}
-        />
-        {kinSwitch.dot === null ? null : (
-          <span
-            aria-hidden
-            className={cn(
-              "size-1.5 shrink-0 rounded-full",
-              KIN_SWITCH_DOT_CLASS_NAME[kinSwitch.dot],
-            )}
-          />
-        )}
-      </TooltipTrigger>
-      <TooltipPopup side="bottom">
-        {kinSwitch.title}
-        {shortcutLabel ? ` (${shortcutLabel})` : ""}
-      </TooltipPopup>
-    </Tooltip>
   );
 }
 
@@ -299,6 +253,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     select: (location) =>
       isSidebarUtilityPage(location.pathname) && kinListAt(location.pathname) !== "kin",
   });
+  const overKin = useLocation({ select: (location) => kinListAt(location.pathname) === "kin" });
   const pullRequestsSupported = usePullRequestsSupported();
   const closeMobileSidebar = () => {
     if (isMobile) {
@@ -340,11 +295,14 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
         </SidebarMenuItem>
       ) : (
         <>
-          <SidebarUtilityItem
-            icon={<SettingsIcon />}
-            label="Settings"
-            onClick={handleSettingsClick}
-          />
+          {/* Over Kin, Settings is the gear on Chats; the app's own sit under its This computer. */}
+          {overKin ? null : (
+            <SidebarUtilityItem
+              icon={<SettingsIcon />}
+              label="Settings"
+              onClick={handleSettingsClick}
+            />
+          )}
           {pullRequestsSupported ? (
             <SidebarUtilityItem
               icon={<PullRequestGlyph.pullRequest />}

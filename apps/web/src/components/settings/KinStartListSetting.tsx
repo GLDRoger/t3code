@@ -21,7 +21,7 @@ export function KinStartListSetting() {
   return (
     <SettingsRow
       {...searchableSetting("kin-start-list")}
-      description="The list the app opens to. The T3 mark in the sidebar switches between them."
+      description="The list the app opens to. Kin's destinations at the top of the sidebar move between them."
       resetAction={
         settings.kinStartList !== DEFAULT_UNIFIED_SETTINGS.kinStartList ? (
           <SettingResetButton

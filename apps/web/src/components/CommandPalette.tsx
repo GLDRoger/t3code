@@ -117,6 +117,8 @@ import {
 import { useKinPaletteHits } from "../kin/useKinDocs";
 import { useKinHost } from "../kin/useKinHost";
 import { useKinListSwitch } from "../kin/useKinListSwitch";
+import { kinDestinationLink, kinShownDestinationsAtom } from "../kin/kinListSwitch";
+import { KIN_DESTINATION_NAMES } from "@t3tools/client-runtime/kin/kinNavigation";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";
 import {
@@ -434,6 +436,7 @@ function OpenCommandPaletteDialog(props: {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
   const kinListSwitch = useKinListSwitch();
+  const kinShown = useAtomValue(kinShownDestinationsAtom);
   const kinNewLead = kinNewLeadTarget(useKinHost());
   const canCreateKinLead = useAtomValue(
     kinNewLead === null
@@ -1701,6 +1704,22 @@ function OpenCommandPaletteDialog(props: {
       await navigate({ to: "/usage" });
     },
   });
+
+  for (const [index, destination] of (kinShown?.destinations ?? []).entries()) {
+    const shown = kinShown;
+    if (shown === null) break;
+    actionItems.push({
+      kind: "action",
+      value: `action:kin-${destination}`,
+      searchTerms: ["kin", "go", "open", destination],
+      title: `Go to ${KIN_DESTINATION_NAMES[destination]}`,
+      icon: <MessagesSquareIcon className={ITEM_ICON_CLASS} />,
+      description: `${isMacPlatform(navigator.platform) ? "⌘" : "Ctrl+"}${index + 1}`,
+      run: async () => {
+        await navigate(kinDestinationLink(destination, shown.target));
+      },
+    });
+  }
 
   if (kinListSwitch !== null) {
     actionItems.push({
