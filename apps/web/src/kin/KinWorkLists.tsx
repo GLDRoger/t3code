@@ -92,7 +92,6 @@ export function KinWorkListPage(
   const lists = useKinLists(props, {
     enabled: true,
     archived: true,
-    seq: props.stale ? null : props.live.seq,
   });
   const { state } = lists;
   if (state._tag === "refused") return <KinWorkNotice {...KIN_LISTS.onlyOwner} />;

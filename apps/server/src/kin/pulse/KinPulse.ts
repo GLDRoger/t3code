@@ -63,6 +63,10 @@ const JUDGEMENT_SENSES: ReadonlySet<string> = new Set([
 const needsJudgement = (facts: ReadonlyArray<Pick<KinPulseFact, "sense">>) =>
   facts.some((fact) => JUDGEMENT_SENSES.has(fact.sense));
 const encodeScope = Schema.encodeEffect(Schema.fromJsonString(KinPulseFact.fields.scope));
+const { handled: _handled, ...sensedFields } = KinPulseFact.fields;
+const encodeSensed = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Array(Schema.Struct(sensedFields))),
+);
 
 /**
  * Who a read is for: the owner sees every fact; people see only facts about tasks and milestones,
@@ -309,6 +313,9 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
 const shortHash = (text: string) =>
   NodeCrypto.createHash("sha256").update(text).digest("hex").slice(0, 32);
 
+/** What each org's last tick sensed, hashed: the server's own memory, gone on restart. */
+const lastSensed = new Map<KinOrgId, string>();
+
 /**
  * Stores what is true now, clears what stopped being true, and wakes each fact's agent once for
  * the facts that matter now. No model runs here.
@@ -318,6 +325,10 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
   const queue = yield* KinEventQueue.KinEventQueue;
   const refreshes = yield* KinRefreshObserver;
   const facts = yield* sense(orgId, at);
+  // Owner-level screens read Needs attention again only on this topic, so any change to what was
+  // sensed moves it: a fact's words or progress, not only a fact coming or going.
+  const sensedNow = shortHash(yield* encodeSensed(facts));
+  const sensedMoved = sensedNow !== lastSensed.get(orgId);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       let moved = 0;
@@ -378,7 +389,8 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           WHERE org_id = ${orgId} AND fact_key = ${fact.key}`;
         woken.push(fact.key);
       }
-      if (moved > 0) yield* refreshes.touch(orgId, "pulse");
+      if (moved > 0 || sensedMoved) yield* refreshes.touch(orgId, "pulse");
+      yield* sql.afterCommit(Effect.sync(() => lastSensed.set(orgId, sensedNow)));
       return { facts: facts.length, cleared: cleared.length, woken };
     }),
   );

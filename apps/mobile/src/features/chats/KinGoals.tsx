@@ -51,7 +51,7 @@ function GoalBar(props: {
 /** The company's goals, one folded row in Money; absent with none (Money's Add makes one). */
 export function KinGoals(props: KinWorkTarget & { readonly seq: number | null }) {
   const navigation = useNavigation();
-  const goals = useKinGoals(props, { enabled: true, seq: props.seq });
+  const goals = useKinGoals(props, { enabled: true });
   const now = new Date(useNowMinuteMs());
   if (goals.state._tag !== "ready") return null;
   const list = goals.state.value.goals;
@@ -136,7 +136,7 @@ export function KinGoalFormScreen({ route }: StaticScreenProps<KinGoalFormParams
 function GoalFormRead(
   props: KinWorkTarget & { readonly goalKey: string | null; readonly title: string },
 ) {
-  const goals = useKinGoals(props, { enabled: true, seq: null });
+  const goals = useKinGoals(props, { enabled: true });
   if (goals.state._tag !== "ready")
     return (
       <FormMessage title={props.title}>

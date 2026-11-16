@@ -306,6 +306,23 @@ export function kinReminderCardView(
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
+// Asia/Kolkata and Asia/Calcutta are one zone; the same offset now and in six months is too.
+const sameZone = (a: string, b: string) => {
+  if (a === b) return true;
+  try {
+    const offsets = (zone: string) =>
+      [0, 182].map(
+        (days) =>
+          new Intl.DateTimeFormat("en-GB", { timeZone: zone, timeZoneName: "longOffset" })
+            .formatToParts(Date.UTC(2026, 0, 1) + days * 86_400_000)
+            .find((part) => part.type === "timeZoneName")?.value,
+      );
+    return offsets(a).join() === offsets(b).join();
+  } catch {
+    return false;
+  }
+};
+
 /** "Weekdays at 8:00", read in the owner's zone, which is named when this device is elsewhere. */
 function scheduleLine(
   every: KinScheduledTaskCard["every"],
@@ -325,7 +342,7 @@ function scheduleLine(
           : days.map((day) => WEEKDAYS[day]).join(", ");
   const [hour, minute] = every.at.split(":");
   const deviceZone = timeZone ?? new Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const zone = deviceZone === ownerZone ? "" : ` (${ownerZone})`;
+  const zone = sameZone(deviceZone, ownerZone) ? "" : ` (${ownerZone})`;
   return `${when} ${around ? "around" : "at"} ${Number(hour)}:${minute}${zone}.`;
 }
 

@@ -49,7 +49,7 @@ import {
   createKinWorkList,
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
-import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
+import { kinWorkListsMoved, type KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { EnvironmentId, KinOrgId, KinRecordKey } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -139,12 +139,11 @@ export function KinWorkEntry(target: KinWorkTarget) {
 
 function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | null }) {
   const open = useKinOpenPlace(props);
-  const seq = props.live?.seq ?? null;
   const summary = props.live?.summary ?? null;
   const hostClients = kinWorkHostClients(summary);
-  const money = useKinMoneySummary(props, { enabled: true, seq }).state;
+  const money = useKinMoneySummary(props, { enabled: true }).state;
   const docs = useKinDocsRecent(props);
-  const counts = useKinClientCounts(props, hostClients, seq);
+  const counts = useKinClientCounts(props, hostClients);
   const now = new Date(useNowMinuteMs());
   return (
     <>
@@ -424,7 +423,7 @@ export function KinWorkTaskList(
   const mine = useKinMyDueTasks(
     props,
     showsNeedsYou ? names.me : null,
-    props.stale ? null : live.seq,
+    props.stale ? null : kinWorkListsMoved(live, ["work"]),
   );
   const rows = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null).map((record) =>
     kinWorkRow(record, names, now, filter),

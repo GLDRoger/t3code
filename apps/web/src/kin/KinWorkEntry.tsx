@@ -504,7 +504,7 @@ export function KinListEntry(
   },
 ) {
   const { item, view, environmentId } = props;
-  const lists = useKinLists(props, { enabled: true, archived: true, seq: null });
+  const lists = useKinLists(props, { enabled: true, archived: true });
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);

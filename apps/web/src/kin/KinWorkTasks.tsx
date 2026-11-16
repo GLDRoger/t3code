@@ -36,7 +36,7 @@ import {
   kinWorkFilterLabel,
   kinWorkOwnerSelected,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
-import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
+import { kinWorkListsMoved, type KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinRecord, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import * as Option from "effect/Option";
@@ -146,7 +146,7 @@ export function KinWorkTaskList(
   const mine = useKinMyDueTasks(
     props,
     showsNeedsYou ? names.me : null,
-    props.stale ? null : live.seq,
+    props.stale ? null : kinWorkListsMoved(live, ["work"]),
   );
   const rows = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null).map((record) =>
     kinWorkRow(record, names, now, filter),

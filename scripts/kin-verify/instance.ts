@@ -193,6 +193,7 @@ export async function startServer(instance: Instance): Promise<InstanceState> {
     KIN_ENABLED: "true",
     T3CODE_DEV_SEED: "0",
     KIN_DEV_FAKE_MAIL: FAKE_MAIL,
+    KIN_DEV_PUSH_CAPTURE: "1",
     KIN_VERIFY_DIR: instance.meta,
     KIN_DEV_FAKE_GITHUB: fakeGitHub,
   };

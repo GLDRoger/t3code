@@ -150,6 +150,21 @@ export function kinSettledNotificationIds(
   });
 }
 
+/**
+ * The chat a read on another device left with nothing unread, from a background push's task
+ * payload (`data.dataString` is the push's `body`). Null for anything else.
+ */
+export function kinClearedChat(
+  payload: unknown,
+): { readonly environmentId: EnvironmentId; readonly chatId: KinChatId } | null {
+  const data = pushData(field(field(payload, "data"), "dataString"));
+  if (data?.cleared !== true || data.chatId === undefined) return null;
+  const target = linkTarget(data);
+  return target === null
+    ? null
+    : { environmentId: EnvironmentId.make(target.environmentId), chatId: data.chatId };
+}
+
 export type KinActionDelivery = "drop" | "wait" | "post";
 
 /** What to do with a pending notification button tap, given the current Kin host. */

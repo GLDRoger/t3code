@@ -718,6 +718,9 @@ importers:
       expo-symbols:
         specifier: ~58.0.4
         version: 58.0.4(expo-font@58.0.11(expo@58.0.23)(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(bufferutil@4.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.3.0))(expo@58.0.23)(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(bufferutil@4.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.3.0)
+      expo-task-manager:
+        specifier: ~58.0.14
+        version: 58.0.14(expo@58.0.23)(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(bufferutil@4.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))
       expo-updates:
         specifier: ~58.0.21
         version: 58.0.21(expo-dev-client@58.0.18(expo@58.0.23)(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(bufferutil@4.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(supports-color@8.1.1)(utf-8-validate@6.0.6)))(expo@58.0.23)(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(bufferutil@4.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.3.0)(supports-color@8.1.1)
@@ -9352,6 +9355,12 @@ packages:
       react: '*'
       react-native: '*'
 
+  expo-task-manager@58.0.14:
+    resolution: {integrity: sha512-a8GFlS0pcL7P7FFY9nukmeQz9gBpRFftXDEdA08NkWZDjVn2VNjdJw2nSbElEnLQCLYzKMkITJLbnixXqVoQdQ==}
+    peerDependencies:
+      expo: '*'
+      react-native: '*'
+
   expo-updates-interface@58.0.1:
     resolution: {integrity: sha512-OF+3BtMXtUsXWDfpHVNus9yHpx7WjMwjxDfeeN9LQBYSq/UtYmNNHBSfzChYTuqljWFSOAHRfsDykV9EB73Wlg==}
     peerDependencies:
@@ -12244,6 +12253,9 @@ packages:
 
   unifont@0.7.5:
     resolution: {integrity: sha512-ULe/Cs+ZIsq+dcFofNkhqielCrUJnb5mr+Yc4EBM2VlL+6OZR6+cjtI2mT1bJvRBrVncqHAbLURxmPLcCXzWMg==}
+
+  unimodules-app-loader@58.0.2:
+    resolution: {integrity: sha512-d7vZN9/awIwPCqzfw1qR/geJEzv3ElW0VdwXFnPw29QZYoAZI0jqXGKPZVG1vQCfhEiWJtBX/nVm1XI8wshrDg==}
 
   unist-util-is@6.0.1:
     resolution: {integrity: sha512-LsiILbtBETkDz8I9p1dQ0uyRUWuaQzd/cuEeS1hoRSyW5E5XGmTzlwY1OrNzzakGowI9Dr/I8HVaw4hTtnxy8g==}
@@ -19392,6 +19404,12 @@ snapshots:
       react-native: 0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(bufferutil@4.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(supports-color@8.1.1)(utf-8-validate@6.0.6)
       sf-symbols-typescript: 2.2.0
 
+  expo-task-manager@58.0.14(expo@58.0.23)(react-native@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(bufferutil@4.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(supports-color@8.1.1)(utf-8-validate@6.0.6)):
+    dependencies:
+      expo: 58.0.23(d226faf1ca90e630d8c56a2108dee32d)
+      react-native: 0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.88.1(@babel/core@7.29.7(supports-color@8.1.1))(bufferutil@4.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(@types/react@19.3.0)(bufferutil@4.1.0)(react@19.3.0)(supports-color@8.1.1)(utf-8-validate@6.0.6)
+      unimodules-app-loader: 58.0.2
+
   expo-updates-interface@58.0.1(expo@58.0.23):
     dependencies:
       expo: 58.0.23(d226faf1ca90e630d8c56a2108dee32d)
@@ -23070,6 +23088,8 @@ snapshots:
       css-tree: 3.2.1
       ohash: 2.0.12
       undici: 8.12.4
+
+  unimodules-app-loader@58.0.2: {}
 
   unist-util-is@6.0.1:
     dependencies:

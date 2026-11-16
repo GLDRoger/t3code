@@ -315,7 +315,7 @@ function KinSubscriptionsGate(props: KinWorkTarget) {
   const ready = work._tag === "ready";
   const directory = useKinWorkDirectory(props, ready);
   const seq = ready && !work.stale ? work.live.seq : null;
-  const lists = useKinLists(props, { enabled: ready, seq });
+  const lists = useKinLists(props, { enabled: ready });
   const rates = useKinRates(props, ready);
   const back = () => navigation.goBack();
   const def = kinSubscriptionsList(kinListsOf(lists));

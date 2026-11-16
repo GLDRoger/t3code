@@ -56,7 +56,7 @@ export const choiceCardState = (input: AskInput): KinChoiceCardState => ({
 });
 
 /** Unanswered cards take taps for a day after they were posted; see `KIN_CHOICE_CARD_TTL_MS`. */
-const choiceExpired = (widget: Pick<KinWidget, "updatedAt">, now: number) =>
+export const choiceExpired = (widget: Pick<KinWidget, "updatedAt">, now: number) =>
   now - Date.parse(widget.updatedAt) >= KIN_CHOICE_CARD_TTL_MS;
 
 /** The owner's tap as the lead reads it: their reply, in words. */

@@ -329,7 +329,6 @@ export function KinDocsList(
   const lists = useKinLists(props, {
     enabled: true,
     archived: filter.archived,
-    seq: props.stale ? null : props.live.seq,
   });
   const refresh = () => {
     refreshKinWorkLive(props);

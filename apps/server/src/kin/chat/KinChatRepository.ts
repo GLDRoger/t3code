@@ -99,8 +99,8 @@ type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId" |
   readonly caller?: McpThreadCaller | undefined;
   // The reply bridge posts for a wake-up it resolved itself; its running row is the authority.
   readonly wakeupId?: KinWakeupId | undefined;
-  // Only the server-only task card creator may attribute a message outside an agent wake-up.
-  readonly serverTaskCard?: true;
+  // Only Kin itself (worker task cards, a failed send's mail again) posts outside a wake-up.
+  readonly serverPosted?: true;
   /** Shown in the chat, but never pushed and never counted as unread or on the badge. */
   readonly silent?: true;
   readonly clientMessageId: {
@@ -217,7 +217,11 @@ const widgetColumns = `org_id AS "orgId", chat_id AS "chatId", widget_id AS "wid
  CASE WHEN feed_kind IS NULL AND feed_key IS NULL THEN 'null'
  ELSE json_object('kind', feed_kind, 'key', feed_key) END AS feed`;
 const WaitingRow = KinWaitingItem;
-const waitingColumns = `waiting_id AS "waitingId", org_id AS "orgId", person_id AS "personId", chat_id AS "chatId", message_id AS "messageId", widget_id AS "widgetId", reason AS "reason", created_at AS "createdAt", resolved_at AS "resolvedAt", resolution AS "resolution"`;
+const waitingBaseColumns = `waiting_id AS "waitingId", org_id AS "orgId", person_id AS "personId", chat_id AS "chatId", message_id AS "messageId", widget_id AS "widgetId", reason AS "reason", created_at AS "createdAt", resolved_at AS "resolvedAt", resolution AS "resolution"`;
+// A card's question names what is waiting, as its message (a card's body is empty) cannot.
+const waitingColumns = `${waitingBaseColumns}, (SELECT json_extract(g.state_json, '$.question') FROM kin_widgets g WHERE g.widget_id = kin_waiting.widget_id) AS "question"`;
+const withoutNoQuestion = ({ question, ...item }: KinWaitingItem): KinWaitingItem =>
+  question == null ? item : { ...item, question };
 const AgentThreadRow = KinAgentThread;
 const ActiveAgentThreadRow = Schema.Struct({
   ...KinAgentThread.fields,
@@ -451,6 +455,10 @@ export class KinChatRepository extends Context.Service<
       },
     ) => Effect.Effect<void, RepositoryError>;
     readonly unreadCount: (input: MemberScope) => Effect.Effect<number, RepositoryError>;
+    /** The app badge: `unreadCount` summed over the chats the Chats list shows the person. */
+    readonly unreadTotal: (
+      input: Scope & { readonly personId: KinPersonId },
+    ) => Effect.Effect<number, RepositoryError>;
     readonly resolveWaiting: (
       input: Scope & {
         readonly waitingId: KinWaitingId;
@@ -663,7 +671,7 @@ const make = Effect.gen(function* () {
         Result: WaitingRow,
         execute: () =>
           sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE org_id = ${input.orgId} AND waiting_id = ${input.waitingId}`,
-      })(input).pipe(NodeSqliteClient.readOnly);
+      })(input).pipe(NodeSqliteClient.readOnly, Effect.map(Option.map(withoutNoQuestion)));
     },
     Effect.mapError(toRepositoryError("KinChatRepository.getWaiting")),
   );
@@ -849,7 +857,7 @@ const make = Effect.gen(function* () {
             Request: Schema.Unknown,
             Result: WaitingRow,
             execute: () =>
-              sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE waiting_id = ${input.waitingId}`,
+              sql`SELECT ${sql.literal(waitingBaseColumns)} FROM kin_waiting WHERE waiting_id = ${input.waitingId}`,
           })(input);
           if (Option.isSome(existing)) {
             if (existing.value.orgId !== input.orgId)
@@ -883,6 +891,21 @@ const make = Effect.gen(function* () {
       );
     },
     Effect.mapError(toRepositoryError("KinChatRepository.addWaiting")),
+  );
+  const unreadCount = Effect.fn("KinChatRepository.unreadCount")(
+    function* (input: MemberScope) {
+      const row = yield* SqlSchema.findOneOption({
+        Request: Schema.Unknown,
+        Result: Schema.Struct({ count: NonNegativeInt }),
+        execute: () => sql`SELECT COUNT(*) AS count FROM kin_messages WHERE org_id = ${input.orgId}
+ AND chat_id = ${input.chatId} AND status = 'posted' AND silent = 0 AND (author_member_id IS NULL OR author_member_id != ${input.memberId})
+ AND ${readableBy(sql, input.orgId, input.memberId)}
+ AND seq > COALESCE((SELECT last_read_seq FROM kin_read_state WHERE org_id = ${input.orgId}
+ AND chat_id = ${input.chatId} AND member_id = ${input.memberId}), 0)`,
+      })(input).pipe(NodeSqliteClient.readOnly);
+      return Option.isSome(row) ? row.value.count : 0;
+    },
+    Effect.mapError(toRepositoryError("KinChatRepository.unreadCount")),
   );
   return KinChatRepository.of({
     hasRunningWakeup,
@@ -1092,7 +1115,10 @@ const make = Effect.gen(function* () {
           Result: WaitingRow,
           execute: () =>
             sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE org_id = ${input.orgId} AND widget_id = ${input.widgetId} AND resolved_at IS NULL ORDER BY created_at, waiting_id`,
-        })(input).pipe(NodeSqliteClient.readOnly);
+        })(input).pipe(
+          NodeSqliteClient.readOnly,
+          Effect.map((rows) => rows.map(withoutNoQuestion)),
+        );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.waitingForWidget")),
     ),
@@ -1186,7 +1212,10 @@ const make = Effect.gen(function* () {
           Result: WaitingRow,
           execute: () =>
             sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND resolved_at IS NULL ORDER BY created_at, waiting_id`,
-        })(input).pipe(NodeSqliteClient.readOnly);
+        })(input).pipe(
+          NodeSqliteClient.readOnly,
+          Effect.map((rows) => rows.map(withoutNoQuestion)),
+        );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listOpenWaiting")),
     ),
@@ -1333,7 +1362,7 @@ const make = Effect.gen(function* () {
               Result: WaitingRow,
               execute:
                 () => sql`UPDATE kin_waiting SET resolved_at = ${input.leftAt}, resolution = 'cancelled'
- WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND person_id = ${personId} AND resolved_at IS NULL RETURNING ${sql.literal(waitingColumns)}`,
+ WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND person_id = ${personId} AND resolved_at IS NULL RETURNING ${sql.literal(waitingBaseColumns)}`,
             })(input).pipe(
               Effect.map((rows) => rows.toSorted((a, b) => a.waitingId.localeCompare(b.waitingId))),
             );
@@ -1587,7 +1616,7 @@ const make = Effect.gen(function* () {
             }
             if (
               author._tag === "agent" &&
-              input.serverTaskCard !== true &&
+              input.serverPosted !== true &&
               !(input.wakeupId !== undefined
                 ? yield* wakeupRunning({
                     orgId: input.orgId,
@@ -1844,21 +1873,24 @@ const make = Effect.gen(function* () {
       (effect) => sql.withTransaction(effect),
       Effect.mapError(toRepositoryError("KinChatRepository.markRead")),
     ),
-    unreadCount: Effect.fn("KinChatRepository.unreadCount")(
+    unreadCount,
+    unreadTotal: Effect.fn("KinChatRepository.unreadTotal")(
       function* (input) {
-        const row = yield* SqlSchema.findOneOption({
-          Request: Schema.Unknown,
-          Result: Schema.Struct({ count: NonNegativeInt }),
-          execute:
-            () => sql`SELECT COUNT(*) AS count FROM kin_messages WHERE org_id = ${input.orgId}
- AND chat_id = ${input.chatId} AND status = 'posted' AND silent = 0 AND (author_member_id IS NULL OR author_member_id != ${input.memberId})
- AND ${readableBy(sql, input.orgId, input.memberId)}
- AND seq > COALESCE((SELECT last_read_seq FROM kin_read_state WHERE org_id = ${input.orgId}
- AND chat_id = ${input.chatId} AND member_id = ${input.memberId}), 0)`,
-        })(input).pipe(NodeSqliteClient.readOnly);
-        return Option.isSome(row) ? row.value.count : 0;
+        const members = yield* sql<{
+          chatId: KinChatId;
+          memberId: KinMemberId;
+        }>`SELECT m.chat_id AS "chatId", m.member_id AS "memberId"
+ FROM kin_chat_members m JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+ WHERE m.org_id = ${input.orgId} AND m.person_id = ${input.personId} AND m.principal_kind = 'person'
+ AND m.left_at IS NULL AND c.archived_at IS NULL ORDER BY m.member_id`.pipe(
+          NodeSqliteClient.readOnly,
+        );
+        let total = 0;
+        for (const member of members)
+          total += yield* unreadCount({ orgId: input.orgId, ...member });
+        return total;
       },
-      Effect.mapError(toRepositoryError("KinChatRepository.unreadCount")),
+      Effect.mapError(toRepositoryError("KinChatRepository.unreadTotal")),
     ),
     resolveWaiting: Effect.fn("KinChatRepository.resolveWaiting")(
       function* (input) {
@@ -1933,7 +1965,7 @@ const make = Effect.gen(function* () {
             : yield* SqlSchema.findAll({
                 Request: Schema.Unknown,
                 Result: WaitingRow,
-                execute: () => sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting
+                execute: () => sql`SELECT ${sql.literal(waitingBaseColumns)} FROM kin_waiting
                   WHERE org_id = ${input.orgId} AND waiting_id IN ${sql.in(open.map((row) => row.id))}
                   ORDER BY waiting_id`,
               })(input);

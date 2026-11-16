@@ -8,8 +8,7 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinDocsLive } from "./useKinDocs";
-import { useRereadOnChange } from "./useKinMoney";
-import { kinWorkChoicesAtom, type KinWorkTarget } from "./useKinWork";
+import type { KinWorkTarget } from "./useKinWork";
 
 const localDayEnd = (nowMs: number) => {
   const now = new Date(nowMs);
@@ -56,17 +55,15 @@ export function useKinMyDueTasks(
   return held;
 }
 
-const noChoicesAtom: ReturnType<typeof kinWorkChoicesAtom> = Atom.make(AsyncResult.initial());
+const noCountsAtom: ReturnType<typeof kinClient.workCounts> = Atom.make(AsyncResult.initial());
 
-/** How many active clients and open projects there are, read again whenever Work changes. */
-export function useKinClientCounts(target: KinWorkTarget, enabled: boolean, seq: number | null) {
-  const atom = kinWorkChoicesAtom(target);
-  const result = useAtomValue(enabled ? atom : noChoicesAtom);
-  const held = Option.getOrNull(AsyncResult.value(result));
-  useRereadOnChange(enabled ? seq : null, () => appAtomRegistry.refresh(atom));
+/** How many clients and open projects there are: the host's own totals, kept current. */
+export function useKinClientCounts({ environmentId, orgId }: KinWorkTarget, enabled: boolean) {
+  const atom = kinClient.workCounts({ environmentId, input: { orgId } });
+  const result = useAtomValue(enabled ? atom : noCountsAtom);
   // A teammate's read of clients is refused; they get no way in rather than a dead one.
   if (AsyncResult.isFailure(result)) return "refused" as const;
-  return held === null ? null : { clients: held.clients.length, projects: held.projects.length };
+  return Option.getOrNull(AsyncResult.value(result));
 }
 
 const noDocsAtom: Atom.Atom<AsyncResult.AsyncResult<KinDocsListResult, unknown>> = Atom.make(

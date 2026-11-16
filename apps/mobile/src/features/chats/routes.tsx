@@ -79,7 +79,7 @@ export const KIN_SCREENS = {
   KinWork: createNativeStackScreen({
     screen: KinWorkScreen,
     linking: "kin/:environmentId/:orgId/work",
-    options: pageRoute({ title: "Work" }),
+    options: pageRoute({ title: "Tasks" }),
   }),
   KinWorkItem: createNativeStackScreen({
     screen: KinWorkItemScreen,

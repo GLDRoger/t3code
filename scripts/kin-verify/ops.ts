@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - fake mail, moved dates and reads for a dev instance.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import { database, sqlite } from "./actors.ts";
@@ -59,6 +60,9 @@ export function mailSentLines(instance: Instance): string {
 
 export const mailDeliver = (instance: Instance, args: ReadonlyArray<string>) =>
   fakeMail(instance, ["deliver", ...args]).trim();
+
+export const mailExpire = (instance: Instance, args: ReadonlyArray<string>) =>
+  fakeMail(instance, ["expire", ...args.filter((arg) => arg !== "expire")]).trim();
 
 /** "3d", "12h", "90m", "2w" to milliseconds. */
 export function parseDuration(text: string): number {
@@ -153,4 +157,61 @@ export function query(instance: Instance, sql: string): string {
   } finally {
     db.close();
   }
+}
+
+interface CapturedPush {
+  readonly at: number;
+  readonly token: string;
+  readonly collapseId?: string;
+  readonly payload: {
+    readonly aps: {
+      readonly alert?: { readonly title: string; readonly body: string };
+      readonly badge?: number;
+      readonly "thread-id"?: string;
+      readonly "content-available"?: number;
+    };
+    readonly body?: { readonly cleared?: boolean };
+  };
+}
+
+/** What the dev server's push capture (`KIN_DEV_PUSH_CAPTURE`) would have sent, by person. */
+export function pushSentLines(instance: Instance): string {
+  const file = NodePath.join(instance.userdata, "kin-push-capture.jsonl");
+  const sent = NodeFS.existsSync(file)
+    ? NodeFS.readFileSync(file, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as CapturedPush)
+    : [];
+  const db = database(instance);
+  const owners = new Map(
+    (
+      db
+        .prepare(
+          `SELECT d.token, p.handle FROM kin_push_devices d
+           JOIN kin_people p ON p.org_id = d.org_id AND p.person_id = d.person_id`,
+        )
+        .all() as Array<{ token: string; handle: string }>
+    ).map((row) => [row.token, row.handle]),
+  );
+  db.close();
+  return [
+    `${sent.length} sent`,
+    ...sent.map((push) => {
+      const { aps } = push.payload;
+      return [
+        `${owners.get(push.token) ?? "?"}/${push.token.slice(0, 6)}`,
+        `badge ${aps.badge ?? "-"}`,
+        aps.alert === undefined
+          ? "silent"
+          : JSON.stringify(`${aps.alert.title}: ${aps.alert.body}`),
+        aps["thread-id"] === undefined ? "" : `thread ${aps["thread-id"]}`,
+        push.collapseId === undefined ? "" : `collapse ${push.collapseId}`,
+        aps["content-available"] === 1 ? "wakes app" : "",
+        push.payload.body?.cleared === true ? "chat cleared" : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    }),
+  ].join("\n");
 }
