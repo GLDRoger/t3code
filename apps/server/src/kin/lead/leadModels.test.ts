@@ -28,9 +28,10 @@ describe("nonClaudeLeadModel", () => {
     ["Codex, with the host's switch on", "codex", false, true, false],
     ["another ACP instance, even with the switch on", "kinVerifyScript", false, true, true],
   ] as const)("%s", (_name, instanceId, devServer, codex, refused) => {
-    expect(nonClaudeLeadModel(settings, on(instanceId), devServer, codex) !== undefined).toBe(
-      refused,
-    );
+    expect(
+      nonClaudeLeadModel({ ...settings, kinNonClaudeAgents: codex }, on(instanceId), devServer) !==
+        undefined,
+    ).toBe(refused);
   });
 });
 

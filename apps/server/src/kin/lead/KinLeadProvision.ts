@@ -54,7 +54,6 @@ import * as LeadAccess from "./LeadAccess.ts";
 import {
   companyDefaultModels,
   encodeLeadModels,
-  codexAgentsAllowed,
   isDevServer,
   leadModelProblem,
   nonClaudeLeadModel,
@@ -259,7 +258,6 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
     yield* (yield* ServerSettingsService).getSettings,
     models,
     yield* isDevServer,
-    yield* codexAgentsAllowed,
   );
   if (notClaude !== undefined) return yield* refuse("not_claude", notClaude);
   return yield* transaction(
@@ -434,7 +432,6 @@ export const checkModels = Effect.fn("KinLeadProvision.checkModels")(function* (
     Option.isSome(registry) ? yield* registry.value.getProviders : null,
     models,
     yield* isDevServer,
-    yield* codexAgentsAllowed,
   );
   if (problem !== undefined) return yield* refuse("not_claude", problem);
 });

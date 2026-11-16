@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
-import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { KIN_OPENAI_AGENTS, kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { KinAgentModels, KinLeadProfile } from "@t3tools/contracts";
@@ -12,6 +12,8 @@ import { useState } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
 import { searchableSetting } from "../components/settings/settingsSearch";
+import { Switch } from "../components/ui/switch";
+import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../hooks/useSettings";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOpenKinAgentPage } from "./KinAgentPage";
@@ -34,6 +36,7 @@ function OwnerLevelAgents(props: KinWorkTarget) {
   return (
     <SettingsSection {...searchableSetting("kin-agents")}>
       <CompanyDefault {...props} />
+      <OpenAiAgents {...props} />
       <AgentRows {...props} />
     </SettingsSection>
   );
@@ -45,7 +48,29 @@ export function KinAgentDefaultsSetting(props: KinWorkTarget) {
   return (
     <SettingsSection {...searchableSetting("kin-agents")}>
       <CompanyDefault {...props} />
+      <OpenAiAgents {...props} />
     </SettingsSection>
+  );
+}
+
+/** The host's experimental switch that lets agents run on Codex models too. */
+function OpenAiAgents(props: KinWorkTarget) {
+  const settings = useEnvironmentSettings(props.environmentId);
+  const updateSettings = useUpdateEnvironmentSettings(props.environmentId);
+  return (
+    <SettingsRow
+      title={KIN_OPENAI_AGENTS.title}
+      description={KIN_OPENAI_AGENTS.detail}
+      control={
+        <Switch
+          checked={settings.kinNonClaudeAgents}
+          onCheckedChange={(checked) =>
+            void updateSettings({ kinNonClaudeAgents: Boolean(checked) })
+          }
+          aria-label={KIN_OPENAI_AGENTS.title}
+        />
+      }
+    />
   );
 }
 

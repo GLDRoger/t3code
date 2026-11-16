@@ -58,7 +58,6 @@ import { KinLeadPrompt } from "./LeadPrompt.ts";
 import {
   chooseLeadModels,
   companyDefaultModels,
-  codexAgentsAllowed,
   isDevServer,
   leadModelProblem,
   nonClaudeLeadModel,
@@ -797,7 +796,6 @@ const make = Effect.gen(function* () {
             // A model the host can't run falls back to the company default; the page says so.
             const hostSettings = yield* settings.getSettings;
             const devServer = yield* isDevServer;
-            const codex = yield* codexAgentsAllowed;
             const providers = Option.isSome(providerRegistry)
               ? yield* providerRegistry.value.getProviders
               : null;
@@ -808,10 +806,10 @@ const make = Effect.gen(function* () {
                 Effect.orElseSucceed(() => null),
               ),
               problemOf: (candidate) =>
-                leadModelProblem(hostSettings, providers, candidate, devServer, codex),
+                leadModelProblem(hostSettings, providers, candidate, devServer),
             });
             // Provisioning refuses these too; a row written another way still never launches.
-            const notClaude = nonClaudeLeadModel(hostSettings, models, devServer, codex);
+            const notClaude = nonClaudeLeadModel(hostSettings, models, devServer);
             if (notClaude !== undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: notClaude });
             // T3 starts the run that answers a finished task at once: own it before the slow

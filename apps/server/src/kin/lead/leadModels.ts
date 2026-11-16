@@ -1,6 +1,5 @@
 import type { KinOrgId, ModelSelection, ServerProvider, ServerSettings } from "@t3tools/contracts";
 import { KinLead } from "@t3tools/contracts";
-import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -24,21 +23,11 @@ export const isDevServer = Effect.serviceOption(ServerConfig).pipe(
   Effect.map(Option.exists((config) => config.devUrl !== undefined)),
 );
 
-/**
- * The host's switch for agents on OpenAI models: off, an agent runs only on Claude. On, also on
- * Codex, whose Kin threads `CodexIsolation` runs with no shell, files or web in any chat.
- */
-export const codexAgentsAllowed = Config.Boolean("KIN_NON_CLAUDE_AGENTS").pipe(
-  Config.withDefault(false),
-  Effect.orElseSucceed(() => false),
-);
-
 /** Only Claude and confined Codex sessions get a lead's no-shell tool set; a lead runs on no other. */
 export const nonClaudeLeadModel = (
   settings: ServerSettings,
   models: LeadModels,
   devServer = false,
-  codex = false,
 ): string | undefined => {
   const instances = deriveProviderInstanceConfigMap(settings);
   for (const role of ["strong", "cheap"] as const) {
@@ -46,8 +35,8 @@ export const nonClaudeLeadModel = (
     const driver = instances[instanceId]?.driver;
     if (devServer && instanceId === KIN_VERIFY_SCRIPT_INSTANCE_ID && driver === "acpRegistry")
       continue;
-    if (driver === "claudeAgent" || (codex && driver === "codex")) continue;
-    return `Kin agents run only on Claude, and the ${role} model's instance ${instanceId} is ${driver === undefined ? "not a configured provider" : `a ${driver} instance`}. Workers may still use any provider.`;
+    if (driver === "claudeAgent" || (settings.kinNonClaudeAgents && driver === "codex")) continue;
+    return `Kin agents run only on Claude, and the ${role} model's instance ${instanceId} is ${driver === undefined ? "not a configured provider" : `a ${driver} instance`}. Workers may still use any provider.${driver === "codex" ? " To use Codex, turn on Agents on OpenAI models in Kin's Settings." : ""}`;
   }
   return undefined;
 };
@@ -69,9 +58,8 @@ export const leadModelProblem = (
   providers: ReadonlyArray<ServerProvider> | null,
   models: LeadModels,
   devServer = false,
-  codex = false,
 ): string | undefined => {
-  const notClaude = nonClaudeLeadModel(settings, models, devServer, codex);
+  const notClaude = nonClaudeLeadModel(settings, models, devServer);
   if (notClaude !== undefined) return notClaude;
   if (providers === null) return undefined;
   for (const role of ["strong", "cheap"] as const) {
@@ -129,11 +117,10 @@ export const turnModels = Effect.fn("KinLeadModels.turnModels")(function* (
   const registry = yield* Effect.serviceOption(ProviderRegistry);
   const providers = Option.isSome(registry) ? yield* registry.value.getProviders : null;
   const devServer = yield* isDevServer;
-  const codex = yield* codexAgentsAllowed;
   const chosen = chooseLeadModels({
     own,
     companyDefault: yield* companyDefaultModels(orgId),
-    problemOf: (models) => leadModelProblem(settings, providers, models, devServer, codex),
+    problemOf: (models) => leadModelProblem(settings, providers, models, devServer),
   });
   return { ...chosen, providers };
 });
