@@ -51,6 +51,28 @@ export type KinHoldRule = {
   readonly hours?: KinWorkHours | undefined;
 };
 
+const minutesOf = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
+
+/**
+ * The rule for one person. Working hours that never fall outside their quiet hours (or name no
+ * day) would hold every line for good, so then only quiet hours hold.
+ */
+export const holdRule = (
+  zone: string,
+  quiet: KinQuietHours,
+  hours: KinWorkHours | undefined,
+): KinHoldRule => {
+  if (hours === undefined || hours.days.length === 0) return { zone, quiet };
+  const from = minutesOf(quiet.from);
+  const to = minutesOf(quiet.to);
+  for (let minute = minutesOf(hours.start); minute < minutesOf(hours.end); minute += 1) {
+    const inQuiet =
+      from < to ? minute >= from && minute < to : from > to && (minute >= from || minute < to);
+    if (!inQuiet) return { zone, quiet, hours };
+  }
+  return { zone, quiet };
+};
+
 /** Why a line to them waits at `at`, or undefined when it goes now. */
 export const heldAt = (rule: KinHoldRule, at: number): "quiet" | "off" | undefined =>
   isQuiet(at, rule.zone, rule.quiet)

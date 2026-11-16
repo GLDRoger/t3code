@@ -7,16 +7,16 @@ description: Model-check Kin's riskiest flows (the send card, a turn's reply, th
 
 Eight small TLA+ models live in `verification/kin/<name>/`. Each has a `README.md` with its rules, bound, what it leaves out, and the files it covers.
 
-| Model        | Run it when you change                                                                                                                                                                              |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `send`       | `connections/ConnectionsService.ts` asks and sends, `connections/Sending.ts`, `work/cardAnswers.ts`, start-up resume in `layer.ts`                                                                  |
-| `reply`      | `reply/KinReplyBridge.ts`, `lead/WakeupRunner.ts` finish and cleanup, `lead/KinEventQueue.ts` claim, steer and requeue, `floor/KinFloor.ts`, relays and nudges                                      |
-| `checkin`    | `scheduledTasks/Schedule.ts` or `ScheduledTaskService.ts` timing, `pulse/checkIn*.ts`, `pulse/KinPulse.ts` holds, `triggers/kinSchedules.ts`                                                        |
-| `money`      | `gendocs/receiptProposals.ts`, `gendocs/receipts.ts`, `work/statements/statementApply.ts`, `statementReview.ts`, `statementMatch.ts`, `KinRecords.ts` payments                                      |
-| `people`     | `people/KinPeople.ts`, `KinAccess.ts`, `personNamed.ts`, `work/teamView.ts`, `lead/Audience.ts`, `lead/ChatSharing.ts`                                                                              |
-| `tasks`      | `work/KinRecords.ts` hand-offs, `leadWork.ts` assign and hand back, `ownerWork.ts`, `assignNotices.ts`, `teamView.ts`, `pulse/senses/work.ts`                                                       |
-| `discussion` | `team/turns.ts`, `team/KinTeam.ts`, `team/stakes.ts`, the Team room's viewer rule in `chat/KinChatService.ts` and `chat/KinGroups.ts`, `lead/Handoff.ts` report-back, `lead/WakeupRunner.ts` finish |
-| `stream`     | `work/workStream.ts`, `KinRecords.ts` ticks (`logChange`, `peopleMoved`, `announce`), `teamView.ts` numbers, client `kinWorkRows.ts` and `kinWorkStream.ts`                                         |
+| Model        | Run it when you change                                                                                                                                                                                    |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `send`       | `connections/ConnectionsService.ts` asks and sends, `connections/Sending.ts`, `work/cardAnswers.ts`, start-up resume in `layer.ts`                                                                        |
+| `reply`      | `reply/KinReplyBridge.ts`, `lead/WakeupRunner.ts` finish and cleanup, `lead/KinEventQueue.ts` claim, steer and requeue, `floor/KinFloor.ts`, relays and nudges                                            |
+| `checkin`    | `scheduledTasks/Schedule.ts` or `ScheduledTaskService.ts` timing, `pulse/checkIn*.ts`, `pulse/KinPulse.ts` holds, `triggers/kinSchedules.ts`, `triggers/quietHold.ts`, `quietHours.ts`, `heldDelivery.ts` |
+| `money`      | `gendocs/receiptProposals.ts`, `gendocs/receipts.ts`, `work/statements/statementApply.ts`, `statementReview.ts`, `statementMatch.ts`, `KinRecords.ts` payments                                            |
+| `people`     | `people/KinPeople.ts`, `KinAccess.ts`, `personNamed.ts`, `pulse/senses/work.ts`, `work/teamView.ts`, `lead/Audience.ts`, `lead/ChatSharing.ts`                                                            |
+| `tasks`      | `work/KinRecords.ts` hand-offs, `leadWork.ts` assign and hand back, `ownerWork.ts`, `assignNotices.ts`, `teamView.ts`, `pulse/senses/work.ts`                                                             |
+| `discussion` | `team/turns.ts`, `team/KinTeam.ts`, `team/stakes.ts`, the Team room's viewer rule in `chat/KinChatService.ts` and `chat/KinGroups.ts`, `lead/Handoff.ts` report-back, `lead/WakeupRunner.ts` finish       |
+| `stream`     | `work/workStream.ts`, `KinRecords.ts` ticks (`logChange`, `peopleMoved`, `announce`), `teamView.ts` numbers, client `kinWorkRows.ts` and `kinWorkStream.ts`                                               |
 
 Paths are under `apps/server/src` and `apps/server/src/kin`. `MODEL_COVERS` in `scripts/kin-model.ts` lists the same files; `vp run check:changed` runs a model when one of them, its folder or the runner changes, and skips it with "skipped: Java not found" when no Java is installed.
 

@@ -16,6 +16,8 @@ export const rules: Record<string, string> = {
   DoneReversible: "A task marked done can always be reopened.",
   OneNoticePerHandOff:
     "Every hand-off tells whoever receives it exactly once, unless they moved it themselves.",
+  AskerIsGiver:
+    "When someone asks the agent to give a task, they gave it, so handing it back returns it to them; the agent is the giver only on its own.",
 };
 
 export const variants = [
@@ -43,6 +45,11 @@ export const variants = [
     name: "screen-hand-back-silent",
     breaks: "OneNoticePerHandOff",
     what: "a teammate handing a task back on their screen tells no one (the code before this change)",
+  },
+  {
+    name: "agent-gives",
+    breaks: "AskerIsGiver",
+    what: "the agent is the giver whoever asked it (the code before this change)",
   },
 ];
 
@@ -75,6 +82,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
           : (names[String(to["holder"])] ?? String(to["holder"]));
       if (to["holder"] === "owner") return "You take it back";
       if (to["byAgent"] === true) return `The agent gives it to ${receiver}`;
+      if (to["asked"] !== "none" && to["asked"] !== undefined)
+        return `${names[String(to["asked"])] ?? "Someone"} asks the agent to give it to ${receiver}`;
       if (to["holder"] === "agent" && to["byPerson"] === "owner")
         return from["holder"] === "agent" ? null : "It goes to the agent";
       const giver = names[String(to["byPerson"])] ?? "Someone";

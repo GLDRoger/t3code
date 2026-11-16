@@ -50,6 +50,7 @@ import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import type { KinLeadFormTarget } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";
 import { KinStandInLine } from "./KinStandInLine";
+import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinInbox } from "./useKinHost";
 
 const STATE_COPY: Record<
@@ -109,7 +110,7 @@ export function KinChatList() {
     );
   }
   if (state._tag !== "ready") {
-    const copy = STATE_COPY[state._tag];
+    const copy = kinAccessCopy(state._tag, STATE_COPY[state._tag]);
     return (
       <Empty size="compact">
         <EmptyHeader>

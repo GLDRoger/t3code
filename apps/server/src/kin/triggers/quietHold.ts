@@ -17,7 +17,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { WriteAudience } from "../chat/KinChatRepository.ts";
 import { ownerZone } from "../work/recordRows.ts";
-import { freeAt, heldAt, KIN_DEFAULT_QUIET_HOURS, type KinHoldRule } from "./quietHours.ts";
+import { freeAt, heldAt, holdRule, KIN_DEFAULT_QUIET_HOURS } from "./quietHours.ts";
 
 const MINUTE = 60_000;
 /** A message they sent this recently is one a line to them answers, whatever the hour. */
@@ -69,11 +69,7 @@ const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, person
   );
   const holds = person?.hold === null || person?.hold === undefined ? !owner : person.hold === 1;
   const hours = holds && person?.hours != null ? decodeHours(person.hours) : Option.none();
-  return {
-    zone,
-    quiet,
-    ...(Option.isSome(hours) ? { hours: hours.value } : {}),
-  } satisfies KinHoldRule;
+  return holdRule(zone, quiet, Option.getOrUndefined(hours));
 });
 
 /** Whether a line to `personId` waits at `now`, why, and the first minute it may go. */

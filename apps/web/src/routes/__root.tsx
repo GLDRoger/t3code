@@ -53,6 +53,7 @@ import { resolveInitialServerAuthGateState } from "../environments/primary";
 import { GUEST_PAGE_PATH } from "../guestPage";
 import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
 import { kinListAt } from "../kin/kinListSwitch";
+import { rememberKinTeammate } from "../kin/kinTeammateMark";
 import { hasHostedPairingRequest, isHostedStaticApp } from "../hostedPairing";
 import { useHostedPromptLinkLanding } from "../components/promptLinks/HostedPromptLinkLanding";
 import { isLocalEnvironmentDisabled } from "../localEnvironment";
@@ -109,6 +110,7 @@ export const Route = createRootRoute({
     if (authGateState.status === "authenticated") {
       // Idempotent, so every navigation can ask for it.
       void configureClientTracing();
+      rememberKinTeammate(authGateState.chatOnly === true);
     }
     if (
       authGateState.status === "authenticated" &&
