@@ -83,24 +83,24 @@ for name in "Change this with your agent" "Snooze this reminder for 10 minutes" 
   "Snooze this reminder for an hour" "Snooze this reminder to tomorrow at 9:00" "Mark this reminder done"; do
   expect_in "$card" "$name" "Zoya's due reminder has no \"$name\""
 done
-kv as zoya web click --name "Snooze this reminder for 10 minutes" >/dev/null
+kv as zoya web click --name "Snooze this reminder for 10 minutes" --within "$WHAT" >/dev/null
 wait_state "$ITEM" snoozed "Zoya's Snooze didn't snooze her reminder"
-until() { q "select json_extract(snapshot_json, '\$.snoozedUntil') from kin_deferral_runs where item_id = '$ITEM'"; }
-soon="$(until)"
-kv as zoya web click --name "Snooze this reminder to tomorrow at 9:00" >/dev/null || fail "no Tomorrow 9:00 after a snooze"
+snoozed_until() { q "select json_extract(snapshot_json, '\$.snoozedUntil') from kin_deferral_runs where item_id = '$ITEM'"; }
+soon="$(snoozed_until)"
+kv as zoya web click --name "Snooze this reminder to tomorrow at 9:00" --within "$WHAT" >/dev/null || fail "no Tomorrow 9:00 after a snooze"
 for _ in $(seq 1 15); do
-  [[ "$(until)" != "$soon" ]] && break
+  [[ "$(snoozed_until)" != "$soon" ]] && break
   sleep 1
 done
 # Tomorrow at 9:00 is at least nine hours past a ten-minute snooze.
-(($(until) > soon + 8 * 3600000)) || fail "Zoya's Tomorrow 9:00 didn't move her reminder ($soon to $(until))"
-kv as zoya web click --name "Change this with your agent" >/dev/null || fail "Zoya has no Change on her reminder"
+(($(snoozed_until) > soon + 8 * 3600000)) || fail "Zoya's Tomorrow 9:00 didn't move her reminder ($soon to $(snoozed_until))"
+kv as zoya web click --name "Change this with your agent" --within "$WHAT" >/dev/null || fail "Zoya has no Change on her reminder"
 for _ in $(seq 1 15); do
   [[ "$(q "select count(*) from kin_messages where chat_id = '$CHAT' and kind = 'widget_action' and body like '%\"change\"%'")" -ge 1 ]] && break
   sleep 1
 done
 [[ "$(q "select count(*) from kin_messages where chat_id = '$CHAT' and kind = 'widget_action' and body like '%\"change\"%'")" -ge 1 ]] ||
   fail "Zoya's Change didn't reach her agent"
-kv as zoya web click --name "Mark this reminder done" >/dev/null || fail "Zoya has no Done on her reminder"
+kv as zoya web click --name "Mark this reminder done" --within "$WHAT" >/dev/null || fail "Zoya has no Done on her reminder"
 wait_state "$ITEM" done "Zoya's Done didn't finish her reminder"
 pass "Zoya set her own reminder and nothing for anyone else; moved and cancelled her own, not the owner's; it came due in her chat, rang her phone, and her Snooze, Tomorrow 9:00, Change and Done each worked"
