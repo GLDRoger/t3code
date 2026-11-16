@@ -58,6 +58,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   as <person> web snapshot [--full]       accessibility tree of the open sheet/dialog, else main
   as <person> web click --name "<name>" [--role r] [--nth n] [--within "<card or section name>"]
   as <person> web type [--name "<field>"] "<text>" [--enter]
+  as <person> web attach <file> [<file>…]  files in the open chat's composer; then type --enter
   as <person> web wait "<text>" [--gone] [--timeout <s>]
   as <person> web screenshot <path> [--full]   (refuses paths under ~/.t3)
   as <person> rpc <method> ['<json>']     a client RPC as that person (orgId is filled in)
@@ -281,6 +282,12 @@ async function web(instance: Instance, person: string, args: Args) {
         enter: args.flags.has("enter"),
       });
       console.log(`typed ${text.length} chars${args.flags.has("enter") ? " + Enter" : ""}`);
+      return;
+    }
+    case "attach": {
+      if (rest.length === 0) throw new VerifyError("attach needs one or more file paths");
+      await Web.attach(session, rest);
+      console.log(`attached ${rest.length} file(s)`);
       return;
     }
     case "wait": {
