@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 import { parse as parseYaml } from "yaml";
 
 import { SHARED_TOOLS } from "../lead/SharedTools.ts";
+import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 
 const REPO_ROOT = NodePath.resolve(import.meta.dirname, "..", "..", "..", "..", "..");
 const FEATURE_MAP_PATH = NodePath.join(import.meta.dirname, "feature-map.yaml");
@@ -86,7 +87,10 @@ export function readInventory(root = REPO_ROOT): Inventory {
     .slice(0, screens.indexOf("\n};"))
     .matchAll(/\n {2}(\w+): createNativeStackScreen\(\{([\s\S]*?)\n {2}\}\),/g))
     phoneScreens.set(match[1]!, /sheetRoute/.test(match[2]!) ? "sheet" : "page");
-  return { webRoutes, webParams, phoneScreens, tools: new Set(Object.keys(SHARED_TOOLS)) };
+  // T3's own tools, lent to an owner-only turn, are listed and tested in `lead/t3Tools.ts`.
+  const t3: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
+  const tools = new Set(Object.keys(SHARED_TOOLS).filter((tool) => !t3.has(tool)));
+  return { webRoutes, webParams, phoneScreens, tools };
 }
 
 export function loadFeatureMap(path = FEATURE_MAP_PATH): FeatureMap {
