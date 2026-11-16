@@ -317,7 +317,8 @@ features:
     phone: [tab:chats, KinChat, KinLead, KinAgentCharacter]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
-      The owner and co-owners see and change everything on it: model and effort, character with its
+      The owner and co-owners see and change everything on it: its one model and effort (Medium or
+      High recommended, the rest still selectable), character with its
       history, check-ins, access, pause and resume, retire and restore. Leads and members get a short
       read-only card. New agents start on the company default model (Settings, Agents); a
       model this server no longer has falls back to it and the page says so. Also opens from an

@@ -332,7 +332,6 @@ export const poll = Effect.fn("KinPulseOutside.poll")(function* (
           provenance: { _tag: "system" },
           factKeys: [],
           outside: [line],
-          strong: true,
         }),
         yield* heldUntil(orgId, agentId, at),
       )

@@ -3,7 +3,7 @@ import { ProviderInstanceId, type ServerProvider, ServerSettings } from "@t3tool
 import * as Schema from "effect/Schema";
 
 import { matchModel } from "./agentUpdate.ts";
-import { chooseLeadModels, leadModelProblem, nonClaudeLeadModel } from "./leadModels.ts";
+import { chooseLeadModel, leadModelProblem, nonClaudeLeadModel } from "./leadModels.ts";
 
 const settings = Schema.decodeSync(ServerSettings)({
   providerInstances: {
@@ -15,8 +15,8 @@ const settings = Schema.decodeSync(ServerSettings)({
   },
 });
 const on = (instanceId: string) => ({
-  strong: { instanceId: ProviderInstanceId.make(instanceId), model: "m" },
-  cheap: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "m" },
+  instanceId: ProviderInstanceId.make(instanceId),
+  model: "m",
 });
 
 describe("nonClaudeLeadModel", () => {
@@ -61,45 +61,41 @@ const claude = (models: ReadonlyArray<string>, enabled = true) =>
     })),
   }) as unknown as ServerProvider;
 const pick = (model: string) => ({ instanceId: ProviderInstanceId.make("claudeAgent"), model });
-const both = (strong: string, cheap = "claude-haiku-4-5") => ({
-  strong: pick(strong),
-  cheap: pick(cheap),
-});
 
-describe("chooseLeadModels", () => {
+describe("chooseLeadModel", () => {
   const providers = [claude(["claude-sonnet-4-6", "claude-haiku-4-5"])];
-  const problemOf = (models: ReturnType<typeof both>) =>
-    leadModelProblem(settings, providers, models);
-  it("runs on the agent's own models when the host offers them", () => {
-    const own = both("claude-sonnet-4-6");
-    assert.deepStrictEqual(chooseLeadModels({ own, companyDefault: null, problemOf }), {
-      models: own,
+  const problemOf = (model: ReturnType<typeof pick>) =>
+    leadModelProblem(settings, providers, model);
+  it("runs on the agent's own model when the host offers it", () => {
+    const own = pick("claude-sonnet-4-6");
+    assert.deepStrictEqual(chooseLeadModel({ own, companyDefault: null, problemOf }), {
+      model: own,
       note: null,
     });
   });
   it("falls back to the company default and says why when its model is gone", () => {
-    const chosen = chooseLeadModels({
-      own: both("claude-opus-3"),
-      companyDefault: both("claude-sonnet-4-6"),
+    const chosen = chooseLeadModel({
+      own: pick("claude-opus-3"),
+      companyDefault: pick("claude-sonnet-4-6"),
       problemOf,
     });
-    assert.strictEqual(chosen.models.strong.model, "claude-sonnet-4-6");
+    assert.strictEqual(chosen.model.model, "claude-sonnet-4-6");
     assert.match(chosen.note ?? "", /claude-opus-3 isn't offered.*company default/);
   });
   it("keeps its own when the default can't run either, so the turn is refused as before", () => {
-    const chosen = chooseLeadModels({
-      own: both("claude-opus-3"),
-      companyDefault: both("claude-opus-2"),
+    const chosen = chooseLeadModel({
+      own: pick("claude-opus-3"),
+      companyDefault: pick("claude-opus-2"),
       problemOf,
     });
-    assert.strictEqual(chosen.models.strong.model, "claude-opus-3");
+    assert.strictEqual(chosen.model.model, "claude-opus-3");
   });
   it("treats a switched-off Claude as unavailable", () => {
     assert.match(
       leadModelProblem(
         settings,
         [claude(["claude-sonnet-4-6"], false)],
-        both("claude-sonnet-4-6"),
+        pick("claude-sonnet-4-6"),
       ) ?? "",
       /isn't available/,
     );
@@ -151,7 +147,10 @@ describe("matchModel", () => {
     });
   });
   it("says what it has when the words name nothing offered", () => {
-    assert.match(String(matchModel(providers, "gpt", undefined, current)), /no Claude model/);
+    assert.match(
+      String(matchModel(providers, "gpt", undefined, current)),
+      /no Claude model called gpt/,
+    );
     assert.match(String(matchModel(providers, "sonnet", "turbo", current)), /no turbo effort/);
   });
 });

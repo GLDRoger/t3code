@@ -14,7 +14,7 @@ import {
   kinLeadDraftCheck,
   kinLeadDraftOf,
   kinLeadSaveProblem,
-  kinLeadStartingModels,
+  kinLeadStartingModel,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import type { ModelSelection } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -64,7 +64,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
       ? (suggested ?? { name: "", area: "", charter: "", intro: "" })
       : kinLeadDraftOf(lead),
   );
-  // The org's first agent picks the models; the host gives every later one the same.
+  // The org's first agent picks the model; the host gives every later one the same.
   const leads = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
   const [noModels, setNoModels] = useState(false);
   const firstAgent =
@@ -72,15 +72,14 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
     (noModels ||
       (AsyncResult.isSuccess(leads) &&
         leads.value.leads.every((held) => held.retired !== undefined)));
-  const { offered } = useKinAgentModels(environmentId);
+  const { offered, withMediumEffort } = useKinAgentModels(environmentId);
   const companyDefault = Option.getOrNull(
     AsyncResult.value(useAtomValue(kinClient.agentDefaults({ environmentId, input: { orgId } }))),
-  )?.models;
-  const [pickedModels, setPickedModels] = useState<{
-    readonly strong: ModelSelection;
-    readonly cheap: ModelSelection;
-  } | null>(null);
-  const models = pickedModels ?? companyDefault ?? kinLeadStartingModels(offered);
+  )?.model;
+  const [pickedModel, setPickedModel] = useState<ModelSelection | null>(null);
+  const starting = kinLeadStartingModel(offered);
+  const model =
+    pickedModel ?? companyDefault ?? (starting === null ? null : withMediumEffort(starting));
   const [character, setCharacter] = useState("");
   const [writeForMe, setWriteForMe] = useState(false);
   const setCharacterBody = useAtomCommand(kinClient.characterSet, { reportFailure: false });
@@ -98,7 +97,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
 
   const checked = kinLeadDraftCheck({ name, area, charter, intro });
   const areaInvalid = area.trim() !== "" && kinDomainSlug(area) === null;
-  const canSave = checked.ok && !busy && !(firstAgent && models === null);
+  const canSave = checked.ok && !busy && !(firstAgent && model === null);
 
   const save = async () => {
     if (!checked.ok || busy) return;
@@ -118,9 +117,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
               domain,
               charter: leadCharter,
               ...(leadIntro === "" ? undefined : { intro: leadIntro }),
-              ...((firstAgent || pickedModels !== null) && models !== null
-                ? { models }
-                : undefined),
+              ...((firstAgent || pickedModel !== null) && model !== null ? { model } : undefined),
             },
           }).then(async (result) => {
             if (result._tag !== "Success") return { cause: squashAtomCommandFailure(result) };
@@ -155,7 +152,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
     setBusy(false);
     if ("cause" in saved) {
       const { cause } = saved;
-      // Another device retired the last agent meanwhile: the models are this form's to choose.
+      // Another device retired the last agent meanwhile: the model is this form's to choose.
       if (typeof cause === "object" && cause !== null && "reason" in cause) {
         if (cause.reason === "no_models") setNoModels(true);
       }
@@ -253,27 +250,17 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
               {lead === null ? (
                 <fieldset className="flex flex-col gap-2">
                   <legend className="mb-1.5 text-sm font-medium">{KIN_LEAD_MODELS.title}</legend>
-                  {models === null ? (
+                  {model === null ? (
                     <p className="text-xs text-destructive-foreground">{KIN_LEAD_MODELS.none}</p>
                   ) : (
                     <>
-                      {(["strong", "cheap"] as const).map((role) => (
-                        <div
-                          key={role}
-                          className="flex flex-wrap items-center justify-between gap-2"
-                        >
-                          <Label>{KIN_LEAD_MODELS[role]}</Label>
-                          <KinAgentModelPicker
-                            environmentId={environmentId}
-                            disabled={busy}
-                            label={KIN_LEAD_MODELS[role]}
-                            selection={models[role]}
-                            onChange={(selection) =>
-                              setPickedModels({ ...models, [role]: selection })
-                            }
-                          />
-                        </div>
-                      ))}
+                      <KinAgentModelPicker
+                        environmentId={environmentId}
+                        disabled={busy}
+                        label={KIN_LEAD_MODELS.title}
+                        selection={model}
+                        onChange={setPickedModel}
+                      />
                       <p className="text-xs text-muted-foreground">
                         {firstAgent ? KIN_LEAD_MODELS.hint : KIN_AGENT_PAGE.modelDetail}
                       </p>

@@ -49,20 +49,19 @@ const jsonFlag = Flag.Boolean("json").pipe(
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeModel = Schema.decodeUnknownEffect(ModelSelection);
 
-const modelFlag = (name: "strong" | "cheap") =>
-  Flag.String(name).pipe(
-    Flag.withDescription(
-      `The agent's ${name} model as <provider instance id>:<model>, on a Claude instance, for example \`claudeAgent:claude-sonnet-4-6\`. Omit both to copy the org's first agent's models.`,
-    ),
-    Flag.optional,
-  );
+const modelFlag = Flag.String("model").pipe(
+  // Older host notes say --strong.
+  Flag.withAlias("strong"),
+  Flag.withDescription(
+    "The agent's model as <provider instance id>:<model>, on a Claude instance, for example `claudeAgent:claude-sonnet-4-6`. Omit it to use the company default, else the org's first agent's model.",
+  ),
+  Flag.optional,
+);
 
-const parseModel = Effect.fn("kin.lead.parseModel")(function* (
-  flag: "strong" | "cheap",
-  value: string,
-) {
+const parseModel = Effect.fn("kin.lead.parseModel")(function* (value: string) {
   const invalid = new KinLeadCliError({
-    message: `--${flag} must be <provider instance id>:<model>, for example claudeAgent:claude-sonnet-4-6.`,
+    message:
+      "--model must be <provider instance id>:<model>, for example claudeAgent:claude-sonnet-4-6.",
   });
   const split = value.indexOf(":");
   if (split < 1) return yield* invalid;
@@ -120,7 +119,7 @@ const describe = (lead: Provision.LeadSummary) =>
     `  domain ${lead.domain}, org ${lead.orgId}, owner ${lead.ownerPersonId}`,
     `  owner chat ${lead.ownerChatId}, created by ${lead.createdByPersonId ?? "unknown"}`,
     `  charter ${lead.charter === "" ? "none" : JSON.stringify(lead.charter)}`,
-    `  strong ${lead.models.strong.instanceId}:${lead.models.strong.model}, cheap ${lead.models.cheap.instanceId}:${lead.models.cheap.model}`,
+    `  model ${lead.model.instanceId}:${lead.model.model}`,
     `  worker projects ${lead.workerProjects.length === 0 ? "none" : lead.workerProjects.join(", ")}`,
     `  ${lead.retiredAt === null ? "live" : `retired ${lead.retiredAt}`}`,
   ].join("\n");
@@ -192,8 +191,7 @@ const createCommand = Command.make("create", {
   ),
   domain: domainFlag.pipe(Flag.withDefault("engineering")),
   charter: charterFlag.pipe(Flag.withDefault("")),
-  strong: modelFlag("strong"),
-  cheap: modelFlag("cheap"),
+  model: modelFlag,
   workerProjects: workerProjectsFlag,
   json: jsonFlag,
 }).pipe(
@@ -203,24 +201,14 @@ const createCommand = Command.make("create", {
   Command.withHandler((flags) =>
     runOnHost(flags, (provision) =>
       Effect.gen(function* () {
-        if (Option.isSome(flags.strong) !== Option.isSome(flags.cheap))
-          return yield* new KinLeadCliError({
-            message: "Pass both --strong and --cheap, or neither.",
-          });
-        const models =
-          Option.isSome(flags.strong) && Option.isSome(flags.cheap)
-            ? {
-                strong: yield* parseModel("strong", flags.strong.value),
-                cheap: yield* parseModel("cheap", flags.cheap.value),
-              }
-            : undefined;
+        const model = Option.isSome(flags.model) ? yield* parseModel(flags.model.value) : undefined;
         const creator = yield* creatorFrom(flags);
         const result = yield* provision.create({
           creator,
           name: flags.name,
           domain: flags.domain,
           charter: flags.charter,
-          models,
+          model,
           workerProjects: flags.workerProjects,
         });
         if (flags.json) return yield* Console.log(encodeJson(result));

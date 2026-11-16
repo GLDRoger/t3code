@@ -56,8 +56,8 @@ import {
 } from "./Audience.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import {
-  chooseLeadModels,
-  companyDefaultModels,
+  chooseLeadModel,
+  companyDefaultModel,
   isDevServer,
   leadModelProblem,
   nonClaudeLeadModel,
@@ -132,7 +132,7 @@ const LeadRow = Schema.Struct({
   name: Schema.String,
   level: KinLead.fields.level,
   threadId: Schema.NullOr(ThreadId),
-  models: Schema.fromJsonString(Schema.Struct({ strong: ModelSelection, cheap: ModelSelection })),
+  model: Schema.fromJsonString(ModelSelection),
   orgName: Schema.String,
   retiredAt: Schema.NullOr(Schema.String),
 });
@@ -231,7 +231,7 @@ const make = Effect.gen(function* () {
       const key = `${event.priority}:${asker}`;
       groups.set(key, [...(groups.get(key) ?? []), event]);
     }
-    const cheap: Array<boolean> = [];
+    const atLimit: Array<boolean> = [];
     const held: Array<{
       readonly events: ReadonlyArray<E>;
       readonly heldBy: KinBudget.HeldBy;
@@ -240,7 +240,7 @@ const make = Effect.gen(function* () {
     for (const [key, group] of groups) {
       const [priority, asker] = key.split(":") as ["P0" | "P1" | "P2" | "P3", "owner" | "teammate"];
       const admission = yield* budget.admit(orgId, priority, asker);
-      if (admission.allowed) cheap.push(admission.cheapOnly);
+      if (admission.allowed) atLimit.push(admission.atLimit);
       else
         held.push({
           events: group,
@@ -248,9 +248,8 @@ const make = Effect.gen(function* () {
           nextReset: admission.nextReset,
         });
     }
-    // The strong model runs while any work it takes still has room: a teammate's spending never
-    // moves the owner's own message to the cheaper one.
-    return { cheapOnly: cheap.length > 0 && cheap.every(Boolean), held };
+    // At the limit only when all its work is: a teammate's spending never counts as the owner's.
+    return { atLimit: atLimit.length > 0 && atLimit.every(Boolean), held };
   });
   const memory = yield* Memory.Memory;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
@@ -295,7 +294,7 @@ const make = Effect.gen(function* () {
 
   const lead = Effect.fn("WakeupRunner.lead")(function* (orgId: KinOrgId, agentId: KinAgentId) {
     const [row] = yield* sql`SELECT l.org_id AS "orgId", l.agent_id AS "agentId", l.name,
-      l.level, l.thread_id AS "threadId", l.models_json AS models, o.name AS "orgName", a.retired_at AS "retiredAt"
+      l.level, l.thread_id AS "threadId", l.models_json AS model, o.name AS "orgName", a.retired_at AS "retiredAt"
       FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
       JOIN kin_orgs o ON o.org_id = l.org_id WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}`;
     return yield* decodeLead(row);
@@ -765,7 +764,7 @@ const make = Effect.gen(function* () {
       yield* Effect.scoped(
         Effect.gen(function* () {
           let events = yield* Effect.acquireRelease(
-            queue.claim({ orgId, agentId, wakeupId, model: record.models.strong.model }),
+            queue.claim({ orgId, agentId, wakeupId, model: record.model.model }),
             (_, exit) =>
               cleanup(row, Exit.hasInterrupts(exit)).pipe(
                 Effect.catch((error) =>
@@ -799,9 +798,9 @@ const make = Effect.gen(function* () {
             const providers = Option.isSome(providerRegistry)
               ? yield* providerRegistry.value.getProviders
               : null;
-            const { models } = chooseLeadModels({
-              own: current.models,
-              companyDefault: yield* companyDefaultModels(orgId).pipe(
+            const { model: modelSelection } = chooseLeadModel({
+              own: current.model,
+              companyDefault: yield* companyDefaultModel(orgId).pipe(
                 provideSql,
                 Effect.orElseSucceed(() => null),
               ),
@@ -809,7 +808,7 @@ const make = Effect.gen(function* () {
                 leadModelProblem(hostSettings, providers, candidate, devServer),
             });
             // Provisioning refuses these too; a row written another way still never launches.
-            const notClaude = nonClaudeLeadModel(hostSettings, models, devServer);
+            const notClaude = nonClaudeLeadModel(hostSettings, modelSelection, devServer);
             if (notClaude !== undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: notClaude });
             // T3 starts the run that answers a finished task at once: own it before the slow
@@ -833,7 +832,7 @@ const make = Effect.gen(function* () {
               });
             }
             const admitted = yield* admitEvents(orgId, agentId, events);
-            const cheapOnly = admitted.cheapOnly;
+            const atLimit = admitted.atLimit;
             for (const group of admitted.held) {
               {
                 const deferred = new Set(group.events.map((item) => item.eventId));
@@ -875,8 +874,8 @@ const make = Effect.gen(function* () {
                 events = events.filter((event) => !deferred.has(event.eventId));
               }
             }
-            // The owner's own messages run on the cheaper model at the limit: they hear why once.
-            if (cheapOnly) yield* budget.notifyOwner(orgId, "org");
+            // At the limit only the owner's own messages run: they hear why once.
+            if (atLimit) yield* budget.notifyOwner(orgId, "org");
             const routines = yield* Effect.serviceOption(Routines.KinRoutines);
             if (Option.isSome(routines))
               events = yield* Effect.filter(events, (event) =>
@@ -1057,24 +1056,6 @@ const make = Effect.gen(function* () {
                 existingThreadId = null;
               }
             }
-            // Anyone writing to the agent one to one gets its strong model: what they ask may
-            // need a decision or a hand-over.
-            const urgent = yield* sql`SELECT 1 FROM kin_events e
-              WHERE e.org_id = ${orgId} AND e.wakeup_id = ${wakeupId}
-                AND (e.priority IN ('P0', 'P1') OR (e.tag = 'chat.message'
-                  AND json_extract(e.json, '$.provenance._tag') = 'human'
-                  AND EXISTS (SELECT 1 FROM kin_chats c WHERE c.org_id = e.org_id
-                    AND c.chat_id = json_extract(e.json, '$.chatId') AND c.kind = 'direct')))
-              LIMIT 1`;
-            const modelSelection =
-              !cheapOnly &&
-              (urgent.length > 0 ||
-                events.some(
-                  (event) =>
-                    event._tag === "routine" || (event._tag === "pulse" && event.strong === true),
-                ))
-                ? models.strong
-                : models.cheap;
             // A join aborted it while it prepared: nothing launches, a fresh wake-up answers.
             if (yield* isAborted(row)) {
               yield* queue.finish({ orgId, wakeupId, status: "failed" });

@@ -18,7 +18,7 @@ GROWTH="Growth$suffix"
 for pair in "$SOCIAL|social-$RUN|Runs Ambermill's posts, brochures and studio look." \
   "$GROWTH|growth-$RUN|Finds new clients and keeps the fair leads warm."; do
   IFS='|' read -r name domain charter <<<"$pair"
-  kv as owner rpc kin.lead.create "{\"name\":\"$name\",\"domain\":\"$domain\",\"charter\":\"$charter\",\"models\":{\"strong\":$MODEL,\"cheap\":$MODEL}}" >/dev/null ||
+  kv as owner rpc kin.lead.create "{\"name\":\"$name\",\"domain\":\"$domain\",\"charter\":\"$charter\",\"model\":$MODEL}" >/dev/null ||
     fail "couldn't make $name"
 done
 

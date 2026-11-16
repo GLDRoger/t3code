@@ -164,8 +164,6 @@ describe("pulse check-ins", () => {
       );
       assert.strictEqual(tuesday._tag, "queued");
       assert.notStrictEqual(looseOffsetMs(afternoon, "2026-11-17"), offset);
-      // A late task is a judgement call: the main model.
-      assert.isTrue(JSON.parse(events[0]!.json).strong);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -444,13 +442,6 @@ describe("pulse check-ins", () => {
           ["t1:a", null],
         ],
       );
-      assert.isTrue(parsed.strong);
-      // Run 4: a brief with nothing matched or late still ran on the small model.
-      yield* checkIn(SLOT + DAY, {
-        lines: [mail("t3:a", "Shop <news@shop.example>", "Sale")],
-        seen: [],
-      });
-      assert.isTrue((yield* pulseEvents).every((one) => JSON.parse(one.json).strong === true));
     }).pipe(Effect.provide(layer)),
   );
 
@@ -503,7 +494,6 @@ describe("pulse check-ins", () => {
           events.map((event) => event.agent),
           [chief, finance, chief],
         );
-        assert.isTrue(events.every((event) => JSON.parse(event.json).strong === true));
       }).pipe(Effect.provide(layer)),
   );
 

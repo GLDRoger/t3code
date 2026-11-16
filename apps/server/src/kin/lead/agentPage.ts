@@ -19,7 +19,7 @@ import { KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { type LeadCreator, profileIn, retirable } from "./KinLeadProvision.ts";
 import * as LeadAccess from "./LeadAccess.ts";
-import { turnModels } from "./leadModels.ts";
+import { turnModel } from "./leadModels.ts";
 import { setCharacter } from "./characters.ts";
 
 const CHARACTER_ORIGIN = "kin-character:";
@@ -44,7 +44,7 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
   const { lead } = yield* retirable(input);
   const { orgId, agentId } = lead;
   const persistence = toPersistenceSqlError("KinAgentPage.read");
-  const runs = yield* turnModels(orgId, lead.models).pipe(Effect.mapError(persistence));
+  const runs = yield* turnModel(orgId, lead.model).pipe(Effect.mapError(persistence));
   const [character] = yield* sql<{ key: string; body: string }>`SELECT r.key, v.body
     FROM kin_records r JOIN kin_doc_versions v ON v.org_id = r.org_id AND v.record_id = r.record_id
     WHERE r.org_id = ${orgId} AND r.register_id = 'docs'
@@ -74,8 +74,8 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
   const team = yield* LeadAccess.teamAgent(orgId).pipe(Effect.mapError(persistence));
   return {
     profile: yield* profileIn(lead),
-    models: lead.models,
-    runsOn: runs.models,
+    model: lead.model,
+    runsOn: runs.model,
     modelNote: runs.note,
     character:
       character === undefined

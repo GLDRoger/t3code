@@ -1041,7 +1041,7 @@ it.effect(
         yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
             worker_projects_json, owner_chat_id)
           VALUES (${agentId}, ${orgId}, ${name}, 0,
-            '{"strong":{"instanceId":"codex","model":"s"},"cheap":{"instanceId":"codex","model":"c"}}',
+            '{"instanceId":"codex","model":"s"}',
             '[]', ${chat.chatId})`;
         return agentId;
       });
