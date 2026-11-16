@@ -13,6 +13,7 @@ import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import {
   KIN_NEEDS_YOU_SHOWN,
   KIN_WORK_HOME,
+  kinNeedsPane,
   kinNeedsYou,
   type KinNeedsYouOpen,
   type KinNeedsYouRow,
@@ -28,6 +29,7 @@ import { cn } from "../lib/utils";
 import { KinAttentionHandled, KinAttentionItem, kinAttentionNames } from "./KinAttention";
 import { KinWorkSection } from "./KinWorkParts";
 import { useKinAttention, useKinAttentionHandle } from "./useKinAttention";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinInbox } from "./useKinHost";
 import { kinListsOf, useKinLists, useKinMoneySummary } from "./useKinMoney";
@@ -121,6 +123,7 @@ export function KinNeedsYou(
     },
 ) {
   const read = useKinNeedsRows({ ...props, names: props.directory.names }, props.mine);
+  const pane = kinNeedsPane(useKinOwnerLevel(props.environmentId));
   if (read === null) return null;
   const cut = kinTasksBlock({
     ownerLevel: true,
@@ -137,9 +140,9 @@ export function KinNeedsYou(
       {...read}
       attention={cut?.attention ?? []}
       needs={cut?.needs ?? []}
-      title={KIN_WORK_HOME.needsYou}
+      title={pane.title}
       total={cut?.total ?? 0}
-      empty={KIN_WORK_HOME.nothingNeedsYou}
+      empty={pane.empty}
     />
   );
 }
