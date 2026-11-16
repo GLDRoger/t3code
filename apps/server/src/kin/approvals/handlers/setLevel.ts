@@ -55,5 +55,5 @@ export const makeSetLevelHandler = Effect.gen(function* () {
   });
 
   // A local write with no GitHub credential, so the hygiene check doesn't gate it.
-  return { kind: "set_level" as const, credentialCheck: false, precheck, run, reconcile };
+  return { kind: "set_level" as const, precheck, run, reconcile };
 });

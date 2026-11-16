@@ -608,7 +608,6 @@ it.effect("a teammate joining aborts the owner-only turn, and leaving reopens no
       ["kin_chat_post", { chatId: "room", body: "Invented", intent: "evidence" }],
       ["kin_widget_upsert", { chatId: "room", type: "task", state: taskState }],
       ["kin_hand_off", { toAgentId: "other", brief: "Invented" }],
-      ["request_action", { kind: "merge", summary: "Invented" }],
       ["kin_defer", { title: "Invented", due: "2026-12-01T09:00:00Z" }],
     ] as const;
     // Only the chat tools are registered here; the gate asks `toolAdmitted` the same for all.

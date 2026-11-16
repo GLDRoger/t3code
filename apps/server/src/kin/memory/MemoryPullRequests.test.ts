@@ -8,14 +8,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
-import * as Redacted from "effect/Redacted";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
-import { KinGitHubApp } from "../github/KinGitHubApp.ts";
-import { fakeGitHub, type FakeAnswer, type RecordedRequest } from "../github/testFakes.ts";
+import { KinGitHubApi } from "../github/GitHubWatch.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import { FIXTURE_QUOTE, FIXTURE_SAID, fixtureItem } from "./__fixtures__/items.ts";
 import * as Memory from "./Memory.ts";
@@ -29,6 +27,21 @@ const orgId = KinOrgId.make("fixture-org");
 const agentId = KinAgentId.make("fixture-lead");
 const repo = "GLDRoger/kin-memory-fixture";
 const gitLayer = Vcs.layer.pipe(Layer.provide(NodeServices.layer));
+
+interface RecordedRequest {
+  readonly method: string;
+  readonly path: string;
+  readonly body: unknown;
+}
+interface FakeAnswer {
+  /** Never answers, like a `gh` call GitHub leaves hanging. */
+  readonly hang?: true;
+  /** Sends the status and headers, then never the body; `gh` never returns either. */
+  readonly stallBody?: true;
+  readonly status: number;
+  readonly body?: unknown;
+  readonly headers?: Record<string, string>;
+}
 
 it.each([
   ["git@github.com:GLDRoger/kin-memory.git", "GLDRoger/kin-memory"],
@@ -70,7 +83,7 @@ const scenarios = [
   "hang",
   "stall-body",
   "run-from-fork",
-  "no-app",
+  "no-pull-requests",
   "batched",
   "restart",
   "repeat-edit",
@@ -111,7 +124,6 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     // A GitHub over the bare remote: it squash-merges there, as the real one would.
     const pulls = new Map<number, { branch: string; state: string; base: string; sha?: string }>();
     const merges: Array<{ number: number; body: unknown }> = [];
-    const tokens: Array<unknown> = [];
     // The request GitHub never answers in `hang` and `stall-body`.
     const silenced = yield* Deferred.make<void>();
     let stalls = 0;
@@ -419,21 +431,27 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           return { status: 201, body: {} };
         return { status: 404, body: { message: "Not Found" } };
       }).pipe(Effect.orDie);
-    const github = fakeGitHub(route);
-    const app = Layer.succeed(
-      KinGitHubApp,
-      KinGitHubApp.of({
-        app: Effect.die("unused"),
-        installations: Effect.die("unused"),
-        patchHookConfig: () => Effect.die("unused"),
-        installationToken: (input) =>
-          Effect.sync(() => {
-            tokens.push(input);
+    // GitHub as the owner's `gh` login, over `route`.
+    const github = { requests: [] as Array<RecordedRequest> };
+    const api = Layer.succeed(
+      KinGitHubApi,
+      KinGitHubApi.of({
+        connected: () => Effect.succeed({ login: "owner", orgs: [] }),
+        call: (request) =>
+          Effect.gen(function* () {
+            const recorded = {
+              method: request.method ?? "GET",
+              path: `/${request.path}`,
+              body: request.body,
+            };
+            github.requests.push(recorded);
+            const answer = yield* route(recorded);
+            if (answer.hang === true || answer.stallBody === true) return yield* Effect.never;
             return {
-              token: Redacted.make("fixture-installation-token"),
-              repo: input.repo,
-              expiresAt: "2026-11-09T01:00:00Z",
-              permissions: {},
+              status: answer.status,
+              headers: answer.headers ?? {},
+              body: answer.body ?? null,
+              text: "",
             };
           }),
       }),
@@ -443,7 +461,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       PullRequests.make({
         pollInterval: scenario === "check-pending" ? "20 minutes" : heldInCi ? "1 minute" : 0,
       }),
-    ).pipe(Layer.provide(Layer.mergeAll(app, github.layer)));
+    ).pipe(Layer.provide(api));
 
     const notices: Array<{ branch: string; reason: string }> = [];
     const recovery = Layer.succeed(Memory.MemoryRecoveryHooks, {
@@ -484,7 +502,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     // Built again by each `Effect.provide`, so a second run is a server restart on the same state.
     const writerLayer = Writer.layer.pipe(
       Layer.provideMerge(memoryLayer),
-      Layer.provide(scenario === "no-app" ? Layer.empty : pullRequests),
+      Layer.provide(scenario === "no-pull-requests" ? Layer.empty : pullRequests),
       Layer.provide(recovery),
       Layer.provide(config),
       Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
@@ -521,7 +539,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       const writer = yield* Writer.MemoryWriter;
       const lander = yield* Lander.MemoryLander;
       // The start-up run finds nothing to land yet; later outcomes then come in order.
-      if (scenario !== "no-app") yield* settled;
+      if (scenario !== "no-pull-requests") yield* settled;
       const paths = yield* memory.ensureCheckouts(orgId);
       yield* memory.prepareWakeup(orgId);
       const localMain = () => git(paths.writer, ["rev-parse", "refs/heads/main"]);
@@ -561,14 +579,14 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           sourceEventId: "owner",
         });
 
-      if (scenario === "no-app") {
+      if (scenario === "no-pull-requests") {
         const error = yield* writer.commitWakeup(orgId, "wake1", "completed").pipe(Effect.flip);
         expect(error).toMatchObject({ _tag: "MemorySyncConflict" });
         expect(yield* bare("rev-parse", "refs/heads/main")).toBe(original);
         expect(yield* localMain()).toBe(original);
         expect(yield* bare("for-each-ref", "--format=%(refname)")).toBe("refs/heads/main");
         expect(notices.map((notice) => notice.reason)).toContainEqual(
-          expect.stringContaining("Kin GitHub App"),
+          expect.stringContaining("through a pull request"),
         );
         return;
       }
@@ -944,17 +962,6 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       ]);
       const pinned = (merges[0]!.body as { sha: string }).sha;
       expect(yield* git(paths.writer, ["rev-parse", `${pinned}^{tree}`])).toBe(autoHead);
-      for (const token of tokens)
-        expect(token).toEqual({
-          repo,
-          holder: "server",
-          permissions: {
-            contents: "write",
-            pull_requests: "write",
-            checks: "read",
-            actions: "read",
-          },
-        });
       if (!ownerPath) {
         // Memory writes post nothing in the owner's chat.
         expect(notices).toEqual([]);

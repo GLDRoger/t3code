@@ -33,8 +33,6 @@ import { KinGroups } from "../chat/KinGroups.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
-import { notConnectedLayer as repoReadsOff } from "../github/KinRepoReads.ts";
-import { notConnectedLayer as pullRequestCareOff } from "../github/PullRequestCare.ts";
 import * as Kin from "../layer.ts";
 import { agentServices } from "../mcp/KinChatToolkit.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
@@ -74,13 +72,9 @@ const scopeOf = (agent: string): McpInvocationScope => ({
 const kinServices = Layer.unwrap(
   Effect.gen(function* () {
     const services = Option.getOrThrow((yield* Kin.KinServer).services);
-    return Layer.mergeAll(
-      Handoff.layer,
-      Team.layer,
-      Layer.mock(LeadMemory)({}),
-      repoReadsOff,
-      pullRequestCareOff,
-    ).pipe(Layer.provideMerge(Layer.succeedContext(services)));
+    return Layer.mergeAll(Handoff.layer, Team.layer, Layer.mock(LeadMemory)({})).pipe(
+      Layer.provideMerge(Layer.succeedContext(services)),
+    );
   }),
 );
 const layer = Layer.mergeAll(

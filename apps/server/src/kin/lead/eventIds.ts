@@ -55,7 +55,6 @@ export const TURN_EVENT_TOOLS: ReadonlySet<string> = new Set([
   "record_create",
   "record_hand_back",
   "record_update",
-  "request_action",
   "statement_read",
   "touch_log",
 ]);

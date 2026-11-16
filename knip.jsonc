@@ -28,12 +28,10 @@
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
         "kin-bench.ts",
-        "kin-github-app.ts",
         "kin-model.ts",
         "kin-release-check.ts",
         "kin-verify.ts",
         "kin-verify/script-agent.ts",
-        "kin-rulesets.ts",
         "knip-schemas.ts",
         "linux-after-pack.ts",
         "mobile-behavior/run.ts",

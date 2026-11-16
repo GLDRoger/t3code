@@ -20,8 +20,8 @@ export class MemoryConfig extends Context.Service<
     readonly sshCommand?: string;
     readonly botEmail?: string;
     /**
-     * Without the Kin GitHub App, writes to the default branch are refused unless this is set;
-     * then they push directly, which a TRIG-15 ruleset on the memory repo rejects.
+     * Writes to the default branch land through a pull request opened as the owner unless this is
+     * set; then they push directly, which a TRIG-15 ruleset on the memory repo rejects.
      */
     readonly directMainPush?: boolean;
     readonly repositories: ReadonlyArray<{
@@ -116,11 +116,3 @@ export const configuredRepositories = Config.schema(
   Schema.fromJsonString(Schema.Array(Schema.Struct({ orgId: KinOrgId, repoUrl: Schema.String }))),
   "KIN_MEMORY_REPOSITORIES",
 ).pipe(Config.withDefault([]));
-
-export const configuredGithubMemoryRepo = Effect.fn("MemoryConfig.configuredGithubMemoryRepo")(
-  function* (orgId: KinOrgId) {
-    const repositories = yield* configuredRepositories;
-    const repo = repositories.find((entry) => entry.orgId === orgId);
-    return repo === undefined ? undefined : githubRepoOf(repo.repoUrl);
-  },
-);

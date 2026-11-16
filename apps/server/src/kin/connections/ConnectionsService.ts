@@ -367,7 +367,7 @@ export class KinConnections extends Context.Service<
     ) => Effect.Effect<KinConnectionSetSendFrom, KinChatError>;
     /**
      * Server use only (a pulse, never an agent tool): what is new at a connection since it was
-     * last marked seen, from the service's own API or, for GitHub, the webhooks Kin recorded.
+     * last marked seen, from the service's own API or, for GitHub, the events Kin's watch queued.
      */
     readonly activity: (
       orgId: KinOrgId,
@@ -1479,7 +1479,7 @@ const make = Effect.gen(function* () {
       } as const;
     }
     if (row.preset === "github") {
-      // Deliveries the GitHub webhooks recorded for the org; the connection adds no source.
+      // What GitHub woke Kin's agents for, as the owner's login watch recorded it.
       const deliveries = yield* sql<{
         fireId: string;
         repo: string | null;
@@ -1487,18 +1487,13 @@ const make = Effect.gen(function* () {
         receivedAt: number;
         eventName: string | null;
         summary: string | null;
-      }>`SELECT i.fire_id AS "fireId", s.repo AS repo,
-            json_extract(i.payload_json, '$.payload.deliveryId') AS "deliveryId",
-            i.received_at AS "receivedAt", json_extract(e.json, '$.eventName') AS "eventName",
-            json_extract(e.json, '$.summary') AS summary
-          FROM kin_trigger_inbox i
-            LEFT JOIN kin_webhook_sources s ON s.org_id = i.org_id
-              AND s.source_id = json_extract(i.payload_json, '$.payload.sourceId')
-            LEFT JOIN kin_events e ON e.org_id = i.org_id AND e.tag = 'github'
-              AND e.dedupe_key = json_extract(i.payload_json, '$.payload.deliveryId')
-          WHERE i.org_id = ${orgId} AND i.received_at > ${since} AND i.received_at <= ${until}
-            AND json_extract(i.payload_json, '$.payload.kind') = 'github'
-          ORDER BY i.received_at, i.fire_id LIMIT 200`;
+      }>`SELECT event_id AS "fireId", json_extract(json, '$.repo') AS repo,
+            json_extract(json, '$.deliveryId') AS "deliveryId", received_at AS "receivedAt",
+            json_extract(json, '$.eventName') AS "eventName", json_extract(json, '$.summary') AS summary
+          FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'github' AND received_at > ${since}
+            AND received_at <= ${until}
+          ORDER BY received_at, event_id LIMIT 200`;
       return { _tag: "github", connectionId: row.connectionId, since, until, deliveries } as const;
     }
     return { _tag: "unsupported", connectionId: row.connectionId } as const;

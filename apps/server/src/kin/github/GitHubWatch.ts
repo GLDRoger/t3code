@@ -84,7 +84,7 @@ const parseGhApi = (out: string): ApiAnswer => {
 };
 
 export interface ApiRequest {
-  readonly method?: "GET" | "POST";
+  readonly method?: "GET" | "POST" | "PUT" | "PATCH";
   readonly path: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: unknown;
@@ -506,7 +506,7 @@ export const make = Effect.gen(function* () {
   ) {
     const now = yield* Clock.currentTimeMillis;
     const account = yield* api.connected();
-    // Signed out: the App's webhook, where set up, is the source again.
+    // Signed out: nothing is watched until the owner connects GitHub again.
     if (account === null)
       return yield* sql`UPDATE kin_github_watch SET checked_at = NULL
         WHERE org_id = ${orgId} AND checked_at IS NOT NULL`;
@@ -824,7 +824,7 @@ export const liveLayer = runtimeLayer.pipe(Layer.provideMerge(layer), Layer.prov
 
 /**
  * `kin_github_review` with the owner's GitHub connected: posted at once on the company's repos and
- * then told, never a card. Undefined while GitHub isn't connected, for the App's path.
+ * then told, never a card. Undefined while GitHub isn't connected.
  */
 export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(function* (
   lead: { readonly orgId: KinOrgId; readonly agentId: string },

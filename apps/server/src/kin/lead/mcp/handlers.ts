@@ -11,10 +11,9 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
-import { KinRepoReads } from "../../github/KinRepoReads.ts";
 import { ghApiLayer, ownerGitHubReview } from "../../github/GitHubWatch.ts";
 import { repoList, setRepo } from "../../github/githubWatchStore.ts";
-import { KinPullRequestCare } from "../../github/PullRequestCare.ts";
+import { linkGithubItem } from "../../github/githubLink.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
 import { laneFor } from "../../reply/KinReplyBridge.ts";
@@ -25,7 +24,6 @@ import * as ChoiceCard from "../../widgets/choiceCard.ts";
 import { KinHandoff } from "../Handoff.ts";
 import { KinTeam } from "../../team/KinTeam.ts";
 import { KinLevelGate } from "../LevelGate.ts";
-import { quote } from "../LeadPrompt.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
 import { readPeople } from "../peopleRead.ts";
 import { updatePeople } from "../peopleUpdate.ts";
@@ -50,8 +48,6 @@ const admitted = (
         : Effect.fail(new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL })),
     ),
   );
-
-const githubQuote = (value: unknown) => ({ quoted: quote("GitHub data (untrusted)", value, true) });
 
 // Kin's service checks the persisted lead and wake-up, rather than T3 thread-control grants.
 export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
@@ -286,37 +282,16 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       return yield* (yield* LeadMemory).journal(yield* McpInvocationContext, input);
     }),
   ),
-  kin_github_repos: McpToolAccess.reads(
-    Effect.fn("KinLeadToolkit.githubRepos")(function* () {
-      const lead = yield* resolveLead(yield* McpInvocationContext);
-      return yield* (yield* KinRepoReads).repos(lead);
-    }, Effect.mapError(failure)),
-  ),
-  kin_github_prs: McpToolAccess.reads(
-    Effect.fn("KinLeadToolkit.githubPrs")(function* (input) {
-      const lead = yield* resolveLead(yield* McpInvocationContext);
-      return githubQuote(yield* (yield* KinRepoReads).pulls(lead, input));
-    }, Effect.mapError(failure)),
-  ),
-  kin_github_pr: McpToolAccess.reads(
-    Effect.fn("KinLeadToolkit.githubPr")(function* (input) {
-      const lead = yield* resolveLead(yield* McpInvocationContext);
-      return githubQuote(yield* (yield* KinRepoReads).pull(lead, input));
-    }, Effect.mapError(failure)),
-  ),
-  kin_github_runs: McpToolAccess.reads(
-    Effect.fn("KinLeadToolkit.githubRuns")(function* (input) {
-      const lead = yield* resolveLead(yield* McpInvocationContext);
-      return githubQuote(yield* (yield* KinRepoReads).runs(lead, input));
-    }, Effect.mapError(failure)),
-  ),
   kin_github_review: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.githubReview")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       yield* admitted(lead, "kin_github_review", input);
       const asOwner = yield* ownerGitHubReview(lead, input).pipe(Effect.provide(ghApiLayer));
       if (asOwner !== undefined) return asOwner;
-      return yield* (yield* KinPullRequestCare).review(lead, input);
+      return yield* new KinChatError({
+        reason: "unavailable",
+        message: "GitHub isn't connected. The owner connects it in Settings, Connections.",
+      });
     }, Effect.mapError(failure)),
   ),
   kin_github_watch: McpToolAccess.actsAsCaller(
@@ -355,7 +330,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.githubLink")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       yield* admitted(lead, "kin_github_link", input);
-      return yield* (yield* KinPullRequestCare).link(lead, input);
+      return yield* linkGithubItem(lead, input);
     }, Effect.mapError(failure)),
   ),
 });

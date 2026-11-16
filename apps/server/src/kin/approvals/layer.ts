@@ -1,26 +1,16 @@
 import type { KinGrant, KinPendingAction } from "@t3tools/contracts";
-import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
-import * as Keychain from "../github/Keychain.ts";
-import * as KinBotReads from "../github/KinBotReads.ts";
-import * as KinGitHubApp from "../github/KinGitHubApp.ts";
-import { KinGitHubScope } from "../github/KinGitHubScope.ts";
-import * as OwnerMergeClient from "../github/OwnerMergeClient.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as ActionExecutor from "./ActionExecutor.ts";
 import * as ActionHandlers from "./ActionHandlers.ts";
 import * as ApproverKeys from "./ApproverKeys.ts";
 import * as Audit from "./Audit.ts";
 import * as AttestationTrust from "./attestation/AttestationTrust.ts";
-import * as CredentialHygiene from "./CredentialHygiene.ts";
 import * as GrantPorts from "./GrantPorts.ts";
 import * as GrantVerifier from "./GrantVerifier.ts";
-import { makeDeleteBranchHandler } from "./handlers/deleteBranch.ts";
-import { makeMergePullRequestHandler } from "./handlers/mergePullRequest.ts";
 import { makeSetLevelHandler } from "./handlers/setLevel.ts";
 import * as PendingActions from "./PendingActions.ts";
 
@@ -32,7 +22,6 @@ const grantOnly = <R>(
   make: Effect.Effect<
     {
       readonly kind: ActionHandlers.KinActionHandler["kind"];
-      readonly credentialCheck: boolean;
       readonly precheck: (
         action: KinPendingAction,
       ) => Effect.Effect<void, { readonly message: string }>;
@@ -50,72 +39,17 @@ const grantOnly = <R>(
 ) =>
   Effect.map(make, (handler): ActionHandlers.KinActionHandler => ({
     kind: handler.kind,
-    credentialCheck: handler.credentialCheck,
     precheck: (action) => handler.precheck(action).pipe(Effect.mapError(refused)),
     run: (action, { grant }) =>
       handler.run(action, grant).pipe(Effect.as({}), Effect.mapError(refused)),
     reconcile: (action) =>
       handler.reconcile(action).pipe(Effect.orElseSucceed(() => "unknown" as const)),
   }));
-const setLevelHandler = grantOnly(makeSetLevelHandler);
 
-/** The GitHub host the GitHub kinds run against; tests swap in fakes. */
-const githubPlatform = Layer.mergeAll(
-  KinGitHubApp.KinGitHubAppConfig.layer,
-  KinGitHubScope.layer,
-  FetchHttpClient.layer,
-  // Like the fetch client above: the keychain's Secret Service probe needs a spawner.
-  Keychain.layer.pipe(Layer.provide(NodeServices.layer)),
-);
-type GitHubPlatform = Layer.Success<typeof githubPlatform>;
-
-// The bot App reads, the owner merge token writes, and the hygiene check gates both.
-const github = <E, R>(platform: Layer.Layer<GitHubPlatform, E, R>) =>
-  Layer.mergeAll(KinBotReads.layer, CredentialHygiene.layer).pipe(
-    Layer.provideMerge(OwnerMergeClient.layer),
-    Layer.provide(CredentialHygiene.identityUnavailableLayer),
-    Layer.provide(KinGitHubApp.layer),
-    Layer.provideMerge(platform),
-  );
-
-const handlers = <E, R>(platform: Layer.Layer<GitHubPlatform, E, R>) =>
-  Layer.effect(
-    ActionHandlers.KinActionHandlers,
-    Effect.all([setLevelHandler, makeMergePullRequestHandler, makeDeleteBranchHandler]).pipe(
-      Effect.map(ActionHandlers.make),
-    ),
-  ).pipe(Layer.provideMerge(github(platform)));
-
-// Without the GitHub App and scope configured, the GitHub kinds have no handler but stay held
-// until their grants lapse, and the hygiene check can't pass, so only set_level runs.
-const unconfigured = Layer.mergeAll(
-  Layer.effect(
-    ActionHandlers.KinActionHandlers,
-    Effect.map(Effect.all([setLevelHandler]), (local) =>
-      ActionHandlers.make(local, ["merge_pull_request", "delete_branch"]),
-    ),
-  ),
-  Layer.succeed(
-    CredentialHygiene.CredentialHygiene,
-    CredentialHygiene.CredentialHygiene.of({
-      check: Effect.fn("CredentialHygiene.unconfigured")(function* () {
-        return yield* Effect.succeed<CredentialHygiene.CredentialHygieneReport>({
-          passed: false,
-          failures: ["identity_unknown", "merge_token_missing"],
-          warnings: [],
-          envTokenNames: [],
-          t3Login: null,
-          identities: [],
-          checkedAt: 0,
-        });
-      }),
-      requirePassing: Effect.fn("CredentialHygiene.unconfiguredRequirePassing")(function* () {
-        return yield* new CredentialHygiene.CredentialHygieneFailedError({
-          failures: ["identity_unknown", "merge_token_missing"],
-        });
-      }),
-    }),
-  ),
+// Only levels run here; a stored merge or delete-branch approval has no handler and is voided.
+const handlers = Layer.effect(
+  ActionHandlers.KinActionHandlers,
+  Effect.map(grantOnly(makeSetLevelHandler), (setLevel) => ActionHandlers.make([setLevel])),
 );
 
 /**
@@ -123,35 +57,16 @@ const unconfigured = Layer.mergeAll(
  * anything here would reach every service holding `kin.services`. Built on top of the layer that
  * supplies `KinPendingActions`, so it takes the very approvals that instance publishes.
  */
-export const makeExecutorLayer = <E, R>(platform: Layer.Layer<GitHubPlatform, E, R>) =>
-  Layer.empty.pipe(
-    Layer.provide(
-      ActionExecutor.layer.pipe(
-        Layer.provide(
-          Layer.merge(
-            handlers(platform).pipe(
-              Layer.catchCause((cause) =>
-                unconfigured.pipe(
-                  Layer.tap(() =>
-                    Effect.logWarning(
-                      "Kin executor: GitHub isn't configured; privileged actions won't run.",
-                      { cause: Cause.pretty(cause).slice(0, 500) },
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            PendingActions.ledgerLayer,
-          ),
-        ),
-        Layer.provide(GrantPorts.orgRolesLayer),
-        Layer.provide(Audit.layer),
-        Layer.provide(KinPersistence.layer),
-      ),
+export const executorLayer = Layer.empty.pipe(
+  Layer.provide(
+    ActionExecutor.layer.pipe(
+      Layer.provide(Layer.merge(handlers, PendingActions.ledgerLayer)),
+      Layer.provide(GrantPorts.orgRolesLayer),
+      Layer.provide(Audit.layer),
+      Layer.provide(KinPersistence.layer),
     ),
-  );
-
-export const executorLayer = makeExecutorLayer(githubPlatform);
+  ),
+);
 
 /** Push routing and level control read pending actions, so they stay in the output. */
 export const layer = GrantVerifier.layer.pipe(

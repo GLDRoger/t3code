@@ -2,7 +2,6 @@ import { assert, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import { Tool } from "effect/ai";
 
-import { KinApprovalsToolkit } from "../approvals/mcp.ts";
 import { KinConnectionsToolkit } from "../connections/mcp.ts";
 import { KinDocumentToolkit } from "../gendocs/mcp.ts";
 import { KinChatToolkit } from "../mcp/KinChatToolkit.ts";
@@ -15,7 +14,6 @@ import { KinLeadToolkit } from "./mcp/tools.ts";
 
 const kinTools = [
   KinChatToolkit,
-  KinApprovalsToolkit,
   KinLeadToolkit,
   KinWorkToolkit,
   KinStatementToolkit,
