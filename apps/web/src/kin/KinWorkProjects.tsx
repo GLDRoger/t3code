@@ -10,6 +10,7 @@ import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_PROJECTS,
   KIN_PROJECT_FAILED,
+  KIN_PROJECT_REFUSED,
   KIN_PROJECT_GONE,
   KIN_PROJECT_LEAD,
   kinProjectLeadChoices,
@@ -49,6 +50,7 @@ import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
 import {
   KinWorkHealthBadge,
   KinWorkNotice,
+  KinLoadFailed,
   KinWorkPrivateMark,
   KinWorkProblem,
   KinWorkRowSkeletons,
@@ -60,7 +62,7 @@ import { KinWorkRow, KinWorkTaskList } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected } from "./useKinHost";
-import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
+import { useKinOpensClients } from "./useKinOwnerLevel";
 import {
   useKinProjectPage,
   type KinWorkChangesHandle,
@@ -98,15 +100,14 @@ export function KinWorkProjectPage(props: PageProps) {
       </div>
     );
   if (state._tag === "gone") return <KinWorkNotice {...KIN_PROJECT_GONE} />;
-  if (state._tag === "refused" || state._tag === "failed")
+  if (state._tag === "refused") return <KinWorkNotice {...KIN_PROJECT_REFUSED} />;
+  if (state._tag === "failed")
     return (
-      <KinWorkNotice
-        {...KIN_PROJECT_FAILED}
-        action={
-          <Button size="sm" variant="outline" onClick={refresh}>
-            Retry
-          </Button>
-        }
+      <KinLoadFailed
+        what={KIN_PROJECT_FAILED.title}
+        cause={state.cause}
+        onRetry={refresh}
+        className="mx-auto w-full max-w-3xl p-4"
       />
     );
   return <ProjectPage {...props} page={state.value} pageStale={state.stale} onRefresh={refresh} />;
@@ -119,8 +120,7 @@ function ProjectPage(
     readonly onRefresh: () => void;
   },
 ) {
-  const ownerLevel = useKinOwnerLevel(props.environmentId);
-  const opensClients = useKinPlaceReach(props.environmentId)?.clients === true || ownerLevel;
+  const opensClients = useKinOpensClients(props.environmentId);
   const { environmentId, orgId, page } = props;
   const { names } = props.directory;
   const canChange = useAtomValue(kinClient.workProjectUpdate.permissionAtom(environmentId));

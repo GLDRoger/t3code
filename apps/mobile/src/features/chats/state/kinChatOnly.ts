@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessAtom, kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
+import { kinViewerScope, type KinViewerScope } from "@t3tools/client-runtime/kin/kinViewerScope";
 import {
   kinAccessEnded,
   kinAppShell,
@@ -8,7 +9,12 @@ import {
   kinViewerOwnerLevel,
   type KinAppShell,
 } from "@t3tools/client-runtime/kin/kinJoin";
-import { EnvironmentId, type KinPersonAccess, type SessionGrantInput } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  kinOwnerLevel,
+  type KinPersonAccess,
+  type SessionGrantInput,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -189,4 +195,20 @@ export function useKinOwnerLevel(
 /** The places a member reaches (switched on, or a project they lead); null until the host says. */
 export function useKinPlaceReach(environmentId: EnvironmentId): KinPlaceReach | null {
   return kinPlaceReach(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)));
+}
+
+/** What part of the company the viewer sees, for words that must not overclaim. */
+export function useKinViewerScope(environmentId: EnvironmentId): KinViewerScope {
+  return kinViewerScope(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)));
+}
+
+/** Whether a client's name opens its page for this viewer: owner level, Clients on, or a lead. */
+export function useKinOpensClients(environmentId: EnvironmentId): boolean {
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  return kinOwnerLevel(me?.access) || kinPlaceReach(me)?.clients === true;
+}
+
+/** Whether the host says the viewer is the owner or a co-owner here; false until it has. */
+export function useKinIsOwnerLevel(environmentId: EnvironmentId): boolean {
+  return kinOwnerLevel(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId))?.access);
 }

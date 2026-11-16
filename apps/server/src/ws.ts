@@ -2761,19 +2761,22 @@ export const layerWsRpc = (
         [WS_METHODS.serverPrepareTriage]: (input) => triage.prepare(input),
         [WS_METHODS.serverSignalProcess]: (input) => processDiagnostics.signal(input),
         [WS_METHODS.serverReportClientActivity]: (input, metadata) =>
-          Ref.update(rpcClientIds, (clientIds) => {
-            const next = new Set(clientIds);
-            next.add(RpcClientId.make(metadata.client.id));
-            return next;
-          }).pipe(
-            Effect.andThen(
-              backgroundPolicy.reportClientActivity(
-                currentSessionId,
-                RpcClientId.make(metadata.client.id),
-                input,
+          // A teammate's client keeps no host work running.
+          isChatOnly(currentSession.scopes)
+            ? Effect.void
+            : Ref.update(rpcClientIds, (clientIds) => {
+                const next = new Set(clientIds);
+                next.add(RpcClientId.make(metadata.client.id));
+                return next;
+              }).pipe(
+                Effect.andThen(
+                  backgroundPolicy.reportClientActivity(
+                    currentSessionId,
+                    RpcClientId.make(metadata.client.id),
+                    input,
+                  ),
+                ),
               ),
-            ),
-          ),
         [WS_METHODS.cloudGetRelayClientStatus]: (_input) => relayClient.resolve,
         [WS_METHODS.cloudInstallRelayClient]: (_input) =>
           Stream.callback<RelayClientInstallProgressEvent, RelayClientInstallFailedError>((queue) =>

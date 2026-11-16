@@ -2508,8 +2508,9 @@ it.effect(
       expect(quoted?.split("> END QUOTE")[0]).toContain("Starter costs 10 invented credits.");
       expect(quoted?.split("> END QUOTE")[0]).not.toContain("Launch on the 10th");
 
-      // A teammate joins: their own pointers are refused, a sensitive doc can't be pointed at here,
-      // and a turn they read gets the doc's name, never its text.
+      // A teammate joins: they point only at a doc everyone here reads (this one they can't see
+      // reads as none), a sensitive doc can't be pointed at here, and a turn they read gets the
+      // doc's name, never its text.
       yield* repo.insertPerson({
         orgId,
         personId: teammateId,
@@ -2535,7 +2536,7 @@ it.effect(
             memberId: teammateMember,
           }),
         ),
-      ).toMatchObject({ reason: "not_allowed" });
+      ).toMatchObject({ reason: "not_found" });
       expect(yield* Effect.flip(send("pay", [{ key: "D-2", section: null }]))).toMatchObject({
         reason: "not_allowed",
       });

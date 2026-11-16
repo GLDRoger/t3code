@@ -1,3 +1,6 @@
+import type { KinViewerScope } from "@t3tools/client-runtime/kin/kinViewerScope";
+import { kinNothingShown } from "@t3tools/client-runtime/kin/kinViewerScope";
+import { useKinViewerScope } from "./state/kinChatOnly";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useNavigation } from "@react-navigation/native";
@@ -194,6 +197,7 @@ export function KinSearchHits(props: {
   readonly onOpen: (hit: KinSearchHitView) => void;
   /** Hits are all docs, so none needs to say what it is. */
   readonly docsOnly?: boolean;
+  readonly scope?: KinViewerScope;
 }) {
   const { state } = props;
   if (state.hits === null) {
@@ -204,7 +208,7 @@ export function KinSearchHits(props: {
     );
   }
   if (state.hits.length === 0)
-    return <EmptyState variant="plain" {...kinSearchNothing(state.answered)} />;
+    return <EmptyState variant="plain" {...kinSearchNothing(state.answered, props.scope)} />;
   return (
     <View className={cn(state.loading && "opacity-60")}>
       {state.failed ? (
@@ -330,6 +334,7 @@ export function KinDocsList(
   const [allLists, setAllLists] = useState(false);
   const [playbooksOpen, setPlaybooksOpen] = useState(false);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
+  const scope = useKinViewerScope(environmentId);
   const { filter } = state;
   const lists = useKinLists(props, {
     enabled: true,
@@ -583,7 +588,9 @@ export function KinDocsList(
               ) : (
                 <EmptyState
                   variant="plain"
-                  {...(filter.archived ? KIN_DOCS.emptyArchived : KIN_DOCS.empty)}
+                  {...(filter.archived
+                    ? KIN_DOCS.emptyArchived
+                    : (kinNothingShown("docs", scope) ?? KIN_DOCS.empty))}
                 />
               )}
             </View>

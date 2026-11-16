@@ -85,14 +85,26 @@ type MoneyActions = ReturnType<typeof useKinMoneyActions>;
 const INVOICES = KinListId.make("invoices");
 
 /** What a money action said: the number it got, what couldn't be made, or why not. */
-export function KinMoneyActionNotice(props: { readonly actions: MoneyActions }) {
-  const { problem, notice, dismiss } = props.actions;
+export function KinMoneyActionNotice(
+  props: Partial<KinWorkTarget> & { readonly actions: MoneyActions },
+) {
+  const { problem, notice, filed, dismiss } = props.actions;
+  const openRecord = useKinWorkLink();
+  const { environmentId, orgId } = props;
   if (problem === null && notice === null) return null;
   return (
     <Notice
       message={problem ?? notice ?? ""}
       tone={problem === null ? "default" : "danger"}
       onDismiss={dismiss}
+      {...(problem !== null || filed === null || environmentId === undefined || orgId === undefined
+        ? {}
+        : {
+            action: {
+              label: KIN_INVOICES.openFiled(filed),
+              onPress: () => openRecord("KinDoc", { environmentId, orgId, doc: filed }),
+            },
+          })}
     />
   );
 }
@@ -140,7 +152,7 @@ export function KinInvoiceActions(
           tone="secondary"
           fullWidth
           icon="doc.text"
-          label={KIN_INVOICES.makeInvoice}
+          label={KIN_INVOICES.makePdf}
           disabled={busy}
           onPress={() =>
             props.onMake({
@@ -499,7 +511,7 @@ export function KinMakeDocumentStep(
   } | null>(null);
   const [requestId] = useState(uuidv4);
   const close = props.onBack;
-  const title = props.list === INVOICES ? KIN_INVOICES.makeInvoice : KIN_INVOICES.makePdf;
+  const title = KIN_INVOICES.makePdf;
   if (!allowed)
     return (
       <KinWorkFrame title={title} onBack={close} guardBack>

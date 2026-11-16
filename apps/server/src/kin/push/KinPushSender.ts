@@ -17,6 +17,7 @@ import {
   KinTriggerSettings,
   kinGreeting,
   kinIsBrief,
+  kinIsPeopleChat,
   kinPageGist,
   kinPageShape,
 } from "@t3tools/contracts";
@@ -235,8 +236,13 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     chatId: KinChatId,
   ) {
-    const [row] = yield* sql<{ kind: string; title: string | null; agent: string | null }>`
-      SELECT c.kind, c.title, (
+    const [row] = yield* sql<{
+      kind: string;
+      team_id: string | null;
+      title: string | null;
+      agent: string | null;
+    }>`
+      SELECT c.kind, c.team_id, c.title, (
           SELECT a.display_name FROM kin_chat_members m
           JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
           WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'agent'
@@ -244,8 +250,9 @@ const make = Effect.gen(function* () {
           ORDER BY m.joined_at, m.member_id LIMIT 1
         ) AS agent
       FROM kin_chats c WHERE c.org_id = ${orgId} AND c.chat_id = ${chatId}`;
-    const direct = row?.kind === "direct";
-    return { direct, name: row?.title ?? (direct ? (row?.agent ?? "Kin") : "Group") };
+    const people = row !== undefined && kinIsPeopleChat({ kind: row.kind, teamId: row.team_id });
+    const direct = row?.kind === "direct" || people;
+    return { direct, people, name: row?.title ?? (direct ? (row?.agent ?? "Kin") : "Group") };
   });
 
   /** Quiet hours as pings keep them: the org's hours on the owner's clock. */
@@ -386,8 +393,12 @@ const make = Effect.gen(function* () {
     const chat = yield* chatName(orgId, row.chat_id);
     const mentions = new Set<string>(yield* decodeIds(row.mentions_json));
     const asked = new Set<string>(yield* decodeIds(row.asked_json));
-    // Reminders and scheduled runs come at the time the owner chose, so quiet hours let them ring.
-    const quiet = row.owner_timed === 1 ? false : yield* quietNow(orgId);
+    // Reminders and scheduled runs come at the time the owner chose, and a teammate writing to
+    // you directly is a person, not Kin: quiet hours hold neither.
+    const quiet =
+      row.owner_timed === 1 || (chat.people && row.author_kind === "human")
+        ? false
+        : yield* quietNow(orgId);
     const people = yield* chatPeople(orgId, row.chat_id);
     const push: Push = {
       category: "kin.message",

@@ -1,3 +1,4 @@
+import { useKinViewerScope } from "./useKinOwnerLevel";
 import { KIN_SEARCH, type KinSearchHitView } from "@t3tools/client-runtime/kin/kinDocs";
 import { useId } from "react";
 
@@ -24,6 +25,7 @@ export function KinSearchDialog(
   },
 ) {
   const { state, search } = useKinSearch(props, null);
+  const scope = useKinViewerScope(props.environmentId);
   const closedId = useId();
   return (
     <Dialog
@@ -54,7 +56,12 @@ export function KinSearchDialog(
             {state.text.trim() === "" ? (
               <KinWorkNotice {...KIN_SEARCH.hint} />
             ) : (
-              <KinSearchHits state={state} onRetry={search.retry} onOpen={props.onOpen} />
+              <KinSearchHits
+                state={state}
+                scope={scope}
+                onRetry={search.retry}
+                onOpen={props.onOpen}
+              />
             )}
           </div>
         </DialogPanel>

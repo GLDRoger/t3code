@@ -1,3 +1,8 @@
+import {
+  kinNothingOwed,
+  kinNothingShown,
+  kinScopeNote,
+} from "@t3tools/client-runtime/kin/kinViewerScope";
 import { useNavigation } from "@react-navigation/native";
 import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
 import {
@@ -51,6 +56,7 @@ import { cn } from "../../lib/cn";
 import { useKinTab } from "./components/KinTab";
 import { KinFoldSection, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
+import { useKinViewerScope } from "./state/kinChatOnly";
 import {
   kinListsOf,
   useKinAskAgent,
@@ -383,6 +389,8 @@ export function KinMoneyArea(props: Shared) {
   const now = new Date(useNowMinuteMs());
   const openList = useKinOpenList(target);
   const { names } = props.directory;
+  const scope = useKinViewerScope(props.environmentId);
+  const scopeNote = kinScopeNote("money", scope);
   const { state } = money;
   const frame = {
     target,
@@ -416,6 +424,11 @@ export function KinMoneyArea(props: Shared) {
   };
   const top = (
     <>
+      {scopeNote === null ? null : (
+        <Text textRole="body" className="px-2 text-foreground-muted">
+          {scopeNote}
+        </Text>
+      )}
       <KinAttentionSection
         {...target}
         scope={{ type: "money" }}
@@ -430,8 +443,8 @@ export function KinMoneyArea(props: Shared) {
         <View className="gap-4">{top}</View>
         <EmptyState
           variant="plain"
-          {...KIN_MONEY.none}
-          {...(agent === null
+          {...(kinNothingShown("money", scope) ?? KIN_MONEY.none)}
+          {...(agent === null || !scope.all
             ? {}
             : {
                 action: (
@@ -492,7 +505,7 @@ export function KinMoneyArea(props: Shared) {
         <ListSection title={KIN_MONEY.byClient}>
           {view.clients.length === 0 ? (
             <Text textRole="body" className="px-4 py-3 text-foreground-muted">
-              {KIN_MONEY.nothingOwed}
+              {kinNothingOwed(scope)}
             </Text>
           ) : (
             view.clients.map((client) => {

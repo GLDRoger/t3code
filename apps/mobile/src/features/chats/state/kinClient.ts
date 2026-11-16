@@ -693,6 +693,11 @@ export const kinClient = {
     tag: KIN_PEOPLE_WS_METHODS.peopleSetAccess,
     concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
   }),
+  chatWithPerson: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:chat:with-person",
+    tag: "kin.chats.withPerson",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.personId },
+  }),
   groupCreate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:group:create",
     tag: "kin.groups.create",

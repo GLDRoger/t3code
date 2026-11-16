@@ -6,8 +6,6 @@ import {
   kinDailyLimitChoices,
   kinDailyLimitWaiting,
 } from "@t3tools/client-runtime/kin/kinBudget";
-import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
-import { KIN_CONNECTIONS_COPY } from "@t3tools/client-runtime/kin/kinConnections";
 import {
   KIN_COMPANY_CHAT_COPY,
   KIN_PROFILE_COPY,
@@ -17,6 +15,11 @@ import {
   kinTeamAgentLabel,
 } from "@t3tools/client-runtime/kin/kinProfiles";
 import { kinHomeTabs } from "@t3tools/client-runtime/kin/kinJoin";
+import {
+  KIN_SETTINGS_PAGE_TITLES,
+  kinSettingsGroups,
+  type KinSettingsPage,
+} from "@t3tools/client-runtime/kin/kinNavigation";
 import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -67,6 +70,23 @@ const CONNECTION_LABEL: Record<EnvironmentPresentation["connection"]["phase"], s
  * itself, and so does a co-owner; a member gets the app and the way to leave.
  * Drawn as a tab of the Kin home, or as a pushed page where there is no dock.
  */
+/** Company pages that open a screen of their own; Check-ins and Approvals are sections here. */
+const COMPANY_ROWS: Partial<
+  Record<
+    KinSettingsPage,
+    {
+      readonly icon: "person.2" | "sparkles" | "brain" | "link" | "doc.text";
+      readonly route: "KinTeam" | "KinAgents" | "KinMemory" | "KinConnections" | "KinCompany";
+    }
+  >
+> = {
+  team: { icon: "person.2", route: "KinTeam" },
+  agents: { icon: "sparkles", route: "KinAgents" },
+  connections: { icon: "link", route: "KinConnections" },
+  memory: { icon: "brain", route: "KinMemory" },
+  company: { icon: "doc.text", route: "KinCompany" },
+};
+
 export function KinSettings(props: {
   /** The coding app's Settings already holds environments, sign-out and the app's own pages. */
   readonly inCodingApp?: boolean;
@@ -106,6 +126,14 @@ export function KinSettings(props: {
       ? { environmentId: host.environmentId, orgId }
       : null;
   const pages = kinHomeTabs(session, ownerLevel);
+  // The same You and Company as web Settings; the phone adds its own rows to each.
+  const groups = kinSettingsGroups({
+    ownerLevel: company !== null,
+    computer: false,
+    notifications: true,
+  });
+  const you = groups[0]!;
+  const companyGroup = groups.find((group) => group.id === "company");
   const waiting = state._tag === "ready" ? selectKinInboxView(state.inbox.value).waiting.length : 0;
 
   // The team on screen has its name; an old one this phone still holds goes by its computer and state.
@@ -161,22 +189,55 @@ export function KinSettings(props: {
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32 + bottomClearance, gap: 20 }}
         >
-          {host._tag !== "host" || orgId === null || mine === null ? null : (
-            <SettingsSection title={team ?? undefined}>
+          <SettingsSection title={you.title} footer={team ?? undefined}>
+            {you.pages.map((page) => {
+              switch (page) {
+                case "profile":
+                  return host._tag !== "host" || orgId === null || mine === null ? null : (
+                    <SettingsRow
+                      key={page}
+                      icon="person.crop.circle"
+                      label={mine.displayName}
+                      value={kinRoleLine(mine.roleTags) || KIN_PROFILE_COPY.mine}
+                      onPress={() =>
+                        navigation.navigate("KinProfile", {
+                          environmentId: host.environmentId,
+                          orgId,
+                          personId: mine.personId,
+                        })
+                      }
+                    />
+                  );
+                case "notifications":
+                  return (
+                    <SettingsRow
+                      key={page}
+                      icon="bell.badge"
+                      label={KIN_SETTINGS_PAGE_TITLES.notifications}
+                      onPress={() => void openKinNotificationSettings()}
+                    />
+                  );
+                case "appearance":
+                  return inCodingApp ? null : (
+                    <SettingsRow
+                      key={page}
+                      icon="paintbrush"
+                      label={KIN_SETTINGS_PAGE_TITLES.appearance}
+                      onPress={() => navigation.navigate("SettingsAppearance")}
+                    />
+                  );
+                default:
+                  return null;
+              }
+            })}
+            {inCodingApp ? null : (
               <SettingsRow
-                icon="person.crop.circle"
-                label={mine.displayName}
-                value={kinRoleLine(mine.roleTags) || KIN_PROFILE_COPY.mine}
-                onPress={() =>
-                  navigation.navigate("KinProfile", {
-                    environmentId: host.environmentId,
-                    orgId,
-                    personId: mine.personId,
-                  })
-                }
+                icon="info.circle"
+                label="About"
+                onPress={() => navigation.navigate("SettingsAbout")}
               />
-            </SettingsSection>
-          )}
+            )}
+          </SettingsSection>
           {owned.length === 0 ? null : (
             <SettingsSection
               title="Your Kin"
@@ -189,36 +250,20 @@ export function KinSettings(props: {
           )}
           {company === null ? null : (
             <>
-              <SettingsSection title="Company">
-                {pages.includes("team") ? (
-                  <SettingsRow
-                    icon="person.2"
-                    label="Team"
-                    onPress={() => navigation.navigate("KinTeam", company)}
-                  />
-                ) : null}
-                <SettingsRow
-                  icon="sparkles"
-                  label="Agents"
-                  onPress={() => navigation.navigate("KinAgents", company)}
-                />
-                {pages.includes("memory") ? (
-                  <SettingsRow
-                    icon="brain"
-                    label="Memory"
-                    onPress={() => navigation.navigate("KinMemory", company)}
-                  />
-                ) : null}
-                <SettingsRow
-                  icon="link"
-                  label={KIN_CONNECTIONS_COPY.title}
-                  onPress={() => navigation.navigate("KinConnections", company)}
-                />
-                <SettingsRow
-                  icon="doc.text"
-                  label={KIN_COMPANY.title}
-                  onPress={() => navigation.navigate("KinCompany", company)}
-                />
+              <SettingsSection title={companyGroup?.title}>
+                {(companyGroup?.pages ?? []).map((page) => {
+                  const row = COMPANY_ROWS[page];
+                  if (row === undefined) return null;
+                  if ((page === "team" || page === "memory") && !pages.includes(page)) return null;
+                  return (
+                    <SettingsRow
+                      key={page}
+                      icon={row.icon}
+                      label={KIN_SETTINGS_PAGE_TITLES[page]}
+                      onPress={() => navigation.navigate(row.route, company)}
+                    />
+                  );
+                })}
               </SettingsSection>
               <SettingsSection footer={KIN_TEAM_AGENT_COPY.detail}>
                 <KinTeamAgentRow {...company} />
@@ -229,7 +274,7 @@ export function KinSettings(props: {
               <KinDailyLimitSection {...company} />
               <KinCheckInsSection {...company} />
               <SettingsSection
-                title="Approvals"
+                title={KIN_SETTINGS_PAGE_TITLES.approvals}
                 footer="Your agents ask before anything that needs your say. You approve on this phone with Face ID."
               >
                 <SettingsRow
@@ -247,27 +292,6 @@ export function KinSettings(props: {
               </SettingsSection>
             </>
           )}
-          <SettingsSection>
-            <SettingsRow
-              icon="bell.badge"
-              label="Notifications"
-              onPress={() => void openKinNotificationSettings()}
-            />
-            {inCodingApp ? null : (
-              <>
-                <SettingsRow
-                  icon="paintbrush"
-                  label="Appearance"
-                  onPress={() => navigation.navigate("SettingsAppearance")}
-                />
-                <SettingsRow
-                  icon="info.circle"
-                  label="About"
-                  onPress={() => navigation.navigate("SettingsAbout")}
-                />
-              </>
-            )}
-          </SettingsSection>
           {/* The coding app signs out of a computer from Environments. */}
           {(inCodingApp ? [] : owned).map((environment) => (
             <Button

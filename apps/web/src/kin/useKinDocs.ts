@@ -4,6 +4,7 @@ import {
   KIN_SEARCH_INITIAL,
   createKinSearch,
   kinDocChat,
+  kinDocSuggestStarter,
   kinDocsQuery,
   kinDocsSameFilter,
   kinPendingRefAtom,
@@ -22,6 +23,7 @@ import type {
   KinDocListRow,
   KinDocVersion,
   KinDocsListResult,
+  KinLeadsListResult,
   KinMessageRef,
   KinRecordKey,
   KinSearchKind,
@@ -32,6 +34,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { prefillKinDraft } from "./KinChatView";
 import { kinClient } from "./kinClient";
 import { useKinInbox } from "./useKinHost";
 import { kinSchedule, useKinPagedList, type KinWorkTarget } from "./useKinWork";
@@ -216,30 +219,43 @@ export function useKinPaletteHits(target: KinWorkTarget | null, text: string) {
 
 /**
  * Opens the chat with the agent that keeps a doc, with what was pointed at waiting above its
- * composer. Null where no agent keeps it, so there is nobody to ask.
+ * composer. A teammate, who can't change a company doc, suggests instead: in their chat with that
+ * agent or else the team agent, with a starter line, and the agent puts it to the owner. Null where
+ * there is nobody to ask.
  */
 export function useKinDocAsk(
   target: KinWorkTarget,
   doc: Pick<KinDocDetail, "owner" | "latest"> | null,
   me: Parameters<typeof kinDocChat>[2],
+  ownerLevel: boolean,
 ) {
   const navigate = useNavigate();
   const inbox = useKinInbox();
+  const leads = useAtomValue(
+    ownerLevel
+      ? noLeadsAtom
+      : kinClient.leads({ environmentId: target.environmentId, input: { orgId: target.orgId } }),
+  );
   const chats = inbox.state._tag === "ready" ? inbox.state.inbox.value.chats : [];
-  const chat = doc === null ? null : kinDocChat(chats, doc, me);
-  if (chat === null) return null;
-  return (ref: KinMessageRef, intent: KinDocAsk) => {
-    appAtomRegistry.set(kinPendingRefAtom(kinPendingRefKey(target.environmentId, chat.chatId)), {
+  const held = leads === null ? null : Option.getOrNull(AsyncResult.value(leads));
+  const teamChat =
+    held?.contacts?.find((contact) => contact.agentId === held.teamAgentId)?.chatId ?? null;
+  const chatId =
+    doc === null ? null : (kinDocChat(chats, doc, me)?.chatId ?? (ownerLevel ? null : teamChat));
+  if (chatId === null) return null;
+  return (ref: KinMessageRef, asked: KinDocAsk) => {
+    const intent = ownerLevel || asked === "ask" ? asked : "suggest";
+    appAtomRegistry.set(kinPendingRefAtom(kinPendingRefKey(target.environmentId, chatId)), {
       ref,
       intent,
     });
+    if (intent === "suggest")
+      prefillKinDraft(target.environmentId, target.orgId, chatId, kinDocSuggestStarter(ref));
     void navigate({
       to: "/kin/$environmentId/$orgId/$chatId",
-      params: {
-        environmentId: target.environmentId,
-        orgId: target.orgId,
-        chatId: chat.chatId,
-      },
+      params: { environmentId: target.environmentId, orgId: target.orgId, chatId },
     });
   };
 }
+
+const noLeadsAtom = Atom.make<AsyncResult.AsyncResult<KinLeadsListResult, unknown> | null>(null);

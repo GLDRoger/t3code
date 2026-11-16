@@ -40,7 +40,13 @@ export const KIN_INVOICES = {
   previewing: "Making a preview…",
   previewFailed: "Kin couldn't make the preview.",
   file: "File it",
-  filed: "Filed. It's under Documents.",
+  /** Names the document made, which Docs holds and this entry lists under Documents. */
+  filed: (documents: ReadonlyArray<{ readonly key: string }>) =>
+    documents.length === 0
+      ? "Filed in Docs."
+      : `Filed as ${documents.map((doc) => doc.key).join(", ")} in Docs. This entry lists it under Documents.`,
+  openFiled: (key: string) => `Open ${key}`,
+  payAfterIssue: "A draft isn't owed yet. Issue it to give it its number, then record payments.",
   noTemplate: "No invoice template yet. Ask an agent to set one up.",
   issue: "Issue",
   issueTitle: "Issue this invoice?",
@@ -294,6 +300,29 @@ export const kinInvoiceMissingClient = (
   problem !== null && party != null && /the client has no place of supply/.test(problem)
     ? { key: party.key as KinRecordKey, name: party.title }
     : null;
+
+/**
+ * Why an invoice takes no payment yet: a draft of a numbered list isn't owed until it is issued,
+ * and the host refuses a payment on one. Null when it can be paid.
+ */
+export function kinInvoiceDraftNote(
+  item: Pick<KinRecordDetail, "state">,
+  view: Pick<KinInvoiceView, "number" | "void"> | null,
+  def: Pick<KinListDefinition, "numbering"> | null,
+): string | null {
+  if (view === null || view.void || view.number !== null || def?.numbering === undefined)
+    return null;
+  return item.state === "open" ? KIN_INVOICES.payAfterIssue : null;
+}
+
+/** An invoice's empty file slot shows the latest PDF Kin made for it, which lives in Docs. */
+export function kinInvoiceFileDoc(
+  field: { readonly key: string; readonly files: ReadonlyArray<unknown> },
+  invoice: Pick<KinInvoiceView, "documents"> | null,
+) {
+  if (invoice === null || field.key !== "file" || field.files.length > 0) return null;
+  return invoice.documents[0] ?? null;
+}
 
 /** The templates that make documents for `list`. */
 export const kinTemplatesFor = (recipes: ReadonlyArray<KinRecipe>, list: string) =>

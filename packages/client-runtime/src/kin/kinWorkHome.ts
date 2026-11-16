@@ -12,6 +12,7 @@ import { kinTotalsText } from "./kinLists.ts";
 import { kinInMoney, kinMoneyAgent, kinMoneyView, type KinListOpen } from "./kinMoney.ts";
 import { kinSubscriptionsList } from "./kinSubscriptions.ts";
 import { kinWaitingRowView } from "./kinScreenState.ts";
+import { KIN_SCOPE_ALL, type KinViewerScope } from "./kinViewerScope.ts";
 import {
   kinWorkName,
   kinWorkRow,
@@ -70,8 +71,12 @@ export function kinWorkPlaceParam(show: string | undefined): {
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${count} ${count === 1 ? one : many}`;
 
-export function kinMoneyLine(money: KinMoneySummary): string {
-  if (money.owed.total.length === 0) return "Nobody owes you anything";
+export function kinMoneyLine(
+  money: KinMoneySummary,
+  scope: KinViewerScope = KIN_SCOPE_ALL,
+): string {
+  if (money.owed.total.length === 0)
+    return scope.all ? "Nobody owes you anything" : "Nothing owed is shared with you";
   return [
     `${kinTotalsText(money.owed.total)} owed`,
     money.owed.overdue.length === 0 ? null : `${kinTotalsText(money.owed.overdue)} overdue`,
@@ -184,19 +189,6 @@ export function kinNeedsYou(input: {
       };
     });
   return [...late, ...owed, ...waiting, ...today];
-}
-
-/**
- * Tasks' list under "Needs you", without the tasks it already shows. Null `mine` while Needs you
- * is hidden (a narrowed or searched list) or still loading: then every task stays in the list.
- */
-export function kinWorkBesideNeedsYou<Item extends { readonly key: KinRecordKey }>(
-  items: ReadonlyArray<Item>,
-  mine: ReadonlyArray<Pick<KinRecord, "key">> | null,
-): ReadonlyArray<Item> {
-  if (mine === null || mine.length === 0) return items;
-  const shown = new Set(mine.map((record) => record.key));
-  return items.filter((item) => !shown.has(item.key));
 }
 
 // Tasks' one filter
