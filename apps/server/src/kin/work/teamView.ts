@@ -637,14 +637,15 @@ const ENTRY_KEY = /\b[A-Z]{1,4}-\d{1,6}\b/g;
 const fold = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
 
 /**
- * Why `text` can't go to this person, or undefined when it can: what an owner-level turn writes
- * to someone else holds no amount, no invoice or quote number, no client's terms, and no key or
- * title of an entry they don't see. Checked on the text, so the message stands on its own.
+ * Why `text` can't go to this person, or undefined: no amount, money document number, client's
+ * terms, or key or title of an entry they don't see. `askedBy`, a teammate whose own words these
+ * are, is held only to what they see, so a refusal never says a guess matches something hidden.
  */
 export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   text: string,
+  askedBy?: KinPersonId,
 ) {
   const amount =
     "it names an amount or a money document. Keep amounts out of a message to a teammate";
@@ -656,6 +657,7 @@ export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   )
     return amount;
   const sql = yield* SqlClient.SqlClient;
+  const known = askedBy === undefined ? sql`1 = 1` : personSees(sql, askedBy);
   // A bare figure that is the sum on something they can't see, however it is written.
   const figures = figuresIn(text);
   if (figures.length > 0) {
@@ -663,17 +665,18 @@ export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
       sql`(${column} IN ${sql.in(figures)} OR ${column} / 100 IN ${sql.in(figures)})`;
     const [hit] = yield* sql<{ hit: number }>`SELECT EXISTS (SELECT 1 FROM kin_records r
         WHERE r.org_id = ${orgId} AND r.amount_minor IS NOT NULL
-          AND ${same(sql`r.amount_minor`)} AND NOT ${personSees(sql, personId)})
+          AND ${same(sql`r.amount_minor`)} AND NOT ${personSees(sql, personId)} AND ${known})
       OR EXISTS (SELECT 1 FROM kin_record_payments p
         JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
         WHERE p.org_id = ${orgId} AND ${same(sql`p.amount_minor`)}
-          AND NOT ${personSees(sql, personId)}) AS hit`;
+          AND NOT ${personSees(sql, personId)} AND ${known}) AS hit`;
     if (hit?.hit === 1) return amount;
   }
   const keys = [...new Set(text.match(ENTRY_KEY) ?? [])];
   if (keys.length > 0) {
     const rows = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(keys)} AND NOT ${personSees(sql, personId)}
+        AND ${known}
       ORDER BY r.key LIMIT 1`;
     if (rows[0] !== undefined) return `${rows[0].key} is something they can't see`;
   }
@@ -681,17 +684,17 @@ export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   // Labelled entries they can't see, and every client's terms, by their words.
   const hidden = yield* sql<{ words: string | null }>`SELECT r.title AS words FROM kin_records r
       WHERE r.org_id = ${orgId} AND ${sensitiveNow(sql)} AND NOT ${personSees(sql, personId)}
-        AND length(r.title) >= 6
+        AND length(r.title) >= 6 AND ${known}
     UNION ALL SELECT json_extract(r.fields_json, '$.terms') FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
-        AND length(json_extract(r.fields_json, '$.terms')) >= 10
+        AND length(json_extract(r.fields_json, '$.terms')) >= 10 AND ${known}
     LIMIT 2000`;
   const named = hidden.find((row) => row.words !== null && folded.includes(fold(row.words)));
   if (named !== undefined) return "it repeats a private entry or a client's terms they can't see";
   const termsFigures = yield* sql<{ terms: string }>`SELECT json_extract(r.fields_json, '$.terms')
       AS terms FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
-      AND json_extract(r.fields_json, '$.terms') GLOB '*[0-9]*'
+      AND json_extract(r.fields_json, '$.terms') GLOB '*[0-9]*' AND ${known}
     LIMIT 2000`;
   return figures.length > 0 &&
     termsFigures.some((row) => figuresIn(row.terms).some((n) => figures.includes(n)))

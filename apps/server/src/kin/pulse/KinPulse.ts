@@ -240,11 +240,36 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
         )}
       ORDER BY r.record_id`)
       attended.add(row.recordId);
-  return candidates.filter(
+  const shown = candidates.filter(
     (fact) =>
       seen.has(fact.subject.recordId!) &&
       (!fact.sense.startsWith("meeting_") || attended.has(fact.subject.recordId!)),
   );
+  // A task they see may sit under a project or client they don't: that one goes unnamed.
+  const scopeKeys = [
+    ...new Set(
+      shown.flatMap((fact) =>
+        [fact.scope.projectKey, fact.scope.clientKey].filter((key) => key !== undefined),
+      ),
+    ),
+  ];
+  const named = new Set<string>();
+  for (let start = 0; start < scopeKeys.length; start += 500)
+    for (const row of yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(scopeKeys.slice(start, start + 500))}
+        AND ${viewSees(sql, viewer.people)} ORDER BY r.key`)
+      named.add(row.key);
+  return shown.map((fact) => {
+    const { projectKey, projectTitle, clientKey, clientTitle, ...rest } = fact.scope;
+    return {
+      ...fact,
+      scope: {
+        ...rest,
+        ...(projectKey !== undefined && named.has(projectKey) ? { projectKey, projectTitle } : {}),
+        ...(clientKey !== undefined && named.has(clientKey) ? { clientKey, clientTitle } : {}),
+      },
+    };
+  });
 });
 
 /** The facts that need attention as of `at`, for one viewer, filtered by scope. */

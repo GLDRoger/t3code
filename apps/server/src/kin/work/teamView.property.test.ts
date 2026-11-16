@@ -453,6 +453,16 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
       assert.isUndefined(yield* to("ana", "We have 4321 users and 98 tasks."));
       assert.isUndefined(yield* to("ana", "The milestone invoice is 43200."));
       assert.isDefined(yield* to("ben", "The milestone invoice is 43200."));
+      // Ben's own words, relayed for him, are held only against what he sees: a refusal would
+      // tell him his guess is some sum hidden from him.
+      assert.isUndefined(
+        yield* unreadableBy(
+          orgId,
+          KinPersonId.make("ana"),
+          "Is it 987654?",
+          KinPersonId.make("ben"),
+        ),
+      );
     }),
   );
 

@@ -1057,6 +1057,12 @@ it.effect(
         })).client,
         "Invented Open Co (C-2)",
       );
+      // Setting up a client by a hidden one's name finds nothing to show: it isn't there for them.
+      const again = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ list: "clients", title: "Invented Acme" }],
+      }).pipe(Effect.flip);
+      assert.notInclude(String(again.message), "C-1");
       // The whole client stays the owner's, even past the gate.
       assert.include(yield* Effect.flip(LeadClients.contact(scope, { key: "C-2" })), {
         reason: "not_allowed",
