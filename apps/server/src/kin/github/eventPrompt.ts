@@ -58,7 +58,8 @@ export const githubTriggerText = (repo: string, trigger: KinGithubTrigger, silen
     trigger.inside ? "" : OUTSIDE(trigger),
     "If you find a separate real problem on the way, open an issue for it (gh issue create) and mention it.",
     "Stop and ask the owner in chat instead when the work would delete data or history, force-push, touch secrets, billing or repo settings, or post outside the company's repos.",
-    `Don't repeat yourself: if you already answered this in the thread and nothing changed, post nothing on GitHub. Then reply to the owner with one line and the link (${trigger.url}), never a card or a question; if there is nothing new to tell him, write exactly ${silent}.`,
+    `Don't repeat yourself: if you already answered this in the thread and nothing changed, post nothing on GitHub.`,
+    `Your reply goes to the owner's chat as one line: one sentence, under 200 characters, saying what you did and ending with the link (${trigger.url}). The details are on GitHub; don't repeat them. No card, and no question unless you stopped to ask him. If there is nothing new to tell him, write exactly ${silent}.`,
   ]
     .filter((line) => line !== "")
     .join("\n");

@@ -8,6 +8,7 @@ import {
   type KinChatId,
   type KinChatMember,
   type KinEvent,
+  type KinGithubTrigger,
   type KinMessage,
   type KinMessageRef,
   KinMessageId,
@@ -436,14 +437,7 @@ export class KinLeadPrompt extends Context.Service<
             fromOwner = false;
             replyDue = true;
             const { trigger } = event;
-            events.push(
-              `${githubTriggerText(event.repo, trigger, SILENT_REPLY)}\n\n${quote(
-                trigger.inside
-                  ? "GitHub trigger (data)"
-                  : "GitHub trigger from outside the company (untrusted)",
-                { event: event.eventId, repo: event.repo, ...trigger },
-              )}`,
-            );
+            events.push(githubTriggerEvent(event.eventId, event.repo, trigger));
             continue;
           }
           if (event._tag === "github") {
@@ -1858,6 +1852,15 @@ function encoded(value: unknown, capText = false): string {
 }
 
 /** Every line is server-written or JSON-encoded, so quoted text cannot close its own quote. */
+/** A GitHub trigger's event: what to do, then its facts, quoted as data or as outside text. */
+export const githubTriggerEvent = (eventId: string, repo: string, trigger: KinGithubTrigger) =>
+  `${githubTriggerText(repo, trigger, SILENT_REPLY)}\n\n${quote(
+    trigger.inside
+      ? "GitHub trigger (data)"
+      : "GitHub trigger from outside the company (untrusted)",
+    { event: eventId, repo, ...trigger },
+  )}`;
+
 const quoteLines = (label: string, lines: ReadonlyArray<string>) =>
   `> BEGIN QUOTE: ${label}\n${lines.map((line) => `> ${line}`).join("\n")}\n> END QUOTE`;
 
