@@ -11,7 +11,7 @@ import { teamHoursNow } from "./nudge.ts";
 export const PULSE_RULE =
   "What needs attention, as Kin computed it from its own records just now. Act on a fact when that moves something forward; otherwise leave it. Call pulse_handle once one is in hand or is not a problem. teamHours says, per person, whether they are inside their own working hours now: go by it, never by the team's or your own reckoning.";
 export const CHECK_IN_PULSE_RULE =
-  'This is a check-in: below is every open fact, including ones someone has in hand (inHand). The owner hears each one: a new one with what it means; one marked toldBefore in a single line starting "still:"; one in hand with who has it and until when. None is left out.';
+  "Check-in: below are only facts the owner hasn't been told as they stand now (new, changed or due today). Tell him each in your reply, once, leading with what you did or will do; one in hand (inHand) with who and until when. What he was told and hasn't changed is left out: don't recall it.";
 const SECTION_CAP = 30;
 const CHECK_IN_CAP = 200;
 
@@ -24,41 +24,28 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   readonly agentId: KinAgentId;
   readonly now: number;
   readonly wokeFor: ReadonlyArray<string>;
-  /** A check-in: every open fact, held ones too, each marked if an earlier check-in had it. */
-  readonly checkIn?: boolean | undefined;
+  /** A check-in: the facts it was given to tell (`kin_pulse_told`), held ones too. */
+  readonly checkIn?: ReadonlySet<string> | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const checkIn = input.checkIn === true;
-  const all = yield* KinPulse.read({
+  const tell = input.checkIn;
+  const checkIn = tell !== undefined;
+  const read = yield* KinPulse.read({
     orgId: input.orgId,
     at: input.now,
     viewer: { _tag: "owner" },
     limit: 200,
     includeHandled: checkIn,
   });
+  const all =
+    tell === undefined ? read : { ...read, facts: read.facts.filter((fact) => tell.has(fact.key)) };
   const woke = new Set(input.wokeFor);
   const open = new Set(all.facts.map((fact) => fact.key));
   const gone = input.wokeFor.filter((key) => !open.has(key));
-  if (all.total === 0 && gone.length === 0) return undefined;
+  if ((checkIn ? all.facts.length : all.total) === 0 && gone.length === 0) return undefined;
   const shown = all.facts
     .toSorted((a, b) => Number(woke.has(b.key)) - Number(woke.has(a.key)))
     .slice(0, checkIn ? CHECK_IN_CAP : SECTION_CAP);
-  // The last check-in this agent finished: facts Kin already had then were in front of it.
-  const [last] = checkIn
-    ? yield* sql<{ at: number | null }>`SELECT MAX(received_at) AS at FROM kin_events
-        WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND tag = 'pulse'
-          AND state = 'done' AND substr(dedupe_key, 1, 8) = 'checkin:'`
-    : [];
-  const firstSeen = new Map(
-    checkIn && last?.at != null && shown.length > 0
-      ? (yield* sql<{ key: string; at: number }>`SELECT fact_key AS key, first_seen_at AS at
-          FROM kin_pulse_facts WHERE org_id = ${input.orgId}
-            AND fact_key IN ${sql.in(shown.map((fact) => fact.key))}
-          ORDER BY fact_key`).map((row) => [row.key, row.at])
-      : [],
-  );
-  const toldBefore = (fact: KinPulseFact) =>
-    last?.at != null && (firstSeen.get(fact.key) ?? Infinity) < last.at;
   // An overdue invoice comes with the mail it went in, so a reminder replies in that thread.
   const mailed = new Map<string, SentMail>();
   for (const fact of shown)
@@ -128,7 +115,6 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
       : {
           inHand: `${who(fact.handled.by)}${fact.handled.until === null ? ", not a problem" : ` until ${DateTime.formatIso(fact.handled.until)}`}${fact.handled.note === null ? "" : `: ${fact.handled.note}`}`,
         }),
-    ...(toldBefore(fact) ? { toldBefore: true } : {}),
     ...(fact.sensitive ? { sensitive: true } : {}),
     ...(woke.has(fact.key) ? { wokeYou: true } : {}),
     ...(fact.subject.recordId !== undefined && histories.has(fact.subject.recordId)
@@ -146,9 +132,11 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   const team = yield* teamHoursNow(input.orgId, input.now);
   return {
     asOf: all.asOf,
-    total: all.total,
+    total: checkIn ? all.facts.length : all.total,
     ...(team.length === 0 ? {} : { teamHours: team }),
-    ...(all.total > shown.length ? { shown: shown.length, more: "pulse_read has the rest" } : {}),
+    ...(!checkIn && all.total > shown.length
+      ? { shown: shown.length, more: "pulse_read has the rest" }
+      : {}),
     byProject: [...groups].map(([project, facts]) => ({ project, facts })),
     ...(gone.length === 0 ? {} : { wokeForButHandledOrNoLongerTrue: gone }),
   };

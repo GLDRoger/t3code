@@ -60,7 +60,7 @@ import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
-import { isMorningCheckIn, wantsWeekly } from "../pulse/weekly.ts";
+import { isMorningCheckIn } from "../pulse/weekly.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { RETIRED_WORKER_REASON, retiredWorkerKey } from "./Retirement.ts";
 import { WorkerTracker } from "./WorkerTracker.ts";
@@ -952,18 +952,6 @@ const make = Effect.gen(function* () {
                 );
                 if (facts !== null) routineFacts.set(event.eventId, facts);
               }
-            // The weekly check-in's figures are Kin's to post; the lead adds judgement under them.
-            if (Option.isSome(routineContent))
-              for (const event of events.filter(
-                (one) => one._tag === "pulse" && wantsWeekly([one]),
-              ))
-                yield* routineContent.value
-                  .weeklyFigures(orgId, agentId, event.eventId)
-                  .pipe(
-                    Effect.catch((error) =>
-                      Effect.logWarning("Kin weekly figures unavailable", { cause: error.cause }),
-                    ),
-                  );
             if (Option.isSome(routineContent)) {
               events = events.filter(
                 (event) =>

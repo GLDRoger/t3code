@@ -17,7 +17,7 @@ import * as KinPulse from "./KinPulse.ts";
 import { DAY_MS } from "./thresholds.ts";
 
 export const WEEKLY_RULE =
-  "This is the weekly brief. Kin posted the week's figures from these rows in the chat just before your turn: goals, money still to come and overdue, open quotes, renewals this month, cold clients and meetings. Don't retype them. Add your judgement under it in a few short lines: what matters most this week and why, what you would do, and each decision as one plain question. A meeting that already happened is not coming up; a follow-up you set is not a meeting. Each overdue line says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
+  "This is the weekly brief, the owner's one post this morning. Below are the week's figures from these rows: goals, money still to come and overdue, open quotes, renewals this month, cold clients and meetings. Nothing posts them: pick only what matters, in a few short lines: what matters most this week and why, what you would do, and each decision as one plain question. A meeting that already happened is not coming up; a follow-up you set is not a meeting. Each overdue line says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
 /** The seeded weekly check-in's schedule (`checkin-<slug>`), which arrives as a pulse event. */
 const WEEKLY_CHECK_IN = "checkin-weekly";
 export const wantsWeekly = (events: ReadonlyArray<KinEvent>) =>
@@ -297,47 +297,3 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     ),
   };
 });
-
-type Week = Effect.Success<ReturnType<typeof buildWeeklySection>>;
-
-/** The week's figures as Kin posts them before the agent's judgement: every section, plain. */
-export const renderWeekly = (week: Week) => {
-  const section = (title: string, lines: ReadonlyArray<string>, empty?: string) =>
-    lines.length === 0
-      ? empty === undefined
-        ? []
-        : [`${title}: ${empty}`]
-      : [`${title}:`, ...lines.map((line) => `- ${line}`)];
-  const overdue = week.money.unpaid.filter((line) => line.includes("past due"));
-  const coming = week.money.unpaid.filter((line) => !line.includes("past due"));
-  return [
-    `The week, ${week.week}, from Kin's records`,
-    ...section("Goals", week.goals, "none set"),
-    ...section(
-      "Money",
-      [
-        week.money.inThisWeek.length === 0
-          ? null
-          : `In this week: ${week.money.inThisWeek.join(", ")}`,
-        week.money.outThisWeek.length === 0
-          ? null
-          : `Out this week: ${week.money.outThisWeek.join(", ")}`,
-        week.money.unpaidTotal.length === 0
-          ? null
-          : `Still to come in: ${week.money.unpaidTotal.join(", ")}`,
-      ].filter((line) => line !== null),
-    ),
-    ...section("Overdue", overdue, "nothing"),
-    ...section("Invoices not yet due", coming),
-    ...section("Open quotes", week.money.openQuotes, "none"),
-    ...section("Renewals this month", week.money.renewalsThisMonth, "none"),
-    ...section("Cold clients", week.clients.cold),
-    ...section("Quiet clients", week.clients.quiet),
-    ...section("Behind", week.projects.behind ?? []),
-    ...section(
-      "Meetings with no outcome noted",
-      week.meetings.lastWeek.filter((line) => line.endsWith("no outcome noted yet")),
-    ),
-    ...section("Coming up", week.meetings.comingUp),
-  ].join("\n");
-};

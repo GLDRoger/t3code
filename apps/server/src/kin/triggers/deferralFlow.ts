@@ -56,6 +56,7 @@ import {
 } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as Pings from "./pings.ts";
+import { deliverHeld } from "./heldDelivery.ts";
 
 export class KinDeferralFlowError extends Schema.TaggedError<KinDeferralFlowError>()(
   "KinDeferralFlowError",
@@ -496,11 +497,18 @@ const make = Effect.gen(function* () {
         const last = sweptAt.get(orgId);
         if (!chased && last !== undefined && now - last < SWEEP_EVERY_MS) return Effect.void;
         sweptAt.set(orgId, now);
-        return pings
-          .sweep(orgId)
-          .pipe(
-            Effect.catch((cause) => Effect.logWarning("Kin pings sweep failed", { orgId, cause })),
-          );
+        return pings.sweep(orgId).pipe(
+          Effect.catch((cause) => Effect.logWarning("Kin pings sweep failed", { orgId, cause })),
+          // Lines held through someone's quiet hours post once those end.
+          Effect.andThen(
+            deliverHeld(orgId, chat).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin held lines not delivered", { orgId, cause }),
+              ),
+            ),
+          ),
+        );
       });
       yield* Effect.gen(function* () {
         const timeZone = yield* cache.ownerTimeZone(orgId);

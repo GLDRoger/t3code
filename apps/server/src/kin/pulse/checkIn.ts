@@ -2,6 +2,7 @@ import {
   KinEvent,
   KinEventId,
   type KinAgentId,
+  type KinPersonId,
   type KinMemoryItemId,
   type KinOrgId,
 } from "@t3tools/contracts";
@@ -20,8 +21,11 @@ import {
   looseWindowStartAt,
 } from "../triggers/kinSchedules.ts";
 import { dayIn } from "../work/money.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { matchLines, type OutsideRead } from "./outside.ts";
+import { markTold, toldBy, untold } from "./told.ts";
+import { agentQuietUntil } from "../triggers/quietHold.ts";
 
 const MINUTE = 60_000;
 const sha = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
@@ -39,52 +43,14 @@ export const looseOffsetMs = (
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const OUTSIDE_CAP = 60;
 
-/**
- * Whether any of `facts` is news since this agent's last check-in: first seen after it, never
- * stored yet, or out of someone's hands since. With none, a check-in would only say "nothing new".
- */
-const anyNews = Effect.fn("KinPulse.checkInNews")(function* (
-  input: {
-    readonly orgId: KinOrgId;
-    readonly agentId: KinAgentId;
-    /** This slot's own event: fired again after a restart, it is not the last one. */
-    readonly dedupeKey: string;
-    readonly at: number;
-  },
-  keys: ReadonlyArray<string>,
-) {
-  const { orgId, agentId, at } = input;
-  if (keys.length === 0) return false;
-  const sql = yield* SqlClient.SqlClient;
-  const [last] = yield* sql<{ at: number | null }>`SELECT MAX(received_at) AS at FROM kin_events
-    WHERE org_id = ${orgId} AND agent_id = ${agentId} AND tag = 'pulse'
-      AND dedupe_key LIKE 'checkin:%' AND dedupe_key != ${input.dedupeKey}
-      AND state != 'failed'`;
-  const since = last?.at ?? null;
-  if (since === null) return true;
-  const stored = new Map<string, { readonly firstSeenAt: number; readonly until: number | null }>();
-  for (let start = 0; start < keys.length; start += 500)
-    for (const row of yield* sql<{ key: string; firstSeenAt: number; until: number | null }>`
-      SELECT fact_key AS key, first_seen_at AS "firstSeenAt", handled_until AS until
-      FROM kin_pulse_facts
-      WHERE org_id = ${orgId} AND fact_key IN ${sql.in(keys.slice(start, start + 500))}
-      ORDER BY fact_key`)
-      stored.set(row.key, row);
-  return keys.some((key) => {
-    const row = stored.get(key);
-    return (
-      row === undefined ||
-      row.firstSeenAt > since ||
-      (row.until !== null && row.until > since && row.until <= at)
-    );
-  });
-});
+/** The seeded check-in the weekly brief stands in for on its day. */
+const MORNING = "checkin-morning";
+const WEEKLY = "checkin-weekly";
 
 /**
- * One check-in: the open facts, held ones too, and what is new outside, handed to the agent as
- * one pulse event at the slot's minute. With nothing new since the agent's last check-in, nothing
- * is queued and no model runs; a Run now tap still runs. `slot` keys the event, so one slot
- * queues once however often it is fired.
+ * One check-in at the slot's minute: what the owner hasn't been told and what is new outside.
+ * With nothing untold no model runs; Run now tells every open fact. On a weekly brief's day the
+ * morning check-in is the brief. `slot` keys the event, so a slot queues once.
  */
 export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly orgId: KinOrgId;
@@ -123,16 +89,33 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   if (facts.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   const slot = input.manualId ?? dayIn(input.dueAt, input.zone);
   const dedupeKey = `checkin:${input.scheduleId}:${slot}`;
-  const news =
-    input.manualId !== undefined ||
-    (yield* anyNews(
-      { orgId, agentId: input.agentId, dedupeKey, at },
-      facts.map((fact) => fact.key),
-    ));
-  if (!news && lines.length === 0) return { _tag: "nothing_new" } as const;
+  const eventId = KinEventId.make(`pulse-${sha(`${orgId}\0${dedupeKey}`).slice(0, 32)}`);
+  const sql = yield* SqlClient.SqlClient;
+  if (input.manualId === undefined && input.scheduleId === MORNING) {
+    const [brief] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+      AND dedupe_key = ${`checkin:${WEEKLY}:${slot}`} AND state != 'failed' LIMIT 1`;
+    if (brief !== undefined) return { _tag: "folded" } as const;
+  }
+  // The same slot fired again, as after a restart: its stored event and minute stand.
+  const [stored] = yield* sql<{ notBefore: number | null; queuedAt: number }>`
+    SELECT not_before AS "notBefore", queued_at AS "queuedAt" FROM kin_events
+    WHERE org_id = ${orgId} AND event_id = ${eventId}`;
+  if (stored !== undefined)
+    return {
+      _tag: "duplicate",
+      facts: (yield* toldBy(orgId, [eventId])).size,
+      outside: lines.length,
+      notBefore: stored.notBefore ?? stored.queuedAt,
+    } as const;
+  const [agent] = yield* sql<{ owner: KinPersonId }>`SELECT owner_person_id AS owner
+    FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${input.agentId}`;
+  if (agent === undefined) return { _tag: "nothing_new" } as const;
+  const told = { orgId, personId: agent.owner, at, zone: yield* ownerZone(orgId) };
+  const tell = input.manualId !== undefined ? facts : yield* untold({ ...told, facts });
+  if (tell.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   // The minute is picked in the window as it stands that day, never from a late start: a run
   // that starts after its minute fires at once.
-  const notBefore =
+  const minute =
     input.looseAt !== null && input.manualId === undefined
       ? Math.max(
           at,
@@ -140,39 +123,50 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
             looseOffsetMs(input.scheduleId, slot, looseSpanMinutes(input.looseAt)),
         )
       : undefined;
-  const queued = yield* queue
-    .enqueue(
-      yield* decodeEvent({
-        _tag: "pulse",
-        orgId,
-        eventId: KinEventId.make(`pulse-${sha(`${orgId}\0${dedupeKey}`).slice(0, 32)}`),
-        agentId: input.agentId,
-        receivedAt: DateTime.formatIso(DateTime.makeUnsafe(at)),
-        dedupeKey,
-        provenance: { _tag: "system" },
-        factKeys: [],
-        checkIn: {
-          scheduleId: input.scheduleId,
-          title: input.title.slice(0, 200),
-          what: input.what.slice(0, 2000),
-          slot: slot.slice(0, 200),
-        },
-        ...(lines.length === 0 ? {} : { outside: lines }),
-        // A check-in or brief is judgement whatever an earlier one already told: the main model.
-        strong: true,
-      }),
-      notBefore === undefined ? undefined : { notBefore },
-    )
-    .pipe(
-      Effect.map((result) => (result.duplicate ? "duplicate" : "queued")),
-      Effect.catchTags({
-        KinEventQueueUnknownAgent: () => Effect.succeed("no_agent" as const),
-        KinEventQueueRetiredAgent: () => Effect.succeed("no_agent" as const),
-      }),
-    );
+  // Nobody asked for it: one that lands in the owner's quiet hours waits for them to end.
+  const quietUntil =
+    input.manualId === undefined
+      ? yield* agentQuietUntil(orgId, input.agentId, minute ?? at)
+      : undefined;
+  const notBefore = quietUntil ?? minute;
+  const queued = yield* sql.withTransaction(
+    queue
+      .enqueue(
+        yield* decodeEvent({
+          _tag: "pulse",
+          orgId,
+          eventId,
+          agentId: input.agentId,
+          receivedAt: DateTime.formatIso(DateTime.makeUnsafe(at)),
+          dedupeKey,
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: input.scheduleId,
+            title: input.title.slice(0, 200),
+            what: input.what.slice(0, 2000),
+            slot: slot.slice(0, 200),
+          },
+          ...(lines.length === 0 ? {} : { outside: lines }),
+          // A check-in or brief is judgement whatever an earlier one already told: the main model.
+          strong: true,
+        }),
+        notBefore === undefined ? undefined : { notBefore },
+      )
+      .pipe(
+        Effect.tap((result) =>
+          result.duplicate ? Effect.void : markTold({ ...told, eventId, facts: tell }),
+        ),
+        Effect.map((result) => (result.duplicate ? "duplicate" : "queued")),
+        Effect.catchTags({
+          KinEventQueueUnknownAgent: () => Effect.succeed("no_agent" as const),
+          KinEventQueueRetiredAgent: () => Effect.succeed("no_agent" as const),
+        }),
+      ),
+  );
   return {
     _tag: queued,
-    facts: facts.length,
+    facts: tell.length,
     outside: lines.length,
     notBefore: notBefore ?? at,
   } as const;
