@@ -62,7 +62,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   as <person> web wait "<text>" [--gone] [--timeout <s>]
   as <person> web screenshot <path> [--full]   (refuses paths under ~/.t3)
   as <person> rpc <method> ['<json>']     a client RPC as that person (orgId is filled in)
-  tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--reply "<text>"] [--hold <s>] [--raw]
+  tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--reply "<text>"] [--hold <s>] [--fail] [--raw]
                                           one real turn, no model: the agent calls the tool
   mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
   mail expire <address> [--back]          the account's sign-in stops working (or works again)
@@ -358,6 +358,7 @@ async function tool(instance: Instance, args: Args) {
     calls: [{ name, arguments: json === undefined ? {} : JSON.parse(json) }],
     ...(flag(args, "reply") === undefined ? {} : { reply: flag(args, "reply")! }),
     ...(flag(args, "hold") === undefined ? {} : { holdSeconds: Number(flag(args, "hold")) }),
+    ...(args.flags.has("fail") ? { fail: true } : {}),
   });
   for (const result of results)
     console.log(args.flags.has("raw") ? JSON.stringify(result) : describeResult(result));
