@@ -5,7 +5,7 @@ import {
   KIN_RETIRED_LABEL,
   kinAgentGroups,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
-import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { KIN_OPENAI_AGENTS, kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { EnvironmentId, KinOrgId, type ModelSelection } from "@t3tools/contracts";
 import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -22,9 +22,12 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { useEnvironmentServerConfig } from "../../state/entities";
+import { serverEnvironment } from "../../state/server";
 import { kinClient } from "./state/kinClient";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
@@ -152,7 +155,10 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
         </ListSection>
       )}
       {canAdd && agents !== null && agents.length > 0 ? (
-        <KinAgentDefaults environmentId={environmentId} orgId={orgId} />
+        <>
+          <KinAgentDefaults environmentId={environmentId} orgId={orgId} />
+          <KinOpenAiAgents environmentId={environmentId} />
+        </>
       ) : null}
       {retired.length === 0 ? null : (
         <ListSection
@@ -173,6 +179,30 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
         </ListSection>
       )}
     </KinAgentsFrame>
+  );
+}
+
+/** The host's experimental switch that lets agents run on Codex models too. */
+function KinOpenAiAgents(props: { readonly environmentId: EnvironmentId }) {
+  const config = useEnvironmentServerConfig(props.environmentId);
+  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
+    label: "Kin agents on OpenAI models",
+    reportFailure: true,
+  });
+  if (config === null) return null;
+  return (
+    <ListSection footer={KIN_OPENAI_AGENTS.detail}>
+      <ListToggleRow
+        label={KIN_OPENAI_AGENTS.title}
+        value={config.settings.kinNonClaudeAgents}
+        onValueChange={(on) =>
+          void updateSettings({
+            environmentId: props.environmentId,
+            input: { patch: { kinNonClaudeAgents: on } },
+          })
+        }
+      />
+    </ListSection>
   );
 }
 

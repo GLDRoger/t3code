@@ -52,8 +52,12 @@ export type KinLeadRoutine = typeof KinLeadRoutine.Type;
 
 export const KinLevel = Schema.Literals(["L0", "L1", "L2", "L3"]);
 export type KinLevel = typeof KinLevel.Type;
-/** The provider drivers a Kin agent may run on: the host refuses any other, pickers offer only these. */
-export const isKinAgentDriver = (driver: string | undefined): boolean => driver === "claudeAgent";
+/**
+ * The providers an agent may run on: Claude, and Codex once the host turns on `kinNonClaudeAgents`.
+ * The host refuses any other and pickers offer only these; widen it here.
+ */
+export const kinAgentDriverAllowed = (driver: string | undefined, nonClaudeAgents: boolean) =>
+  driver === "claudeAgent" || (nonClaudeAgents && driver === "codex");
 
 export const KinLead = Schema.Struct({
   orgId: KinOrgId,

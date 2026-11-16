@@ -43,6 +43,7 @@ describe("kinQuoteState", () => {
       decline: false,
     });
     expect(kinQuoteActions("draft", false).send).toBe(false);
+    expect(kinQuoteActions("accepted", true, true).makeInvoice).toBe(false);
   });
 });
 

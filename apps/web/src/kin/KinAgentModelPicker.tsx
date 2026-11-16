@@ -6,7 +6,8 @@ import {
   kinHasEffort,
   kinWithMediumEffort,
 } from "@t3tools/client-runtime/kin/kinAgentPage";
-import { type EnvironmentId, isKinAgentDriver, type ModelSelection } from "@t3tools/contracts";
+import { kinAgentDriverAllowed } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import type { EnvironmentId, ModelSelection } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
 import { ProviderModelPicker } from "../components/chat/ProviderModelPicker";
@@ -17,13 +18,16 @@ import { getCustomModelOptionsByInstance } from "../modelSelection";
 import { providerInstanceEntriesFor } from "../providerInstances";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../state/server";
 
-/** The models this server really offers agents, from the providers the host lets them run on. */
+/** The models this server really offers that agents may run on: Claude, and Codex when allowed. */
 export function useKinAgentModels(environmentId: EnvironmentId) {
   const settings = useEnvironmentSettings(environmentId);
   const providers =
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
   const instanceEntries = providerInstanceEntriesFor(providers, settings, null).filter(
-    (entry) => isKinAgentDriver(entry.driverKind) && entry.enabled && entry.isAvailable,
+    (entry) =>
+      kinAgentDriverAllowed(entry.driverKind, settings.kinNonClaudeAgents) &&
+      entry.enabled &&
+      entry.isAvailable,
   );
   const modelOptionsByInstance = getCustomModelOptionsByInstance(settings, providers);
   const offered = instanceEntries.flatMap((entry) =>

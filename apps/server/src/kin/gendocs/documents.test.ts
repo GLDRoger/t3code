@@ -1007,6 +1007,12 @@ describe("recipe documents", () => {
         ["INV-2", true, "₹2,36,000.00", "998391"],
       );
       assert.deepStrictEqual((yield* invoiceIt).entry, "INV-2");
+      // The quote names its invoice back, once, so it can say it was invoiced.
+      const quoteLinks = (yield* records.detail((yield* records.get(orgId, "QT-1"))!)).links;
+      assert.deepStrictEqual(
+        quoteLinks.flatMap((link) => (link.record?.key === "INV-2" ? [link.relation] : [])),
+        ["relates"],
+      );
       const drafted = (yield* records.get(orgId, "INV-2"))!;
       assert.deepStrictEqual(
         [drafted.state, drafted.partyId, drafted.title],

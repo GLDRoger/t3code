@@ -1,6 +1,7 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect } from "react";
 
@@ -64,6 +65,10 @@ export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
     savedHostId,
     probe: kinProbe(get),
     cachedOrgs: kinCachedOrgs(get),
+    ...Option.match(get.self<KinHost>(), {
+      onNone: () => ({}),
+      onSome: (previous) => ({ previous }),
+    }),
   });
 }).pipe(Atom.withLabel("kin:host"));
 

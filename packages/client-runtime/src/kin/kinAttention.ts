@@ -11,7 +11,7 @@ import {
 import * as DateTime from "effect/DateTime";
 
 import { kinMoneyDraft, kinMoneyText } from "./kinLists.ts";
-import type { KinNeedsYouRow } from "./kinWorkHome.ts";
+import { KIN_NEEDS_YOU_SHOWN, type KinNeedsYouRow } from "./kinWorkHome.ts";
 import { kinFailure } from "./kinAnswers.ts";
 
 /**
@@ -334,6 +334,61 @@ export function kinNeedsYouBeside(
       !(money && row.id === "money:overdue"),
   );
 }
+
+/**
+ * The block over Tasks, the owner's and a co-owner's only: company-wide things, never a task the
+ * list already shows under "On me", which carries its own mark. Null when nothing is in it.
+ */
+export function kinTasksBlock(input: {
+  readonly ownerLevel: boolean;
+  /** The keys the list shows under "On me". */
+  readonly onMe: ReadonlySet<string>;
+  readonly attention: ReadonlyArray<KinAttentionRow>;
+  readonly needs: ReadonlyArray<KinNeedsYouRow>;
+  /** Open facts past the page read, counted by the host. */
+  readonly hidden: number;
+  /** Answered rows, kept for their Undo until the read lets them go. */
+  readonly handled: number;
+  /** After "See all": every row, not the first few. */
+  readonly expanded: boolean;
+}): {
+  readonly attention: ReadonlyArray<KinAttentionRow>;
+  readonly needs: ReadonlyArray<KinNeedsYouRow>;
+  readonly total: number;
+} | null {
+  if (!input.ownerLevel) return null;
+  const attention = input.attention.filter(
+    (row) => !(row.open.type === "record" && input.onMe.has(row.open.key)),
+  );
+  const needs = input.needs.filter(
+    (row) => !(row.open.type === "task" && input.onMe.has(row.open.key)),
+  );
+  if (attention.length === 0 && needs.length === 0 && input.handled === 0) return null;
+  const total = attention.length + needs.length + input.hidden;
+  // The rows it shows, so the list below keeps every task the block doesn't. A money row leads,
+  // so a long run of attention rows never hides it.
+  const limit = input.expanded ? total : KIN_NEEDS_YOU_SHOWN;
+  const lead = needs[0]?.id === "attention:money" ? 1 : 0;
+  const shownAttention = attention.slice(0, Math.max(0, limit - lead));
+  return {
+    attention: shownAttention,
+    needs: [
+      ...needs.slice(0, lead),
+      ...needs.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length)),
+    ],
+    total,
+  };
+}
+
+/**
+ * The badge on Tasks, each thing once: for the owner and a co-owner what needs attention; for
+ * anyone else their own late and due-today tasks, the ones "On me" marks.
+ */
+export const kinTasksBadgeCount = (input: {
+  readonly ownerLevel: boolean;
+  readonly attention: KinPulseScreenRead | null;
+  readonly mineDue: ReadonlyArray<unknown> | null;
+}) => (input.ownerLevel ? kinAttentionCount(input.attention) : (input.mineDue?.length ?? 0));
 
 const pad = (value: number) => String(value).padStart(2, "0");
 const dayOf = (date: Date) =>

@@ -27,7 +27,7 @@ const session = (person: string): AuthenticatedSession => ({
   scopes: [AuthKinChatScope],
 });
 
-// What a member reaches: their own chats, Work shared with them and what needs them in it, their
+// What a member reaches: their own chats and one with any teammate, Work shared with them and what needs them in it, their
 // phone and their GitHub login, and the Clients, Docs and Money reads, where the service shows
 // them only their places.
 const MEMBER = [
@@ -39,6 +39,7 @@ const MEMBER = [
   "kin.chats.createDirect",
   "kin.chats.mute",
   "kin.chats.subscribe",
+  "kin.chats.withPerson",
   "kin.docs.diff",
   "kin.docs.get",
   "kin.docs.history",

@@ -21,12 +21,17 @@ const on = (instanceId: string) => ({
 
 describe("nonClaudeLeadModel", () => {
   it.each([
-    ["Claude, anywhere", "claudeAgent", false, false],
-    ["the scripted agent, off a dev server", "kinVerifyScript", false, true],
-    ["the scripted agent, on a dev server", "kinVerifyScript", true, false],
-    ["another ACP or Codex instance, even on a dev server", "codex", true, true],
-  ] as const)("%s", (_name, instanceId, devServer, refused) => {
-    expect(nonClaudeLeadModel(settings, on(instanceId), devServer) !== undefined).toBe(refused);
+    ["Claude, anywhere", "claudeAgent", false, false, false],
+    ["the scripted agent, off a dev server", "kinVerifyScript", false, false, true],
+    ["the scripted agent, on a dev server", "kinVerifyScript", true, false, false],
+    ["another ACP or Codex instance, even on a dev server", "codex", true, false, true],
+    ["Codex, with the host's switch on", "codex", false, true, false],
+    ["another ACP instance, even with the switch on", "kinVerifyScript", false, true, true],
+  ] as const)("%s", (_name, instanceId, devServer, codex, refused) => {
+    expect(
+      nonClaudeLeadModel({ ...settings, kinNonClaudeAgents: codex }, on(instanceId), devServer) !==
+        undefined,
+    ).toBe(refused);
   });
 });
 
@@ -109,6 +114,36 @@ describe("matchModel", () => {
       instanceId: ProviderInstanceId.make("claudeAgent"),
       model: "claude-sonnet-4-6",
       options: [{ id: "effort", value: "high" }],
+    });
+  });
+  it("finds a Codex model, with its reasoning effort, only with the host's switch on", () => {
+    const codex = {
+      ...claude(["gpt-6-astra"]),
+      instanceId: ProviderInstanceId.make("codex"),
+      driver: "codex",
+      models: claude(["gpt-6-astra"]).models.map((model) => ({
+        ...model,
+        name: "GPT-6 Astra",
+        capabilities: {
+          optionDescriptors: [
+            {
+              id: "reasoningEffort",
+              label: "Reasoning",
+              type: "select" as const,
+              options: [
+                { id: "medium", label: "Medium", isDefault: true },
+                { id: "high", label: "High" },
+              ],
+            },
+          ],
+        },
+      })),
+    } as unknown as ServerProvider;
+    assert.match(String(matchModel([...providers, codex], "astra", "high", current)), /no Claude/);
+    assert.deepStrictEqual(matchModel([...providers, codex], "astra", "high", current, true), {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-6-astra",
+      options: [{ id: "reasoningEffort", value: "high" }],
     });
   });
   it("says what it has when the words name nothing offered", () => {

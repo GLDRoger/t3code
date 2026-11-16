@@ -544,6 +544,8 @@ const CHAT_ATTACHMENT_METHODS = ["attachments.createUploadUrl", "attachments.del
 it.effect("a chat-only session connects with a config that carries nothing of the host", () =>
   Effect.gen(function* () {
     yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], "subscribeServerConfig", {});
+    yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], "server.probe", {});
+    yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], "server.reportClientActivity", {});
     expect(
       yield* RpcAuthorization.authorizeRpc([AuthKinChatScope], "subscribeServerLifecycle", {}).pipe(
         Effect.flip,
@@ -614,7 +616,9 @@ it.effect.each(
     (method) =>
       !method.startsWith("kin.") &&
       !CHAT_ATTACHMENT_METHODS.includes(method) &&
-      method !== "subscribeServerConfig",
+      method !== "subscribeServerConfig" &&
+      method !== "server.probe" &&
+      method !== "server.reportClientActivity",
   ),
 )("chat-only sessions are refused before dispatch or stream subscription: %s", (method) =>
   Effect.gen(function* () {

@@ -1,3 +1,4 @@
+import { useKinViewerScope } from "./state/kinChatOnly";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
@@ -16,6 +17,7 @@ import {
   kinWorkNothing,
   kinWorkOverview,
   kinWorkRow,
+  kinWorkRowMarked,
   kinWorkShown,
   KIN_WORK_DEFAULT_FILTER,
   kinWorkHostClients,
@@ -37,7 +39,6 @@ import {
   kinDocsLine,
   kinMoneyLine,
   kinWorkAskDraft,
-  kinWorkBesideNeedsYou,
   kinWorkFilterCleared,
   kinWorkFilterLabel,
   kinWorkOwnerSelected,
@@ -51,11 +52,12 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkList";
 import {
   kinWorkGroupWithin,
-  kinWorkGroups,
+  kinTasksTop,
   kinWorkGroupsShown,
   type KinWorkGroupItem,
 } from "@t3tools/client-runtime/kin/kinWorkGroups";
-import { kinWorkListsMoved, type KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
+import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
+import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { EnvironmentId, KinOrgId, KinRecordKey, type KinRecord } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -80,7 +82,8 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { KinDocsList, KinSearchHits } from "./KinDocsList";
-import { KinNeedsYou } from "./KinNeedsYou";
+import { KinTasksAttention, useKinNeedsRows } from "./KinNeedsYou";
+import { connectionAtomRuntime } from "../../connection/runtime";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinClientsList } from "./KinWorkLists";
 import { KinMoneyArea } from "./KinWorkMoney";
@@ -103,7 +106,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { useKinClientCounts, useKinDocsRecent, useKinMyDueTasks } from "./state/useKinWorkHome";
+import { useKinClientCounts, useKinDocsRecent } from "./state/useKinWorkHome";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 
 /** What the Tasks search finds besides tasks, which the list itself already narrows to. */
@@ -151,13 +154,14 @@ function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | n
   const money = useKinMoneySummary(props, { enabled: true }).state;
   const docs = useKinDocsRecent(props);
   const counts = useKinClientCounts(props, hostClients);
+  const scope = useKinViewerScope(props.environmentId);
   return (
     <>
       <KinWorkEntryRow summary={kinWorkEntrySummary(summary)} onPress={() => open("tasks")} />
       {money._tag === "refused" || money._tag === "failed" ? null : (
         <KinPlaceEntryRow
           place="money"
-          summary={money._tag === "ready" ? kinMoneyLine(money.value) : null}
+          summary={money._tag === "ready" ? kinMoneyLine(money.value, scope) : null}
           onPress={() => open("money")}
         />
       )}
@@ -413,6 +417,7 @@ export function KinWorkTaskList(
     list.refresh();
   };
   const { filter } = listState;
+  const scope = useKinViewerScope(environmentId);
   const overview = kinWorkOverview(live.summary, filter, names);
   const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
     kinWorkApplied(record, changed),
@@ -427,27 +432,39 @@ export function KinWorkTaskList(
     props.within === undefined ? filter : { ...filter, party: null, project: null },
     names,
   );
-  // The whole company's open tasks, unsearched, start with what needs you.
-  const showsNeedsYou =
-    props.within === undefined && narrowed === null && filter.text.trim() === "";
-  const mine = useKinMyDueTasks(
-    props,
-    showsNeedsYou ? names.me : null,
-    props.stale ? null : kinWorkListsMoved(live, ["work"]),
-  );
-  const beside = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null);
+  const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
+  const grouped = props.within === undefined && kinWorkGroupsShown(filter, names.me);
+  // The whole company's open tasks, unsearched: the owner's block leads, over "On me".
+  const showsBlock = grouped && narrowed === null;
+  const needs = useKinNeedsRows({ ...props, names }, showsBlock && ownerLevel);
+  const top = kinTasksTop({
+    ownerLevel: needs !== null,
+    records,
+    names,
+    now,
+    attention: needs?.attention ?? [],
+    needs: needs?.needs ?? [],
+    hidden: needs?.hidden ?? 0,
+    handled: needs?.handled.length ?? 0,
+    expanded: needs?.expanded ?? false,
+  });
   // The plain list reads by whom each task waits on; a filtered one stays one list.
-  const items: ReadonlyArray<KinWorkGroupItem<KinRecord>> =
-    props.within === undefined && kinWorkGroupsShown(filter, names.me)
-      ? kinWorkGroups(beside, names)
-      : beside.map((record) => ({ type: "task", key: record.key, record, section: null }));
+  const items: ReadonlyArray<KinWorkGroupItem<KinRecord>> = grouped
+    ? top.items
+    : records.map((record) => ({ type: "task", key: record.key, record, section: null }));
   const rows: ReadonlyArray<KinWorkListItem> = items.map((item) =>
     item.type === "task"
-      ? { ...item, row: kinWorkRow(item.record, names, now, kinWorkGroupWithin(item, filter)) }
+      ? {
+          ...item,
+          row: kinWorkRowMarked(
+            kinWorkRow(item.record, names, now, kinWorkGroupWithin(item, filter)),
+            item.mark ?? null,
+          ),
+        }
       : item,
   );
-  const nothing = kinWorkNothing(filter, names);
-  // Needs you shows the rest, so the count says how many are loaded in all.
+  const nothing = kinWorkNothing(filter, names, scope);
+  // Needs attention shows some, so the count says how many are loaded in all.
   const footer = kinWorkListFooter(
     filter,
     records.length,
@@ -539,14 +556,15 @@ export function KinWorkTaskList(
           ListHeaderComponent={
             <View className="gap-3 pt-2">
               {within?.header}
-              {showsNeedsYou ? (
-                <KinNeedsYou
-                  {...props}
-                  names={names}
-                  mine={mine}
-                  hideWhenNone={records.length === 0 && !listState.loading}
+              {needs === null || top.block === null ? null : (
+                <KinTasksAttention
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  {...needs}
+                  {...top.block}
+                  handled={needs.handled}
                 />
-              ) : null}
+              )}
               {props.stale || listState.stale ? (
                 <View className="px-4">
                   <KinWorkStaleNotice environmentId={environmentId} onRetry={refresh} />
@@ -594,7 +612,7 @@ export function KinWorkTaskList(
             </View>
           }
           ListEmptyComponent={
-            // Every open task is already under Needs you.
+            // Every open task is already under Needs attention.
             records.length > 0 ? null : (
               <View className="px-4 pt-4">
                 {listState.loading ? (
@@ -653,7 +671,12 @@ export function KinWorkTaskList(
                       />
                     </ListSection>
                   </View>
-                  <KinSearchHits state={found} onRetry={search.retry} onOpen={openHit} />
+                  <KinSearchHits
+                    state={found}
+                    scope={scope}
+                    onRetry={search.retry}
+                    onOpen={openHit}
+                  />
                 </View>
               ) : null}
             </>

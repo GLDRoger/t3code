@@ -1,11 +1,12 @@
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { KIN_WORK_ONLY_OWNER, kinWorkHostEdits } from "@t3tools/client-runtime/kin/kinWork";
+import { kinWorkHostEdits } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkApplied, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   KIN_CLIENTS,
   KIN_CLIENT_FAILED,
+  KIN_CLIENT_REFUSED,
   KIN_CLIENT_GONE,
   KIN_PROJECTS,
   kinClientPageView,
@@ -110,7 +111,7 @@ function KinClientGate(props: ClientTarget) {
   if (!allowed) {
     return (
       <KinWorkFrame title={KIN_CLIENTS.title} onBack={() => navigation.goBack()}>
-        <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+        <EmptyState variant="plain" {...KIN_CLIENT_REFUSED} />
       </KinWorkFrame>
     );
   }
@@ -130,7 +131,7 @@ function KinClientStates(props: ClientTarget) {
       ) : state._tag === "gone" ? (
         <EmptyState variant="plain" {...KIN_CLIENT_GONE} />
       ) : state._tag === "refused" ? (
-        <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+        <EmptyState variant="plain" {...KIN_CLIENT_REFUSED} />
       ) : (
         <EmptyState
           variant="plain"

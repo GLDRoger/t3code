@@ -174,6 +174,16 @@ export const KIN_CHIEF_OF_STAFF: KinLeadDraft = {
   intro: "",
 };
 
+/** The providers an agent may run on; the one rule lives in contracts, beside the host's. */
+export { kinAgentDriverAllowed } from "@t3tools/contracts";
+
+/** The host's switch for agents on Codex, shown beside the model new agents start on. */
+export const KIN_OPENAI_AGENTS = {
+  title: "Agents on OpenAI models",
+  detail:
+    "An experiment: agents may also run on Codex's models. There they use only their Kin tools, with no shell, files or web, in every chat. Sign in to Codex under Settings, Providers first.",
+};
+
 /** An org's first agent is where the model comes from: the host copies it to every later one. */
 export const KIN_LEAD_MODELS = {
   title: "Model",

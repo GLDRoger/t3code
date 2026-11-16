@@ -1124,6 +1124,16 @@ describe("invoices", () => {
           fields: { number: "INV/26-27/999" },
         }).pipe(Effect.flip);
         assert.include(own.message, "when they are issued");
+        // A draft isn't owed yet, so a payment on it waits for its number.
+        const unissued = yield* OwnerMoney.recordPayment(people, {
+          orgId,
+          key: "INV-1",
+          amount: { minor: 100_000, currency: "INR" },
+          paidOn: "2026-11-05",
+          clientRequestId: "on-a-draft",
+        }).pipe(Effect.flip);
+        assert.include(unissued, { reason: "invalid_state" });
+        assert.include(unissued.message, "Issue it first");
         // Two issues at once get consecutive numbers, one each.
         const both = yield* Effect.all(
           [

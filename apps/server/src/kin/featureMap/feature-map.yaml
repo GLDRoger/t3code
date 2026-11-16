@@ -249,6 +249,23 @@ features:
       - apps/server/src/kin/chat/KinGroups.test.ts
       - packages/client-runtime/src/kin/kinGroups.test.ts
 
+  - id: chat-teammate
+    name: Message a teammate
+    tab: chats
+    web: [home, "menu:New chat, group, agent or teammate", dialog:Message a teammate, chat]
+    phone: [tab:chats, KinPeoplePick, KinChat]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      Two people, no agent. Starting it again opens the same chat. Only those two read it, not
+      the owner or a co-owner, and the chat says so at its top. Also from a teammate's profile.
+    depth_reason: >-
+      Picking the teammate is a one-tap list that closes as it opens the chat it made, as making a
+      group does; the chat is where the person was going, not a page opened from the picker.
+    proof:
+      - apps/server/src/kin/chat/KinGroups.test.ts
+      - packages/client-runtime/src/kin/kinPeopleChat.test.ts
+      - .agents/skills/verify-kin/scripts/member-messages-teammate.sh
+
   - id: group-details
     name: A group's members and who answers
     tab: chats
@@ -324,10 +341,13 @@ features:
   - id: pulse
     name: Needs attention (the pulse)
     tab: tasks
-    web: [tasks, section:Needs you]
-    phone: [tab:tasks, section:Needs you]
+    web: [tasks, section:Needs attention]
+    phone: [tab:tasks, section:Needs attention]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: Money facts reach only the owner level.
+    note: >-
+      Money facts reach only the owner level. Tasks shows the block only to the owner level, never
+      empty and never with a task On me holds; a lead or member gets their own late, due-today and
+      stuck tasks marked at the top of On me, which the Tasks badge counts.
     tools: [pulse_read, pulse_handle, pulse_nudge]
     proof:
       - apps/server/src/kin/pulse/KinPulse.test.ts
@@ -446,15 +466,18 @@ features:
     phone: [tab:money, KinList, KinWorkItem, KinPayment]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: A draft invoice takes no payment until it is issued, and says so.
     tools: [payment_record]
-    proof: [apps/server/src/kin/work/money.test.ts]
+    proof:
+      - apps/server/src/kin/work/money.test.ts
+      - .agents/skills/verify-kin/scripts/quote-invoice-loop.sh
 
   - id: make-document
     name: Make an invoice, quote or receipt PDF
     tab: money
     # A step of the entry's sheet: the sheet turns into the form, with Back to the entry.
     web: [money, "?list", "?task", button:Make its PDF]
-    phone: [tab:money, KinList, KinWorkItem, button:Make invoice]
+    phone: [tab:money, KinList, KinWorkItem, button:Make its PDF]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [kin_document, kin_recipes, kin_issue, kin_recipe_undo]
@@ -562,10 +585,11 @@ features:
     web: [clients, "?client"]
     phone: [tab:clients, KinClient]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: Amounts, contacts and history are owner-level.
+    note: Amounts, contacts and history are owner-level. Someone who can't open it is told so.
     proof:
       - apps/server/src/kin/work/crm.test.ts
       - .agents/skills/verify-kin/scripts/member-no-money.sh
+      - .agents/skills/verify-kin/scripts/member-refused-client.sh
 
   - id: client-form
     name: Add or change a client
@@ -675,8 +699,10 @@ features:
     web: [docs, "?doc"]
     phone: [tab:docs, KinDoc]
     roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: A teammate's Suggest a change opens their chat with the team agent, the doc attached.
     tools: [doc_create, doc_read, doc_edit, doc_rewrite, doc_link]
     proof:
+      - .agents/skills/verify-kin/scripts/member-suggests-playbook.sh
       - apps/server/src/kin/work/docs.test.ts
       - apps/server/src/kin/work/docBody.test.ts
       - apps/server/src/kin/chat/privateDocs.test.ts

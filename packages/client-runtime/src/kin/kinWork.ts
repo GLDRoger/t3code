@@ -31,6 +31,7 @@ import { AsyncResult } from "effect/reactivity";
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
+import { KIN_SCOPE_ALL, kinScopeNote, type KinViewerScope } from "./kinViewerScope.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
 import { kinPickablePeople } from "./kinTeam.ts";
@@ -503,6 +504,27 @@ export interface KinWorkRowView {
   /** `holder` and `detail` on one line: "Priya · Due Fri 14 Nov · In progress · Acme". */
   readonly line: string;
   readonly accessibilityLabel: string;
+  /** The mark beside the row: "Late" anywhere, and on your own tasks "Due today" or "Stuck". */
+  readonly mark: KinWorkMark | null;
+}
+
+/** Why one of your own tasks leads "On me": shown on the task, not as a second list. */
+export type KinWorkMark = "late" | "today" | "stuck";
+
+export const KIN_WORK_MARKS: Record<KinWorkMark, string> = {
+  late: "Late",
+  today: "Due today",
+  stuck: "Stuck",
+};
+
+/** The row with its "On me" mark, which its label also says. */
+export function kinWorkRowMarked(row: KinWorkRowView, mark: KinWorkMark | null): KinWorkRowView {
+  if (mark === null || mark === row.mark) return row;
+  return {
+    ...row,
+    mark,
+    accessibilityLabel: `${row.accessibilityLabel}. ${KIN_WORK_MARKS[mark]}`,
+  };
 }
 
 export const kinWorkClosed = (state: KinRecordState) => state === "done" || state === "dropped";
@@ -575,6 +597,7 @@ export function kinWorkRow(
     accessibilityLabel: [record.title, ...parts, record.late ? "Late" : null]
       .filter((part) => part !== null)
       .join(". "),
+    mark: record.late ? "late" : null,
   };
 }
 
@@ -597,6 +620,7 @@ export function kinWorkListFooter(
 export function kinWorkNothing(
   filter: KinWorkFilter,
   names: KinWorkNames,
+  scope: KinViewerScope = KIN_SCOPE_ALL,
 ): {
   readonly title: string;
   readonly detail: string;
@@ -605,6 +629,21 @@ export function kinWorkNothing(
   const text = filter.text.trim();
   if (text !== "")
     return { title: `Nothing matches “${text}”`, detail: "Try another word.", offerNew: false };
+  const whole = kinWorkNothingAll(filter, names);
+  // A teammate sees part of the company's tasks: "nobody is blocked" would be a guess.
+  return scope.all || filter.owner !== null || filter.project != null || filter.party != null
+    ? whole
+    : { ...whole, detail: kinScopeNote("tasks", scope) ?? whole.detail };
+}
+
+function kinWorkNothingAll(
+  filter: KinWorkFilter,
+  names: KinWorkNames,
+): {
+  readonly title: string;
+  readonly detail: string;
+  readonly offerNew: boolean;
+} {
   const person = filter.owner === null ? null : kinWorkName(filter.owner, names, "you");
   const scope = filter.project?.title ?? filter.party?.title ?? null;
   const who = person === null ? scope : scope === null ? person : `${person} on ${scope}`;

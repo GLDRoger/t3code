@@ -13,6 +13,9 @@ import { KinNewLeadButton } from "./KinNewLeadButton";
 import { startKinOutbox } from "./kinOutbox";
 import { KinPicturesHost } from "./kinPictures";
 import { KinProfileSheetHost } from "./KinProfileSheet";
+import { KinPeoplePickerHost } from "./KinPeopleChat";
+import { KinMessageAlerts } from "./KinNotifications";
+import { KinToday } from "./KinToday";
 import { KinSettingsButton, KinSettingsModalHost } from "./KinSettingsView";
 import { KinDock } from "./KinNav";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
@@ -30,6 +33,8 @@ export function KinPage() {
       <KinGroupDialogHost />
       <KinPicturesHost />
       <KinProfileSheetHost />
+      <KinPeoplePickerHost />
+      <KinMessageAlerts />
       <KinSettingsModalHost />
     </SidebarInset>
   );
@@ -43,11 +48,21 @@ function KinDockHost() {
   );
 }
 
+const noChat = (
+  <Empty size="compact">
+    <EmptyHeader>
+      <EmptyTitle>No chat open</EmptyTitle>
+      <EmptyDescription>Pick a chat from the list to read and reply.</EmptyDescription>
+    </EmptyHeader>
+  </Empty>
+);
+
 /**
  * Kin with no chat open. A narrow window has no sidebar beside the page, so the list is the page;
- * a wide one already shows it in the sidebar.
+ * a wide one already shows it in the sidebar, so the page shows what needs you.
  */
 export function KinNoChat() {
+  const target = kinNewLeadTarget(useKinHost());
   return (
     <>
       <WorkspacePageHeader electron={isElectron}>
@@ -64,13 +79,12 @@ export function KinNoChat() {
       <nav aria-label="Kin chats" className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 md:hidden">
         <KinChatList />
       </nav>
-      <div className="hidden min-h-0 flex-1 md:flex">
-        <Empty size="compact">
-          <EmptyHeader>
-            <EmptyTitle>No chat open</EmptyTitle>
-            <EmptyDescription>Pick a chat from the list to read and reply.</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+      <div className="hidden min-h-0 flex-1 overflow-y-auto md:flex">
+        {target === null ? (
+          noChat
+        ) : (
+          <KinToday environmentId={target.environmentId} orgId={target.orgId} fallback={noChat} />
+        )}
       </div>
     </>
   );

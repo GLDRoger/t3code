@@ -1,5 +1,5 @@
 import type { KinOrgId, ModelSelection, ServerProvider, ServerSettings } from "@t3tools/contracts";
-import { isKinAgentDriver, KinLead } from "@t3tools/contracts";
+import { kinAgentDriverAllowed, KinLead } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -27,14 +27,19 @@ export const isDevServer = Effect.serviceOption(ServerConfig).pipe(
 );
 
 /** The models this host offers an agent: the one place that decides which providers qualify. */
-export const kinAgentModels = (providers: ReadonlyArray<ServerProvider>) =>
+export const kinAgentModels = (
+  providers: ReadonlyArray<ServerProvider>,
+  nonClaudeAgents: boolean,
+) =>
   providers
-    .filter((provider) => isKinAgentDriver(provider.driver) && provider.enabled)
+    .filter(
+      (provider) => kinAgentDriverAllowed(provider.driver, nonClaudeAgents) && provider.enabled,
+    )
     .flatMap((provider) =>
       provider.models.map((model) => ({ instanceId: provider.instanceId, model })),
     );
 
-/** Only Claude sessions get LeadIsolation's no-shell tool set, so a lead runs on nothing else. */
+/** Only Claude and confined Codex sessions get a lead's no-shell tool set; a lead runs on no other. */
 export const nonClaudeLeadModel = (
   settings: ServerSettings,
   model: ModelSelection,
@@ -44,8 +49,8 @@ export const nonClaudeLeadModel = (
   const driver = deriveProviderInstanceConfigMap(settings)[instanceId]?.driver;
   if (devServer && instanceId === KIN_VERIFY_SCRIPT_INSTANCE_ID && driver === "acpRegistry")
     return undefined;
-  if (!isKinAgentDriver(driver))
-    return `Kin agents run only on Claude, and the model's instance ${instanceId} is ${driver === undefined ? "not a configured provider" : `a ${driver} instance`}. Workers may still use any provider.`;
+  if (!kinAgentDriverAllowed(driver, settings.kinNonClaudeAgents))
+    return `Kin agents run only on Claude, and the model's instance ${instanceId} is ${driver === undefined ? "not a configured provider" : `a ${driver} instance`}. Workers may still use any provider.${driver === "codex" ? " To use Codex, turn on Agents on OpenAI models in Kin's Settings." : ""}`;
   return undefined;
 };
 
@@ -74,13 +79,13 @@ export const leadModelProblem = (
   const provider = providers.find((entry) => entry.instanceId === selection.instanceId);
   if (provider === undefined || !provider.enabled || !provider.installed)
     return `${modelLabel(providers, selection)} isn't available on this server right now.`;
-  const onInstance = kinAgentModels([provider]);
   const listed =
     provider.models.length === 0 ||
-    onInstance.some(
+    kinAgentModels([provider], settings.kinNonClaudeAgents).some(
       ({ model }) => model.slug === selection.model || model.aliases?.includes(selection.model),
     );
-  if (!listed) return `${selection.model} isn't offered on this server any more.`;
+  if (!listed)
+    return `${selection.model} isn't offered by ${provider.displayName ?? "Claude"} on this server any more.`;
   return undefined;
 };
 

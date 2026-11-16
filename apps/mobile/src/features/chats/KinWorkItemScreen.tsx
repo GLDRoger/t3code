@@ -1,3 +1,4 @@
+import { useKinOpensClients } from "./state/kinChatOnly";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
@@ -184,6 +185,7 @@ function KinWorkItemBody(props: ItemTarget) {
   // Make invoice and Make its PDF are a step of this sheet, never a sheet over it.
   const [making, setMaking] = useState<KinMakeStep | null>(null);
   // An older server has no clients or projects: the task shows as it always did.
+  const opensClients = useKinOpensClients(environmentId);
   const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
   const choices = useKinWorkChoices(props, hostClients && canChange);
   const now = new Date(useNowMinuteMs());
@@ -556,7 +558,7 @@ function KinWorkItemBody(props: ItemTarget) {
       {!hostClients ? null : (
         <ListSection>
           {act === null || !view.can.party ? (
-            view.party === null ? null : (
+            view.party === null ? null : opensClients ? (
               <ListRow
                 icon="person.2"
                 label={KIN_WORK_NEW_COPY.clientLabel}
@@ -564,6 +566,15 @@ function KinWorkItemBody(props: ItemTarget) {
                 {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
                 onPress={openParty}
               />
+            ) : (
+              <View className="bg-grouped-card">
+                <ListRowLayout
+                  icon="person.2"
+                  label={KIN_WORK_NEW_COPY.clientLabel}
+                  detail={view.party.title}
+                  {...(view.side === "theirs" ? { description: KIN_WORK_NEW_COPY.sideTheirs } : {})}
+                />
+              </View>
             )
           ) : (
             <KinWorkPlaceRow

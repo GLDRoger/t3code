@@ -42,7 +42,6 @@ import { useMediaQuery } from "../hooks/useMediaQuery";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { KinDocPage } from "./KinDocPage";
 import { KinDocsList } from "./KinDocsList";
-import { KinNeedsYou } from "./KinNeedsYou";
 import { KinSubscriptionsPage } from "./KinSubscriptions";
 import { KinSearchDialog } from "./KinSearchDialog";
 import { KinWorkClientPage, KinWorkClientsList } from "./KinWorkClients";
@@ -432,19 +431,14 @@ function KinPlaceView({
         onAdd={addTask === null ? null : () => addTask(KIN_WORK_NO_DRAFT)}
         initial={narrowed}
         choices={hostClients ? choices : null}
-        renderNeedsYou={(mine) => (
-          <KinNeedsYou
-            {...props}
-            directory={directory}
-            mine={mine}
-            onOpenTask={setOpenKey}
-            onOpenList={(start) => {
-              setListStart(start);
-              onGo(kinPlaceOfRecord({ list: start.list }), { list: start.list });
-            }}
-            onOpenMoney={() => onGo("money", null)}
-          />
-        )}
+        needsYou={{
+          onOpenTask: setOpenKey,
+          onOpenList: (start) => {
+            setListStart(start);
+            onGo(kinPlaceOfRecord({ list: start.list }), { list: start.list });
+          },
+          onOpenMoney: () => onGo("money", null),
+        }}
       />
     );
   };

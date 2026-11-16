@@ -43,6 +43,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { isOrgOwner } from "../lead/orgState.ts";
 import { sectionsOf } from "../work/docBody.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
+import { viewVisible } from "../work/teamView.ts";
 import { encodeNames, nameKeys, withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
 import { chatShared, readableBy, recordJoin } from "./sharing.ts";
@@ -594,8 +595,9 @@ const make = Effect.gen(function* () {
       OR attachment_id IN (SELECT file_attachment_id FROM kin_doc_versions
         WHERE org_id = ${orgId} AND file_attachment_id IS NOT NULL))`;
   /**
-   * The doc sections a message points at, checked in the write's transaction: the org owner's
-   * own message, docs of this org at a version they have, and nothing sensitive where others read.
+   * The doc sections a message points at, checked in the write's transaction: a person's own
+   * message, docs of this org at a version they have that everyone in the chat reads (any doc for
+   * the org owner), and nothing sensitive where others read.
    */
   const resolveRefs = Effect.fnUntraced(function* (
     input: Scope & { readonly chatId: KinChatId },
@@ -603,25 +605,39 @@ const make = Effect.gen(function* () {
     refs: ReadonlyArray<KinMessageRefInput>,
   ) {
     if (refs.length === 0) return [];
-    if (
-      author._tag !== "human" ||
-      !(yield* isOrgOwner(input.orgId, author.personId).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      ))
-    )
-      return yield* refRefused("Only the owner can point at a doc yet.");
-    const others = yield* sql`SELECT 1 FROM kin_chat_members WHERE org_id = ${input.orgId}
+    if (author._tag !== "human") return yield* refRefused("Only a person can point at a doc.");
+    const owner = yield* isOrgOwner(input.orgId, author.personId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    const readers = yield* sql<{ personId: KinPersonId }>`SELECT person_id AS "personId"
+      FROM kin_chat_members WHERE org_id = ${input.orgId}
       AND chat_id = ${input.chatId} AND principal_kind = 'person' AND left_at IS NULL
-      AND person_id != ${author.personId} LIMIT 1`;
+      ORDER BY person_id`;
+    const others = readers.filter((reader) => reader.personId !== author.personId);
     const resolved: Array<KinMessageRef> = [];
     for (const ref of refs) {
-      const [doc] = yield* sql<{ title: string; body: string; sensitive: number }>`
-        SELECT v.title, v.body, ${sensitiveNow(sql)} AS sensitive
+      const [doc] = yield* sql<{
+        recordId: string;
+        title: string;
+        body: string;
+        sensitive: number;
+      }>`
+        SELECT r.record_id AS "recordId", v.title, v.body, ${sensitiveNow(sql)} AS sensitive
         FROM kin_records r JOIN kin_doc_versions v ON v.org_id = r.org_id
           AND v.record_id = r.record_id AND v.version = ${ref.version}
         WHERE r.org_id = ${input.orgId} AND r.key = ${ref.key} AND r.register_id = 'docs'
         ORDER BY r.record_id`;
-      if (doc === undefined)
+      // A teammate points only at a doc everyone in the chat already reads; one they can't is none.
+      const seen =
+        doc !== undefined &&
+        (owner ||
+          (doc.sensitive === 0 &&
+            (yield* viewVisible(
+              input.orgId,
+              readers.map((reader) => reader.personId),
+              doc.recordId,
+            ).pipe(Effect.provideService(SqlClient.SqlClient, sql)))));
+      if (doc === undefined || !seen)
         return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
       if (doc.sensitive === 1 && others.length > 0)
         return yield* refRefused("That doc is sensitive: point at it in a chat only you read.");

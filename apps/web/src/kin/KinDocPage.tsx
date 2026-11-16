@@ -1,3 +1,4 @@
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   KIN_RETRY,
@@ -131,7 +132,8 @@ export function KinDocPage(
     onGo({ doc: made.key });
   };
   const restore = useAtomCommand(kinClient.docRestore, { reportFailure: false });
-  const ask = useKinDocAsk(props, doc, names.me);
+  const ownerLevel = useKinOwnerLevel(environmentId);
+  const ask = useKinDocAsk(props, doc, names.me, ownerLevel);
   const [actions, setActions] = useState<HTMLElement | null>(null);
   const [restoring, setRestoring] = useState<Restoring>(null);
   const [busy, setBusy] = useState(false);
@@ -335,6 +337,7 @@ export function KinDocPage(
           section={where.section ?? null}
           actions={actions}
           onPoint={ask}
+          suggests={!ownerLevel}
           onCopyLink={copyLink}
           onSeeChanges={(to) => onGo({ doc: key, changes: { to } })}
           onOpenLatest={() => onGo({ doc: key })}

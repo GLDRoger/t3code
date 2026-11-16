@@ -12,6 +12,7 @@ import {
   type KinOutlookItem,
   type KinRecord,
   type KinRecordKey,
+  type KinRecordLink,
   type KinRunway,
   type KinSignedMoney,
 } from "@t3tools/contracts";
@@ -140,6 +141,7 @@ export const KIN_QUOTES = {
   invoiceMade: (key: string) => `Invoice ${key} made from this quote, with the same lines.`,
   invoiceProblems: "The draft invoice stands, but Kin couldn't make its PDF:",
   openInvoice: "Open invoice",
+  invoicedAs: (key: string) => `Invoiced as ${key}.`,
   send: "Mark sent",
   sendTitle: "Mark this quote sent?",
   sendDetail: "It gets the next quote number, for good.",
@@ -557,10 +559,21 @@ export function kinQuotesSummary(
   return `${open} open${expired === 0 ? "" : `, ${expired} expired`}`;
 }
 
-export function kinQuoteActions(state: KinQuoteState, numbered: boolean) {
+const INVOICE_KEY = /^INV-\d+$/;
+
+/** The invoice made from this quote, which the host links back to it; null until there is one. */
+export function kinQuoteInvoice(links: ReadonlyArray<KinRecordLink>): KinRecordKey | null {
+  for (const link of links)
+    if (link.kind === "record" && link.record !== undefined && INVOICE_KEY.test(link.record.key))
+      return link.record.key;
+  return null;
+}
+
+/** A quote invoiced once offers its invoice, not another one. */
+export function kinQuoteActions(state: KinQuoteState, numbered: boolean, invoiced = false) {
   return {
     send: state === "draft" && numbered,
-    makeInvoice: state !== "declined",
+    makeInvoice: state !== "declined" && !invoiced,
     accept: state === "draft" || state === "sent" || state === "expired",
     decline: state !== "declined" && state !== "accepted",
     unaccept: state === "accepted",
