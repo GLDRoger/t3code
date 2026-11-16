@@ -79,6 +79,9 @@ import { KIN_DOCS_LABEL, kinDocsLiveStream } from "@t3tools/client-runtime/kin/k
 import {
   createKinWorkRefreshTriggers,
   KIN_WORK_LABEL,
+  KIN_WORK_NOT_TASKS,
+  kinDocsListLean,
+  kinWorkListLean,
   kinWorkLiveStream,
 } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
@@ -236,6 +239,7 @@ const readWorkSummary = guardedRead(workSummaryRead);
 const workListRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:work:list:read",
   tag: "kin.work.list",
+  execute: kinWorkListLean,
 });
 const workItemRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:work:item:read",
@@ -270,6 +274,7 @@ const readWorkProject = guardedRead(workProjectRead);
 const docsListRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:docs:list:read",
   tag: "kin.docs.list",
+  execute: kinDocsListLean,
 });
 const readDocsList = guardedRead(docsListRead);
 const docRead = createKinRpcCommand(connectionAtomRuntime, {
@@ -900,6 +905,28 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: sessionGeneration,
   }),
+  /**
+   * How many docs there are and how many changed since `since`: the list's own totals, without
+   * its rows. The caller reads again when the docs' change number passes `seq`.
+   */
+  docsCounts: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:docs:counts",
+    execute: Effect.fn("KinClient.docsCounts")(function* (input: {
+      readonly orgId: KinOrgId;
+      readonly since: string;
+    }) {
+      const [all, changed] = yield* Effect.all(
+        [
+          readDocsList({ orgId: input.orgId, limit: 1 }),
+          readDocsList({ orgId: input.orgId, limit: 1, changedSince: input.since }),
+        ],
+        { concurrency: 2 },
+      );
+      return { total: all.total, changed: changed.total, seq: Math.min(all.seq, changed.seq) };
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: sessionGeneration,
+  }),
   /** A doc at one version, with its outline. */
   doc: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:docs:doc",
@@ -1096,9 +1123,9 @@ export const kinClient = {
       return yield* readWorkLists(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: kinWorkRefreshOn("any"),
+    refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS, kinRefreshOn("workLists")),
   }),
-  /** Owed, received, spent and what is due, added up by the host per currency. */
+  /** Money's own screen: its coming-up count includes tasks, so any change reads it again. */
   workMoney: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:money",
     execute: Effect.fn("KinClient.workMoney")(function* (input: KinMoneySummaryInput) {
@@ -1107,6 +1134,15 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: kinWorkRefreshOn("any"),
   }),
+  /** The same read for a line of what is owed, which no task moves. */
+  workOwed: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:owed",
+    execute: Effect.fn("KinClient.workOwed")(function* (input: KinMoneySummaryInput) {
+      return yield* readWorkMoney(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS),
+  }),
   /** Bank balances from confirmed statements; read again when a statement or Work changes. */
   workCash: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:cash",
@@ -1114,7 +1150,7 @@ export const kinClient = {
       return yield* readWorkCash(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: kinWorkRefreshOn("any", kinRefreshOn("moneyStatements")),
+    refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS, kinRefreshOn("moneyStatements")),
   }),
   /** What is expected in and out in the next 30 days, and runway. */
   workOutlook: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
@@ -1123,7 +1159,7 @@ export const kinClient = {
       return yield* readWorkOutlook(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: kinWorkRefreshOn("any", kinRefreshOn("moneyStatements")),
+    refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS, kinRefreshOn("moneyStatements")),
   }),
   workBudgets: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:work:budgets",
@@ -1131,7 +1167,7 @@ export const kinClient = {
       return yield* readWorkBudgets(input);
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: kinWorkRefreshOn("any", kinRefreshOn("moneyBudgets")),
+    refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS, kinRefreshOn("moneyBudgets")),
   }),
   workSetBudget: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:budget:set",

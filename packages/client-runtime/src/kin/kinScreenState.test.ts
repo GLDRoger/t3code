@@ -18,6 +18,7 @@ import {
   kinInboxScreenState,
   kinOwnedLeadAgentId,
   kinPreviewText,
+  kinTableWiderThan,
   kinReconnectStep,
   kinWaitingBannerView,
   kinWaitingRowView,
@@ -343,8 +344,20 @@ describe("chat list rows", () => {
     ["*Shipped* the _retry_ fix", "Shipped the retry fix"],
     ["Run:\n```ts\nawait retry()\n```", "Run: await retry()"],
     ["2 * 3 * 4 in snake_case_name", "2 * 3 * 4 in snake_case_name"],
+    [
+      "Due:\n\n| Piece | Owner |\n|---|:--:|\n| Brand guide | Zoya |",
+      "Due: Piece, Owner Brand guide, Zoya",
+    ],
   ])("flattens %j to one line", (body, preview) => {
     expect(kinPreviewText(body)).toBe(preview);
+  });
+
+  it("tells a table wider than a bubble from one that fits", () => {
+    const table =
+      "| Piece | Owner | Due |\n|---|---|---|\n| Launch checklist | Dev Malhotra | Wed |";
+    expect(kinTableWiderThan(`Where:\n\n${table}\n\nThanks.`, 30)).toBe(true);
+    expect(kinTableWiderThan(table, 60)).toBe(false);
+    expect(kinTableWiderThan("No table here, just | a pipe", 5)).toBe(false);
   });
 });
 

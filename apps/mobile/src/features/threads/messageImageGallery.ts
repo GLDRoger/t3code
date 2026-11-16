@@ -4,21 +4,18 @@ import type { FilePreviewItem } from "../../components/ui/FilePreviewModal.types
 import { markdownImageSources } from "../../lib/markdownImageSources";
 import { resolveMarkdownMediaPreview } from "../../lib/markdownMedia";
 
-export function messageImageGallery(
-  message: { readonly text: string; readonly attachments?: readonly ChatAttachment[] },
-  context: {
-    environmentId: EnvironmentId;
-    threadId: ThreadId;
-    workspaceRoot: string | null | undefined;
-  },
+/** A message's attached pictures, in order, as one gallery. */
+export function attachmentImageGallery(
+  attachments: readonly Pick<ChatAttachment, "type" | "id" | "name" | "mimeType">[],
+  environmentId: EnvironmentId,
 ): FilePreviewItem[] {
   const images: FilePreviewItem[] = [];
-  for (const attachment of message.attachments ?? []) {
+  for (const attachment of attachments) {
     if (attachment.type !== "image" && imageMimeType(attachment) === null) continue;
     images.push({
       kind: "image",
       name: attachment.name,
-      environmentId: context.environmentId,
+      environmentId,
       resource: {
         _tag: "attachment",
         attachmentId: attachment.id,
@@ -27,6 +24,18 @@ export function messageImageGallery(
       },
     });
   }
+  return images;
+}
+
+export function messageImageGallery(
+  message: { readonly text: string; readonly attachments?: readonly ChatAttachment[] },
+  context: {
+    environmentId: EnvironmentId;
+    threadId: ThreadId;
+    workspaceRoot: string | null | undefined;
+  },
+): FilePreviewItem[] {
+  const images = attachmentImageGallery(message.attachments ?? [], context.environmentId);
   for (const href of markdownImageSources(message.text)) {
     const preview = resolveMarkdownMediaPreview(href, { ...context, imageEmbed: true });
     if (preview?.kind === "image") images.push(preview.source);

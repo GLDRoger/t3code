@@ -38,7 +38,15 @@ import {
   metric,
   type WireRow,
 } from "./kin-bench/stats.ts";
-import { idle, Probe, scrollJank, timed, typingLatency, untilVisible } from "./kin-bench/web.ts";
+import {
+  deflatedSize,
+  idle,
+  Probe,
+  scrollJank,
+  timed,
+  typingLatency,
+  untilVisible,
+} from "./kin-bench/web.ts";
 
 const HELP = `kin-bench [--out <dir>] [--compare <old.json>] [--threshold <percent>] [--runs <n>] [--instance <name>] [--reuse] [--findings <json>]
 kin-bench --render <run.json> [--findings <json>] [--compare <old.json>]   re-render an earlier run's .md and report.html
@@ -187,17 +195,20 @@ async function timeRead(
   const rpc = await rpcAs(instance, "owner");
   const samples: Array<number> = [];
   let bytes = 0;
+  let deflated = 0;
   try {
     for (let run = 0; run < runs; run++) {
       const started = performance.now();
       const result = await rpc.call(method, payload, until === undefined ? {} : { until });
       samples.push(performance.now() - started);
-      bytes = Buffer.byteLength(JSON.stringify(result));
+      const text = JSON.stringify(result);
+      bytes = Buffer.byteLength(text);
+      deflated = deflatedSize(text, Buffer.alloc(0));
     }
   } finally {
     rpc.close();
   }
-  return { samples, bytes };
+  return { samples, bytes, deflated };
 }
 
 async function sessionOf(instance: Instance, person: string) {
@@ -329,17 +340,22 @@ async function main() {
       [
         ["chatList", "kin.chats.subscribe", { orgId: ORG }],
         ["chatPage", "kin.chat.history", { chatId: group.chatId, beforeSeq: 1500, limit: 100 }],
-        ["workList", "kin.work.list", { orgId: ORG, open: true }],
+        // What today's clients ask; the `legacy` rows are what an older phone app still gets.
+        ["workList", "kin.work.list", { orgId: ORG, open: true, acceptCompactRows: true }],
+        ["workListLegacy", "kin.work.list", { orgId: ORG, open: true }],
         ["workSummary", "kin.work.summary", { orgId: ORG }],
-        ["money", "kin.work.money", { orgId: ORG }],
+        ["money", "kin.work.money", { orgId: ORG, upcomingRows: false }],
+        ["moneyLegacy", "kin.work.money", { orgId: ORG }],
         ["clientPage", "kin.work.party", { orgId: ORG, key: clientKey }],
-        ["pulse", "kin.pulse.read", { orgId: ORG }],
+        ["pulse", "kin.pulse.read", { orgId: ORG, includeHandled: true, limit: 8 }],
+        ["pulseLegacy", "kin.pulse.read", { orgId: ORG, includeHandled: true }],
         ["search", "kin.search", { orgId: ORG, text: "booking", limit: 20 }],
-        ["docsList", "kin.docs.list", { orgId: ORG }],
+        ["docsList", "kin.docs.list", { orgId: ORG, acceptSlimLatest: true }],
+        ["docsListLegacy", "kin.docs.list", { orgId: ORG }],
       ];
     for (const [key, method, payload] of reads) {
       try {
-        const { samples, bytes } = await timeRead(instance, readRuns, method, payload);
+        const { samples, bytes, deflated } = await timeRead(instance, readRuns, method, payload);
         metrics.push(
           metric(
             "server",
@@ -350,7 +366,17 @@ async function main() {
             `answer ${Math.round(bytes / 1024)} KB`,
           ),
         );
-        metrics.push(metric("wire", `readBytes.${key}`, `${method} answer size`, "bytes", [bytes]));
+        const shape = key.endsWith("Legacy") ? ", older client" : "";
+        metrics.push(
+          metric("wire", `readBytes.${key}`, `${method}${shape} answer size`, "bytes", [bytes]),
+          metric(
+            "wire",
+            `readDeflated.${key}`,
+            `${method}${shape} answer, deflated alone`,
+            "bytes",
+            [deflated],
+          ),
+        );
       } catch (error) {
         notes.push(`Read ${method} failed: ${(error as Error).message.split("\n")[0]}`);
       }
@@ -597,6 +623,7 @@ async function main() {
             bytesIn: frames
               .filter((frame) => frame.dir === "in")
               .reduce((sum, frame) => sum + frame.bytes, 0),
+            deflatedIn: frames.reduce((sum, frame) => sum + frame.deflated, 0),
             framesOut: frames.filter((frame) => frame.dir === "out" && frame.bytes > 20).length,
             requestsOut: frames.filter((frame) => frame.request).length,
             methods: Object.fromEntries(
@@ -648,6 +675,31 @@ async function main() {
         }),
       );
     await watch("Nothing changes (5 s baseline)", async () => undefined);
+    for (const [index, one] of chatter.entries()) {
+      const sum = (key: "framesIn" | "bytesIn" | "requestsOut" | "deflatedIn") =>
+        one.clients.reduce((total, client) => total + (client[key] ?? 0), 0);
+      metrics.push(
+        metric("wire", `chatter.${index}.bytes`, `${one.change}: KB in, all`, "bytes", [
+          sum("bytesIn"),
+        ]),
+        metric("wire", `chatter.${index}.deflated`, `${one.change}: deflated, all`, "bytes", [
+          sum("deflatedIn"),
+        ]),
+        metric("wire", `chatter.${index}.requests`, `${one.change}: requests, all`, "count", [
+          sum("requestsOut"),
+        ]),
+      );
+    }
+    const cold = wire.find((row) => row.action === "coldLoad");
+    if (cold !== undefined)
+      metrics.push(
+        metric("wire", "coldLoad.bytes", "Cold load, KB in", "bytes", [cold.bytesIn]),
+        metric("wire", "coldLoad.deflated", "Cold load, deflated", "bytes", [cold.deflatedIn ?? 0]),
+        metric("wire", "coldLoad.frames", "Cold load, frames in", "count", [cold.framesIn]),
+        metric("wire", "coldLoad.requests", "Cold load, requests", "count", [
+          Object.values(cold.methods ?? {}).reduce((total, count) => total + count, 0),
+        ]),
+      );
 
     const rssWalk = rssMb(server.pid);
     metrics.push(metric("server", "rssStart", "Server memory after start", "MB", [rssStart]));

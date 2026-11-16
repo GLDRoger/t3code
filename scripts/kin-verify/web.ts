@@ -313,6 +313,23 @@ export async function click(
   return target.role;
 }
 
+/** Puts files in the composer, as the person picking them with "Attach files" would. */
+export async function attach(session: WebSession, paths: ReadonlyArray<string>) {
+  const { page } = session;
+  const files = paths.map((path) => NodePath.resolve(path));
+  for (const file of files)
+    if (!NodeFS.existsSync(file)) throw new VerifyError(`no file at ${file}`);
+  const button = page.getByRole("button", { name: "Attach files" });
+  if ((await button.count()) === 0)
+    throw new VerifyError("no Attach files button here; open a chat first");
+  const [chooser] = await Promise.all([
+    page.waitForEvent("filechooser", { timeout: 10_000 }),
+    button.first().click(),
+  ]);
+  await chooser.setFiles(files);
+  await settle(page);
+}
+
 /** Types into the named field, or the focused one, or the page's only text area. */
 export async function type(
   session: WebSession,

@@ -189,6 +189,26 @@ export const KinRecord = Schema.Struct({
 });
 export type KinRecord = typeof KinRecord.Type;
 
+/**
+ * A `KinRecord` as `acceptCompactRows` sends it: no `orgId` (the input's), nulls and `false`
+ * flags left out, `confirmed` left out when true, and `can` left out when it is the answer's.
+ */
+export const KinRecordCompact = Schema.Struct({
+  ...KinRecord.fields,
+  orgId: Schema.optional(KinOrgId),
+  waitingOn: Schema.optional(KinWorkPrincipal),
+  category: Schema.optional(KinRecordCategory),
+  dueAt: Schema.optional(IsoDateTime),
+  dueAllDay: Schema.optional(Schema.Literal(true)),
+  late: Schema.optional(Schema.Literal(true)),
+  confirmed: Schema.optional(Schema.Literal(false)),
+  sensitive: Schema.optional(Schema.Literal(true)),
+  working: Schema.optional(Schema.Literal(true)),
+  pullRequest: Schema.optional(KinPullRequestRef),
+  closedAt: Schema.optional(IsoDateTime),
+});
+export type KinRecordCompact = typeof KinRecordCompact.Type;
+
 export const KinRecordLinkKind = Schema.Literals([
   "message",
   "worker",
@@ -371,6 +391,8 @@ export const KinWorkListInput = Schema.Struct({
   limit: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(100)),
   ),
+  /** Answer `rows` and `can` in place of `records`; `kinWorkListRecords` restores them. */
+  acceptCompactRows: Schema.optional(Schema.Boolean),
 });
 export type KinWorkListInput = typeof KinWorkListInput.Type;
 /** Ordered open first, then soonest due, then key. `seq` is the change number the page is as of. */
@@ -382,6 +404,10 @@ export const KinWorkListResult = Schema.Struct({
   asOf: IsoDateTime,
   /** Asked for with `totalsBy`: exact sums per currency of every match, not of this page. */
   totals: Schema.optional(KinListTotals),
+  /** With `acceptCompactRows`, `records` is empty and the page is here. */
+  rows: Schema.optional(Schema.Array(KinRecordCompact)),
+  /** What the reader may do to every row in `rows` that carries no `can` of its own. */
+  can: Schema.optional(KinRecordCan),
 });
 export type KinWorkListResult = typeof KinWorkListResult.Type;
 

@@ -28,7 +28,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     confirmed: input.option.kind === "yes",
     now: input.now,
   });
-  yield* answerCurrencyCard({
+  const currency = yield* answerCurrencyCard({
     orgId: input.orgId,
     widgetId: input.widget.widgetId,
     personId: input.personId,
@@ -53,7 +53,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   });
   if (asked !== undefined && asked._tag !== "declined")
     yield* sql.afterCommit(afterTap(sendAsked(input, asked), scope));
-  if (made !== undefined)
+  if (made?._tag === "made")
     yield* sql.afterCommit(
       afterTap(
         receiptDocument({
@@ -66,6 +66,17 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
         scope,
       ),
     );
+  if (made?._tag === "made") return made.outcome;
+  if (made?._tag === "declined")
+    return { title: "Not recorded", text: "You said no, so nothing was recorded or numbered." };
+  if (asked?._tag === "declined")
+    return { title: "Not sent", text: "You cancelled it, so nothing was sent." };
+  if (currency !== undefined)
+    return {
+      title: "Currency set",
+      text: `The statement is read in ${input.option.label}.`,
+    };
+  return undefined;
 });
 
 const at = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));

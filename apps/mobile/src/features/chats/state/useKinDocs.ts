@@ -15,7 +15,7 @@ import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { createKinPagedList, mapPage } from "@t3tools/client-runtime/kin/kinWorkList";
 import type {
   KinDocDetail,
-  KinDocRow,
+  KinDocListRow,
   KinDocVersion,
   KinDocsListResult,
   KinRecordKey,
@@ -57,7 +57,7 @@ export function useKinDocsList(
   text = "",
 ) {
   const initial = { ...KIN_DOCS_DEFAULT_FILTER, text };
-  return useKinPagedList<KinDocsFilter, KinDocRow>(
+  return useKinPagedList<KinDocsFilter, KinDocListRow>(
     initial,
     (onChange) =>
       createKinPagedList({

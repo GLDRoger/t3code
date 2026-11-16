@@ -180,7 +180,7 @@ export function kinMoneyView(
     totals.find((money) => money.currency === currency)?.minor ?? 0;
   const nothing =
     summary.owed.invoices === 0 &&
-    summary.upcoming.length === 0 &&
+    summary.upcomingTotal === 0 &&
     currencies.length === 0 &&
     summary.receivedThisFinancialYear.length === 0 &&
     summary.spentThisFinancialYear.length === 0;

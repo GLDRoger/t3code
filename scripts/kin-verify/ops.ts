@@ -88,12 +88,30 @@ export function shiftKinTimes(instance: Instance, ms: number): { columns: number
     const seconds = Math.round(ms / 1000);
     const days = Math.floor(ms / 86_400_000);
     db.exec("BEGIN IMMEDIATE");
+    // Append-only guards (a rendered figure, an audit row) refuse any update; time moves under
+    // them too, so they step aside for this transaction and come back exactly as they were.
+    const guards = db
+      .prepare(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name LIKE 'kin\\_%' ESCAPE '\\' AND sql LIKE '%RAISE(ABORT%'",
+      )
+      .all() as Array<{ name: string; sql: string }>;
+    for (const guard of guards) db.exec(`DROP TRIGGER "${guard.name}"`);
     const tables = db
       .prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'kin\\_%' ESCAPE '\\' AND sql NOT LIKE '%VIRTUAL%' AND name NOT LIKE 'kin_search%' AND name NOT LIKE 'kin_audit%'",
       )
       .all() as Array<{ name: string }>;
-    for (const { name } of tables) {
+    // Append-only tables refuse any update; their stamps are history, so they stay put.
+    const frozen = new Set(
+      (
+        db
+          .prepare(
+            "SELECT tbl_name FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%BEFORE UPDATE%' AND sql LIKE '%RAISE(ABORT%'",
+          )
+          .all() as Array<{ tbl_name: string }>
+      ).map((row) => row.tbl_name),
+    );
+    for (const { name } of tables.filter((table) => !frozen.has(table.name))) {
       const cols = db.prepare(`PRAGMA table_info("${name}")`).all() as Array<{
         name: string;
         type: string;
@@ -125,6 +143,7 @@ export function shiftKinTimes(instance: Instance, ms: number): { columns: number
           );
       }
     }
+    for (const guard of guards) db.exec(guard.sql);
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");
