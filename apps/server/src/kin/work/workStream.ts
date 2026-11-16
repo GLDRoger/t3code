@@ -238,7 +238,10 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     if (items.some((one) => one.key === GAP)) return yield* restart();
     const top = Math.max(...items.map((one) => one.sequence));
     const keyed = items.filter((one) => one.key !== RESCAN);
-    if (viewer.teammate && items.some((one) => one.key === RESCAN)) {
+    const place = (one: Pending) =>
+      one.key !== RESCAN && (one.list === "clients" || one.list === "projects");
+    // A place's own change can reach a burst apart from its rescan, so either one looks again.
+    if (viewer.teammate && items.some((one) => one.key === RESCAN || place(one))) {
       // A label or a place shows or hides entries with no change of their own.
       const sees = yield* teamKeyLists(orgId, own(viewer)).pipe(workFailure);
       const named = new Set(keyed.map((one) => one.key));
@@ -253,7 +256,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
       // Their entries under a client or project that moved read differently now: a task shows
       // its project once they see that project, and what they may do follows its lead.
       for (const one of items)
-        if (one.list === "clients" || one.list === "projects") {
+        if (place(one)) {
           const moved = yield* records.get(orgId, one.key);
           if (moved === undefined) continue;
           for (const row of yield* dependentRows(orgId, moved.recordId).pipe(workFailure))

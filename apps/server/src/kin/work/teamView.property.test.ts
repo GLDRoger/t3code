@@ -1249,4 +1249,53 @@ layer(testLayer)("Work's live stream", (it) => {
       }),
     ),
   );
+
+  it.effect("a project she joins shows on her tasks, its ticks arriving one by one", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(at + 3_600_000);
+        yield* install(emptyWorld);
+        const records = yield* KinRecords.KinRecords;
+        const sql = yield* SqlClient.SqlClient;
+        const pull = yield* Stream.toPull(records.changes(orgId));
+        yield* pull;
+        const task = yield* OwnerWork.create(peopleOf("owner"), {
+          orgId,
+          clientRequestId: "joins-p1",
+          title: "Under P-1",
+          owner: { _tag: "person", personId: KinPersonId.make("ana") },
+          project: "P-1",
+        });
+        // Her screen opens after the task's own tick, holding it without the project she can't see.
+        const before: Array<KinRecords.Tick> = [];
+        while (!before.some((tick) => tick.key === task.key)) before.push(...(yield* pull));
+        const ana = yield* WorkStream.makeWorkStream(peopleOf("ana"), { orgId, acceptRows: true });
+        const opened = yield* ana.start(yield* records.seq(orgId));
+        let rows = kinWorkRowsStart(opened.find((event) => event._tag === "counts")?.seq ?? 0);
+        const [project] = yield* sql<{ rev: number }>`SELECT rev FROM kin_records
+          WHERE org_id = ${orgId} AND key = 'P-1'`;
+        yield* OwnerClients.updateProject(peopleOf("owner"), {
+          orgId,
+          key: KinRecordKey.make("P-1"),
+          rev: project!.rev,
+          members: [{ _tag: "person", personId: KinPersonId.make("ana") }],
+        });
+        const ticks: Array<KinRecords.Tick> = [];
+        while (!ticks.some((tick) => tick.key === "P-1")) ticks.push(...(yield* pull));
+        // A slow burst splits the project's own change from the rescan it brings.
+        for (const tick of ticks)
+          for (const one of ana.pendingOf(tick))
+            for (const event of yield* ana.batch([one]))
+              if (event._tag === "upsert" || event._tag === "removed")
+                rows = kinApplyWorkRow(rows, event, orgId);
+        const read = kinRestoreWorkList(
+          yield* OwnerWork.list(peopleOf("ana"), { orgId, acceptCompactRows: true }),
+          orgId,
+        );
+        const now = read.records.find((record) => record.key === task.key);
+        assert.isDefined(now?.project, "a member of P-1 sees it on the task");
+        assert.deepStrictEqual(rows.entries.get(task.key)?.record, now);
+      }),
+    ),
+  );
 });
