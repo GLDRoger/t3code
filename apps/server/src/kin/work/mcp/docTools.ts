@@ -70,7 +70,8 @@ export const KinDocsToolkit = Toolkit.make(
     description: `Replace a doc's whole body, only when most of it changes, with baseVersion the version you read and summary saying why. Kin refuses a rewrite that changes under a third of the lines and names the sections that differ: change those with doc_edit instead. ${writes}`,
     parameters: Docs.RewriteInput,
     success: Docs.WriteResult,
-  }).annotate(McpSchema.EnabledWhen, enabled)
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
     .annotate(Tool.Meta, deferredMeta),
   Tool.make("doc_move", {
     ...shared,
@@ -83,7 +84,8 @@ export const KinDocsToolkit = Toolkit.make(
     description: `Link a doc to entries (W-12) or other docs (D-3), both ways, so each shows the other: a plan to the entries it became, notes to the client's work. ${writes}`,
     parameters: Docs.LinkInput,
     success: Docs.LinkResult,
-  }).annotate(McpSchema.EnabledWhen, enabled)
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
     .annotate(Tool.Meta, deferredMeta),
   Tool.make("docs_search", {
     ...shared,
@@ -96,13 +98,15 @@ export const KinDocsToolkit = Toolkit.make(
     description: `List a doc's versions, newest first: when, by whom, the one-line summary and the sections each touched. Read-only.`,
     parameters: Docs.HistoryInput,
     success: Docs.HistoryResult,
-  }).annotate(McpSchema.EnabledWhen, enabled)
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
     .annotate(Tool.Meta, deferredMeta),
   Tool.make("doc_restore", {
     ...shared,
     description: `Undo a doc's changes: brings back version as a new latest version, so nothing is lost and it can be undone again. latest is the newest version from doc_history; if it moved, nothing changes. ${writes}`,
     parameters: Docs.RestoreInput,
     success: Docs.WriteResult,
-  }).annotate(McpSchema.EnabledWhen, enabled)
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
     .annotate(Tool.Meta, deferredMeta),
 );

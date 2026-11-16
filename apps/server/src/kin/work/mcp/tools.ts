@@ -79,7 +79,8 @@ export const KinWorkToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("touch_log", {
     ...shared,
-    description: "Log contact with a client that a person tells you happened: kind (call, meeting, email, message, other), a one-line note of what happened and was agreed, at (default now), who on our side (default the teller). Only reported contact, never a mention or a guess; invoices, quotes and payments count already. Track agreed work as Work entries too. Don't narrate it.",
+    description:
+      "Log contact with a client that a person tells you happened: kind (call, meeting, email, message, other), a one-line note of what happened and was agreed, at (default now), who on our side (default the teller). Only reported contact, never a mention or a guess; invoices, quotes and payments count already. Track agreed work as Work entries too. Don't narrate it.",
     parameters: Clients.TouchInput,
     success: Clients.TouchResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -97,13 +98,15 @@ export const KinWorkToolkit = Toolkit.make(
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_assign", {
     ...shared,
-    description: "Give open tasks to people or agents, a whole plan in one call (up to 50): key, to (\"me\", an agentId, or a person as people_read names them), reason (one line on why them), optional due. Taking over a late task is giving it to \"me\" or another agent. Kin shows the reason and tells each person once in their own chat, so don't message them again (told names who heard). Giving a task to a person shares it with them. A handed-back task goes to them again only after it changed or the owner says so. Refused rows say why; the rest are given.",
+    description:
+      'Give open tasks to people or agents, a whole plan in one call (up to 50): key, to ("me", an agentId, or a person as people_read names them), reason (one line on why them), optional due. Taking over a late task is giving it to "me" or another agent. Kin shows the reason and tells each person once in their own chat, so don\'t message them again (told names who heard). Giving a task to a person shares it with them. A handed-back task goes to them again only after it changed or the owner says so. Refused rows say why; the rest are given.',
     parameters: Work.AssignInput,
     success: Work.AssignResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("record_hand_back", {
     ...shared,
-    description: "Give a task back to whoever gave it: yours, or the asker's when they say they can't take it (their words as note). For your own, note what blocks it and what would unblock it. It returns open to the giver; an agent is woken to reassign or ask the owner, and can't give it straight back until it changes or the owner says so.",
+    description:
+      "Give a task back to whoever gave it: yours, or the asker's when they say they can't take it (their words as note). For your own, note what blocks it and what would unblock it. It returns open to the giver; an agent is woken to reassign or ask the owner, and can't give it straight back until it changes or the owner says so.",
     parameters: Work.HandBackInput,
     success: Work.HandBackResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -112,11 +115,13 @@ export const KinWorkToolkit = Toolkit.make(
     description: `Start tracking something new as a list with typed fields, such as "start tracking expenses" or "track leave": a template (expenses, invoices, dates, receipts) or a name and fields (text, choice with choices, date, person, link to clients or projects, money, file), plus categories, the states it uses and what it calls them, and whether entries carry an amount. To add fields, choices or categories to a list you defined, pass list. The first call only proposes: it returns a proposal, creates nothing, and shows the owner its fields on a card to tap. Ask in one short line; once they tap yes or say yes in a later turn, call again with just proposal to create exactly that. A no on the card ends that proposal. Never create a list the owner hasn't agreed to. Only the owner retires a field or archives a list.`,
     parameters: Money.DefineInput,
     success: Money.DefineResult,
-  }).annotate(McpSchema.EnabledWhen, enabled)
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
     .annotate(Tool.Meta, deferredMeta),
   Tool.make("payment_record", {
     ...shared,
-    description: "Record money received against an invoice (INV-4): amount as said in its currency, and paidOn. TDS deducted goes in withheld, never amount. A part payment leaves the rest owed. void with a paymentId from record_get takes a wrong one back. Returns the amount, received total and balance, exact. Reply in one line.",
+    description:
+      "Record money received against an invoice (INV-4): amount as said in its currency, and paidOn. TDS deducted goes in withheld, never amount. A part payment leaves the rest owed. void with a paymentId from record_get takes a wrong one back. Returns the amount, received total and balance, exact. Reply in one line.",
     parameters: Money.PaymentInput,
     success: Money.PaymentResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -136,7 +141,8 @@ export const KinWorkToolkit = Toolkit.make(
     description: `Set the owner's monthly spending limit for an expense category, a project, or a category in a project, as they said it ("50k for travel"). limit null removes it. Only in a turn the owner started with their own message or tap; in any other turn propose it to them instead. Returns the old and new limit and every budget with this month's spending. Reply in one line with the old and new limit.`,
     parameters: Money.BudgetInput,
     success: Money.BudgetResult,
-  }).annotate(McpSchema.EnabledWhen, enabled)
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
     .annotate(Tool.Meta, deferredMeta),
   Tool.make("dates_query", {
     ...shared,
@@ -149,6 +155,7 @@ export const KinWorkToolkit = Toolkit.make(
     description: `The company's legal name, address, GSTIN, PAN, place of supply, SAC, bank details, logo and brand. set proposes changing the fields given (null clears one): Kin shows the owner the change on a card, the logo as a picture, and it applies only when they tap Confirm. Nothing changes before then. logo is the file's name as its message shows it, with or without its extension, of a PNG, JPEG or SVG the owner sent in this chat ("this is our logo"); Kin keeps its own copy. brand is the documents' look: primaryColor and secondaryColor as #RRGGBB, font (Poppins, Mukta, Libertinus Serif, New Computer Modern or DejaVu Sans Mono) and a footer line. Every recipe that shows a logo or brand colours uses them; nothing else needs changing. The profile is confidential: never put it in a worker brief, a pull request or a chat others read.`,
     parameters: Money.ProfileInput,
     success: Money.ProfileResult,
-  }).annotate(McpSchema.EnabledWhen, enabled)
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
     .annotate(Tool.Meta, deferredMeta),
 );

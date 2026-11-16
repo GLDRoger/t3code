@@ -136,11 +136,9 @@ const kinAppConfigured = Config.option(Config.String("KIN_GITHUB_APP_ID")).pipe(
 );
 
 /**
- * What the Kin endpoint lists and lets a session call, decided per thread so the list stays the
- * same on every turn of it (the provider caches the prefix). A shared thread lists only what a
- * shared turn may run. A T3 tool shows only on a thread whose turns only the owner reads, while
- * GitHub is connected; `kin_delegate` shows only while it isn't. The gate (`KinToolGate`) still
- * checks each call against the running turn.
+ * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
+ * Shared threads list only what shared turns may run; T3 tools need GitHub connected on an
+ * owner-only thread, `kin_delegate` needs it not connected. `KinToolGate` still checks each call.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(
   function* (name: string, threadId: ThreadId) {

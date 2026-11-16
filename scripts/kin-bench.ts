@@ -800,13 +800,7 @@ async function main() {
     metrics.push(metric("server", "rssStart", "Server memory after start", "MB", [rssStart]));
     metrics.push(metric("server", "rssWalk", "Server memory after the walk", "MB", [rssWalk]));
 
-    save(
-      prompts,
-      seedCounts,
-      Math.round((performance.now() - began) / 1000),
-      wire,
-      chatter,
-    );
+    save(prompts, seedCounts, Math.round((performance.now() - began) / 1000), wire, chatter);
   } finally {
     log("stopping what it started");
     try {

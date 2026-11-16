@@ -27,7 +27,10 @@ const kinTools = [
 
 it("a Kin tool waits for ToolSearch exactly when it is named deferred", () => {
   const marked = kinTools
-    .filter((tool) => Context.getOrUndefined(tool.annotations, Tool.Meta)?.["anthropic/alwaysLoad"] === false)
+    .filter(
+      (tool) =>
+        Context.getOrUndefined(tool.annotations, Tool.Meta)?.["anthropic/alwaysLoad"] === false,
+    )
     .map((tool) => tool.name);
   assert.sameMembers(
     marked,
