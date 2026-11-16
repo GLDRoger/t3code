@@ -439,7 +439,7 @@ features:
   - id: search
     name: Search everything
     tab: money
-    web: [money, dialog:Search Work]
+    web: [money, "?open"]
     phone: [tab:money, KinSearch]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-

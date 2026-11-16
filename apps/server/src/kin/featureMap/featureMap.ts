@@ -13,8 +13,8 @@ const ROLES = ["owner", "co_owner", "lead", "member"] as const;
 const REACH = ["both", "web", "phone", "none"] as const;
 /** Steps inside a screen that add no depth: a menu, a card in a chat, a section of a page. */
 const INLINE = ["menu", "card", "section", "button"] as const;
-/** Web panes that open over the place as a sheet rather than beside its list. */
-const SHEET_PANES = new Set(["task", "history"]);
+/** Web panes that open over the place as a sheet rather than beside its list (`?open`: Search or New task). */
+const SHEET_PANES = new Set(["task", "history", "open"]);
 
 type Role = (typeof ROLES)[number];
 type Reach = (typeof REACH)[number];
