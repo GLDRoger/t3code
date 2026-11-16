@@ -83,6 +83,7 @@ const make = Effect.gen(function* () {
     if (!allowed) return yield* notAllowed;
   });
   const read = Effect.fn("KinOwnerTimeZone.read")(function* (orgId: KinOrgId) {
+    // oxlint-disable-next-line t3code/kin-zoned-time -- Settings shows whether the zone is the host stand-in
     const [row] = yield* sql<{
       time_zone: string;
     }>`SELECT time_zone FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;

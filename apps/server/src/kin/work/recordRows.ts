@@ -744,6 +744,7 @@ export const unsetOwnerZone = () => {
 /** The owner's IANA zone, for all-day due dates; the host's until he sets one. */
 export const ownerZone = Effect.fn("KinRecords.ownerZone")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
+  // oxlint-disable-next-line t3code/kin-zoned-time -- this is the one owner-zone read
   const [row] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone
     FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`.pipe(
     Effect.orElseSucceed(() => []),

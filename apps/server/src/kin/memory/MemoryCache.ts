@@ -51,6 +51,7 @@ const make = Effect.gen(function* () {
   const readOwnerTimeZone = Effect.fn("MemoryCache.readOwnerTimeZone")(function* (
     orgId: KinOrgId,
   ): Effect.fn.Return<OwnerTimeZone> {
+    // oxlint-disable-next-line t3code/kin-zoned-time -- the prompt omits a zone it can't read or decode, not the host's
     const result = yield* sql<{ time_zone: unknown }>`
       SELECT time_zone FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id
     `.pipe(Effect.mapError(toPersistenceSqlError("MemoryCache.readOwnerTimeZone")), Effect.result);
