@@ -292,7 +292,8 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       to: mail.to,
       cc: mail.cc,
       subject: mail.subject,
-      at: Math.max(0, ...state.messages.map((one) => one.at)) + 1,
+      // Sent now, and after anything already in the box so threads keep their order.
+      at: Math.max(Date.now(), ...state.messages.map((one) => one.at + 1)),
       messageId: `<${id}@${account.address.split("@")[1]}>`,
       inReplyTo: mail.inReplyTo,
       references: mail.references,

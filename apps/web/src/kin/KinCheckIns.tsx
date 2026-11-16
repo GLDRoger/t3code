@@ -11,11 +11,18 @@ import type { KinCheckIn, KinCheckInActInput, KinCheckInsResult } from "@t3tools
 import { PlusIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
 import { searchableSetting } from "../components/settings/settingsSearch";
 import { Button } from "../components/ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogHeader,
+  DialogPopup,
+  DialogTitle,
+} from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import {
@@ -41,13 +48,16 @@ import { kinClient } from "./kinClient";
 import { useKinHost } from "./useKinHost";
 import type { KinWorkTarget } from "./useKinWork";
 
-/** The company's check-ins, for the owner or a co-owner; nothing shows where there is no Kin. */
-export function KinCheckInsSetting() {
+/**
+ * The company's check-ins, for the owner or a co-owner; nothing shows where there is no Kin.
+ * Inside T3's Settings dialog the form is a dialog too: a sheet stacks under dialogs.
+ */
+export function KinCheckInsSetting(props: { readonly inDialog?: boolean }) {
   const target = kinNewLeadTarget(useKinHost());
-  return target === null ? null : <CheckIns {...target} />;
+  return target === null ? null : <CheckIns {...target} inDialog={props.inDialog === true} />;
 }
 
-function CheckIns(props: KinWorkTarget) {
+function CheckIns(props: KinWorkTarget & { readonly inDialog: boolean }) {
   const query = { environmentId: props.environmentId, input: { orgId: props.orgId } };
   const atom = kinClient.checkIns(query);
   const result = useAtomValue(atom);
@@ -142,6 +152,7 @@ function CheckIns(props: KinWorkTarget) {
       )}
       {editing === null || value === null ? null : (
         <CheckInSheet
+          inDialog={props.inDialog}
           checkIn={editing === "new" ? null : editing}
           result={value}
           onSave={async (draft) => {
@@ -171,6 +182,7 @@ function CheckIns(props: KinWorkTarget) {
 
 /** Add a check-in, or change one's name, words, time and days; its agent stays. */
 function CheckInSheet(props: {
+  readonly inDialog: boolean;
   readonly checkIn: KinCheckIn | null;
   readonly result: KinCheckInsResult;
   readonly onSave: (draft: KinCheckInDraft) => Promise<boolean>;
@@ -197,14 +209,15 @@ function CheckInSheet(props: {
     if (ok) props.onClose();
     else setFailed(true);
   };
+  const Parts = props.inDialog ? DIALOG_PARTS : SHEET_PARTS;
   return (
-    <Sheet
+    <Parts.Root
       open
       onOpenChange={(open) => {
         if (!open && !saving) props.onClose();
       }}
     >
-      <SheetPopup side="right">
+      <Parts.Popup>
         <form
           className="flex min-h-0 flex-1 flex-col"
           onSubmit={(event) => {
@@ -212,10 +225,10 @@ function CheckInSheet(props: {
             if (problem === null && !saving) void finish(props.onSave(draft));
           }}
         >
-          <SheetHeader>
-            <SheetTitle>{checkIn === null ? KIN_CHECK_INS.add : KIN_CHECK_INS.edit}</SheetTitle>
-            <SheetDescription>{KIN_CHECK_INS.zone(result.zone)}</SheetDescription>
-          </SheetHeader>
+          <Parts.Header>
+            <Parts.Title>{checkIn === null ? KIN_CHECK_INS.add : KIN_CHECK_INS.edit}</Parts.Title>
+            <Parts.Description>{KIN_CHECK_INS.zone(result.zone)}</Parts.Description>
+          </Parts.Header>
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-6">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={ids.name}>{KIN_CHECK_INS.name}</Label>
@@ -329,7 +342,24 @@ function CheckInSheet(props: {
             </Button>
           </div>
         </form>
-      </SheetPopup>
-    </Sheet>
+      </Parts.Popup>
+    </Parts.Root>
   );
 }
+
+const SHEET_PARTS = {
+  Root: Sheet,
+  Popup: (props: { readonly children: ReactNode }) => (
+    <SheetPopup side="right">{props.children}</SheetPopup>
+  ),
+  Header: SheetHeader,
+  Title: SheetTitle,
+  Description: SheetDescription,
+};
+const DIALOG_PARTS = {
+  Root: Dialog,
+  Popup: (props: { readonly children: ReactNode }) => <DialogPopup>{props.children}</DialogPopup>,
+  Header: DialogHeader,
+  Title: DialogTitle,
+  Description: DialogDescription,
+};

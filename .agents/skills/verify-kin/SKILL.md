@@ -80,21 +80,23 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
 instance.
 
 ```bash
-.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, all eight, down; ~5 min
+.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, all ten, down; ~6 min
 .agents/skills/verify-kin/scripts/run-all.sh send-card-once private-task-hidden
 bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the running instance
 ```
 
-| Script                     | Proves                                                                                       |
-| -------------------------- | -------------------------------------------------------------------------------------------- |
-| `assign-member-sees`       | owner's New task sheet gives Zoya a task; it is in her Tasks and her chat, not Arjun's       |
-| `relay-owner-to-member`    | `kin_relay` in the owner's turn lands in Zoya's chat only                                    |
-| `member-request-to-owner`  | `kin_relay` in Zoya's turn lands in the owner's chat, attributed to her                      |
-| `private-task-hidden`      | "Only me" hides W-6 from the lead and members: Tasks, project page and count, search, pulse  |
-| `member-no-money`          | 12 screens each for two members show no amount, invoice or quote                             |
-| `send-card-once`           | one Confirm on a send card sends exactly one mail; a second confirm is refused               |
-| `overdue-invoice-reminder` | INV-1's overdue fact reaches the owner only; the reminder is a reply in the invoice's thread |
-| `checkin-new-agent`        | a brand-new agent gets a check-in from Kin settings; Run now wakes it                        |
+| Script                     | Proves                                                                                               |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `assign-member-sees`       | owner's New task sheet gives Zoya a task; it is in her Tasks and her chat, not Arjun's               |
+| `relay-owner-to-member`    | `kin_relay` in the owner's turn lands in Zoya's chat only                                            |
+| `member-request-to-owner`  | `kin_relay` in Zoya's turn lands in the owner's chat, attributed to her                              |
+| `private-task-hidden`      | "Only me" hides W-6 from the lead and members: Tasks, project page and count, search, pulse          |
+| `member-no-money`          | 12 screens each for two members show no amount, invoice or quote                                     |
+| `send-card-once`           | one Confirm on a send card sends exactly one mail; a second confirm is refused                       |
+| `overdue-invoice-reminder` | INV-1's overdue fact reaches the owner only; the reminder is a reply in the invoice's thread         |
+| `checkin-new-agent`        | a new agent gets a check-in from the Settings dialog; Kin settings are owner-level; Run now wakes it |
+| `lead-adds-milestone`      | members see P-1's milestones and no Add; Dev, its lead, adds one and they see it                     |
+| `owner-money-forms`        | a goal, the coming-up dates, an advance set against INV-1 once; members are refused                  |
 
 A script that sees a known product bug prints a `known` line on stderr instead of passing
 silently. Write a new script from `lib.sh`: `kv`, `fail`, `pass`, `expect_in`, `expect_not_in`,

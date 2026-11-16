@@ -6,5 +6,7 @@ OUT="$(kv tool chief kin_relay "{\"to\":\"Rhea Kapoor\",\"text\":\"$TEXT\"}" --a
 expect_in "$OUT" "kin_relay: ok" "kin_relay from Zoya's chat was refused: $OUT"
 kv as owner web open chat:chief >/dev/null
 kv as owner web wait "$TEXT" >/dev/null || fail "Zoya's request never showed in the owner's chat"
-expect_in "$(kv as owner web snapshot)" "Zoya Sheikh" "the owner's chat doesn't say who asked"
+# This run's message, named as hers (earlier runs' lines stay in the same chat).
+line="$(kv as owner web snapshot | grep -F "Proof $RUN:" | head -1)"
+expect_in "$line" "Zoya Sheikh asked Chief of staff" "the owner's chat doesn't say who asked: $line"
 pass "Zoya's request reached the owner's chat, quoted as hers"

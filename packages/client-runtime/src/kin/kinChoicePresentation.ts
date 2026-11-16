@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format a mail thread's date for React render, outside an Effect runtime.
 import {
   KIN_CHOICE_CARD_ACTION,
   type KinChatError,
@@ -12,7 +13,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { type KinCardNotice, kinActionFailureNotice } from "./kinDeferralPresentation.ts";
-import { kinSentences } from "./kinScreenState.ts";
+import { formatKinTime, kinSentences } from "./kinScreenState.ts";
 
 const KIN_CHOICE_EXPIRED_TEXT = "This question expired. Answer in the chat instead.";
 const KIN_CHOICE_REPLACED_TEXT = "Replaced by a newer one.";
@@ -79,7 +80,19 @@ const kb = (bytes: number) =>
     ? `${Math.max(1, Math.round(bytes / 1024))} KB`
     : `${(bytes / 1048576).toFixed(1)} MB`;
 
-function kinSendView(send: KinSendCard): KinSendView {
+/**
+ * The provider's date of a thread's last message (RFC 2822 from Gmail, ISO from Microsoft), in
+ * the reader's zone; null where it gave none we can read. Nothing mailed before 1995 is real.
+ */
+export function kinThreadDate(raw: string | null, now: Date = new Date()): string | null {
+  if (raw === null) return null;
+  const at = new Date(raw.trim());
+  return Number.isNaN(at.getTime()) || at.getTime() < Date.UTC(1995, 0, 1)
+    ? null
+    : formatKinTime(at, now);
+}
+
+function kinSendView(send: KinSendCard, now: Date): KinSendView {
   // Cards from before accounts carry only the account, in `from`.
   const account = send.account === undefined ? send.from : send.account;
   const legacy = send.account === undefined ? (send.from === null ? "" : ` from ${send.from}`) : "";
@@ -119,7 +132,10 @@ function kinSendView(send: KinSendCard): KinSendView {
   return {
     heading,
     lines,
-    thread: send.thread ?? null,
+    thread:
+      send.thread === undefined || send.thread === null
+        ? null
+        : { ...send.thread, date: kinThreadDate(send.thread.date, now) },
     body: send.body,
     quoted: send.quoted ?? null,
     fromChoices: choices.map((choice) => ({
@@ -152,7 +168,10 @@ const decode = Schema.decodeUnknownOption(KinChoiceCardState);
 // The lead writes these, so they are shown as plain text on one line.
 const line = (text: string) => text.replace(/\s+/g, " ").trim();
 
-export function kinChoiceCardView(widget: KinWidget): KinChoiceCardView | null {
+export function kinChoiceCardView(
+  widget: KinWidget,
+  now: Date = new Date(),
+): KinChoiceCardView | null {
   const state = decode(widget.state);
   if (Option.isNone(state)) return null;
   const card = state.value;
@@ -172,7 +191,7 @@ export function kinChoiceCardView(widget: KinWidget): KinChoiceCardView | null {
     detail: card.detail === null || card.detail.trim() === "" ? null : card.detail.trim(),
     options,
     image: card.image === undefined ? null : card.image,
-    send: card.send === undefined ? null : kinSendView(card.send),
+    send: card.send === undefined ? null : kinSendView(card.send, now),
     answer:
       card.answer === null
         ? null

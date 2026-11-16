@@ -1,3 +1,4 @@
+import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -168,6 +169,10 @@ function KinProjectBody(
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
   const view = kinProjectPageView(props.page, props.directory.names, now);
+  // A project's lead adds its milestones too; the host checks they still lead it.
+  const leads =
+    view.lead.personId !== null &&
+    view.lead.personId === kinFeedViewer(props.directory.orgs, orgId).personId;
 
   const change = async (input: {
     readonly state?: KinProjectState;
@@ -262,7 +267,7 @@ function KinProjectBody(
               onOpenTask={openTask}
               onOpenClient={(to) => openRecord("KinClient", { environmentId, orgId, party: to })}
               onAddMilestone={
-                canChange && view.state === "open"
+                (canChange || leads) && view.state === "open"
                   ? () =>
                       navigation.navigate("KinMilestoneForm", {
                         environmentId,
@@ -417,7 +422,14 @@ function KinProjectSummary(props: {
       )}
       <ListSection title={KIN_PROJECTS.milestones}>
         {view.milestones.length === 0 ? (
-          <ListRowLayout label={KIN_PROJECTS.noMilestones} disabled />
+          <ListRowLayout
+            label={
+              props.onAddMilestone === null
+                ? KIN_PROJECTS.noMilestones
+                : KIN_PROJECTS.noMilestonesAdd
+            }
+            disabled
+          />
         ) : (
           view.milestones.map((row) => (
             <ListRow

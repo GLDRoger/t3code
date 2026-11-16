@@ -236,6 +236,24 @@ describe("WakeupRunner", () => {
       );
     }).pipe(provideDeterministicTestRuntime),
   );
+  it.effect("wakes a company created after start on its first event, not a minute later", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const runner = yield* WakeupRunner.WakeupRunner;
+        yield* runner.start;
+        // Discovery has run and found no company.
+        yield* TestClock.adjust("1 second");
+        yield* seed;
+        yield* queue.enqueue(yield* ownerSays("new-company-first"));
+        yield* TestClock.adjust("20 seconds");
+        const [first] = yield* sql<{ state: string }>`SELECT state FROM kin_events
+          WHERE org_id = ${orgId} AND event_id = 'new-company-first'`;
+        assert.notStrictEqual(first?.state, "queued");
+      }),
+    ).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
   it.effect("moves a lead's thread off the shared project into its own checkout's", () =>
     Effect.gen(function* () {
       let projectId = ProjectId.make("kin:org");

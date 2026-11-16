@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures read a thread date against a fixed now.
 import { KinChatError, type EnvironmentId, type KinWidget } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -12,7 +13,9 @@ import {
   kinChoiceAnswerText,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinThreadDate,
 } from "./kinChoicePresentation.ts";
+import { formatKinTime } from "./kinScreenState.ts";
 import { kinCardStatusAfter, kinDeferralCountdown } from "./kinDeferralPresentation.ts";
 import { kinMemoryUndoFailureText } from "./kinMemoryChangesPresentation.ts";
 
@@ -231,6 +234,17 @@ describe("kinCardView", () => {
 });
 
 describe("choice cards", () => {
+  it("shows a reply's thread date in the reader's zone, and none the provider didn't give", () => {
+    const now = new Date("2026-11-16T12:00:00Z");
+    const gmail = kinThreadDate("Mon, 9 Nov 2026 10:22:00 +0530", now);
+    expect(gmail).toBe(formatKinTime(new Date("2026-11-09T04:52:00Z"), now));
+    expect(gmail).not.toContain("+0530");
+    expect(kinThreadDate("2026-11-09T04:52:00.000Z", now)).toBe(gmail);
+    expect(kinThreadDate("1970-01-01T00:00:00.001Z", now)).toBeNull();
+    expect(kinThreadDate("sometime last week", now)).toBeNull();
+    expect(kinThreadDate(null, now)).toBeNull();
+  });
+
   const posted = Date.parse("2026-11-08T09:00:00.000Z");
   const choiceState = (answer: unknown = null) => ({
     question: "Ship   today?",
