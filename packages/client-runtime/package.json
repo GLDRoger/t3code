@@ -563,6 +563,10 @@
       "types": "./src/kin/kinTimeZone.ts",
       "default": "./src/kin/kinTimeZone.ts"
     },
+    "./kin/kinMessagePage": {
+      "types": "./src/kin/kinMessagePage.ts",
+      "default": "./src/kin/kinMessagePage.ts"
+    },
     "./kin/kinAgentRetire": {
       "types": "./src/kin/kinAgentRetire.ts",
       "default": "./src/kin/kinAgentRetire.ts"

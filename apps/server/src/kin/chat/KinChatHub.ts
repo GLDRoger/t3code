@@ -21,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import { withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
 import { memberReads } from "./sharing.ts";
 import * as Repository from "./KinChatRepository.ts";
@@ -224,10 +225,18 @@ const make = Effect.gen(function* () {
             );
           }),
         ),
-        Stream.map((event) =>
+        Stream.mapEffect((event): Effect.Effect<KinChatHubEvent> =>
           event.type === "message.posted"
-            ? { ...event, message: messageForViewer(event.message, identity) }
-            : event,
+            ? withLinks(identity.orgId, identity, [messageForViewer(event.message, identity)]).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.map(([message]): KinChatHubEvent => ({ ...event, message: message! })),
+                // The words still arrive when the links can't be read; only the links are missing.
+                Effect.orElseSucceed((): KinChatHubEvent => ({
+                  ...event,
+                  message: messageForViewer(event.message, identity),
+                })),
+              )
+            : Effect.succeed(event),
         ),
       );
     }),

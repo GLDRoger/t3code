@@ -1,9 +1,12 @@
-import type {
-  EnvironmentId,
-  KinOrgId,
-  KinWorkEvent,
-  KinWorkSubscribeInput,
-  KinWorkSummary,
+import {
+  kinRestoreWorkList,
+  type EnvironmentId,
+  type KinDocsListInput,
+  type KinOrgId,
+  type KinWorkEvent,
+  type KinWorkListInput,
+  type KinWorkSubscribeInput,
+  type KinWorkSummary,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -11,7 +14,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import * as Stream from "effect/Stream";
 
 import type * as EnvironmentRegistry from "../connection/registry.ts";
-import { subscribe } from "../rpc/index.ts";
+import { requestGuarded, subscribe } from "../rpc/index.ts";
 import { environmentSessionGenerationAtom } from "../state/runtime.ts";
 import { resubscribeWhenKinReturns, retryWhileKinUnavailable } from "./kinStreams.ts";
 import { kinWorkFailuresOf, kinWorkRefused } from "./kinWork.ts";
@@ -94,17 +97,36 @@ export function kinWorkNote(
   };
 }
 
+/** The lists a read covers: some, every one, or every one but some. */
+export type KinWorkListsCovered =
+  | ReadonlyArray<string>
+  | "any"
+  | { readonly except: ReadonlyArray<string> };
+
 /**
  * Moves only when a change since the first number could touch a read over `lists`: a change named
  * with one of them, or one that said nothing of its list. `"any"` moves on every change.
  */
 export function kinWorkListsMoved(
   live: Pick<KinWorkLive, "lists" | "unlisted" | "unnamed">,
-  lists: ReadonlyArray<string> | "any",
+  lists: KinWorkListsCovered,
 ): number {
-  const named = lists === "any" ? Object.values(live.lists) : lists.map((l) => live.lists[l] ?? 0);
+  const named =
+    lists === "any"
+      ? Object.values(live.lists)
+      : "except" in lists
+        ? Object.entries(live.lists).flatMap(([list, seq]) =>
+            lists.except.includes(list) ? [] : [seq],
+          )
+        : lists.map((l) => live.lists[l] ?? 0);
   return Math.max(live.unnamed, live.unlisted, ...named);
 }
+
+/**
+ * What a task cannot move: Money, cash, outlook and budgets add up money lists, and the lists'
+ * definitions count open entries only for lists people made. A client's name shows in Money.
+ */
+export const KIN_WORK_NOT_TASKS = { except: ["work"] } as const;
 
 type KinWorkTarget = {
   readonly environmentId: EnvironmentId;
@@ -121,10 +143,7 @@ export function createKinWorkRefreshTriggers<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
   live: (target: KinWorkTarget) => Atom.Atom<AsyncResult.AsyncResult<KinWorkLive, unknown>>,
 ) {
-  return (
-    lists: ReadonlyArray<string> | "any",
-    also?: (target: KinWorkTarget) => Atom.Atom<unknown>,
-  ) =>
+  return (lists: KinWorkListsCovered, also?: (target: KinWorkTarget) => Atom.Atom<unknown>) =>
     (target: KinWorkTarget) =>
       Atom.make((get) => {
         const { environmentId } = target;
@@ -137,6 +156,19 @@ export function createKinWorkRefreshTriggers<R, ER>(
         return `${get(environmentSessionGenerationAtom(runtime, environmentId))}:${moved}:${topic}`;
       });
 }
+
+/**
+ * `kin.work.list` in its compact shape, restored to whole rows here, so every screen reads the
+ * same `records` whichever shape the host answered in. An older host ignores the ask.
+ */
+export const kinWorkListLean = (input: KinWorkListInput) =>
+  requestGuarded("kin.work.list", { ...input, acceptCompactRows: true }).pipe(
+    Effect.map((result) => kinRestoreWorkList(result, input.orgId)),
+  );
+
+/** `kin.docs.list` with slim rows: what the row's line says of the latest version. */
+export const kinDocsListLean = (input: KinDocsListInput) =>
+  requestGuarded("kin.docs.list", { ...input, acceptSlimLatest: true });
 
 /** Asks the counts stream to read again now, inside the running stream. */
 export const KIN_WORK_RETRY = { _tag: "retry" } as const;

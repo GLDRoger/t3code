@@ -151,9 +151,9 @@ export function KinAttentionSection(
     readonly read?: KinPulseRead | null;
   },
 ) {
-  const own = useKinAttention(props, props.read === undefined);
+  const own = useKinAttention(props, props.read === undefined, false, props.scope);
   const read = props.read === undefined ? own : props.read;
-  const handler = useKinAttentionHandle(props);
+  const handler = useKinAttentionHandle(props, props.scope);
   const now = new Date(useNowMinuteMs());
   const { open, handled } = kinAttention(read, {
     scope: props.scope,

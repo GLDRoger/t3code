@@ -62,7 +62,10 @@ export function KinNeedsYou(
   const { mine } = props;
   const inbox = useKinInbox();
   const [expanded, setExpanded] = useState(false);
-  const attentionRead = useKinAttention(target);
+  // The first page until See all; then everything, the page standing in until it arrives.
+  const pagedRead = useKinAttention(target, true, true);
+  const fullRead = useKinAttention(target, expanded);
+  const attentionRead = expanded && fullRead !== null ? fullRead : pagedRead;
   const handler = useKinAttentionHandle(target);
   const attention = kinAttention(attentionRead, {
     scope: { type: "all" },
@@ -94,15 +97,15 @@ export function KinNeedsYou(
           now,
         });
   // Money's own rows live on Money; here they are one row that opens it.
-  const split = kinTasksAttention(attention.open);
+  const split = kinTasksAttention(attention.open, attentionRead);
   const needs =
     before === null
       ? null
       : [
           ...(split.moneyRow === null ? [] : [split.moneyRow]),
-          ...kinNeedsYouBeside(before, attention),
+          ...kinNeedsYouBeside(before, attention, attentionRead),
         ];
-  const total = needs === null ? 0 : needs.length + split.rows.length;
+  const total = needs === null ? 0 : needs.length + split.rows.length + split.hidden;
   if (props.hideWhenNone && needs !== null && total === 0 && attention.handled.length === 0)
     return null;
 

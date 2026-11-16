@@ -49,6 +49,16 @@ features:
       - packages/client-runtime/src/kin/kinCardPresentation.test.ts
       - .agents/skills/verify-kin/scripts/card-gallery.sh
 
+  - id: chat-pages
+    name: Long replies as pages, briefs, and names that open what they name
+    tab: chats
+    web: [chat, section:Needs you]
+    phone: [tab:chats, KinChat, section:Needs you]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    proof:
+      - apps/server/src/kin/chat/messageLinks.test.ts
+      - packages/client-runtime/src/kin/kinMessagePage.test.ts
+
   - id: waiting-on-you
     name: Waiting on you
     tab: chats

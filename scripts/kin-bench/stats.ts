@@ -43,6 +43,8 @@ export interface Chatter {
     readonly person: string;
     readonly framesIn: number;
     readonly bytesIn: number;
+    /** About what crossed the link, compressed (`deflatedSize`); absent from older runs. */
+    readonly deflatedIn?: number;
     readonly framesOut: number;
     readonly requestsOut: number;
     readonly methods: Record<string, number>;
@@ -53,6 +55,7 @@ export interface WireRow {
   readonly action: string;
   readonly framesIn: number;
   readonly bytesIn: number;
+  readonly deflatedIn?: number;
   readonly framesOut: number;
   readonly bytesOut: number;
   readonly largest: number;

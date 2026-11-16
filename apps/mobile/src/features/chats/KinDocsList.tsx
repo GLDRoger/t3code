@@ -32,7 +32,7 @@ import {
   kinWorkAskDraft,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import type { KinDocRow, KinRecordKey } from "@t3tools/contracts";
+import type { KinDocListRow, KinRecordKey } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import { Pressable, View } from "react-native";
@@ -249,8 +249,13 @@ export function KinSearchHits(props: {
 
 type Item =
   | { readonly type: "group"; readonly id: string; readonly title: string; readonly unfiled?: true }
-  | { readonly type: "recent"; readonly id: string; readonly rows: ReadonlyArray<KinDocRow> }
-  | { readonly type: "doc"; readonly id: string; readonly row: KinDocRow; readonly bare: boolean }
+  | { readonly type: "recent"; readonly id: string; readonly rows: ReadonlyArray<KinDocListRow> }
+  | {
+      readonly type: "doc";
+      readonly id: string;
+      readonly row: KinDocListRow;
+      readonly bare: boolean;
+    }
   | { readonly type: "list"; readonly id: string; readonly row: KinListIndexRow }
   | { readonly type: "moreLists"; readonly id: string; readonly label: string }
   | { readonly type: "playbooks"; readonly id: string; readonly count: number };
@@ -260,7 +265,7 @@ const LISTS_FOLDED = 3;
 
 /** The last few docs changed, as two rows of cards; nothing scrolls sideways. */
 function KinRecentStrip(props: {
-  readonly rows: ReadonlyArray<KinDocRow>;
+  readonly rows: ReadonlyArray<KinDocListRow>;
   readonly names: KinWorkDirectory["names"];
   readonly now: Date;
   readonly onOpen: (key: KinRecordKey) => void;
