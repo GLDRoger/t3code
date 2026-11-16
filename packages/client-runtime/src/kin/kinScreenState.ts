@@ -231,9 +231,30 @@ export function kinAvatarView(
   return { kind: "agent", seed: `chat:${chat.chatId}` };
 }
 
+const TABLE_RULE = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+/** A markdown table's lines as plain words: the rule line gone, a row's cells joined by commas. */
+export function kinPlainTables(markdown: string): string {
+  return markdown
+    .split("\n")
+    .filter((line) => !TABLE_RULE.test(line))
+    .map((line) =>
+      /^\s*\|.*\|\s*$/.test(line)
+        ? line
+            .trim()
+            .slice(1, -1)
+            .split("|")
+            .map((cell) => cell.trim())
+            .filter((cell) => cell !== "")
+            .join(", ")
+        : line,
+    )
+    .join("\n");
+}
+
 /** Message markdown as one plain line. */
 export function kinPreviewText(body: string): string {
-  return body
+  return kinPlainTables(body)
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
     .replace(/```[^\s`]*/g, "")

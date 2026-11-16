@@ -343,6 +343,10 @@ describe("chat list rows", () => {
     ["*Shipped* the _retry_ fix", "Shipped the retry fix"],
     ["Run:\n```ts\nawait retry()\n```", "Run: await retry()"],
     ["2 * 3 * 4 in snake_case_name", "2 * 3 * 4 in snake_case_name"],
+    [
+      "Due:\n\n| Piece | Owner |\n|---|:--:|\n| Brand guide | Zoya |",
+      "Due: Piece, Owner Brand guide, Zoya",
+    ],
   ])("flattens %j to one line", (body, preview) => {
     expect(kinPreviewText(body)).toBe(preview);
   });
