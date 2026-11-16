@@ -6,7 +6,6 @@ import type {
   KinRecord,
   KinRecordKey,
   KinWaitingItem,
-  KinWorkSummary,
 } from "@t3tools/contracts";
 
 import { kinTotalsText } from "./kinLists.ts";
@@ -70,13 +69,6 @@ export function kinWorkPlaceParam(show: string | undefined): {
 
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${count} ${count === 1 ? one : many}`;
-
-export function kinTasksLine(summary: KinWorkSummary): string {
-  if (summary.open === 0) return "Nothing open";
-  return [`${summary.open} open`, summary.late > 0 ? `${summary.late} late` : null]
-    .filter((part) => part !== null)
-    .join(", ");
-}
 
 export function kinMoneyLine(money: KinMoneySummary): string {
   if (money.owed.total.length === 0) return "Nobody owes you anything";

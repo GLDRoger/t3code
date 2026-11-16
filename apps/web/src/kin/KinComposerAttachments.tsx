@@ -1,11 +1,11 @@
 import { fileAttachmentTooLargeMessage } from "@t3tools/client-runtime/state/attachments";
 import {
-  AuthOrchestrationOperateScope,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type EnvironmentId,
   type KinAttachment,
 } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 
 import {
@@ -49,7 +49,7 @@ import {
 import { inheritComposerImageThumbnail, prepareImageForAttachment } from "../lib/imageCompression";
 import { randomUUID } from "../lib/utils";
 import { useServerConfigs } from "../state/entities";
-import { useEnvironmentScope } from "../state/session";
+import { kinClient } from "./kinClient";
 
 /** A Kin chat's files wait in the thread composer's draft store, under a key no thread has. */
 const kinAttachmentTarget = (draftKey: string) => DraftId.make(`kin:${draftKey}`);
@@ -80,7 +80,9 @@ export function useKinComposerAttachments(input: {
   const target = kinAttachmentTarget(draftKey);
   const draft = useComposerThreadDraft(target);
   const preparing = usePreparingComposerImages(target);
-  const canOperate = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
+  // Whoever may post in a Kin chat may attach: the upload stays theirs alone until a send the
+  // host checks against the chat claims it.
+  const canPost = useAtomValue(kinClient.send.permissionAtom(environmentId));
   const config = useServerConfigs().get(environmentId) ?? null;
   const maxFileBytes = config?.environment.capabilities.fileAttachments?.maxUploadBytes ?? null;
   const capability = {
@@ -104,7 +106,7 @@ export function useKinComposerAttachments(input: {
   const store = () => useComposerDraftStore.getState();
 
   const add = async (files: ReadonlyArray<File>): Promise<boolean> => {
-    if (!canOperate || files.length === 0) return false;
+    if (!canPost || files.length === 0) return false;
     // Slots are reserved before the first await, so two pastes can't both take the last one.
     let reserved =
       (store().getComposerDraft(target)?.images.length ?? 0) +
@@ -282,7 +284,7 @@ export function useKinComposerAttachments(input: {
     refusal: error,
     /** Why the draft cannot go as it stands. */
     blockReason: blockReason ?? (preparing.length > 0 ? "Preparing images" : null),
-    canAttach: canOperate && config !== null,
+    canAttach: canPost && config !== null,
     maxFileBytes,
     stagingLimit,
     add,

@@ -13,6 +13,9 @@ import {
   type KinWorkDraft,
   type KinWorkRef,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinNewTaskChoices } from "@t3tools/client-runtime/kin/kinWorkClients";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { useId, useState } from "react";
 
@@ -40,6 +43,7 @@ import {
 import { Textarea } from "../components/ui/textarea";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { randomUUID } from "../lib/utils";
+import { connectionAtomRuntime } from "../connection/runtime";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
 import type { KinWorkChoices, KinWorkDirectory, KinWorkTarget } from "./useKinWork";
@@ -131,7 +135,8 @@ export function KinWorkNewDialog(
   const checked = kinWorkDraftCheck(draft);
   const hint = kinWorkDraftHint(draft, names);
   const words = kinWorkDraftWords(draft);
-  const { choices } = props;
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  const choices = props.choices === null ? null : kinNewTaskChoices(props.choices, me);
 
   const save = async () => {
     if (busy) return;
@@ -241,18 +246,22 @@ export function KinWorkNewDialog(
               {hint === null ? null : <p className="text-xs text-muted-foreground">{hint}</p>}
               {choices === null ? null : (
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <PlaceSelect
-                    label={KIN_WORK_NEW_COPY.clientLabel}
-                    value={draft.party}
-                    choices={choices.clients}
-                    onChange={(party) => setDraft({ ...draft, party })}
-                  />
-                  <PlaceSelect
-                    label={KIN_WORK_NEW_COPY.projectLabel}
-                    value={draft.project}
-                    choices={choices.projects}
-                    onChange={(project) => setDraft({ ...draft, project })}
-                  />
+                  {choices.clients.length === 0 && draft.party === null ? null : (
+                    <PlaceSelect
+                      label={KIN_WORK_NEW_COPY.clientLabel}
+                      value={draft.party}
+                      choices={choices.clients}
+                      onChange={(party) => setDraft({ ...draft, party })}
+                    />
+                  )}
+                  {choices.projects.length === 0 && draft.project === null ? null : (
+                    <PlaceSelect
+                      label={KIN_WORK_NEW_COPY.projectLabel}
+                      value={draft.project}
+                      choices={choices.projects}
+                      onChange={(project) => setDraft({ ...draft, project })}
+                    />
+                  )}
                 </div>
               )}
               {choices === null || draft.party === null ? null : (

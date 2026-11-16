@@ -94,6 +94,20 @@ export function kinHostConnected(environmentId: EnvironmentId): boolean {
   return host._tag === "host" && host.connected;
 }
 
+/** The directory a host last answered with, while this page has seen one. */
+export const kinCachedOrgs = cachedOrgs;
+
+/** Makes `environmentId` the usual host, so Kin opens there first and stops standing in. */
+export function chooseKinHost(environmentId: EnvironmentId) {
+  savedHost.id = environmentId;
+  try {
+    window.localStorage.setItem(KIN_HOST_STORAGE_KEY, environmentId);
+  } catch {
+    // Storage can be full or blocked; this page still uses it until reload.
+  }
+  appAtomRegistry.refresh(kinHostAtom);
+}
+
 /** The connected environment that hosts Kin. `none` on plain T3 servers and with Kin off. */
 export function useKinHost(): KinHost {
   return useAtomValue(kinHostAtom);

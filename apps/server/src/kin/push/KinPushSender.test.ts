@@ -578,6 +578,25 @@ describe("KinPushSender", () => {
       assert.isAtMost(Array.from(first?.body ?? "").length, 160);
       assert.match(first?.body ?? "", /^Payroll for November is ready to review\. .*ledger\.…$/);
 
+      // A check-in greets only when it has sections, and then leads with its first real line.
+      for (const [body, expected] of [
+        ["Done.", /^Done\.$/],
+        [
+          "## Work\nW-2 is due today.\n\n## Money\nNothing new.",
+          /^Good (morning|afternoon|evening) · W-2 is due today\.$/,
+        ],
+      ] as const) {
+        yield* TestClock.adjust("31 minutes");
+        apns.sent.length = 0;
+        const brief = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+          chatId: "chat_dm",
+          body,
+        });
+        yield* sql`UPDATE kin_messages SET form = 'brief' WHERE message_id = ${brief}`;
+        yield* notify({ _tag: "message", orgId, messageId: brief });
+        assert.match(alerts(apns.sent)[0]?.body ?? "", expected);
+      }
+
       // The lead's answer in the group rings whoever it is answering, named or not.
       yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
           worker_projects_json, owner_chat_id)

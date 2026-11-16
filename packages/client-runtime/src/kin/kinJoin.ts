@@ -8,6 +8,7 @@ import {
   type KinPersonAccess,
   type SessionGrantInput,
 } from "@t3tools/contracts";
+import { kinDestinations, type KinDestination, type KinPlacesRefused } from "./kinNavigation.ts";
 import { readKinJoinLink } from "@t3tools/shared/remote";
 
 /** A join link a teammate gave the app, and the address it points at, shown before joining. */
@@ -137,35 +138,24 @@ const grants = (session: SessionGrantInput | null) => (scope: AuthEnvironmentSco
 export type KinHomeTab = "chats" | "work" | "team" | "memory" | "settings";
 
 /** The places a Kin home's dock draws. Settings is a button on Chats, Team and Memory its pages. */
-export type KinDockTab = "chats" | "tasks" | "money" | "clients" | "docs";
+export type KinDockTab = KinDestination;
 
 /** Places the host has answered it won't show this viewer, which a grant can't tell apart. */
-export interface KinDockRefused {
-  readonly money: boolean;
-  readonly clients: boolean;
-  readonly docs: boolean;
-}
+export type KinDockRefused = KinPlacesRefused;
 
-/**
- * Chats and Tasks, then each place the host hasn't refused: every one for the owner or a co-owner,
- * for anyone else the ones the host says they reach (`kin.access.me`), none until it has.
- */
+/** The dock for a session: `kinDestinations`, with Work read from the session's grant. */
 export function kinDockTabs(
   session: SessionGrantInput | null,
   ownerLevel: boolean,
   refused: KinDockRefused,
   reaches: KinPlaceReach | null = null,
 ): ReadonlyArray<KinDockTab> {
-  if (!grants(session)(KIN_WORK_RPC_SCOPES["kin.work.list"])) return ["chats"];
-  const shown = (place: keyof KinDockRefused) =>
-    !refused[place] && (ownerLevel || reaches?.[place] === true);
-  return [
-    "chats",
-    "tasks",
-    ...(shown("money") ? (["money"] as const) : []),
-    ...(shown("clients") ? (["clients"] as const) : []),
-    ...(shown("docs") ? (["docs"] as const) : []),
-  ];
+  return kinDestinations({
+    work: grants(session)(KIN_WORK_RPC_SCOPES["kin.work.list"]),
+    ownerLevel,
+    refused,
+    reaches,
+  });
 }
 
 /** Which places someone besides the owner reaches: switched on for them, or a project they lead. */

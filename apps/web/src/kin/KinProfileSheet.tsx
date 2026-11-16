@@ -1,4 +1,4 @@
-import { useRouter } from "@tanstack/react-router";
+import { type RouterHistory, useLocation, useRouter } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DAY_LABELS,
@@ -67,24 +67,63 @@ const kinProfileSheetAtom = Atom.make<KinProfileTarget | null>(null).pipe(
   Atom.withLabel("kin:profile-sheet"),
 );
 
+declare module "@tanstack/react-router" {
+  interface HistoryState {
+    /** The profile sheet was opened on this page, so closing it is one step back. */
+    kinProfilePushed?: boolean;
+  }
+}
+
+// The profile lives in the address, as New task and Search do, so Back closes only the sheet.
+const PROFILE_PARAM = "profile";
+let kinHistory: RouterHistory | null = null;
+
 /** Opens someone's profile over whatever is on screen: the Team list, a chat, the chat list. */
-export const openKinProfile = (target: KinProfileTarget) =>
+export const openKinProfile = (target: KinProfileTarget) => {
   appAtomRegistry.set(kinProfileSheetAtom, target);
+  if (kinHistory === null) return;
+  const { pathname, search, hash, state } = kinHistory.location;
+  const params = new URLSearchParams(search);
+  const already = params.has(PROFILE_PARAM);
+  params.set(PROFILE_PARAM, target.personId);
+  const href = `${pathname}?${params.toString()}${hash}`;
+  // From one profile to another keeps the one step back to the page underneath.
+  if (already) kinHistory.replace(href, state);
+  else kinHistory.push(href, { ...state, kinProfilePushed: true });
+};
 
 export function KinProfileSheetHost() {
   const target = useAtomValue(kinProfileSheetAtom);
   const router = useRouter();
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the sheet isn't in the address, so any navigation, Back included, closes it rather than leaving it over another screen
-  useEffect(
-    () => router.history.subscribe(() => appAtomRegistry.set(kinProfileSheetAtom, null)),
-    [router],
-  );
-  if (target === null) return null;
+  const shown = useLocation({
+    select: (location) => new URLSearchParams(location.searchStr).get(PROFILE_PARAM),
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the router's history to `openKinProfile`, which runs from handlers outside React
+  useEffect(() => {
+    kinHistory = router.history;
+    return () => {
+      kinHistory = null;
+    };
+  }, [router]);
+  if (target === null || shown !== target.personId) return null;
+  const close = () => {
+    const { history } = router;
+    if (history.location.state.kinProfilePushed === true) return history.back();
+    const params = new URLSearchParams(history.location.search);
+    params.delete(PROFILE_PARAM);
+    const rest = params.toString();
+    history.replace(
+      `${history.location.pathname}${rest === "" ? "" : `?${rest}`}${history.location.hash}`,
+      {
+        ...history.location.state,
+      },
+    );
+  };
   return (
     <KinProfileSheet
       key={`${target.environmentId}:${target.personId}`}
       target={target}
-      onClose={() => appAtomRegistry.set(kinProfileSheetAtom, null)}
+      onClose={close}
     />
   );
 }
@@ -148,22 +187,7 @@ function KinProfileSheet(props: {
   readonly onClose: () => void;
 }) {
   const { environmentId, orgId, personId } = props.target;
-  const host = useKinHostAt(environmentId);
-  const viewer = kinFeedViewer(
-    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
-    orgId,
-  ).personId;
-  const result = useKinProfiles(environmentId, orgId);
-  const held = result === null ? null : Option.getOrNull(AsyncResult.value(result));
-  const profile = held?.profiles.find((entry) => entry.personId === personId) ?? null;
-  const mayEdit = kinMayEditProfile({
-    viewerPersonId: viewer,
-    ownerPersonId: held?.ownerPersonId ?? null,
-    personId,
-    canEdit: profile?.canEdit,
-  });
-  const [editing, setEditing] = useState(false);
-  const mine = viewer === personId;
+  const profile = useKinProfileOf(environmentId, orgId, personId);
   return (
     <Sheet
       open
@@ -174,34 +198,77 @@ function KinProfileSheet(props: {
       <SheetPopup side="right">
         <SheetHeader>
           <SheetTitle>
-            {mine ? KIN_PROFILE_COPY.mine : (profile?.displayName ?? KIN_PROFILE_COPY.title)}
+            {profile.mine
+              ? KIN_PROFILE_COPY.mine
+              : (profile.profile?.displayName ?? KIN_PROFILE_COPY.title)}
           </SheetTitle>
-          {held?.ownerPersonId === personId ? (
-            <SheetDescription>Runs this workspace</SheetDescription>
-          ) : null}
+          {profile.runsWorkspace ? <SheetDescription>Runs this workspace</SheetDescription> : null}
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
-          {profile === null ? (
-            <p className="text-sm text-muted-foreground">
-              {result !== null && AsyncResult.isFailure(result)
-                ? KIN_PROFILE_COPY.loadFailed
-                : "Loading…"}
-            </p>
-          ) : editing ? (
-            <KinProfileForm
-              environmentId={environmentId}
-              orgId={orgId}
-              profile={profile}
-              mine={mine}
-              onDone={() => setEditing(false)}
-            />
-          ) : (
-            <KinProfileRead profile={profile} mayEdit={mayEdit} onEdit={() => setEditing(true)} />
-          )}
+          <KinProfileBody {...props.target} />
         </div>
       </SheetPopup>
     </Sheet>
   );
+}
+
+function useKinProfileOf(environmentId: EnvironmentId, orgId: KinOrgId, personId: KinPersonId) {
+  const host = useKinHostAt(environmentId);
+  const viewer = kinFeedViewer(
+    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
+    orgId,
+  ).personId;
+  const result = useKinProfiles(environmentId, orgId);
+  const held = result === null ? null : Option.getOrNull(AsyncResult.value(result));
+  const profile = held?.profiles.find((entry) => entry.personId === personId) ?? null;
+  return {
+    result,
+    profile,
+    viewer,
+    mine: viewer === personId,
+    runsWorkspace: held?.ownerPersonId === personId,
+    mayEdit: kinMayEditProfile({
+      viewerPersonId: viewer,
+      ownerPersonId: held?.ownerPersonId ?? null,
+      personId,
+      canEdit: profile?.canEdit,
+    }),
+  };
+}
+
+/** Someone's profile, read or edited: in the sheet, and as Settings → Profile for your own. */
+export function KinProfileBody(props: KinProfileTarget) {
+  const { environmentId, orgId, personId } = props;
+  const { result, profile, mine, mayEdit } = useKinProfileOf(environmentId, orgId, personId);
+  const [editing, setEditing] = useState(false);
+  if (profile === null)
+    return (
+      <p className="text-sm text-muted-foreground">
+        {result !== null && AsyncResult.isFailure(result)
+          ? KIN_PROFILE_COPY.loadFailed
+          : "Loading…"}
+      </p>
+    );
+  return editing ? (
+    <KinProfileForm
+      environmentId={environmentId}
+      orgId={orgId}
+      profile={profile}
+      mine={mine}
+      onDone={() => setEditing(false)}
+    />
+  ) : (
+    <KinProfileRead profile={profile} mayEdit={mayEdit} onEdit={() => setEditing(true)} />
+  );
+}
+
+/** The viewer's own person here, once the host has said who they are. */
+export function useKinMe(environmentId: EnvironmentId, orgId: KinOrgId): KinPersonId | null {
+  const host = useKinHostAt(environmentId);
+  return kinFeedViewer(
+    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
+    orgId,
+  ).personId;
 }
 
 function Field(props: { readonly label: string; readonly children: React.ReactNode }) {
@@ -503,44 +570,5 @@ function KinProfileForm(props: {
         </Button>
       </div>
     </form>
-  );
-}
-
-/** The chat list's way to the viewer's own profile: their face, name and roles. */
-export function KinProfileEntry(props: {
-  readonly environmentId: EnvironmentId;
-  readonly orgId: KinOrgId;
-  readonly onOpen: () => void;
-}) {
-  const { environmentId, orgId } = props;
-  const host = useKinHostAt(environmentId);
-  const viewer = kinFeedViewer(
-    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
-    orgId,
-  ).personId;
-  const result = useKinProfiles(environmentId, orgId);
-  const held = result === null ? null : Option.getOrNull(AsyncResult.value(result));
-  const profile = held?.profiles.find((entry) => entry.personId === viewer) ?? null;
-  if (viewer === null || profile === null) return null;
-  const personId = viewer;
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        props.onOpen();
-        openKinProfile({ environmentId, orgId, personId });
-      }}
-      className="flex items-center gap-2.5 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset"
-    >
-      <KinAvatar avatar={{ kind: "person", seed: kinPersonSeed(personId) }} />
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate text-sm font-medium text-sidebar-foreground">
-          {profile.displayName}
-        </span>
-        <span className="truncate text-xs text-sidebar-muted-foreground">
-          {profile.roleTags.length === 0 ? KIN_PROFILE_COPY.mine : profile.roleTags.join(", ")}
-        </span>
-      </span>
-    </button>
   );
 }

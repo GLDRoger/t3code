@@ -178,19 +178,23 @@ describe("resolveKinHost", () => {
     expect(host).toMatchObject({ environmentId: b, connected: true, probe: ready, standInFor: c });
     expect(kinHostIdToSave(host)).toBeNull();
     const names = new Map([[b, "Studio Mac"]]);
-    expect(kinStandInLine(host, (id) => names.get(id) ?? null, true)).toEqual({
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null, true, withIdentity)).toEqual({
       message: "Showing Studio Mac. Your usual computer can't be reached.",
       usual: c,
+      shown: b,
     });
-    expect(kinStandInLine(host, () => "Studio Mac", true)?.message).toBe(
+    // A usual computer that never named this person held none of their Kin: nothing to warn of.
+    expect(kinStandInLine(host, () => "Studio Mac", true, null)).toBeNull();
+    expect(kinStandInLine(host, () => "Studio Mac", true, orgs([]))).toBeNull();
+    expect(kinStandInLine(host, () => "Studio Mac", true, withIdentity)?.message).toBe(
       "Showing Studio Mac. Your usual computer can't be reached.",
     );
     names.set(c, "Office Mac");
-    expect(kinStandInLine(host, (id) => names.get(id) ?? null, true)?.message).toBe(
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null, true, withIdentity)?.message).toBe(
       "Showing Studio Mac. Office Mac can't be reached.",
     );
     // A teammate never reads a computer's name.
-    expect(kinStandInLine(host, (id) => names.get(id) ?? null, false)?.message).toBe(
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null, false, withIdentity)?.message).toBe(
       "Showing another computer. Your usual computer can't be reached.",
     );
   });
@@ -202,7 +206,7 @@ describe("resolveKinHost", () => {
     );
     expect(host).toMatchObject({ environmentId: b, connected: true, standInFor: c });
     expect(kinHostIdToSave(host)).toBeNull();
-    expect(kinStandInLine(host, () => "Studio Mac", true)).toBeNull();
+    expect(kinStandInLine(host, () => "Studio Mac", true, withIdentity)).toBeNull();
   });
 
   it("waits on an earlier host's probe before letting a later one stand in", () => {
@@ -224,7 +228,7 @@ describe("resolveKinHost", () => {
     });
     const back = resolve({ [b]: ready, [c]: ready }, { savedHostId: c });
     expect(back).toMatchObject({ environmentId: c, connected: true });
-    expect(kinStandInLine(back, () => "Office Mac", true)).toBeNull();
+    expect(kinStandInLine(back, () => "Office Mac", true, withIdentity)).toBeNull();
     expect(kinHostIdToSave(back)).toBe(c);
     const noIdentity: KinProbe = { _tag: "noIdentity", orgs: orgs([]) };
     const flaky: KinProbe = { _tag: "error", message: "socket closed", transient: true };

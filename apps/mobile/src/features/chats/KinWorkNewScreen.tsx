@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { connectionAtomRuntime } from "../../connection/runtime";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_WORK_NEW_COPY,
@@ -17,7 +18,8 @@ import {
   kinWorkPrincipalKey,
   type KinWorkDraft,
 } from "@t3tools/client-runtime/kin/kinWork";
-import { KIN_CLIENTS } from "@t3tools/client-runtime/kin/kinWorkClients";
+import { KIN_CLIENTS, kinNewTaskChoices } from "@t3tools/client-runtime/kin/kinWorkClients";
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -114,7 +116,12 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const work = useKinWork(target);
   // An older server has no clients or projects to put a task under.
   const hostClients = kinWorkHostClients(work._tag === "ready" ? work.live.summary : null);
-  const choices = useKinWorkChoices(target, allowed && hostClients);
+  const choices = kinNewTaskChoices(
+    useKinWorkChoices(target, allowed && hostClients),
+    useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)),
+  );
+  const offersClient = choices.clients.length > 0 || draft.party !== null;
+  const offersProject = choices.projects.length > 0 || draft.project !== null;
   const words = kinWorkDraftWords(draft);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -239,17 +246,19 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                   ))}
                 </View>
               </View>
-              {!hostClients ? null : (
+              {!hostClients || (!offersClient && !offersProject) ? null : (
                 <ListSection>
-                  <KinWorkPlaceRow
-                    icon="person.2"
-                    label={KIN_WORK_NEW_COPY.clientLabel}
-                    none={KIN_WORK_NEW_COPY.none}
-                    held={draft.party}
-                    choices={choices.clients}
-                    disabled={saving}
-                    onPick={(party) => setDraft({ ...draft, party })}
-                  />
+                  {!offersClient ? null : (
+                    <KinWorkPlaceRow
+                      icon="person.2"
+                      label={KIN_WORK_NEW_COPY.clientLabel}
+                      none={KIN_WORK_NEW_COPY.none}
+                      held={draft.party}
+                      choices={choices.clients}
+                      disabled={saving}
+                      onPick={(party) => setDraft({ ...draft, party })}
+                    />
+                  )}
                   {draft.party === null ? null : (
                     <KinWorkSideRow
                       side={draft.side}
@@ -257,15 +266,17 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                       onPick={(side) => setDraft({ ...draft, side })}
                     />
                   )}
-                  <KinWorkPlaceRow
-                    icon="folder"
-                    label={KIN_WORK_NEW_COPY.projectLabel}
-                    none={KIN_WORK_NEW_COPY.none}
-                    held={draft.project}
-                    choices={choices.projects}
-                    disabled={saving}
-                    onPick={(project) => setDraft({ ...draft, project })}
-                  />
+                  {!offersProject ? null : (
+                    <KinWorkPlaceRow
+                      icon="folder"
+                      label={KIN_WORK_NEW_COPY.projectLabel}
+                      none={KIN_WORK_NEW_COPY.none}
+                      held={draft.project}
+                      choices={choices.projects}
+                      disabled={saving}
+                      onPick={(project) => setDraft({ ...draft, project })}
+                    />
+                  )}
                 </ListSection>
               )}
               <ListSection>

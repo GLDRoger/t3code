@@ -134,6 +134,14 @@ export const KIN_ONLY_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
   "/settings/kin-connections",
 ]);
 
+/** Kin's pages, which Kin's own Settings holds while a host runs Kin. */
+export const KIN_MOVED_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
+  "/settings/approvals",
+  "/settings/check-ins",
+  "/settings/company",
+  "/settings/kin-connections",
+]);
+
 /** Sidebar order. A group without a heading is set apart by space alone. */
 export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   readonly heading: string | null;
