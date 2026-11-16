@@ -113,6 +113,8 @@ const screen = extract((state) => {
     inKin,
     mainBlank: inKin && main !== null && (main as HTMLElement).innerText.trim() === "",
     dialogs: dialogs.length,
+    // Settings is a modal standing in for a page; a form over it is the one sheet.
+    sheets: dialogs.filter((d) => !d.matches("[data-app-modal]")).length,
     dialogTitles: dialogs.map(
       (d) => (d.querySelector("h1,h2,h3,[id$=title]") as HTMLElement | null)?.innerText ?? "",
     ),
@@ -190,7 +192,7 @@ export const noRecordInRecord = always(() => {
   // A doc's history and changes open as sheets over it, so only records count here.
   return RECORD_KEYS.filter((k) => k in s.search).length <= 1;
 });
-export const noSheetOnSheet = always(() => (screen.current?.dialogs ?? 0) <= 1);
+export const noSheetOnSheet = always(() => (screen.current?.sheets ?? 0) <= 1);
 
 // No dead controls: a click on a button, link or row changes something you can see.
 const clicked = (action: unknown) => {
