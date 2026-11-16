@@ -891,6 +891,7 @@ const run = <A, E>(
           Layer.mock(Toolchain.KinToolchain)({}),
           Layer.mock(KinAgentSessionPolicy)({
             toolDirectories: ["/invented/gh"],
+            agentName: () => Effect.undefined,
           }),
         ),
       ),

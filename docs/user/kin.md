@@ -77,6 +77,12 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   people in that chat can open them, and an agent reads them with the access of whoever sent them.
 - **It asks with cards.** A question with choices, a chart, or something to confirm comes as a card
   in the chat. Tapping an answer answers the agent; it is never an approval.
+- **It asks once, and says what it will do.** An agent's question comes with the answer it will go
+  with and the day, by default the end of your next working day (until 19:30). If you don't answer
+  by then, it goes with that answer and tells you in one line; say "undo it" to reverse. Something
+  that would send, post or move money has no such default: it is raised once more the next working
+  morning and then waits for you. Another agent won't ask you the same thing while it is open.
+  To change the answer before the day, tap another one.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
   for the owner alone.
 - **It comes back later.** "Remind me Friday at 10" or "check on this in two hours" sets a reminder.
@@ -90,7 +96,8 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   requests and checks, reviews pull requests, and starts coding work in T3 Code. It never merges
   without the owner's approval.
 
-**Waiting on you** in Chats collects what needs your answer.
+**Waiting on you** in Chats collects what needs your answer. An agent's open question shows there with
+its default and day, and you can answer it right there.
 
 ### An agent's page
 
@@ -294,6 +301,37 @@ main branch. Longer work runs as a task in its own checkout, and when it finishe
 once with what changed and the pull request. Commits name you as the author and credit the agent
 on a `Co-authored-by` line. Say "commit as yourself" (pull requests and comments still show as you) or "don't credit yourself" and it remembers.
 Teammates' chats and shared rooms still get no shell: what they ask for comes to you.
+
+#### When things happen on GitHub
+
+With GitHub connected, Kin checks it about once a minute with your login, so there is no app or
+webhook to install. On your repos and your organizations' repos, these start an agent on their own:
+
+- **A teammate opens a pull request**, or marks a draft ready: it is reviewed and the review posted.
+  On your own pull requests the review is a comment, since GitHub doesn't let you approve your own.
+- **A call in a comment, an issue or a line comment**: a line that starts with `/kin`, or with an
+  agent's name and a comma ("Tech lead, rename this"), which goes to that agent. On an issue the
+  agent says what it will do, works on a branch and opens a pull request that closes the issue. On a
+  pull request it pushes a commit to that pull request's branch and replies in the thread, or says it
+  can't push there and offers a pull request instead.
+- **The `kin` label** on an issue, which works the issue the same way.
+- **A review requested from you**, and **failing checks on an agent's own pull request**, which it
+  fixes or explains.
+
+Only people who can write to the repo can call an agent. Anyone else's `/kin` starts nothing, and
+their pull request gets a comment review from its diff: their code never runs. An agent never reacts
+to its own posts, and a mention of you doesn't call it unless you tell it in chat to let mentions
+of you call it in a repo. Everything an agent posts on GitHub ends with its name ("_Tech lead, via
+Kin_"). It tells you once, in one line with the link; quiet hours hold that line, not the work. A
+thread that keeps calling an agent gets five turns an hour, then one comment saying it has stopped
+until the hour is up.
+
+Kin watches every repo yours or your organizations' unless you say "leave acme/site alone" in chat.
+**Settings → Connections → GitHub** shows how many repos it watches, when it last checked and how
+much it handled today; **Show repos** lists them with a switch each, and **Watch every repo** undoes
+the switches. Forks of other people's repos start off. If a check fails, the row says why and how to
+fix it. While the login is connected, the GitHub App's webhook, if you set one up, no longer starts
+agents.
 
 To try pull requests in a browser on Ubuntu 23.10 or later, run `t3 browser setup` once as root.
 

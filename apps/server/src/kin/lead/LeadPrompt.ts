@@ -8,6 +8,7 @@ import {
   type KinChatId,
   type KinChatMember,
   type KinEvent,
+  type KinGithubTrigger,
   type KinMessage,
   type KinMessageRef,
   KinMessageId,
@@ -34,6 +35,7 @@ import { accessSql, isOwnerHimself, ownerLevel, ownerLevelPeople } from "../peop
 import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
 import { historyFloor } from "../chat/sharing.ts";
 
+import { githubTriggerText } from "../github/eventPrompt.ts";
 import { SILENT_REPLY } from "../reply/classify.ts";
 import { effectiveAudience, recordAudience, turnAudience, type TurnAudience } from "./Audience.ts";
 import { sectionsOf } from "../work/docBody.ts";
@@ -58,6 +60,7 @@ import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules, teamRules } from "./instructions.ts";
 import { buildSeat } from "./seat.ts";
+import { dueTurnText, openQuestionsSection } from "../questions/openQuestions.ts";
 import { asksUndo, recentChanges, UNDO_RULE } from "./undoSection.ts";
 
 export class KinLeadPromptError extends Schema.TaggedError<KinLeadPromptError>()(
@@ -421,6 +424,37 @@ export class KinLeadPrompt extends Context.Service<
             );
             continue;
           }
+          if (event._tag === "deferral.due" && event.subject.type === "question") {
+            fromOwner = false;
+            const due = yield* dueTurnText(
+              orgId,
+              event.subject.questionId,
+              yield* Clock.currentTimeMillis,
+            ).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin open question unreadable", cause).pipe(Effect.as(null)),
+              ),
+            );
+            const eventQuote = quote("event data", { event: event.eventId });
+            if (due === null) {
+              events.push(
+                `${eventQuote}\n\nKin couldn't read that question just now. Write exactly ${SILENT_REPLY}.`,
+              );
+              continue;
+            }
+            if (due === undefined) {
+              events.push(
+                `${eventQuote}\n\nThat question was answered or withdrawn before its day. Write exactly ${SILENT_REPLY}.`,
+              );
+              continue;
+            }
+            replyDue = true;
+            events.push(
+              `${eventQuote}\n\n${due.text}\n\n${quote("open question (data)", due.data, true)}`,
+            );
+            continue;
+          }
           if (event._tag === "record.changed") {
             fromOwner = false;
             const text = yield* workEventText({ orgId, event, ownerOnly }).pipe(
@@ -429,6 +463,13 @@ export class KinLeadPrompt extends Context.Service<
             if (text === undefined) continue;
             replyDue ||= event.reason !== "withdrawn";
             events.push(text);
+            continue;
+          }
+          if (event._tag === "github" && event.trigger !== undefined) {
+            fromOwner = false;
+            replyDue = true;
+            const { trigger } = event;
+            events.push(githubTriggerEvent(event.eventId, event.repo, trigger));
             continue;
           }
           if (event._tag === "github") {
@@ -549,11 +590,16 @@ export class KinLeadPrompt extends Context.Service<
           orgId,
           wakeupId: input.wakeupId,
           eventIds: [...input.events.map((event) => event.eventId), ...askedIn],
+          // One rule with the check-in's: text from someone who can't write to the repo is outside.
           shows: input.events.some(
             (event) => event._tag === "pulse" && (event.outside?.length ?? 0) > 0,
           )
             ? "check-in"
-            : undefined,
+            : input.events.some(
+                  (event) => event._tag === "github" && event.trigger?.inside === false,
+                )
+              ? "github"
+              : undefined,
         }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(
@@ -1173,6 +1219,22 @@ export class KinLeadPrompt extends Context.Service<
             Effect.logWarning("Kin seat unavailable", cause).pipe(Effect.as(undefined)),
           ),
         );
+        const asked =
+          input.lane === undefined
+            ? undefined
+            : yield* openQuestionsSection({
+                orgId,
+                chatId: input.lane.chatId,
+                ownerOnly,
+                now,
+              }).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin open questions unavailable", cause).pipe(
+                    Effect.as(undefined),
+                  ),
+                ),
+              );
         // The owner taking something back: what this agent's last turns changed here, to put back.
         const changedLately =
           ownerOnly && input.lane !== undefined && asksUndo(events)
@@ -1301,6 +1363,7 @@ export class KinLeadPrompt extends Context.Service<
                 ),
                 sharedPart(seat.team.join("\n")),
               ]),
+          ...(asked === undefined ? [] : [sharedPart(asked.heading), sharedPart(asked.body)]),
           ...(changedLately.length === 0
             ? []
             : [
@@ -1673,7 +1736,9 @@ const WITHHELD_DUE = `Something the owner set up is due, but other people can re
 /** The memory items an event names. */
 const memoryIds = (event: KinEvent): ReadonlyArray<KinMemoryItemId> =>
   event._tag === "deferral.due"
-    ? [event.subject.itemId]
+    ? "itemId" in event.subject
+      ? [event.subject.itemId]
+      : []
     : event._tag === "watchdog"
       ? event.itemIds
       : event._tag === "routine"
@@ -1688,7 +1753,11 @@ const memoryIds = (event: KinEvent): ReadonlyArray<KinMemoryItemId> =>
  */
 const sharedEventFacts = (event: KinEvent, known: ReadonlySet<string>) => {
   const facts: Record<string, unknown> = eventFacts(event);
-  if (event._tag === "deferral.due" && !known.has(event.subject.itemId)) {
+  if (
+    event._tag === "deferral.due" &&
+    "itemId" in event.subject &&
+    !known.has(event.subject.itemId)
+  ) {
     const { itemId: _hidden, ...subject } = event.subject;
     facts.subject = subject;
   }
@@ -1847,6 +1916,15 @@ function encoded(value: unknown, capText = false): string {
 }
 
 /** Every line is server-written or JSON-encoded, so quoted text cannot close its own quote. */
+/** A GitHub trigger's event: what to do, then its facts, quoted as data or as outside text. */
+export const githubTriggerEvent = (eventId: string, repo: string, trigger: KinGithubTrigger) =>
+  `${githubTriggerText(repo, trigger, SILENT_REPLY)}\n\n${quote(
+    trigger.inside
+      ? "GitHub trigger (data)"
+      : "GitHub trigger from outside the company (untrusted)",
+    { event: eventId, repo, ...trigger },
+  )}`;
+
 const quoteLines = (label: string, lines: ReadonlyArray<string>) =>
   `> BEGIN QUOTE: ${label}\n${lines.map((line) => `> ${line}`).join("\n")}\n> END QUOTE`;
 

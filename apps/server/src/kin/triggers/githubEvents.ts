@@ -388,6 +388,13 @@ const make = Effect.gen(function* () {
             care.value.closeIssues(orgId, closed.issues).pipe(Effect.forkIn(fibers), Effect.asVoid),
           );
       }
+      // The owner's own GitHub watch is the source while it runs; the App's events then wake no one.
+      const [polled] = yield* sql`SELECT 1 AS polled FROM kin_github_watch
+        WHERE org_id = ${orgId} AND checked_at IS NOT NULL`;
+      if (polled !== undefined) {
+        yield* inbox.markConsumed(orgId, [fire.fireId]);
+        return;
+      }
       const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN });
       if (lead === undefined) {
         yield* Effect.logWarning("Kin GitHub event dropped: no active lead", {

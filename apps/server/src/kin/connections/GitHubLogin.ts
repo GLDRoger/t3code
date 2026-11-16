@@ -46,7 +46,7 @@ const DEVICE_URL = "https://github.com/login/device";
 const CODE_LIFETIME_MS = 15 * 60_000;
 const SIGN_IN_LIMIT = "16 minutes";
 const ACCOUNT_TTL_MS = 60_000;
-const MAX_OUTPUT = 64 * 1024;
+const MAX_OUTPUT = 512 * 1024;
 const LOGIN_ARGS = ["auth", "login", "--hostname", HOST, "--git-protocol", "https"];
 /** `workflow` lets agents change CI files too; gh adds `repo`, `read:org` and `gist`. */
 const DEVICE_ARGS = [...LOGIN_ARGS, "--web", "--scopes", "workflow"];
@@ -129,6 +129,11 @@ export class KinGitHubLogin extends Context.Service<
     readonly ghDirectory: string;
     /** Whether gh holds a login; never fetches gh, so a host that never connected stays quiet. */
     readonly connected: () => Effect.Effect<boolean>;
+    /** One `gh` run as the connected login: its exit code and output. Kin's GitHub watch reads with it. */
+    readonly gh: (
+      args: ReadonlyArray<string>,
+      stdin?: string,
+    ) => Effect.Effect<{ readonly code: number; readonly out: string }>;
   }
 >()("t3/kin/connections/GitHubLogin/KinGitHubLogin") {}
 
@@ -503,6 +508,9 @@ export const make = Effect.fn("KinGitHubLogin.make")(function* (
     account,
     connected,
     ghDirectory: tool.directory,
+    gh: Effect.fn("KinGitHubLogin.gh")((args, stdin) =>
+      gh(args, stdin).pipe(Effect.orElseSucceed(() => ({ code: -1, out: "" }))),
+    ),
   });
 });
 
