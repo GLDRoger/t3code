@@ -9,7 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { characters, parseCharacter } from "./characters.ts";
+import { characterForTurn, characters, colleagueLine } from "./characters.ts";
 import { describeHours, loads, workingAt } from "./peopleRead.ts";
 
 const decodeTags = Schema.decodeUnknownOption(Schema.fromJsonString(KinRoleTags));
@@ -19,7 +19,6 @@ const ACCESS_WORDS: Record<string, string> = {
   co_owner: "co-owner",
   member: "member",
 };
-const LINE_CAP = 160;
 const PEOPLE_CAP = 25;
 const LISTED_CAP = 6;
 
@@ -71,22 +70,12 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
   const load = ownerOnly ? yield* loads(orgId, now) : undefined;
   const all = yield* characters(orgId);
   const own = all.find((one) => one.agentId === agentId);
-  const parsed = own === undefined ? undefined : parseCharacter(own.body);
-  const character =
-    own === undefined || parsed === undefined
-      ? undefined
-      : ownerOnly
-        ? [
-            `Doc ${own.key}. When the owner tells you how to sound, change it with doc_edit and confirm in one line; doc_restore brings the last one back.${parsed.starter ? " It is a starter: offer him a sharper one." : ""}`,
-            own.body.trim(),
-          ].join("\n")
-        : parsed.voice;
+  const character = own === undefined ? undefined : characterForTurn(own, ownerOnly);
   const colleagues = all
     .filter((one) => one.agentId !== agentId)
     .map((one) => {
-      const line = parseCharacter(one.body).colleagues ?? "";
       const held = load?.("agent", one.agentId);
-      return `- ${one.name}: ${clip(line, LINE_CAP)}${
+      return `${colleagueLine(one.name, one.body)}${
         held === undefined
           ? ""
           : ` (${held.open} open${held.late > 0 ? `, ${held.late} late` : ""})`

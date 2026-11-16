@@ -65,4 +65,4 @@ export const recentChanges = Effect.fn("KinLeadPrompt.recentChanges")(function* 
 });
 
 export const UNDO_RULE =
-  "What you changed in this chat lately, newest turn first, with the values each change replaced (turn 1 is your latest acting line). To undo, put those values back with the same tools (record_update, doc_restore to the version before) and say in one line what you put back and what can't be (a message already sent stays sent).";
+  "What you changed in this chat lately, newest turn first, with the values each change replaced (turn 1 is your latest acting line). To undo, put those values back with the same tools (record_update, record_assign, doc_restore to the version before) and say in one line what you put back and what can't be (a message already sent stays sent).";

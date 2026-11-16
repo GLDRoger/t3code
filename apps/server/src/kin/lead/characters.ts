@@ -36,6 +36,27 @@ export const parseCharacter = (body: string) => {
   };
 };
 
+/**
+ * The character as a turn carries it: whole, with the doc to change it, in the owner's own turns;
+ * the voice alone where others read, since examples may carry figures.
+ */
+export const characterForTurn = (
+  doc: { readonly key: string; readonly body: string },
+  ownerOnly: boolean,
+) => {
+  const parsed = parseCharacter(doc.body);
+  return ownerOnly
+    ? `Doc ${doc.key}. When the owner tells you how to sound, change it with doc_edit and confirm in one line; doc_restore brings the last one back.${parsed.starter ? " It is a starter: offer him a sharper one." : ""}\n${doc.body.trim()}`
+    : parsed.voice;
+};
+
+const LINE_CAP = 160;
+/** What every other agent is told about this one. */
+export const colleagueLine = (name: string, body: string) => {
+  const line = (parseCharacter(body).colleagues ?? "").replace(/\s+/g, " ");
+  return `- ${name}: ${line.length <= LINE_CAP ? line : `${line.slice(0, LINE_CAP - 1)}…`}`;
+};
+
 /** A character for an agent no default fits, until the owner and the agent shape a real one. */
 const starterCharacter = (name: string, domain: string, charter: string) => {
   const job = charter.trim() === "" ? `You run ${domain} for the company.` : charter.trim();
