@@ -1,11 +1,19 @@
-import type { KinActionId, KinWidget, KinWidgetId } from "@t3tools/contracts";
+import type {
+  KinActionId,
+  KinAgentId,
+  KinChatId,
+  KinMessageId,
+  KinOrgId,
+  KinWidget,
+  KinWidgetId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 
 import { ApproverKeys } from "../approvals/ApproverKeys.ts";
-import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinPushSender } from "./KinPushSender.ts";
 
 const phaseOf = (widget: KinWidget) =>
@@ -34,10 +42,49 @@ const make = Effect.gen(function* () {
     { readonly phase: string; readonly awaiting: Set<string> }
   >();
 
+  // An agent's turn in a chat, from its presence line to the line's end. A card the turn posts
+  // waits for the turn's end: whoever its words rang heard of the card with them.
+  type Turn = {
+    readonly agents: Set<KinAgentId>;
+    readonly said: Array<KinMessageId>;
+    readonly cards: Map<KinWidgetId, KinWidget>;
+  };
+  const turns = new Map<string, Turn>();
+  const turnKey = (orgId: KinOrgId, chatId: KinChatId) => `${orgId}\u0000${chatId}`;
+
+  const onPresence = Effect.fn("KinPushDispatch.onPresence")(function* (
+    orgId: KinOrgId,
+    chatId: KinChatId,
+    agentId: KinAgentId,
+    on: boolean,
+  ) {
+    const key = turnKey(orgId, chatId);
+    const turn = turns.get(key);
+    if (on) {
+      if (turn === undefined)
+        turns.set(key, { agents: new Set([agentId]), said: [], cards: new Map() });
+      else turn.agents.add(agentId);
+      return;
+    }
+    if (turn === undefined) return;
+    turn.agents.delete(agentId);
+    if (turn.agents.size > 0) return;
+    turns.delete(key);
+    for (const card of turn.cards.values())
+      yield* sender.notify({
+        _tag: "widget",
+        orgId,
+        widgetId: card.widgetId,
+        covered: turn.said,
+      });
+  });
+
   const onWidget = Effect.fn("KinPushDispatch.onWidget")(function* (widget: KinWidget) {
     const previous = announced.get(widget.widgetId);
+    const turn = turns.get(turnKey(widget.orgId, widget.chatId));
     if (widget.closedAt !== null || widget.awaiting.length === 0) {
       announced.delete(widget.widgetId);
+      turn?.cards.delete(widget.widgetId);
       return;
     }
     const phase = phaseOf(widget);
@@ -48,6 +95,10 @@ const make = Effect.gen(function* () {
       widget.awaiting.some((person) => !previous.awaiting.has(person));
     if (!fresh) return;
     if (widget.type !== "approval") {
+      if (turn !== undefined && turn.said.includes(widget.messageId)) {
+        turn.cards.set(widget.widgetId, widget);
+        return;
+      }
       yield* sender.notify({ _tag: "widget", orgId: widget.orgId, widgetId: widget.widgetId });
       return;
     }
@@ -66,20 +117,30 @@ const make = Effect.gen(function* () {
     Effect.forkScoped,
   );
 
+  const onMessage = (event: Extract<KinChatHubEvent, { type: "message.posted" }>) => {
+    const { message } = event;
+    const turn = turns.get(turnKey(event.orgId, message.chatId));
+    if (message.author._tag === "agent" && turn?.agents.has(message.author.agentId) === true)
+      turn.said.push(message.messageId);
+    return sender.notify({ _tag: "message", orgId: event.orgId, messageId: message.messageId });
+  };
+
   const events = yield* hub.subscribeAll;
   yield* Stream.runForEach(events, (event) =>
     event.type === "message.posted" && event.message.status === "posted"
-      ? sender.notify({ _tag: "message", orgId: event.orgId, messageId: event.message.messageId })
+      ? onMessage(event)
       : event.type === "widget.updated"
         ? onWidget(event.widget)
-        : event.type === "read.updated"
-          ? sender.notify({
-              _tag: "read",
-              orgId: event.orgId,
-              chatId: event.chatId,
-              memberId: event.memberId,
-            })
-          : Effect.void,
+        : event.type === "presence.updated"
+          ? onPresence(event.orgId, event.chatId, event.agentId, event.presence !== null)
+          : event.type === "read.updated"
+            ? sender.notify({
+                _tag: "read",
+                orgId: event.orgId,
+                chatId: event.chatId,
+                memberId: event.memberId,
+              })
+            : Effect.void,
   ).pipe(Effect.forkScoped);
 });
 
