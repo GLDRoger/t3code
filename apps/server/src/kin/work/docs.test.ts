@@ -658,6 +658,29 @@ it.effect(
         [yield* seen(prd.key), yield* seen(made.key), yield* seen(quote.key)],
         [true, false, false],
       );
+      // A doc written for the project, by its name or for its tasks, is filed under it; one that
+      // names no project stays unfiled.
+      const forIt = (title: string, links?: ReadonlyArray<string>) =>
+        LeadDocs.create(scopeOf(lead), {
+          sourceEventId: "ask-event",
+          title,
+          body: "Invented scope.",
+          ...(links === undefined ? {} : { links }),
+        });
+      const filed = [
+        yield* forIt("Invented app: brief"),
+        yield* forIt("Invented login notes", [task.row.key]),
+        yield* forIt("Invented ideas"),
+      ];
+      assert.deepStrictEqual(
+        filed.map((doc) => doc.unfiled === undefined),
+        [true, true, false],
+      );
+      assert.deepStrictEqual(
+        yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE project_id = ${project.row.recordId} AND register_id = 'docs' ORDER BY key`,
+        [prd.key, made.key, filed[0]!.key, filed[1]!.key].toSorted().map((key) => ({ key })),
+      );
       yield* sql`UPDATE kin_records SET owner_kind = 'agent', owner_id = ${lead}
         WHERE key = ${task.row.key}`;
       assert.isFalse(yield* seen(prd.key));

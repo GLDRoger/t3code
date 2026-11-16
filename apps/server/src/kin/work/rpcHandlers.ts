@@ -162,6 +162,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.updateProject": Effect.fn("KinWork.rpc.updateProject")(function* (input) {
         return yield* call((people) => Clients.updateProject(people, input));
       }),
+      "kin.work.projectPeople": Effect.fn("KinWork.rpc.projectPeople")(function* (input) {
+        return yield* call((people) => Clients.projectPeople(people, input));
+      }),
       "kin.docs.list": Effect.fn("KinDocs.rpc.list")(function* (input) {
         return yield* call((people) => Docs.list(people, input));
       }),
