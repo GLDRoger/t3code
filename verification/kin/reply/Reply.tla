@@ -24,7 +24,7 @@ VARIABLES
   presence,  \* the lead's line: "off", "on"
   restarts,
   ended,     \* the lead called kin_end and Kin let the turn end
-  blind      \* it let it end because the bridge hadn't seen the call yet
+  blind      \* it let it end unrefused: the bridge hadn't seen the call, or had refused once
 
 vars == <<ev, tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged, lost,
           worked, floor, presence, restarts, ended, blind>>
@@ -201,6 +201,6 @@ NeverReasoning == ~thought
 RelayLands == ~lost
 EveryMessageAnswered == \A m \in Msgs : ev[m] # "none" ~> replies[m] + fails[m] >= 1
 LineClears == presence = "on" ~> presence = "off"
-\* kin_end never closes a turn on a message still owed words, unless the bridge couldn't tell yet.
+\* kin_end closes a turn on a message still owed words only unseen, or after refusing once.
 EndNotSilent == (wake = "running" /\ ended /\ ~blind) => Owed = {}
 =============================================================================

@@ -1695,6 +1695,13 @@ const endTool = Effect.fn("test.endTool")(function* (
 // so the owner heard nothing. kin_end now refuses that end; turns that rightly end quietly don't.
 it.effect.each([
   { name: "a question answered only in thinking", ask: "Did the deploy finish?", first: false },
+  // Refused once: a second silent end goes through, and the rescue asks for the reply.
+  {
+    name: "thinking again after the refusal",
+    ask: "Did the deploy finish?",
+    first: false,
+    silentAgain: true,
+  },
   { name: "a reply written as text", ask: "Did the deploy finish?", first: true, said: true },
   {
     name: "thanks taken with a 👍",
@@ -1739,13 +1746,17 @@ it.effect.each([
       // The reply it then writes is a reply, not a status line before a tool.
       const reply = text("b", 4, "Yes, it finished at 4:10 pm.", runId);
       const again = yield* end.pipe(Effect.forkScoped);
-      for (const item of [reply, tool("end2", 5, "mcp__kin__kin_end", runId)])
-        yield* Queue.offer(fake.live, itemEvent(item));
+      const next = [
+        ...(input.silentAgain === true ? [thought("r2", 4, runId)] : [reply]),
+        tool("end2", 5, "mcp__kin__kin_end", runId),
+      ];
+      for (const item of next) yield* Queue.offer(fake.live, itemEvent(item));
       assert.isTrue((yield* Fiber.join(again)).ok);
     }
     fake.items = [];
+    fake.rescueItems = [text("rescued", 10, "Yes, it finished at 4:10 pm.", rescueRunId)];
     yield* complete;
-    assert.strictEqual(fake.rescues, 0);
+    assert.strictEqual(fake.rescues, input.silentAgain === true ? 1 : 0);
     assert.deepStrictEqual(
       (yield* posted).map((row) => row.body),
       input.react === true ? [] : ["Yes, it finished at 4:10 pm."],

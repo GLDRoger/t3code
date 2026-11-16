@@ -1725,7 +1725,7 @@ const ANSWERS_IN_CHAT = new Set([
 ]);
 /**
  * Kin refuses a lead's kin_end while a person's message has no answer in the chat
- * (KinReplyBridge `silentEnd`): no posted text and no card or reaction.
+ * (KinReplyBridge `silentEnd`): no posted text and no card or reaction, once per turn.
  */
 export const silentEnd = (sample: Pick<Sample, "testCase" | "responses">) =>
   sample.testCase.setup.world?.kinLead === true &&
@@ -1733,7 +1733,11 @@ export const silentEnd = (sample: Pick<Sample, "testCase" | "responses">) =>
   classifySegment(shownText(sample.responses), "end") !== "post" &&
   !sample.responses.some((content) =>
     content.some((block) => isToolUse(block) && ANSWERS_IN_CHAT.has(normalizeToolName(block.name))),
-  );
+  ) &&
+  // Refused once only: a second silent kin_end ends the turn, and Kin's rescue answers.
+  sample.responses
+    .flat()
+    .filter((block) => isToolUse(block) && normalizeToolName(block.name) === "kin_end").length <= 1;
 
 /** The result for one tool call. */
 export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* (

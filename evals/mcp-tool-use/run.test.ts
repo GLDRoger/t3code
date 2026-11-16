@@ -322,6 +322,8 @@ it("refuses a Kin kin_end that leaves a person's message unanswered, as Kin does
   // Sonnet 5.5: the reply only in thinking, then kin_end.
   assert.isTrue(turn(asked, [[use("records_query")], [use("kin_end")]]));
   assert.isTrue(turn(asked, [[text("NO_REPLY"), use("kin_end")]]));
+  // Once: the second silent kin_end ends the turn.
+  assert.isFalse(turn(asked, [[use("kin_end")], [use("kin_end")]]));
   assert.isFalse(turn(asked, [[text("Yes, on 4 Nov."), use("kin_end")]]));
   assert.isFalse(turn(asked, [[use("kin_ask")], [use("kin_end")]]));
   // A check-in owes no reply.

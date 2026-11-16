@@ -175,6 +175,8 @@ type Wake = {
   endSeen: Deferred.Deferred<void>;
   // kin_end calls checked so far: each waits for its own item.
   endChecks: number;
+  // A silent kin_end was refused once; a second one ends the turn, and the rescue answers.
+  endRefused: boolean;
   // A segment reached the chat, so the lane is answered.
   answered: boolean;
   // Kin refused a segment: nothing reached the chat for it, and a rescue would be refused too.
@@ -971,8 +973,9 @@ const make = Effect.gen(function* () {
       }
       return yield* wake.lock.withPermits(1)(
         Effect.gen(function* () {
-          if (wake.done || wake.replied || wake.withheld !== null) return false;
-          return !(yield* answered(wake));
+          if (wake.done || wake.endRefused || wake.replied || wake.withheld !== null) return false;
+          wake.endRefused = !(yield* answered(wake));
+          return wake.endRefused;
         }),
       );
     },
@@ -1348,6 +1351,7 @@ const make = Effect.gen(function* () {
         ends: [],
         endSeen: Deferred.makeUnsafe<void>(),
         endChecks: 0,
+        endRefused: false,
         answered: false,
         withheld: null,
         withheldWhy: null,
