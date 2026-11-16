@@ -146,8 +146,9 @@ you're handling one.
   message in their chat.
 - **Hand back** returns a task you were given to the person who gave it, with a reason if you like.
 - **Who can see this** says who can see a task. **People on it and the project** is the usual.
-  **Only me** makes it private: only the owner, co-owners and whoever has it see it, and it stays
-  out of every list, count and search for anyone else. Members can't change it.
+  **Only me** makes it private: it hides the task from other teammates, not from the owner and
+  co-owners. Only they and whoever has it see it, and it stays out of every list, count and search
+  for anyone else. Members can't change it.
 
 Keep amounts, rates and client terms out of task titles and notes. Project people read those; put
 the figures in the quote or the invoice.
@@ -280,24 +281,25 @@ stays with the owner. **Forget** an item and agents stop using it; bring it back
 A project lead is a member who leads one or more projects. They see what a member sees, plus more
 on the projects they lead.
 
-| What                                                 | Owner and co-owners             | Member                                                                           | Project lead, on top                 |
-| ---------------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------ |
-| Chat with agents                                     | All of them                     | The team agent, and agents the owner lets them message                           |                                      |
-| Start a group, create an agent, add a teammate       | Yes                             | No                                                                               |                                      |
-| Tasks                                                | All, except others' **Only me** | What they hold, made or gave, their projects' and the team's                     |                                      |
-| Mark a task **Only me**                              | Yes                             | No                                                                               | Yes                                  |
-| Hand back a task                                     | Not needed                      | Yes                                                                              |                                      |
-| Money                                                | All                             | Nothing, or read-only shared figures with **Can see Money**                      | The money filed under their projects |
-| Record payments, make PDFs and receipts, set budgets | Yes                             | No                                                                               |                                      |
-| Clients                                              | All, with what they owe         | Names, contacts and their projects with **Can see Clients**; never what they owe |                                      |
-| Add a milestone                                      | Yes                             | No; they see milestones                                                          | On their projects                    |
-| Docs                                                 | All                             | Company docs with **Can see Docs**, and their projects' docs                     |                                      |
-| Restore an older version of a doc                    | Yes                             | No                                                                               |                                      |
-| Confirm an email, statement or receipt; approve      | Yes                             | No                                                                               |                                      |
-| Settings, Check-ins, Connections, Memory, Team       | Yes                             | No; their own profile only                                                       |                                      |
+| What                                                 | Owner and co-owners                 | Member                                                                           | Project lead, on top                                 |
+| ---------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Chat with agents                                     | All of them                         | The team agent, and agents the owner lets them message                           |                                                      |
+| Start a group, create an agent, add a teammate       | Yes                                 | No                                                                               |                                                      |
+| Tasks                                                | All, including tasks marked private | What they hold, made or gave, their projects' and the team's                     |                                                      |
+| Mark a task **Only me**                              | Yes                                 | No                                                                               | Yes                                                  |
+| Hand back a task                                     | Not needed                          | Yes                                                                              |                                                      |
+| Money                                                | All                                 | Nothing, or read-only shared figures with **Can see Money**                      | The money filed under their projects                 |
+| Record payments, make PDFs and receipts, set budgets | Yes                                 | No                                                                               |                                                      |
+| Clients                                              | All, with what they owe             | Names, contacts and their projects with **Can see Clients**; never what they owe | Their projects' clients, without **Can see Clients** |
+| Add a milestone                                      | Yes                                 | No; they see milestones                                                          | On their projects                                    |
+| Docs                                                 | All                                 | Company docs with **Can see Docs**, and their projects' docs                     |                                                      |
+| Restore an older version of a doc                    | Yes                                 | No                                                                               |                                                      |
+| Confirm an email, statement or receipt; approve      | Yes                                 | No                                                                               |                                                      |
+| Settings, Check-ins, Connections, Memory, Team       | Yes                                 | No; their own profile only                                                       |                                                      |
 
-Only the owner himself edits a teammate's profile, manages co-owners, and sees his own private
-chats. Agents act with the authority of whoever is asking, never more.
+The owner and co-owners edit a member's profile. Only the owner himself edits a co-owner's
+profile, manages co-owners, and sees his own private chats. Agents act with the authority of
+whoever is asking, never more.
 
 ## Running Kin on your own host
 

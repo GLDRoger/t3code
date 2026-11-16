@@ -107,6 +107,9 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import { ServerConfig } from "../config.ts";
+import { isKinWorkspace } from "../kin/lead/workThread.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -1038,6 +1041,30 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
+  // Optional so test runtimes without them still build; the server provides both.
+  const managedFolders = yield* Effect.serviceOption(ManagedProjectFolders.ManagedProjectFolders);
+  const serverConfig = yield* Effect.serviceOption(ServerConfig);
+  /**
+   * A Kin agent's checkout is its memory, never a task's workspace: a task it delegates without a
+   * project works in Scratch. `undefined` for any other parent checkout.
+   */
+  const kinScratchProject = Effect.fn("OrchestratorMcpService.kinScratchProject")(function* (
+    parent: OrchestrationV2ThreadProjection["thread"],
+  ) {
+    if (Option.isNone(serverConfig)) return undefined;
+    const parentRoot =
+      parent.worktreePath ?? (yield* requireProject(parent.projectId)).workspaceRoot;
+    if (!isKinWorkspace(serverConfig.value.stateDir, parentRoot)) return undefined;
+    const scratch = Option.isNone(managedFolders)
+      ? Option.none()
+      : yield* managedFolders.value.ensureScratchProject.pipe(Effect.option);
+    if (Option.isNone(scratch))
+      return yield* failure(
+        "invalid_request",
+        "This agent's workspace holds its memory, and Scratch is unavailable here. Clone the repository with t3_project_clone, then pass its project as target.projectId.",
+      );
+    return scratch.value.projectId;
+  });
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -2438,11 +2465,14 @@ const make = Effect.gen(function* () {
           : readTask(scope, taskId, false, true);
       }
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
-      const otherProjectId =
+      const namedProjectId =
         input.target?.projectId !== undefined && input.target.projectId !== parent.thread.projectId
           ? input.target.projectId
           : undefined;
-      if (otherProjectId !== undefined && input.isolation !== "worktree") {
+      const kinScratch =
+        namedProjectId === undefined ? yield* kinScratchProject(parent.thread) : undefined;
+      const otherProjectId = namedProjectId ?? kinScratch;
+      if (namedProjectId !== undefined && input.isolation !== "worktree") {
         return yield* failure(
           "invalid_request",
           'A task in another project needs its own checkout there. Pass isolation "worktree", or omit target.projectId.',
@@ -2490,6 +2520,24 @@ const make = Effect.gen(function* () {
       );
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
       if (
+        kinScratch !== undefined &&
+        !isRetryOfAcceptedDelegation &&
+        Option.isSome(managedFolders)
+      ) {
+        const folder = yield* managedFolders.value
+          .folderForThread({
+            projectId: kinScratch,
+            threadId: ThreadId.make(commandId),
+            text: input.title ?? input.task,
+          })
+          .pipe(
+            Effect.mapError((error) =>
+              failure("orchestration_error", `Unable to make a Scratch folder: ${error.message}`),
+            ),
+          );
+        if (Option.isSome(folder))
+          workspaceStrategy = { type: "existing_worktree", worktreePath: folder.value };
+      } else if (
         input.isolation === "worktree" &&
         !isRetryOfAcceptedDelegation &&
         otherProjectId !== undefined
