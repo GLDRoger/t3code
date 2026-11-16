@@ -8,10 +8,7 @@ const OWNER_GATES = new Set(["theOwner", "ownerOnlyGate"]);
 const VIEWER_TYPE = /\b(?:KinViewer|KinPersonId|Fragment)\b/;
 const RECORDS = /\bkin_records\b/;
 
-type FunctionNode =
-  | ESTree.FunctionDeclaration
-  | ESTree.FunctionExpression
-  | ESTree.ArrowFunctionExpression;
+type FunctionNode = ESTree.Function | ESTree.ArrowFunctionExpression;
 
 const readOptions = (options: ReadonlyArray<unknown>) => {
   const [first] = options;
@@ -125,7 +122,7 @@ export default defineRule({
         if (param.type !== "Identifier") continue;
         const annotation = param.typeAnnotation?.typeAnnotation;
         if (!optionalViewer(param.name, annotation)) continue;
-        if (param.optional === true || /\bundefined\b/.test(text(annotation!)))
+        if (param.optional || /\bundefined\b/.test(text(annotation!)))
           context.report({
             node: param,
             message: `An absent \`${param.name}\` reads everything. Take a required \`viewer: KinViewer\` (work/teamView.ts); owner-level reads pass \`KIN_OWNER_LEVEL\`.`,
@@ -145,7 +142,7 @@ export default defineRule({
       });
       return found;
     };
-    const ownerGated = (node: FunctionNode) => calls(node.body, OWNER_GATES);
+    const ownerGated = (node: FunctionNode) => node.body != null && calls(node.body, OWNER_GATES);
     const checkScopedSql = (node: FunctionNode) => {
       const tainted = new Set<string>();
       for (const param of node.params) {
@@ -155,6 +152,7 @@ export default defineRule({
       }
       const declarators: Array<ESTree.VariableDeclarator> = [];
       const templates: Array<ESTree.TaggedTemplateExpression> = [];
+      if (node.body == null) return;
       walk(node.body, (one) => {
         if (one.type === "VariableDeclarator" && one.init != null) {
           declarators.push(one);
@@ -193,7 +191,7 @@ export default defineRule({
 
     const takesViewer = (node: FunctionNode) =>
       ownerGated(node) ||
-      calls(node.body, RESOLVERS) ||
+      (node.body != null && calls(node.body, RESOLVERS)) ||
       node.params.some(
         (param) =>
           param.type === "Identifier" &&
@@ -221,7 +219,7 @@ export default defineRule({
     };
     const checkExport = (name: string, fn: FunctionNode | undefined, node: ESTree.Node) => {
       if (fn === undefined || name.startsWith("ownerLevel") || takesViewer(fn)) return;
-      if (!queriesRecords(fn.body)) return;
+      if (fn.body == null || !queriesRecords(fn.body)) return;
       context.report({
         node,
         message: `\`${name}\` reads records for a screen without a viewer. Take \`viewer: KinViewer\` (work/teamView.ts) and apply it, or name the owner-level read \`ownerLevel…\`.`,
