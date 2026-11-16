@@ -11,7 +11,7 @@ import { KinRepoReads } from "../../github/KinRepoReads.ts";
 import { KinPullRequestCare } from "../../github/PullRequestCare.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
-import { laneFor } from "../../reply/KinReplyBridge.ts";
+import { KinReplyBridge, laneFor, SILENT_END_REFUSAL } from "../../reply/KinReplyBridge.ts";
 import { KinHandoff } from "../Handoff.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import { quote } from "../LeadPrompt.ts";
@@ -247,7 +247,17 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   ),
   kin_end: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.end")(function* (input) {
-      return yield* (yield* LeadMemory).end(yield* McpInvocationContext, input);
+      const context = yield* McpInvocationContext;
+      const lead = yield* resolveLead(context).pipe(Effect.option);
+      if (
+        Option.isSome(lead) &&
+        (yield* (yield* KinReplyBridge).silentEnd(
+          lead.value.orgId,
+          KinWakeupId.make(lead.value.wakeupId),
+        ))
+      )
+        return yield* new KinChatError({ reason: "not_allowed", message: SILENT_END_REFUSAL });
+      return yield* (yield* LeadMemory).end(context, input);
     }),
   ),
 });

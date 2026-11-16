@@ -42,7 +42,7 @@ const marked =
 const shows =
   "A doc can show an image, ![what it shows](kin-file:<id>), with the id of an image sent in this chat or shown in another doc; a chart, as a ```kin_chart block holding the JSON kin_chart takes; and a page, as a ```kin_visual <title> block holding its HTML, sealed like kin_visual's. Kin checks them when you write.";
 const writes =
-  "Pass this turn's sourceEventId; the same call again in this turn returns what it made. Don't narrate the change in your reply: one short line is enough.";
+  "The same call again in this turn returns what it made. Don't narrate the change in your reply: one short line is enough.";
 
 /** Docs: what agents write for a reader and keep current. People read them; only agents write. */
 export const KinDocsToolkit = Toolkit.make(

@@ -74,7 +74,8 @@ import { HANDED_BACK_WORK, SHARED_TURN_LINE } from "../../apps/server/src/kin/le
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
-import { classifySegment } from "../../apps/server/src/kin/reply/classify.ts";
+import { classifySegment, SILENT_END_REFUSAL } from "../../apps/server/src/kin/reply/classify.ts";
+import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
@@ -952,6 +953,8 @@ type Sample = {
   devices?: DeviceTools;
   /** T3's results for prior device calls whose case result is "default". */
   readonly priorResults: Map<unknown, string>;
+  /** The model's responses so far, as `shownText` reads them. */
+  readonly responses: Array<ReadonlyArray<unknown>>;
 };
 
 const SHELL_TOOLS = new Set(["Bash", "Read", "Edit", "Write", "WebFetch"]);
@@ -996,6 +999,7 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     secretFiles: [],
     secretRequests: 0,
     priorResults: new Map(),
+    responses: [],
   };
 };
 
@@ -1700,6 +1704,41 @@ const savedSecretFile = (sample: Sample, result: unknown) => {
   if (isRecord(result) && typeof result.file === "string") sample.secretFiles.push(result.file);
 };
 
+// Tools whose card or reaction answers the person in the chat, as Kin's own message would.
+const ANSWERS_IN_CHAT = new Set([
+  "kin_ask",
+  "kin_chart",
+  "kin_visual",
+  "kin_react",
+  "request_action",
+  "kin_connection_call",
+  "kin_connection_offer",
+  "kin_document",
+  "kin_issue",
+  "kin_receipt",
+  "list_define",
+  "company_profile",
+  "statement_read",
+  "doc_create",
+  "doc_edit",
+  "doc_rewrite",
+]);
+/**
+ * Kin refuses a lead's kin_end while a person's message has no answer in the chat
+ * (KinReplyBridge `silentEnd`): no posted text and no card or reaction, once per turn.
+ */
+export const silentEnd = (sample: Pick<Sample, "testCase" | "responses">) =>
+  sample.testCase.setup.world?.kinLead === true &&
+  /BEGIN QUOTE: (?:owner|co-owner|member human|guest human) message/.test(sample.testCase.prompt) &&
+  classifySegment(shownText(sample.responses), "end") !== "post" &&
+  !sample.responses.some((content) =>
+    content.some((block) => isToolUse(block) && ANSWERS_IN_CHAT.has(normalizeToolName(block.name))),
+  ) &&
+  // Refused once only: a second silent kin_end ends the turn, and Kin's rescue answers.
+  sample.responses
+    .flat()
+    .filter((block) => isToolUse(block) && normalizeToolName(block.name) === "kin_end").length <= 1;
+
 /** The result for one tool call. */
 export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* (
   sample: Sample,
@@ -1720,6 +1759,7 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
         : input;
   }
   const failed = (error: string): Block => ({ ...toolResult(call.id, error), is_error: true });
+  if (name === "kin_end" && silentEnd(sample)) return failed(SILENT_END_REFUSAL);
   if (!base.codex && !hasTool(tools, call.name)) {
     const error = `InputValidationError: ${call.name} is deferred. Load it with ToolSearch first.`;
     return failed(`<tool_use_error>${error}</tool_use_error>`);
@@ -2228,14 +2268,37 @@ const settle = (call: Call | undefined, result: Block) => {
 };
 
 /** Calls that ran. Claude Code rejects a deferred tool that was not loaded, so it never runs. */
+/**
+ * A Kin tool's event as Kin's tool gate fills it (`KinToolGate.turnEvents`): left out, the turn's
+ * latest message, else its first event; a message id, that message's event.
+ */
+export const filledEvent = (testCase: McpToolUseCase, use: typeof ToolUse.Type) => {
+  const name = normalizeToolName(use.name);
+  if (testCase.setup.world?.kinLead !== true || !TURN_EVENT_TOOLS.has(name) || !isRecord(use.input))
+    return use;
+  const events = [
+    ...testCase.prompt.matchAll(/"event":\s*"([^"]+)"(?:,\s*"message":\s*"([^"]+)")?/g),
+  ].map((match) => ({ eventId: match[1]!, messageId: match[2] }));
+  const given = use.input.sourceEventId;
+  if (events.some((event) => event.eventId === given)) return use;
+  const chosen =
+    events.find((event) => event.messageId !== undefined && event.messageId === given) ??
+    (given === undefined
+      ? (events.findLast((event) => event.messageId !== undefined) ?? events[0])
+      : undefined);
+  return chosen === undefined
+    ? use
+    : { ...use, input: { ...use.input, sourceEventId: chosen.eventId } };
+};
+
 export const ranCalls = (
-  { base, tools }: Sample,
+  { base, tools, testCase }: Sample,
   step: number,
   uses: ReadonlyArray<typeof ToolUse.Type>,
 ) =>
   uses
     .filter((use) => base.codex !== undefined || hasTool(tools, use.name))
-    .map((use) => recordedCall(step, use));
+    .map((use) => recordedCall(step, filledEvent(testCase, use)));
 
 /**
  * Runs one sample until the model ends its turn, uses up its steps, or fails a check that no
@@ -2255,7 +2318,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   const transcript: Array<unknown> = [];
   const start = messages.length;
   const calls: Array<Call> = [];
-  const responses: Array<ReadonlyArray<unknown>> = [];
+  const responses = sample.responses;
   let shown = "";
   const { usage } = spent;
   let stopReason = "max_steps";

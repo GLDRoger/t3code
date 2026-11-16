@@ -19,6 +19,7 @@ import {
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -57,6 +58,7 @@ import {
   PHASE_LABELS,
   isProviderErrorText,
   setupFailureIn,
+  SILENT_END_REFUSAL,
   stripTrailingSilenceMarker,
   toolLabel,
   type SegmentNext,
@@ -68,12 +70,14 @@ import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promise
 /** One rescue turn asks for the reply the run owed; its text is posted like any other. */
 const RESCUE_PROMPT =
   "You ended without a reply anyone can see. Write your reply now as plain text.";
-export { rescueMessageId };
+export { rescueMessageId, SILENT_END_REFUSAL };
 /** No turn-item or provider-turn update for this long shows the owner a stall and Stop. */
 const STALL_MS = 120_000;
 /** A streaming segment this old becomes a visible draft even while still short. */
 const DRAFT_AFTER_MS = 1_000;
 const RESCUE_TIMEOUT_MS = 120_000;
+/** How long a kin_end call waits for its own item to reach the bridge before letting it end. */
+const END_SEEN_MS = 3_000;
 const OVERFLOW_SUFFIX = "\n\n…more in the agent's thread";
 
 /**
@@ -166,6 +170,13 @@ type Wake = {
   replied: boolean;
   // Ordinal of the first kin_end call.
   endedAt: number | null;
+  // Every kin_end item seen, by ordinal; `endSeen` resolves at the next one.
+  readonly ends: Array<number>;
+  endSeen: Deferred.Deferred<void>;
+  // kin_end calls checked so far: each waits for its own item.
+  endChecks: number;
+  // A silent kin_end was refused once; a second one ends the turn, and the rescue answers.
+  endRefused: boolean;
   // A segment reached the chat, so the lane is answered.
   answered: boolean;
   // Kin refused a segment: nothing reached the chat for it, and a rescue would be refused too.
@@ -263,6 +274,11 @@ export class KinReplyBridge extends Context.Service<
      * rest of their text, and nothing it streams shows again.
      */
     readonly abort: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
+    /**
+     * Whether a kin_end call would end a turn that still owes words with nothing anyone can see,
+     * which the turn's end would otherwise rescue. False when the bridge can't tell.
+     */
+    readonly silentEnd: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<boolean>;
     /** Clears the wake-up's line; a queue line stays, or comes back, where a message still waits. */
     readonly end: (input: {
       readonly orgId: KinOrgId;
@@ -702,7 +718,7 @@ const make = Effect.gen(function* () {
   const nextAfter = (wake: Wake, ordinal: number): SegmentNext | null => {
     const tool = Math.min(...wake.tools.filter((tool) => tool > ordinal));
     if (tool === Infinity) return null;
-    return tool === wake.endedAt ? "end" : "tool";
+    return wake.ends.includes(tool) ? "end" : "tool";
   };
 
   const segmentFor = (wake: Wake, id: TurnItemId, ordinal: number, now: number) => {
@@ -776,6 +792,7 @@ const make = Effect.gen(function* () {
     if (isEndCall(item)) wake.endedAt = Math.min(wake.endedAt ?? item.ordinal, item.ordinal);
     for (const earlier of pendingBefore(wake, item.ordinal))
       yield* decide(wake, earlier, isEndCall(item) ? "end" : "tool");
+    if (isEndCall(item)) yield* endItemSeen(wake, item.ordinal);
     if (item.ordinal < wake.latest) return;
     if (item.status === "pending" || item.status === "running" || item.status === "waiting") {
       const label = toolLabel(item);
@@ -855,7 +872,10 @@ const make = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     for (const [index, item] of items.entries()) {
       reopen(wake, item);
-      if (isEndCall(item)) wake.endedAt = Math.min(wake.endedAt ?? item.ordinal, item.ordinal);
+      if (isEndCall(item)) {
+        wake.endedAt = Math.min(wake.endedAt ?? item.ordinal, item.ordinal);
+        yield* endItemSeen(wake, item.ordinal);
+      }
       if (item.type !== "assistant_message" || !isAnswer(item) || item.streaming) continue;
       const segment = segmentFor(wake, item.id, item.ordinal, now);
       if (segment.outcome !== null) continue;
@@ -926,6 +946,52 @@ const make = Effect.gen(function* () {
       ORDER BY 1 LIMIT 1`;
     return rows.length > 0;
   });
+
+  // Any kin_end, even one Kin refused: the text before each is the reply, never a status note.
+  const endItemSeen = Effect.fn("KinReplyBridge.endItemSeen")(function* (
+    wake: Wake,
+    ordinal: number,
+  ) {
+    if (wake.ends.includes(ordinal)) return;
+    wake.ends.push(ordinal);
+    const seen = wake.endSeen;
+    wake.endSeen = Deferred.makeUnsafe<void>();
+    yield* Deferred.succeed(seen, undefined);
+  });
+
+  const owesWords = (wake: Wake, refuse: boolean) =>
+    wake.lock.withPermits(1)(
+      Effect.gen(function* () {
+        if (wake.done || wake.endRefused || wake.replied || wake.withheld !== null) return false;
+        // Undecided text before this call posts once kin_end decides it: words are on the way.
+        const writing = [...wake.segments.values()].some(
+          (segment) => segment.outcome === null && classifySegment(segment.text, "end") === "post",
+        );
+        if (writing || (yield* answered(wake))) return false;
+        if (refuse) wake.endRefused = true;
+        return true;
+      }),
+    );
+
+  // The call arrives over MCP while its item arrives through the thread's stream, so a turn
+  // with no words yet waits for its item: by then the text before it is posted or dropped.
+  // Unsure means it may end; the rescue at the turn's end still answers.
+  const silentEnd = Effect.fn("KinReplyBridge.silentEnd")(
+    function* (orgId: KinOrgId, wakeupId: KinWakeupId) {
+      const wake = byWakeup.get(wakeupId);
+      if (wake === undefined || wake.orgId !== orgId) return false;
+      const call = ++wake.endChecks;
+      if (!(yield* owesWords(wake, false))) return false;
+      while (wake.ends.length < call) {
+        const seen = yield* Deferred.await(wake.endSeen).pipe(Effect.timeoutOption(END_SEEN_MS));
+        if (Option.isNone(seen)) return false;
+      }
+      return yield* owesWords(wake, true);
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin silent-end check failed", { cause }).pipe(Effect.as(false)),
+    ),
+  );
 
   const unsent = (
     wake: { readonly orgId: KinOrgId; readonly wakeupId: KinWakeupId },
@@ -1291,6 +1357,10 @@ const make = Effect.gen(function* () {
         chars: 0,
         replied: false,
         endedAt: null,
+        ends: [],
+        endSeen: Deferred.makeUnsafe<void>(),
+        endChecks: 0,
+        endRefused: false,
         answered: false,
         withheld: null,
         withheldWhy: null,
@@ -1337,6 +1407,7 @@ const make = Effect.gen(function* () {
     steered,
     failed,
     abort,
+    silentEnd,
     end,
   });
 });

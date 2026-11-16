@@ -236,22 +236,32 @@ export type ChatFile = {
 };
 
 /** An attachment id as an agent gives it: its file name, with or without the extension, is fine. */
-export const attachmentIdOf = (given: string) =>
-  given
-    .trim()
-    .toLowerCase()
-    .replace(/\.[a-z0-9]{1,10}$/, "");
+const plain = (given: string) => given.trim().toLowerCase();
+const stem = (given: string) => plain(given).replace(/\.[a-z0-9]{1,10}$/, "");
+type Named = { readonly id: string; readonly name: string | null };
 
-/** The named files as they are on live messages of `chatId`; any other id isn't there. */
+/**
+ * The file `given` names among `files`: its id or its name, either with or without its
+ * extension. An exact id or name wins over a match without the extension.
+ */
+export const fileNamed = <F extends Named>(files: ReadonlyArray<F>, given: string) =>
+  files.find(
+    (file) => plain(given) === plain(file.id) || plain(given) === plain(file.name ?? ""),
+  ) ??
+  files.find(
+    (file) =>
+      stem(given) === stem(file.id) || (file.name !== null && stem(given) === stem(file.name)),
+  );
+
+/** The named files as they are on live messages of `chatId`, in the order named. */
 export const chatFiles = Effect.fn("KinBrand.chatFiles")(function* (
   orgId: KinOrgId,
   chatId: string | undefined,
-  ids: ReadonlyArray<string>,
+  given: ReadonlyArray<string>,
 ) {
-  if (chatId === undefined || ids.length === 0) return [];
+  if (chatId === undefined || given.length === 0) return [];
   const sql = yield* SqlClient.SqlClient;
-  const wanted = [...new Set(ids.map(attachmentIdOf))];
-  return yield* sql<ChatFile>`SELECT a.attachment_id AS "attachmentId",
+  const files = yield* sql<ChatFile>`SELECT a.attachment_id AS "attachmentId",
       (SELECT json_extract(j.value, '$.mimeType') FROM json_each(COALESCE(m.attachments_json, '[]')) j
         WHERE json_extract(j.value, '$.id') = a.attachment_id) AS "mimeType",
       (SELECT json_extract(j.value, '$.name') FROM json_each(COALESCE(m.attachments_json, '[]')) j
@@ -259,8 +269,13 @@ export const chatFiles = Effect.fn("KinBrand.chatFiles")(function* (
     FROM kin_message_attachments a
     JOIN kin_messages m ON m.org_id = a.org_id AND m.message_id = a.message_id
     WHERE a.org_id = ${orgId} AND a.chat_id = ${chatId} AND m.status <> 'deleted'
-      AND a.attachment_id IN ${sql.in(wanted)}
-    GROUP BY a.attachment_id ORDER BY a.attachment_id`;
+    GROUP BY a.attachment_id ORDER BY MAX(m.seq) DESC, a.attachment_id`;
+  const named = files.map((file) => ({ ...file, id: file.attachmentId }));
+  // The newest file a name fits: the owner may send "logo.png" twice.
+  return given.flatMap((one) => {
+    const file = fileNamed(named, one);
+    return file === undefined ? [] : [file];
+  });
 });
 
 /** A stored file's bytes, read only when it is no larger than `cap`. */

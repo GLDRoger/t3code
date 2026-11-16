@@ -13,6 +13,7 @@ import { isElectron } from "../env";
 import { isChatOnlySession } from "../environments/primary";
 import { KinCompanyProfileSettings } from "./KinCompanyProfile";
 import { KinCheckInsSetting } from "./KinCheckIns";
+import { KinGitHubConnect } from "./KinGitHubConnect";
 import { KinCompanyTimeZoneSetting } from "./KinCompanyTimeZone";
 import { KinDailyLimitSetting } from "./KinDailyLimit";
 import { KinWorkNotice } from "./KinWorkParts";
@@ -99,7 +100,7 @@ function SettingsNotice(props: {
   );
 }
 
-/** The company's settings: its details, the daily limit, check-ins, and approvals on this phone. */
+/** The company's settings: its details, the daily limit, check-ins, GitHub, and approvals on this phone. */
 export function KinSettingsView() {
   const target = kinNewLeadTarget(useKinHost());
   const body = (
@@ -111,6 +112,9 @@ export function KinSettingsView() {
         <KinCompanyTimeZoneSetting />
         <KinDailyLimitSetting />
         <KinCheckInsSetting />
+        {target === null ? null : (
+          <KinGitHubConnect environmentId={target.environmentId} orgId={target.orgId} />
+        )}
       </SettingsPageContainer>
       <ApprovalsSettings />
     </div>

@@ -583,6 +583,10 @@
       "types": "./src/kin/kinConnections.ts",
       "default": "./src/kin/kinConnections.ts"
     },
+    "./kin/kinGitHub": {
+      "types": "./src/kin/kinGitHub.ts",
+      "default": "./src/kin/kinGitHub.ts"
+    },
     "./kin/kinCurrency": {
       "types": "./src/kin/kinCurrency.ts",
       "default": "./src/kin/kinCurrency.ts"
