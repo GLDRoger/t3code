@@ -28,6 +28,7 @@ import { answerChoice, resumeInterruptedSends } from "./work/cardAnswers.ts";
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
+import { seedCharacters } from "./lead/characters.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
 export { KinServer } from "./KinServer.ts";
@@ -61,6 +62,12 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         Effect.provide(services),
         Effect.catchCause((cause) =>
           Effect.logWarning("Kin default playbooks not written", Cause.pretty(cause)),
+        ),
+      );
+      yield* seedCharacters(owner.orgId).pipe(
+        Effect.provide(services),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin default characters not written", Cause.pretty(cause)),
         ),
       );
       yield* DevFakeMail.connectFakeAccounts(owner).pipe(Effect.provide(services));

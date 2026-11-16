@@ -25,7 +25,9 @@ export function kinMessageLayout(
   message: Pick<KinMessage, "author" | "body" | "form" | "status">,
 ): KinMessageLayout {
   if (message.status === "deleted" || message.author._tag === "human") return "bubble";
-  if (message.form === "brief") return "brief";
+  // The greeting heads sections; a check-in that came back as one line stays a bubble.
+  if (message.form === "brief" && kinPageSections(message.body).some(({ title }) => title !== null))
+    return "brief";
   return kinPageShape(message.body);
 }
 

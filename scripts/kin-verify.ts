@@ -62,7 +62,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   as <person> web wait "<text>" [--gone] [--timeout <s>]
   as <person> web screenshot <path> [--full]   (refuses paths under ~/.t3)
   as <person> rpc <method> ['<json>']     a client RPC as that person (orgId is filled in)
-  tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--reply "<text>"] [--hold <s>] [--fail] [--raw]
+  tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--say "<text>"] [--reply "<text>"] [--hold <s>] [--fail] [--raw]
                                           one real turn, no model: the agent calls the tool
   tool <agent> --script <file.json>       the same with several calls (and "shell"/"sleep" steps)
   mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
@@ -390,6 +390,7 @@ async function tool(instance: Instance, args: Args) {
       arguments: call.arguments ?? {},
     })) ?? [{ name: name!, arguments: json === undefined ? {} : JSON.parse(json) }],
     ...(reply === undefined ? {} : { reply }),
+    ...(flag(args, "say") === undefined ? {} : { say: flag(args, "say")! }),
     ...(flag(args, "hold") === undefined ? {} : { holdSeconds: Number(flag(args, "hold")) }),
     ...(args.flags.has("fail") ? { fail: true } : {}),
   });
