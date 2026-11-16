@@ -121,6 +121,10 @@ export function KinWorkTaskList(
         const timer = setTimeout(run, ms);
         return () => clearTimeout(timer);
       },
+      rows: () =>
+        appAtomRegistry
+          .get(kinWorkLiveAtom({ environmentId, orgId }))
+          .pipe(AsyncResult.value, Option.getOrNull)?.rows ?? null,
     }),
   );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when the page shows, and abandons what is in flight when it leaves

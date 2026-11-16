@@ -60,6 +60,8 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as ServerConfig from "../config.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -2065,6 +2067,118 @@ describe("OrchestratorMcpService provider resolution", () => {
           baseRef: "origin/trunk",
           startFromOrigin: true,
         });
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("a task a Kin agent delegates without a project gets its own Scratch folder", () =>
+    Effect.gen(function* () {
+      const scratchProjectId = ProjectId.make("project:scratch");
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        runId: parentRunId,
+        parentNodeId,
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: null,
+        prompt: "Clone the site and fix the README.",
+        title: null,
+        model: "gpt-5.4",
+        status: "running",
+        result: null,
+        startedAt: null,
+        completedAt: null,
+      };
+      const config = yield* Effect.provide(
+        ServerConfig.ServerConfig,
+        ServerConfig.layerTest(process.cwd(), { prefix: "mcp-kin-scratch-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+      ).pipe(Effect.scoped);
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.succeed(ServerConfig.ServerConfig, config),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: "/projects",
+          ensureScratchProject: Effect.succeed({ projectId: scratchProjectId }),
+          folderForThread: (input) =>
+            Effect.succeedSome(`/scratch/2026-11-16-clone-site-${input.threadId.length}`),
+        }),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          getThreadRecords: (threadId) =>
+            Ref.get(dispatched).pipe(
+              Effect.map((commands) =>
+                threadId === parentThreadId
+                  ? parentProjection(commands.length > 0 ? [task] : [])
+                  : childProjection,
+              ),
+            ),
+          isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+          assertProviderInstanceEnabled: () => Effect.void,
+          dispatch: (command) =>
+            Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+              Effect.as({
+                sequence: 1,
+                storedEvents: [
+                  {
+                    sequence: 1,
+                    commandId: null,
+                    event: { type: "subagent.updated", payload: task },
+                  },
+                ],
+              } as never),
+            ),
+        }),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+        ]),
+        adapterRegistryLayer([codexInstanceId]),
+        // The parent is a Kin lead: its project is the agent's memory checkout under Kin's state.
+        Layer.mock(ProjectService.ProjectService)({
+          getById: (id) =>
+            Effect.succeedSome({
+              id,
+              title: "Kin · Tech lead",
+              workspaceRoot: `${config.stateDir}/kin/org/tech/memory`,
+            } as never),
+        }),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        ServerSettings.layerTest(),
+      );
+      const layer = OrchestratorMcpService.layer.pipe(
+        Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+        Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+        Layer.provide(layerDependencies),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        yield* service.delegateTask(scope, {
+          task: "Clone the site and fix the README.",
+          mode: "async",
+          clientRequestId: "delegate-from-kin",
+        });
+        const [request] = (yield* Ref.get(dispatched)) as ReadonlyArray<{
+          readonly projectId?: string;
+          readonly workspaceStrategy?: { readonly type: string; readonly worktreePath?: string };
+        }>;
+        assert.equal(request?.projectId, scratchProjectId);
+        assert.equal(request?.workspaceStrategy?.type, "existing_worktree");
+        assert.isTrue(request?.workspaceStrategy?.worktreePath?.startsWith("/scratch/"));
       }).pipe(Effect.provide(layer));
     }),
   );

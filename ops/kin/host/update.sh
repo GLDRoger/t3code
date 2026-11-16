@@ -24,6 +24,7 @@ SERVICE_ENV="$HOME/.t3/service.env"
 # Seconds to wait for a new build to answer and finish its migrations.
 ANSWER_TIMEOUT=90
 BACKUP=""
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
 say() { echo "update.sh: $*" >&2; }
 
@@ -102,8 +103,7 @@ health() {
 }
 
 switch_to() {
-  ln -sfn "$1" "$CURRENT.new"
-  mv -T "$CURRENT.new" "$CURRENT"
+  ln -sfn "$1" "$CURRENT.new" && mv -T "$CURRENT.new" "$CURRENT"
 }
 
 # The worker environment mounts ~/kin-current when it starts, so it moves to a build only on a
@@ -115,14 +115,47 @@ restart_workers() {
     say "couldn't restart kin-worker-server, so workers still run the build before this one. Run sudo /root/kin-ops/ops/kin/host/kin-worker.sh."
 }
 
-# Puts back the backup taken before this update. The migrated database is kept beside it.
+# Puts back the backup taken before this update; the migrated database is kept beside it as
+# $DB.failed-<sha>. Every step is checked: on failure it puts back what it moved and returns 1.
+# Sets MIGRATED to where the migrated database is afterwards.
 restore_db() {
-  local sha="$1" kept="$DB.failed-${1:0:12}" ext
+  local sha="$1" kept="$DB.failed-${1:0:12}" tmp="$DB.restoring" ext moved=()
+  MIGRATED="$DB"
+  rm -f "$tmp" "$tmp-wal" "$tmp-shm"
+  # Copied and checked beside the database first, so a failed copy changes nothing.
+  if ! cp -p "$BACKUP" "$tmp" ||
+    [ "$(wc -c <"$tmp")" != "$(wc -c <"$BACKUP")" ] ||
+    [ "$(sqlite3 -readonly "$tmp" 'PRAGMA quick_check;' 2>/dev/null)" != ok ]; then
+    rm -f "$tmp" "$tmp-wal" "$tmp-shm"
+    say "couldn't copy $BACKUP to $tmp intact, so the database was left as $sha migrated it."
+    return 1
+  fi
+  rm -f "$tmp-wal" "$tmp-shm"
+  # The migrated database's -wal and -shm go with it: a stale WAL beside the restored file would be replayed into it.
   for ext in "" -wal -shm; do
-    if [ -e "$DB$ext" ]; then mv -f "$DB$ext" "$kept$ext"; fi
+    [ -e "$DB$ext" ] || continue
+    if mv -f "$DB$ext" "$kept$ext"; then moved+=("$ext"); else
+      put_back "$kept" ${moved[@]+"${moved[@]}"}
+      rm -f "$tmp"
+      say "couldn't move $DB$ext aside."
+      return 1
+    fi
   done
-  cp -p "$BACKUP" "$DB"
+  if ! mv -f "$tmp" "$DB"; then
+    put_back "$kept" ${moved[@]+"${moved[@]}"}
+    say "couldn't rename $tmp to $DB."
+    return 1
+  fi
+  MIGRATED="$kept"
   say "restored the database from $BACKUP; the one $sha migrated is kept as $kept."
+}
+
+# put_back <kept> <ext...>: moves the migrated database's files back to $DB. Sets MIGRATED.
+put_back() {
+  local kept="$1" ext
+  shift
+  MIGRATED="$DB"
+  for ext in "$@"; do mv -f "$kept$ext" "$DB$ext" || MIGRATED="$kept"; done
 }
 
 # Keep the newest complete builds, the running one and the previous one. Interrupted
@@ -142,25 +175,49 @@ prune_builds() {
   git -C "$REPO" worktree prune
 }
 
+# Keeps the file it replaces as $ENV_FILE.prev. Returns 1 on any failed step, with $ENV_FILE untouched.
 write_env_file() {
-  mkdir -p "$(dirname "$ENV_FILE")"
-  rm -f "$ENV_FILE.prev"
-  if [ -f "$ENV_FILE" ]; then cp -p "$ENV_FILE" "$ENV_FILE.prev"; fi
   local tmp
-  tmp="$(mktemp "$ENV_FILE.XXXXXX")"
-  printf '%s\n' \
+  mkdir -p "$(dirname "$ENV_FILE")" || return 1
+  rm -f "$ENV_FILE.prev"
+  if [ -f "$ENV_FILE" ]; then cp -p "$ENV_FILE" "$ENV_FILE.prev" || { rm -f "$ENV_FILE.prev"; return 1; }; fi
+  tmp="$(mktemp "$ENV_FILE.XXXXXX")" || return 1
+  if ! printf '%s\n' \
     "KIN_ENABLED=true" \
     "PATH=$HOME/.local/bin:$HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin" \
     "KIN_REPO=$REPO" \
     "KIN_CHECKOUT=$CURRENT" \
-    "KIN_NODE_VERSION=$1" >"$tmp"
-  chmod 600 "$tmp"
-  mv -f "$tmp" "$ENV_FILE"
+    "KIN_NODE_VERSION=$1" >"$tmp" || ! chmod 600 "$tmp" || ! mv -f "$tmp" "$ENV_FILE"; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+install_units() {
+  local unit
+  mkdir -p "$UNIT_DIR" || return 1
+  for unit in kin-server.service kin-backup.service kin-backup.timer; do
+    cmp -s "$1/ops/kin/host/$unit" "$UNIT_DIR/$unit" ||
+      install -m 0644 "$1/ops/kin/host/$unit" "$UNIT_DIR/$unit" || return 1
+  done
+}
+
+# Back to the previous build's env file, units and link after a failure. Returns 1 if any step fails.
+restore_previous() {
+  local previous="$1" ok=0
+  if [ -f "$ENV_FILE.prev" ]; then mv -f "$ENV_FILE.prev" "$ENV_FILE" || ok=1; fi
+  install_units "$previous" || ok=1
+  switch_to "$previous" || ok=1
+  systemctl --user daemon-reload || ok=1
+  return "$ok"
 }
 
 # From a finished build to a running one: stop, back up, switch, start, check, and go back on failure.
+# Every way out ends with one update.sh: line saying what runs now.
 deploy() {
-  local sha="$1" build="$2" previous="$3" node_version="$4" before problem unit
+  local sha="$1" build="$2" previous="$3" node_version="$4" before problem
+  local has_previous=""
+  if [ -n "$previous" ] && [ "$previous" != "$build" ] && [ -f "$previous/apps/server/dist/bin.mjs" ]; then has_previous=1; fi
   before="$(db_heads)"
   # Stopped first, so the backup holds every write the previous build made.
   systemctl --user stop kin-server 2>/dev/null || true
@@ -169,16 +226,21 @@ deploy() {
     say "nothing changed; the server runs ${previous:-nothing} again."
     return 1
   fi
-  write_env_file "$node_version"
-  mkdir -p "$UNIT_DIR"
-  for unit in kin-server.service kin-backup.service kin-backup.timer; do
-    cmp -s "$build/ops/kin/host/$unit" "$UNIT_DIR/$unit" ||
-      install -m 0644 "$build/ops/kin/host/$unit" "$UNIT_DIR/$unit"
-  done
-  touch "$build"
-  switch_to "$build"
-  systemctl --user daemon-reload
-  systemctl --user restart kin-server
+  # Nothing has touched the database yet, so a failure here only needs the previous files and a start.
+  if ! { write_env_file "$node_version" && install_units "$build" && touch "$build" && switch_to "$build" &&
+    systemctl --user daemon-reload; }; then
+    say "couldn't switch to $sha (env file, units or link); the database is untouched."
+    if [ -z "$has_previous" ]; then
+      rm -f "$CURRENT"
+      say "no previous build; kin-server is stopped."
+    elif restore_previous "$previous" && systemctl --user start kin-server; then
+      say "the server runs $previous again."
+    else
+      say "couldn't put $previous back; kin-server is stopped. See systemctl --user status kin-server."
+    fi
+    return 1
+  fi
+  systemctl --user restart kin-server || true
   problem="$(health "$build")"
   if [ -z "$problem" ]; then
     rm -f "$ENV_FILE.prev"
@@ -190,31 +252,34 @@ deploy() {
   fi
 
   say "$sha is not healthy: $problem."
-  touch "$build/.failed"
+  touch "$build/.failed" || true
   systemctl --user stop kin-server 2>/dev/null || true
   systemctl --user reset-failed kin-server 2>/dev/null || true
-  if [ -n "$previous" ] && [ "$previous" != "$build" ] && [ -f "$previous/apps/server/dist/bin.mjs" ]; then
-    # The previous build goes back with its own Node version, and its own schema when this one migrated.
-    {
-      if [ -f "$ENV_FILE.prev" ]; then mv -f "$ENV_FILE.prev" "$ENV_FILE"; fi
-      if [ "$(db_heads)" != "$before" ] && [ -n "$BACKUP" ]; then restore_db "$sha"; fi
-      switch_to "$previous"
-      systemctl --user daemon-reload
-    } || {
-      say "rollback to $previous failed; see systemctl --user status kin-server"
-      return 1
-    }
-    systemctl --user restart kin-server || {
-      say "rollback restart failed; see systemctl --user status kin-server"
-      return 1
-    }
-    restart_workers
-    say "rolled back to $previous. $build is kept for inspection until the next good update."
-  else
+  if [ -z "$has_previous" ]; then
     # First install: nothing to go back to. Stop the crash loop so a rerun rebuilds.
     rm -f "$CURRENT"
     say "no previous build; kin-server is stopped. $build is kept for inspection."
+    return 1
   fi
+  # The previous build goes back with its own Node version, and its own schema when this one migrated.
+  if [ "$(db_heads)" != "$before" ] && [ -n "$BACKUP" ] && ! restore_db "$sha"; then
+    # Down with its data intact beats up and empty: never start on a database we couldn't restore.
+    # No link either, so a reboot can't start the previous build on the migrated database.
+    restore_previous "$previous" || true
+    rm -f "$CURRENT"
+    say "ROLLBACK STOPPED: kin-server is NOT running and its data is intact. Good copy from before the update: $BACKUP. Database $sha migrated: $MIGRATED. Free disk space, then run: bash -c 'source \"\$1\" && BACKUP=\"\$2\" && restore_db \"\$3\" && switch_to \"\$4\"' _ '$SELF' '$BACKUP' '$sha' '$previous' && systemctl --user start kin-server"
+    return 1
+  fi
+  if ! restore_previous "$previous"; then
+    say "rollback to $previous failed; kin-server is stopped. See systemctl --user status kin-server."
+    return 1
+  fi
+  if ! systemctl --user restart kin-server; then
+    say "rollback restart failed; kin-server is stopped. See systemctl --user status kin-server."
+    return 1
+  fi
+  restart_workers
+  say "rolled back to $previous. $build is kept for inspection until the next good update."
   return 1
 }
 
