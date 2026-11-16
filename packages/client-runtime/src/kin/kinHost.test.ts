@@ -18,6 +18,7 @@ import {
   kinStandInLine,
   resolveKinHost,
   resolveKinHostAt,
+  type KinHost,
   type KinProbe,
 } from "./kinHost.ts";
 
@@ -113,9 +114,11 @@ const resolve = (
     offline?: ReadonlyArray<EnvironmentId>;
     phases?: Record<string, Pick<EnvironmentConnectionPresentation, "phase" | "error">>;
     cached?: Record<string, KinOrgsListResult>;
+    previous?: KinHost;
   } = {},
 ) =>
   resolveKinHost({
+    ...(options.previous === undefined ? {} : { previous: options.previous }),
     candidates: [a, b, c].map((environmentId) =>
       kinHostCandidate(
         environmentId,
@@ -234,6 +237,37 @@ describe("resolveKinHost", () => {
     const flaky: KinProbe = { _tag: "error", message: "socket closed", transient: true };
     expect(
       resolve({ [a]: noIdentity, [b]: flaky }, { savedHostId: c, phases: down }),
+    ).toMatchObject({ environmentId: c, connected: false });
+  });
+
+  it("keeps a stand-in while the saved host retries from scratch, as on coming to the front", () => {
+    const refused = { phase: "error", error: "refused" } as const;
+    const restarting = { phase: "connecting", error: null } as const;
+    const failing = { [c]: refused };
+    const standing = resolve({ [b]: ready }, { savedHostId: c, phases: failing });
+    expect(standing).toMatchObject({ environmentId: b, standInFor: c });
+    // Back in front, the saved host starts over: a first attempt with no failure yet.
+    const retry = { [c]: restarting };
+    expect(
+      resolve({ [b]: ready }, { savedHostId: c, phases: retry, previous: standing }),
+    ).toMatchObject({ environmentId: b, connected: true, standInFor: c });
+    // Once it answers, Kin goes back to it.
+    expect(
+      resolve({ [b]: ready, [c]: ready }, { savedHostId: c, previous: standing }),
+    ).toMatchObject({ environmentId: c, connected: true });
+    // The stand-in restarts too; it holds through its own blip.
+    expect(
+      resolve(
+        { [b]: ready },
+        { savedHostId: c, phases: { ...retry, [b]: restarting }, previous: standing },
+      ),
+    ).toMatchObject({ environmentId: b, standInFor: c, probe: ready });
+    // A stand-in that is really down leaves the saved host's cache.
+    expect(
+      resolve(
+        { [b]: ready },
+        { savedHostId: c, phases: { ...retry, [b]: refused }, previous: standing },
+      ),
     ).toMatchObject({ environmentId: c, connected: false });
   });
 

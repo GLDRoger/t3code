@@ -1,8 +1,11 @@
 import {
+  KIN_ATTENTION,
   kinAttention,
   kinNeedsYouBeside,
   kinTasksAttention,
+  kinTasksBlock,
   type KinAttentionOpen,
+  type KinAttentionRow,
 } from "@t3tools/client-runtime/kin/kinAttention";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
@@ -15,6 +18,7 @@ import {
   type KinNeedsYouRow,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinRecord, KinRecordKey } from "@t3tools/contracts";
+import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
 import { useNavigate } from "@tanstack/react-router";
 import { BanknoteIcon, CircleAlertIcon, CircleCheckIcon, type LucideIcon } from "lucide-react";
 import { useState } from "react";
@@ -35,31 +39,32 @@ const ICON: Record<KinNeedsYouRow["kind"], LucideIcon> = {
   waiting: CircleAlertIcon,
 };
 
+/** Where a Needs-you row goes: the task over the list, a list, Money, or a chat. */
+export interface KinNeedsYouGo {
+  readonly onOpenTask: (key: KinRecordKey) => void;
+  readonly onOpenList: (open: KinListOpen) => void;
+  readonly onOpenMoney: () => void;
+}
+
 /**
- * The top of Tasks: what needs attention, then your late tasks, what clients owe past due, what an
- * agent waits on you for, and what is yours today. Each row opens the thing itself.
+ * What needs attention and what needs you, read for one screen: the attention rows, then your
+ * late tasks, what clients owe past due, what an agent waits on you for, and your tasks today.
+ * Null while `mine` is (still loading, or not asked for: then nothing is read).
  */
-export function KinNeedsYou(
-  props: KinWorkTarget & {
-    readonly directory: KinWorkDirectory;
-    /** Your open tasks due by the end of today; null until read. Tasks leaves them out below. */
-    readonly mine: ReadonlyArray<KinRecord> | null;
-    readonly onOpenTask: (key: KinRecordKey) => void;
-    readonly onOpenList: (open: KinListOpen) => void;
-    readonly onOpenMoney: () => void;
-  },
+export function useKinNeedsRows(
+  props: KinWorkTarget & { readonly names: KinWorkNames },
+  mine: ReadonlyArray<KinRecord> | null,
 ) {
-  const { environmentId, orgId, mine } = props;
-  const { names } = props.directory;
-  const navigate = useNavigate();
+  const { environmentId, orgId, names } = props;
+  const enabled = mine !== null;
   const now = new Date(useNowMinuteMs());
-  const money = useKinMoneySummary(props, { enabled: true });
-  const lists = useKinLists(props, { enabled: true });
+  const money = useKinMoneySummary(props, { enabled });
+  const lists = useKinLists(props, { enabled });
   const inbox = useKinInbox();
   const [expanded, setExpanded] = useState(false);
   // The first page until See all; then everything, the page standing in until it arrives.
-  const pagedRead = useKinAttention(props, true, true);
-  const fullRead = useKinAttention(props, expanded);
+  const pagedRead = useKinAttention(props, enabled, true);
+  const fullRead = useKinAttention(props, enabled && expanded);
   const attentionRead = expanded && fullRead !== null ? fullRead : pagedRead;
   const handler = useKinAttentionHandle(props);
   if (mine === null) return null;
@@ -88,10 +93,80 @@ export function KinNeedsYou(
   });
   // Money's own rows live on Money; here they are one row that opens it.
   const split = kinTasksAttention(attention.open, attentionRead);
-  const rows = [
+  const needs: ReadonlyArray<KinNeedsYouRow> = [
     ...(split.moneyRow === null ? [] : [split.moneyRow]),
     ...kinNeedsYouBeside(before, attention, attentionRead),
   ];
+  return {
+    attention: split.rows,
+    needs,
+    hidden: split.hidden,
+    handled: attention.handled,
+    handler,
+    expanded,
+    setExpanded,
+  };
+}
+
+/**
+ * The wide window's top with no chat open: what needs you today, your own tasks included. For a
+ * teammate that is what is on them.
+ */
+export function KinNeedsYou(
+  props: KinWorkTarget &
+    KinNeedsYouGo & {
+      readonly directory: KinWorkDirectory;
+      /** Your open tasks due by the end of today; null until read. */
+      readonly mine: ReadonlyArray<KinRecord> | null;
+    },
+) {
+  const read = useKinNeedsRows({ ...props, names: props.directory.names }, props.mine);
+  if (read === null) return null;
+  const cut = kinTasksBlock({
+    ownerLevel: true,
+    onMe: new Set(),
+    attention: read.attention,
+    needs: read.needs,
+    hidden: read.hidden,
+    handled: read.handled.length,
+    expanded: read.expanded,
+  });
+  return (
+    <KinNeedsBlock
+      {...props}
+      {...read}
+      attention={cut?.attention ?? []}
+      needs={cut?.needs ?? []}
+      title={KIN_WORK_HOME.needsYou}
+      total={cut?.total ?? 0}
+      empty={KIN_WORK_HOME.nothingNeedsYou}
+    />
+  );
+}
+
+/** Over Tasks, the owner's and a co-owner's: what needs attention that "On me" doesn't hold. */
+export function KinTasksAttention(
+  props: KinWorkTarget &
+    KinNeedsYouGo &
+    NonNullable<ReturnType<typeof useKinNeedsRows>> & { readonly total: number },
+) {
+  return <KinNeedsBlock {...props} title={KIN_ATTENTION.title} empty={null} />;
+}
+
+function KinNeedsBlock(
+  props: KinWorkTarget &
+    KinNeedsYouGo &
+    NonNullable<ReturnType<typeof useKinNeedsRows>> & {
+      readonly title: string;
+      readonly total: number;
+      /** What an empty block says; null where it never shows empty. */
+      readonly empty: string | null;
+    },
+) {
+  const { environmentId, orgId, handler, expanded, setExpanded, total } = props;
+  const navigate = useNavigate();
+  const rows: ReadonlyArray<KinNeedsYouRow> = props.needs;
+  const attentionRows: ReadonlyArray<KinAttentionRow> = props.attention;
   const openAttention = (to: KinAttentionOpen) => {
     if (to.type === "record") props.onOpenTask(to.key);
     else if (to.type === "money") props.onOpenMoney();
@@ -106,15 +181,10 @@ export function KinNeedsYou(
         params: { environmentId, orgId, chatId: to.chatId },
       });
   };
-  const total = split.rows.length + split.hidden + rows.length;
-  const limit = expanded ? total : KIN_NEEDS_YOU_SHOWN;
-  // The money row leads, so a long run of attention rows never hides it.
-  const lead = split.moneyRow === null ? 0 : 1;
-  const shownAttention = split.rows.slice(0, Math.max(0, limit - lead));
-  const shown = [
-    ...rows.slice(0, lead),
-    ...rows.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length)),
-  ];
+  // The rows come already cut to what shows (`kinTasksBlock`); the money row leads.
+  const lead = rows[0]?.id === "attention:money" ? 1 : 0;
+  const shownAttention = attentionRows;
+  const shown = rows;
   const needRow = (row: (typeof rows)[number]) => {
     const Icon = ICON[row.kind];
     return (
@@ -148,7 +218,7 @@ export function KinNeedsYou(
   };
   return (
     <KinWorkSection
-      title={KIN_WORK_HOME.needsYou}
+      title={props.title}
       action={
         total <= KIN_NEEDS_YOU_SHOWN ? undefined : (
           <Button size="xs" variant="ghost" onClick={() => setExpanded(!expanded)}>
@@ -158,7 +228,9 @@ export function KinNeedsYou(
       }
     >
       {total === 0 ? (
-        <p className="px-2 text-sm text-muted-foreground">{KIN_WORK_HOME.nothingNeedsYou}</p>
+        props.empty === null ? null : (
+          <p className="px-2 text-sm text-muted-foreground">{props.empty}</p>
+        )
       ) : (
         <ul className="flex flex-col">
           {shown.slice(0, lead).map(needRow)}
@@ -175,7 +247,7 @@ export function KinNeedsYou(
           {shown.slice(lead).map(needRow)}
         </ul>
       )}
-      <KinAttentionHandled rows={attention.handled} handler={handler} />
+      <KinAttentionHandled rows={props.handled} handler={handler} />
       {handler.problem === null ? null : (
         <p role="alert" className="px-2 text-xs text-destructive-foreground">
           {handler.problem}

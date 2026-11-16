@@ -147,20 +147,27 @@ function KinDocEmbedView(props: KinWorkTarget & { readonly embed: KinDocEmbed })
   }
 }
 
+/** Ask and Change show only where there is an agent to ask; a teammate suggests a change. */
 function AskItems(props: {
   readonly onAsk: ((intent: KinDocAsk) => void) | null;
+  readonly suggests: boolean;
   readonly onCopyLink: () => void;
 }) {
+  const { onAsk } = props;
   return (
     <>
-      <MenuItem disabled={props.onAsk === null} onClick={() => props.onAsk?.("ask")}>
-        <MessageCircleQuestionIcon />
-        {KIN_DOCS.ask}
-      </MenuItem>
-      <MenuItem disabled={props.onAsk === null} onClick={() => props.onAsk?.("change")}>
-        <PencilLineIcon />
-        {KIN_DOCS.change}
-      </MenuItem>
+      {onAsk === null ? null : (
+        <>
+          <MenuItem onClick={() => onAsk("ask")}>
+            <MessageCircleQuestionIcon />
+            {KIN_DOCS.ask}
+          </MenuItem>
+          <MenuItem onClick={() => onAsk("change")}>
+            <PencilLineIcon />
+            {props.suggests ? KIN_DOCS.suggest : KIN_DOCS.change}
+          </MenuItem>
+        </>
+      )}
       <MenuItem onClick={props.onCopyLink}>
         <LinkIcon />
         {KIN_DOCS.copyLink}
@@ -178,6 +185,8 @@ export function KinDocReader(
     readonly section: string | null;
     /** Null where no agent keeps the doc, so there is nobody to ask. */
     readonly onPoint: KinDocPoint | null;
+    /** A teammate's Change this is a suggestion the owner decides on. */
+    readonly suggests?: boolean;
     readonly onCopyLink: (section: string | null) => void;
     readonly onSeeChanges: (to: number) => void;
     readonly onOpenLatest: () => void;
@@ -325,7 +334,11 @@ export function KinDocReader(
                   <EllipsisIcon />
                 </MenuTrigger>
                 <MenuPopup align="end">
-                  <AskItems onAsk={point(null)} onCopyLink={() => props.onCopyLink(null)} />
+                  <AskItems
+                    onAsk={point(null)}
+                    suggests={props.suggests === true}
+                    onCopyLink={() => props.onCopyLink(null)}
+                  />
                   <MenuSeparator />
                   <MenuItem onClick={props.onHistory}>
                     <HistoryIcon />
@@ -472,7 +485,11 @@ export function KinDocReader(
                   <EllipsisIcon />
                 </MenuTrigger>
                 <MenuPopup align="start">
-                  <AskItems onAsk={point(id)} onCopyLink={() => props.onCopyLink(id)} />
+                  <AskItems
+                    onAsk={point(id)}
+                    suggests={props.suggests === true}
+                    onCopyLink={() => props.onCopyLink(id)}
+                  />
                 </MenuPopup>
               </Menu>,
               slot,
@@ -483,6 +500,7 @@ export function KinDocReader(
         root={article}
         resolve={(node) => (article === null ? null : sectionAt(article, headings, node, hasTop))}
         onAsk={onPoint === null ? null : (section, intent) => point(section)?.(intent)}
+        suggests={props.suggests === true}
         onCopyLink={props.onCopyLink}
       />
     </>
@@ -494,6 +512,7 @@ function KinDocSelectionMenu(props: {
   readonly root: HTMLDivElement | null;
   readonly resolve: (node: Node) => string | null;
   readonly onAsk: ((section: string | null, intent: KinDocAsk) => void) | null;
+  readonly suggests: boolean;
   readonly onCopyLink: (section: string | null) => void;
 }) {
   const [held, setHeld] = useState<{
@@ -595,7 +614,7 @@ function KinDocSelectionMenu(props: {
             }}
           >
             <PencilLineIcon />
-            {KIN_DOCS.change}
+            {props.suggests ? KIN_DOCS.suggest : KIN_DOCS.change}
           </Button>
         </>
       )}

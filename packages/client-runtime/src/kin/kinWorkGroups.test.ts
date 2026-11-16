@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers compare due times with the reader's local day, outside an Effect runtime.
 import {
   KinAgentId,
   KinOrgId,
@@ -8,8 +9,15 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { kinTasksBlock, type KinAttentionRow } from "./kinAttention.ts";
 import { KIN_WORK_DEFAULT_FILTER, type KinWorkNames } from "./kinWork.ts";
-import { kinWorkGroupWithin, kinWorkGroups, kinWorkGroupsShown } from "./kinWorkGroups.ts";
+import { KIN_NEEDS_YOU_SHOWN } from "./kinWorkHome.ts";
+import {
+  kinTasksTop,
+  kinWorkGroupWithin,
+  kinWorkGroups,
+  kinWorkGroupsShown,
+} from "./kinWorkGroups.ts";
 
 // Invented people: Rhea owns the company, Meera is a co-owner, Dev leads Lumen, Zoya is on it.
 const person = (id: string) => ({ _tag: "person", personId: KinPersonId.make(id) }) as const;
@@ -32,6 +40,7 @@ const namesFor = (me: KinWorkPrincipal & { _tag: "person" }): KinWorkNames => ({
   owner: rhea.personId,
   zone: "UTC",
 });
+const now = new Date(2026, 10, 16, 12);
 let n = 0;
 const task = (patch: Partial<KinRecord>): KinRecord => {
   n += 1;
@@ -72,7 +81,7 @@ const all = [zoyas, zoyaWaits, devs, devGaveZoya, financeHas, rheas, meerasLoose
 
 /** Each line as text: "# On me 2", "@ Dev 1", or a task's key. */
 const shape = (me: KinWorkPrincipal & { _tag: "person" }) =>
-  kinWorkGroups(all, namesFor(me)).map((item) =>
+  kinWorkGroups(all, namesFor(me), now).map((item) =>
     item.type === "section"
       ? `# ${item.title} ${item.count}`
       : item.type === "who"
@@ -140,7 +149,7 @@ describe("kinWorkGroups", () => {
   });
 
   it("a row under its project's heading doesn't name the project again", () => {
-    const items = kinWorkGroups(all, namesFor(zoya)).filter((item) => item.type === "task");
+    const items = kinWorkGroups(all, namesFor(zoya), now).filter((item) => item.type === "task");
     const under = items.find((item) => item.key === devs.key)!;
     const own = items.find((item) => item.key === zoyas.key)!;
     expect(kinWorkGroupWithin(under, KIN_WORK_DEFAULT_FILTER).project?.key).toBe("P-1");
@@ -156,5 +165,97 @@ describe("kinWorkGroups", () => {
       false,
     );
     expect(kinWorkGroupsShown(KIN_WORK_DEFAULT_FILTER, null)).toBe(false);
+  });
+
+  it("leads On me with what is late, due today or stuck, each marked once", () => {
+    const later = task({ owner: zoya, dueAt: "2026-12-01T12:00:00.000Z" });
+    const stuck = task({ owner: zoya, state: "waiting", waitingOn: null });
+    const today = task({ owner: zoya, dueAt: new Date(2026, 10, 16, 18).toISOString() });
+    const late = task({ owner: zoya, dueAt: "2026-11-10T12:00:00.000Z", late: true });
+    const mine = kinWorkGroups([later, stuck, today, late], namesFor(zoya), now).flatMap((item) =>
+      item.type === "task" ? [[item.key, item.mark ?? null]] : [],
+    );
+    expect(mine).toEqual([
+      [late.key, "late"],
+      [today.key, "today"],
+      [stuck.key, "stuck"],
+      [later.key, null],
+    ]);
+  });
+});
+
+describe("the top of Tasks", () => {
+  const lateOnRhea = task({ owner: rhea, late: true, dueAt: "2026-11-10T12:00:00.000Z" });
+  const lateOnZoya = task({ owner: zoya, late: true, dueAt: "2026-11-10T12:00:00.000Z" });
+  const company = [...all, lateOnRhea, lateOnZoya];
+  // What needs attention across the company: both late tasks, and a quiet client.
+  const row = (id: string, key: string | null): KinAttentionRow => ({
+    id,
+    factKey: id,
+    title: id,
+    detail: "",
+    about: null,
+    urgent: true,
+    open: key === null ? { type: "none" } : { type: "record", key: key as KinRecord["key"] },
+    agentId: null,
+    askDraft: "",
+    handled: null,
+    money: false,
+  });
+  // More than the block shows before "See all": the rest must stay in the list.
+  const attention = [
+    row("late:rhea", lateOnRhea.key),
+    row("late:zoya", lateOnZoya.key),
+    row("quiet:client", null),
+    row("stuck:dev", devs.key),
+    row("stuck:meera", meerasLoose.key),
+    row("stuck:zoya", zoyas.key),
+  ];
+
+  it.each([
+    ["the owner", rhea, true],
+    ["a co-owner", meera, true],
+    ["a lead", dev, false],
+    ["a member", zoya, false],
+  ] as const)("shows %s each task under one heading only", (_who, me, ownerLevel) => {
+    const top = (rows: ReadonlyArray<KinAttentionRow>) =>
+      kinTasksTop({
+        ownerLevel,
+        records: company,
+        names: namesFor(me),
+        now,
+        attention: rows,
+        needs: [],
+        hidden: 0,
+        handled: 0,
+        expanded: false,
+      });
+    const { block, items } = top(attention);
+    const shown = [
+      ...items.flatMap((item) => (item.type === "task" ? [item.key] : [])),
+      ...(block?.attention ?? []).flatMap((one) =>
+        one.open.type === "record" ? [one.open.key] : [],
+      ),
+    ];
+    expect(new Set(shown).size).toBe(shown.length);
+    expect([...shown].sort()).toEqual(company.map((one) => one.key).sort());
+    expect(block === null).toBe(!ownerLevel);
+    // Only what it shows before "See all"; the rest of the tasks stay in the list.
+    expect((block?.attention.length ?? 0) + (block?.needs.length ?? 0)).toBeLessThanOrEqual(
+      KIN_NEEDS_YOU_SHOWN,
+    );
+    // Nothing left in it is nothing at all: no heading, no "nothing needs you" line.
+    expect(top([]).block).toBeNull();
+    expect(
+      kinTasksBlock({
+        ownerLevel,
+        onMe: new Set([lateOnRhea.key]),
+        attention: attention.slice(0, 1),
+        needs: [],
+        hidden: 0,
+        handled: 0,
+        expanded: false,
+      }),
+    ).toBeNull();
   });
 });

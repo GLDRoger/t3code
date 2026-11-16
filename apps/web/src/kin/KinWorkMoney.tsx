@@ -13,6 +13,11 @@ import {
   kinTotalsEstimate,
   type KinEstimate,
 } from "@t3tools/client-runtime/kin/kinCurrency";
+import {
+  kinNothingOwed,
+  kinNothingShown,
+  kinScopeNote,
+} from "@t3tools/client-runtime/kin/kinViewerScope";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { KIN_GOALS } from "@t3tools/client-runtime/kin/kinAttention";
@@ -40,6 +45,7 @@ import { KinNewReceiptDialog, KinReceiptsSection } from "./KinReceipts";
 import { KinAttentionSection } from "./KinAttention";
 import { KinGoalSheet, KinGoals } from "./KinGoals";
 import { useKinGoals } from "./useKinAttention";
+import { useKinViewerScope } from "./useKinOwnerLevel";
 import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection, KinLoadFailed } from "./KinWorkParts";
 import {
   kinListsOf,
@@ -175,8 +181,11 @@ export function KinWorkMoney(
   const canBudget = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(props.environmentId));
   const [adding, setAdding] = useState<"goal" | "budget" | "receipt" | null>(null);
+  const scope = useKinViewerScope(props.environmentId);
+  const scopeNote = kinScopeNote("money", scope);
   const top = (
     <>
+      {scopeNote === null ? null : <p className="text-sm text-muted-foreground">{scopeNote}</p>}
       <KinAttentionSection
         {...props}
         scope={{ type: "money" }}
@@ -214,8 +223,8 @@ export function KinWorkMoney(
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-7 px-4 pt-4">{top}</div>
         <KinWorkNotice
-          {...KIN_MONEY.none}
-          {...(agent === null
+          {...(kinNothingShown("money", scope) ?? KIN_MONEY.none)}
+          {...(agent === null || !scope.all
             ? {}
             : {
                 action: (
@@ -279,7 +288,7 @@ export function KinWorkMoney(
           )}
           <KinWorkSection title={KIN_MONEY.byClient}>
             {view.clients.length === 0 ? (
-              <p className="px-2 text-sm text-muted-foreground">{KIN_MONEY.nothingOwed}</p>
+              <p className="px-2 text-sm text-muted-foreground">{kinNothingOwed(scope)}</p>
             ) : (
               <ul className="flex flex-col">
                 {view.clients.map((client) => {

@@ -1,3 +1,4 @@
+import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
@@ -180,7 +181,7 @@ function KinJoinedName(props: {
   );
 }
 
-/** The list's bar with its "+": a new group or a new lead, for a viewer this host lets make them. */
+/** The list's bar with its "+": a chat with a teammate for everyone; a group or lead by grant. */
 function KinChatsBar(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
@@ -195,48 +196,50 @@ function KinChatsBar(props: {
     <AppBar
       title="Kin"
       {...props.bar}
-      menus={
-        canAddLead || canAddGroup || canAddTeammate
-          ? [
-              {
-                title: "New",
-                icon: "plus",
-                items: [
-                  ...(canAddGroup
-                    ? [
-                        {
-                          id: "group",
-                          title: "New group",
-                          icon: "person.2",
-                          onPress: () => navigation.navigate("KinGroupForm", target),
-                        },
-                      ]
-                    : []),
-                  ...(canAddLead
-                    ? [
-                        {
-                          id: "lead",
-                          title: "New agent",
-                          icon: "sparkles",
-                          onPress: () => navigation.navigate("KinLeadForm", target),
-                        },
-                      ]
-                    : []),
-                  ...(canAddTeammate
-                    ? [
-                        {
-                          id: "teammate",
-                          title: "Add teammate",
-                          icon: "person.badge.plus",
-                          onPress: () => navigation.navigate("KinInvite", target),
-                        },
-                      ]
-                    : []),
-                ],
-              },
-            ]
-          : undefined
-      }
+      menus={[
+        {
+          title: "New",
+          icon: "plus",
+          items: [
+            {
+              id: "person",
+              title: KIN_PEOPLE_CHAT.newChat,
+              icon: "bubble.left",
+              onPress: () => navigation.navigate("KinPeoplePick", target),
+            },
+            ...(canAddGroup
+              ? [
+                  {
+                    id: "group",
+                    title: "New group",
+                    icon: "person.2",
+                    onPress: () => navigation.navigate("KinGroupForm", target),
+                  },
+                ]
+              : []),
+            ...(canAddLead
+              ? [
+                  {
+                    id: "lead",
+                    title: "New agent",
+                    icon: "sparkles",
+                    onPress: () => navigation.navigate("KinLeadForm", target),
+                  },
+                ]
+              : []),
+            ...(canAddTeammate
+              ? [
+                  {
+                    id: "teammate",
+                    title: "Add teammate",
+                    icon: "person.badge.plus",
+                    onPress: () => navigation.navigate("KinInvite", target),
+                  },
+                ]
+              : []),
+          ],
+        },
+      ]}
     />
   );
 }

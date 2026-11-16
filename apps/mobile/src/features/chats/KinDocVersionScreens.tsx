@@ -1,3 +1,4 @@
+import { useKinViewerScope } from "./state/kinChatOnly";
 import { KIN_RETRY, KIN_CHECK_CONNECTION } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -359,6 +360,7 @@ export function KinSearchScreen({ route }: StaticScreenProps<KinSearchParams>) {
 function KinSearch(props: KinWorkTarget) {
   const navigation = useNavigation();
   const { state, search } = useKinSearch(props, null);
+  const scope = useKinViewerScope(props.environmentId);
   const input = useRef<TextInputInstance>(null);
   const open = useKinOpenHit(props);
   return (
@@ -384,7 +386,7 @@ function KinSearch(props: KinWorkTarget) {
         <EmptyState variant="plain" {...KIN_SEARCH.hint} />
       ) : (
         <View className="-mx-4">
-          <KinSearchHits state={state} onRetry={search.retry} onOpen={open} />
+          <KinSearchHits state={state} scope={scope} onRetry={search.retry} onOpen={open} />
         </View>
       )}
     </KinWorkFrame>
