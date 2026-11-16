@@ -45,6 +45,10 @@ describe("kinProfiles", () => {
       ok: true,
       changes: { roleTags: ["tech", "design"], workHours: null },
     });
+    expect(kinProfileChanges(profile, { ...draft, talkStyle: " Short. " })).toEqual({
+      ok: true,
+      changes: { talkStyle: "Short." },
+    });
     expect(kinProfileChanges(profile, { ...draft, displayName: " " }).ok).toBe(false);
     expect(kinProfileChanges(profile, { ...draft, start: "9am" }).ok).toBe(false);
   });

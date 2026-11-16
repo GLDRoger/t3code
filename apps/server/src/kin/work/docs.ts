@@ -530,6 +530,35 @@ export const rewrite = Effect.fn("KinDocs.rewrite")(function* (
   );
 });
 
+/** The owner's whole new text from the host, with none of the agent rewrite's refusals. */
+export const replaceBody = Effect.fn("KinDocs.replaceBody")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+  provenance: Provenance,
+  ref: { readonly key: string },
+  input: { readonly body: string; readonly summary: string; readonly originKey: string },
+) {
+  const body = normalize(input.body);
+  if (body.length > DOC_BODY_MAX) return yield* tooLong(body.length);
+  return yield* transaction(
+    Effect.gen(function* () {
+      const row = yield* docRow(orgId, ref, KIN_OWNER_LEVEL);
+      const current = yield* versionOf(orgId, row.recordId);
+      if (current === undefined) return yield* unavailable;
+      if (current.bodyKind === "file") return yield* fileOnly(row.key);
+      if (current.body === body) return { row, version: current, created: false };
+      return yield* revise(orgId, writer, provenance, row, current, {
+        title: row.title,
+        body,
+        kind: "rewritten",
+        summary: input.summary,
+        operations: [{ op: "rewrite" }],
+        originKey: input.originKey,
+      });
+    }),
+  );
+});
+
 /** Brings a version back as a new one. Refused when the latest is not the one the caller saw. */
 export const restore = Effect.fn("KinDocs.restore")(function* (
   orgId: KinOrgId,
