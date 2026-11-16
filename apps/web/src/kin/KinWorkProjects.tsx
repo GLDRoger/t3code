@@ -60,6 +60,7 @@ import { KinWorkRow, KinWorkTaskList } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected } from "./useKinHost";
+import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
 import {
   useKinProjectPage,
   type KinWorkChangesHandle,
@@ -118,6 +119,8 @@ function ProjectPage(
     readonly onRefresh: () => void;
   },
 ) {
+  const ownerLevel = useKinOwnerLevel(props.environmentId);
+  const opensClients = useKinPlaceReach(props.environmentId)?.clients === true || ownerLevel;
   const { environmentId, orgId, page } = props;
   const { names } = props.directory;
   const canChange = useAtomValue(kinClient.workProjectUpdate.permissionAtom(environmentId));
@@ -178,7 +181,10 @@ function ProjectPage(
               {view.privacy.private ? <KinWorkPrivateMark /> : null}
             </div>
             <p className="text-sm text-muted-foreground">
-              {party === null ? null : (
+              {party === null ? null : !opensClients ? (
+                // Someone the host keeps Clients from sees the name, with nowhere to go.
+                `${party.title} · `
+              ) : (
                 <>
                   <button
                     type="button"

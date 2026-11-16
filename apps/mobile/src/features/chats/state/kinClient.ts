@@ -87,6 +87,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
   createKinDirectoryTrigger,
+  kinAccessMoves,
   createKinRefreshTriggers,
   noteKinDirectoryOrgs,
 } from "@t3tools/client-runtime/kin/kinRefresh";
@@ -428,8 +429,10 @@ const rereadMembersOnChange =
       }),
     );
 
-const chatStream = makeKinChatStream((input) =>
-  readHistory(input).pipe(Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry)),
+const chatStream = makeKinChatStream(
+  (input) =>
+    readHistory(input).pipe(Effect.provideService(AtomRegistry.AtomRegistry, appAtomRegistry)),
+  kinAccessMoves(connectionAtomRuntime, appAtomRegistry),
 );
 
 /** The viewer's own leads, and the leads of others they may message. */

@@ -34,7 +34,7 @@ import { KinSettingsScreen } from "./KinSettings";
 import { KinCheckInFormScreen } from "./KinCheckIns";
 import { KinGoalFormScreen } from "./KinGoals";
 import { KinInviteScreen } from "./KinInviteScreen";
-import { KinMakeDocumentScreen, KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
+import { KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
 import { KinJoinScreen } from "./KinJoinScreen";
 import { KinBudgetScreen } from "./KinMoneyAnswers";
 import { KinTeamScreen } from "./KinTeamScreen";
@@ -100,10 +100,6 @@ export const KIN_SCREENS = {
   // Full sheets, so the keyboard never covers what is being typed.
   KinPayment: createNativeStackScreen({
     screen: KinPaymentScreen,
-    options: sheetRoute({ detent: "full", android: "fullScreen" }),
-  }),
-  KinMakeDocument: createNativeStackScreen({
-    screen: KinMakeDocumentScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinBudget: createNativeStackScreen({

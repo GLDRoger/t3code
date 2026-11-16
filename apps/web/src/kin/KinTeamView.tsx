@@ -13,10 +13,8 @@ import {
   KIN_TEAM_LOAD_FAILED,
   KIN_TEAM_NO_EDITS,
   KIN_TEAM_ONLY_OWNER,
-  KIN_TEAM_TITLE,
   createKinTeamActions,
   kinRemoveAccessCopy,
-  kinTeamEntrySummary,
   kinTeamView,
   KIN_ACCESS_CHOICES,
   KIN_PLACE_SWITCHES,
@@ -46,11 +44,9 @@ import type {
 import { Link, useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { ArrowLeftIcon, ChevronRightIcon, UserPlusIcon, UsersIcon, XIcon } from "lucide-react";
+import { ChevronRightIcon, UserPlusIcon, XIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
-import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -87,7 +83,6 @@ import {
 import { Skeleton } from "../components/ui/skeleton";
 import { Switch } from "../components/ui/switch";
 import { connectionAtomRuntime } from "../connection/runtime";
-import { isElectron } from "../env";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
@@ -155,75 +150,20 @@ function useKinTeam(target: KinTeamTarget) {
   };
 }
 
-/** The way in from the chat list, for the owner only. Its second line counts who has joined. */
-export function KinTeamEntry(
-  props: KinTeamTarget & { readonly active: boolean; readonly onOpen: () => void },
-) {
-  const allowed = useAtomValue(kinClient.inviteCreate.permissionAtom(props.environmentId));
-  return allowed ? <PermittedTeamEntry {...props} /> : null;
-}
-
-function PermittedTeamEntry(
-  props: KinTeamTarget & { readonly active: boolean; readonly onOpen: () => void },
-) {
-  const { environmentId, orgId } = props;
-  const team = useKinTeam(props);
-  // The host refused: this browser may hand out access but isn't the owner's.
-  if (team.failed) return null;
-  return (
-    <Link
-      to="/kin/$environmentId/$orgId/team"
-      params={{ environmentId, orgId }}
-      aria-current={props.active ? "page" : undefined}
-      data-active={props.active}
-      onClick={props.onOpen}
-      className="flex items-center gap-2.5 rounded-md px-2 py-2 outline-none ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset data-[active=true]:bg-sidebar-row-selected"
-    >
-      <span className="flex size-10 shrink-0 items-center justify-center text-sidebar-muted-foreground">
-        <UsersIcon aria-hidden className="size-4.5" />
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate text-sm font-medium text-sidebar-foreground">
-          {KIN_TEAM_TITLE}
-        </span>
-        <span className="truncate text-xs text-sidebar-muted-foreground">
-          {kinTeamEntrySummary(team.list, team.ownerPersonId)}
-        </span>
-      </span>
-    </Link>
-  );
-}
-
 /** Who is on the team, whether each has joined, and the links that bring them in. */
 export function KinTeamView(props: KinTeamTarget) {
   const allowed = useAtomValue(kinClient.inviteCreate.permissionAtom(props.environmentId));
   const [adding, setAdding] = useState(false);
   return (
     <>
-      <WorkspacePageHeader electron={isElectron}>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          aria-label="Back to chats"
-          className="md:hidden"
-          render={<Link to="/kin" />}
-        >
-          <ArrowLeftIcon />
-        </Button>
-        <WorkspaceBreadcrumb ariaLabel={KIN_TEAM_TITLE}>
-          <WorkspaceBreadcrumbItem current>
-            <h1 className="truncate">{KIN_TEAM_TITLE}</h1>
-          </WorkspaceBreadcrumbItem>
-        </WorkspaceBreadcrumb>
-        {allowed ? (
-          <div className="ms-auto">
-            <Button size="sm" onClick={() => setAdding(true)}>
-              <UserPlusIcon />
-              {KIN_TEAM_ADD}
-            </Button>
-          </div>
-        ) : null}
-      </WorkspacePageHeader>
+      {allowed ? (
+        <div className="mx-auto flex w-full max-w-3xl justify-end px-4 pt-4">
+          <Button size="sm" onClick={() => setAdding(true)}>
+            <UserPlusIcon />
+            {KIN_TEAM_ADD}
+          </Button>
+        </div>
+      ) : null}
       {allowed ? (
         <KinTeamBody {...props} adding={adding} setAdding={setAdding} />
       ) : (

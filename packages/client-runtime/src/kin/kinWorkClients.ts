@@ -1,6 +1,8 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
+import { kinOwnerLevel } from "@t3tools/contracts";
 import type {
+  KinAccessMeResult,
   KinClientTouch,
   KinContact,
   KinOrgId,
@@ -1034,6 +1036,21 @@ export const kinProjectPageKeys = (page: KinProjectPage): ReadonlySet<string> =>
     ...(page.meetings ?? []).map((one) => one.key),
     ...(page.specChanged ?? []).map((one) => one.record.key),
   ]);
+
+/**
+ * What a new task may be put under for this viewer, as the host's `teamRule` takes it: anything
+ * for the owner level; for a teammate only the projects they lead (whose client comes with them)
+ * and no client of their own. Before the host has said (`me` null), or a host that sends no
+ * `leads`, offers all and lets the host refuse.
+ */
+export function kinNewTaskChoices<C, P extends { readonly key: KinRecordKey }>(
+  choices: { readonly clients: ReadonlyArray<C>; readonly projects: ReadonlyArray<P> },
+  me: Pick<KinAccessMeResult, "access" | "leads"> | null,
+): { readonly clients: ReadonlyArray<C>; readonly projects: ReadonlyArray<P> } {
+  if (me === null || kinOwnerLevel(me.access) || me.leads === undefined) return choices;
+  const led = new Set(me.leads.map((project) => project.key));
+  return { clients: [], projects: choices.projects.filter((project) => led.has(project.key)) };
+}
 
 /** A client or project as a filter, a form or a picker holds it. */
 export const kinWorkRefOf = (row: {

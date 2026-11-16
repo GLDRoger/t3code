@@ -12,6 +12,7 @@ import {
 
 import {
   kinProjectPeopleChoices,
+  kinNewTaskChoices,
   kinClientContactLine,
   kinClientRow,
   kinLastContactLine,
@@ -116,5 +117,23 @@ describe("kinProjectPeopleChoices", () => {
       ],
     });
     expect(choices.map((one) => one.name)).toEqual(["Arjun", "Dev", "Chief of staff"]);
+  });
+});
+
+describe("kinNewTaskChoices", () => {
+  it("offers a teammate only the projects they lead and no client, as the host takes them", () => {
+    const p1 = { key: KinRecordKey.make("P-1") };
+    const p2 = { key: KinRecordKey.make("P-2") };
+    const choices = { clients: ["C-1"], projects: [p1, p2] };
+    const leads = [{ key: p1.key }] as never;
+    expect(kinNewTaskChoices(choices, { access: "member", leads })).toEqual({
+      clients: [],
+      projects: [p1],
+    });
+    for (const access of ["owner", "co_owner"] as const)
+      expect(kinNewTaskChoices(choices, { access, leads: [] })).toBe(choices);
+    // Until the host says, or from a host that sends no leads, the host is left to refuse.
+    expect(kinNewTaskChoices(choices, null)).toBe(choices);
+    expect(kinNewTaskChoices(choices, { access: "member" })).toBe(choices);
   });
 });

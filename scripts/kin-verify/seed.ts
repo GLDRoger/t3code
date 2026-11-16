@@ -333,6 +333,8 @@ export async function seed(
       key: retainerKey,
       rev: retainer.project?.rev ?? retainer.record?.rev ?? retainer.rev ?? 0,
       renewsOn: day(9),
+      // On a project he doesn't lead, so his New task picker has one to leave out.
+      members: [person("dev")],
     });
     await owner.call("kin.goals.save", {
       orgId: ORG,

@@ -19,7 +19,6 @@ import {
   type KinQuoteRowView,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { kinDefaultTemplate } from "@t3tools/client-runtime/kin/kinTemplates";
-import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type {
   EnvironmentId,
@@ -34,6 +33,7 @@ import type {
 import {
   BanIcon,
   CheckIcon,
+  ChevronLeftIcon,
   DownloadIcon,
   ExternalLinkIcon,
   FileTextIcon,
@@ -44,8 +44,6 @@ import {
 import { useEffect, useId, useState } from "react";
 
 import { useAtomCommand } from "../state/use-atom-command";
-import { appAtomRegistry } from "../rpc/atomRegistry";
-import { KinClientDialog } from "./KinWorkForms";
 import { kinHostConnected } from "./useKinHost";
 
 import { useAssetUrls } from "../assets/assetUrls";
@@ -60,15 +58,7 @@ import {
   AlertDialogTitle,
 } from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogPanel,
-  DialogPopup,
-  DialogTitle,
-} from "../components/ui/dialog";
+import { SheetDescription, SheetHeader, SheetTitle } from "../components/ui/sheet";
 import { Label } from "../components/ui/label";
 import {
   Select,
@@ -108,8 +98,9 @@ export function KinInvoiceActions(
     readonly actions: MoneyActions;
     /** The invoice's client, to edit when Make invoice needs a detail of theirs. */
     readonly party: KinPartyRef | null;
-    readonly currency: string;
     readonly busy: boolean;
+    /** Opens Make invoice as the sheet's next step. */
+    readonly onMake: () => void;
   },
 ) {
   const { environmentId, orgId, invoice, actions } = props;
@@ -131,7 +122,6 @@ export function KinInvoiceActions(
     });
     setNext(read.ok ? read.value : null);
   };
-  const [making, setMaking] = useState(false);
   const busy = props.busy || actions.busy;
   if (!can.make && !can.issue && !can.void && !can.unvoid) return null;
   return (
@@ -144,7 +134,7 @@ export function KinInvoiceActions(
             disabled={busy}
             onClick={() => {
               actions.dismiss();
-              setMaking(true);
+              props.onMake();
             }}
           >
             <FileTextIcon />
@@ -218,14 +208,6 @@ export function KinInvoiceActions(
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-      {making ? (
-        <KinMakeDocumentDialog
-          {...props}
-          list={props.def?.list ?? "invoices"}
-          currency={props.currency}
-          onClose={() => setMaking(false)}
-        />
-      ) : null}
     </>
   );
 }
@@ -241,6 +223,8 @@ export function KinQuoteActions(
     readonly canChange: boolean;
     readonly onState: (state: KinRecordState) => void;
     readonly onOpenKey: (key: KinRecordKey) => void;
+    /** Opens Make its PDF as the sheet's next step. */
+    readonly onMakePdf: () => void;
   },
 ) {
   const { environmentId, item, quote, actions } = props;
@@ -251,7 +235,6 @@ export function KinQuoteActions(
   };
   const can = kinQuoteActions(quote.state, props.def?.numbering !== undefined);
   const invoicing = useKinInvoiceFromQuote(props);
-  const [making, setMaking] = useState(false);
   const [sending, setSending] = useState(false);
   const [requestId] = useState(randomUUID);
   const busy = props.busy || actions.busy || invoicing.busy;
@@ -316,7 +299,7 @@ export function KinQuoteActions(
           </Button>
         ) : null}
         {quote.state !== "declined" && allowed.render ? (
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setMaking(true)}>
+          <Button size="sm" variant="ghost" disabled={busy} onClick={props.onMakePdf}>
             <FileTextIcon />
             {KIN_INVOICES.makePdf}
           </Button>
@@ -362,17 +345,6 @@ export function KinQuoteActions(
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-      {making ? (
-        <KinMakeDocumentDialog
-          {...props}
-          itemKey={item.key}
-          list={props.def?.list ?? "quotes"}
-          title={KIN_INVOICES.makePdf}
-          currency={item.amount?.currency ?? props.def?.currency ?? "INR"}
-          party={item.party ?? null}
-          onClose={() => setMaking(false)}
-        />
-      ) : null}
     </div>
   );
 }
@@ -383,8 +355,11 @@ export function kinPreviewUrl(file: KinPreviewFile) {
   return URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: file.mimeType }));
 }
 
-/** Pick a template, see the document as it would be made, then file it. */
-function KinMakeDocumentDialog(
+/**
+ * Pick a template, see the document as it would be made, then file it: a step inside the entry's
+ * sheet, never a dialog over it, with the preview in the sheet and a way back to the entry.
+ */
+export function KinMakeDocumentStep(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
     readonly list: string;
@@ -393,6 +368,9 @@ function KinMakeDocumentDialog(
     readonly currency: string;
     readonly actions: MoneyActions;
     readonly party: KinPartyRef | null;
+    /** What Back returns to: the entry's own heading. */
+    readonly backLabel: string;
+    readonly onOpenClient: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
 ) {
@@ -426,7 +404,6 @@ function KinMakeDocumentDialog(
   const [picked, setPicked] = useState<string | null>(null);
   const recipe = templates.find((one) => one.name === picked) ?? kinDefaultTemplate(templates);
   const missing = kinInvoiceMissingClient(actions.problem, props.party);
-  const [editing, setEditing] = useState(false);
   const [shown, setShown] = useState<{
     readonly url: string;
     readonly file: KinPreviewFile;
@@ -453,110 +430,105 @@ function KinMakeDocumentDialog(
     show({ url: kinPreviewUrl(file), file });
   };
   return (
-    <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open && !actions.busy) close();
-      }}
-    >
-      <DialogPopup className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>{props.title ?? KIN_INVOICES.makeInvoice}</DialogTitle>
-          {recipe === null ? null : <DialogDescription>{recipe.description}</DialogDescription>}
-        </DialogHeader>
-        <DialogPanel>
-          <div className="flex flex-col gap-4">
-            {recipes.state._tag === "loading" ? (
-              <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Spinner />
-                Loading templates…
-              </p>
-            ) : recipes.state._tag !== "ready" ? (
-              <div className="flex flex-col items-start gap-2">
-                <Alert variant="error">
-                  <AlertDescription>Couldn't load your templates.</AlertDescription>
-                </Alert>
-                <Button size="sm" variant="outline" onClick={recipes.refresh}>
-                  Retry
-                </Button>
-              </div>
-            ) : recipe === null ? (
-              <p className="text-sm text-muted-foreground">{KIN_INVOICES.noTemplate}</p>
-            ) : templates.length > 1 ? (
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={selectId}>{KIN_INVOICES.template}</Label>
-                <Select
-                  value={recipe.name}
-                  onValueChange={(value) => {
-                    setPicked(templates.find((one) => one.name === value)?.name ?? null);
-                    show(null);
-                  }}
-                >
-                  <SelectTrigger id={selectId} className="w-full sm:w-80">
-                    <SelectValue>{recipe.title}</SelectValue>
-                  </SelectTrigger>
-                  <SelectPopup>
-                    {templates.map((one) => (
-                      <SelectItem key={one.name} value={one.name}>
-                        {one.title}
-                      </SelectItem>
-                    ))}
-                  </SelectPopup>
-                </Select>
-              </div>
-            ) : null}
-            {recipe === null || shown !== null ? null : lines === null ? (
-              <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Spinner />
-                {KIN_LINES.title}…
-              </p>
-            ) : (
-              <KinLinesEditor
-                lines={lines}
-                disabled={actions.busy}
-                onChange={(next) => {
-                  setLines(next);
-                  setLinesProblem(null);
-                }}
-              />
-            )}
-            {linesProblem === null ? null : (
-              <Alert variant="error">
-                <AlertDescription>{linesProblem}</AlertDescription>
-              </Alert>
-            )}
-            {shown !== null ? (
-              // oxlint-disable-next-line react/iframe-missing-sandbox -- Chrome will not render a PDF in a sandboxed frame; the src is a blob made here
-              <iframe
-                title={`${KIN_INVOICES.preview}: ${shown.file.name}`}
-                src={shown.url}
-                className="h-[60vh] w-full rounded-md border border-border bg-white"
-              />
-            ) : actions.busy ? (
-              <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Spinner />
-                {KIN_INVOICES.previewing}
-              </p>
-            ) : null}
-            {failed ? (
-              <Alert variant="error">
-                <AlertDescription>{KIN_INVOICES.previewFailed}</AlertDescription>
-              </Alert>
-            ) : null}
-            <KinMoneyActionNotice actions={actions} />
-            {missing === null ? null : (
-              <div className="flex flex-col items-start gap-2">
-                <p className="text-sm text-foreground">
-                  {KIN_INVOICES.missingClient(missing.name)}
-                </p>
-                <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
-                  {KIN_INVOICES.editClient(missing.name)}
-                </Button>
-              </div>
-            )}
+    <>
+      <SheetHeader>
+        <div className="flex flex-col items-start gap-1 pe-8">
+          <Button size="xs" variant="ghost" disabled={actions.busy} onClick={close}>
+            <ChevronLeftIcon />
+            {props.backLabel}
+          </Button>
+          <SheetTitle>{props.title ?? KIN_INVOICES.makeInvoice}</SheetTitle>
+          {recipe === null ? null : <SheetDescription>{recipe.description}</SheetDescription>}
+        </div>
+      </SheetHeader>
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-6">
+        {recipes.state._tag === "loading" ? (
+          <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Spinner />
+            Loading templates…
+          </p>
+        ) : recipes.state._tag !== "ready" ? (
+          <div className="flex flex-col items-start gap-2">
+            <Alert variant="error">
+              <AlertDescription>Couldn't load your templates.</AlertDescription>
+            </Alert>
+            <Button size="sm" variant="outline" onClick={recipes.refresh}>
+              Retry
+            </Button>
           </div>
-        </DialogPanel>
-        <DialogFooter>
+        ) : recipe === null ? (
+          <p className="text-sm text-muted-foreground">{KIN_INVOICES.noTemplate}</p>
+        ) : templates.length > 1 ? (
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor={selectId}>{KIN_INVOICES.template}</Label>
+            <Select
+              value={recipe.name}
+              onValueChange={(value) => {
+                setPicked(templates.find((one) => one.name === value)?.name ?? null);
+                show(null);
+              }}
+            >
+              <SelectTrigger id={selectId} className="w-full sm:w-80">
+                <SelectValue>{recipe.title}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup>
+                {templates.map((one) => (
+                  <SelectItem key={one.name} value={one.name}>
+                    {one.title}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          </div>
+        ) : null}
+        {recipe === null || shown !== null ? null : lines === null ? (
+          <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Spinner />
+            {KIN_LINES.title}…
+          </p>
+        ) : (
+          <KinLinesEditor
+            lines={lines}
+            disabled={actions.busy}
+            onChange={(next) => {
+              setLines(next);
+              setLinesProblem(null);
+            }}
+          />
+        )}
+        {linesProblem === null ? null : (
+          <Alert variant="error">
+            <AlertDescription>{linesProblem}</AlertDescription>
+          </Alert>
+        )}
+        {shown !== null ? (
+          // oxlint-disable-next-line react/iframe-missing-sandbox -- Chrome will not render a PDF in a sandboxed frame; the src is a blob made here
+          <iframe
+            title={`${KIN_INVOICES.preview}: ${shown.file.name}`}
+            src={shown.url}
+            className="h-[60vh] w-full rounded-md border border-border bg-white"
+          />
+        ) : actions.busy ? (
+          <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Spinner />
+            {KIN_INVOICES.previewing}
+          </p>
+        ) : null}
+        {failed ? (
+          <Alert variant="error">
+            <AlertDescription>{KIN_INVOICES.previewFailed}</AlertDescription>
+          </Alert>
+        ) : null}
+        <KinMoneyActionNotice actions={actions} />
+        {missing === null ? null : (
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-sm text-foreground">{KIN_INVOICES.missingClient(missing.name)}</p>
+            <Button size="sm" variant="outline" onClick={() => props.onOpenClient(missing.key)}>
+              {KIN_INVOICES.editClient(missing.name)}
+            </Button>
+          </div>
+        )}
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Button variant="outline" disabled={actions.busy} onClick={close}>
             {KIN_WORK_COPY.cancel}
           </Button>
@@ -583,42 +555,9 @@ function KinMakeDocumentDialog(
               {KIN_INVOICES.file}
             </Button>
           )}
-        </DialogFooter>
-      </DialogPopup>
-      {editing && missing !== null ? (
-        <KinEditClient
-          {...props}
-          clientKey={missing.key}
-          onDone={() => {
-            setEditing(false);
-            actions.dismiss();
-          }}
-        />
-      ) : null}
-    </Dialog>
-  );
-}
-
-/** The client's own edit form, opened from the invoice that needs one of its details. */
-function KinEditClient(
-  props: KinWorkTarget & { readonly clientKey: KinRecordKey; readonly onDone: () => void },
-) {
-  const { environmentId, orgId } = props;
-  const atom = kinClient.workClient({ environmentId, input: { orgId, key: props.clientKey } });
-  const state = kinWorkReadState(useAtomValue(atom));
-  if (state._tag !== "ready") return null;
-  return (
-    <KinClientDialog
-      environmentId={environmentId}
-      orgId={orgId}
-      editing={state.value.party}
-      onSaved={() => {
-        appAtomRegistry.refresh(atom);
-        props.onDone();
-      }}
-      onOpenExisting={props.onDone}
-      onClose={props.onDone}
-    />
+        </div>
+      </div>
+    </>
   );
 }
 

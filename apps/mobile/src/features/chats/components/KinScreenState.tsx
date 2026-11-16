@@ -18,7 +18,7 @@ import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { environmentPresentations } from "../../../state/presentation";
-import { kinStandInLine } from "@t3tools/client-runtime/kin/kinHost";
+import { KIN_USE_THIS_HOST, kinStandInLine } from "@t3tools/client-runtime/kin/kinHost";
 import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinOwnerLevel, type KinPersonAccess } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
@@ -33,7 +33,9 @@ import {
   type KinStaleNotice,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinAppShell } from "../state/kinChatOnly";
-import { useKinHost } from "../state/useKinHost";
+import { useKinHost, useKinHostChooser } from "../state/useKinHost";
+import { kinCachedOrgsAtom } from "../state/kinClient";
+import { AsyncResult } from "effect/reactivity";
 import { useKinReconnect } from "../state/useKinReconnect";
 
 export type KinReadyState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
@@ -198,6 +200,8 @@ export function KinOfflineState(props: {
   );
 }
 
+const noDirectoryAtom = Atom.make(AsyncResult.success(null));
+
 /** The stand-in line for a screen, or null while the usual computer is the one showing. */
 export function useKinStandIn(environmentId?: EnvironmentId) {
   const host = useKinHost();
@@ -205,10 +209,17 @@ export function useKinStandIn(environmentId?: EnvironmentId) {
   const access = useAtomValue(
     host._tag === "host" ? kinAccessAtom(connectionAtomRuntime, host.environmentId) : noAccessAtom,
   );
+  const usualDirectory = useAtomValue(
+    host._tag === "host" && host.standInFor !== undefined
+      ? kinCachedOrgsAtom(host.standInFor)
+      : noDirectoryAtom,
+  );
+  const useHere = useKinHostChooser();
   const line = kinStandInLine(
     host,
     (id) => presentations.get(id)?.entry.target.label ?? null,
     kinOwnerLevel(access ?? undefined),
+    AsyncResult.getOrElse(usualDirectory, () => null),
   );
   const { status, reconnect } = useKinReconnect(line?.usual ?? null);
   if (line === null || host._tag !== "host") return null;
@@ -217,47 +228,69 @@ export function useKinStandIn(environmentId?: EnvironmentId) {
     message: status === "failed" ? `${line.message} Still no answer.` : line.message,
     action: reconnect === null ? null : status === "pending" ? "Trying…" : KIN_RETRY,
     onPress: status === "pending" ? null : reconnect,
+    onUseHere: () => useHere(line.shown),
   };
 }
 
 /**
  * "Showing Studio Mac. Office Mac can't be reached." while another computer's Kin stands in: one
- * quiet line in the layout, never over content, that tries the usual one again when tapped.
+ * quiet line in the layout, never over content, that tries the usual one again or makes the one
+ * showing the usual one.
  */
 export function KinStandInLine(props: {
   readonly line: NonNullable<ReturnType<typeof useKinStandIn>>;
 }) {
-  const { message, action, onPress } = props.line;
+  const { message, action, onPress, onUseHere } = props.line;
   return (
-    <Pressable
-      accessibilityRole={action === null ? "text" : "button"}
-      accessibilityLabel={action === null ? message : `${message} ${action}`}
-      accessibilityLiveRegion="polite"
-      disabled={onPress === null}
-      onPress={onPress ?? undefined}
-      className="flex-row items-start gap-2 py-1 active:opacity-60"
-    >
+    <View className="flex-row items-start gap-2 py-1">
       <View className="pt-0.5">
         <SymbolView name="wifi.slash" size={12} tintColorClassName="accent-icon-muted" />
       </View>
       {/* A status line, capped like the chat title so it never crowds out the chats. */}
-      <AppText
-        textRole="caption"
-        maxFontSizeMultiplier={1.5}
-        className="min-w-0 flex-1 text-foreground-muted"
-      >
-        {message}
-        {action === null ? null : (
-          <AppText
-            textRole="caption"
-            maxFontSizeMultiplier={1.5}
-            className="font-t3-medium text-primary"
+      <View className="min-w-0 flex-1 gap-1">
+        <AppText
+          textRole="caption"
+          maxFontSizeMultiplier={1.5}
+          accessibilityLiveRegion="polite"
+          className="text-foreground-muted"
+        >
+          {message}
+        </AppText>
+        <View className="flex-row gap-4">
+          {action === null ? null : (
+            <Pressable
+              accessibilityRole="button"
+              disabled={onPress === null}
+              onPress={onPress ?? undefined}
+              hitSlop={8}
+              className="active:opacity-60"
+            >
+              <AppText
+                textRole="caption"
+                maxFontSizeMultiplier={1.5}
+                className="font-t3-medium text-primary"
+              >
+                {action}
+              </AppText>
+            </Pressable>
+          )}
+          <Pressable
+            accessibilityRole="button"
+            onPress={onUseHere}
+            hitSlop={8}
+            className="active:opacity-60"
           >
-            {` ${action}`}
-          </AppText>
-        )}
-      </AppText>
-    </Pressable>
+            <AppText
+              textRole="caption"
+              maxFontSizeMultiplier={1.5}
+              className="font-t3-medium text-primary"
+            >
+              {KIN_USE_THIS_HOST}
+            </AppText>
+          </Pressable>
+        </View>
+      </View>
+    </View>
   );
 }
 
