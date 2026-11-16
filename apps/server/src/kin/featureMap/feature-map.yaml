@@ -127,6 +127,15 @@ features:
       - apps/server/src/kin/approvals/PendingActions.test.ts
       - apps/server/src/kin/approvals/ActionExecutor.test.ts
       - apps/server/src/kin/chat/approvalCards.test.ts
+      - packages/client-runtime/src/kin/kinInboxModel.test.ts
+
+  - id: approval-phones
+    name: The phones that approve with Face ID
+    tab: settings
+    web: [settings, section:Approvals]
+    phone: [SettingsKin, KinApprovals]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [packages/client-runtime/src/kin/kinApprovalPresentation.test.ts]
 
   - id: send-mail
     name: Send or reply to mail, confirmed on a card
@@ -141,6 +150,7 @@ features:
       - apps/server/src/kin/connections/ConnectionsService.test.ts
       - .agents/skills/verify-kin/scripts/send-card-once.sh
       - .agents/skills/verify-kin/scripts/overdue-invoice-reminder.sh
+      - packages/client-runtime/src/kin/kinCardPresentation.test.ts
 
   - id: statements
     name: Read a bank statement and match its rows
@@ -193,6 +203,7 @@ features:
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof:
       - apps/server/src/kin/lead/KinLeadProvision.test.ts
+      - apps/server/src/kin/lead/WakeupRunner.test.ts
       - .agents/skills/verify-kin/scripts/checkin-new-agent.sh
 
   - id: memory
@@ -371,7 +382,9 @@ features:
     phone: [tab:money, section:Receipts, KinReceiptApply]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    proof: none
+    proof:
+      - apps/server/src/kin/gendocs/DocJobs.test.ts
+      - .agents/skills/verify-kin/scripts/owner-money-forms.sh
 
   - id: budget
     name: A spending budget
@@ -390,7 +403,7 @@ features:
     phone: [tab:money, menu:Add, KinGoalForm]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    proof: none
+    proof: [.agents/skills/verify-kin/scripts/owner-money-forms.sh]
 
   - id: subscriptions
     name: Subscriptions
@@ -416,7 +429,23 @@ features:
     phone: [tab:money, KinDates]
     roles: { owner: both, co_owner: both, lead: both, member: none }
     tools: [dates_query]
-    proof: none
+    proof:
+      - apps/server/src/kin/work/money.test.ts
+      - .agents/skills/verify-kin/scripts/owner-money-forms.sh
+
+  - id: search
+    name: Search everything
+    tab: money
+    web: [money, dialog:Search Work]
+    phone: [tab:money, KinSearch]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      The web has Search on every place's header. On the phone, Money has it; Tasks, Clients and
+      Docs search from their own bar, and the Tasks bar also finds clients, projects and docs, which
+      is how a member searches everything there.
+    proof:
+      - packages/client-runtime/src/kin/kinDocs.test.ts
+      - .agents/skills/verify-kin/scripts/private-task-hidden.sh
 
   # ── Clients ────────────────────────────────────────────────────────────────────────────────
   - id: clients
@@ -474,10 +503,11 @@ features:
     web: [clients, "?project"]
     phone: [tab:clients, KinProject]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: A member's project page can't list its tasks (kin.work.list takes only led projects).
+    note: Its people list its tasks as they see them; a task marked "Only me" stays out.
     proof:
       - apps/server/src/kin/work/KinRecords.test.ts
       - .agents/skills/verify-kin/scripts/private-task-hidden.sh
+      - .agents/skills/verify-kin/scripts/lead-adds-milestone.sh
 
   - id: project-form
     name: Add or change a project
@@ -494,9 +524,9 @@ features:
     web: [clients, "?project", dialog:Add milestone]
     phone: [tab:clients, KinProject, KinMilestoneForm]
     form: true
-    roles: { owner: both, co_owner: both, lead: web, member: none }
-    note: The web lets a project's lead add one; the phone shows the button to the owner level only.
-    proof: none
+    roles: { owner: both, co_owner: both, lead: both, member: none }
+    note: Members see the milestones; only those who can add one are told to.
+    proof: [.agents/skills/verify-kin/scripts/lead-adds-milestone.sh]
 
   - id: project-lead
     name: Change a project's lead
@@ -576,8 +606,13 @@ features:
     web: [settings]
     phone: [SettingsKin]
     roles: { owner: both, co_owner: both, lead: phone, member: phone }
-    note: On web the gear shows only in a chat-only session; the owner's app has Settings pages instead.
-    proof: none
+    note: >-
+      On web the gear shows only to the owner level in a chat-only session; the owner's app has
+      Settings pages instead. A lead's or member's phone settings are their profile (on web, the
+      name in the sidebar), this phone's notifications, appearance and leaving the team: the
+      browser and the web app already hold those, so web adds no entry. A teammate who follows
+      the link is told these settings are the owner's.
+    proof: [.agents/skills/verify-kin/scripts/checkin-new-agent.sh]
 
   - id: company
     name: Company details, brand and templates
@@ -609,7 +644,7 @@ features:
     phone: [SettingsKin, KinCheckInForm]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    note: In the app's Settings › Check-ins the sheet opens behind the Settings dialog; Kin's own settings works.
+    note: Inside the app's Settings dialog the form opens as a dialog; in Kin's own settings, a sheet.
     proof:
       - apps/server/src/kin/pulse/checkIn.test.ts
       - packages/client-runtime/src/kin/kinCheckIns.test.ts
@@ -641,9 +676,6 @@ features:
     phone: [SettingsKin, KinConnections, KinConnection, KinConnectionEdit]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    depth_reason: >-
-      Four levels on the phone: Settings › Connections › a connection › edit. The gear adds a
-      level the dock tabs don't have.
     proof: [apps/server/src/kin/connections/ConnectionsService.test.ts]
 
   - id: team
@@ -681,12 +713,12 @@ features:
     name: Change a teammate's profile
     tab: settings
     web: [team, sheet:Teammate]
-    phone: [SettingsKin, KinTeam, KinTeammate, KinProfile, KinProfileEdit]
+    phone: [SettingsKin, KinTeam, KinTeammate, KinProfileEdit]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    depth_reason: >-
-      Five levels on the phone, past the rule: Team › teammate › profile › edit. Open; the
-      teammate sheet should edit the profile itself.
+    note: >-
+      The host lets a co-owner edit a teammate's profile, but both clients offer the edit to the
+      owner himself only (kinMayEditProfile).
     proof: [packages/client-runtime/src/kin/kinProfiles.test.ts]
 
   - id: profile
@@ -713,4 +745,3 @@ unlisted:
   "web:?v": Picks the version of the open doc; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.
-  "phone:KinSearch": No in-app way reaches it, only the link kin/:env/:org/search; search is each tab's search bar.
