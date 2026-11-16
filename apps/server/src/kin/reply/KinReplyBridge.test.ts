@@ -605,6 +605,25 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a reply and its answered mark commit together: a crash between them can't re-ask", () =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, posted, wakeupId, owner, sql, services } = yield* setup({
+      ask: "Apples?",
+    });
+    // The process dies as the mark is written, after the reply's own insert.
+    yield* sql`CREATE TRIGGER crash_at_mark BEFORE UPDATE OF replied_at ON kin_events
+      BEGIN SELECT RAISE(ABORT, 'crashed between the reply and its mark'); END`;
+    fake.items = [text("a", 1, "Apples, red and round.", runId)];
+    yield* complete;
+    const stored = (yield* posted).some((row) => row.body === "Apples, red and round.");
+    const askedAgain = yield* Context.get(services, KinEventQueue.KinEventQueue).requeueUnfinished(
+      owner.orgId,
+      wakeupId,
+    );
+    assert.deepStrictEqual({ stored, askedAgain }, { stored: false, askedAgain: 1 });
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect.each([
   { reply: "Here is the invoice. I've put up a card to send it.", after: ["kin-no-card"] },
   { reply: "The invoice total is 59,000.", after: [] },
