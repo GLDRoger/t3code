@@ -6,7 +6,7 @@ import {
   type KinReactionEmoji,
   type KinWidget,
 } from "@t3tools/contracts";
-import { Pressable, View } from "react-native";
+import { Pressable, useWindowDimensions, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import type { FilePreviewSource } from "../../../components/ui/FilePreviewModal";
@@ -40,6 +40,7 @@ import {
   kinAgentAvatar,
   kinSentences,
   type KinAvatarView,
+  kinTableWiderThan,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
@@ -164,6 +165,12 @@ export function KinMessageBubble(props: {
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
   const hasBody = !deleted && message.body.trim().length > 0;
+  const window = useWindowDimensions();
+  // A wide table scrolls sideways in the bubble; its bar shows only mid-swipe, so a line says so.
+  // Width in body characters: the bubble's share of the screen less its padding, ~0.55em each.
+  const wideTable =
+    hasBody &&
+    kinTableWiderThan(message.body, (window.width * 0.88 - 64) / (17 * window.fontScale * 0.55));
   // The bubble reads as one element, so its links are reachable as VoiceOver actions.
   const links = hasBody ? kinMessageLinks(message.body) : [];
   const hasCard =
@@ -232,6 +239,14 @@ export function KinMessageBubble(props: {
           )}
         >
           Message deleted
+        </Text>
+      ) : null}
+      {wideTable ? (
+        <Text
+          textRole="caption"
+          className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
+        >
+          Swipe the table sideways to see all of it
         </Text>
       ) : null}
       {suggested || message.editedAt !== null ? (

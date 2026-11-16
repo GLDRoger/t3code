@@ -18,6 +18,7 @@ import {
   kinInboxScreenState,
   kinOwnedLeadAgentId,
   kinPreviewText,
+  kinTableWiderThan,
   kinReconnectStep,
   kinWaitingBannerView,
   kinWaitingRowView,
@@ -349,6 +350,14 @@ describe("chat list rows", () => {
     ],
   ])("flattens %j to one line", (body, preview) => {
     expect(kinPreviewText(body)).toBe(preview);
+  });
+
+  it("tells a table wider than a bubble from one that fits", () => {
+    const table =
+      "| Piece | Owner | Due |\n|---|---|---|\n| Launch checklist | Dev Malhotra | Wed |";
+    expect(kinTableWiderThan(`Where:\n\n${table}\n\nThanks.`, 30)).toBe(true);
+    expect(kinTableWiderThan(table, 60)).toBe(false);
+    expect(kinTableWiderThan("No table here, just | a pipe", 5)).toBe(false);
   });
 });
 

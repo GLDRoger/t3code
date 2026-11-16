@@ -252,6 +252,30 @@ export function kinPlainTables(markdown: string): string {
     .join("\n");
 }
 
+/**
+ * Whether a markdown table is wider than `chars` characters, as its widest cell per column plus
+ * each cell's padding: a phone bubble scrolls such a table sideways and says so beneath it.
+ */
+export function kinTableWiderThan(markdown: string, chars: number): boolean {
+  let widths: number[] = [];
+  for (const line of [...markdown.split("\n"), ""]) {
+    if (TABLE_RULE.test(line)) continue;
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      line
+        .trim()
+        .slice(1, -1)
+        .split("|")
+        .forEach((cell, index) => {
+          widths[index] = Math.max(widths[index] ?? 0, cell.trim().length + 3);
+        });
+      continue;
+    }
+    if (widths.reduce((sum, width) => sum + width, 0) > chars) return true;
+    widths = [];
+  }
+  return false;
+}
+
 /** Message markdown as one plain line. */
 export function kinPreviewText(body: string): string {
   return kinPlainTables(body)
