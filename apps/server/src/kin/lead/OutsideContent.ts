@@ -57,6 +57,8 @@ export const OUTSIDE_TOOLS = {
   kin_chat_post: "allowed",
   kin_widget_upsert: "allowed",
   kin_ask: "allowed",
+  // Outside text could close a question the person never answered.
+  kin_ask_close: "refused",
   kin_react: "allowed",
   kin_chart: "allowed",
   kin_visual: "allowed",

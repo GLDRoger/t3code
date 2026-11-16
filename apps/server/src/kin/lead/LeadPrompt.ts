@@ -60,6 +60,7 @@ import { groupRules, teamRules } from "./instructions.ts";
 import { socialRules } from "../social/instructions.ts";
 import { isSocialDomain } from "../social/seat.ts";
 import { buildSeat } from "./seat.ts";
+import { dueTurnText, openQuestionsSection } from "../questions/openQuestions.ts";
 import { asksUndo, recentChanges, UNDO_RULE } from "./undoSection.ts";
 
 export class KinLeadPromptError extends Schema.TaggedError<KinLeadPromptError>()(
@@ -420,6 +421,37 @@ export class KinLeadPrompt extends Context.Service<
                     Option.getOrUndefined(words),
                     true,
                   )}`,
+            );
+            continue;
+          }
+          if (event._tag === "deferral.due" && event.subject.type === "question") {
+            fromOwner = false;
+            const due = yield* dueTurnText(
+              orgId,
+              event.subject.questionId,
+              yield* Clock.currentTimeMillis,
+            ).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin open question unreadable", cause).pipe(Effect.as(null)),
+              ),
+            );
+            const eventQuote = quote("event data", { event: event.eventId });
+            if (due === null) {
+              events.push(
+                `${eventQuote}\n\nKin couldn't read that question just now. Write exactly ${SILENT_REPLY}.`,
+              );
+              continue;
+            }
+            if (due === undefined) {
+              events.push(
+                `${eventQuote}\n\nThat question was answered or withdrawn before its day. Write exactly ${SILENT_REPLY}.`,
+              );
+              continue;
+            }
+            replyDue = true;
+            events.push(
+              `${eventQuote}\n\n${due.text}\n\n${quote("open question (data)", due.data, true)}`,
             );
             continue;
           }
@@ -1175,6 +1207,22 @@ export class KinLeadPrompt extends Context.Service<
             Effect.logWarning("Kin seat unavailable", cause).pipe(Effect.as(undefined)),
           ),
         );
+        const asked =
+          input.lane === undefined
+            ? undefined
+            : yield* openQuestionsSection({
+                orgId,
+                chatId: input.lane.chatId,
+                ownerOnly,
+                now,
+              }).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin open questions unavailable", cause).pipe(
+                    Effect.as(undefined),
+                  ),
+                ),
+              );
         // The owner taking something back: what this agent's last turns changed here, to put back.
         const changedLately =
           ownerOnly && input.lane !== undefined && asksUndo(events)
@@ -1307,6 +1355,7 @@ export class KinLeadPrompt extends Context.Service<
                 ),
                 sharedPart(seat.team.join("\n")),
               ]),
+          ...(asked === undefined ? [] : [sharedPart(asked.heading), sharedPart(asked.body)]),
           ...(changedLately.length === 0
             ? []
             : [
@@ -1679,7 +1728,9 @@ const WITHHELD_DUE = `Something the owner set up is due, but other people can re
 /** The memory items an event names. */
 const memoryIds = (event: KinEvent): ReadonlyArray<KinMemoryItemId> =>
   event._tag === "deferral.due"
-    ? [event.subject.itemId]
+    ? "itemId" in event.subject
+      ? [event.subject.itemId]
+      : []
     : event._tag === "watchdog"
       ? event.itemIds
       : event._tag === "routine"
@@ -1694,7 +1745,11 @@ const memoryIds = (event: KinEvent): ReadonlyArray<KinMemoryItemId> =>
  */
 const sharedEventFacts = (event: KinEvent, known: ReadonlySet<string>) => {
   const facts: Record<string, unknown> = eventFacts(event);
-  if (event._tag === "deferral.due" && !known.has(event.subject.itemId)) {
+  if (
+    event._tag === "deferral.due" &&
+    "itemId" in event.subject &&
+    !known.has(event.subject.itemId)
+  ) {
     const { itemId: _hidden, ...subject } = event.subject;
     facts.subject = subject;
   }

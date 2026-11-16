@@ -104,7 +104,7 @@ describe("KinRefreshHub", () => {
   );
 
   it.effect(
-    "tells a teammate only about their own lead list, people, the time zone and what needs attention, never the owner's reads",
+    "tells a teammate only about their own lead list, people, the time zone, what needs attention and that a list moved, never the owner's reads",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -126,6 +126,7 @@ describe("KinRefreshHub", () => {
           people: 0,
           leads: 0,
           pulse: 0,
+          workLists: 0,
         });
 
         // Things only the owner reads: the company, and a lead Priya can't message.
@@ -162,6 +163,7 @@ describe("KinRefreshHub", () => {
           people: 0,
           leads: 1,
           pulse: 0,
+          workLists: 0,
         });
         assert.strictEqual(yield* Queue.size(priyaSees), 0);
       }).pipe(Effect.scoped, Effect.provide(paired)),
@@ -219,7 +221,11 @@ describe("KinRefreshHub", () => {
           leads: (start.leads ?? 0) + 1,
           workChoices: (start.workChoices ?? 0) + 2,
         });
-        assert.deepStrictEqual(yield* Queue.take(work), { seq: created.seq + 1 });
+        // Anyone's view may have moved, so each person's own number moves too.
+        assert.deepStrictEqual(yield* Queue.take(work), {
+          seq: created.seq + 1,
+          team: new Map([[me.personId, 1]]),
+        });
         const someone = { ...me, personId: KinPersonId.make("someone") };
         assert.include(
           yield* announceRefreshes([someone], {

@@ -58,6 +58,8 @@ The `kin-lead-docs-*` cases check the doc tools: "move the launch to the 14th" o
 
 The `kin-team-*` cases replay a Team-room turn (write `{{TEAM_RULES}}` where `LeadPrompt` puts the room's rules) and check `team_say`: an agent offered an uninvited turn speaks when it holds a fact nobody said and passes when there is nothing new (`kin-team-pitch-in-passes-with-nothing-new`, the control); the one objection is an objection with no end; whose call it is decides once everyone agrees; a question already widened is not widened again; and a closing decision has a one-line outcome that names no key (Kin lists what changed).
 
+The `kin-questions-*` cases check open questions: a decision only the owner can make goes out as one `kin_ask` with a `default`, with no second question in text; an agent whose turn lists the same question as already asked (the `# Open questions to` section `questions/openQuestions.ts` writes) doesn't put it to the owner again; woken at a question's day, it does the default with its tools and says so with how to undo it; and an internal call is decided and told, never asked.
+
 `kin-lead-memory-quotes-owner-words` checks that a lead saves what the owner said with a `quote` of their words, and `kin-lead-memory-paraphrased-quote-refused` replays the server refusing a paraphrased quote and checks the lead never resends it: it retries with the exact words or leaves the item out.
 
 ## Device manager cases

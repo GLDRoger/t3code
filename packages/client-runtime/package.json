@@ -723,6 +723,10 @@
       "types": "./src/kin/kinChartLayout.ts",
       "default": "./src/kin/kinChartLayout.ts"
     },
+    "./kin/kinWaitingAsk": {
+      "types": "./src/kin/kinWaitingAsk.ts",
+      "default": "./src/kin/kinWaitingAsk.ts"
+    },
     "./kin/kinChoicePresentation": {
       "types": "./src/kin/kinChoicePresentation.ts",
       "default": "./src/kin/kinChoicePresentation.ts"
