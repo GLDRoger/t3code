@@ -119,3 +119,13 @@ export const agentQuietUntil = Effect.fn("KinQuiet.agent")(function* (
   const quiet = yield* personQuiet(orgId, agent.owner, at);
   return quiet.quiet ? quiet.endsAt : undefined;
 });
+
+/** The end of `personId`'s quiet hours when `at` falls in them, else undefined. */
+export const personQuietUntil = Effect.fn("KinQuiet.personUntil")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  at: number,
+) {
+  const quiet = yield* personQuiet(orgId, personId, at);
+  return quiet.quiet ? quiet.endsAt : undefined;
+});
