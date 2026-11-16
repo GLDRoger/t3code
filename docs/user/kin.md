@@ -23,9 +23,9 @@ use stay signed in.
 ### Your profile
 
 Open your profile (your name in the Chats list on the web, **Settings** on the phone) to set your
-name, skills, time zone and working hours. Agents
-read them when they decide who should do something and when to message you. Quiet hours are
-respected: an agent nudges you about the same thing at most once a day, inside your hours.
+name, skills, time zone and working hours. Agents read them when they decide who should do
+something and when to message you. An agent nudges you about the same thing at most once a day,
+inside your hours.
 
 ### Adding a teammate (owner and co-owners)
 
@@ -44,8 +44,8 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
 
 - **One reply per message.** Each message gets one answer. If the agent starts something longer,
   such as a coding job, it says so and comes back in the chat when there's news.
-- **It works with what you can see.** An agent answering you sees only what you may see. Ask a
-  member's question about money and it won't share figures they can't see.
+- **It works with what you can see.** An agent answering you sees only what you may see.
+  When a member asks about money, it won't share figures they can't see.
 - **It asks with cards.** A question with choices, a chart, or something to confirm comes as a card
   in the chat. Tapping an answer answers the agent; it is never an approval.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
@@ -81,7 +81,7 @@ approval can happen.
 A group is one chat with any mix of agents and people (owner and co-owners: **New → New group**).
 The first agent you pick answers when a message names nobody; write `@` and a name to ask another.
 Agents keep to one short message in a group, and don't talk to each other unless you name one.
-People in a group can ask its agents to talk things through; only the owner can have an agent
+People in a group can ask its agents to talk things through; only the owner and co-owners can have an agent
 start work.
 
 In a group, an agent won't show something to people who can't see it. Ask about an invoice there
