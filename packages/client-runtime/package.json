@@ -567,6 +567,10 @@
       "types": "./src/kin/kinMessagePage.ts",
       "default": "./src/kin/kinMessagePage.ts"
     },
+    "./kin/kinAgentPage": {
+      "types": "./src/kin/kinAgentPage.ts",
+      "default": "./src/kin/kinAgentPage.ts"
+    },
     "./kin/kinAgentRetire": {
       "types": "./src/kin/kinAgentRetire.ts",
       "default": "./src/kin/kinAgentRetire.ts"

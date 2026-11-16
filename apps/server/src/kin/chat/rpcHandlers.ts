@@ -11,7 +11,7 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
-import { ownerLevelAgentPage } from "../lead/agentPage.ts";
+import { ownerLevelAgentPage, ownerLevelSetCharacter } from "../lead/agentPage.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { seedCharacters } from "../lead/characters.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -455,6 +455,22 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               withHostModels,
               Effect.provideContext(kin.value.services.value),
             );
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.lead.character.set": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* ownerLevelSetCharacter({
+              ...input,
+              by: { _tag: "session", session },
+            }).pipe(withHostModels, Effect.provideContext(kin.value.services.value));
           }),
         ),
         Effect.mapError(toLeadError),

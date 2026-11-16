@@ -20,6 +20,7 @@ import { ownerZone } from "../work/recordRows.ts";
 import { type LeadCreator, profileIn, retirable } from "./KinLeadProvision.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import { turnModels } from "./leadModels.ts";
+import { setCharacter } from "./characters.ts";
 
 const CHARACTER_ORIGIN = "kin-character:";
 const CHARACTER_MAX = 20_000;
@@ -90,4 +91,19 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
     })),
     playbooks: playbooks.map((row) => ({ key: KinRecordKey.make(row.key), title: row.title })),
   } satisfies KinAgentPage;
+});
+
+/**
+ * Writes an agent's character from its page as a new version of its doc, so History still brings
+ * the old one back. The next turn reads it. Checked as for retiring it.
+ */
+export const ownerLevelSetCharacter = Effect.fn("KinAgentPage.setCharacter")(function* (input: {
+  readonly by: LeadCreator;
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly body: string;
+}) {
+  const { lead, by } = yield* retirable(input);
+  yield* setCharacter(lead.orgId, lead.agentId, input.body, by ?? undefined);
+  return yield* ownerLevelAgentPage(input);
 });

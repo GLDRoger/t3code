@@ -222,6 +222,13 @@ export const KinAgentPage = Schema.Struct({
   playbooks: Schema.Array(Schema.Struct({ key: KinRecordKey, title: Schema.String })),
 });
 export type KinAgentPage = typeof KinAgentPage.Type;
+/** A new character for one agent, written over the old as a version its history keeps. */
+export const KinAgentCharacterSetInput = Schema.Struct({
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  body: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
+});
+export type KinAgentCharacterSetInput = typeof KinAgentCharacterSetInput.Type;
 export const KinAgentDefaultsInput = Schema.Struct({ orgId: KinOrgId });
 export type KinAgentDefaultsInput = typeof KinAgentDefaultsInput.Type;
 /** The models new agents start on; null until the owner chooses (then the first agent's). */

@@ -26,6 +26,11 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinLevels from "./KinLevels.ts";
 import * as RetiredActions from "../approvals/retiredActions.ts";
 import * as Provision from "./KinLeadProvision.ts";
+import { ownerLevelAgentPage, ownerLevelSetCharacter } from "./agentPage.ts";
+import { seedCharacters } from "./characters.ts";
+import * as KinRecords from "../work/KinRecords.ts";
+import { KinLevelGate } from "./LevelGate.ts";
+import * as KinEventQueue from "./KinEventQueue.ts";
 import { RETIRED_ACTION_REASON, RETIRED_WORKER_REASON } from "./Retirement.ts";
 
 const layer = Layer.merge(Provision.layer, RetiredActions.hostLayer).pipe(
@@ -951,6 +956,45 @@ describe("KinLeadProvision", () => {
         assert.strictEqual(yield* refusal(pause(false, teammate)), "not_found");
         assert.isUndefined((yield* pause(false)).paused);
       }).pipe(Effect.provide(paired)),
+  );
+  it.effect("shows an agent's page and keeps an edited character's old version", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const tech = (yield* Provision.create(input(owner, []))).lead;
+      yield* seedCharacters(tech.orgId);
+      const target = { by: owner, orgId: tech.orgId, agentId: tech.agentId };
+      const page = yield* ownerLevelAgentPage(target);
+      assert.strictEqual(page.models.strong.model, "claude-opus-4-6");
+      assert.deepStrictEqual(page.runsOn, page.models);
+      assert.isNull(page.modelNote);
+      assert.include(page.character?.body ?? "", "# Ada");
+      const edited = yield* ownerLevelSetCharacter({ ...target, body: "# Ada\n\nDry and exact." });
+      assert.strictEqual(edited.character?.body.trim(), "# Ada\n\nDry and exact.");
+      const versions = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_doc_versions v
+        JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
+        WHERE r.key = ${edited.character!.key}`;
+      assert.strictEqual(versions[0]!.n, 2);
+
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('teammate', ${tech.orgId}, 'teammate', 'Teammate', '2026-11-09T00:00:00.000Z')`;
+      const teammate = { _tag: "person", personId: KinPersonId.make("teammate") } as const;
+      assert.strictEqual(
+        yield* refusal(ownerLevelAgentPage({ ...target, by: teammate })),
+        "not_found",
+      );
+      assert.strictEqual(
+        yield* refusal(ownerLevelSetCharacter({ ...target, by: teammate, body: "Loud." })),
+        "not_found",
+      );
+    }).pipe(
+      Effect.provide(
+        KinRecords.layer.pipe(
+          Layer.provideMerge(Layer.mock(KinLevelGate)({})),
+          Layer.provideMerge(KinEventQueue.layer),
+          Layer.provideMerge(paired),
+        ),
+      ),
+    ),
   );
   it.effect(
     "lets only the owner choose who may message a lead, in a chat that is that person's own",

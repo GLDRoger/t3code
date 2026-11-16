@@ -1,6 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 import {
+  KinAgentCharacterSetInput,
   KinAgentDefaults,
   KinAgentDefaultsInput,
   KinAgentDefaultsSetInput,
@@ -116,6 +117,11 @@ const KinLeadRpcs = [
   }),
   // An agent's whole page, pausing it, and the models new agents start on: owner level.
   Rpc.make("kin.lead.page", { payload: KinAgentPageInput, success: KinAgentPage, error: KinError }),
+  Rpc.make("kin.lead.character.set", {
+    payload: KinAgentCharacterSetInput,
+    success: KinAgentPage,
+    error: KinError,
+  }),
   Rpc.make("kin.lead.pause", {
     payload: KinLeadRetireInput,
     success: KinLeadProfile,
@@ -247,6 +253,7 @@ export const KIN_RPC_SCOPES = {
   "kin.lead.retire": AuthKinChatScope,
   "kin.lead.restore": AuthKinChatScope,
   "kin.lead.page": AuthKinChatScope,
+  "kin.lead.character.set": AuthKinChatScope,
   "kin.lead.pause": AuthKinChatScope,
   "kin.lead.resume": AuthKinChatScope,
   "kin.agents.defaults": AuthKinChatScope,
@@ -307,6 +314,7 @@ const KIN_RPC_ACCESS = {
   "kin.lead.retire": "owner_level",
   "kin.lead.restore": "owner_level",
   "kin.lead.page": "owner_level",
+  "kin.lead.character.set": "owner_level",
   "kin.lead.pause": "owner_level",
   "kin.lead.resume": "owner_level",
   "kin.agents.defaults": "owner_level",
@@ -508,6 +516,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.lead.retire": "kin-chat",
   "kin.lead.restore": "kin-chat",
   "kin.lead.page": "kin-chat",
+  "kin.lead.character.set": "kin-chat",
   "kin.lead.pause": "kin-chat",
   "kin.lead.resume": "kin-chat",
   "kin.agents.defaults": "kin-chat",
