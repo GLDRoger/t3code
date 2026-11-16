@@ -47,6 +47,7 @@ features:
       - apps/server/src/kin/widgets/registry.test.ts
       - apps/server/src/kin/visualSeal.test.ts
       - packages/client-runtime/src/kin/kinCardPresentation.test.ts
+      - .agents/skills/verify-kin/scripts/card-gallery.sh
 
   - id: waiting-on-you
     name: Waiting on you
@@ -151,6 +152,7 @@ features:
       - .agents/skills/verify-kin/scripts/send-card-once.sh
       - .agents/skills/verify-kin/scripts/overdue-invoice-reminder.sh
       - packages/client-runtime/src/kin/kinCardPresentation.test.ts
+      - .agents/skills/verify-kin/scripts/card-gallery.sh
 
   - id: statements
     name: Read a bank statement and match its rows
