@@ -1,11 +1,11 @@
 ---
 name: verify-kin-models
-description: Model-check Kin's riskiest flows (the send card, a turn's reply, the loose check-in, money recorded on a Confirm, changing who a person is, a task's hand-offs, a Team-room discussion) with TLA+ and draw them as statecharts the owner can read. Use when changing the code a model covers, when a model or property test fails, or when asked for a chart of one of these flows.
+description: Model-check Kin's riskiest flows (the send card, a turn's reply, the loose check-in, money recorded on a Confirm, changing who a person is, a task's hand-offs, a Team-room discussion, Work's live stream) with TLA+ and draw them as statecharts the owner can read. Use when changing the code a model covers, when a model or property test fails, or when asked for a chart of one of these flows.
 ---
 
 # Verify Kin's models
 
-Seven small TLA+ models live in `verification/kin/<name>/`. Each has a `README.md` with its rules, bound, what it leaves out, and the files it covers.
+Eight small TLA+ models live in `verification/kin/<name>/`. Each has a `README.md` with its rules, bound, what it leaves out, and the files it covers.
 
 | Model        | Run it when you change                                                                                                                                                                              |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -16,6 +16,7 @@ Seven small TLA+ models live in `verification/kin/<name>/`. Each has a `README.m
 | `people`     | `people/KinPeople.ts`, `KinAccess.ts`, `personNamed.ts`, `work/teamView.ts`, `lead/Audience.ts`, `lead/ChatSharing.ts`                                                                              |
 | `tasks`      | `work/KinRecords.ts` hand-offs, `leadWork.ts` assign and hand back, `ownerWork.ts`, `assignNotices.ts`, `teamView.ts`, `pulse/senses/work.ts`                                                       |
 | `discussion` | `team/turns.ts`, `team/KinTeam.ts`, `team/stakes.ts`, the Team room's viewer rule in `chat/KinChatService.ts` and `chat/KinGroups.ts`, `lead/Handoff.ts` report-back, `lead/WakeupRunner.ts` finish |
+| `stream`     | `work/workStream.ts`, `KinRecords.ts` ticks (`logChange`, `peopleMoved`, `announce`), `teamView.ts` numbers, client `kinWorkRows.ts` and `kinWorkStream.ts`                                         |
 
 Paths are under `apps/server/src` and `apps/server/src/kin`. `MODEL_COVERS` in `scripts/kin-model.ts` lists the same files; `vp run check:changed` runs a model when one of them, its folder or the runner changes, and skips it with "skipped: Java not found" when no Java is installed.
 
