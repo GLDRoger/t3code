@@ -602,6 +602,34 @@ describe("bank statements", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  // Model money: the same money recorded by hand while the card was open is not paid twice.
+  it.effect("records nothing on an invoice that changed since the card was read", () =>
+    Effect.gen(function* () {
+      const keys = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const result = yield* read(1, "hdfc-account.pdf");
+      const confirm = yield* confirmAll((yield* reviewCardOf(result.statement)).card);
+      yield* records.update(orgId, owner, keys.exact, {
+        amount: { minor: 23_600_000, currency: "INR" },
+      });
+      yield* records.pay(orgId, owner, keys.exact, {
+        amount: { minor: 11_800_000, currency: "INR" },
+        paidOn: "2026-10-02",
+        note: "UTR N275260001234567",
+        originKey: "by-hand",
+      });
+      const refused = yield* OwnerStatements.apply(people, confirm).pipe(Effect.flip);
+      assert.isTrue(isChatError(refused) && refused.reason === "conflict", String(refused));
+      assert.deepStrictEqual(
+        yield* sql`SELECT p.amount_minor AS minor FROM kin_record_payments p
+          JOIN kin_records r ON r.record_id = p.record_id
+          WHERE r.key = ${keys.exact} AND p.voided_at IS NULL`,
+        [{ minor: 11_800_000 }],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   // F35: a lead can't call a bank row explained when nothing records its money.
   it.effect(
     "keeps a bank row unexplained until its money is recorded or it is said to be a transfer",
