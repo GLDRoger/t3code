@@ -8,6 +8,7 @@ import {
   type KinOrgId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -479,4 +480,28 @@ export const make = Effect.fn("KinGitHubLogin.make")(function* (
   return KinGitHubLogin.of({ status, start, cancel, disconnect, account });
 });
 
-export const layer = Layer.effect(KinGitHubLogin, make());
+/**
+ * `KIN_DEV_FAKE_GITHUB=<dir>` (dev and kin-verify only): `<dir>/gh` stands in for gh, as
+ * `fakeGh.sh` does, with HOME and gh's config under `<dir>`, so nothing touches this machine's own
+ * GitHub login or git config.
+ */
+export const layer = Layer.effect(
+  KinGitHubLogin,
+  Effect.gen(function* () {
+    const fake = yield* Config.String("KIN_DEV_FAKE_GITHUB").pipe(Config.withDefault(""));
+    if (fake === "") return yield* make();
+    yield* Effect.logWarning("Kin's GitHub login is the dev stand-in", { directory: fake });
+    const stand = `${fake}/gh`;
+    return yield* make({
+      HOME: `${fake}/home`,
+      XDG_CONFIG_HOME: `${fake}/home`,
+      GH_CONFIG_DIR: `${fake}/config`,
+      KIN_FAKE_GH: `${fake}/state`,
+    }).pipe(
+      Effect.provideService(
+        KinGhTool,
+        KinGhTool.of({ ensure: Effect.fn("KinGhTool.devStandIn")(() => Effect.succeed(stand)) }),
+      ),
+    );
+  }),
+);

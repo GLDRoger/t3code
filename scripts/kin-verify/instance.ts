@@ -178,6 +178,15 @@ export async function startServer(instance: Instance): Promise<InstanceState> {
   NodeFS.mkdirSync(instance.meta, { recursive: true });
   NodeFS.mkdirSync(instance.userdata, { recursive: true });
   writeScriptProvider(instance);
+  // GitHub's login is a stand-in under the instance, never this machine's own gh or git config.
+  const fakeGitHub = NodePath.join(instance.meta, "github");
+  for (const dir of ["state", "home", "config"])
+    NodeFS.mkdirSync(NodePath.join(fakeGitHub, dir), { recursive: true });
+  NodeFS.copyFileSync(
+    NodePath.join(ROOT, "apps/server/src/kin/connections/fakeGh.sh"),
+    NodePath.join(fakeGitHub, "gh"),
+  );
+  NodeFS.chmodSync(NodePath.join(fakeGitHub, "gh"), 0o755);
   const log = NodeFS.openSync(logPath(instance), "a");
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -185,6 +194,7 @@ export async function startServer(instance: Instance): Promise<InstanceState> {
     T3CODE_DEV_SEED: "0",
     KIN_DEV_FAKE_MAIL: FAKE_MAIL,
     KIN_VERIFY_DIR: instance.meta,
+    KIN_DEV_FAKE_GITHUB: fakeGitHub,
   };
   // Dev is single-origin; baking an origin in breaks remote browsers (AGENTS.md).
   delete env.VITE_HTTP_URL;
