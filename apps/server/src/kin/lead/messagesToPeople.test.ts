@@ -508,12 +508,11 @@ const ROUTES = [
   "a relay answering her message from 5 minutes ago",
 ];
 /** Every route, `now` arriving at once and the rest held, then each of those delivered at 07:00. */
-const expected = (now: ReadonlyArray<string>) => [
-  ...ROUTES.map((route) => [route, now.includes(route) ? "arrived" : "held"]),
-  ...ROUTES.filter((route) => !now.includes(route)).map((route) => [
-    route,
-    "arrived at 07:00, once",
-  ]),
+const expected = (now: ReadonlyArray<string>): Array<readonly [string, string]> => [
+  ...ROUTES.map((route) => [route, now.includes(route) ? "arrived" : "held"] as const),
+  ...ROUTES.filter((route) => !now.includes(route)).map(
+    (route) => [route, "arrived at 07:00, once"] as const,
+  ),
 ];
 const ANSWERS = ["the teammate's own reply after a relay", ROUTES[11]!];
 
