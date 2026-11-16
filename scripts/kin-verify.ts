@@ -367,8 +367,14 @@ async function clock(instance: Instance, args: Args) {
   const state = readState(instance);
   const wasRunning = state !== undefined && isAlive(state.pid);
   if (wasRunning) await stopTree(state.pid);
-  const { columns, rows } = shiftKinTimes(instance, ms);
-  if (wasRunning) await startServer(instance);
+  let shifted: ReturnType<typeof shiftKinTimes>;
+  try {
+    shifted = shiftKinTimes(instance, ms);
+  } finally {
+    // A refused shift rolls back; the server comes back either way.
+    if (wasRunning) await startServer(instance);
+  }
+  const { columns, rows } = shifted;
   console.log(
     `clock: Kin's stored times moved ${Math.round(ms / 3_600_000)}h into the past (${rows} values in ${columns} columns)${wasRunning ? "; server restarted" : ""}`,
   );
