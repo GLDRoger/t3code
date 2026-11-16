@@ -230,6 +230,16 @@ const samples = {
     { ...widget, widgetClass: "live", feed: { kind: "build", key: "build-1" } },
   ],
   KinTaskCardState: [task],
+  KinWaitingAsk: [
+    {
+      agent: "Finance",
+      default: "Same rate",
+      by: at,
+      revision: 1,
+      options: [{ optionId: "option-1", label: "Same rate" }],
+    },
+    { agent: "Finance", default: null, by: at, revision: 2, options: [] },
+  ],
   KinWaitingItem: [
     waiting,
     { ...waiting, messageId: null, widgetId: "widget-1", resolvedAt: at, resolution: "superseded" },

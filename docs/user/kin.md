@@ -81,6 +81,12 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   people in that chat can open them, and an agent reads them with the access of whoever sent them.
 - **It asks with cards.** A question with choices, a chart, or something to confirm comes as a card
   in the chat. Tapping an answer answers the agent; it is never an approval.
+- **It asks once, and says what it will do.** An agent's question comes with the answer it will go
+  with and the day, by default the end of your next working day (until 19:30). If you don't answer
+  by then, it goes with that answer and tells you in one line; say "undo it" to reverse. Something
+  that would send, post or move money has no such default: it is raised once more the next working
+  morning and then waits for you. Another agent won't ask you the same thing while it is open.
+  To change the answer before the day, tap another one.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
   for the owner alone.
 - **It comes back later.** "Remind me Friday at 10" or "check on this in two hours" sets a reminder.
@@ -94,7 +100,8 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   requests and checks, reviews pull requests, and starts coding work in T3 Code. It never merges
   without the owner's approval.
 
-**Waiting on you** in Chats collects what needs your answer.
+**Waiting on you** in Chats collects what needs your answer. An agent's open question shows there with
+its default and day, and you can answer it right there.
 
 ### An agent's page
 

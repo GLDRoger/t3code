@@ -22,6 +22,7 @@ import {
   KinMessageId,
   KinWidget,
   KinWidgetId,
+  KinWaitingAsk,
   KinWaitingItem,
   KinWaitingId,
   KinChatError,
@@ -245,9 +246,32 @@ const widgetColumns = `org_id AS "orgId", chat_id AS "chatId", widget_id AS "wid
 const WaitingRow = KinWaitingItem;
 const waitingBaseColumns = `waiting_id AS "waitingId", org_id AS "orgId", person_id AS "personId", chat_id AS "chatId", message_id AS "messageId", widget_id AS "widgetId", reason AS "reason", created_at AS "createdAt", resolved_at AS "resolvedAt", resolution AS "resolution"`;
 // A card's question names what is waiting, as its message (a card's body is empty) cannot.
-const waitingColumns = `${waitingBaseColumns}, (SELECT json_extract(g.state_json, '$.question') FROM kin_widgets g WHERE g.widget_id = kin_waiting.widget_id) AS "question"`;
-const withoutNoQuestion = ({ question, ...item }: KinWaitingItem): KinWaitingItem =>
-  question == null ? item : { ...item, question };
+// An agent's open question on the card adds what it does on which day unless answered.
+const waitingColumns = `${waitingBaseColumns}, (SELECT json_extract(g.state_json, '$.question') FROM kin_widgets g WHERE g.widget_id = kin_waiting.widget_id) AS "question",
+ (SELECT json_object('agent', COALESCE(l.name, a.display_name, q.agent_id),
+   'default', CASE WHEN q.safe = 1 THEN q.default_label END,
+   'by', strftime('%Y-%m-%dT%H:%M:%fZ', q.due_at / 1000.0, 'unixepoch'),
+   'revision', g.revision,
+   'options', (SELECT json_group_array(json_object('optionId', json_extract(o.value, '$.optionId'),
+     'label', json_extract(o.value, '$.label'))) FROM json_each(g.state_json, '$.options') o))
+  FROM kin_questions q JOIN kin_widgets g ON g.widget_id = kin_waiting.widget_id
+  LEFT JOIN kin_leads l ON l.org_id = q.org_id AND l.agent_id = q.agent_id
+  LEFT JOIN kin_agents a ON a.org_id = q.org_id AND a.agent_id = q.agent_id
+  WHERE q.org_id = kin_waiting.org_id AND q.state = 'open'
+    AND (q.widget_id = kin_waiting.widget_id OR q.raise_widget_id = kin_waiting.widget_id)) AS "ask"`;
+const WaitingAskRow = Schema.Struct({
+  ...KinWaitingItem.fields,
+  ask: Schema.optional(Schema.NullOr(Schema.fromJsonString(KinWaitingAsk))),
+});
+const withoutNoQuestion = ({
+  question,
+  ask,
+  ...item
+}: typeof WaitingAskRow.Type): KinWaitingItem => ({
+  ...item,
+  ...(question == null ? {} : { question }),
+  ...(ask == null ? {} : { ask }),
+});
 const AgentThreadRow = KinAgentThread;
 const ActiveAgentThreadRow = Schema.Struct({
   ...KinAgentThread.fields,
@@ -725,7 +749,7 @@ const make = Effect.gen(function* () {
     function (input: Scope & { readonly waitingId: KinWaitingId }) {
       return SqlSchema.findOneOption({
         Request: Schema.Unknown,
-        Result: WaitingRow,
+        Result: WaitingAskRow,
         execute: () =>
           sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE org_id = ${input.orgId} AND waiting_id = ${input.waitingId}`,
       })(input).pipe(NodeSqliteClient.readOnly, Effect.map(Option.map(withoutNoQuestion)));
@@ -1171,7 +1195,7 @@ const make = Effect.gen(function* () {
       function (input) {
         return SqlSchema.findAll({
           Request: Schema.Unknown,
-          Result: WaitingRow,
+          Result: WaitingAskRow,
           execute: () =>
             sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE org_id = ${input.orgId} AND widget_id = ${input.widgetId} AND resolved_at IS NULL ORDER BY created_at, waiting_id`,
         })(input).pipe(
@@ -1272,7 +1296,7 @@ const make = Effect.gen(function* () {
       function* (input) {
         return yield* SqlSchema.findAll({
           Request: Schema.Unknown,
-          Result: WaitingRow,
+          Result: WaitingAskRow,
           execute: () =>
             sql`SELECT ${sql.literal(waitingColumns)} FROM kin_waiting WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND resolved_at IS NULL ORDER BY created_at, waiting_id`,
         })(input).pipe(

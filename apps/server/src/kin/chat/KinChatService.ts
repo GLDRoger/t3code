@@ -83,6 +83,7 @@ import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferr
 import * as ChartCard from "../widgets/chartCard.ts";
 import * as VisualCard from "../widgets/visualCard.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
+import { answerByReply } from "../questions/openQuestions.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
@@ -274,10 +275,14 @@ export class KinChatService extends Context.Service<
       readonly threadId: ThreadId;
       readonly closed: boolean;
     }) => Effect.Effect<KinWidget, ServiceError>;
-    /** Server-only: closes an unanswered choice card a newer one for the same thing replaced. */
+    /**
+     * Server-only: closes an unanswered choice card, as replaced by a newer one for the same
+     * thing, or with `outcome` saying what became of it (an open question's default taken).
+     */
     readonly closeReplaced: (input: {
       readonly orgId: KinOrgId;
       readonly widgetId: KinWidgetId;
+      readonly outcome?: { readonly title: string; readonly text: string };
     }) => Effect.Effect<void, ServiceError>;
     /** Server-only: what became of a send card's Confirm: sending, then sent or failed. */
     readonly setSendOutcome: (input: {
@@ -813,6 +818,16 @@ const make = Effect.gen(function* () {
       }
     }
     if (identity._tag === "person") {
+      // Their words answer an agent's question asked in text here before them.
+      yield* answerByReply({
+        orgId: identity.orgId,
+        chatId: message.chatId,
+        personId: identity.personId,
+        now: Date.parse(message.createdAt),
+      }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(toPersistenceSqlError("KinChatService.answerByReply")),
+      );
       for (const item of yield* repo.listOpenWaiting(identity)) {
         if (item.chatId !== message.chatId || item.reason !== "question" || item.messageId === null)
           continue;
@@ -2289,7 +2304,10 @@ const make = Effect.gen(function* () {
         ...existing.value,
         // Closing writes no words.
         audience: "chat",
-        state: { ...card, replaced: true },
+        state:
+          input.outcome === undefined
+            ? { ...card, replaced: true }
+            : { ...card, outcome: input.outcome },
         awaiting: [],
         expectedRevision: existing.value.revision,
         closedAt: at,
