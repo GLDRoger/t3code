@@ -56,9 +56,12 @@ export function KinNeedsYou(
   const money = useKinMoneySummary(props, { enabled: true });
   const lists = useKinLists(props, { enabled: true });
   const inbox = useKinInbox();
-  const attentionRead = useKinAttention(props);
-  const handler = useKinAttentionHandle(props);
   const [expanded, setExpanded] = useState(false);
+  // The first page until See all; then everything, the page standing in until it arrives.
+  const pagedRead = useKinAttention(props, true, true);
+  const fullRead = useKinAttention(props, expanded);
+  const attentionRead = expanded && fullRead !== null ? fullRead : pagedRead;
+  const handler = useKinAttentionHandle(props);
   if (mine === null) return null;
   const attention = kinAttention(attentionRead, {
     scope: { type: "all" },
@@ -84,10 +87,10 @@ export function KinNeedsYou(
     now,
   });
   // Money's own rows live on Money; here they are one row that opens it.
-  const split = kinTasksAttention(attention.open);
+  const split = kinTasksAttention(attention.open, attentionRead);
   const rows = [
     ...(split.moneyRow === null ? [] : [split.moneyRow]),
-    ...kinNeedsYouBeside(before, attention),
+    ...kinNeedsYouBeside(before, attention, attentionRead),
   ];
   const openAttention = (to: KinAttentionOpen) => {
     if (to.type === "record") props.onOpenTask(to.key);
@@ -103,7 +106,7 @@ export function KinNeedsYou(
         params: { environmentId, orgId, chatId: to.chatId },
       });
   };
-  const total = split.rows.length + rows.length;
+  const total = split.rows.length + split.hidden + rows.length;
   const limit = expanded ? total : KIN_NEEDS_YOU_SHOWN;
   // The money row leads, so a long run of attention rows never hides it.
   const lead = split.moneyRow === null ? 0 : 1;

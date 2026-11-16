@@ -27,7 +27,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_WORK_STALE } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_HOME, kinPlaceLists } from "@t3tools/client-runtime/kin/kinWorkHome";
-import type { KinDocRow, KinListDefinition, KinListId, KinRecordKey } from "@t3tools/contracts";
+import type { KinDocListRow, KinListDefinition, KinListId, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import {
   BookOpenIcon,
@@ -192,8 +192,13 @@ type Item =
       readonly lists?: true;
       readonly unfiled?: true;
     }
-  | { readonly type: "recent"; readonly id: string; readonly rows: ReadonlyArray<KinDocRow> }
-  | { readonly type: "doc"; readonly id: string; readonly row: KinDocRow; readonly bare: boolean }
+  | { readonly type: "recent"; readonly id: string; readonly rows: ReadonlyArray<KinDocListRow> }
+  | {
+      readonly type: "doc";
+      readonly id: string;
+      readonly row: KinDocListRow;
+      readonly bare: boolean;
+    }
   | { readonly type: "list"; readonly id: string; readonly row: KinListIndexRow }
   | { readonly type: "moreLists"; readonly id: string; readonly hidden: number }
   | { readonly type: "playbooks"; readonly id: string; readonly count: number };
@@ -238,7 +243,7 @@ export function KinDocsList(
   const { state: found, search } = useKinSearch(props, DOCS_ONLY);
   const [allLists, setAllLists] = useState(false);
   const [playbooksOpen, setPlaybooksOpen] = useState(false);
-  const [filing, setFiling] = useState<KinDocRow | null>(null);
+  const [filing, setFiling] = useState<KinDocListRow | null>(null);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(props.environmentId));
   const { filter } = state;
   const text = filter.text.trim().toLowerCase();

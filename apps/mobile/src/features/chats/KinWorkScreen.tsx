@@ -144,7 +144,6 @@ function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | n
   const money = useKinMoneySummary(props, { enabled: true }).state;
   const docs = useKinDocsRecent(props);
   const counts = useKinClientCounts(props, hostClients);
-  const now = new Date(useNowMinuteMs());
   return (
     <>
       <KinWorkEntryRow summary={kinWorkEntrySummary(summary)} onPress={() => open("tasks")} />
@@ -165,7 +164,7 @@ function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | n
       {docs.refused ? null : (
         <KinPlaceEntryRow
           place="docs"
-          summary={docs.docs === null ? null : kinDocsLine(docs.docs.total, docs.docs.docs, now)}
+          summary={docs.docs === null ? null : kinDocsLine(docs.docs.total, docs.docs.changed)}
           onPress={() => open("docs")}
         />
       )}

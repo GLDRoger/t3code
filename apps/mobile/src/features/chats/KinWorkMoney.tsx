@@ -370,12 +370,16 @@ export function KinMoneyArea(props: Shared) {
   const navigation = useNavigation();
   const target = { environmentId: props.environmentId, orgId: props.orgId };
   const seq = props.stale ? null : props.live.seq;
-  const money = useKinMoneySummary(target, { enabled: true });
+  const datesAllowed = useAtomValue(kinClient.workDates.permissionAtom(target.environmentId));
+  // Only a viewer who can't open Dates is drawn the coming-up rows themselves.
+  const money = useKinMoneySummary(target, {
+    enabled: true,
+    use: datesAllowed ? "screen" : "rows",
+  });
   const lists = useKinLists(target, { enabled: true });
   const agent = useKinAskAgent(target);
   const rates = useKinRates(target);
   const ratesAllowed = useAtomValue(kinClient.companyRead.permissionAtom(target.environmentId));
-  const datesAllowed = useAtomValue(kinClient.workDates.permissionAtom(target.environmentId));
   const now = new Date(useNowMinuteMs());
   const openList = useKinOpenList(target);
   const { names } = props.directory;
@@ -545,7 +549,7 @@ export function KinMoneyArea(props: Shared) {
           seq={seq}
           rates={rates}
         />
-        {summary.upcoming.length === 0 ? null : datesAllowed ? (
+        {summary.upcomingTotal === 0 ? null : datesAllowed ? (
           <KinFoldSection
             title={KIN_MONEY.upcoming}
             summary={KIN_MONEY.upcomingCount(summary.upcomingTotal)}

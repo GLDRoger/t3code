@@ -19,6 +19,9 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { formatMoney, formatMoneyPlain } from "./money.ts";
+import * as PulsePeople from "../pulse/people.ts";
+import * as OwnerDocs from "./ownerDocs.ts";
+import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import { search } from "./search.ts";
 import { listDef } from "./registers.ts";
@@ -401,6 +404,18 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
             ...(yield* Effect.forEach(LISTS, (list) =>
               Effect.result(OwnerWork.list(people, { orgId, list, limit: 100 })),
             )),
+            // The opt-in wire shapes screens ask for (`kinWire.ts`).
+            ...(yield* Effect.forEach(LISTS, (list) =>
+              Effect.result(
+                OwnerWork.list(people, { orgId, list, limit: 100, acceptCompactRows: true }),
+              ),
+            )),
+            yield* Effect.result(OwnerMoney.money(people, { orgId, upcomingRows: false })),
+            yield* Effect.result(OwnerMoney.money(people, { orgId })),
+            yield* Effect.result(OwnerDocs.list(people, { orgId, acceptSlimLatest: true })),
+            yield* Effect.result(
+              PulsePeople.read(people, { orgId, includeHandled: true, limit: 8 }),
+            ),
             ...(yield* Effect.forEach(rows, (row) =>
               Effect.result(OwnerWork.get(people, { orgId, recordId: KinRecordId.make(row.id) })),
             )),
