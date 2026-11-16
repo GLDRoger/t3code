@@ -637,6 +637,15 @@ describe("recipe documents", () => {
         sourceEventId: "event-3",
       });
       assert.deepStrictEqual([again.issued, again.documents], [false, []]);
+      // Sonnet 5.5 distrusted issued false and checked again: the answer says what happened.
+      assert.strictEqual(
+        again.next,
+        "Already issued as INV/26-27/001. Its documents already carry the number; there is nothing more to make.",
+      );
+      assert.strictEqual(
+        first.next,
+        "Issued as INV/26-27/001. Its documents couldn't be made: see problems.",
+      );
       // F24: a void isn't final for the agent either: undone, it is owed again with its number.
       const issueAs = (more: Partial<typeof LeadDocuments.IssueInput.Type>) =>
         LeadDocuments.issue(scope, {
