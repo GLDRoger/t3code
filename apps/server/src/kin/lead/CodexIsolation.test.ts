@@ -69,6 +69,15 @@ const t3TurnStart = {
   input: [{ type: "text", text: "Run ls for me" }],
   approvalPolicy: "never",
   sandboxPolicy: { type: "dangerFullAccess" },
+  additionalContext: { t3_code_orchestration_01: { kind: "application", value: "Subagents…" } },
+};
+
+const guidance = {
+  type: "message",
+  role: "developer",
+  content: [
+    { type: "input_text", text: "<t3_code_orchestration_01>Subagents…</t3_code_orchestration_01>" },
+  ],
 };
 
 const session = (threadId: string, cwd: string, enabled = true) =>
@@ -93,6 +102,15 @@ const session = (threadId: string, cwd: string, enabled = true) =>
       yield* client.request("thread/start", { ...t3ThreadStart, cwd } as never).pipe(Effect.exit);
       yield* client.raw.request("thread/resume", { threadId: "native", ...t3ThreadStart, cwd });
       yield* client.request("turn/start", t3TurnStart as never).pipe(Effect.exit);
+      yield* client
+        .request("thread/inject_items", {
+          threadId: "native",
+          items: [
+            guidance,
+            { type: "message", role: "user", content: [{ type: "input_text", text: "kept" }] },
+          ],
+        } as never)
+        .pipe(Effect.exit);
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -145,13 +163,18 @@ it.effect(
         assert.deepStrictEqual(turn, {
           method: "turn/start",
           params: {
-            ...t3TurnStart,
+            threadId: "native",
+            input: t3TurnStart.input,
             environments: [],
             approvalPolicy: "never",
             sandboxPolicy: { type: "readOnly", networkAccess: false },
           },
         });
-        assert.lengthOf(sent, 4);
+        // T3 puts its guidance back after a compaction; a Kin thread keeps only the rest.
+        assert.deepStrictEqual(sent[4]?.params.items, [
+          { type: "message", role: "user", content: [{ type: "input_text", text: "kept" }] },
+        ]);
+        assert.lengthOf(sent, 5);
       }
     }).pipe(
       Effect.provide(
@@ -177,7 +200,7 @@ it.effect(
       const plain = yield* session("thread-1", "/work/project");
       assert.deepStrictEqual(
         plain.map(({ method }) => method),
-        ["typed:thread/start", "thread/resume", "typed:turn/start"],
+        ["typed:thread/start", "thread/resume", "typed:turn/start", "typed:thread/inject_items"],
       );
       assert.deepStrictEqual(plain[2]?.params, t3TurnStart);
       const off = yield* session("kin:finance", `${stateDir}/kin/demo-a/memory-read`, false);

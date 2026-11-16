@@ -87,8 +87,11 @@ const confinedThreadParams = (params: Params, userServers: ReadonlyArray<string>
   };
 };
 
-/** T3 sends full access on every turn; a Kin turn keeps the thread's confinement instead. */
-const confinedTurnParams = (params: Params) => ({
+/**
+ * T3 sends full access on every turn; a Kin turn keeps the thread's confinement instead. T3's
+ * thread guidance describes tools a lead doesn't have, as on Claude (`LeadIsolation`), so it goes.
+ */
+const confinedTurnParams = ({ additionalContext: _t3Guidance, ...params }: Params) => ({
   ...params,
   environments: [],
   approvalPolicy: "never",
@@ -111,6 +114,18 @@ const signedShellParams = (
 });
 
 const THREAD_METHODS = new Set(["thread/start", "thread/resume"]);
+const REWRITTEN = new Set([...THREAD_METHODS, "turn/start", "thread/inject_items"]);
+
+/** After a compaction T3 puts its thread guidance back (`restoreAdditionalContext`); not on Kin's. */
+const isT3Guidance = (item: unknown) => {
+  const content = (item as { content?: ReadonlyArray<{ text?: unknown }> }).content;
+  const text = Array.isArray(content) ? content[0]?.text : undefined;
+  return typeof text === "string" && text.startsWith("<t3_code_");
+};
+const withoutT3Guidance = (params: Params) => ({
+  ...params,
+  items: (Array.isArray(params.items) ? params.items : []).filter((item) => !isT3Guidance(item)),
+});
 
 /** The user's Codex MCP servers as Codex resolves them for this cwd (user and project layers). */
 const ConfigRead = Schema.Struct({
@@ -139,8 +154,7 @@ const rewriting = (
     ...client,
     raw: { ...client.raw, request: raw as typeof client.raw.request },
     request: ((method: CodexRpc.ClientRequestMethod, payload: unknown) => {
-      if (method !== "turn/start" && !THREAD_METHODS.has(method))
-        return client.request(method, payload as never);
+      if (!REWRITTEN.has(method)) return client.request(method, payload as never);
       const schema = CodexRpc.CLIENT_REQUEST_RESPONSES[method] as Schema.Codec<unknown, unknown>;
       return raw(method, payload).pipe(
         Effect.flatMap((answer) =>
@@ -209,9 +223,11 @@ export const codexClientFactory = <E, R>(
             return rewriting(client, (method, params) =>
               method === "turn/start"
                 ? Effect.succeed(confinedTurnParams(params))
-                : THREAD_METHODS.has(method)
-                  ? servers.pipe(Effect.map((names) => confinedThreadParams(params, names)))
-                  : Effect.succeed(params),
+                : method === "thread/inject_items"
+                  ? Effect.succeed(withoutT3Guidance(params))
+                  : THREAD_METHODS.has(method)
+                    ? servers.pipe(Effect.map((names) => confinedThreadParams(params, names)))
+                    : Effect.succeed(params),
             );
           }
           if (Option.isNone(policy) || !(yield* policy.value.delegated(threadId))) return client;
