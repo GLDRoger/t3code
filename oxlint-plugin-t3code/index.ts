@@ -1,5 +1,6 @@
 import { definePlugin } from "@oxlint/plugins";
 
+import kinMessagesToPeople from "./rules/kin-messages-to-people.ts";
 import kinOwnerLevel from "./rules/kin-owner-level.ts";
 import kinViewerScopedReads from "./rules/kin-viewer-scoped-reads.ts";
 import maxSettingsDescriptionLength from "./rules/max-settings-description-length.ts";
@@ -41,6 +42,7 @@ export default definePlugin({
     name: "t3code",
   },
   rules: {
+    "kin-messages-to-people": kinMessagesToPeople,
     "kin-owner-level": kinOwnerLevel,
     "kin-viewer-scoped-reads": kinViewerScopedReads,
     "max-settings-description-length": maxSettingsDescriptionLength,

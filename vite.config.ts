@@ -467,7 +467,19 @@ export default defineConfig({
         rules: {
           "t3code/kin-viewer-scoped-reads": "error",
           "t3code/kin-owner-level": "error",
+          "t3code/kin-messages-to-people": "error",
         },
+      },
+      {
+        // The gate, the floor, the chat service and the turn's own reply are the floor's path.
+        files: [
+          "apps/server/src/kin/lead/LevelGate.ts",
+          "apps/server/src/kin/floor/**",
+          "apps/server/src/kin/chat/KinChatService.ts",
+          "apps/server/src/kin/reply/KinReplyBridge.ts",
+          "apps/server/src/kin/mcp/KinChatToolkit.ts",
+        ],
+        rules: { "t3code/kin-messages-to-people": "off" },
       },
       {
         // The one place that answers "may act as owner" and "is the owner himself".
