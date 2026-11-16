@@ -34,7 +34,7 @@ entry points: owner RPCs, invite links, `kin import`, and one scripted agent tur
 | ------------ | --------- | ----------------------------------------------- |
 | Rhea Kapoor  | `owner`   | owner                                           |
 | Meera Iyer   | `meera`   | co-owner                                        |
-| Dev Malhotra | `dev`     | member, lead of P-1                             |
+| Dev Malhotra | `dev`     | member, lead of P-1, on P-2 (not its lead)      |
 | Zoya Sheikh  | `zoya`    | member of P-1, Clients place on, holds W-1..W-3 |
 | Arjun Rao    | `arjun`   | member of P-1, holds W-5                        |
 
