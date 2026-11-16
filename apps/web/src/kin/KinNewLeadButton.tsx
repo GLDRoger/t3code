@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { Atom } from "effect/reactivity";
 import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
-import { useNavigate } from "@tanstack/react-router";
+import { useRouter } from "@tanstack/react-router";
 import { MessageSquareIcon, PlusIcon, SparklesIcon, UserPlusIcon, UsersIcon } from "lucide-react";
 
 import { SidebarHeaderIconButton } from "../components/sidebar/SidebarThreadHeader";
@@ -12,6 +12,7 @@ import { kinClient } from "./kinClient";
 import { openKinPeoplePicker } from "./KinPeopleChat";
 import { kinGroupFormAtom } from "./kinGroupForm";
 import { kinLeadFormAtom, type KinLeadFormTarget } from "./kinLeadForm";
+import { openKinSettings } from "./kinSettingsAddress";
 import { kinTeamAddRequestAtom } from "./kinTeamForm";
 import { useKinHost } from "./useKinHost";
 
@@ -42,7 +43,7 @@ function PermittedNewLeadButton(props: { readonly target: KinLeadFormTarget }) {
   const canAddLead = useAtomValue(kinClient.leadCreate.permissionAtom(environmentId));
   const canAddGroup = useAtomValue(kinClient.groupCreate.permissionAtom(environmentId));
   const canAddTeammate = useAtomValue(kinClient.inviteCreate.permissionAtom(environmentId));
-  const navigate = useNavigate();
+  const router = useRouter();
   return (
     <Menu>
       <MenuTrigger render={<SidebarHeaderIconButton label="New chat, group, agent or teammate" />}>
@@ -73,10 +74,7 @@ function PermittedNewLeadButton(props: { readonly target: KinLeadFormTarget }) {
           <MenuItem
             onClick={() => {
               appAtomRegistry.set(kinTeamAddRequestAtom, true);
-              void navigate({
-                to: "/kin/$environmentId/$orgId/settings/$page",
-                params: { environmentId, orgId, page: "team" },
-              });
+              openKinSettings(router.history, "team");
             }}
           >
             <UserPlusIcon />

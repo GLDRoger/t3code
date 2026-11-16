@@ -9,8 +9,8 @@ import {
   type KinSettingsGroup,
   type KinSettingsPage,
 } from "@t3tools/client-runtime/kin/kinNavigation";
-import { KinOrgId, type EnvironmentId } from "@t3tools/contracts";
-import { Link, Navigate, Outlet, useLocation, useParams } from "@tanstack/react-router";
+import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import { Link, Navigate, useLocation, useRouter } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import {
@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
+import { AppRouteModal, AppRouteModalClose } from "../components/AppRouteModal";
 import { ApprovalsSettings } from "../components/settings/ApprovalsSettings";
 import { SettingsPageContainer, SettingsSection } from "../components/settings/settingsLayout";
 import { searchableSetting } from "../components/settings/settingsSearch";
@@ -40,9 +41,15 @@ import {
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../components/WorkspaceBreadcrumb";
-import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
+import {
+  SidebarContent,
+  SidebarGroup,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "../components/ui/sidebar";
 import {
   Select,
   SelectItem,
@@ -50,7 +57,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
-import { isElectron } from "../env";
 import { isChatOnlySession } from "../environments/primary";
 import { useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
@@ -65,6 +71,7 @@ import { KinMemoryView } from "./KinMemoryView";
 import { KinSettingsNotifications } from "./KinNotifications";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import { KinProfileBody, useKinMe } from "./KinProfileSheet";
+import { closeKinSettings, kinSettingsSectionIn, openKinSettings } from "./kinSettingsAddress";
 import { KinTeamView } from "./KinTeamView";
 import { useKinHost } from "./useKinHost";
 import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
@@ -96,6 +103,7 @@ const THIS_COMPUTER = [
   { to: "/settings/devices", label: "Devices" },
   { to: "/settings/maintenance", label: "Maintenance" },
   { to: "/settings/about", label: "About" },
+  { to: "/usage", label: "Usage" },
   { to: "/settings/general", label: "All app settings" },
 ] as const;
 
@@ -104,21 +112,14 @@ interface KinSettingsTarget {
   readonly orgId: KinOrgId;
 }
 
-function useKinSettingsTarget(): KinSettingsTarget {
-  const params = useParams({ from: "/_chat/kin/$environmentId/$orgId/settings" });
-  return {
-    environmentId: params.environmentId as EnvironmentId,
-    orgId: KinOrgId.make(params.orgId),
-  };
-}
-
 function useKinSettingsGroups(environmentId: EnvironmentId): ReadonlyArray<KinSettingsGroup> {
   const ownerLevel = useKinOwnerLevel(environmentId);
   return kinSettingsGroups({ ownerLevel, computer: !isChatOnlySession(), notifications: true });
 }
 
-/** The gear on Chats: everyone's way into Settings. */
+/** The gear on Chats on a narrow window, where there is no sidebar corner for it. */
 export function KinSettingsButton() {
+  const router = useRouter();
   const target = kinNewLeadTarget(useKinHost());
   if (target === null) return null;
   return (
@@ -126,12 +127,7 @@ export function KinSettingsButton() {
       size="icon-xs"
       variant="ghost"
       aria-label={KIN_SETTINGS_TITLE}
-      render={
-        <Link
-          to="/kin/$environmentId/$orgId/settings"
-          params={{ environmentId: target.environmentId, orgId: target.orgId }}
-        />
-      }
+      onClick={() => openKinSettings(router.history)}
     >
       <SettingsIcon />
     </Button>
@@ -140,165 +136,156 @@ export function KinSettingsButton() {
 
 /**
  * An old address of a page that moved into Kin's Settings (the app's Company details, Check-ins,
- * Connections and Approvals, Kin's Team and Memory): goes there once Kin's host is known.
+ * Connections and Approvals): opens Settings on it once Kin's host is known.
  */
 export function KinSettingsMoved(props: {
-  readonly page: KinSettingsPage | null;
-  readonly fallback?: React.ReactNode;
+  readonly page: KinSettingsPage;
+  readonly fallback: React.ReactNode;
 }) {
   const target = kinNewLeadTarget(useKinHost());
-  if (target === null) return props.fallback ?? null;
-  const params = { environmentId: target.environmentId, orgId: target.orgId };
-  return props.page === null ? (
-    <Navigate to="/kin/$environmentId/$orgId/settings" params={params} replace />
-  ) : (
-    <Navigate
-      to="/kin/$environmentId/$orgId/settings/$page"
-      params={{ ...params, page: props.page }}
-      replace
-    />
-  );
+  if (target === null) return props.fallback;
+  return <Navigate to="/kin" search={{ settings: props.page }} replace />;
 }
 
-/** The app's Settings address a teammate followed, which their session lacks: Kin's own page. */
-export function KinSettingsFromApp(props: { readonly slug: string }) {
-  return (
-    <KinSettingsMoved
-      page={KIN_SETTINGS_MOVED[props.slug] ?? null}
-      fallback={
-        <Empty size="compact">
-          <EmptyHeader>
-            <EmptyTitle>Opening Settings…</EmptyTitle>
-          </EmptyHeader>
-        </Empty>
-      }
-    />
-  );
+/** Settings, open over the Kin page on screen while the address names a section. */
+export function KinSettingsModalHost() {
+  const section = useLocation({ select: (location) => kinSettingsSectionIn(location.searchStr) });
+  const target = kinNewLeadTarget(useKinHost());
+  if (section === null || target === null) return null;
+  return <KinSettingsModal target={target} section={section} />;
 }
 
 /**
- * Settings: You for everyone, Company for the owner and co-owners, This computer where the session
- * has the app's own settings. Wide, the groups sit beside the open page; narrow, the groups are
- * the page and each one opens over them, as on the phone.
+ * You for everyone, Company for the owner and co-owners, This computer where the session has the
+ * app's own settings. Wide, the groups sit beside the open section; narrow, the groups are the
+ * first screen and each section opens over them, as on the phone.
  */
-export function KinSettingsLayout() {
-  const target = useKinSettingsTarget();
+function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly section: string }) {
+  const { target } = props;
+  const router = useRouter();
   const groups = useKinSettingsGroups(target.environmentId);
-  const pathname = useLocation({ select: (location) => location.pathname });
-  const raw = pathname.split("/")[5];
-  const atIndex = raw === undefined || raw === "";
-  const page = kinSettingsPageOf(raw, groups);
+  // A teammate's session learns from the host whether they run the company; until it has said,
+  // a Company section waits rather than showing a co-owner their profile.
+  const reach = useKinPlaceReach(target.environmentId);
+  const known = !isChatOnlySession() || reach !== null;
+  const wanted = KIN_SETTINGS_MOVED[props.section] ?? props.section;
+  const atIndex = wanted === "";
+  // A section this person can't open shows their own profile, not a refusal.
+  const page = kinSettingsPageOf(wanted, groups);
+  const waiting = !atIndex && page !== wanted && !known;
+  const show = (section: KinSettingsPage | "") => openKinSettings(router.history, section);
   return (
-    <>
-      <WorkspacePageHeader electron={isElectron}>
-        {atIndex ? (
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label="Back to chats"
-            className="md:hidden"
-            render={<Link to="/kin" />}
-          >
-            <ArrowLeftIcon />
-          </Button>
-        ) : (
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label="Back to Settings"
-            className="md:hidden"
-            render={<Link to="/kin/$environmentId/$orgId/settings" params={target} />}
-          >
-            <ArrowLeftIcon />
-          </Button>
-        )}
-        <WorkspaceBreadcrumb ariaLabel={KIN_SETTINGS_TITLE}>
-          <WorkspaceBreadcrumbItem current={atIndex}>
-            <h1 className="truncate">{KIN_SETTINGS_TITLE}</h1>
-          </WorkspaceBreadcrumbItem>
-          {atIndex ? null : <WorkspaceBreadcrumbSeparator />}
-          {atIndex ? null : (
-            <WorkspaceBreadcrumbItem current>
-              <span className="truncate">{KIN_SETTINGS_PAGE_TITLES[page]}</span>
-            </WorkspaceBreadcrumbItem>
-          )}
-        </WorkspaceBreadcrumb>
-      </WorkspacePageHeader>
-      <div className="flex min-h-0 flex-1">
+    <AppRouteModal label={KIN_SETTINGS_TITLE} onClose={() => closeKinSettings(router.history)}>
+      <div className="relative flex min-h-0 flex-1">
         <nav
           aria-label="Settings sections"
           className={cn(
-            "min-h-0 w-full shrink-0 overflow-y-auto p-2 md:block md:w-60 md:border-e",
-            atIndex ? "block" : "hidden",
+            "flex w-60 shrink-0 flex-col border-e bg-sidebar text-sidebar-foreground max-md:w-full max-md:border-e-0",
+            atIndex ? null : "max-md:hidden",
           )}
         >
-          <KinSettingsMenu groups={groups} active={atIndex ? null : page} target={target} />
+          <header className="flex h-12 shrink-0 items-center gap-3 border-b ps-5 pe-2 md:hidden">
+            <h1 className="min-w-0 flex-1 truncate text-sm font-medium">{KIN_SETTINGS_TITLE}</h1>
+            <AppRouteModalClose />
+          </header>
+          <SidebarContent className="overflow-x-hidden">
+            <SidebarGroup>
+              <KinSettingsMenu groups={groups} active={page} onOpen={(section) => show(section)} />
+            </SidebarGroup>
+          </SidebarContent>
         </nav>
         <div
-          className={cn(
-            "min-h-0 min-w-0 flex-1 flex-col overflow-y-auto md:flex",
-            atIndex ? "hidden" : "flex",
-          )}
+          className={cn("flex min-h-0 min-w-0 flex-1 flex-col", atIndex ? "max-md:hidden" : null)}
         >
-          <Outlet />
+          <header className="flex h-12 shrink-0 items-center gap-2 border-b ps-2 pe-2 md:ps-5">
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Back to Settings"
+              className="md:hidden"
+              onClick={() => show("")}
+            >
+              <ArrowLeftIcon />
+            </Button>
+            <WorkspaceBreadcrumb ariaLabel={KIN_SETTINGS_TITLE}>
+              <WorkspaceBreadcrumbItem>
+                <span className="truncate">{KIN_SETTINGS_TITLE}</span>
+              </WorkspaceBreadcrumbItem>
+              <WorkspaceBreadcrumbSeparator />
+              <WorkspaceBreadcrumbItem current>
+                <h2 className="truncate">{KIN_SETTINGS_PAGE_TITLES[page]}</h2>
+              </WorkspaceBreadcrumbItem>
+            </WorkspaceBreadcrumb>
+            <div className="ms-auto flex shrink-0 items-center">
+              <AppRouteModalClose />
+            </div>
+          </header>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            {waiting ? null : <KinSettingsPageBody page={page} target={target} />}
+          </div>
         </div>
       </div>
-    </>
+    </AppRouteModal>
   );
 }
 
 function KinSettingsMenu(props: {
   readonly groups: ReadonlyArray<KinSettingsGroup>;
   readonly active: KinSettingsPage | null;
-  readonly target: KinSettingsTarget;
+  readonly onOpen: (page: KinSettingsPage) => void;
 }) {
   const [computerOpen, setComputerOpen] = useState(false);
   return (
     <div className="flex flex-col gap-4">
       {props.groups.map((group) =>
         group.id === "computer" ? (
-          <section key={group.id} aria-label={group.title} className="flex flex-col gap-0.5">
-            <button
-              type="button"
-              aria-expanded={computerOpen}
-              onClick={() => setComputerOpen(!computerOpen)}
-              className="flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground outline-none ring-ring hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset"
-            >
-              {computerOpen ? (
-                <ChevronDownIcon aria-hidden className="size-3.5" />
-              ) : (
-                <ChevronRightIcon aria-hidden className="size-3.5" />
-              )}
-              {group.title}
-            </button>
-            {computerOpen
-              ? THIS_COMPUTER.map((item) => (
-                  <Link key={item.to} to={item.to} className={MENU_ROW}>
-                    <span className="truncate">{item.label}</span>
-                  </Link>
-                ))
-              : null}
+          <section key={group.id} aria-label={group.title} className="flex flex-col gap-1">
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  size="sm"
+                  aria-expanded={computerOpen}
+                  onClick={() => setComputerOpen(!computerOpen)}
+                >
+                  {computerOpen ? <ChevronDownIcon /> : <ChevronRightIcon />}
+                  <span className="truncate">{group.title}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              {computerOpen
+                ? THIS_COMPUTER.map((item) => (
+                    <SidebarMenuItem key={item.to}>
+                      <SidebarMenuButton render={<Link to={item.to} />}>
+                        <span className="truncate">{item.label}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))
+                : null}
+            </SidebarMenu>
           </section>
         ) : (
-          <section key={group.id} aria-label={group.title} className="flex flex-col gap-0.5">
-            <h2 className="px-2 pb-1 text-xs font-medium text-muted-foreground">{group.title}</h2>
-            {group.pages.map((page) => {
-              const Icon = PAGE_ICON[page];
-              const active = props.active === page;
-              return (
-                <Link
-                  key={page}
-                  to="/kin/$environmentId/$orgId/settings/$page"
-                  params={{ ...props.target, page }}
-                  aria-current={active ? "page" : undefined}
-                  data-active={active}
-                  className={MENU_ROW}
-                >
-                  <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-                  <span className="truncate">{KIN_SETTINGS_PAGE_TITLES[page]}</span>
-                </Link>
-              );
-            })}
+          <section key={group.id} aria-label={group.title} className="flex flex-col gap-1">
+            <h3 className="px-2 text-xs font-medium text-sidebar-muted-foreground/80">
+              {group.title}
+            </h3>
+            <SidebarMenu>
+              {group.pages.map((page) => {
+                const Icon = PAGE_ICON[page];
+                const active = props.active === page;
+                return (
+                  <SidebarMenuItem key={page}>
+                    <SidebarMenuButton
+                      isActive={active}
+                      aria-current={active ? "page" : undefined}
+                      data-kin-settings-section={page}
+                      onClick={() => props.onOpen(page)}
+                    >
+                      <Icon />
+                      <span className="truncate">{KIN_SETTINGS_PAGE_TITLES[page]}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
+            </SidebarMenu>
           </section>
         ),
       )}
@@ -306,32 +293,11 @@ function KinSettingsMenu(props: {
   );
 }
 
-const MENU_ROW =
-  "flex h-9 items-center gap-2.5 rounded-md px-2 text-sm text-foreground outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset data-[active=true]:bg-accent data-[active=true]:font-medium md:h-8";
-
-/** Settings with no page chosen: wide, your profile beside the groups; narrow, just the groups. */
-export function KinSettingsIndex() {
-  return <KinSettingsPageBody page="profile" />;
-}
-
-export function KinSettingsPageRoute() {
-  const target = useKinSettingsTarget();
-  const groups = useKinSettingsGroups(target.environmentId);
-  const { page: raw } = useParams({ from: "/_chat/kin/$environmentId/$orgId/settings/$page" });
-  const page = kinSettingsPageOf(raw, groups);
-  // A teammate's session learns from the host whether they run the company; until it has said,
-  // a Company address waits rather than sending a co-owner to their profile.
-  const reach = useKinPlaceReach(target.environmentId);
-  const known = !isChatOnlySession() || reach !== null;
-  if (page !== raw && !known) return null;
-  // An address this person can't open lands on their own profile, not on a refusal.
-  if (page !== raw)
-    return <Navigate to="/kin/$environmentId/$orgId/settings" params={target} replace />;
-  return <KinSettingsPageBody page={page} />;
-}
-
-function KinSettingsPageBody(props: { readonly page: KinSettingsPage }) {
-  const target = useKinSettingsTarget();
+function KinSettingsPageBody(props: {
+  readonly page: KinSettingsPage;
+  readonly target: KinSettingsTarget;
+}) {
+  const { target } = props;
   switch (props.page) {
     case "profile":
       return <KinSettingsProfile {...target} />;

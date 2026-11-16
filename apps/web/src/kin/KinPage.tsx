@@ -1,4 +1,4 @@
-import { Outlet, useSearch } from "@tanstack/react-router";
+import { Outlet } from "@tanstack/react-router";
 
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset } from "../components/ui/sidebar";
@@ -15,7 +15,7 @@ import { KinProfileSheetHost } from "./KinProfileSheet";
 import { KinPeoplePickerHost } from "./KinPeopleChat";
 import { KinMessageAlerts } from "./KinNotifications";
 import { KinToday } from "./KinToday";
-import { KinSettingsButton, KinSettingsFromApp } from "./KinSettingsView";
+import { KinSettingsButton, KinSettingsModalHost } from "./KinSettingsView";
 import { KinDock } from "./KinNav";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useKinHost } from "./useKinHost";
@@ -33,6 +33,7 @@ export function KinPage() {
       <KinProfileSheetHost />
       <KinPeoplePickerHost />
       <KinMessageAlerts />
+      <KinSettingsModalHost />
     </SidebarInset>
   );
 }
@@ -59,14 +60,7 @@ const noChat = (
  * a wide one already shows it in the sidebar, so the page shows what needs you.
  */
 export function KinNoChat() {
-  const { settings } = useSearch({ from: "/_chat/kin/" });
   const target = kinNewLeadTarget(useKinHost());
-  if (settings !== undefined)
-    return (
-      <div className="flex min-h-0 flex-1">
-        <KinSettingsFromApp slug={settings} />
-      </div>
-    );
   return (
     <>
       <WorkspacePageHeader electron={isElectron}>

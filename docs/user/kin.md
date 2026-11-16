@@ -7,13 +7,15 @@ keep Tasks, Money, Clients and Docs current for you.
 Kin has five places: **Chats**, **Tasks**, **Money**, **Clients** and **Docs**. On the phone they
 are the dock; on the web and the desktop app they sit at the top of the sidebar, and become the same
 dock at the bottom of a narrow window. `⌘1` to `⌘5` (`Ctrl` on Windows and Linux) open them.
-**Settings** is the gear on Chats. What you see in each depends on your place in the team; see
-[Who sees and does what](#who-sees-and-does-what). If you run Kin's computer, **Code** under the
-five opens T3 Code's coding threads.
+**Settings** is the gear at the bottom left on the web and the desktop app, and the gear on Chats on
+the phone and in a narrow window. It opens over whatever you're looking at; close it to carry on
+where you were. What you see in each depends on your place in the team; see
+[Who sees and does what](#who-sees-and-does-what).
 
 Settings has **You** (your profile and appearance) for everyone, and for the owner and co-owners
 **Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
-computer Kin runs on, **This computer** holds the app's own settings, such as providers and models.
+computer Kin runs on, **This computer** holds the app's own settings, such as providers and models,
+and how much of each provider's usage your agents have spent.
 
 ## Getting started
 
