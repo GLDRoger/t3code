@@ -461,13 +461,12 @@ it.effect(
       const returned = yield* service.accept({ secret: (yield* link()).secret });
       assert.equal(returned.person.personId, personId);
       assert.equal(returned.person.access, "member");
-      assert.deepInclude((yield* service.list(ownerSession, orgId)).places, {
-        personId,
-        clients: true,
-        docs: true,
-        money: false,
-        leads: [],
-      });
+      assert.deepEqual(
+        (yield* service.list(ownerSession, orgId)).places?.find(
+          (one) => one?.personId === personId,
+        ),
+        { personId, clients: true, docs: true, money: false, leads: [] },
+      );
       assert.deepEqual(yield* joined(), [personId, other.person.personId].sort());
     }).pipe(Effect.provide(layer)),
 );

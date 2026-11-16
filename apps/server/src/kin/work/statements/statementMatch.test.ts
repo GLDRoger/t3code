@@ -32,6 +32,7 @@ const invoice = (over: Partial<InvoiceCandidate>): InvoiceCandidate => ({
   issued: "2026-09-30",
   client: null,
   number: null,
+  seen: "0:",
   ...over,
 });
 const expense = (over: Partial<ExpenseCandidate>): ExpenseCandidate => ({
