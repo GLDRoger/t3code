@@ -880,7 +880,9 @@ const make = Effect.gen(function* () {
               WHERE org_id = ${input.orgId} AND message_id = ${handoff.messageId}
                 AND reply_message_id IS NULL RETURNING message_id`;
             if (claimed.length === 0) return;
-            const [asker] = yield* sql<{ ownerChatId: KinChatId }>`SELECT l.owner_chat_id AS "ownerChatId"
+            const [asker] = yield* sql<{
+              ownerChatId: KinChatId;
+            }>`SELECT l.owner_chat_id AS "ownerChatId"
               FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
                 AND a.retired_at IS NULL
               WHERE l.org_id = ${input.orgId} AND l.agent_id = ${handoff.fromAgentId}`;
