@@ -33,6 +33,8 @@ export interface KinChoiceCardView {
     readonly personId: KinPersonId;
     readonly emoji: string | null;
   } | null;
+  /** What the answer did, in the owner's words, on a card Kin asked itself. */
+  readonly outcome: { readonly title: string; readonly text: string } | null;
   /** What a send card would send, in full: shown instead of `detail`. */
   readonly send: KinSendView | null;
   /** When an unanswered card stops taking taps; the host refuses later ones. */
@@ -163,6 +165,17 @@ function kinSendView(send: KinSendCard, now: Date): KinSendView {
 }
 
 const decode = Schema.decodeUnknownOption(KinChoiceCardState);
+
+const sentTitle = (send: KinSendCard) =>
+  send.outcome?.state === "failed"
+    ? "Not sent"
+    : send.action === "event"
+      ? "Event saved"
+      : send.action === "call"
+        ? `Done in ${send.service}`
+        : send.action === "reply"
+          ? "Reply sent"
+          : "Email sent";
 // The lead writes these, so they are shown as plain text on one line.
 const line = (text: string) => text.replace(/\s+/g, " ").trim();
 
@@ -181,15 +194,26 @@ export function kinChoiceCardView(
     card.answer === null
       ? undefined
       : options.find((option) => option.id === card.answer?.optionId);
+  const send = card.send === undefined ? null : kinSendView(card.send, now);
   return {
     orgId: widget.orgId,
     widgetId: widget.widgetId,
     revision: widget.revision,
-    question: line(card.question),
+    // Answered, the title says what happened, never the question it asked.
+    question:
+      card.answer !== null && card.outcome !== undefined
+        ? line(card.outcome.title)
+        : card.send?.outcome != null && card.send.outcome.state !== "sending"
+          ? sentTitle(card.send)
+          : line(card.question),
+    outcome:
+      card.answer === null || card.outcome === undefined
+        ? null
+        : { title: line(card.outcome.title), text: card.outcome.text.trim() },
     detail: card.detail === null || card.detail.trim() === "" ? null : card.detail.trim(),
     options,
     image: card.image === undefined ? null : card.image,
-    send: card.send === undefined ? null : kinSendView(card.send, now),
+    send,
     answer:
       card.answer === null
         ? null
@@ -232,11 +256,13 @@ export function kinChoiceAnswered(
   tappedLabel: string | null,
 ): { readonly text: string | null } | null {
   const text =
-    view.answer !== null
-      ? kinChoiceAnswerText(view.answer, viewerPersonId)
-      : tappedLabel !== null
-        ? `You chose “${tappedLabel}”`
-        : null;
+    view.outcome !== null
+      ? view.outcome.text
+      : view.answer !== null
+        ? kinChoiceAnswerText(view.answer, viewerPersonId)
+        : tappedLabel !== null
+          ? `You chose “${tappedLabel}”`
+          : null;
   if (text === null) return null;
   return { text: view.send?.outcome == null ? text : null };
 }

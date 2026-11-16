@@ -266,10 +266,11 @@ export const answerChange = Effect.fn("KinCompanyProfile.answerChange")(function
   if (!input.confirmed) {
     yield* sql`UPDATE kin_profile_changes SET declined_at = ${input.now}
       WHERE org_id = ${input.orgId} AND change_id = ${row.changeId}`;
-    return;
+    return { title: "Not changed", text: "You said no, so the company details stay as they were." };
   }
   const patch = yield* decodePatch(row.patch);
-  if ((yield* readProfile(input.orgId)).rev !== row.baseRev)
+  const current = yield* readProfile(input.orgId);
+  if (current.rev !== row.baseRev)
     return yield* new KinChatError({
       reason: "conflict",
       message:
@@ -278,4 +279,12 @@ export const answerChange = Effect.fn("KinCompanyProfile.answerChange")(function
   yield* setProfile(input.orgId, { _tag: "person", personId: input.personId }, patch, row.baseRev);
   yield* sql`UPDATE kin_profile_changes SET applied_at = ${input.now}
     WHERE org_id = ${input.orgId} AND change_id = ${row.changeId}`;
+  const changed = changeLines(current, patch);
+  return {
+    title: "Company details changed",
+    text:
+      changed.length === 0
+        ? "Saved; nothing in the details was different."
+        : `Changed: ${changed.join("; ")}.`.slice(0, 600),
+  };
 });

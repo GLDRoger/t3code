@@ -141,6 +141,19 @@ export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
   ];
 };
 
+/** What the owner's Confirm did, in their words, for the answered card. */
+const madeOutcome = (made: { readonly number: string | null }, shown: Snapshot) => {
+  const money = shown.amount === null ? "The money" : formatMoney(shown.amount);
+  const from = shown.client === null ? "" : ` from ${shown.client.title}`;
+  const on = shown.receivedOn === null ? "" : `, received ${dayText(shown.receivedOn)}`;
+  const where =
+    shown.against === null ? "kept as an advance" : `set against ${shown.against.title}`;
+  return {
+    title: "Money recorded",
+    text: `${money}${from}${on}, is recorded and ${where}. ${made.number === null ? "Its receipt is being numbered." : `Receipt ${made.number}; its PDF follows.`}`,
+  };
+};
+
 /** Stores the request and its card's figures. The same ask on the same figures is one proposal. */
 export const proposeReceipt = Effect.fn("KinReceipts.propose")(function* (input: {
   readonly orgId: KinOrgId;
@@ -221,7 +234,7 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
       WHERE org_id = ${input.orgId} AND proposal_id = ${row.proposalId}`;
   if (!input.confirmed) {
     yield* decide("declined", null);
-    return undefined;
+    return { _tag: "declined" as const };
   }
   const request = Option.getOrUndefined(decodeRequest(row.json));
   if (request === undefined)
@@ -229,7 +242,8 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
       reason: "invalid_state",
       message: "That receipt proposal can no longer be read; nothing was recorded.",
     });
-  if (stableStringify(yield* snapshotOf(input.orgId, request)) !== row.snapshot)
+  const shown = yield* snapshotOf(input.orgId, request);
+  if (stableStringify(shown) !== row.snapshot)
     return yield* new KinChatError({
       reason: "conflict",
       message:
@@ -255,7 +269,7 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
     extras: { towards: request.towards, mode: request.mode, reference: request.reference },
   });
   yield* decide("made", made.key);
-  return { ...made, writer, personId };
+  return { _tag: "made" as const, ...made, writer, personId, outcome: madeOutcome(made, shown) };
 });
 
 /**

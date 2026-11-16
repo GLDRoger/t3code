@@ -365,6 +365,16 @@ export const KinChoiceCardState = Schema.Struct({
   send: Schema.optionalKey(KinSendCard),
   /** Set when a newer card for the same thing closed this one. */
   replaced: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * What the answer did, in the owner's words, set by the server on a card Kin asked itself: a
+   * past-tense title ("Money recorded") and what happened ("Receipt RCT/26-27/001 for ₹25,000…").
+   */
+  outcome: Schema.optionalKey(
+    Schema.Struct({
+      title: KinTrimmedText.check(Schema.isMaxLength(120)),
+      text: KinText.check(Schema.isMaxLength(600)),
+    }),
+  ),
   // The first answer settles the card.
   answer: Schema.NullOr(
     Schema.Struct({
@@ -377,6 +387,7 @@ export const KinChoiceCardState = Schema.Struct({
   ),
 });
 export type KinChoiceCardState = typeof KinChoiceCardState.Type;
+export type KinChoiceOutcome = NonNullable<KinChoiceCardState["outcome"]>;
 
 export const KinPresenceState = Schema.Literals([
   // Older servers only; clients show no line for it.
