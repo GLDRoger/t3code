@@ -45,7 +45,7 @@ import * as KinLevels from "./KinLevels.ts";
 import { KinStop } from "./KinStop.ts";
 import * as Retirement from "./Retirement.ts";
 import * as LeadAccess from "./LeadAccess.ts";
-import { nonClaudeLeadModel } from "./leadModels.ts";
+import { isDevServer, nonClaudeLeadModel } from "./leadModels.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 // `create`, `retire` and `restore` have two callers: the host's `kin lead` CLI and the owner's
@@ -235,7 +235,11 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
   const { owner } = yield* KinIdentity;
   const { orgId } = person;
   const models = input.models ?? (yield* defaultModels(orgId));
-  const notClaude = nonClaudeLeadModel(yield* (yield* ServerSettingsService).getSettings, models);
+  const notClaude = nonClaudeLeadModel(
+    yield* (yield* ServerSettingsService).getSettings,
+    models,
+    yield* isDevServer,
+  );
   if (notClaude !== undefined) return yield* refuse("not_claude", notClaude);
   return yield* transaction(
     sql,

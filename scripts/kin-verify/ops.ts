@@ -1,0 +1,158 @@
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - fake mail, moved dates and reads for a dev instance.
+import * as NodeChildProcess from "node:child_process";
+import * as NodePath from "node:path";
+
+import { database, sqlite } from "./actors.ts";
+import { type Instance, ROOT } from "./instance.ts";
+import { VerifyError } from "./rpc.ts";
+
+const mailbox = (instance: Instance) => NodePath.join(instance.userdata, "kin-fake-mail.json");
+
+/** The dev server's fake mailbox, through the repo's own `kin-fake-mail.ts`. */
+function fakeMail(instance: Instance, args: ReadonlyArray<string>): string {
+  const out = NodeChildProcess.spawnSync(
+    process.execPath,
+    [
+      NodePath.join(ROOT, "apps", "server", "scripts", "kin-fake-mail.ts"),
+      mailbox(instance),
+      ...args,
+    ],
+    { cwd: NodePath.join(ROOT, "apps", "server"), encoding: "utf8" },
+  );
+  if (out.status !== 0)
+    throw new VerifyError(out.stderr.trim().split("\n").at(-1) ?? "fake mail failed");
+  return out.stdout;
+}
+
+export interface SentMail {
+  readonly messageId: string;
+  readonly threadId: string;
+  readonly from: string;
+  readonly to: ReadonlyArray<string> | string;
+  readonly subject: string;
+  readonly inReplyTo?: string;
+  readonly attachments?: ReadonlyArray<{ readonly name?: string; readonly filename?: string }>;
+}
+
+export const mailSent = (instance: Instance) =>
+  JSON.parse(fakeMail(instance, ["sent"])) as Array<SentMail>;
+
+export function mailSentLines(instance: Instance): string {
+  const sent = mailSent(instance);
+  return [
+    `${sent.length} sent`,
+    ...sent.map((mail) =>
+      [
+        mail.messageId,
+        mail.threadId,
+        `from ${mail.from}`,
+        `to ${[mail.to].flat().join(",")}`,
+        JSON.stringify(mail.subject),
+        mail.inReplyTo === undefined ? "" : `inReplyTo ${mail.inReplyTo}`,
+        (mail.attachments ?? []).length > 0
+          ? `files ${(mail.attachments ?? []).map((file) => file.filename ?? file.name).join(",")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    ),
+  ].join("\n");
+}
+
+export const mailDeliver = (instance: Instance, args: ReadonlyArray<string>) =>
+  fakeMail(instance, ["deliver", ...args]).trim();
+
+/** "3d", "12h", "90m", "2w" to milliseconds. */
+export function parseDuration(text: string): number {
+  const match = /^(\d+)\s*(m|h|d|w)$/.exec(text.trim());
+  if (match === null) throw new VerifyError(`duration "${text}": use 90m, 12h, 3d or 2w`);
+  const unit = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }[
+    match[2] as "m" | "h" | "d" | "w"
+  ];
+  return Number(match[1]) * unit;
+}
+
+const TIME_COLUMN = /(_at|_on|^at|due|until|not_before|expires|_day)$/i;
+
+/**
+ * "Time passes": every stored Kin time moves `ms` into the past, which is what the runs did by
+ * hand. The server clock is untouched, so run it with the server stopped and start it again.
+ */
+export function shiftKinTimes(instance: Instance, ms: number): { columns: number; rows: number } {
+  const db = new (sqlite().DatabaseSync)(NodePath.join(instance.userdata, "statev2.sqlite"));
+  let columns = 0;
+  let rows = 0;
+  try {
+    const seconds = Math.round(ms / 1000);
+    const days = Math.floor(ms / 86_400_000);
+    db.exec("BEGIN IMMEDIATE");
+    const tables = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'kin\\_%' ESCAPE '\\' AND sql NOT LIKE '%VIRTUAL%' AND name NOT LIKE 'kin_search%' AND name NOT LIKE 'kin_audit%'",
+      )
+      .all() as Array<{ name: string }>;
+    for (const { name } of tables) {
+      const cols = db.prepare(`PRAGMA table_info("${name}")`).all() as Array<{
+        name: string;
+        type: string;
+      }>;
+      for (const col of cols.filter((one) => TIME_COLUMN.test(one.name))) {
+        columns++;
+        const c = `"${col.name}"`;
+        rows += Number(
+          db
+            .prepare(
+              `UPDATE "${name}" SET ${c} = ${c} - ? WHERE typeof(${c}) = 'integer' AND ${c} > 1000000000000`,
+            )
+            .run(ms).changes,
+        );
+        rows += Number(
+          db
+            .prepare(
+              `UPDATE "${name}" SET ${c} = strftime('%Y-%m-%dT%H:%M:%fZ', ${c}, ?) WHERE typeof(${c}) = 'text' AND ${c} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*'`,
+            )
+            .run(`-${seconds} seconds`).changes,
+        );
+        if (days > 0)
+          rows += Number(
+            db
+              .prepare(
+                `UPDATE "${name}" SET ${c} = date(${c}, ?) WHERE typeof(${c}) = 'text' AND length(${c}) = 10 AND ${c} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`,
+              )
+              .run(`-${days} days`).changes,
+          );
+      }
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  } finally {
+    db.close();
+  }
+  return { columns, rows };
+}
+
+/** A read-only query on this instance's database, as tab-separated rows (at most 200). */
+export function query(instance: Instance, sql: string): string {
+  const db = database(instance);
+  try {
+    const statement = db.prepare(sql);
+    const rows = statement.all() as Array<Record<string, unknown>>;
+    if (rows.length === 0) return "(no rows)";
+    const header = Object.keys(rows[0]!);
+    const cell = (value: unknown) =>
+      value === null ? "∅" : typeof value === "object" ? JSON.stringify(value) : String(value);
+    return [
+      header.join("\t"),
+      ...rows
+        .slice(0, 200)
+        .map((row) => header.map((key) => cell(row[key]).replace(/\s+/g, " ")).join("\t")),
+      ...(rows.length > 200 ? [`… ${rows.length - 200} more rows`] : []),
+    ].join("\n");
+  } catch (error) {
+    throw new VerifyError(`db: ${(error as Error).message}`);
+  } finally {
+    db.close();
+  }
+}
