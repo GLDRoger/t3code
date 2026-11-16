@@ -306,3 +306,5 @@ teammates will use.
 
 To give agents characters you wrote yourself, see
 [Setting agents' characters from the host](../operations/kin-characters.md).
+
+Checked by Tech lead from a Kin chat.
