@@ -370,8 +370,8 @@ export function KinMoneyArea(props: Shared) {
   const navigation = useNavigation();
   const target = { environmentId: props.environmentId, orgId: props.orgId };
   const seq = props.stale ? null : props.live.seq;
-  const money = useKinMoneySummary(target, { enabled: true, seq });
-  const lists = useKinLists(target, { enabled: true, seq });
+  const money = useKinMoneySummary(target, { enabled: true });
+  const lists = useKinLists(target, { enabled: true });
   const agent = useKinAskAgent(target);
   const rates = useKinRates(target);
   const ratesAllowed = useAtomValue(kinClient.companyRead.permissionAtom(target.environmentId));

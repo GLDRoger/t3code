@@ -5,7 +5,7 @@ import { fieldList, parseFields } from "../../work/lists.ts";
 import { milestoneRisk, principalOfText, specChangesOf } from "../../work/projectSpine.ts";
 import { KIN_OWNER_LEVEL } from "../../work/teamView.ts";
 import { countedEntry, type RecordRow, selectRecords } from "../../work/recordRows.ts";
-import { DAY_MS, HOUR_MS, threshold, toMs } from "../thresholds.ts";
+import { DAY_MS, HOUR_MS, thresholds, toMs } from "../thresholds.ts";
 import {
   agentOrOwner,
   dayOf,
@@ -76,13 +76,26 @@ const meetingWho = (
 };
 
 /** Milestones, plans, quiet projects, changed specs and meetings: the project spine's facts. */
+/**
+ * When project `r` or any entry under it last changed; -1 when nothing did. Its own changes and its
+ * entries' are read apart, entries first (CROSS JOIN keeps that order): one OR over both made
+ * SQLite walk every change in the org once per project.
+ */
+export const projectLastMoved = (sql: SqlClient.SqlClient) => sql`MAX(
+    COALESCE((SELECT MAX(ch.at) FROM kin_record_changes ch
+      WHERE ch.org_id = r.org_id AND ch.record_id = r.record_id), -1),
+    COALESCE((SELECT MAX(ch.at) FROM kin_records t
+      CROSS JOIN kin_record_changes ch ON ch.org_id = t.org_id AND ch.record_id = t.record_id
+      WHERE t.org_id = r.org_id AND t.project_id = r.record_id), -1))`;
+
 export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx: SenseContext) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, at } = ctx;
   const facts: Array<SensedFact> = [];
-  const headsUp = yield* threshold(orgId, "milestone_heads_up_days");
-  const followUp = yield* threshold(orgId, "meeting_follow_up_hours");
-  const soon = yield* threshold(orgId, "due_soon_hours");
+  const limits = yield* thresholds(orgId);
+  const headsUp = limits("milestone_heads_up_days");
+  const followUp = limits("meeting_follow_up_hours");
+  const soon = limits("due_soon_hours");
 
   // milestone_late and milestone_at_risk: the spine's own rule, on open milestones of open projects.
   const milestones = yield* sql<EntryRow>`SELECT ${entryColumns(sql)} FROM ${entryJoins(sql)}
@@ -168,19 +181,16 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
   // project_quiet: an open project with work on it and nothing changed for the threshold.
   const quiet = yield* sql<EntryRow & { lastAt: number }>`SELECT * FROM (
     SELECT ${entryColumns(sql)},
-      (SELECT MAX(ch.at) FROM kin_record_changes ch
-        JOIN kin_records t ON t.org_id = ch.org_id AND t.record_id = ch.record_id
-        WHERE ch.org_id = r.org_id AND (t.record_id = r.record_id OR t.project_id = r.record_id))
-        AS "lastAt"
+      ${projectLastMoved(sql)} AS "lastAt"
     FROM ${entryJoins(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.state = 'open'
       AND ${countedEntry(sql)} AND EXISTS (SELECT 1 FROM kin_records t WHERE t.org_id = r.org_id
         AND t.project_id = r.record_id AND t.register_id IN ('milestones', 'work')
         AND t.state IN ${sql.in(OPEN)}))
-    WHERE "lastAt" IS NOT NULL AND "lastAt" <= ${at - DAY_MS}
+    WHERE "lastAt" >= 0 AND "lastAt" <= ${at - DAY_MS}
     ORDER BY "lastAt", key LIMIT ${SENSE_CAP}`;
   for (const row of quiet) {
-    const limit = yield* threshold(orgId, "project_quiet_days", row.clientId ?? undefined);
+    const limit = limits("project_quiet_days", row.clientId ?? undefined);
     if (row.lastAt > at - toMs(limit)) continue;
     const days = elapsed(row.lastAt, at, "days");
     facts.push(

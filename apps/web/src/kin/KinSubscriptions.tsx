@@ -210,7 +210,7 @@ export function KinSubscriptionsPage(
   },
 ) {
   const seq = props.stale ? null : props.live.seq;
-  const lists = useKinLists(props, { enabled: true, seq });
+  const lists = useKinLists(props, { enabled: true });
   const rates = useKinRates(props);
   const def = kinSubscriptionsList(kinListsOf(lists));
   if (lists.state._tag === "refused")

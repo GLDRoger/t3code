@@ -83,12 +83,11 @@ export function useRereadOnChange(seq: number | null, reread: () => void) {
 /** Every list there is, as its definition. `enabled` is off for a viewer the host would refuse. */
 export function useKinLists(
   target: KinWorkTarget,
-  options: { readonly enabled: boolean; readonly archived?: boolean; readonly seq: number | null },
+  options: { readonly enabled: boolean; readonly archived?: boolean },
 ) {
   const archived = options.archived === true;
   const atom = listsAtom(target, archived);
   const state = kinWorkReadState(useAtomValue(options.enabled ? atom : noListsAtom));
-  useRereadOnChange(options.seq, () => appAtomRegistry.refresh(atom));
   return { state, refresh: () => appAtomRegistry.refresh(atom) };
 }
 
@@ -97,14 +96,10 @@ export type KinListsHandle = ReturnType<typeof useKinLists>;
 export const kinListsOf = (handle: KinListsHandle): ReadonlyArray<KinListDefinition> =>
   handle.state._tag === "ready" ? handle.state.value.lists : [];
 
-/** The Money summary, read again whenever Work changes. */
-export function useKinMoneySummary(
-  target: KinWorkTarget,
-  options: { readonly enabled: boolean; readonly seq: number | null },
-) {
+/** The Money summary, kept current by Work's changes (`kinWorkRefreshOn`). */
+export function useKinMoneySummary(target: KinWorkTarget, options: { readonly enabled: boolean }) {
   const atom = moneyAtom(target);
   const state = kinWorkReadState(useAtomValue(options.enabled ? atom : noMoneyAtom));
-  useRereadOnChange(options.seq, () => appAtomRegistry.refresh(atom));
   return { state, refresh: () => appAtomRegistry.refresh(atom) };
 }
 
@@ -405,17 +400,13 @@ export function useKinRates(target: KinWorkTarget, enabled = true) {
 const noReceiptsAtom: ReturnType<typeof kinClient.receipts> = Atom.make(AsyncResult.initial());
 const noRecipesAtom: ReturnType<typeof kinClient.recipes> = Atom.make(AsyncResult.initial());
 
-/** Money's receipts, newest first, read again whenever Work changes. */
-export function useKinReceipts(
-  target: KinWorkTarget,
-  options: { readonly enabled: boolean; readonly seq: number | null },
-) {
+/** Money's receipts, newest first, kept current by Work's changes. */
+export function useKinReceipts(target: KinWorkTarget, options: { readonly enabled: boolean }) {
   const atom = kinClient.receipts({
     environmentId: target.environmentId,
     input: { orgId: target.orgId },
   });
   const state = kinWorkReadState(useAtomValue(options.enabled ? atom : noReceiptsAtom));
-  useRereadOnChange(options.seq, () => appAtomRegistry.refresh(atom));
   return { state, refresh: () => appAtomRegistry.refresh(atom) };
 }
 

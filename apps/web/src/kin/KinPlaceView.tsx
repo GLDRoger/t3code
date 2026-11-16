@@ -254,14 +254,13 @@ function KinPlaceView({
   const canChangeTasks = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const ready = state._tag === "ready";
   const summary = ready ? state.live.summary : null;
-  const seq = state._tag === "ready" && !state.stale ? state.live.seq : null;
   const hostClients = kinWorkHostClients(summary);
   const directory = useKinWorkDirectory(props, ready);
   const choices = useKinWorkChoices(props, ready && hostClients);
   const changes = useKinWorkChanges(props);
   const agent = useKinAskAgent(props);
-  const lists = useKinLists(props, { enabled: ready && place === "docs", archived: true, seq });
-  const moneyLists = useKinLists(props, { enabled: ready && place === "money", seq });
+  const lists = useKinLists(props, { enabled: ready && place === "docs", archived: true });
+  const moneyLists = useKinLists(props, { enabled: ready && place === "money" });
   const [adding, setAdding] = useState<Adding>(null);
   const searching = dialog === "search";
   // Where the task list starts when it is opened from a client: narrowed to that client.
@@ -447,7 +446,6 @@ function KinPlaceView({
           <KinNeedsYou
             {...props}
             directory={directory}
-            seq={seq}
             mine={mine}
             onOpenTask={setOpenKey}
             onOpenList={(start) => {

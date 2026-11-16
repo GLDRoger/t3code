@@ -154,7 +154,7 @@ const useOpenEntry = (target: KinWorkTarget) => {
 /** Bank balances of record, one line each; why a figure is held back sits behind Why. */
 export function KinCashSection(props: Section) {
   const now = new Date(useNowMinuteMs());
-  const { state, refresh } = useKinCash(props, true, props.seq);
+  const { state, refresh } = useKinCash(props, true);
   const [why, setWhy] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
   if (state._tag === "refused" || state._tag === "gone") return null;
@@ -293,7 +293,7 @@ function OutlookRows(props: {
 export function KinOutlookSection(props: Section) {
   const now = new Date(useNowMinuteMs());
   const open = useOpenEntry(props);
-  const { state, refresh } = useKinOutlook(props, true, props.seq);
+  const { state, refresh } = useKinOutlook(props, true);
   const [all, setAll] = useState(false);
   if (state._tag === "refused" || state._tag === "gone") return null;
   const view = state._tag === "ready" ? kinOutlookView(state.value, props.rates, now) : null;
@@ -482,7 +482,7 @@ export function KinBudgetsSection(
   props: Section & { readonly lists: ReadonlyArray<KinListDefinition> },
 ) {
   const navigation = useNavigation();
-  const { state, refresh } = useKinBudgets(props, true, props.seq);
+  const { state, refresh } = useKinBudgets(props, true);
   const canChange = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const [all, setAll] = useState(false);
   const expenses = props.lists.find((one) => one.list === "expenses") ?? null;
@@ -554,7 +554,7 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
   const navigation = useNavigation();
   const { budget } = props;
   const rates = useKinRates(props);
-  const lists = useKinLists(props, { enabled: true, seq: null });
+  const lists = useKinLists(props, { enabled: true });
   const expenses = kinListsOf(lists).find((one) => one.list === "expenses") ?? null;
   const held = Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))));
   const projects = held?.projects ?? [];

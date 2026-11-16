@@ -73,8 +73,7 @@ function KinHomeWithWork(props: {
   readonly workTarget: KinWorkTarget;
 }) {
   const work = useKinWork(props.workTarget);
-  const seq = work._tag === "ready" && !work.stale ? work.live.seq : null;
-  const money = useKinMoneySummary(props.workTarget, { enabled: true, seq }).state;
+  const money = useKinMoneySummary(props.workTarget, { enabled: true }).state;
   const docs = useKinDocsLive(props.workTarget);
   const ownerLevel = useKinOwnerLevel(props.workTarget.environmentId, props.session);
   const reach = useKinPlaceReach(props.workTarget.environmentId);

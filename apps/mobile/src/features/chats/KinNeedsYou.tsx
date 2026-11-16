@@ -57,9 +57,8 @@ export function KinNeedsYou(
   const { environmentId, orgId, names } = props;
   const target = { environmentId, orgId };
   const now = new Date(useNowMinuteMs());
-  const seq = props.stale ? null : props.live.seq;
-  const money = useKinMoneySummary(target, { enabled: true, seq }).state;
-  const lists = useKinLists(target, { enabled: true, archived: true, seq }).state;
+  const money = useKinMoneySummary(target, { enabled: true }).state;
+  const lists = useKinLists(target, { enabled: true, archived: true }).state;
   const { mine } = props;
   const inbox = useKinInbox();
   const [expanded, setExpanded] = useState(false);
