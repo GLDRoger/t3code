@@ -56,6 +56,7 @@ import { abortChatTurns } from "../lead/Audience.ts";
 import { onPersonRemoved } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
+import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { placesOf } from "../work/teamView.ts";
 import { accessOf, accessSql, isOwnerHimself, mayActAsOwner, ownerLevel } from "./KinAccess.ts";
 import { profileSets } from "./profileFields.ts";
@@ -185,6 +186,7 @@ export const make = Effect.gen(function* () {
   const store = yield* Effect.serviceOption(KinAttachmentStore);
   const chats = yield* Effect.serviceOption(KinChatService);
   const groups = yield* Effect.serviceOption(KinGroups);
+  const records = yield* Effect.serviceOption(KinRecords);
   const level = (orgId: KinOrgId, personId: KinPersonId) =>
     ownerLevel(orgId, personId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   /** The caller, when owner-level here: the owner or a co-owner runs Team. */
@@ -308,6 +310,11 @@ export const make = Effect.gen(function* () {
           );
           if (!consumed.length) return yield* missing;
           const personId = KinPersonId.make(row.person_id ?? NodeCrypto.randomUUID());
+          if (row.person_id)
+            yield* sql`UPDATE kin_people SET removed_at = NULL
+              WHERE org_id = ${orgId} AND person_id = ${row.person_id}`.pipe(
+              Effect.mapError(toPersistenceSqlError("KinPeople.back")),
+            );
           if (!row.person_id) {
             const handle = yield* uniqueHandle(identity.owner.orgId, row.handle, now);
             // A new teammate starts with client names and shared docs; money stays off.
@@ -512,13 +519,22 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleRemoveAccessInput,
   ) {
-    yield* mayActOn(yield* owner(session, input.orgId), input.orgId, input.personId);
+    const caller = yield* owner(session, input.orgId);
+    yield* mayActOn(caller, input.orgId, input.personId);
     const now = (yield* DateTime.now).epochMilliseconds;
     const leftAt = DateTime.formatIso(DateTime.makeUnsafe(now));
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
-          yield* person(input.orgId, input.personId);
+          const leaving = yield* person(input.orgId, input.personId);
+          // Let back in later, they start as a new joiner: their old level never comes back.
+          yield* sql`UPDATE kin_people SET access = 'member', sees_clients = 1, sees_docs = 1,
+              sees_money = 0, removed_at = ${now}
+            WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
+            Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessReset")),
+          );
+          if (Option.isSome(records))
+            yield* handTasksBack(records.value, caller.personId, input, leaving.displayName);
           // An unused link would let them straight back in.
           yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
         WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND consumed_at IS NULL
@@ -597,6 +613,33 @@ export const make = Effect.gen(function* () {
         }),
       )
       .pipe(Effect.mapError(sqlError("KinPeople.removeAccess")));
+  });
+  /** Open tasks a leaving person holds go back to whoever gave them, else to the owner. */
+  const handTasksBack = Effect.fn("KinPeople.handTasksBack")(function* (
+    tasks: KinRecords["Service"],
+    by: KinPersonId,
+    input: { readonly orgId: KinOrgId; readonly personId: KinPersonId },
+    name: string,
+  ) {
+    const held = yield* sql<{ key: string }>`SELECT key FROM kin_records
+      WHERE org_id = ${input.orgId} AND register_id = 'work' AND owner_kind = 'person'
+        AND owner_id = ${input.personId} AND state NOT IN ('done', 'dropped')
+      ORDER BY key`.pipe(Effect.mapError(toPersistenceSqlError("KinPeople.heldTasks")));
+    const writer: Writer = { actor: { _tag: "person", personId: by }, via: "owner", askedBy: by };
+    const holder = { _tag: "person", personId: input.personId } as const;
+    for (const task of held)
+      yield* tasks
+        .handBack(input.orgId, writer, task.key, holder, `${name} left the company.`)
+        .pipe(
+          // Nobody else gave it to them: it is the owner's to give again.
+          Effect.catchIf(
+            (error) => isKinError(error) && error.reason === "invalid_state",
+            () =>
+              tasks.update(input.orgId, writer, task.key, {
+                owner: { _tag: "person", personId: identity.owner.personId },
+              }),
+          ),
+        );
   });
   const setGithubLogin = Effect.fn("KinPeople.setGithubLogin")(function* (
     session: AuthenticatedSession,

@@ -36,23 +36,23 @@ import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenSt
 import { kinPickablePeople } from "./kinTeam.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
 
-export const KIN_WORK_TITLE = "Work";
+export const KIN_WORK_TITLE = "Tasks";
 export const KIN_WORK_NEW = "New task";
 export const KIN_WORK_SEARCH_PLACEHOLDER = "Search tasks";
-export const KIN_WORK_LOAD_FAILED = "Couldn't load Work";
+export const KIN_WORK_LOAD_FAILED = "Couldn't load tasks";
 export const KIN_WORK_STALE = "Offline. Showing the last update.";
 export const KIN_WORK_REFRESH_FAILED = "Couldn't refresh. Showing the last update.";
 export const KIN_WORK_ONLY_OWNER = {
   title: "Only the owner can open this",
-  detail: "Work is shown to the person who runs this workspace for now.",
+  detail: "Tasks are shown to the person who runs this workspace for now.",
 };
 export const KIN_WORK_OFFLINE = {
   title: "You're offline",
-  detail: "Work comes back when the connection does.",
+  detail: "Tasks come back when the connection does.",
 };
 export const KIN_WORK_GONE = {
   title: "This task isn't here any more",
-  detail: "Open Work to see what there is now.",
+  detail: "Open Tasks to see what there is now.",
 };
 export const KIN_WORK_ITEM_FAILED = {
   title: "Couldn't load this task",
@@ -800,6 +800,7 @@ export const KIN_WORK_AUDIENCE = {
 /**
  * A task's one privacy control, as the host decides it: private only when marked, and its holder
  * always sees it; unmarked, its maker, holder and project's people do, and the team once shared.
+ * Each answer says the server's `personSees` rule in words: change the two together.
  */
 export function kinWorkAudience(
   view: Pick<KinWorkItemView, "privacy" | "shared" | "project">,
@@ -816,8 +817,8 @@ export function kinWorkAudience(
       : current === "team"
         ? "Everyone on the team"
         : view.project === null
-          ? `${owner ?? "You"} and whoever has it`
-          : `${owner ?? "You"}, whoever has it and the people on ${view.project.title}`;
+          ? `${owner ?? "You"}, co-owners and whoever has it or gave it`
+          : `${owner ?? "You"}, co-owners, whoever has it or gave it, and the people on ${view.project.title}`;
   const label = {
     people,
     team: "The whole team",
@@ -857,9 +858,15 @@ export const KIN_ENTRY_SHARE: typeof KIN_WORK_SHARE = {
 export const KIN_DOC_SHARE: typeof KIN_WORK_SHARE = {
   label: "Share with team",
   on: "Teammates who can see Docs read this one.",
-  off: "Only the owner and co-owners see this doc, and the lead of its project.",
+  off: "Only the owner and co-owners see this doc, and the people on its project.",
   failed: "Couldn't change who sees this.",
 };
+
+/** A company doc, such as a playbook: the team's to read, with no switch. Private hides it. */
+export const KIN_DOC_COMPANY = {
+  label: "Who can read this",
+  note: "Everyone on the team with Docs, and the agents working for them: it's a company doc. Marked private, only the owner and co-owners see it.",
+} as const;
 
 const CATEGORY_LABEL = {
   task: null,
@@ -1301,7 +1308,8 @@ export interface KinWorkAssignee {
 export const KIN_WORK_ASSIGN = {
   title: "Give this to",
   leads: "Agents",
-  leadsHint: "Given to an agent, it starts right away. Its progress shows here.",
+  leadsHint:
+    "Given to an agent, it starts right away and works with your access. Its progress shows here.",
   people: "People",
   /** A re-invited teammate who hasn't opened the new link yet. */
   invited: "Invited, hasn't joined yet",

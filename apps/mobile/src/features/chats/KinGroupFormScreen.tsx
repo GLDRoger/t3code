@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import {
   KIN_GROUP_NAME_MAX,
+  KIN_GROUP_PEOPLE_NOTE,
   kinGroupNameCheck,
   kinGroupProblem,
 } from "@t3tools/client-runtime/kin/kinGroups";
@@ -327,7 +328,7 @@ function GroupForm(props: {
               {people.length === 0 ? null : (
                 <ListSection
                   title="People"
-                  footer="Someone added later sees only what is said after they join, not earlier messages. People in a group can ask its agents to talk things through. Only you can have an agent start work."
+                  footer={`Someone added later sees only what is said after they join, not earlier messages. ${KIN_GROUP_PEOPLE_NOTE}`}
                 >
                   {people.map(({ person, invited: waiting }, index) => (
                     <SelectionRow

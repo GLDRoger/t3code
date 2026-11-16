@@ -82,7 +82,8 @@ A group is one chat with any mix of agents and people (owner and co-owners: **Ne
 The first agent you pick answers when a message names nobody; write `@` and a name to ask another.
 Agents keep to one short message in a group, and don't talk to each other unless you name one.
 People in a group can ask its agents to talk things through; only the owner and co-owners can have an agent
-start work.
+start work there. Anyone can give an agent a task in Tasks, and it then works with that person's
+access, never more.
 
 In a group, an agent won't show something to people who can't see it. Ask about an invoice there
 and it answers you privately instead.
@@ -122,7 +123,8 @@ what's late or stuck, and who's on it. The owner, co-owners and the project's le
 everyone on the project sees them. The owner or a co-owner sets the lead under **Project lead**.
 
 A member sees client names and contacts only when the owner turns on **Can see Clients**, and never
-what a client is charged or owes.
+what a client is charged or owes. With it on, they also find the projects they're on, under their
+clients.
 
 ## Money
 
@@ -172,6 +174,10 @@ reviewing code, and so on. Agents read the right playbook before they act. Chang
 in a chat: "chase invoices after 7 days" and the agent edits the playbook and tells you what
 changed. A teammate's suggestion goes to the owner as a question.
 
+Playbooks, like every company doc, are for the whole team to read: everyone with **Can see Docs**,
+and the agents working for them. Mark one private to keep it to the owner and co-owners; it then
+leaves teammates' lists and search, and agents working for them can't open it either.
+
 ## Email and connections
 
 Owners and co-owners connect services under **Settings → Connections**: Google or Microsoft mail,
@@ -211,21 +217,21 @@ stays with the owner. **Forget** an item and agents stop using it; bring it back
 A project lead is a member who leads one or more projects. They see what a member sees, plus more
 on the projects they lead.
 
-| What                                                 | Owner and co-owners             | Member                                                           | Project lead, on top                 |
-| ---------------------------------------------------- | ------------------------------- | ---------------------------------------------------------------- | ------------------------------------ |
-| Chat with agents                                     | All of them                     | The team agent, and agents the owner lets them message           |                                      |
-| Start a group, create an agent, add a teammate       | Yes                             | No                                                               |                                      |
-| Tasks                                                | All, except others' **Only me** | What they hold, made or gave, their projects' and the team's     |                                      |
-| Mark a task **Only me**                              | Yes                             | No                                                               | Yes                                  |
-| Hand back a task                                     | Not needed                      | Yes                                                              |                                      |
-| Money                                                | All                             | Nothing, or read-only shared figures with **Can see Money**      | The money filed under their projects |
-| Record payments, make PDFs and receipts, set budgets | Yes                             | No                                                               |                                      |
-| Clients                                              | All, with what they owe         | Names and contacts with **Can see Clients**; never what they owe |                                      |
-| Add a milestone                                      | Yes                             | No; they see milestones                                          | On their projects                    |
-| Docs                                                 | All                             | Company docs with **Can see Docs**, and their projects' docs     |                                      |
-| Restore an older version of a doc                    | Yes                             | No                                                               |                                      |
-| Confirm an email, statement or receipt; approve      | Yes                             | No                                                               |                                      |
-| Settings, Check-ins, Connections, Memory, Team       | Yes                             | No; their own profile only                                       |                                      |
+| What                                                 | Owner and co-owners             | Member                                                                           | Project lead, on top                 |
+| ---------------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------ |
+| Chat with agents                                     | All of them                     | The team agent, and agents the owner lets them message                           |                                      |
+| Start a group, create an agent, add a teammate       | Yes                             | No                                                                               |                                      |
+| Tasks                                                | All, except others' **Only me** | What they hold, made or gave, their projects' and the team's                     |                                      |
+| Mark a task **Only me**                              | Yes                             | No                                                                               | Yes                                  |
+| Hand back a task                                     | Not needed                      | Yes                                                                              |                                      |
+| Money                                                | All                             | Nothing, or read-only shared figures with **Can see Money**                      | The money filed under their projects |
+| Record payments, make PDFs and receipts, set budgets | Yes                             | No                                                                               |                                      |
+| Clients                                              | All, with what they owe         | Names, contacts and their projects with **Can see Clients**; never what they owe |                                      |
+| Add a milestone                                      | Yes                             | No; they see milestones                                                          | On their projects                    |
+| Docs                                                 | All                             | Company docs with **Can see Docs**, and their projects' docs                     |                                      |
+| Restore an older version of a doc                    | Yes                             | No                                                                               |                                      |
+| Confirm an email, statement or receipt; approve      | Yes                             | No                                                                               |                                      |
+| Settings, Check-ins, Connections, Memory, Team       | Yes                             | No; their own profile only                                                       |                                      |
 
 Only the owner himself edits a teammate's profile, manages co-owners, and sees his own private
 chats. Agents act with the authority of whoever is asking, never more.

@@ -437,7 +437,11 @@ export function kinWaitingRowView(
   return {
     label: WAITING_REASON_LABELS[item.reason],
     chatTitle: chat === undefined ? "Direct chat" : kinChatTitle(chat, agentNames),
-    text: message === null || message.status === "deleted" ? null : message.body,
+    text:
+      item.question ??
+      (message === null || message.status === "deleted" || message.body === ""
+        ? null
+        : message.body),
     createdAt: item.createdAt,
   };
 }

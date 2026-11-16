@@ -98,7 +98,11 @@ export const Route = createRootRoute({
       authGateState.chatOnly &&
       kinListAt(location.pathname) !== "kin"
     ) {
-      throw redirect({ to: "/kin", replace: true });
+      throw redirect({
+        to: "/kin",
+        search: location.pathname.startsWith("/settings") ? { settings: "owner" } : {},
+        replace: true,
+      });
     }
     if (authGateState.status === "authenticated") {
       // Idempotent, so every navigation can ask for it.

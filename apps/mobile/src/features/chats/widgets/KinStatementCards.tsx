@@ -310,6 +310,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
       </View>
       {heldAll === 0 ? null : (
         <Button
+          tone="outline"
           size="compact"
           label={`Tick all ${heldAll} matches`}
           onPress={() => void change({ _tag: "tickAll", ticked: true })}
@@ -370,6 +371,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
       ) : card.status === "applied" ? (
         <View className="flex-row flex-wrap gap-2">
           <Button
+            tone="outline"
             size="compact"
             label="Undo this statement"
             loading={pending === "undo"}
@@ -393,6 +395,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
           </Text>
           {undoBefore === null ? null : (
             <Button
+              tone="outline"
               size="compact"
               label={undoBefore}
               loading={pending === "undo"}
@@ -421,6 +424,7 @@ function MatchedRows(props: RowsProps) {
     <View>
       {!props.editable ? null : (
         <Button
+          tone="outline"
           size="compact"
           label={all ? "Untick all" : "Tick all"}
           onPress={() => props.onChange({ _tag: "tickAll", ticked: !all })}
@@ -518,6 +522,7 @@ function UnmatchedRows(props: RowsProps) {
     <View className="gap-2">
       {!kinStatementSuggestionsLeft(card, rows.unmatched, selection) || !props.editable ? null : (
         <Button
+          tone="outline"
           size="compact"
           label={
             whole

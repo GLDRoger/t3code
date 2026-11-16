@@ -470,6 +470,14 @@ describe("kinWaitingRowView", () => {
 
   it("has no text when the inbox doesn't carry the message", () => {
     expect(kinWaitingRowView(item("m-1"), chats, agentNames).text).toBeNull();
+    // A card's message has no body; its question says what waits.
+    expect(
+      kinWaitingRowView(
+        { ...(item("m-1") as object), question: "Send this email?" } as never,
+        chats,
+        agentNames,
+      ).text,
+    ).toBe("Send this email?");
     expect(kinWaitingRowView(item(null, "chat-9"), chats, agentNames)).toMatchObject({
       chatTitle: "Direct chat",
       text: null,

@@ -108,9 +108,17 @@ export function KinSettings(props: {
   const pages = kinHomeTabs(session, ownerLevel);
   const waiting = state._tag === "ready" ? selectKinInboxView(state.inbox.value).waiting.length : 0;
 
+  // The team on screen has its name; an old one this phone still holds goes by its computer and state.
+  const teamOf = (environmentId: EnvironmentId) => {
+    if (host._tag === "host" && host.environmentId === environmentId) return team;
+    const held = environments.find((one) => one.environmentId === environmentId);
+    return held === undefined
+      ? null
+      : `${held.label} (${CONNECTION_LABEL[held.connection.phase].toLowerCase()})`;
+  };
   const leave = (environmentId: EnvironmentId) =>
     Dialog.alert(
-      team === null ? "Leave this team?" : `Leave ${team}?`,
+      teamOf(environmentId) === null ? "Leave this team?" : `Leave ${teamOf(environmentId)}?`,
       "You'll be signed out on this phone and its chats will be removed from it. To come back, ask your team for a new join link.",
       [
         { text: "Cancel", style: "cancel" },
@@ -275,7 +283,11 @@ export function KinSettings(props: {
               key={environmentId}
               tone="danger"
               fullWidth
-              label={team === null ? "Leave this team" : `Leave ${team}`}
+              label={
+                teamOf(environmentId) === null
+                  ? "Leave this team"
+                  : `Leave ${teamOf(environmentId)}`
+              }
               onPress={() => leave(environmentId)}
             />
           ))}

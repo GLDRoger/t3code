@@ -61,6 +61,9 @@ export function mailSentLines(instance: Instance): string {
 export const mailDeliver = (instance: Instance, args: ReadonlyArray<string>) =>
   fakeMail(instance, ["deliver", ...args]).trim();
 
+export const mailExpire = (instance: Instance, args: ReadonlyArray<string>) =>
+  fakeMail(instance, ["expire", ...args.filter((arg) => arg !== "expire")]).trim();
+
 /** "3d", "12h", "90m", "2w" to milliseconds. */
 export function parseDuration(text: string): number {
   const match = /^(\d+)\s*(m|h|d|w)$/.exec(text.trim());

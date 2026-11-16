@@ -930,7 +930,12 @@ describe("KinLeadProvision", () => {
             );
 
         // Nobody but the owner, until the owner says so.
-        assert.deepStrictEqual(yield* Provision.access(on), { people: [] });
+        assert.deepStrictEqual(yield* Provision.access(on), { everyone: false, people: [] });
+        // The team agent is everyone's, and its list says so whoever has a row.
+        yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+          VALUES (${finance.orgId}, ${finance.agentId}, ${finance.ownerPersonId}, 0)`;
+        assert.deepStrictEqual(yield* Provision.access(on), { everyone: true, people: [] });
+        yield* sql`DELETE FROM kin_team_agents`;
         assert.deepStrictEqual(yield* Provision.contacts(priya), []);
         assert.include(yield* chats.createDirect(priya, finance).pipe(Effect.flip), {
           reason: "not_allowed",
@@ -1027,7 +1032,7 @@ describe("KinLeadProvision", () => {
         );
 
         // Taken away before she wrote anything: the chat leaves her list.
-        assert.deepStrictEqual(yield* Provision.disallow(her), { people: [] });
+        assert.deepStrictEqual(yield* Provision.disallow(her), { everyone: false, people: [] });
         assert.deepStrictEqual(yield* Provision.contacts(priya), []);
         assert.isNotNull((yield* member(contact.chatId))?.leftAt);
         assert.include(yield* chats.createDirect(priya, finance).pipe(Effect.flip), {

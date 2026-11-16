@@ -3,20 +3,31 @@
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json deliver --to hello@invented-co.example \
 //     --from "Ravi Menon <ravi@lumen.example>" --subject "Launch date" --body "Can we move it?" [--thread ft3]
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json sent
+//   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json expire hello@invented-co.example [--back]
 import * as NodeUtil from "node:util";
 
 import { fileStore, makeFakeMail } from "../src/kin/connections/FakeMail.ts";
 
 const [path, command, ...rest] = process.argv.slice(2);
-if (path === undefined || (command !== "deliver" && command !== "sent")) {
+if (path === undefined || (command !== "deliver" && command !== "sent" && command !== "expire")) {
   console.error(
-    "Usage: kin-fake-mail.ts <mailbox.json> deliver --to --from --subject --body | sent",
+    "Usage: kin-fake-mail.ts <mailbox.json> deliver --to --from --subject --body | sent | expire <address> [--back]",
   );
   process.exit(2);
 }
 const fake = makeFakeMail(fileStore(path));
 if (command === "sent") {
   console.log(JSON.stringify(fake.sent(), null, 2));
+} else if (command === "expire") {
+  // The account's sign-in stops working, as a revoked grant does; --back restores it.
+  const address = rest.find((arg) => !arg.startsWith("--"));
+  if (address === undefined) {
+    console.error("expire needs the account's address.");
+    process.exit(2);
+  }
+  const back = rest.includes("--back");
+  fake.setExpired(address, !back);
+  console.log(`${address}: sign-in ${back ? "works again" : "expired"}`);
 } else {
   const { values } = NodeUtil.parseArgs({
     args: rest,

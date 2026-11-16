@@ -34,28 +34,29 @@ For each role, `<out>/<role>/trace` holds Bombadil's trace and screenshots:
 ## The company
 
 Rhea Kapoor (owner), Arjun Mehta (co-owner), Dev Iyer (member who leads the Lumen Grove project),
-Zoya Sheikh (member, no Clients place) and Kabir Rao (member with Clients). Three clients, three
+Zoya Sheikh (member, no Clients or Money place) and Kabir Rao (member with Clients and **Can see
+Money**). Three clients, three
 projects, milestones, tasks held by different people, an overdue invoice of ₹7,31,941
 (INV/26-27/731), two quotes, a contact with email and phone, and two owner-private tasks titled
 `CANARY-PRIVATE-…`. Leaks are detected by these strings.
 
 ## Properties
 
-| Property                                                                                      | Meaning                                                                                                                                                 |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `privacyMoney`                                                                                | Members see no amount (₹, Rs, INR, 7,31,941-style numbers) and no invoice or quote number.                                                              |
-| `privacyOwnerPrivate`                                                                         | Lead and members never see an owner-private `CANARY-PRIVATE` title.                                                                                     |
-| `privacyContact`                                                                              | A member without the Clients place never sees the contact's email or phone.                                                                             |
-| `noCouldntLoad`, `noGoneRecord`, `noSomethingWrong`, `noNotAvailable`                         | No screen reached by tapping what the app offered says it couldn't load, the thing is gone, something went wrong, or it is not available.               |
-| `enabledNeverRefused`                                                                         | A tapped control never brings up a refusal ("You can't do that here", "Only the owner … can") that wasn't on screen before it.                          |
-| `noConnectionBlame`                                                                           | Nothing says to check the connection or that Kin isn't answering: the server is up, so a refusal or an empty result never reads as one.                 |
-| `noBlankScreen`, `spinnersEnd`                                                                | The main area is never blank for more than 6 s; a spinner ends within 10 s.                                                                             |
-| `countMatchesList`                                                                            | Tapping something labelled "N open/dates/clients…" shows a new list of N items.                                                                         |
-| `noDeadControls`                                                                              | A tapped button or link changes the screen, opens a sheet, or shows a message within 3 s.                                                               |
-| `noRecordInRecord`, `noSheetOnSheet`                                                          | Nothing deeper than dock tab → list → record → sheet: one record open at a time, one sheet at a time. Confirmation prompts and toasts don't count.      |
-| `noBrokenValues`, `noATeammate`, `noInternalWords`, `noRawIds`                                | No `undefined`/`NaN`/`[object Object]`/`null`, no "A teammate", no internal words (widget, wake, deferral, L2, "lead agent", pulse, floor), no raw ids. |
-| `backClosesWhatOpened`                                                                        | Opening something and pressing Back returns to where you were.                                                                                          |
-| `noUncaughtExceptions`, `noUnhandledPromiseRejections`, `noConsoleErrors`, `noHttpErrorCodes` | Bombadil's defaults: the console stays clean and no request fails.                                                                                      |
+| Property                                                                                      | Meaning                                                                                                                                                                      |
+| --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `privacyMoney`                                                                                | A member without Can see Money sees no amount (₹, Rs, INR, 7,31,941-style numbers) and no invoice or quote number; one with it sees none of what isn't shared with the team. |
+| `privacyOwnerPrivate`                                                                         | Lead and members never see an owner-private `CANARY-PRIVATE` title.                                                                                                          |
+| `privacyContact`                                                                              | A member without the Clients place never sees the contact's email or phone.                                                                                                  |
+| `noCouldntLoad`, `noGoneRecord`, `noSomethingWrong`, `noNotAvailable`                         | No screen reached by tapping what the app offered says it couldn't load, the thing is gone, something went wrong, or it is not available.                                    |
+| `enabledNeverRefused`                                                                         | A tapped control never brings up a refusal ("You can't do that here", "Only the owner … can") that wasn't on screen before it.                                               |
+| `noConnectionBlame`                                                                           | Nothing says to check the connection or that Kin isn't answering: the server is up, so a refusal or an empty result never reads as one.                                      |
+| `noBlankScreen`, `spinnersEnd`                                                                | The main area is never blank for more than 6 s; a spinner ends within 10 s.                                                                                                  |
+| `countMatchesList`                                                                            | Tapping something labelled "N open/dates/clients…" shows a new list of N items.                                                                                              |
+| `noDeadControls`                                                                              | A tapped button or link changes the screen, opens a sheet, or shows a message within 3 s.                                                                                    |
+| `noRecordInRecord`, `noSheetOnSheet`                                                          | Nothing deeper than dock tab → list → record → sheet: one record open at a time, one sheet at a time. Confirmation prompts and toasts don't count.                           |
+| `noBrokenValues`, `noATeammate`, `noInternalWords`, `noRawIds`                                | No `undefined`/`NaN`/`[object Object]`/`null`, no "A teammate", no internal words (widget, wake, deferral, L2, "lead agent", pulse, floor), no raw ids.                      |
+| `backClosesWhatOpened`                                                                        | Opening something and pressing Back returns to where you were.                                                                                                               |
+| `noUncaughtExceptions`, `noUnhandledPromiseRejections`, `noConsoleErrors`, `noHttpErrorCodes` | Bombadil's defaults: the console stays clean and no request fails.                                                                                                           |
 
 Each property reports its first failure per run, so the kinds are split to keep one leak from
 hiding another.
