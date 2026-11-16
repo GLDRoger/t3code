@@ -268,11 +268,16 @@ features:
     web: [tasks]
     phone: [tab:tasks]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: A member sees what they hold, made or gave, and their projects' tasks.
+    note: >-
+      A member sees what they hold, made, gave or kept to themselves, their projects' tasks and
+      what is shared with the whole team. Every role reads the same groups: On me, On others by
+      person, On agents, then the rest by project; each row leads with who has it, agents by name.
     tools: [records_query, record_get]
     proof:
       - packages/client-runtime/src/kin/kinWorkList.test.ts
+      - packages/client-runtime/src/kin/kinWorkGroups.test.ts
       - .agents/skills/verify-kin/scripts/assign-member-sees.sh
+      - .agents/skills/verify-kin/scripts/member-sees-agent-name.sh
 
   - id: pulse
     name: Needs attention (the pulse)
@@ -339,10 +344,13 @@ features:
     phone: [tab:tasks, KinWorkItem, menu:Who can see this]
     form: true
     roles: { owner: both, co_owner: both, lead: both, member: none }
-    note: A lead may mark a task private; sharing with the team is owner-level.
+    note: >-
+      A lead may mark a task private and undo their own mark; others who see it read whose it
+      is. Sharing with the team is owner-level.
     proof:
       - apps/server/src/kin/lead/WorkIsolation.test.ts
       - .agents/skills/verify-kin/scripts/private-task-hidden.sh
+      - .agents/skills/verify-kin/scripts/lead-undoes-only-me.sh
 
   - id: work-links
     name: Tasks, Money, Clients or Docs opened from the coding app
@@ -559,6 +567,23 @@ features:
       - .agents/skills/verify-kin/scripts/private-task-hidden.sh
       - .agents/skills/verify-kin/scripts/lead-adds-milestone.sh
       - packages/client-runtime/src/kin/kinWorkForms.test.ts
+
+  - id: project-people
+    name: Who is on a project
+    tab: clients
+    web: [clients, "?project", "sheet:Who's on this project"]
+    phone: [tab:clients, KinProject, KinProjectPeople]
+    form: true
+    roles: { owner: both, co_owner: both, lead: both, member: none }
+    note: >-
+      The owner, a co-owner or the project's lead puts people and agents on it and takes them
+      off; also from a teammate's sheet and when making a project. The person is told once, with
+      a link; taken off, its tasks leave their list at once.
+    tools: [record_update]
+    proof:
+      - apps/server/src/kin/work/KinRecords.test.ts
+      - packages/client-runtime/src/kin/kinWorkClients.test.ts
+      - .agents/skills/verify-kin/scripts/project-people-loop.sh
 
   - id: project-form
     name: Add or change a project
