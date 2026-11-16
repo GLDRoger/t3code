@@ -52,6 +52,7 @@ import { useNowMinuteMs } from "./useKinClock";
 import { KinWaitingAsk } from "./KinWaitingAsk";
 import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { KinStandInLine } from "./KinStandInLine";
+import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinInbox } from "./useKinHost";
 
 const STATE_COPY: Record<
@@ -111,7 +112,7 @@ export function KinChatList() {
     );
   }
   if (state._tag !== "ready") {
-    const copy = STATE_COPY[state._tag];
+    const copy = kinAccessCopy(state._tag, STATE_COPY[state._tag]);
     return (
       <Empty size="compact">
         <EmptyHeader>

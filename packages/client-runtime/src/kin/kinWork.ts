@@ -999,6 +999,15 @@ export function kinWorkChangeText(
     return `${who} added a link`;
   }
   const clauses: Array<string> = [];
+  // Access moves leave the task where it is; the line says whose access and who moved it.
+  const removed = principalFromText(field("accessRemoved")?.from ?? null);
+  if (removed !== null)
+    clauses.push(
+      removed._tag === "person" && removed.personId === names.me
+        ? "removed your access; it stayed with you"
+        : `removed ${kinWorkName(removed, names)}'s access; it stays with them`,
+    );
+  if (field("accessBack") !== undefined) clauses.push("came back; it's theirs again");
   const owner = field("owner");
   const to = principalFromText(owner?.to ?? null);
   const handedBack = field("handedBack");
@@ -1172,7 +1181,8 @@ export function kinWorkItemView(
   const row = kinWorkRow(item, names, now);
   const category = item.category === null ? null : CATEGORY_LABEL[item.category];
   const ownerName = kinWorkName(item.owner, names);
-  // The agent that gave it says more than the authority it gave it with.
+  // The agent that gave it on its own says more than the authority it gave it with; one a person
+  // asked is named after them: "Zoya gave this to you, via Chief of staff".
   const giver: KinWorkPrincipal | null =
     item.assignedByAgent === undefined
       ? item.assignedBy
@@ -1180,6 +1190,10 @@ export function kinWorkItemView(
   // Handed back, it is with whoever gave it, and the holder's words say why.
   const lastMove = item.changes.find((change) => change.fields.some((f) => f.field === "owner"));
   const handBack = lastMove?.fields.find((f) => f.field === "handedBack");
+  const via =
+    giver?._tag === "person" && lastMove !== undefined && lastMove.by._tag === "agent"
+      ? `, via ${kinWorkActorName(lastMove.by, names)}`
+      : "";
   const given =
     lastMove !== undefined && handBack !== undefined
       ? `${kinWorkActorName(lastMove.by, names)} handed this back · ${formatKinTime(new Date(lastMove.at), now)}`
@@ -1192,7 +1206,7 @@ export function kinWorkItemView(
             kinWorkSamePrincipal(item.createdBy, item.owner))
         ? null
         : [
-            `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}`,
+            `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}${via}`,
             item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
           ]
             .filter((part) => part !== null)

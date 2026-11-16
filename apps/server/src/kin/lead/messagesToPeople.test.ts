@@ -45,6 +45,8 @@ import { LeadMemory } from "./LeadMemory.ts";
 import { handlers as leadHandlers } from "./mcp/handlers.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { SHARED_REFUSAL } from "./Audience.ts";
+import { listedOnSharedThread } from "./SharedTools.ts";
 import { KinWorkers } from "./Workers.ts";
 
 const chief = KinAgentId.make("chief");
@@ -80,7 +82,10 @@ const kinServices = Layer.unwrap(
       Handoff.layer,
       Team.layer,
       Layer.mock(KinWorkers)({}),
-      Layer.mock(LeadMemory)({}),
+      Layer.mock(LeadMemory)({
+        defer: (_scope, input) =>
+          Effect.succeed({ itemId: KinMemoryItemId.make(`def-${input.what}`) }),
+      }),
       repoReadsOff,
       pullRequestCareOff,
     ).pipe(Layer.provideMerge(Layer.succeedContext(services)));
@@ -130,14 +135,22 @@ const rowsIn = (sql: SqlClient.SqlClient, orgId: KinOrgId, chatId: KinChatId) =>
   sql<{ author: string; body: string }>`SELECT author_kind AS author, body FROM kin_messages
     WHERE org_id = ${orgId} AND chat_id = ${chatId} ORDER BY seq`;
 
-type Phase = "day" | "night" | "urgent";
-// Everyone here is on UTC, and quiet hours are 22:00 to 07:00.
+type Phase = "day" | "night" | "urgent" | "off";
+// Everyone here is on UTC, and quiet hours are 22:00 to 07:00. In "off" the teammates are in
+// India and work Monday to Friday, 10:00 to 18:00 their time; it is Monday 18:30 there.
 const START: Record<Phase, number> = {
   day: Date.UTC(2026, 10, 16, 12),
   night: Date.UTC(2026, 10, 15, 23, 30),
   urgent: Date.UTC(2026, 10, 15, 23, 30),
+  off: Date.UTC(2026, 10, 16, 13),
 };
-const MORNING = Date.UTC(2026, 10, 16, 7);
+/** When what was held is free to go: 07:00 UTC, or Tuesday 10:00 in India. */
+const WAKE: Record<Phase, { at: number; clock: string }> = {
+  day: { at: Date.UTC(2026, 10, 16, 7), clock: "07:00" },
+  night: { at: Date.UTC(2026, 10, 16, 7), clock: "07:00" },
+  urgent: { at: Date.UTC(2026, 10, 16, 7), clock: "07:00" },
+  off: { at: Date.UTC(2026, 10, 17, 4, 30), clock: "10:00" },
+};
 
 // Ambermill, run 4 (16 Nov 2026): kin_relay to a teammate was refused by the floor, and later in
 // their quiet hours. Each route a message to a person takes, by the agent's tool call, through
@@ -170,7 +183,11 @@ const routes = (phase: Phase) =>
       const relay = (args: Record<string, unknown>) =>
         Effect.andThen(later, call("kin_relay", { ...args, ...urgent }));
       yield* sql`UPDATE kin_people SET display_name = 'Rhea Kapoor' WHERE person_id = ${owner.personId}`;
-      const allDay = '{"days":[0,1,2,3,4,5,6],"start":"00:00","end":"23:59"}';
+      const hours =
+        phase === "off"
+          ? '{"days":[1,2,3,4,5],"start":"10:00","end":"18:00"}'
+          : '{"days":[0,1,2,3,4,5,6],"start":"00:00","end":"23:59"}';
+      const zone = phase === "off" ? "Asia/Kolkata" : "UTC";
       for (const [id, name, access] of [
         ["zoya", "Zoya Sheikh", "member"],
         ["dev", "Dev Kulkarni", "member"],
@@ -178,7 +195,7 @@ const routes = (phase: Phase) =>
       ] as const) {
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
           access, time_zone, work_hours_json)
-        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'UTC', ${allDay})`;
+        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, ${zone}, ${hours})`;
         yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
           VALUES (${`${id}-session`}, ${orgId}, ${id}, 0)`;
       }
@@ -271,7 +288,7 @@ const routes = (phase: Phase) =>
         const note = result.value.note;
         if (waiting === undefined || (yield* copies(chatId, expected)) > 0)
           return outcomes.push([route, `missing: ${JSON.stringify(last)}`]);
-        if (typeof note === "string" && !note.includes("07:00 their time"))
+        if (typeof note === "string" && !note.includes(`${WAKE[phase].clock} their time`))
           return outcomes.push([route, `held, but the agent was told: ${note}`]);
         held.push({ route, chatId, ...expected });
         return outcomes.push([route, "held"]);
@@ -303,7 +320,7 @@ const routes = (phase: Phase) =>
           sourceEventId: zoyaAsks,
         }),
         ownerChat,
-        { author: "system", body: '"Can the booking flow copy move a week?"' },
+        { author: "agent", body: '"Can the booking flow copy move a week?"' },
       );
       const answer = yield* says(owner, ownerChat, "Yes, move it to 18 December.");
       yield* call("record_update", { key: task, sourceEventId: answer, due: "2026-12-18" });
@@ -328,7 +345,7 @@ const routes = (phase: Phase) =>
           sourceEventId: toLead,
         }),
         devsChat,
-        { author: "system", body: "review the booking flow copy" },
+        { author: "agent", body: "review the booking flow copy" },
       );
 
       // Owner's chat → a teammate whose own message waits on the agent's reply: the relay posts,
@@ -471,14 +488,16 @@ const routes = (phase: Phase) =>
         { author: "agent", body: "still on" },
       );
 
-      // 07:00: each held message is in its chat once, Dev's in the order they were sent.
-      yield* TestClock.setTime(MORNING + 60_000);
+      // When they are free: each held message is in its chat once, Dev's in the order sent.
+      yield* TestClock.setTime(WAKE[phase].at - 60_000);
+      assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
+      yield* TestClock.setTime(WAKE[phase].at);
       yield* deliverHeld(orgId, chats);
       assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
       for (const one of held)
         outcomes.push([
           one.route,
-          (yield* copies(one.chatId, one)) === 1 ? "arrived at 07:00, once" : "not delivered once",
+          (yield* copies(one.chatId, one)) === 1 ? "arrived when free, once" : "not delivered once",
         ]);
       const devs = yield* rowsIn(sql, orgId, devsChat);
       const order = held
@@ -507,11 +526,11 @@ const ROUTES = [
   "hand-back notice → who gave it",
   "a relay answering her message from 5 minutes ago",
 ];
-/** Every route, `now` arriving at once and the rest held, then each of those delivered at 07:00. */
+/** Every route, `now` arriving at once and the rest held, then each of those delivered once. */
 const expected = (now: ReadonlyArray<string>): Array<readonly [string, string]> => [
   ...ROUTES.map((route) => [route, now.includes(route) ? "arrived" : "held"] as const),
   ...ROUTES.filter((route) => !now.includes(route)).map(
-    (route) => [route, "arrived at 07:00, once"] as const,
+    (route) => [route, "arrived when free, once"] as const,
   ),
 ];
 const ANSWERS = ["the teammate's own reply after a relay", ROUTES[11]!];
@@ -536,6 +555,15 @@ it.effect("an urgent relay arrives in their quiet hours; nudges and notices wait
             ),
         ),
       ),
+    ),
+  ),
+);
+
+it.effect("outside their working hours, on their own clock, it waits until they start", () =>
+  Effect.map(routes("off"), (outcomes) =>
+    assert.deepStrictEqual(
+      outcomes,
+      expected([...ANSWERS, "teammate → owner", "hand-back notice → who gave it"]),
     ),
   ),
 );
@@ -600,6 +628,75 @@ it.effect("a visual in a teammate's chat goes only when everyone there may see i
       const hidden = yield* visual("This month", "47200 billed");
       assert.isFalse(hidden.ok);
       assert.match(String(hidden.value.message), /not everyone in this chat may see/);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a teammate sets a reminder for themselves, in their own chat, and nothing more", () =>
+  Effect.andThen(
+    TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
+    Effect.gen(function* () {
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      const identity = Context.get(services, KinIdentity);
+      const chats = Context.get(services, KinChatService);
+      const sql = yield* SqlClient.SqlClient;
+      yield* pairSession(AuthSessionId.make("owner"));
+      const [resolved] = yield* identity.resolve({
+        sessionId: AuthSessionId.make("owner"),
+        subject: "browser",
+        method: "browser-session-cookie",
+        scopes: AuthStandardClientScopes,
+      });
+      const owner = resolved!;
+      const { orgId } = owner;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access, time_zone)
+        VALUES ('zoya', ${orgId}, 'zoya', 'Zoya Sheikh', ${at}, 'member', 'UTC')`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 'lead', ${owner.personId}, ${at})`;
+      yield* identity.registerAgentThread({ orgId, agentId: chief, threadId });
+      const ownerChat = (yield* chats.createDirect(owner, { orgId, agentId: chief })).chatId;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+          worker_projects_json, owner_chat_id, domain)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 0, ${threadId}, '{}', '[]', ${ownerChat},
+          'chief-of-staff')`;
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, ${chief}, ${owner.personId}, 0)`;
+      const zoya = { _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") };
+      const zoyasChat = (yield* chats.createDirect(zoya, { orgId, agentId: chief })).chatId;
+      const message = yield* chats.send(zoya, {
+        chatId: zoyasChat,
+        body: "Remind me Friday at 10 to send the Lumen mockups",
+        clientMessageId: "remind-friday",
+      });
+      const asked = `event:${yield* startAgentWakeup({ orgId, agentId: chief, threadId, message })}`;
+      const defer = (args: Record<string, unknown>) =>
+        call("kin_defer", {
+          what: "Send the Lumen mockups",
+          due: "2026-11-20T10:00:00+00:00",
+          onDue: "remind",
+          chatId: zoyasChat,
+          sourceEventId: asked,
+          ...args,
+        });
+      // Listed on her turns, and hers, in her chat with the agent: set.
+      assert.isTrue(listedOnSharedThread("kin_defer"));
+      const set = yield* defer({});
+      assert.isTrue(set.ok, JSON.stringify(set.value));
+      assert.strictEqual(set.value.itemId, "def-Send the Lumen mockups");
+      // Anything that would message someone else or start work: refused.
+      for (const other of [
+        { chatId: ownerChat },
+        { onDue: "start" },
+        { onDue: "chase" },
+        { onDue: "ask" },
+        { replaces: "def-the-owners" },
+      ]) {
+        const refused = yield* defer({ ...other, what: `Other ${JSON.stringify(other)}` }).pipe(
+          Effect.flip,
+        );
+        assert.strictEqual(refused.message, SHARED_REFUSAL, JSON.stringify(other));
+      }
     }).pipe(Effect.provide(layer)),
   ),
 );

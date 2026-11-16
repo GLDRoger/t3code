@@ -2,16 +2,21 @@ import {
   type KinAgentId,
   KinChatId,
   KinMessageId,
+  KinMessageRelay,
   type KinOrgId,
   type KinPersonId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { WriteAudience } from "../chat/KinChatRepository.ts";
 import type { KinChatService } from "../chat/KinChatService.ts";
 import { personQuietUntil } from "./quietHold.ts";
+
+const decodeRelay = Schema.decodeUnknownOption(Schema.fromJsonString(KinMessageRelay));
 
 /**
  * Posts every held line now due, oldest first, one message per chat and kind. The message id
@@ -32,8 +37,9 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
     audience: WriteAudience;
     agentId: KinAgentId | null;
     waits: number;
+    relay: string | null;
   }>`SELECT hold_id AS "holdId", chat_id AS "chatId", person_id AS "personId", kind, body, audience,
-      agent_id AS "agentId", waits
+      agent_id AS "agentId", waits, relay_json AS relay
     FROM kin_held_posts
     WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
     ORDER BY held_at, rowid`;
@@ -65,6 +71,10 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
             body: [...new Set(group.map((row) => row.body))].join("\n\n"),
             ...(first.agentId === null ? {} : { from: first.agentId }),
             ...(first.waits === 1 ? { waitingFor: first.personId } : {}),
+            ...Option.match(decodeRelay(first.relay ?? undefined), {
+              onNone: () => ({}),
+              onSome: (relay) => ({ relay }),
+            }),
           });
           yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
           WHERE org_id = ${orgId} AND hold_id IN ${sql.in(group.map((row) => row.holdId))}`;

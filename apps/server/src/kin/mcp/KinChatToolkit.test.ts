@@ -470,11 +470,12 @@ it.effect("an owner-only turn posts nothing where a teammate reads, and the owne
       "Pinecrest signed at 4.5 lakh.",
       "It came to two and a half lakh.",
       "Around five hundred dollars a month.",
-    ].entries())
-      assert.include(
-        (yield* Effect.flip(to("theirs", body, `nudge-amount-${index}`))).message,
-        "Nothing was sent: it names an amount",
-      );
+    ].entries()) {
+      const refused = (yield* Effect.flip(to("theirs", body, `nudge-amount-${index}`))).message;
+      // It says which words read as a sum, and the way through.
+      assert.match(refused, /^Nothing was sent: “.+” reads as an amount of money/);
+      assert.include(refused, "or ask the owner to share it with them");
+    }
     yield* to("theirs", "Two thousand users signed up after the launch.", "nudge-count");
     assert.include(yield* Effect.flip(to("room", "How did the call go?", "nudge-3")), {
       reason: "not_allowed",

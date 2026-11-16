@@ -168,6 +168,7 @@ import {
 } from "./KinMessageRows";
 import { useKinPresenceNow, useNowMinuteMs } from "./useKinClock";
 import { KinStandInLine } from "./KinStandInLine";
+import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinHostAt } from "./useKinHost";
 
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
@@ -551,7 +552,10 @@ function KinChatStateView(props: {
       </div>
     );
   }
-  const copy = state._tag === "gone" ? kinChatGoneCopy(state.reason) : STATE_COPY[state._tag];
+  const copy =
+    state._tag === "gone"
+      ? kinChatGoneCopy(state.reason)
+      : kinAccessCopy(state._tag, STATE_COPY[state._tag]);
   return (
     <Empty size="compact">
       <EmptyHeader>

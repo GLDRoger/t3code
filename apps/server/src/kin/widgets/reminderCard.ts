@@ -68,6 +68,19 @@ export const describeReminderTap = Effect.fn("KinReminderCard.describe")(functio
   };
 });
 
+/** Whose clock a reminder snoozes on: the person's own, in their chat with an agent; else the owner's. */
+const reminderZone = Effect.fn("KinReminderCard.zone")(function* (widget: KinWidget) {
+  const sql = yield* SqlClient.SqlClient;
+  const [own] = yield* sql<{ zone: string }>`SELECT p.time_zone AS zone FROM kin_chats c
+    JOIN kin_people p ON p.org_id = c.org_id
+      AND p.person_id = substr(c.direct_key, 1, instr(c.direct_key, ':') - 1)
+    WHERE c.org_id = ${widget.orgId} AND c.chat_id = ${widget.chatId} AND c.kind = 'direct'
+      AND p.time_zone IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM kin_leads l WHERE l.org_id = c.org_id
+        AND l.owner_chat_id = c.chat_id)`;
+  return own?.zone ?? (yield* ownerZone(widget.orgId));
+});
+
 /**
  * Applies a described tap in the tap's transaction. Done and Snooze change the deferral run
  * here and finish there. Returns the card's next state, or null.
@@ -100,7 +113,7 @@ export const applyReminderTap = Effect.fn("KinReminderCard.apply")(function* (
   }
   if (!current || run === undefined)
     return yield* invalid("This reminder changed. Check it again.");
-  const until = snoozeEnd(action, now, yield* ownerZone(orgId));
+  const until = snoozeEnd(action, now, yield* reminderZone(widget));
   const snapshot = yield* decodeSnapshot(run.snapshot).pipe(
     Effect.mapError(() => invalid("This reminder changed. Check it again.")),
   );

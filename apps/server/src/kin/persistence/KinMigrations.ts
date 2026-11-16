@@ -82,6 +82,7 @@ import PrivateBy from "./migrations/K158_PrivateBy.ts";
 import OpenQuestions from "./migrations/K159_OpenQuestions.ts";
 import GitHubWatch from "./migrations/K160_GitHubWatch.ts";
 import Social from "./migrations/K161_Social.ts";
+import PersonHours from "./migrations/K162_PersonHours.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -244,6 +245,7 @@ const loader = Migrator.fromRecord({
   "159_OpenQuestions": OpenQuestions,
   "160_GitHubWatch": GitHubWatch,
   "161_Social": Social,
+  "162_PersonHours": PersonHours,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

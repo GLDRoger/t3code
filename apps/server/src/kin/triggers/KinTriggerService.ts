@@ -236,7 +236,7 @@ const make = Effect.gen(function* () {
       text: confirmText(plan.dueAt, plan.onDue, timeZone),
     };
     // Only kin_defer items name a chat; other deferrals arm without a card. A remind or ask
-    // only ever messages the owner, and the lead's own reply already said when, so no card.
+    // only ever messages whoever set it, and the lead's own reply already said when, so no card.
     let chatId: KinChatId | null = null;
     if (item.chat !== undefined && (plan.onDue === "start" || plan.onDue === "chase")) {
       // Once its chat was shared, the card goes to the owner chat of the lead it fires with.

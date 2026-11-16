@@ -241,9 +241,9 @@ export type KinFeedRow =
       readonly open: KinNoticeOpen | null;
     }
   /**
-   * One agent's words in another's chat (`relay`). `sent_by`: what one agent asked another, on
-   * the viewer's side of the receiver's chat. `reply_from`: the answer, or a Team-room outcome,
-   * back in the asker's chat, naming who answered; `discussionId` links to the discussion.
+   * Words carried into this chat (`relay`): `sent_by` what one agent asked another, `reply_from`
+   * the answer or a Team-room outcome (`discussionId` links it). With `personLabel`, a person's
+   * words an agent passed on ("Sent by Rhea, via Chief of staff"), `text` their words alone.
    */
   | {
       readonly type: "relay";
@@ -252,6 +252,8 @@ export type KinFeedRow =
       readonly relay: "sent_by" | "reply_from";
       readonly agentLabel: string;
       readonly discussionId: string | null;
+      readonly personLabel?: string;
+      readonly text?: string;
     }
   /**
    * A centred time divider: it starts each local day and any message after a quiet gap
@@ -280,6 +282,15 @@ function kinAuthorLabel(message: KinMessage, viewer: KinFeedViewer): string {
     return viewer.memberNames?.get(author.memberId) ?? ROLE_LABELS[message.authorRole];
   return "Kin";
 }
+
+/**
+ * A teammate's request passed on reads `Zoya asked Chief of staff:\n"…"`, so an agent reading the
+ * chat never takes it for the owner's own words; under its "Sent by" header only the quote shows.
+ */
+const kinRelayWords = (body: string) => {
+  const quoted = /^[^\n]+ asked [^\n]+:\n"([\s\S]*)"$/.exec(body);
+  return quoted?.[1] ?? body;
+};
 
 const isSystem = (message: KinMessage) =>
   message.kind === "system" || message.author._tag === "system";
@@ -448,6 +459,21 @@ export function buildKinFeedRows(
 
   const pushMessage = (message: KinMessage) => {
     startDay(message);
+    const passedOn = message.relay?.personId === undefined ? undefined : message.relay;
+    if (passedOn !== undefined && message.author._tag === "agent") {
+      rows.push({
+        type: "relay",
+        key: message.messageId,
+        message,
+        relay: "sent_by",
+        agentLabel: viewer.agentNames.get(passedOn.agentId) ?? kinAuthorLabel(message, viewer),
+        discussionId: null,
+        personLabel: passedOn.personName ?? "A teammate",
+        text: kinRelayWords(message.body),
+      });
+      previousAuthor = null;
+      return;
+    }
     if (isSystem(message) && message.relay !== undefined) {
       rows.push({
         type: "relay",

@@ -43,7 +43,13 @@ const KIN_PULSE_SENSES = [
   "spec_changed",
   "meeting_passed",
   "meeting_soon",
+  "holder_removed",
 ] as const;
+/**
+ * Senses newer than the first phones: a screen read sends them only to a client that lists them
+ * in `acceptSenses`, so an older client never meets a sense it can't decode.
+ */
+export const KIN_PULSE_LATER_SENSES = ["holder_removed"] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
 
@@ -175,6 +181,10 @@ export const KinPulseListInput = Schema.Struct({
   limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
   /** Only facts about this project, client (by key) or family, as a screen about it shows them. */
   scope: Schema.optional(KinPulseScope),
+  /** The later senses (`KIN_PULSE_LATER_SENSES`) this client reads; absent, none of them. */
+  acceptSenses: Schema.optional(
+    Schema.Array(Schema.String.check(Schema.isMaxLength(40))).check(Schema.isMaxLength(20)),
+  ),
 });
 export type KinPulseListInput = typeof KinPulseListInput.Type;
 

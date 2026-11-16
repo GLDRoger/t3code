@@ -435,6 +435,34 @@ export function KinRelayRow(props: {
   const { row } = props;
   const [expanded, setExpanded] = useState(false);
   const time = formatTime(row.message.createdAt);
+  // A person's words an agent passed on: the header T3 gives a message from another thread,
+  // naming whose words they are and who brought them; the words themselves stay open.
+  if (row.personLabel !== undefined) {
+    const words = row.text ?? row.message.body;
+    return (
+      <div className={cn(ROW, "pt-3", "items-start")}>
+        <div
+          role="article"
+          aria-label={`Sent by ${row.personLabel}, via ${row.agentLabel}, ${time}: ${kinPlainText(words)}`}
+          className="min-w-0 max-w-[85%] rounded-2xl bg-accent text-sm text-foreground dark:bg-card"
+        >
+          <p
+            aria-hidden
+            className="flex flex-wrap items-center gap-x-1.5 px-3.5 pt-2 text-xs text-muted-foreground"
+          >
+            <MessagesSquareIcon className="size-3.5 shrink-0" />
+            <span className="font-medium text-foreground">Sent by {row.personLabel}</span>
+            <span>
+              via {row.agentLabel} · <span className="tabular-nums">{time}</span>
+            </span>
+          </p>
+          <div className="px-3.5 pb-2 pt-1">
+            <KinBody markdown={words} environmentId={props.environmentId} />
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (row.relay === "sent_by") {
     const summary = kinPlainText(row.message.body).split(/\r?\n/, 1)[0]?.trim() ?? "";
     return (

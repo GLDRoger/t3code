@@ -619,6 +619,110 @@ describe("KinPushSender", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
+  it.effect(
+    "the first unprompted line after a quiet spell rings, even before a phone was there",
+    () => {
+      const apns = makeApns();
+      return Effect.gen(function* () {
+        const { notify, sql, devices } = yield* seed;
+        const fin = { agentMemberId: "m_fin" } as const;
+        const mention = () => postMessage(sql, fin, "posted", { mentions: ["m_priya"] });
+        // Priya's phone is not registered yet: what was meant to ring her reached nothing.
+        yield* sql`DELETE FROM kin_push_devices WHERE person_id = ${member}`;
+        yield* notify({ _tag: "message", orgId, messageId: yield* mention() });
+        yield* devices.register(caller("sess-member", member), {
+          orgId,
+          token: memberPhone,
+          platform: "ios",
+          apsEnvironment: "development",
+        });
+        yield* TestClock.adjust("2 minutes");
+        apns.sent.length = 0;
+        yield* notify({ _tag: "message", orgId, messageId: yield* mention() });
+        assert.deepStrictEqual(alerts(apns.sent).length, 1);
+        assert.isDefined(alerts(apns.sent)[0]);
+        // Inside the half hour after a ring, the next lands without one.
+        apns.sent.length = 0;
+        yield* notify({ _tag: "message", orgId, messageId: yield* mention() });
+        assert.deepStrictEqual(alerts(apns.sent), [undefined]);
+
+        // A line she reads as it lands, with the chat open, spends no ring either.
+        yield* TestClock.adjust("31 minutes");
+        const presence = yield* KinPushPresence;
+        const watching = yield* presence
+          .watch(watcher(AuthSessionId.make("sess-member")), KinChatId.make("chat_team"))
+          .pipe(Stream.runDrain, Effect.forkChild({ startImmediately: true }));
+        apns.sent.length = 0;
+        yield* notify({ _tag: "message", orgId, messageId: yield* mention() });
+        assert.deepStrictEqual(apns.sent, []);
+        yield* Fiber.interrupt(watching);
+        yield* notify({ _tag: "message", orgId, messageId: yield* mention() });
+        assert.isDefined(alerts(apns.sent)[0]);
+      }).pipe(Effect.provide(build(apns)));
+    },
+  );
+
+  it.effect("rings each person on their own clock and working hours", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      const fin = { agentMemberId: "m_fin" } as const;
+      const tokens = () => apns.sent.map((push) => push.token);
+      const rung = () =>
+        apns.sent.flatMap((push) =>
+          (push.payload as { aps: { alert?: unknown } }).aps.alert === undefined
+            ? []
+            : [push.token],
+        );
+      // Priya is in India and works Monday to Friday, 10:00 to 18:00 there.
+      yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata',
+          work_hours_json = '{"days":[1,2,3,4,5],"start":"10:00","end":"18:00"}'
+        WHERE person_id = ${member}`;
+      // Sunday 12:00 in India: her day off. 01:30 in New York: the owner's quiet hours.
+      yield* TestClock.setTime(Date.parse("2026-11-08T06:30:00Z"));
+      apns.sent.length = 0;
+      yield* notify({
+        _tag: "message",
+        orgId,
+        messageId: yield* postMessage(sql, fin, "posted", { mentions: ["m_priya", "m_owner"] }),
+      });
+      assert.deepStrictEqual(
+        tokens().toSorted(),
+        [ownerPhone, ownerTablet, memberPhone].toSorted(),
+      );
+      assert.deepStrictEqual(rung(), []);
+      // A person writing to her still rings, off hours; the owner's quiet hours stay quiet.
+      apns.sent.length = 0;
+      yield* notify({
+        _tag: "message",
+        orgId,
+        messageId: yield* postMessage(sql, { personId: owner, memberId: "m_owner" }, "posted", {
+          mentions: ["m_priya"],
+        }),
+      });
+      assert.deepStrictEqual(rung(), [memberPhone]);
+      // Her switch off: the agent's line rings her on her day off too.
+      yield* sql`UPDATE kin_people SET hold_outside_hours = 0 WHERE person_id = ${member}`;
+      apns.sent.length = 0;
+      yield* notify({
+        _tag: "message",
+        orgId,
+        messageId: yield* postMessage(sql, fin, "posted", { mentions: ["m_priya"] }),
+      });
+      assert.deepStrictEqual(rung(), [memberPhone]);
+      // Switched back on, Monday 12:00 in India: working, so it rings.
+      yield* sql`UPDATE kin_people SET hold_outside_hours = NULL WHERE person_id = ${member}`;
+      yield* TestClock.setTime(Date.parse("2026-11-09T06:30:00Z"));
+      apns.sent.length = 0;
+      yield* notify({
+        _tag: "message",
+        orgId,
+        messageId: yield* postMessage(sql, fin, "posted", { mentions: ["m_priya"] }),
+      });
+      assert.deepStrictEqual(rung(), [memberPhone]);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect("counts the Chats list's unread across chats in the badge, and nothing else", () => {
     const apns = makeApns();
     return Effect.gen(function* () {

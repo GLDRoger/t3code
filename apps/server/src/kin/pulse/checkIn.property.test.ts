@@ -11,6 +11,7 @@ import {
   looseSpanMinutes,
   type NativeTask,
 } from "../triggers/kinSchedules.ts";
+import { freeAt, heldAt, holdRule } from "../triggers/quietHours.ts";
 import { looseOffsetMs } from "./checkIn.ts";
 
 const MINUTE = 60_000;
@@ -93,5 +94,29 @@ it.prop(
       from = next;
     }
     return true;
+  },
+);
+
+it.prop(
+  "a line held for someone goes at the first minute they are free on their own clock, never sooner",
+  [int(0, 4), int(0, 47), int(0, 47), int(0, 127), int(0, 92), int(1, 40), int(0, 365 * 24 * 60)],
+  ([zone, from, to, dayBits, start, length, minute]) => {
+    const days = [0, 1, 2, 3, 4, 5, 6].filter((day) => (dayBits >> day) & 1);
+    const rule = holdRule(
+      ZONES[zone]!,
+      { from: clock(from * 30), to: clock(to * 30) },
+      {
+        days,
+        start: clock(start * 15),
+        end: clock(Math.min(start * 15 + length * 15, 23 * 60 + 59)),
+      },
+    );
+    const now = YEAR_START + minute * MINUTE + 17_000;
+    const free = freeAt(rule, now);
+    if (free === now) return heldAt(rule, now) === undefined;
+    if (free % MINUTE !== 0 || free <= now) return false;
+    for (let at = Math.ceil(now / MINUTE) * MINUTE; at < free; at += MINUTE)
+      if (heldAt(rule, at) === undefined) return false;
+    return heldAt(rule, free) === undefined;
   },
 );

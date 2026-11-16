@@ -32,6 +32,7 @@ import {
   environmentSessionGenerationAtom,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  KIN_PULSE_LATER_SENSES,
   KIN_APPROVAL_WS_METHODS,
   KIN_CHAT_WS_METHODS,
   KIN_PEOPLE_WS_METHODS,
@@ -974,7 +975,7 @@ export const kinClient = {
   attention: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:pulse",
     execute: Effect.fn("KinWebClient.attention")(function* (input: KinPulseListInput) {
-      return yield* readPulse(input);
+      return yield* readPulse({ ...input, acceptSenses: KIN_PULSE_LATER_SENSES });
     }),
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("pulse"),

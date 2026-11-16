@@ -11,10 +11,9 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { workingAt } from "../lead/peopleRead.ts";
 import { NUDGE_PREFIX } from "../reply/promises.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
-import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
+import { isQuiet, KIN_DEFAULT_QUIET_HOURS, workingAt } from "../triggers/quietHours.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";

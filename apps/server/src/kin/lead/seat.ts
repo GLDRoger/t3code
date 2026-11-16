@@ -10,7 +10,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { characterForTurn, characters, colleagueLine } from "./characters.ts";
-import { describeHours, loads, workingAt } from "./peopleRead.ts";
+import { workingAt } from "../triggers/quietHours.ts";
+import { describeHours, loads } from "./peopleRead.ts";
 
 const decodeTags = Schema.decodeUnknownOption(Schema.fromJsonString(KinRoleTags));
 const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
