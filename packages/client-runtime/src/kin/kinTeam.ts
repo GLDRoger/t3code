@@ -266,7 +266,7 @@ export function kinTeamEntrySummary(
 ): string {
   if (list === null) return "The people who chat with you and your agents";
   const rows = kinTeamView(list, KIN_TEAM_NO_EDITS, ownerPersonId);
-  const joined = rows.filter((row) => row.state === "joined").length;
+  const joined = rows.filter((row) => row.state === "joined" || row.state === "owner").length;
   const waiting = rows.filter((row) => row.state === "invited").length;
   if (joined === 0 && waiting === 0) return "Add the people you work with";
   const parts = [

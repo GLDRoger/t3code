@@ -63,6 +63,12 @@ describe("kinTeamView", () => {
       ["Tomas", "no_access", "i-tomas"],
     ]);
     expect(kinTeamEntrySummary(list, owner)).toBe("1 teammate, 1 hasn't joined yet");
+    // A co-owner's count holds the owner too: every row the Team page lists besides their own.
+    const asMira = {
+      ...list,
+      people: [{ ...person(owner, "Olu"), access: "owner" as const }, person(mira, "Mira")],
+    };
+    expect(kinTeamEntrySummary(asMira, mira)).toBe("1 teammate, 1 hasn't joined yet");
     expect(
       kinTeamEntrySummary({ people: [person(owner, "Olu")], joined: [], invites: [] }, owner),
     ).toBe("Add the people you work with");

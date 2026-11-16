@@ -38,7 +38,11 @@ export interface KinPlaceSearch {
   changes?: number;
   from?: number;
   history?: true;
+  /** A dialog open over the place, so Back closes it. */
+  open?: KinPlaceDialog;
 }
+
+export type KinPlaceDialog = "new" | "search";
 
 const isKey = Schema.is(KinRecordKey);
 const isList = Schema.is(KinListId);
@@ -67,6 +71,7 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
     ...(changes === undefined ? {} : { changes }),
     ...(from === undefined ? {} : { from }),
     ...(raw.history === true ? { history: true } : {}),
+    ...(raw.open === "new" || raw.open === "search" ? { open: raw.open } : {}),
   };
 }
 

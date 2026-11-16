@@ -141,6 +141,25 @@ export const noSomethingWrong = never(/Something went wrong|Unexpected error/i);
 export const noNotAvailable = never(
   /Not available|You don['’]t have access|not allowed|Only whoever holds|or gave it to them, can/i,
 );
+
+// An enabled control is one the host lets through: a tap never brings up a refusal that wasn't on
+// the screen before it.
+const REFUSAL =
+  /You can['’]t do that here|isn['’]t allowed to|can['’]t change (?:it|this)|Only (?:the owner|whoever|the person who)[^.\n]* can/i;
+export const enabledNeverRefused = always(() => {
+  const before = shown();
+  if (REFUSAL.test(before)) return true;
+  return next(() => {
+    if (!clicked(lastAction.current)) return true;
+    const answered = () => !REFUSAL.test(shown());
+    return answered() && next(() => answered() && next(answered));
+  });
+});
+// Only a request that got no answer blames the connection; the walk's server is always up, so a
+// refusal or something gone must never read as one.
+export const noConnectionBlame = never(
+  /check (?:your|the) connection|can['’]t reach your|isn['’]t answering right now/i,
+);
 export const noBlankScreen = always(
   now(() => screen.current?.mainBlank === true).implies(
     eventually(() => screen.current?.mainBlank !== true).within(6, "seconds"),
