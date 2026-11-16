@@ -80,6 +80,7 @@ import {
   WITHDRAWN_REASON,
   WorkerTracker,
 } from "./WorkerTracker.ts";
+import { isOwnerHimself } from "../people/KinAccess.ts";
 
 const text = (max: number) => Schema.String.check(Schema.isMaxLength(max));
 
@@ -374,7 +375,7 @@ const make = Effect.gen(function* () {
       const ownersOwn = (lead: typeof PasserRow.Type | undefined) =>
         lead !== undefined &&
         lead.ownerPersonId === owner.personId &&
-        (lead.createdBy === null || lead.createdBy === owner.personId);
+        (lead.createdBy === null || isOwnerHimself(owner, lead.createdBy));
       if (ctx.orgId !== owner.orgId || ![config, ...passers].every(ownersOwn)) return listed;
       // The owner's reach is for what the owner asked; a teammate's message never borrows it.
       if (!(yield* KinLevels.ownerAlone(ctx))) return listed;

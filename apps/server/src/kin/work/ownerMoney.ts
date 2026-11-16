@@ -50,7 +50,7 @@ import {
   toDefinition,
   unknownList,
 } from "./registers.ts";
-import { personSees, placesOf } from "./teamView.ts";
+import { KIN_OWNER_LEVEL, placesOf, viewerOfPeople } from "./teamView.ts";
 
 /** What the owner's clients read and do with lists, money and the company profile. Owner only. */
 
@@ -65,11 +65,10 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
   input: KinListsInput,
 ) {
   const team = yield* moneyReader(people, input.orgId);
-  const sql = yield* SqlClient.SqlClient;
   const all = yield* allLists(input.orgId);
   const open = yield* openCounts(
     input.orgId,
-    team === undefined ? undefined : personSees(sql, team),
+    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
   );
   return {
     lists: [...all.values()]
@@ -203,7 +202,7 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
       }
       const next = yield* listDef(input.orgId, def.id);
       if (next === undefined) return yield* unknownList(def.id);
-      return toDefinition(next, (yield* openCounts(input.orgId)).get(def.id) ?? 0);
+      return toDefinition(next, (yield* openCounts(input.orgId, KIN_OWNER_LEVEL)).get(def.id) ?? 0);
     }),
   );
 }, workFailure);
@@ -237,7 +236,7 @@ export const dates = Effect.fn("KinMoney.dates")(function* (
       open: input.open,
       offset,
       limit: input.limit,
-      ...(team === undefined ? {} : { view: [team] }),
+      viewer: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
     },
     now,
   );
@@ -258,7 +257,7 @@ export const money = Effect.fn("KinMoney.summary")(function* (
   return yield* moneySummary(
     input.orgId,
     yield* Clock.currentTimeMillis,
-    team === undefined ? undefined : [team],
+    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
   );
 }, workFailure);
 

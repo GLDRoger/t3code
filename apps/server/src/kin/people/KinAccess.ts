@@ -56,3 +56,27 @@ export const ownerLevelPeople = Effect.fn("KinAccess.ownerLevelPeople")(function
     ORDER BY p.person_id`;
   return new Set(rows.map((row) => row.personId));
 });
+
+/** May act as owner here: the owner himself or anyone owner-level. Authority checks ask this. */
+export const mayActAsOwner = Effect.fn("KinAccess.mayActAsOwner")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  owner: { readonly personId: string },
+) {
+  return isOwnerHimself(owner, personId) || (yield* ownerLevel(orgId, personId));
+});
+
+/**
+ * The owner himself, never a co-owner. Only for what is his alone: his private chats and own
+ * leads, statement notices, his host's local workers, and managing co-owners.
+ */
+export const isOwnerHimself = (
+  owner: { readonly personId: string },
+  personId: string | null | undefined,
+) => owner.personId === personId;
+
+/** Whether this person owns this agent (`kin_agents.owner_person_id`). */
+export const ownsAgent = (
+  agent: { readonly ownerPersonId: string },
+  personId: string | null | undefined,
+) => agent.ownerPersonId === personId;

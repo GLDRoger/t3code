@@ -12,6 +12,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerOnlyChat } from "../lead/Audience.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
+import { ownsAgent } from "../people/KinAccess.ts";
 
 export type DeferralSource = Pick<MemoryItemHead, "chat" | "source_event">;
 
@@ -80,7 +81,7 @@ export const deferralOrigin = Effect.fn("Deferrals.origin")(function* (
               agentId: KinAgentId.make(row.agentId),
               wakeupId: row.wakeupId,
             }).pipe(Effect.provideService(SqlClient.SqlClient, sql)))[0]) ??
-        (event.provenance._tag === "human" && event.provenance.personId !== row.ownerPersonId
+        (event.provenance._tag === "human" && !ownsAgent(row, event.provenance.personId)
           ? event.provenance.personId
           : undefined));
   if (origin !== undefined && asker !== undefined) return { ...origin, personId: asker };
