@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalFetch:off - an ACP agent process, spoken over stdio.
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalFetch:off globalDate:off - an ACP agent process, spoken over stdio.
 /**
  * A Kin lead with no model, run by a dev server as the `kinVerifyScript` ACP instance. A prompt
  * with `[kv:<id>]` makes it call the tools in `<verify dir>/turns/<id>.json` on the session's real
@@ -111,7 +111,18 @@ interface Turn {
 }
 const noEnd = async () => {};
 
+/** kin-bench measures every prompt: with `<verify dir>/capture-prompts` present, each is kept with its tool list. */
+async function capture(server: McpServer | undefined, prompt: string) {
+  const dir = NodePath.join(verifyDir, "prompts");
+  if (!NodeFS.existsSync(NodePath.join(verifyDir, "capture-prompts"))) return;
+  NodeFS.mkdirSync(dir, { recursive: true });
+  const name = `${Date.now()}-${NodeCrypto.randomBytes(3).toString("hex")}`;
+  const tools = server === undefined ? undefined : await (await mcpClient(server)).list();
+  NodeFS.writeFileSync(NodePath.join(dir, `${name}.json`), JSON.stringify({ prompt, tools }));
+}
+
 async function runTurn(server: McpServer | undefined, prompt: string): Promise<Turn> {
+  await capture(server, prompt).catch(() => undefined);
   // The prompt may quote earlier messages; the newest marker is this turn's.
   const id = [...prompt.matchAll(MARKER)].at(-1)?.[1];
   if (id === undefined) return { reply: "Noted.", end: noEnd };

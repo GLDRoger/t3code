@@ -124,3 +124,31 @@ scoped.invalid(
   "refuses an optional view list",
   "const dates = (orgId: KinOrgId, view?: ReadonlyArray<KinPersonId>) => orgId;",
 );
+
+// runLog as it was: touch_log runs in teammates' turns, resolved a guessed client
+// key and read its title with no viewer, so a hidden client's name came back in a shared chat.
+scoped.invalid(
+  "catches an agent tool body that reads records with no viewer",
+  `const runLog = Effect.fnUntraced(function* (lead: Lead, input: typeof TouchInput.Type) {
+    const partyId = yield* refOrNull(lead, input.client, "clients");
+    const sql = yield* SqlClient.SqlClient;
+    const [client] = yield* sql\`SELECT key, title FROM kin_records
+      WHERE org_id = \${lead.orgId} AND record_id = \${partyId!} ORDER BY key\`;
+    return { client: \`\${client!.title} (\${client!.key})\` };
+  });
+  export const logTouch = leadTool("KinClientTools.logTouch", runLog);`,
+  (output) => assert.include(output, "teammates read its turns"),
+);
+scoped.valid(
+  "accepts an agent tool that resolves through the turn's viewer or is gated to the owner",
+  `const runLog = Effect.fnUntraced(function* (lead: Lead, input: typeof TouchInput.Type) {
+    const client = yield* refRecord(lead, input.client, "clients");
+    return { client: \`\${client.name} (\${client.key})\` };
+  });
+  export const logTouch = leadTool("KinClientTools.logTouch", runLog);
+  export const rows = leadTool("KinStatementTools.rows", function* (lead: Lead) {
+    yield* ownerTurn(lead);
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql\`SELECT * FROM kin_records r WHERE r.org_id = \${lead.orgId}\`;
+  });`,
+);

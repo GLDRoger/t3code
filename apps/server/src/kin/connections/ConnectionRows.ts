@@ -26,6 +26,8 @@ export type ConnectionRow = {
   readonly reach: KinConnectionReach;
   readonly state: KinConnectionState;
   readonly accountLabel: string | null;
+  /** Moves on a sign-in whose account Kin couldn't confirm; a send card keeps the one it saw. */
+  readonly signInGen: number;
   readonly note: string | null;
   readonly sendAsJson: string | null;
   readonly protocolVersion: string | null;
@@ -67,7 +69,7 @@ export const changed = (tool: ToolRow) =>
 
 const connectionColumns = (sql: SqlClient.SqlClient) => sql`connection_id AS "connectionId",
   preset, label, kind, url, url_host AS "urlHost", auth, auth_header AS "authHeader", reach,
-  state, account_label AS "accountLabel", note, send_as_json AS "sendAsJson",
+  state, account_label AS "accountLabel", sign_in_gen AS "signInGen", note, send_as_json AS "sendAsJson",
   protocol_version AS "protocolVersion",
   instructions_text AS "instructionsText", instructions_digest AS "instructionsDigest",
   instructions_accepted_text AS "instructionsAcceptedText",

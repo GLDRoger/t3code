@@ -49,7 +49,7 @@ import { SEEDS, type SeedName, seed, seedTurns } from "./kin-verify/seed.ts";
 import * as Web from "./kin-verify/web.ts";
 
 const HELP = `kin-verify [--instance <name>] <command>
-  up [--seed lifecycle|empty] [--fresh]   start (or reuse) an isolated Kin, seeded; prints when ready
+  up [--seed lifecycle|empty|bench] [--fresh] start (or reuse) an isolated Kin, seeded; prints when ready
   doctor                                  is this instance ours, on this commit, healthy?
   down [--wipe]                           stop exactly what up started (--wipe deletes its state)
   people                                  seeded people and agents

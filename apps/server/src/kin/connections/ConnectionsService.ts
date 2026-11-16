@@ -288,7 +288,19 @@ type AskRow = {
   readonly entryRecordId: string | null;
   readonly owner: string;
   readonly threadId: string;
+  /** The account its card showed, and its connection's `signInGen` then. */
+  readonly account: string | null;
+  readonly signInGen: number;
 };
+/** Whether the connection is still signed in as the account the card showed. */
+const signedInAsShown = (
+  ask: Pick<AskRow, "account" | "signInGen">,
+  connection: Pick<ConnectionRow, "accountLabel" | "signInGen">,
+) =>
+  ask.signInGen === connection.signInGen &&
+  (ask.account ?? "").toLowerCase() === (connection.accountLabel ?? "").toLowerCase();
+const accountMoved = (connection: Pick<ConnectionRow, "accountLabel" | "label">, mail: boolean) =>
+  `${connection.label} is signed in as ${connection.accountLabel ?? "another account"} since this card was made, so nothing was sent.${mail ? " A fresh card is below." : ""}`;
 /** A confirmed mail whose file changed since its card: what a fresh card is made from. */
 export type StaleAsk = {
   readonly prepared: Extract<Prepared, { readonly _tag: "email" }>;
@@ -890,6 +902,7 @@ const make = Effect.gen(function* () {
         reach: preset?.reach ?? CUSTOM_REACH,
         state: "active",
         accountLabel: null,
+        signInGen: 0,
         note: null,
         sendAsJson: null,
         protocolVersion: null,
@@ -1290,7 +1303,14 @@ const make = Effect.gen(function* () {
       );
       if (target._tag === "again") {
         const row = yield* live(input.orgId, target.connectionId);
-        const account = yield* accountOf(mailProviderOf(row), tokens.accessToken);
+        const provider = mailProviderOf(row);
+        const account = yield* accountOf(provider, tokens.accessToken);
+        // Saving tokens of an account Kin can't name would let a card made for this one send as it.
+        if (provider !== undefined && account === null)
+          return yield* fail(
+            "invalid_state",
+            "Couldn't confirm which account that was. Nothing changed; try again.",
+          );
         // Its threads and events belong to one account: another account is another connection.
         if (
           account !== null &&
@@ -1301,6 +1321,11 @@ const make = Effect.gen(function* () {
             "invalid_state",
             `That signed in as ${account}, but this connection is ${row.accountLabel}. Nothing changed. To connect ${account}, add it as another account.`,
           );
+        // An account no one confirmed may be another: cards made before it no longer send. Moved
+        // before the new tokens are stored, so a send that reads them also sees the move.
+        if (account === null)
+          yield* sql`UPDATE kin_connections SET sign_in_gen = sign_in_gen + 1
+            WHERE org_id = ${input.orgId} AND connection_id = ${row.connectionId}`;
         yield* secrets.setSignIn(row.connectionId, Redacted.make(secret));
         yield* gateway.invalidate(row.connectionId);
         yield* sql`UPDATE kin_connections SET state = 'active', last_error = NULL,
@@ -1346,6 +1371,7 @@ const make = Effect.gen(function* () {
         reach: "closed",
         state: "active",
         accountLabel: account,
+        signInGen: 0,
         note: null,
         sendAsJson:
           provider === undefined ? null : yield* sendAsJsonOf(provider, tokens.accessToken),
@@ -2041,9 +2067,11 @@ const make = Effect.gen(function* () {
         : null;
     const now = yield* Clock.currentTimeMillis;
     yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
-        pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at)
+        pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at,
+        account, sign_in_gen)
       VALUES (${turn.orgId}, ${askId}, ${row.connectionId}, ${tool.name}, ${tool.pinDigest},
-        ${payload}, ${turn.agentId}, ${turn.wakeupId}, ${chat.chatId}, ${entryRecordId}, ${now})
+        ${payload}, ${turn.agentId}, ${turn.wakeupId}, ${chat.chatId}, ${entryRecordId}, ${now},
+        ${row.accountLabel}, ${row.signInGen})
       ON CONFLICT (org_id, ask_id) DO NOTHING`;
     // A newer card for the same document, or the same thread and people, replaces the older,
     // in the card's own transaction: no Confirm lands on the older once the newer shows.
@@ -2167,7 +2195,8 @@ const make = Effect.gen(function* () {
         const from = fromOf(chosen.row.accountLabel, sendAsOf(chosen.row), chosen.choice.address);
         const next = { ...prepared, from: from ?? null };
         yield* sql`UPDATE kin_connection_asks SET connection_id = ${chosen.row.connectionId},
-            pin_digest = ${tool.pinDigest}, payload_json = ${encodePrepared(next)}
+            pin_digest = ${tool.pinDigest}, payload_json = ${encodePrepared(next)},
+            account = ${chosen.row.accountLabel}, sign_in_gen = ${chosen.row.signInGen}
           WHERE org_id = ${input.orgId} AND ask_id = ${ask.askId} AND state = 'open'`;
         const mail = mailProviderOf(chosen.row);
         const card = sendCard({
@@ -2195,7 +2224,7 @@ const make = Effect.gen(function* () {
       k.connection_id AS "connectionId", k.tool_name AS "toolName", k.pin_digest AS "pinDigest",
       k.payload_json AS payload, k.agent_id AS "agentId", k.chat_id AS "chatId", k.state,
       k.entry_record_id AS "entryRecordId", a.owner_person_id AS owner, l.thread_id AS "threadId",
-      k.widget_id AS "widgetId", k.reason
+      k.widget_id AS "widgetId", k.reason, k.account, k.sign_in_gen AS "signInGen"
     FROM kin_connection_asks k
     JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
     JOIN kin_leads l ON l.org_id = k.org_id AND l.agent_id = k.agent_id
@@ -2252,14 +2281,16 @@ const make = Effect.gen(function* () {
           ? "Kin can no longer read what this card was for, so nothing was sent."
           : connection === undefined || connection.pausedAt !== null
             ? "The connection is removed or paused, so nothing was sent."
-            : tool === undefined ||
-                !callable(tool) ||
-                tool.mode !== "ask" ||
-                tool.pinDigest !== row.pinDigest
-              ? `${row.toolName} changed or was switched off since this card was made, so nothing was sent.`
-              : (yield* attachmentsCurrent(input.orgId, prepared))
-                ? null
-                : "The attached document changed since this card was made, so nothing was sent. A fresh card is below.";
+            : !signedInAsShown(row, connection)
+              ? accountMoved(connection, prepared._tag === "email")
+              : tool === undefined ||
+                  !callable(tool) ||
+                  tool.mode !== "ask" ||
+                  tool.pinDigest !== row.pinDigest
+                ? `${row.toolName} changed or was switched off since this card was made, so nothing was sent.`
+                : (yield* attachmentsCurrent(input.orgId, prepared))
+                  ? null
+                  : "The attached document changed since this card was made, so nothing was sent. A fresh card is below.";
       if (reason !== null) {
         const again = reason.endsWith("A fresh card is below.");
         const newer = again && (yield* superseded(input.orgId, row.askId));
@@ -2305,26 +2336,31 @@ const make = Effect.gen(function* () {
     const attachments = yield* Effect.forEach(stale.prepared.attachments, (one) =>
       attachmentOf(orgId, one.key).pipe(provideSql),
     );
-    const prepared = { ...stale.prepared, attachments };
+    const connection = yield* connectionById(orgId, stale.row.connectionId).pipe(provideSql);
+    // Signed in as another account since: the card names it, and the old From doesn't go along.
+    const moved = connection !== undefined && !signedInAsShown(stale.row, connection);
+    const prepared = { ...stale.prepared, attachments, ...(moved ? { from: null } : {}) };
     const payload = encodePrepared(prepared);
     const askId = `ask_${NodeCrypto.createHash("sha256")
       .update([orgId, stale.row.askId, payload].join("\n"))
       .digest("hex")
       .slice(0, 24)}`;
     yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
-        pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at)
-      SELECT org_id, ${askId}, connection_id, tool_name, pin_digest, ${payload}, agent_id,
-        wakeup_id, chat_id, ${attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null},
-        ${now}
-      FROM kin_connection_asks WHERE org_id = ${orgId} AND ask_id = ${stale.row.askId}
+        pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at,
+        account, sign_in_gen)
+      SELECT k.org_id, ${askId}, k.connection_id, k.tool_name, k.pin_digest, ${payload}, k.agent_id,
+        k.wakeup_id, k.chat_id, ${attachments.find((one) => one.entryRecordId !== null)?.entryRecordId ?? null},
+        ${now}, c.account_label, c.sign_in_gen
+      FROM kin_connection_asks k
+      JOIN kin_connections c ON c.org_id = k.org_id AND c.connection_id = k.connection_id
+      WHERE k.org_id = ${orgId} AND k.ask_id = ${stale.row.askId}
       ON CONFLICT (org_id, ask_id) DO NOTHING`;
-    const connection = yield* connectionById(orgId, stale.row.connectionId).pipe(provideSql);
     const mail = connection === undefined ? undefined : mailProviderOf(connection);
     const card = sendCard({
       zone: yield* ownerZone(orgId).pipe(provideSql),
       service: stale.label,
       ...(mail === undefined ? {} : { mail }),
-      account: stale.account,
+      account: connection?.accountLabel ?? stale.account,
       tool: stale.row.toolName,
       prepared,
       choices:
@@ -2380,9 +2416,19 @@ const make = Effect.gen(function* () {
     const prepared = Option.getOrUndefined(decodePrepared(row.payload));
     if (connection === undefined || prepared === undefined)
       return yield* finish("failed", "The connection is gone, so nothing was sent.", null);
+    // Read again once the token is in hand: a sign-in moves the generation before its tokens.
+    const asShown = connectionById(orgId, row.connectionId).pipe(
+      provideSql,
+      Effect.flatMap((now) =>
+        now !== undefined && signedInAsShown(row, now)
+          ? Effect.void
+          : Effect.fail(fail("unavailable", accountMoved(now ?? connection, false))),
+      ),
+    );
     const sent = yield* (
       prepared._tag === "call"
         ? Effect.gen(function* () {
+            yield* asShown;
             const [tool] = (yield* toolsOf(orgId, row.connectionId).pipe(provideSql)).filter(
               (candidate) => candidate.name === row.toolName,
             );
@@ -2400,8 +2446,10 @@ const make = Effect.gen(function* () {
             const provider = mailProviderOf(connection);
             if (provider === undefined)
               return yield* fail("unavailable", `${connection.label} can't send mail.`);
+            yield* asShown;
             return yield* withSignIn(orgId, connection, (force) =>
               tokenOf(orgId, connection, force).pipe(
+                Effect.tap(() => asShown),
                 Effect.flatMap((token) =>
                   sendMail(provider, http, token, prepared).pipe(provideSql, Effect.provide(files)),
                 ),
@@ -2413,6 +2461,13 @@ const make = Effect.gen(function* () {
       const after = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
       if (prepared._tag === "email" && (yield* superseded(orgId, askId)))
         return yield* finish("failed", `Kin couldn't send it. ${REPLACED_SINCE}`, null);
+      if (after !== undefined && !signedInAsShown(row, after)) {
+        const email = prepared._tag === "email";
+        const failed = yield* finish("failed", accountMoved(after, email), null, email);
+        return email
+          ? { ...failed, fresh: { prepared, row, label: after.label, account: after.accountLabel } }
+          : failed;
+      }
       if (after?.state === "needs_sign_in" && prepared._tag === "email") {
         const failed = yield* finish(
           "failed",

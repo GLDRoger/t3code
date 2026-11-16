@@ -33,7 +33,7 @@ import { fieldText, listOf, parseFields } from "./lists.ts";
 import { guardPlaybook } from "./playbooks.ts";
 import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "./recordRows.ts";
 import { indexRecord } from "./searchIndex.ts";
-import { KIN_OWNER_LEVEL, viewVisible, type KinViewer } from "./teamView.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople, viewVisible, type KinViewer } from "./teamView.ts";
 import { SensitiveRefusal } from "./workerAttempts.ts";
 
 /**
@@ -184,6 +184,17 @@ export const versionOf = Effect.fn("KinDocs.version")(function* (
     ORDER BY version DESC LIMIT 1`;
   return row;
 });
+
+/**
+ * Whose view a write finds its doc and links in: a turn's people or a teammate on their own
+ * screen, so what they can't see is no doc at all before anything of it is read; else everything.
+ */
+const writerSees = (writer: Writer): KinViewer =>
+  writer.view !== undefined
+    ? viewerOfPeople(writer.view.people)
+    : writer.teammate === true && writer.actor._tag === "person"
+      ? viewerOfPeople([writer.actor.personId])
+      : KIN_OWNER_LEVEL;
 
 /** A doc by key or id, in this org's Docs list; anything else, another org's included, is unknown. */
 export const docRow = Effect.fn("KinDocs.row")(function* (
@@ -459,7 +470,7 @@ export const edit = Effect.fn("KinDocs.edit")(function* (
 ) {
   return yield* transaction(
     Effect.gen(function* () {
-      const row = yield* docRow(orgId, ref, KIN_OWNER_LEVEL);
+      const row = yield* docRow(orgId, ref, writerSees(writer));
       const again = yield* retried(orgId, row.recordId, input.originKey);
       if (again !== undefined) return again;
       const current = yield* versionOf(orgId, row.recordId);
@@ -498,7 +509,7 @@ export const rewrite = Effect.fn("KinDocs.rewrite")(function* (
   if (body.length > DOC_BODY_MAX) return yield* tooLong(body.length);
   return yield* transaction(
     Effect.gen(function* () {
-      const row = yield* docRow(orgId, ref, KIN_OWNER_LEVEL);
+      const row = yield* docRow(orgId, ref, writerSees(writer));
       const again = yield* retried(orgId, row.recordId, input.originKey);
       if (again !== undefined) return again;
       const current = yield* versionOf(orgId, row.recordId);
@@ -534,7 +545,7 @@ export const restore = Effect.fn("KinDocs.restore")(function* (
 ) {
   return yield* transaction(
     Effect.gen(function* () {
-      const row = yield* docRow(orgId, ref, KIN_OWNER_LEVEL);
+      const row = yield* docRow(orgId, ref, writerSees(writer));
       const again = yield* retried(orgId, row.recordId, input.originKey);
       if (again !== undefined) return again;
       const current = yield* versionOf(orgId, row.recordId);
@@ -649,7 +660,7 @@ export const move = Effect.fn("KinDocs.move")(function* (
   return yield* transaction(
     Effect.gen(function* () {
       const records = yield* KinRecords;
-      const row = yield* docRow(orgId, ref, KIN_OWNER_LEVEL);
+      const row = yield* docRow(orgId, ref, writerSees(writer));
       // A doc has one home: the company, or a client and project.
       const toClient =
         (patch.partyId !== undefined && patch.partyId !== null) ||
@@ -696,7 +707,7 @@ export const link = Effect.fn("KinDocs.link")(function* (
   return yield* transaction(
     Effect.gen(function* () {
       const records = yield* KinRecords;
-      const row = yield* docRow(orgId, ref, KIN_OWNER_LEVEL);
+      const row = yield* docRow(orgId, ref, writerSees(writer));
       const linked: Array<{
         readonly key: string;
         readonly title: string;
@@ -705,7 +716,11 @@ export const link = Effect.fn("KinDocs.link")(function* (
       }> = [];
       for (const key of targets) {
         const other = yield* records.get(orgId, key);
-        if (other === undefined)
+        const sees = writerSees(writer);
+        if (
+          other === undefined ||
+          (sees._tag === "people" && !(yield* viewVisible(orgId, sees.people, other.recordId)))
+        )
           return yield* new KinChatError({
             reason: "not_found",
             message: `No entry or doc ${key.slice(0, 40)}. Nothing was linked.`,

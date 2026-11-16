@@ -497,7 +497,10 @@ features:
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [touch_log]
-    proof: [apps/server/src/kin/work/crm.test.ts]
+    note: A teammate's turn logs contact only with a client they all see; a private one answers as none.
+    proof:
+      - apps/server/src/kin/work/crm.test.ts
+      - .agents/skills/verify-kin/scripts/private-client-unnamed.sh
 
   - id: project
     name: A project, its tasks, milestones and lead

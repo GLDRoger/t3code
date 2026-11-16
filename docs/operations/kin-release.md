@@ -1,0 +1,31 @@
+# Releasing Kin
+
+A Kin release is a commit on `kin` that runs on the host. The release check runs every Kin check we have on this Mac and compares the result with the last release, so only new findings need a decision. Deploying stays a manual step.
+
+## Steps
+
+1. On a clean checkout of the commit you want to ship: `KIN_RELEASE_CHECK_DIR=~/code/kin-lane-a/release-check BOMBADIL=<path to bombadil> node scripts/kin-release-check.ts --full`. Use `--quick` (under 10 minutes) for a small fix.
+2. Read `summary.md` or `report.html` in the folder it prints. NEW findings block the release. STILL PRESENT ones were already there at the last release. FIXED ones are gone.
+3. Deploy: `ssh` to the host, then `sudo -iu kin ~/t3code/ops/kin/host/update.sh`. It backs up the database, switches, checks health, and rolls back by itself. A non-zero exit means the host is on the previous build again. Its last lines say why.
+4. Mark it: `node scripts/kin-release-check.ts --mark-released <commit>`, then commit `ops/kin/releases.json` to `kin`.
+
+## The release check
+
+| Stage        | Runs                                                                                                | Mode  |
+| ------------ | --------------------------------------------------------------------------------------------------- | ----- |
+| `static`     | `vp run check:changed <last release>`, including the Kin rules in `docs/kin/RULES.md`               | quick |
+| `models`     | `node scripts/kin-model.ts send\|reply\|checkin`                                                    | quick |
+| `properties` | the `*.property.test.ts` files beside Kin's pure rules                                              | quick |
+| `lifecycle`  | the ten verify-kin lifecycle scripts (`run-all.sh`)                                                 | quick |
+| `migrate`    | the last release's company database, started on this build, then `doctor` and two lifecycle scripts | full  |
+| `ui-fuzz`    | Bombadil as owner, co-owner, lead and member, 2 minutes each (`--fuzz-time`)                        | full  |
+
+- Every failure becomes a finding with a fingerprint built from the stage, check, step, role and normalised message, so the same failure matches across runs. `findings.json` holds them.
+- By default a run is compared with the last release in `ops/kin/releases.json`. `--against <commit|findings.json>` picks another. A finding that is not in the baseline is NEW.
+- The exit is non-zero on any finding from a deterministic stage, and on a NEW fuzz finding. A deterministic failure stops the later stages unless you pass `--keep-going`. `--only <stage,…>` runs a subset.
+- No model is called. Provider CLIs are stubbed on `PATH` for every stage, and the fuzz runner fails if any agent turn produced a token.
+- A `--full` run keeps `<dir>/<commit>/fixture`, the lifecycle company's state after all ten scripts. The next release's `migrate` stage starts the new build on a copy of it. If the last release has no fixture, `migrate` is skipped and says so. Fuzz traces are deleted after summarising, unless you pass `--keep-traces`.
+
+## What update.sh does on the host
+
+Only after the build passes does it stop `kin-server` and take a `sqlite3 .backup` of `~/.t3/userdata/statev2.sqlite` into `~/kin-update-backups` (or `$KIN_UPDATE_BACKUPS`). It keeps the 10 newest and never touches files it didn't name. Then it switches `~/kin-current` and starts the server. The build is healthy when the service is up with no restarts, the server answers on its port, and the database's T3 and Kin migrations have reached the build's highest. If any of those fails, it switches back to the previous build. If the failed build had already migrated the database, it also restores the backup. The migrated copy stays beside it as `statev2.sqlite.failed-<sha>`. It keeps the 3 newest builds, about 7 GB each. `scripts/kin-update.test.ts` runs these paths against a fake host.
