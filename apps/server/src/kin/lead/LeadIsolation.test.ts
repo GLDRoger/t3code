@@ -132,7 +132,6 @@ it.effect.each([
         systemPrompt: { type: "custom", prompt: instructions, snapshot: false },
         // No settings file: user settings carry hooks, plugins and env a lead must not inherit.
         settingSources: [],
-        tools: LeadIsolation.leadTools,
         disallowedTools: [
           ...(lead.disallowedTools ?? []),
           ...LeadIsolation.leadBlockedTools,
@@ -144,6 +143,9 @@ it.effect.each([
           "Read(~/.config/gh/**)",
         ],
         strictMcpConfig: true,
+        // Kin's tools load upfront; only those marked deferred wait for ToolSearch.
+        tools: [...LeadIsolation.leadTools, "ToolSearch"],
+        mcpServers: { kin: { type: "http", url: "http://127.0.0.1/kin", alwaysLoad: true } },
         // Only the owner's model credentials come from their settings.
         settings: {
           apiKeyHelper: "gateway-token",
@@ -151,14 +153,14 @@ it.effect.each([
           // G07: auto-memory's folder, under the host's home, named the account to a teammate.
           autoMemoryEnabled: false,
           autoDreamEnabled: false,
-          env: { ANTHROPIC_BASE_URL: "https://gateway.test", ENABLE_TOOL_SEARCH: "false" },
+          env: { ANTHROPIC_BASE_URL: "https://gateway.test", ENABLE_TOOL_SEARCH: "true" },
         },
         env: {
           PATH: "/usr/bin",
           HOME: "/home/kin",
           ANTHROPIC_BASE_URL: "https://gateway.test",
           CLAUDE_CONFIG_DIR: configDir,
-          ENABLE_TOOL_SEARCH: "false",
+          ENABLE_TOOL_SEARCH: "true",
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
         },
       });
@@ -172,6 +174,7 @@ it.effect.each([
       const leadAllows = (tool: string, input: unknown) => hookAllows(leadOpened, tool, input);
       assert.isTrue(yield* Effect.promise(() => leadAllows("Read", { file_path: "notes.md" })));
       assert.isTrue(yield* Effect.promise(() => leadAllows("Glob", { pattern: "**/*.md" })));
+      assert.isTrue(yield* Effect.promise(() => leadAllows("ToolSearch", { query: "chart" })));
       for (const [tool, input] of [
         ["Read", { file_path: "/etc/passwd" }],
         ["Read", { file_path: "/proc/self/environ" }],
@@ -202,7 +205,10 @@ it.effect.each([
       assert.isFalse((dreamOpened?.disallowedTools ?? []).includes("Edit"));
       assert.isDefined(leadOpened?.mcpServers?.kin);
       // A turn someone besides the owner reads can't open the memory checkout it runs in.
-      assert.deepStrictEqual(sharedOpened?.tools, []);
+      assert.deepStrictEqual(sharedOpened?.tools, ["ToolSearch"]);
+      assert.isTrue(
+        yield* Effect.promise(() => hookAllows(sharedOpened, "ToolSearch", { query: "chart" })),
+      );
       for (const tool of LeadIsolation.leadTools)
         assert.include(sharedOpened?.disallowedTools ?? [], tool);
       assert.isDefined(sharedOpened?.mcpServers?.kin);
@@ -294,6 +300,7 @@ it.effect(
       const signing = `${stateDir}/kin/gh-sign`;
       assert.strictEqual(full?.env?.PATH, `${signing}:/kin-home/kin-tools/gh-pinned:/usr/bin`);
       assert.strictEqual(full?.env?.KIN_AGENT_NAME, "Tech lead");
+      assert.strictEqual(full?.env?.ENABLE_TOOL_SEARCH, "true");
       assert.include(
         yield* fs.readFileString(`${signing}/gh`),
         "REAL='/kin-home/kin-tools/gh-pinned/gh'",
@@ -340,11 +347,11 @@ it.effect(
       assert.isFalse(yield* allows("Bash", shell));
       // A turn others read never gets the full session, connected or not.
       const shared = yield* open("kin-shared:tech");
-      assert.deepStrictEqual(shared?.tools, []);
+      assert.deepStrictEqual(shared?.tools, ["ToolSearch"]);
       // GitHub not connected: the old confined session.
       connected = false;
       const confined = yield* open("kin:tech");
-      assert.deepStrictEqual(confined?.tools, LeadIsolation.leadTools);
+      assert.deepStrictEqual(confined?.tools, [...LeadIsolation.leadTools, "ToolSearch"]);
       assert.include(confined?.disallowedTools ?? [], "Bash");
     }).pipe(
       Effect.scoped,

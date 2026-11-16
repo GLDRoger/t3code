@@ -594,4 +594,35 @@ describe("Kin streams", () => {
       });
     }),
   );
+
+  it.effect("reads the open chat again when the viewer's access moves, so a lost link goes", () =>
+    Effect.gen(function* () {
+      const linked = { ...message(1), links: [{ text: "INV-1" }] } as unknown as KinMessage;
+      const events = yield* Queue.unbounded<KinChatStreamEvent>();
+      const moves = yield* Queue.unbounded<string>();
+      const views = yield* Queue.unbounded<KinSynced<KinChatState>>();
+      let page = linked;
+      const provide = yield* provider(
+        yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+          Option.some(fakeSession({ chat: () => Stream.fromQueue(events), inbox: Stream.never })),
+        ),
+        new Map(),
+      );
+      yield* makeKinChatStream(
+        () => Effect.sync(() => ({ messages: [page], widgets: [], hasMore: false })),
+        () => Stream.fromQueue(moves),
+      )({ chatId }).pipe(
+        Stream.runForEach((view) => Queue.offer(views, view)),
+        provide,
+        Effect.forkChild,
+      );
+      // The revision held when the chat opens moves nothing.
+      yield* Queue.offer(moves, "0");
+      yield* Queue.offer(events, { _tag: "message", message: linked } as KinChatStreamEvent);
+      expect((yield* Queue.take(views)).value.messages[0]?.links).toHaveLength(1);
+      page = message(1);
+      yield* Queue.offer(moves, "1");
+      expect((yield* Queue.take(views)).value.messages[0]?.links).toBeUndefined();
+    }),
+  );
 });

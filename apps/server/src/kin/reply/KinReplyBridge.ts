@@ -486,7 +486,11 @@ const make = Effect.gen(function* () {
         repliedBy(wake, ordinal),
       )
       .pipe(
-        Effect.map((result) => ({ _tag: "posted" as const, messageId: result.messageId })),
+        Effect.map((result) => ({
+          _tag: "posted" as const,
+          messageId: result.messageId,
+          body: result.body,
+        })),
         Effect.catch((error) =>
           Effect.succeed({
             _tag: "withheld" as const,
@@ -528,9 +532,9 @@ const make = Effect.gen(function* () {
         repliedBy(wake, ordinal),
       )
       .pipe(
-        Effect.map(() => {
-          slot.body = body;
-          return { _tag: "posted" as const, messageId: slot.messageId };
+        Effect.map((message) => {
+          slot.body = message.body;
+          return { _tag: "posted" as const, messageId: slot.messageId, body: message.body };
         }),
         Effect.catch((error) =>
           Effect.succeed({
@@ -599,7 +603,8 @@ const make = Effect.gen(function* () {
         segment.outcome = "posted";
         if (slot === undefined) {
           wake.posted++;
-          wake.slots.set(key, { messageId: result.messageId, body: capBody(text) });
+          // As stored: Kin may have named an entry key, and the next part extends this text.
+          wake.slots.set(key, { messageId: result.messageId, body: result.body });
         }
         wake.chars += text.length;
         wake.answered = true;

@@ -31,7 +31,6 @@ export interface KinChoiceCardView {
     readonly optionId: string;
     readonly label: string;
     readonly personId: KinPersonId;
-    readonly emoji: string | null;
   } | null;
   /** What the answer did, in the owner's words, on a card Kin asked itself. */
   readonly outcome: { readonly title: string; readonly text: string } | null;
@@ -249,7 +248,6 @@ export function kinChoiceCardView(
             optionId: card.answer.optionId,
             label: chosen?.label ?? card.answer.optionId,
             personId: card.answer.personId,
-            emoji: card.answer.via === "reaction" ? card.answer.emoji : null,
           },
     // Unanswered cards are never rewritten, so `updatedAt` is still the time it was posted.
     expiresAtMs: Date.parse(widget.updatedAt) + KIN_CHOICE_CARD_TTL_MS,
@@ -265,13 +263,60 @@ export function kinChoicePhase(view: KinChoiceCardView, nowMs: number): KinChoic
   return view.closed || nowMs >= view.expiresAtMs ? "expired" : "open";
 }
 
-/** "You chose “Ship it”", or with a reaction "You chose “Yes” with 👍". */
-export function kinChoiceAnswerText(
-  answer: NonNullable<KinChoiceCardView["answer"]>,
-  viewerPersonId: KinPersonId | null,
-): string {
-  const who = answer.personId === viewerPersonId ? "You chose" : "Chose";
-  return `${who} “${answer.label}”${answer.emoji === null ? "" : ` with ${answer.emoji}`}`;
+// Imperative first words an agent's option starts with, and how the outcome says them.
+const DOING: Readonly<Record<string, string>> = {
+  accept: "Accepting",
+  add: "Adding",
+  approve: "Approving",
+  book: "Booking",
+  cancel: "Cancelling",
+  change: "Changing",
+  continue: "Continuing",
+  decline: "Declining",
+  delete: "Deleting",
+  do: "Doing",
+  draft: "Drafting",
+  file: "Filing",
+  finish: "Finishing",
+  go: "Going",
+  hold: "Holding",
+  keep: "Keeping",
+  make: "Making",
+  merge: "Merging",
+  move: "Moving",
+  pause: "Pausing",
+  pay: "Paying",
+  post: "Posting",
+  proceed: "Proceeding",
+  publish: "Publishing",
+  push: "Pushing",
+  reject: "Rejecting",
+  remind: "Reminding",
+  retry: "Retrying",
+  run: "Running",
+  schedule: "Scheduling",
+  send: "Sending",
+  ship: "Shipping",
+  skip: "Skipping",
+  start: "Starting",
+  stop: "Stopping",
+  try: "Trying",
+  use: "Using",
+  wait: "Waiting",
+};
+
+/**
+ * What the chosen option means, said as a sentence: "Go ahead" is "Going ahead.", "Let me change
+ * it" is "You'll change it.", and anything else is the option's own words with a full stop.
+ */
+export function kinChoiceOutcomeSentence(label: string, chosenByViewer: boolean): string {
+  const words = line(label).replace(/[.!…]+$/u, "");
+  const letMe = /^let me (.+)$/iu.exec(words);
+  if (letMe !== null) return `${chosenByViewer ? "You'll" : "They'll"} ${letMe[1]}.`;
+  const [first = "", ...rest] = words.split(" ");
+  const head = DOING[first.toLowerCase()] ?? `${first.charAt(0).toUpperCase()}${first.slice(1)}`;
+  const said = [head, ...rest].join(" ");
+  return said.endsWith("?") ? said : `${said}.`;
 }
 
 /**
@@ -287,9 +332,9 @@ export function kinChoiceAnswered(
     view.outcome !== null
       ? view.outcome.text
       : view.answer !== null
-        ? kinChoiceAnswerText(view.answer, viewerPersonId)
+        ? kinChoiceOutcomeSentence(view.answer.label, view.answer.personId === viewerPersonId)
         : tappedLabel !== null
-          ? `You chose “${tappedLabel}”`
+          ? kinChoiceOutcomeSentence(tappedLabel, true)
           : null;
   if (text === null) return null;
   return { text: view.send?.outcome == null ? text : null };

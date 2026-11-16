@@ -1,20 +1,12 @@
-import { KinOrgId, type EnvironmentId } from "@t3tools/contracts";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-import { KinMemoryView } from "../kin/KinMemoryView";
-
-function KinMemoryRoute() {
-  const { environmentId, orgId } = Route.useParams();
-  return (
-    <KinMemoryView
-      // One mounted view per organization, so a tap in flight never lands on another's list.
-      key={`${environmentId}:${orgId}`}
-      environmentId={environmentId as EnvironmentId}
-      orgId={KinOrgId.make(orgId)}
-    />
-  );
-}
-
+// Memory moved into Settings → Company; its old address lands there.
 export const Route = createFileRoute("/_chat/kin/$environmentId/$orgId/memory")({
-  component: KinMemoryRoute,
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: "/kin/$environmentId/$orgId/settings/$page",
+      params: { ...params, page: "memory" },
+      replace: true,
+    });
+  },
 });

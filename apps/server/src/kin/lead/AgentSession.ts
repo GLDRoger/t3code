@@ -1,4 +1,5 @@
 import type { KinAgentId, KinOrgId, ThreadId } from "@t3tools/contracts";
+import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -23,6 +24,7 @@ import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
+import { listedOnSharedThread } from "./SharedTools.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 
 const leadT3Tools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
@@ -148,20 +150,38 @@ export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
 );
 
 /**
- * What the Kin endpoint lists and lets a session call. A T3 tool shows only on a thread whose turns
- * only the owner reads, while GitHub is connected; `kin_delegate` shows only while it isn't. The
- * gate (`KinToolGate`) still checks each call against the running turn.
+ * Kin's GitHub tools answer only "not connected" without the Kin App (`layer.ts` `repoReads`),
+ * except the ones that work through the owner's own login.
+ */
+const isKinGitHubTool = (name: string) => name.startsWith("kin_github_");
+const LOGIN_GITHUB_TOOLS = new Set(["kin_github_review", "kin_github_watch"]);
+const kinAppConfigured = Config.option(Config.String("KIN_GITHUB_APP_ID")).pipe(
+  Effect.map(Option.isSome),
+  Effect.orElseSucceed(() => false),
+);
+
+/**
+ * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
+ * Shared threads list only what shared turns may run; T3 tools need GitHub connected on an
+ * owner-only thread, `kin_delegate` needs it not connected. `KinToolGate` still checks each call.
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(
   function* (name: string, threadId: ThreadId) {
+    const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
+    if (shared && !listedOnSharedThread(name)) return false;
+    const gitHub = isKinGitHubTool(name);
+    if (gitHub && (yield* kinAppConfigured)) return true;
+    if (gitHub && !LOGIN_GITHUB_TOOLS.has(name)) return false;
     const t3 = isT3Tool(name);
-    if (!t3 && name !== "kin_delegate") return true;
-    if (t3 && (!leadT3Tools.has(name) || threadId.startsWith(SHARED_THREAD_PREFIX))) return false;
+    if (!t3 && name !== "kin_delegate" && !gitHub) return true;
+    if (t3 && !leadT3Tools.has(name)) return false;
     const kin = yield* KinServer;
     if (Option.isNone(kin.services)) return false;
     const connected = yield* githubConnected.pipe(
       Effect.provideService(KinGitHubLogin, Context.get(kin.services.value, KinGitHubLogin)),
     );
+    // Without the App, these work through the owner's own login, so they show while it's connected.
+    if (gitHub) return connected;
     return t3 ? connected : !connected;
   },
   Effect.catchCause((cause) =>

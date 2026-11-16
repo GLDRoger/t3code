@@ -170,7 +170,7 @@ export function renderMarkdown(
   for (const turn of result.prompts.turns)
     lines.push(
       turn.reached
-        ? `| ${turn.kind} | ${turn.agent} | ${turn.turnTokens} | ${turn.toolCount} / ${turn.toolTokens} | ${turn.totalTokens} | ${(turn.cacheableShare * 100).toFixed(0)}% | ${[
+        ? `| ${turn.kind} | ${turn.agent} | ${turn.turnTokens} | ${turn.toolCount} / ${turn.toolTokens}${turn.deferredCount ? ` (+${turn.deferredCount} deferred)` : ""} | ${turn.totalTokens} | ${(turn.cacheableShare * 100).toFixed(0)}% | ${[
             ...turn.sections,
           ]
             .sort((a, b) => b.tokens - a.tokens)
