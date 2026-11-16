@@ -36,6 +36,8 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
 import * as Render from "./gendocs/render.ts";
 import * as Toolchain from "./gendocs/toolchain.ts";
+import * as GhTool from "./connections/ghTool.ts";
+import * as GitHubLogin from "./connections/GitHubLogin.ts";
 import * as Workspace from "./gendocs/workspace.ts";
 import * as Vcs from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -125,6 +127,16 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Layer.provide(ConnectionSecrets.layer),
           Layer.provide(McpGateway.layer),
           Layer.provide(DevFakeMail.egress),
+          Layer.provideMerge(
+            GitHubLogin.layer.pipe(
+              Layer.provide(
+                GhTool.layer.pipe(
+                  Layer.provide(ProcessRunner.layer),
+                  Layer.provide(FetchHttpClient.layer),
+                ),
+              ),
+            ),
+          ),
         ),
       ).pipe(Layer.provideMerge(KinChat.layer)),
     ),

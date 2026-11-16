@@ -13,6 +13,7 @@ import {
 } from "./connections/KinConnectionFormScreens";
 import { KinConnectionScreen } from "./connections/KinConnectionScreen";
 import { KinConnectionsScreen } from "./connections/KinConnectionsScreen";
+import { KinGitHubConnectScreen } from "./connections/KinGitHubConnect";
 import { KinDocFileScreen } from "./KinDocFileScreen";
 import { KinDocScreen } from "./KinDocScreen";
 import { KinDocChangesScreen, KinDocHistoryScreen, KinSearchScreen } from "./KinDocVersionScreens";
@@ -152,6 +153,10 @@ export const KIN_SCREENS = {
   // Full sheets, so the keyboard never covers the key being pasted.
   KinConnectionAdd: createNativeStackScreen({
     screen: KinConnectionAddScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinGitHubConnect: createNativeStackScreen({
+    screen: KinGitHubConnectScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinConnectionEdit: createNativeStackScreen({

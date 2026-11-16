@@ -188,6 +188,18 @@ from the account and thread the email is in.
 The card shows exactly what will be sent, from which account, to whom. One **Confirm** sends it
 once. Only the owner or a co-owner can confirm.
 
+### GitHub
+
+GitHub connects as your own login on your Kin's computer, from the phone or the web: **Settings →
+Connections → GitHub → Connect**, then **Get a code**. Tap **Open GitHub**, enter the code, and tap
+**Authorize** (grant your organizations if GitHub asks). Kin then shows who it is connected as and
+which organizations it reaches. Git and T3 Code on that computer act as you from then on. If you'd
+rather not use a code, paste a classic token with `repo`, `read:org` and `workflow` instead.
+
+One account is connected at a time; to switch, **Disconnect** and connect again. Disconnect signs
+Kin's computer out; to end it on GitHub too, revoke GitHub CLI under GitHub's Settings →
+Applications. If GitHub stops accepting the login, the row says so and offers **Reconnect**.
+
 ## Check-ins and the weekly brief
 
 A check-in is an agent's regular round: it looks over what needs attention and tells you what
