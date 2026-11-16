@@ -159,7 +159,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       ] as const) {
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
           access, time_zone, work_hours_json)
-        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'UTC', ${allDay})`;
+        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'Asia/Kolkata', ${allDay})`;
         yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
           VALUES (${`${id}-session`}, ${orgId}, ${id}, 0)`;
       }
