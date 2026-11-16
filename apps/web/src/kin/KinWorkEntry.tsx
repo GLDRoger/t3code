@@ -25,6 +25,8 @@ import {
   KIN_INVOICES,
   kinInvoiceView,
   kinIsInvoice,
+  kinInvoiceFileDoc,
+  kinInvoiceDraftNote,
 } from "@t3tools/client-runtime/kin/kinInvoices";
 import type { KinFieldValue, KinFileRef, KinRecordDetail, KinRecordKey } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -33,6 +35,7 @@ import {
   CheckIcon,
   ChevronDownIcon,
   FileIcon,
+  FileTextIcon,
   MessageSquareIcon,
   PlusIcon,
   RepeatIcon,
@@ -542,7 +545,11 @@ export function KinListEntry(
       clientRequestId: randomUUID(),
     });
   };
-  const { finish, amountEdit } = entry;
+  const draftNote = kinInvoiceDraftNote(item, invoice, def);
+  // A draft takes no payment: its Mark paid and Record payment wait for Issue, and say so.
+  const payLater = draftNote !== null && entry.finish?.pays != null ? draftNote : null;
+  const finish = payLater === null ? entry.finish : null;
+  const { amountEdit } = entry;
   const held = Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))));
   const clients = held?.clients ?? [];
   const projects = held?.projects ?? [];
@@ -663,6 +670,9 @@ export function KinListEntry(
             />
           ) : !canChange ? null : (
             <div className="flex flex-wrap items-center gap-2">
+              {payLater === null ? null : (
+                <p className="w-full text-sm text-muted-foreground">{payLater}</p>
+              )}
               {finish === null ? null : (
                 <Button
                   size="sm"
@@ -718,7 +728,7 @@ export function KinListEntry(
               onMake={() => setMaking("invoice")}
             />
           )}
-          <KinMoneyActionNotice actions={money} />
+          <KinMoneyActionNotice actions={money} onOpenDoc={props.onOpenDoc} />
           {paying ? (
             <PaymentForm
               entry={entry}
@@ -857,6 +867,10 @@ export function KinListEntry(
                     {field.private ? <KinWorkPrivateMark /> : null}
                   </dt>
                   <dd className="flex min-w-0 flex-col items-start gap-1.5 text-foreground">
+                    <InvoiceFileDoc
+                      doc={kinInvoiceFileDoc(field, invoice)}
+                      onOpenDoc={props.onOpenDoc}
+                    />
                     {canDraft && !field.retired && (canChange || field.type !== "file") ? (
                       <FieldEdit
                         {...props}
@@ -1064,5 +1078,20 @@ export function KinListEntry(
         </AlertDialogPopup>
       </AlertDialog>
     </>
+  );
+}
+
+/** The PDF Kin made for an invoice, shown in its empty file slot and opened on its doc's page. */
+function InvoiceFileDoc(props: {
+  readonly doc: { readonly key: KinRecordKey; readonly title: string } | null;
+  readonly onOpenDoc: (key: KinRecordKey) => void;
+}) {
+  const { doc } = props;
+  if (doc === null) return null;
+  return (
+    <Button size="xs" variant="ghost" onClick={() => props.onOpenDoc(doc.key)}>
+      <FileTextIcon />
+      {doc.title} · {doc.key}
+    </Button>
   );
 }

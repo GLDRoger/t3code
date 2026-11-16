@@ -15,6 +15,7 @@ import {
   kinLineDrafts,
   kinLinesInput,
   kinQuoteActions,
+  kinQuoteInvoice,
   type KinLineDraft,
   type KinQuoteRowView,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
@@ -79,12 +80,24 @@ import type { KinWorkTarget } from "./useKinWork";
 type MoneyActions = ReturnType<typeof useKinMoneyActions>;
 
 /** What an invoice's actions said: the number it got, what couldn't be made, or why not. */
-export function KinMoneyActionNotice(props: { readonly actions: MoneyActions }) {
-  const { problem, notice } = props.actions;
+export function KinMoneyActionNotice(props: {
+  readonly actions: MoneyActions;
+  /** Opens the document an action filed, named in its notice. */
+  readonly onOpenDoc?: (key: KinRecordKey) => void;
+}) {
+  const { problem, notice, filed } = props.actions;
+  const { onOpenDoc } = props;
   if (problem === null && notice === null) return null;
   return (
-    <Alert variant={problem === null ? "info" : "error"}>
+    <Alert variant={problem === null ? "info" : "error"} controlAlignment="first-line">
       <AlertDescription>{problem ?? notice}</AlertDescription>
+      {problem !== null || filed === null || onOpenDoc === undefined ? null : (
+        <AlertAction>
+          <Button size="xs" variant="outline" onClick={() => onOpenDoc(filed)}>
+            {KIN_INVOICES.openFiled(filed)}
+          </Button>
+        </AlertAction>
+      )}
     </Alert>
   );
 }
@@ -138,7 +151,7 @@ export function KinInvoiceActions(
             }}
           >
             <FileTextIcon />
-            {KIN_INVOICES.makeInvoice}
+            {KIN_INVOICES.makePdf}
           </Button>
         ) : null}
         {can.issue ? (
@@ -233,8 +246,9 @@ export function KinQuoteActions(
     issue: useAtomValue(kinClient.workIssue.permissionAtom(environmentId)),
     invoice: useAtomValue(kinClient.workInvoiceFromQuote.permissionAtom(environmentId)),
   };
-  const can = kinQuoteActions(quote.state, props.def?.numbering !== undefined);
   const invoicing = useKinInvoiceFromQuote(props);
+  const invoiced = invoicing.invoice ?? kinQuoteInvoice(item.links);
+  const can = kinQuoteActions(quote.state, props.def?.numbering !== undefined, invoiced !== null);
   const [sending, setSending] = useState(false);
   const [requestId] = useState(randomUUID);
   const busy = props.busy || actions.busy || invoicing.busy;
@@ -242,6 +256,15 @@ export function KinQuoteActions(
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
+        {invoiced === null || invoicing.invoice !== null ? null : (
+          <>
+            <span className="text-sm text-muted-foreground">{KIN_QUOTES.invoicedAs(invoiced)}</span>
+            <Button size="sm" variant="outline" onClick={() => props.onOpenKey(invoiced)}>
+              <FileTextIcon />
+              {KIN_QUOTES.openInvoice}
+            </Button>
+          </>
+        )}
         {can.makeInvoice && allowed.invoice ? (
           <Button
             size="sm"
@@ -437,7 +460,7 @@ export function KinMakeDocumentStep(
             <ChevronLeftIcon />
             {props.backLabel}
           </Button>
-          <SheetTitle>{props.title ?? KIN_INVOICES.makeInvoice}</SheetTitle>
+          <SheetTitle>{props.title ?? KIN_INVOICES.makePdf}</SheetTitle>
           {recipe === null ? null : <SheetDescription>{recipe.description}</SheetDescription>}
         </div>
       </SheetHeader>

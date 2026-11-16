@@ -61,5 +61,12 @@ export const invoiceFromQuote = Effect.fn("KinQuotes.invoiceFrom")(function* (
     ...(Array.isArray(given.lines) || amount === undefined ? {} : { amount }),
     links: [{ kind: "record", target: quote.recordId, relation: "source", label: quote.key }],
   });
+  // The quote names its invoice too, so it can say it was invoiced and open it.
+  yield* records.link(orgId, writer, quote.recordId, {
+    kind: "record",
+    target: row.recordId,
+    relation: "relates",
+    label: row.key,
+  });
   return { entry: row, given };
 });
