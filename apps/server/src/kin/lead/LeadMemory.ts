@@ -463,10 +463,7 @@ const make = Effect.gen(function* () {
     const { ctx, audience } = yield* turn(scope);
     if (audience === "owner_only") return ctx;
     // `replaces` is checked in `cancelOwn`: only the asker's own reminder in this same chat.
-    if (
-      input.onDue !== "remind" ||
-      !(yield* askersDirectChat(ctx, input.chatId).pipe(provideSql))
-    )
+    if (input.onDue !== "remind" || !(yield* askersDirectChat(ctx, input.chatId).pipe(provideSql)))
       return yield* invalid(SHARED_REFUSAL);
     return ctx;
   });

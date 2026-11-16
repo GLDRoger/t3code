@@ -742,7 +742,11 @@ it.effect("a held message follows its reader's changed clock", () =>
       const zoya = { _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") };
       yield* chats.createDirect(zoya, { orgId, agentId: chief });
       const says = Effect.fn("test.says")(function* (body: string) {
-        const message = yield* chats.send(owner, { chatId: ownerChat, body, clientMessageId: body });
+        const message = yield* chats.send(owner, {
+          chatId: ownerChat,
+          body,
+          clientMessageId: body,
+        });
         return `event:${yield* startAgentWakeup({ orgId, agentId: chief, threadId, message })}`;
       });
       const deliverAt = sql<{ at: number }>`SELECT deliver_at AS at FROM kin_held_posts

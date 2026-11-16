@@ -901,7 +901,7 @@ const PINNED_JOIN: readonly [World, ReadonlyArray<Step>] = [
   ],
 ];
 
-/** A task leaving a teammate takes the project off their other tasks there (#423). */
+/** A task leaving a teammate takes the project off their other tasks there. */
 const PINNED_MOVE: readonly [World, ReadonlyArray<Step>] = [
   {
     clients: [

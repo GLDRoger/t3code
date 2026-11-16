@@ -19,7 +19,7 @@ export const rules: Record<string, string> = {
   AskerIsGiver:
     "When someone asks the agent to give a task, they gave it, so handing it back returns it to them; the agent is the giver only on its own.",
   HandedBackShown:
-    "\"Handed back by\" shows only on an open task, naming someone other than its holder: giving it again or closing it clears the mark.",
+    '"Handed back by" shows only on an open task, naming someone other than its holder: giving it again or closing it clears the mark.',
 };
 
 export const variants = [
@@ -56,7 +56,7 @@ export const variants = [
   {
     name: "mark-stays",
     breaks: "HandedBackShown",
-    what: "giving a task again leaves its \"Handed back by\" mark",
+    what: 'giving a task again leaves its "Handed back by" mark',
   },
 ];
 
