@@ -24,7 +24,7 @@ Evals call paid models, so CI does not run them. CI typechecks this package and 
 
 ## Kin baseline
 
-Kin's agent cases live in `mcp-tool-use`: `cases/kin.ndjson`, `cases/kin-owed.ndjson`, `cases/kin-characters.ndjson`, `cases/kin-questions.ndjson` and `cases/kin-social.ndjson`, one area per group of behaviours (`kin/owner-chat`, `kin/mail` and the rest). Run them once per model before changing Kin's instructions or tool descriptions, and compare later runs against that baseline. From `evals/`:
+Kin's agent cases live in `mcp-tool-use`: `cases/kin.ndjson`, `cases/kin-owed.ndjson`, `cases/kin-characters.ndjson`, `cases/kin-questions.ndjson`, `cases/kin-github-events.ndjson` and `cases/kin-social.ndjson`, one area per group of behaviours (`kin/owner-chat`, `kin/mail` and the rest). Run them once per model before changing Kin's instructions or tool descriptions, and compare later runs against that baseline. From `evals/`:
 
 | Command                                                      | Calls a model | What it does                                                                                                                                               |
 | ------------------------------------------------------------ | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -32,6 +32,7 @@ Kin's agent cases live in `mcp-tool-use`: `cases/kin.ndjson`, `cases/kin-owed.nd
 | `pnpm kin:subset --model <id> --out runs/kin-subset`         | yes           | The first case of each group, 3 samples each.                                                                                                              |
 | `pnpm kin:characters --model <id> --out runs/kin-characters` | yes           | The character cases: five voices on three questions (money, a deadline, a client), length, names not keys, act then tell, undo, Confirm on mail and posts. |
 | `pnpm kin:questions --model <id> --out runs/kin-questions`   | yes           | Open questions: asked with a default, not asked again, the default taken at its day, not asked at all.                                                     |
+| `pnpm kin:github --model <id> --out runs/kin-github`         | yes           | The GitHub event turns: review, `/kin` on a PR or issue, the `kin` label, a stranger's PR, failing checks, a risky ask.                                    |
 | `pnpm kin:social --model <id> --out runs/kin-social`         | yes           | The Social agent: a week from real numbers on one card, no posted before Confirm, clients apart, packs.                                                    |
 | `pnpm kin:baseline --model <id> --out runs/kin-<id>`         | yes           | Every Kin case, 3 samples each, on one model.                                                                                                              |
 | `pnpm kin:baseline:all`                                      | yes           | The same on Opus, Sonnet and Haiku, into `runs/kin-baseline-<model>`.                                                                                      |

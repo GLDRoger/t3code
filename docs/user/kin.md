@@ -302,6 +302,37 @@ once with what changed and the pull request. Commits name you as the author and 
 on a `Co-authored-by` line. Say "commit as yourself" (pull requests and comments still show as you) or "don't credit yourself" and it remembers.
 Teammates' chats and shared rooms still get no shell: what they ask for comes to you.
 
+#### When things happen on GitHub
+
+With GitHub connected, Kin checks it about once a minute with your login, so there is no app or
+webhook to install. On your repos and your organizations' repos, these start an agent on their own:
+
+- **A teammate opens a pull request**, or marks a draft ready: it is reviewed and the review posted.
+  On your own pull requests the review is a comment, since GitHub doesn't let you approve your own.
+- **A call in a comment, an issue or a line comment**: a line that starts with `/kin`, or with an
+  agent's name and a comma ("Tech lead, rename this"), which goes to that agent. On an issue the
+  agent says what it will do, works on a branch and opens a pull request that closes the issue. On a
+  pull request it pushes a commit to that pull request's branch and replies in the thread, or says it
+  can't push there and offers a pull request instead.
+- **The `kin` label** on an issue, which works the issue the same way.
+- **A review requested from you**, and **failing checks on an agent's own pull request**, which it
+  fixes or explains.
+
+Only people who can write to the repo can call an agent. Anyone else's `/kin` starts nothing, and
+their pull request gets a comment review from its diff: their code never runs. An agent never reacts
+to its own posts, and a mention of you doesn't call it unless you tell it in chat to let mentions
+of you call it in a repo. Everything an agent posts on GitHub ends with its name ("_Tech lead, via
+Kin_"). It tells you once, in one line with the link; quiet hours hold that line, not the work. A
+thread that keeps calling an agent gets five turns an hour, then one comment saying it has stopped
+until the hour is up.
+
+Kin watches every repo yours or your organizations' unless you say "leave acme/site alone" in chat.
+**Settings → Connections → GitHub** shows how many repos it watches, when it last checked and how
+much it handled today; **Show repos** lists them with a switch each, and **Watch every repo** undoes
+the switches. Forks of other people's repos start off. If a check fails, the row says why and how to
+fix it. While the login is connected, the GitHub App's webhook, if you set one up, no longer starts
+agents.
+
 To try pull requests in a browser on Ubuntu 23.10 or later, run `t3 browser setup` once as root.
 
 ### Social media

@@ -1,5 +1,3 @@
-import { isSocialTool } from "../social/mcp.ts";
-import { socialSeatThread } from "../social/seat.ts";
 import type { KinAgentId, KinOrgId, ThreadId } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -22,14 +20,16 @@ import { AttachmentToolkit } from "../../mcp/toolkits/attachment/tools.ts";
 import { EnvironmentToolkit } from "../../mcp/toolkits/environment/tools.ts";
 import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { ServerConfig } from "../../config.ts";
-import { KinServer } from "../KinServer.ts";
 import { toolDirectories } from "../gendocs/toolchain.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
+import { KinServer } from "../KinServer.ts";
 import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { isSocialTool } from "../social/mcp.ts";
+import { socialSeatThread } from "../social/seat.ts";
 
 const leadT3Tools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
 
@@ -142,12 +142,42 @@ const onSocialSeat = Effect.fn("KinAgentSession.onSocialSeat")(
   ),
 );
 
-/** Kin's GitHub tools answer only "not connected" without the Kin App (`layer.ts` `repoReads`). */
+/** The name of the lead whose thread this is, or whose task it is, up T3's task links. */
+export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
+  function* (threadId: ThreadId) {
+    const sql = yield* SqlClient.SqlClient;
+    let current: string = threadId;
+    for (let depth = 0; depth <= MAX_DELEGATION_DEPTH; depth++) {
+      const [lead] = yield* sql<{ name: string }>`SELECT l.name FROM kin_wakeups w
+        JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id
+        WHERE w.thread_id = ${current} ORDER BY w.started_at DESC LIMIT 1`;
+      if (lead !== undefined) return lead.name;
+      const [link] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId"
+        FROM orchestration_v2_projection_subagents
+        WHERE child_thread_id = ${current} AND origin = 'app_owned' ORDER BY subagent_id LIMIT 1`;
+      if (link === undefined) return undefined;
+      current = link.threadId;
+    }
+    return undefined;
+  },
+  Effect.orElseSucceed((): string | undefined => undefined),
+);
+
+/**
+ * Kin's GitHub tools answer only "not connected" without the Kin App (`layer.ts` `repoReads`),
+ * except the ones that work through the owner's own login.
+ */
 const isKinGitHubTool = (name: string) => name.startsWith("kin_github_");
+const LOGIN_GITHUB_TOOLS = new Set(["kin_github_review", "kin_github_watch"]);
 const kinAppConfigured = Config.option(Config.String("KIN_GITHUB_APP_ID")).pipe(
   Effect.map(Option.isSome),
   Effect.orElseSucceed(() => false),
 );
+const loginConnected = Effect.gen(function* () {
+  const kin = yield* Effect.serviceOption(KinServer);
+  if (Option.isNone(kin) || Option.isNone(kin.value.services)) return false;
+  return yield* Context.get(kin.value.services.value, KinGitHubLogin).connected();
+});
 
 /**
  * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
@@ -160,7 +190,8 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
 ) {
   const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
   if (shared && !listedOnSharedThread(name)) return false;
-  if (isKinGitHubTool(name)) return yield* kinAppConfigured;
+  if (isKinGitHubTool(name))
+    return (yield* kinAppConfigured) || (LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected));
   if (isSocialTool(name)) return yield* onSocialSeat(threadId);
   if (name === "kin_delegate") return false;
   if (!isT3Tool(name)) return true;
@@ -189,6 +220,9 @@ export const sessionPolicyLayer = Layer.effect(
         delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ),
       toolDirectories: [login.ghDirectory, ...toolDirectories(config.baseDir)],
+      agentName: Effect.fn("KinAgentSessionPolicy.agentName")((threadId: ThreadId) =>
+        leadNameOf(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      ),
     });
   }),
 );

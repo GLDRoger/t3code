@@ -104,7 +104,7 @@ describe("KinRefreshHub", () => {
   );
 
   it.effect(
-    "tells a teammate only about their own lead list, people, the time zone, what needs attention and that a list moved, never the owner's reads",
+    "tells a teammate only about their own lead list, people, the time zone, the lists she sees and what needs attention, never the owner's reads",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -149,6 +149,14 @@ describe("KinRefreshHub", () => {
           leads: start.leads,
         });
         assert.deepInclude(yield* Queue.take(ownerSees), { leads: (start.leads ?? 0) + 1 });
+        // A list definition she sees no entry of, such as a money list the owner renamed.
+        yield* sql.withTransaction(
+          (yield* RefreshHub.KinRefreshObserver).touch(me.orgId, "workLists"),
+        );
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.deepInclude(yield* Queue.take(ownerSees), {
+          workLists: (start.workLists ?? 0) + 1,
+        });
 
         // Priya may now message Finance: her list changed, so hers is the next thing she hears.
         yield* Provision.allow({
@@ -221,11 +229,10 @@ describe("KinRefreshHub", () => {
           leads: (start.leads ?? 0) + 1,
           workChoices: (start.workChoices ?? 0) + 2,
         });
-        // Anyone's view may have moved, so each person's own number moves too.
-        assert.deepStrictEqual(yield* Queue.take(work), {
-          seq: created.seq + 1,
-          team: new Map([[me.personId, 1]]),
-        });
+        const announced = yield* Queue.take(work);
+        assert.strictEqual(announced.seq, created.seq + 1);
+        // Everyone's own number moves too, so a viewer who resumes later reads again.
+        assert.deepStrictEqual([...(announced.team?.keys() ?? [])], [me.personId]);
         const someone = { ...me, personId: KinPersonId.make("someone") };
         assert.include(
           yield* announceRefreshes([someone], {

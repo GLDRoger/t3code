@@ -187,6 +187,10 @@ export async function startServer(instance: Instance): Promise<InstanceState> {
     NodePath.join(fakeGitHub, "gh"),
   );
   NodeFS.chmodSync(NodePath.join(fakeGitHub, "gh"), 0o755);
+  NodeFS.copyFileSync(
+    NodePath.join(ROOT, "apps/server/src/kin/github/fakeGitHub.ts"),
+    NodePath.join(fakeGitHub, "fakeGitHub.ts"),
+  );
   const log = NodeFS.openSync(logPath(instance), "a");
   const env: NodeJS.ProcessEnv = {
     ...process.env,

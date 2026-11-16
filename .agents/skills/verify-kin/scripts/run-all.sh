@@ -13,7 +13,7 @@ SCRIPTS=("$@")
   lead-adds-milestone owner-money-forms private-client-unnamed told-once-quiet-hours
   team-room-discussion character-and-undo github-delegated-task work-change-five-people
   member-attaches-file agent-page project-people-loop member-sees-agent-name lead-undoes-only-me
-  open-questions social-week)
+  open-questions github-events social-week)
 trap 'kv down >/dev/null' EXIT
 started=$SECONDS
 kv up --fresh || exit 1

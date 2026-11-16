@@ -22,7 +22,7 @@ import * as DreamIsolation from "../dreaming/DreamIsolation.ts";
 import { instructions } from "./instructions.ts";
 import * as LeadIsolation from "./LeadIsolation.ts";
 import { ownerOnlyWakeup } from "./Audience.testkit.ts";
-import { delegatedFromLead, fullSessionRefusal } from "./AgentSession.ts";
+import { delegatedFromLead, leadNameOf, fullSessionRefusal } from "./AgentSession.ts";
 import { SESSION_REFUSAL } from "./Audience.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { KinServer, type Services as KinServices } from "../KinServer.ts";
@@ -244,6 +244,8 @@ it.effect(
           delegated: (threadId) =>
             delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
+          agentName: (threadId) =>
+            Effect.succeed(threadId === "kin:tech" ? "Tech lead" : undefined),
         }),
       ) as Context.Context<KinServices>;
       const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
@@ -261,14 +263,14 @@ it.effect(
         }),
       );
       const lead = optionsAt(memory, { PATH: "/usr/bin", HOME: "/home/kin" });
-      const open = (threadId: string) =>
+      const open = (threadId: string, options = lead) =>
         Effect.gen(function* () {
           const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
           yield* runner
             .open({
               threadId: ThreadId.make(threadId),
               providerSessionId: ProviderSessionId.make("session"),
-              options: lead,
+              options,
             })
             .pipe(Effect.exit);
           return opened.at(-1);
@@ -292,8 +294,24 @@ it.effect(
       // Claude Code's own tools, no deny rules, the pinned gh first on PATH.
       assert.strictEqual(full?.tools, lead.tools);
       assert.deepStrictEqual(full?.disallowedTools ?? [], lead.disallowedTools ?? []);
-      assert.strictEqual(full?.env?.PATH, "/kin-home/kin-tools/gh-pinned:/usr/bin");
+      // The signing gh first, then the pinned one; Claude Code's own PR footer and trailer off.
+      const signing = `${stateDir}/kin/gh-sign`;
+      assert.strictEqual(full?.env?.PATH, `${signing}:/kin-home/kin-tools/gh-pinned:/usr/bin`);
+      assert.strictEqual(full?.env?.KIN_AGENT_NAME, "Tech lead");
       assert.strictEqual(full?.env?.ENABLE_TOOL_SEARCH, "true");
+      assert.include(
+        yield* fs.readFileString(`${signing}/gh`),
+        "REAL='/kin-home/kin-tools/gh-pinned/gh'",
+      );
+      const footerOff = (options: typeof full) =>
+        typeof options?.settings === "object" &&
+        options.settings.includeCoAuthoredBy === false &&
+        JSON.stringify(options.settings.attribution) ===
+          JSON.stringify({ commit: "", pr: "", sessionUrl: false });
+      assert.isTrue(footerOff(full));
+      // Any other T3 thread is left exactly as it was.
+      const work = optionsAt("/work/acme/app", { PATH: "/usr/bin" });
+      assert.strictEqual(yield* open("someone-elses-thread", work), work);
       assert.deepStrictEqual(full?.settingSources, []);
       assert.deepStrictEqual(full?.systemPrompt, {
         type: "custom",
@@ -404,6 +422,8 @@ it.effect(
           delegated: (threadId) =>
             delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
+          agentName: (threadId) =>
+            leadNameOf(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         }),
       ) as Context.Context<KinServices>;
       const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
@@ -460,7 +480,17 @@ it.effect(
       // T3's own prompt and tools, Kin's hook, and the pinned gh first, as the lead's turn has.
       assert.strictEqual(child?.systemPrompt, task.systemPrompt);
       assert.strictEqual(child?.tools, task.tools);
-      assert.strictEqual(child?.env?.PATH, "/kin-home/kin-tools/gh-pinned:/usr/bin");
+      // The signing gh first, as its lead's: what it posts ends with the lead's name, no footer.
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      assert.strictEqual(
+        child?.env?.PATH,
+        `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
+      );
+      assert.strictEqual(grandchild?.env?.KIN_AGENT_NAME, "Lead");
+      assert.strictEqual(
+        typeof child?.settings === "object" && child.settings.includeCoAuthoredBy,
+        false,
+      );
       assert.deepStrictEqual(child?.settingSources, []);
       for (const session of [child, grandchild]) {
         assert.isUndefined(yield* denial(session, "Bash", shell));
