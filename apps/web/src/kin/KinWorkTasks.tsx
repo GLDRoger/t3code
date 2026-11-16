@@ -12,7 +12,6 @@ import {
   kinWorkOverview,
   kinWorkRow,
   kinWorkRowMarked,
-  KIN_WORK_MARKS,
   kinWorkShown,
   type KinWorkFilter,
   type KinWorkNames,
@@ -532,9 +531,14 @@ export function KinWorkRow(props: {
             )}
           </span>
         </span>
-        {row.mark === null ? null : (
-          <Badge size="sm" variant={row.mark === "late" ? "error" : "warning"}>
-            {KIN_WORK_MARKS[row.mark]}
+        {row.markText === null ? null : (
+          <Badge
+            size="sm"
+            variant={
+              row.mark === "late" ? "error" : row.mark === "handed_back" ? "secondary" : "warning"
+            }
+          >
+            {row.markText}
           </Badge>
         )}
       </button>

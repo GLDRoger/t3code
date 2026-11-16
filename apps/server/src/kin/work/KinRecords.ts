@@ -1335,6 +1335,11 @@ const make = Effect.gen(function* () {
           set("state", state);
           if (isClosed(state) !== isClosed(row.state))
             set("closed_at", isClosed(state) ? now : null);
+          if (isClosed(state) && row.handedBackAt !== null) {
+            set("handed_back_kind", null);
+            set("handed_back_id", null);
+            set("handed_back_at", null);
+          }
         }
         const waitingOn =
           state !== "waiting"
@@ -1379,6 +1384,10 @@ const make = Effect.gen(function* () {
           set("owner_id", principalId(patch.owner));
           // Reassigning never launders authority: the assigner is whoever asked for this change.
           // Handed back, it keeps the authority it was given with; the holder's words go with it.
+          // Handed back, it says so on the giver's row until it is given again or closed.
+          set("handed_back_kind", patch.handedBack === undefined ? null : before.owner._tag);
+          set("handed_back_id", patch.handedBack === undefined ? null : principalId(before.owner));
+          set("handed_back_at", patch.handedBack === undefined ? null : now);
           if (patch.handedBack === undefined) {
             set("assigned_by_person_id", writer.askedBy ?? null);
             set(

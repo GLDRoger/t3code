@@ -599,11 +599,9 @@ const make = Effect.gen(function* () {
     // A turn someone else reads learns nothing of an item that isn't its asker's own reminder.
     const sharedTurn = (yield* effectiveAudience(ctx).pipe(provideSql)) !== "owner_only";
     // The view triggers arm from, so the lead cancels what would fire, whichever branch holds it.
-    const item = yield* memory
-      .readItemQuietly(ctx.orgId, itemId, "triggers")
-      .pipe(
-        Effect.catch((error) => (sharedTurn ? invalid(SHARED_REFUSAL) : Effect.fail(error))),
-      );
+    const read = yield* Effect.exit(memory.readItemQuietly(ctx.orgId, itemId, "triggers"));
+    if (Exit.isFailure(read) && sharedTurn) return yield* invalid(SHARED_REFUSAL);
+    const item = yield* read;
     const head = item.head;
     const askers = head.kind === "deferral" && (yield* askersOwnReminder(ctx, head, sourceEventId));
     if (sharedTurn && !askers) return yield* invalid(SHARED_REFUSAL);

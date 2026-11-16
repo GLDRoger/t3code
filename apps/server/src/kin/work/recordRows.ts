@@ -70,6 +70,10 @@ export type RecordRow = {
   readonly assignedBy: string | null;
   readonly assignedByAgent: string | null;
   readonly assignedAt: number | null;
+  /** Who handed it back to its holder, and when, until it is given again or closed. */
+  readonly handedBackKind: "person" | "agent" | null;
+  readonly handedBackId: string | null;
+  readonly handedBackAt: number | null;
   /** The person who marked it private, while it is (`teamView.ts`). */
   readonly markedBy: string | null;
   readonly originKey: string;
@@ -272,6 +276,8 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.created_by_kind AS "createdByKind", r.created_by_id AS "createdById",
     r.assigned_by_person_id AS "assignedBy", r.assigned_by_agent_id AS "assignedByAgent",
     r.assigned_at AS "assignedAt", r.marked_by_person_id AS "markedBy",
+    r.handed_back_kind AS "handedBackKind", r.handed_back_id AS "handedBackId",
+    r.handed_back_at AS "handedBackAt",
     r.origin_key AS "originKey", r.created_at AS "createdAt", r.updated_at AS "updatedAt",
     r.closed_at AS "closedAt", r.party_id AS "partyId", r.project_id AS "projectId", r.repo,
     r.fields_json AS "fieldsJson",
@@ -363,6 +369,7 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
     ...(row.inheritedSensitive === 1 ? { sensitiveInherited: true as const } : {}),
     ...(row.teamShared === 1 ? { shared: true as const } : {}),
     ...givenOf(row),
+    ...handedBackOf(row),
     ...(row.sensitive === 1 && row.markedBy !== null
       ? { markedBy: KinPersonId.make(row.markedBy) }
       : {}),
@@ -383,6 +390,16 @@ const givenOf = (row: RecordRow): { readonly givenBy?: KinWorkPrincipal } => {
     (by._tag === row.ownerKind && (by._tag === "person" ? by.personId : by.agentId) === row.ownerId)
     ? {}
     : { givenBy: by };
+};
+
+const handedBackOf = (row: RecordRow) => {
+  if (row.registerId !== "work" || row.handedBackAt === null || row.handedBackId === null)
+    return {};
+  const by: KinWorkPrincipal =
+    row.handedBackKind === "agent"
+      ? { _tag: "agent", agentId: KinAgentId.make(row.handedBackId) }
+      : { _tag: "person", personId: KinPersonId.make(row.handedBackId) };
+  return { handedBack: { by, at: iso(row.handedBackAt) } };
 };
 
 /** Its amount, own date and repeat; in a defined list, the list, its category and a balance. */

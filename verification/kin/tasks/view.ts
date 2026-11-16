@@ -18,6 +18,8 @@ export const rules: Record<string, string> = {
     "Every hand-off tells whoever receives it exactly once, unless they moved it themselves.",
   AskerIsGiver:
     "When someone asks the agent to give a task, they gave it, so handing it back returns it to them; the agent is the giver only on its own.",
+  HandedBackShown:
+    "\"Handed back by\" shows only on an open task, naming someone other than its holder: giving it again or closing it clears the mark.",
 };
 
 export const variants = [
@@ -50,6 +52,11 @@ export const variants = [
     name: "agent-gives",
     breaks: "AskerIsGiver",
     what: "the agent is the giver whoever asked it (the code before this change)",
+  },
+  {
+    name: "mark-stays",
+    breaks: "HandedBackShown",
+    what: "giving a task again leaves its \"Handed back by\" mark",
   },
 ];
 

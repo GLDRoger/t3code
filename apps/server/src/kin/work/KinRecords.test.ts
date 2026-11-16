@@ -2445,8 +2445,12 @@ it.effect(
         assignedBy: { _tag: "person", personId: ownerId },
         state: "open",
       });
-      // Why it was given no longer holds.
+      // Why it was given no longer holds; who handed it back, and when, does.
       assert.isUndefined(returned.reason);
+      assert.deepStrictEqual(returned.handedBack, {
+        by: { _tag: "person", personId: mateId },
+        at: "2026-11-16T00:00:00.000Z",
+      });
       // Only whoever holds it hands it back.
       assert.include(
         yield* Effect.flip(
@@ -2467,6 +2471,8 @@ it.effect(
       yield* OwnerWork.assign([owner], { orgId, key: "W-2", to: null });
       yield* OwnerWork.assign([owner], { orgId, key: "W-3", to: null });
       yield* OwnerWork.assign([owner], { orgId, key: "W-2", to: mateHolds });
+      // Given again, it is no longer marked handed back.
+      assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-2" })).handedBack);
       assert.deepStrictEqual(
         (yield* notices).slice(before).map((row) => row.body),
         [

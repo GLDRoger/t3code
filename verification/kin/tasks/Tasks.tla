@@ -22,12 +22,13 @@ VARIABLES
   alert,     \* the pulse's late fact: none, raised, held
   bounced,   \* who handed it back since the last change on it, as notBouncedBack reads it
   backs,     \* who really handed it back since the last change on it
+  handedBack, \* handed_back_id: who handed it back, shown on the row until it moves on, or "none"
   pingpong,  \* the agent gave it back to someone who handed it back, nothing changed, unasked
   told,      \* notices the receiver of the last hand-off got
   owed,      \* the last hand-off's receiver is someone other than whoever moved it
   moves, edits
 
-vars == <<backs, holder, byAgent, byPerson, asked, state, private, inProject, alert, bounced, pingpong,
+vars == <<handedBack, backs, holder, byAgent, byPerson, asked, state, private, inProject, alert, bounced, pingpong,
           told, owed, moves, edits>>
 
 (* work/teamView.ts personSees, for a teammate: a task they hold; unlabelled, one they made or
@@ -41,6 +42,7 @@ Sees(p) ==
 Init ==
   /\ holder = "owner" /\ byAgent = FALSE /\ byPerson = "none" /\ asked = "none" /\ state = "open"
   /\ private = FALSE /\ inProject = FALSE /\ alert = "none" /\ bounced = {} /\ backs = {}
+  /\ handedBack = "none"
   /\ pingpong = FALSE /\ told = 0 /\ owed = FALSE /\ moves = 0 /\ edits = 0
 
 \* Each hand-off tells its receiver once: a person from the agent or the team agent
@@ -66,6 +68,8 @@ Give(actor, to, asker) ==
   /\ byPerson' = IF actor # "agent" THEN actor ELSE IF asker = "none" THEN "owner" ELSE asker
   /\ asked' = IF actor = "agent" THEN asker ELSE "none"
   /\ state' = "open"
+  \* "mark-stays": given again, the row still says it was handed back.
+  /\ handedBack' = IF Broken = "mark-stays" THEN handedBack ELSE "none"
   /\ Tell(to, actor, 1)
   /\ moves' = moves + 1
   /\ UNCHANGED <<backs, private, inProject, alert, edits>>
@@ -82,6 +86,7 @@ HandBack ==
        /\ state' = "open"
        /\ bounced' = IF Broken = "last-change-only" THEN {holder} ELSE bounced \cup {holder}
        /\ backs' = backs \cup {holder}
+       /\ handedBack' = holder
        /\ IF Broken = "screen-hand-back-silent" /\ holder \in Members /\ to \in People
             THEN /\ owed' = TRUE /\ told' = 0
             ELSE Tell(to, holder, 1)
@@ -92,7 +97,7 @@ HandBack ==
 Start ==
   /\ state = "open" /\ holder # "agent"
   /\ state' = "doing"
-  /\ UNCHANGED <<backs, holder, byAgent, byPerson, asked, private, inProject, alert, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, private, inProject, alert, bounced, pingpong, told, owed,
                  moves, edits>>
 
 (* A change on it that isn't a hand-off: its notes, due day or title (KinRecords.update). *)
@@ -100,12 +105,13 @@ Edit ==
   /\ edits < 1
   /\ bounced' = {} /\ backs' = {}
   /\ edits' = edits + 1
-  /\ UNCHANGED <<holder, byAgent, byPerson, asked, state, private, inProject, alert, pingpong, told, owed,
+  /\ UNCHANGED <<handedBack, holder, byAgent, byPerson, asked, state, private, inProject, alert, pingpong, told, owed,
                  moves>>
 
 MarkDone ==
   /\ state # "done"
   /\ state' = "done"
+  /\ handedBack' = "none"
   /\ UNCHANGED <<backs, holder, byAgent, byPerson, asked, private, inProject, alert, bounced, pingpong, told, owed,
                  moves, edits>>
 
@@ -113,18 +119,18 @@ MarkDone ==
 Reopen ==
   /\ state = "done" /\ Broken # "done-final"
   /\ state' = "open"
-  /\ UNCHANGED <<backs, holder, byAgent, byPerson, asked, private, inProject, alert, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, private, inProject, alert, bounced, pingpong, told, owed,
                  moves, edits>>
 
 MakePrivate ==
   /\ ~private
   /\ private' = TRUE
-  /\ UNCHANGED <<backs, holder, byAgent, byPerson, asked, state, inProject, alert, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, state, inProject, alert, bounced, pingpong, told, owed,
                  moves, edits>>
 
 MoveProject ==
   /\ inProject' = ~inProject
-  /\ UNCHANGED <<backs, holder, byAgent, byPerson, asked, state, private, alert, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, state, private, alert, bounced, pingpong, told, owed,
                  moves, edits>>
 
 (* pulse/senses/work.ts task_late raises it while it is open past due; KinPulse hold keeps it
@@ -132,13 +138,13 @@ MoveProject ==
 AlertRaised ==
   /\ alert = "none" /\ state # "done"
   /\ alert' = "raised"
-  /\ UNCHANGED <<backs, holder, byAgent, byPerson, asked, state, private, inProject, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, state, private, inProject, bounced, pingpong, told, owed,
                  moves, edits>>
 
 AlertHeld ==
   /\ alert = "raised"
   /\ alert' = "held"
-  /\ UNCHANGED <<backs, holder, byAgent, byPerson, asked, state, private, inProject, bounced, pingpong, told, owed,
+  /\ UNCHANGED <<handedBack, backs, holder, byAgent, byPerson, asked, state, private, inProject, bounced, pingpong, told, owed,
                  moves, edits>>
 
 Next ==
@@ -156,4 +162,6 @@ DoneReversible == state = "done" => ENABLED Reopen
 OneNoticePerHandOff == owed => told = 1
 \* Whoever asked the agent for the hand-off gave it, so a hand-back goes to them.
 AskerIsGiver == asked \in People => (~byAgent /\ byPerson = asked)
+\* "Handed back by X" shows only on an open task X handed to its holder.
+HandedBackShown == handedBack # "none" => (state # "done" /\ handedBack # holder)
 =============================================================================

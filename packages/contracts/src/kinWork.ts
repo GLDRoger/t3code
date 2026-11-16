@@ -188,6 +188,8 @@ export const KinRecord = Schema.Struct({
   can: Schema.optional(KinRecordCan),
   /** Who gave it to its holder, when that is someone else; absent from older hosts. */
   givenBy: Schema.optional(KinWorkPrincipal),
+  /** Who handed it back to its holder, and when, until it is given again or closed. */
+  handedBack: Schema.optional(Schema.Struct({ by: KinWorkPrincipal, at: IsoDateTime })),
   /** Who marked it private ("Only me"), while it is; absent when unknown or not marked. */
   markedBy: Schema.optional(KinPersonId),
 });
