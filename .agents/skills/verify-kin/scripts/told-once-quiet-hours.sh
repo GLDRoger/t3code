@@ -27,6 +27,7 @@ told_by() { kv db "select fact_key from kin_pulse_told where event_id = '$1' ord
 
 CHIEF="$(q "select agent_id from kin_leads where domain = 'chief' limit 1")"
 ZOYA="$(q "select person_id from kin_people where display_name = 'Zoya Sheikh'")"
+ZOYA_ZONE="$(q "select time_zone from kin_people where person_id = '$ZOYA'")"
 # A line to someone who wrote in that chat in the last ten minutes answers them at any hour, so an
 # earlier script's turn as Zoya would let the relay through: put everything said before this out of reach.
 kv clock advance 11m >/dev/null
@@ -34,7 +35,7 @@ DAY="$(zone_at 14)"
 kv as owner rpc kin.triggers.setTimeZone "{\"timeZone\":\"$DAY\"}" >/dev/null
 # Pass or fail, the next script finds the owner in his day and Zoya back on her own clock.
 restore() {
-  kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"Asia/Kolkata\"}" >/dev/null
+  kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"$ZOYA_ZONE\"}" >/dev/null
   kv as owner rpc kin.triggers.setTimeZone "{\"timeZone\":\"$DAY\"}" >/dev/null
 }
 trap restore EXIT
