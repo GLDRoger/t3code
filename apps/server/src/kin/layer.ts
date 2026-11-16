@@ -49,6 +49,7 @@ import * as Connections from "./connections/ConnectionsService.ts";
 import * as ConnectionSecrets from "./connections/ConnectionSecrets.ts";
 import * as DevFakeMail from "./connections/DevFakeMail.ts";
 import * as McpGateway from "./connections/McpGateway.ts";
+import * as DevFakeSocial from "./social/DevFakeSocial.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   Layer.effect(
@@ -150,7 +151,15 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
             ),
           ),
         ),
-      ).pipe(Layer.provideMerge(KinChat.layer)),
+      ).pipe(
+        Layer.provideMerge(KinChat.layer),
+        // Social's posting service sits on top: it reads cards, chats and the document renderer.
+        (core) =>
+          DevFakeSocial.layer.pipe(
+            Layer.provide(ConnectionSecrets.layer),
+            Layer.provideMerge(core),
+          ),
+      ),
     ),
     // Inside `enabled`: built only with Kin on, and a secret store failure disables Kin, not the server.
     Layer.provide(seal),

@@ -44,6 +44,7 @@ import {
   type KinConnectionCallsInput,
   type KinConnectionRef,
   type KinConnectionsInput,
+  type KinSocialInput,
   type KinGitHubInput,
   type KinOrgsListInput,
   type KinOwnerTimeZoneGetInput,
@@ -190,6 +191,11 @@ const githubReposRead = createKinRpcCommand(connectionAtomRuntime, {
   tag: "kin.github.repos",
 });
 const readGitHubRepos = guardedRead(githubReposRead);
+const socialRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:social:read",
+  tag: "kin.social.list",
+});
+const readSocial = guardedRead(socialRead);
 const leadAccessRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:lead-access:read",
   tag: "kin.lead.access.list",
@@ -823,6 +829,38 @@ export const kinClient = {
     label: "kin:github:disconnect",
     tag: "kin.github.disconnect",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:github` },
+  }),
+  /** The company's and clients' social accounts; owner-level only. */
+  social: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:social",
+    execute: Effect.fn("KinClient.social")(function* (input: KinSocialInput) {
+      return yield* readSocial(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("connections"),
+  }),
+  /** Reads what a pasted key reaches; the key travels once, redacted, and Kin holds it until Confirm. */
+  socialCheck: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:social:check",
+    tag: "kin.social.check",
+  }),
+  socialConnect: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:social:connect",
+    tag: "kin.social.connect",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:social` },
+  }),
+  socialRefresh: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:social:refresh",
+    tag: "kin.social.refresh",
+  }),
+  socialRemove: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:social:remove",
+    tag: "kin.social.remove",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:social` },
+  }),
+  socialLink: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:social:link",
+    tag: "kin.social.link",
   }),
   /** Adds a connection; the key travels once, redacted, and is never sent back. */
   connectionAdd: createKinRpcCommand(connectionAtomRuntime, {

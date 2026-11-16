@@ -68,6 +68,8 @@ import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
+import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
+import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinPulseToolkit } from "../../apps/server/src/kin/pulse/mcp.ts";
 import {
   MONEY_RULE,
@@ -153,7 +155,7 @@ import {
 const MODELS = {
   "claude-sonnet-5-5": "Sonnet 5.5",
   "claude-opus-5-5": "Opus 5.5",
-  // Kin's cheap model; leads run on Claude only, so its cases are the ones worth running here.
+  // Kin's cheap model.
   "claude-haiku-5-5": "Haiku 5.5",
   "gpt-6.1-sol": "GPT-6.1 Sol",
   "gpt-6-astra": "GPT-6 Astra",
@@ -170,6 +172,13 @@ const PRICES = {
   "claude-opus-5-5": { input: 4, output: 20, cacheWrite: 5, cacheRead: 0.2 },
 };
 type PricedModel = keyof typeof PRICES;
+// OpenAI's standard API prices (developers.openai.com/api/docs/pricing, November 2026); output
+// includes reasoning. GPT runs bill a ChatGPT sign-in instead: this is what the API would charge.
+const AGENT_PRICES = {
+  ...PRICES,
+  "gpt-6.1-sol": { input: 2, output: 10, cacheWrite: 0, cacheRead: 0.1 },
+  "gpt-6-astra": { input: 10, output: 50, cacheWrite: 0, cacheRead: 1 },
+};
 /** GPT models that can play the shell through CLIProxyAPI, when no Anthropic key is at hand. */
 const PROXY_SHELL_MODELS = ["gpt-6-luna", "gpt-6.1-terra"] as const;
 type ShellModel = PricedModel | (typeof PROXY_SHELL_MODELS)[number];
@@ -552,6 +561,7 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   KinDocumentToolkit,
   KinConnectionsToolkit,
   KinPulseToolkit,
+  KinSocialToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
 const t3InputDecoders = new Map(
@@ -606,6 +616,8 @@ const visibleT3Tools = (options: {
   readonly kinLead?: boolean;
   readonly kinSession?: boolean;
   readonly kinShared?: boolean;
+  /** The lead's remit is social media, so Social's tools join (AgentSession). */
+  readonly kinSocial?: boolean;
 }) =>
   t3Tools.filter(
     (tool) =>
@@ -633,6 +645,7 @@ const visibleT3Tools = (options: {
               ...Object.keys(KinDocumentToolkit.tools),
               ...Object.keys(KinPulseToolkit.tools),
               ...Object.keys(KinConnectionsToolkit.tools),
+              ...(options.kinSocial === true ? Object.keys(KinSocialToolkit.tools) : []),
             ].some((name) => tool.name === `${T3_PREFIX}${name}`))
         : ![
             ...Object.keys(KinChatToolkit.tools),
@@ -643,6 +656,7 @@ const visibleT3Tools = (options: {
             ...Object.keys(KinPulseToolkit.tools),
             ...Object.keys(KinApprovalsToolkit.tools),
             ...Object.keys(KinConnectionsToolkit.tools),
+            ...Object.keys(KinSocialToolkit.tools),
           ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
       !(options.subagent === true && hiddenFromSubagents.has(tool.name)),
@@ -756,6 +770,7 @@ export const buildBase = (
     readonly kinLead?: boolean;
     readonly kinSession?: boolean;
     readonly kinShared?: boolean;
+    readonly kinSocial?: boolean;
     /** A native subagent starts from its task: T3 appends nothing to its system prompt. */
     readonly nativeSubagent?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
@@ -887,6 +902,7 @@ const buildCodexBase = (
     readonly kinLead?: boolean;
     readonly kinSession?: boolean;
     readonly kinShared?: boolean;
+    readonly kinSocial?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
     readonly deviceAccess?: boolean;
   },
@@ -1211,6 +1227,7 @@ const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) 
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
     .replaceAll("{{TEAM_RULES}}", kinTeamRules)
+    .replaceAll("{{SOCIAL_RULES}}", kinSocialRules)
     .replaceAll("{{REPLY_SHAPE}}", REPLY_SHAPE)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
@@ -2797,10 +2814,11 @@ const groups = <A>(rows: ReadonlyArray<A>, key: (row: A) => string) =>
   [...Map.groupBy(rows, key)].toSorted(([left], [right]) => left.localeCompare(right));
 
 const USAGE_KEYS = ["input", "output", "cacheWrite", "cacheRead"] as const;
-/** Token totals and their cost in USD at one model's prices. Proxy runs have no price. */
-const spend = (usages: ReadonlyArray<Usage>, model: ShellModel | undefined) => {
+/** Token totals and their cost in USD at one model's prices. Proxy shell models have no price. */
+const spend = (usages: ReadonlyArray<Usage>, model: ShellModel | Model) => {
   const total = (key: keyof Usage) => usages.reduce((sum, usage) => sum + usage[key], 0);
-  const price = (key: keyof Usage) => (model && isPricedModel(model) ? PRICES[model][key] : 0);
+  const prices = model in AGENT_PRICES ? AGENT_PRICES[model as keyof typeof AGENT_PRICES] : null;
+  const price = (key: keyof Usage) => prices?.[key] ?? 0;
   const cost = USAGE_KEYS.reduce((sum, key) => sum + total(key) * price(key), 0) / 1e6;
   return { cost, tokens: USAGE_KEYS.map((key) => `${key} ${total(key)}`).join(", ") };
 };
@@ -2830,7 +2848,7 @@ export const summarize = (
   const codex = isCodex(options.model);
   const agent = spend(
     rows.map((row) => row.usage),
-    codex ? undefined : options.model,
+    options.model,
   );
   const shell = spend(
     rows.map((row) => row.shellUsage),
@@ -2878,10 +2896,8 @@ export const summarize = (
     `- Pass: ${percent(passRate(rows))} of ${finished} samples (${sampleCount("pass")} pass, ${sampleCount("margin")} within margin, ${sampleCount("fail")} fail).`,
     `- Cases: ${caseCount("pass")} pass, ${caseCount("margin")} pass within margin, ${caseCount("fail")} fail.`,
     ...(errors.length > 0 ? [errorNote] : []),
-    codex
-      ? "- Cost: the agent is not priced. GPT models run on a ChatGPT sign-in (`--harness app-server`) or the `vibeproxy` in `~/.codex/config.toml`; agent tokens are below."
-      : `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample.`,
-    `- Agent tokens: ${agent.tokens}${codex ? "." : ` ($${agent.cost.toFixed(2)}).`}`,
+    `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample${codex ? ", at OpenAI's API prices; the run itself bills the ChatGPT sign-in (`--harness app-server`) or the `vibeproxy` in `~/.codex/config.toml`" : ""}.`,
+    `- Agent tokens: ${agent.tokens} ($${agent.cost.toFixed(2)}).`,
     ...latencyLine(rows),
     `- Shell simulator (${options.shellModel}) tokens: ${shell.tokens} (API-price estimate $${shell.cost.toFixed(2)}).`,
     ...(codex
@@ -3064,6 +3080,7 @@ const main = Effect.gen(function* () {
     kinLead = false,
     kinSession = false,
     kinShared = false,
+    kinSocial = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     replay
       ? decodeCodexCapture(template).pipe(
@@ -3078,6 +3095,7 @@ const main = Effect.gen(function* () {
               kinLead,
               kinSession,
               kinShared,
+              kinSocial,
               deviceAccess,
             }),
           ),
@@ -3094,6 +3112,7 @@ const main = Effect.gen(function* () {
               kinLead,
               kinSession,
               kinShared,
+              kinSocial,
               deviceAccess,
             });
             return role === "native-subagent"
@@ -3106,15 +3125,23 @@ const main = Effect.gen(function* () {
   // Codex has no native subagents; its cases with that role run as top-level threads.
   // A Kin turn others read carries Kin's shared-turn line, as the server's prompt does.
   const baseKey = ({ setup, prompt }: McpToolUseCase) =>
-    `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinSession === true}:${prompt.includes("{{SHARED_TURN}}")}`;
+    `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinSession === true}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}`;
   const base = yield* buildFor("top", true, false);
-  const bases = new Map<string, Base>([["top:true:false:false:false:false:false", base]]);
+  const bases = new Map<string, Base>([["top:true:false:false:false:false:false:false", base]]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
     if (bases.has(key)) continue;
-    const [role = "top", access, links, kinAgent, kinLead, kinSession, kinShared] = key.split(
-      ":",
-    ) as [McpToolUseCase["setup"]["role"], string, string, string, string, string, string];
+    const [role = "top", access, links, kinAgent, kinLead, kinSession, kinShared, kinSocial] =
+      key.split(":") as [
+        McpToolUseCase["setup"]["role"],
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
     bases.set(
       key,
       yield* buildFor(
@@ -3125,6 +3152,7 @@ const main = Effect.gen(function* () {
         kinLead === "true",
         kinSession === "true",
         kinShared === "true",
+        kinSocial === "true",
       ),
     );
   }

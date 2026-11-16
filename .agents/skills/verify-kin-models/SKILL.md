@@ -1,11 +1,11 @@
 ---
 name: verify-kin-models
-description: Model-check Kin's riskiest flows (the send card, a turn's reply, the loose check-in, money recorded on a Confirm, changing who a person is, a task's hand-offs, a Team-room discussion, Work's live stream, an agent's open question, GitHub events) with TLA+ and draw them as statecharts the owner can read. Use when changing the code a model covers, when a model or property test fails, or when asked for a chart of one of these flows.
+description: Model-check Kin's riskiest flows (the send card, a turn's reply, the loose check-in, money recorded on a Confirm, changing who a person is, a task's hand-offs, a Team-room discussion, Work's live stream, an agent's open question, GitHub events, a week of social posts) with TLA+ and draw them as statecharts the owner can read. Use when changing the code a model covers, when a model or property test fails, or when asked for a chart of one of these flows.
 ---
 
 # Verify Kin's models
 
-Nine small TLA+ models live in `verification/kin/<name>/`. Each has a `README.md` with its rules, bound, what it leaves out, and the files it covers.
+Ten small TLA+ models live in `verification/kin/<name>/`. Each has a `README.md` with its rules, bound, what it leaves out, and the files it covers.
 
 | Model           | Run it when you change                                                                                                                                                                                    |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -19,6 +19,7 @@ Nine small TLA+ models live in `verification/kin/<name>/`. Each has a `README.md
 | `stream`        | `work/workStream.ts`, `KinRecords.ts` ticks (`logChange`, `peopleMoved`, `announce`), `teamView.ts` numbers, client `kinWorkRows.ts` and `kinWorkStream.ts`                                               |
 | `questions`     | `questions/openQuestions.ts`, `questions/rules.ts`, `widgets/choiceCard.ts` expiry, `work/cardAnswers.ts`, `kin_ask` and `kin_ask_close` in `lead/mcp/handlers.ts`, `triggers/deferralFlow.ts` sweep      |
 | `github-events` | `github/GitHubWatch.ts` looks and `handle`, `github/githubTriggers.ts`, `github/agentMark.ts`, `github/ghSign.ts`, the webhook switch in `triggers/githubEvents.ts`                                       |
+| `social`        | `social/SocialService.ts` hand-over, cancel, errors and the pass, `social/cards.ts` taps on the week card, `social/rows.ts` due posts, digest and idempotency key                                         |
 
 Paths are under `apps/server/src` and `apps/server/src/kin`. `MODEL_COVERS` in `scripts/kin-model.ts` lists the same files; `vp run check:changed` runs a model when one of them, its folder or the runner changes, and skips it with "skipped: Java not found" when no Java is installed.
 

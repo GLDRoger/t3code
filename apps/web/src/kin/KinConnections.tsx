@@ -72,6 +72,7 @@ import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { KinGitHubConnect } from "./KinGitHubConnect";
+import { KinSocialConnect } from "./KinSocialConnect";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
@@ -103,6 +104,7 @@ export function KinConnectionsSettings() {
   ) : (
     <>
       <KinGitHubConnect environmentId={target.environmentId} orgId={target.orgId} />
+      <KinSocialConnect environmentId={target.environmentId} orgId={target.orgId} />
       <ConnectionsList environmentId={target.environmentId} orgId={target.orgId} />
       <KinVisualHosts environmentId={target.environmentId} orgId={target.orgId} />
     </>
