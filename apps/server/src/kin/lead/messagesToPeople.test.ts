@@ -85,6 +85,7 @@ const kinServices = Layer.unwrap(
       Layer.mock(LeadMemory)({
         defer: (_scope, input) =>
           Effect.succeed({ itemId: KinMemoryItemId.make(`def-${input.what}`) }),
+        cancel: (_scope, input) => Effect.succeed({ itemId: input.itemId }),
       }),
       repoReadsOff,
       pullRequestCareOff,
@@ -690,13 +691,19 @@ it.effect("a teammate sets a reminder for themselves, in their own chat, and not
         { onDue: "start" },
         { onDue: "chase" },
         { onDue: "ask" },
-        { replaces: "def-the-owners" },
       ]) {
         const refused = yield* defer({ ...other, what: `Other ${JSON.stringify(other)}` }).pipe(
           Effect.flip,
         );
         assert.strictEqual(refused.message, SHARED_REFUSAL, JSON.stringify(other));
       }
+      // Moving or cancelling one reaches LeadMemory, which lets through only her own.
+      assert.isTrue(listedOnSharedThread("kin_cancel"));
+      assert.isTrue((yield* defer({ replaces: "def-Send the Lumen mockups" })).ok);
+      assert.isTrue(
+        (yield* call("kin_cancel", { itemId: "def-Send the Lumen mockups", sourceEventId: asked }))
+          .ok,
+      );
     }).pipe(Effect.provide(layer)),
   ),
 );

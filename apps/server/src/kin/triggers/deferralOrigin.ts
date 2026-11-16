@@ -163,16 +163,24 @@ export const cardChatFor = Effect.fn("Deferrals.cardChatFor")(function* (
   return row.shared === 1 ? fallback : KinChatId.make(chatId);
 });
 
-/** Someone's own direct chat with an agent, not a lead's owner chat: their reminders go back there. */
+/**
+ * Someone's own direct chat with an agent, not a lead's owner chat: their reminders go back there.
+ * `theirs` says they set it themselves, so their turn may move it (`LeadMemory.cancelOwn`).
+ */
 export const askersChat = Effect.fn("Deferrals.askersChat")(function* (
   sql: SqlClient.SqlClient,
   orgId: KinOrgId,
-  chatId: string | undefined,
+  item: { readonly chat?: string | undefined; readonly said_by: string } | undefined,
 ) {
-  if (chatId === undefined) return undefined;
-  const [row] = yield* sql`SELECT 1 FROM kin_chats c WHERE c.org_id = ${orgId}
-    AND c.chat_id = ${chatId} AND c.kind = 'direct' AND c.archived_at IS NULL
+  if (item?.chat === undefined) return undefined;
+  const [row] = yield* sql<{ handle: string | null }>`SELECT p.handle FROM kin_chats c
+    LEFT JOIN kin_people p ON p.org_id = c.org_id
+      AND p.person_id = substr(c.direct_key, 1, instr(c.direct_key, ':') - 1)
+    WHERE c.org_id = ${orgId}
+    AND c.chat_id = ${item.chat} AND c.kind = 'direct' AND c.archived_at IS NULL
     AND NOT EXISTS (SELECT 1 FROM kin_leads l WHERE l.org_id = c.org_id
       AND l.owner_chat_id = c.chat_id) ORDER BY c.chat_id`;
-  return row === undefined ? undefined : KinChatId.make(chatId);
+  return row === undefined
+    ? undefined
+    : { chatId: KinChatId.make(item.chat), theirs: row.handle === item.said_by };
 });

@@ -39,11 +39,20 @@ const inAskedChat: Condition = Effect.fnUntraced(function* (turn, args) {
   return typeof chatId === "string" && (yield* askedIn(turn, chatId));
 });
 
-/** A reminder for whoever asked, in their own chat with this agent: it never messages anyone else. */
+/**
+ * A reminder for whoever asked, in their own chat with this agent: it never messages anyone else.
+ * `LeadMemory.cancelOwn` lets `replaces` name only their own reminder there.
+ */
 const ownReminder: Condition = Effect.fnUntraced(function* (turn, args) {
   const chatId = field(args, "chatId");
-  if (field(args, "onDue") !== "remind" || field(args, "replaces") !== undefined) return false;
+  if (field(args, "onDue") !== "remind") return false;
   return typeof chatId === "string" && (yield* askersDirectChat(turn, chatId));
+});
+
+/** Asked in the asker's own chat with this agent; `LeadMemory.cancelOwn` checks the item is theirs. */
+const ownReminderCancel: Condition = Effect.fnUntraced(function* (turn) {
+  const chat = yield* turnChat(turn);
+  return chat !== undefined && (yield* askersDirectChat(turn, chat.chatId));
 });
 
 /** The turn answers in the company chat: what it makes is shared with the whole team. */
@@ -169,7 +178,7 @@ export const SHARED_TOOLS = {
   memory_label: "refused",
   kin_defer: ownReminder,
   kin_schedule: "refused",
-  kin_cancel: "refused",
+  kin_cancel: ownReminderCancel,
   kin_github_repos: "refused",
   kin_github_prs: "refused",
   kin_github_pr: "refused",
