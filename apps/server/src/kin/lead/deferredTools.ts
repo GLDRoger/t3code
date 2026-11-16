@@ -4,9 +4,7 @@
  * tool added later is never deferred by default, and a name here that no longer exists is inert.
  */
 export const KIN_DEFERRED_TOOLS: ReadonlySet<string> = new Set([
-  "statement_read",
   "statement_rows",
-  "kin_recipes",
   "kin_issue",
   "kin_receipt",
   "kin_recipe_undo",

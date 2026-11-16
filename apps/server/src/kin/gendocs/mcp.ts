@@ -67,8 +67,7 @@ export const KinDocumentToolkit = Toolkit.make(
     description:
       "List the recipes this company's files are made from: each one's name, what it makes, the list it is for, whether it is numbered or confidential, its inputs (from is agent for the ones you give, else where Kin reads it), the fields Kin computes and its output files. Read-only.",
     success: Documents.RecipesResult,
-  }).annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(Tool.Meta, deferredMeta),
+  }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_issue", {
     ...shared,
     description:
