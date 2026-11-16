@@ -2,7 +2,11 @@ import {
   KinConnectionKey,
   type KinGitHubConnectInput,
   type KinGitHubInput,
+  type KinGitHubRepo,
+  type KinGitHubRepos,
+  type KinGitHubRepoSetInput,
   type KinGitHubStatus,
+  type KinGitHubWatch,
   type KinOrgId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -163,5 +167,63 @@ export function createKinGitHubActions(options: {
     },
     cancel: () => after(options.cancel({ orgId }), "cancel signing in"),
     disconnect: () => after(options.disconnect({ orgId }), "disconnect GitHub"),
+  };
+}
+
+/** What Kin watches on GitHub with that login, under the GitHub row. */
+export const KIN_GITHUB_WATCH_COPY = {
+  reposTitle: "Repos Kin watches",
+  reposHint:
+    "An agent starts on its own when a teammate opens a pull request here, writes /kin or an agent's name at the start of a comment, or adds the kin label to an issue. Turn a repo off to leave it alone.",
+  watchEverything: "Watch every repo",
+  noRepos: "No repos yet. Kin lists yours and your organisations' after its first look.",
+  mentions: "Your @-mention calls an agent",
+  fork: "Fork",
+  showRepos: (count: number) => `Show repos (${count})`,
+  hideRepos: "Hide repos",
+  loadFailed: "Couldn't load the repo list",
+} as const;
+
+const plural = (count: number, one: string) => `${count} ${count === 1 ? one : `${one}s`}`;
+
+const ago = (at: number, now: number) => {
+  const seconds = Math.max(0, Math.round((now - at) / 1000));
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 86_400) return `${Math.round(seconds / 3600)} h ago`;
+  return `${Math.round(seconds / 86_400)} d ago`;
+};
+
+/** "Watching: 4 repos · last checked 20 s ago · 3 things handled today". */
+export function kinGitHubWatchLine(watch: KinGitHubWatch, now: number): string {
+  return [
+    `Watching: ${plural(watch.repos, "repo")}`,
+    watch.checkedAt === null ? "not checked yet" : `last checked ${ago(watch.checkedAt, now)}`,
+    `${plural(watch.handledToday, "thing")} handled today`,
+  ].join(" · ");
+}
+
+/** A repo switch, answered in plain words; `repo` null watches every repo again. */
+export function createKinGitHubRepoActions(options: {
+  readonly orgId: KinOrgId;
+  readonly set: (input: KinGitHubRepoSetInput) => Sent<KinGitHubRepos>;
+  readonly refresh: () => void;
+}) {
+  const run = async (input: Omit<KinGitHubRepoSetInput, "orgId">) => {
+    const result = await options.set({ orgId: options.orgId, ...input });
+    options.refresh();
+    return AsyncResult.isSuccess(result)
+      ? ({ ok: true } as const)
+      : ({
+          ok: false,
+          problem: kinFailureText(squashAtomCommandFailure(result), "Couldn't change that repo.", {
+            device: "This device isn't allowed to change which repos Kin watches.",
+          }),
+        } as const);
+  };
+  return {
+    watch: (repo: KinGitHubRepo, watched: boolean) => run({ repo: repo.repo, watched }),
+    mentions: (repo: KinGitHubRepo, mentions: boolean) => run({ repo: repo.repo, mentions }),
+    everything: () => run({ repo: null }),
   };
 }

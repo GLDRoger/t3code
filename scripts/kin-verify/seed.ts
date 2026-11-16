@@ -25,6 +25,35 @@ const day = (offset: number) => {
 };
 const at = (offset: number) => `${day(offset)}T12:00:00.000Z`;
 
+/**
+ * Asia/Kolkata while it is day there; at night a whole-hour zone where it is day on the same date.
+ * Quiet hours (22:00 to 07:00, which no RPC changes) hold what a run sends, and dates stay the host's.
+ */
+const daytimeZone = (now = Date.now()) => {
+  const today = new Date(now).toLocaleDateString("en-CA");
+  const clock = (timeZone: string) => {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(now);
+    const part = (type: string) => parts.find((one) => one.type === type)!.value;
+    return { date: `${part("year")}-${part("month")}-${part("day")}`, hour: Number(part("hour")) };
+  };
+  const daytime = (zone: string) => {
+    const { date, hour } = clock(zone);
+    return date === today && hour >= 8 && hour <= 18;
+  };
+  if (daytime("Asia/Kolkata")) return "Asia/Kolkata";
+  const zones = Array.from({ length: 27 }, (_, at) => at - 12).map((offset) =>
+    offset === 0 ? "Etc/GMT" : `Etc/GMT${offset > 0 ? "-" : "+"}${Math.abs(offset)}`,
+  );
+  return zones.find(daytime) ?? "Asia/Kolkata";
+};
+
 const SCRIPT_MODEL = { instanceId: "kinVerifyScript", model: "script" };
 const ALL_DAY = { days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: "23:59" };
 
@@ -207,7 +236,8 @@ export async function seed(
     if (name === "empty")
       return { name, seededAt: new Date().toISOString(), people, agents, environmentId };
     await owner.call("kin.people.setOwnerName", { orgId: ORG, displayName: "Rhea Kapoor" });
-    await owner.call("kin.triggers.setTimeZone", { orgId: ORG, timeZone: "Asia/Kolkata" });
+    const zone = daytimeZone();
+    await owner.call("kin.triggers.setTimeZone", { orgId: ORG, timeZone: zone });
     const profile = (await owner.call("kin.work.companyProfile", { orgId: ORG })) as {
       rev: number;
     };
@@ -260,7 +290,7 @@ export async function seed(
       await owner.call("kin.people.updateProfile", {
         orgId: ORG,
         personId: person.personId,
-        timeZone: "Asia/Kolkata",
+        timeZone: zone,
         workHours: ALL_DAY,
         ...(key === "owner" ? {} : { roleTags: TEAM.find((one) => one.key === key)!.tags }),
       });

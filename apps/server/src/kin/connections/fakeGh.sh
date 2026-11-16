@@ -2,9 +2,18 @@
 # A stand-in for gh, for GitHubLogin.test.ts and `KIN_DEV_FAKE_GITHUB`. State lives in
 # $KIN_FAKE_GH: `token` and `user` are the login it holds, `decision` (ok, expired or denied)
 # answers a waiting code sign-in, `revoked` makes GitHub refuse the login, `prs` counts the PRs
-# `pr create` made, and `calls` records every run. Invented login and tokens only; it never reaches GitHub.
+# `pr create` made, and `calls` records every run. `gh api` and the posting commands go to
+# `fakeGitHub.ts` beside this file (`github.json` in the state). Invented data only; it never reaches GitHub.
 S="$KIN_FAKE_GH"
 echo "$*" >> "$S/calls"
+API="$(dirname "$0")/fakeGitHub.ts"
+[ -f "$API" ] || API="$(dirname "$0")/../github/fakeGitHub.ts"
+case "$1 $2 $3" in
+  "api -i user"|"api user/orgs"*) ;;
+  "api "*|"pr review"*|"pr comment"*|"issue comment"*|"issue create"*)
+    if [ -f "$S/revoked" ]; then echo "gh: Bad credentials (HTTP 401)" >&2; exit 1; fi
+    exec node "$API" "$@" ;;
+esac
 case "$1 $2" in
   "auth token")
     if [ -f "$S/token" ]; then cat "$S/token"; exit 0; fi

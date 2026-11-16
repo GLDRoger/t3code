@@ -345,6 +345,13 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // Kin's wire budget reads the whole read path, so any Kin server, contract or client file moves it.
   if (files.some((file) => KIN_WIRE.test(file)))
     tests.add("apps/server/src/kin/wireBudget.test.ts");
+  // Each reads all of Kin (amount queries; routes, screens and agent tools), so nothing beside selects it.
+  if (files.some((file) => KIN_WIRE.test(file) || /^apps\/(web|mobile)\/src\/.*kin/i.test(file))) {
+    tests.add("apps/server/src/kin/work/counted.test.ts");
+    tests.add("apps/server/src/kin/featureMap/featureMap.test.ts");
+  }
+  // `modelsFor`, which says which Kin model a change checks, is tested there.
+  if (files.includes("scripts/kin-model.ts")) tests.add("scripts/check-changed.test.ts");
   const { vitestTests, nodeTests } = splitTests(tests);
 
   // React Compiler coverage compiles every client source file, so run only the

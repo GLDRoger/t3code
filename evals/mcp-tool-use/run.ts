@@ -75,6 +75,7 @@ import {
 } from "../../apps/server/src/kin/work/workPrompt.ts";
 import { OWNER_DECLINED, WAITING_FOR_OWNER } from "../../apps/server/src/kin/lead/workerBrief.ts";
 import {
+  githubTriggerEvent,
   HANDED_BACK_WORK,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
@@ -1177,8 +1178,25 @@ const fillCharacters = (prompt: string) =>
         .join("\n"),
     );
 
-const fillKinRules = (prompt: string) =>
-  fillCharacters(prompt)
+/** `{{GITHUB_TRIGGER}}` is the event Kin builds for the case's `world.githubTrigger`. */
+const fillGitHubTrigger = (prompt: string, world: McpToolUseCase["setup"]["world"]) => {
+  if (!prompt.includes("{{GITHUB_TRIGGER}}")) return prompt;
+  const given = world?.githubTrigger as
+    | {
+        readonly event: string;
+        readonly repo: string;
+        readonly trigger: Contracts.KinGithubTrigger;
+      }
+    | undefined;
+  if (given === undefined) throw new Error("{{GITHUB_TRIGGER}} needs setup.world.githubTrigger.");
+  return prompt.replaceAll(
+    "{{GITHUB_TRIGGER}}",
+    githubTriggerEvent(given.event, given.repo, given.trigger),
+  );
+};
+
+const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) =>
+  fillCharacters(fillGitHubTrigger(prompt, world))
     .replaceAll("{{UNDO_RULE}}", UNDO_RULE)
     .replaceAll("{{WORK_RULE}}", WORK_RULE)
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
@@ -1263,7 +1281,7 @@ export const buildMessages = (sample: Sample) => {
     }
     if (turn.text) push(turn.role, text(fillKinRules(turn.text)));
   }
-  const casePrompt = fillKinRules(testCase.prompt);
+  const casePrompt = fillKinRules(testCase.prompt, testCase.setup.world);
   const userText =
     testCase.promptContext === undefined
       ? casePrompt
