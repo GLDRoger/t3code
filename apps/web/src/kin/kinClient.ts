@@ -60,6 +60,7 @@ import {
   type KinConnectionCallsInput,
   type KinConnectionRef,
   type KinConnectionsInput,
+  type KinGitHubInput,
   type KinProjectPageInput,
   type KinWorkGetInput,
   type KinWorkSubscribeInput,
@@ -143,6 +144,11 @@ const connectionCallsRead = createKinRpcCommand(connectionAtomRuntime, {
   tag: "kin.connections.calls",
 });
 const readConnectionCalls = guardedRead(connectionCallsRead);
+const githubRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:github:read",
+  tag: "kin.github.connect.status",
+});
+const readGitHub = guardedRead(githubRead);
 
 const membersRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:chat-members:read",
@@ -481,6 +487,30 @@ export const kinClient = {
     }),
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("connections"),
+  }),
+  /** The owner's own GitHub login on the host; live on the `connections` topic. */
+  github: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:github",
+    execute: Effect.fn("KinWebClient.github")(function* (input: KinGitHubInput) {
+      return yield* readGitHub(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("connections"),
+  }),
+  /** Starts the code sign-in, or connects with a pasted token, which travels once, redacted. */
+  githubStart: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:github:start",
+    tag: "kin.github.connect.start",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:github` },
+  }),
+  githubCancel: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:github:cancel",
+    tag: "kin.github.connect.cancel",
+  }),
+  githubDisconnect: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:github:disconnect",
+    tag: "kin.github.disconnect",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:github` },
   }),
   /** Adds a connection; the key travels once, redacted, and is never sent back. */
   connectionAdd: createKinRpcCommand(connectionAtomRuntime, {
