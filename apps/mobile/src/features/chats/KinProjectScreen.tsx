@@ -11,6 +11,7 @@ import {
   KIN_PROJECTS,
   KIN_PROJECT_FAILED,
   KIN_PROJECT_GONE,
+  KIN_PROJECT_REFUSED,
   KIN_PROJECT_LEAD,
   kinProjectPageView,
   type KinProjectPageView,
@@ -136,7 +137,9 @@ function KinProjectStates(props: ProjectTarget) {
     <KinWorkFrame title={KIN_PROJECTS.title} onBack={() => navigation.goBack()}>
       {state._tag === "gone" ? (
         <EmptyState variant="plain" {...KIN_PROJECT_GONE} />
-      ) : state._tag === "refused" || work._tag === "refused" ? (
+      ) : state._tag === "refused" ? (
+        <EmptyState variant="plain" {...KIN_PROJECT_REFUSED} />
+      ) : work._tag === "refused" ? (
         <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
       ) : work._tag === "offline" ? (
         <EmptyState variant="plain" {...KIN_WORK_OFFLINE} />

@@ -275,6 +275,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       ),
     "kin.chat.members": (input) => group((groups, people) => groups.members(people, input)),
     "kin.groups.create": (input) => group((groups, people) => groups.create(people, input)),
+    "kin.chats.withPerson": (input) => group((groups, people) => groups.withPerson(people, input)),
     "kin.groups.addMember": (input) => group((groups, people) => groups.addMember(people, input)),
     "kin.groups.removeMember": (input) =>
       group((groups, people) => groups.removeMember(people, input).pipe(Effect.as({}))),

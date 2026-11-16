@@ -24,6 +24,7 @@ import type {
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { kinMoneyText } from "./kinLists.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
+import { KIN_SCOPE_ALL, kinNothingShown, type KinViewerScope } from "./kinViewerScope.ts";
 import {
   kinWorkAllDay,
   kinWorkAvatar,
@@ -191,6 +192,12 @@ export const KIN_CLIENT_GONE = {
   title: "This client isn't here any more",
   detail: "Open Clients to see who there is now.",
 };
+/** The host keeps this client from the viewer: a refusal, never a connection problem. */
+export const KIN_CLIENT_REFUSED = {
+  title: "This client isn't yours to see",
+  detail: "The owner or a co-owner decides who sees Clients.",
+};
+
 export const KIN_CLIENT_FAILED = {
   title: "Couldn't load this client",
   detail: KIN_CHECK_CONNECTION,
@@ -237,6 +244,11 @@ export const KIN_PROJECT_GONE = {
   title: "This project isn't here any more",
   detail: "Open Projects to see what there is now.",
 };
+export const KIN_PROJECT_REFUSED = {
+  title: "This project isn't yours to see",
+  detail: "Projects show for the people on them, and for the owner and co-owners.",
+};
+
 export const KIN_PROJECT_FAILED = {
   title: "Couldn't load this project",
   detail: KIN_CHECK_CONNECTION,
@@ -427,7 +439,10 @@ export function kinClientRow(row: KinPartyRow, names: KinWorkNames, now: Date): 
 }
 
 /** Why the clients list shows nothing, and whether to offer a new client. */
-export function kinClientsNothing(filter: KinClientsFilter): {
+export function kinClientsNothing(
+  filter: KinClientsFilter,
+  scope: KinViewerScope = KIN_SCOPE_ALL,
+): {
   readonly title: string;
   readonly detail: string;
   readonly offerNew: boolean;
@@ -441,6 +456,8 @@ export function kinClientsNothing(filter: KinClientsFilter): {
       detail: "A client you close shows up here, with its history.",
       offerNew: false,
     };
+  const shown = kinNothingShown("clients", scope);
+  if (shown !== null) return { ...shown, offerNew: false };
   return {
     title: "No clients yet",
     detail:
@@ -683,7 +700,10 @@ export function kinProjectRow(
 }
 
 /** Why the projects list shows nothing, and whether to offer a new project. */
-export function kinProjectsNothing(filter: KinProjectsFilter): {
+export function kinProjectsNothing(
+  filter: KinProjectsFilter,
+  scope: KinViewerScope = KIN_SCOPE_ALL,
+): {
   readonly title: string;
   readonly detail: string;
   readonly offerNew: boolean;
@@ -699,6 +719,8 @@ export function kinProjectsNothing(filter: KinProjectsFilter): {
     };
   if (filter.view === "dropped")
     return { title: "Nothing dropped", detail: "Projects you drop show up here.", offerNew: false };
+  const shown = kinNothingShown("projects", scope);
+  if (shown !== null) return { ...shown, offerNew: false };
   return {
     title: "No projects yet",
     detail:

@@ -465,6 +465,8 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** The document the last action filed, for its notice to open. */
+  const [filed, setFiled] = useState<KinRecordKey | null>(null);
   const reread = (key?: KinRecordKey) => {
     if (key !== undefined)
       appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } }));
@@ -479,6 +481,7 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
     setBusy(true);
     setProblem(null);
     setNotice(null);
+    setFiled(null);
     const outcome = await kinListSend({
       online: () => kinHostConnected(environmentId),
       send: send as Parameters<typeof kinListSend<A>>[0]["send"],
@@ -496,9 +499,11 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
     busy,
     problem,
     notice,
+    filed,
     dismiss: () => {
       setProblem(null);
       setNotice(null);
+      setFiled(null);
     },
     issue: (key: KinRecordKey) =>
       run(() => issue({ environmentId, input: { orgId, key } }), key, kinIssueNotice),
@@ -567,7 +572,10 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
             },
           }),
         entry,
-        () => KIN_INVOICES.filed,
+        (made) => {
+          setFiled(made.documents[0]?.key ?? null);
+          return KIN_INVOICES.filed(made.documents);
+        },
       ),
   };
 }

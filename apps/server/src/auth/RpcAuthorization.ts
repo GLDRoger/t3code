@@ -293,6 +293,9 @@ const requiredScopesForRpcCall = (
 const kinChatMayCall = (method: string, payload: unknown) =>
   // Connecting needs a config snapshot; the handler sends such a session an empty one.
   method === WS_METHODS.subscribeServerConfig ||
+  // A phone probes and reports activity on every foreground; a refusal blocks the connection.
+  method === WS_METHODS.serverProbe ||
+  method === WS_METHODS.serverReportClientActivity ||
   method === WS_METHODS.attachmentsCreateUploadUrl ||
   method === WS_METHODS.attachmentsDelete ||
   (method === WS_METHODS.assetsCreateUrl &&

@@ -129,11 +129,28 @@ export function resolveKinHost(input: {
   readonly savedHostId: EnvironmentId | null | undefined;
   /** The directory saved at a host's last answer, read only while it is offline. */
   readonly cachedOrgs?: (environmentId: EnvironmentId) => KinOrgsListResult | null;
+  /** The last answer. A stand-in stays until the saved host is back, not just retrying. */
+  readonly previous?: KinHost;
 }): KinHost {
   if (input.savedHostId === undefined) return { _tag: "searching" };
   const saved = input.candidates.find((c) => c.environmentId === input.savedHostId);
   let fallback: KinHost | null = null;
   if (saved !== undefined) {
+    const { previous } = input;
+    // Coming to the front, every socket starts over as a first attempt, which looks like a blip:
+    // the stand-in holds through its own blip too, and leaves only once it is really down.
+    const standIn =
+      !saved.connected && previous?._tag === "host" && previous.standInFor === saved.environmentId
+        ? input.candidates.find((c) => c.environmentId === previous.environmentId && !c.down)
+        : undefined;
+    if (previous?._tag === "host" && standIn !== undefined) {
+      const probe = input.probe(standIn.environmentId);
+      return {
+        ...previous,
+        connected: standIn.connected,
+        probe: standIn.connected && probe._tag === "ready" ? probe : previous.probe,
+      };
+    }
     if (!saved.connected) {
       // A live host stands in for one that is down, awaiting earlier probes like the search below
       // so it doesn't pick one and switch; a blip shows the saved host's cache.

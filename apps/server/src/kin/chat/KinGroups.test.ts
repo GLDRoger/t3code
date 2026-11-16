@@ -271,6 +271,54 @@ it.effect("only the owner makes a group or changes it; a teammate reads and writ
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("anyone messages a teammate in one chat only the two of them read, with no agent", () =>
+  Effect.gen(function* () {
+    const { groups, chats, owner, orgId, priya, sam, say } = yield* seed;
+    const chat = yield* groups.withPerson([priya], { orgId, personId: sam.personId });
+    assert.include(chat, { kind: "team_group", leadAgentId: null });
+    // Asked again, from either side, it is the same chat.
+    assert.strictEqual(
+      (yield* groups.withPerson([sam], { orgId, personId: priya.personId })).chatId,
+      chat.chatId,
+    );
+    const { chatId } = chat;
+    yield* say(priya, chatId, "Invented hello");
+    assert.lengthOf(
+      (yield* chats.history([sam], { chatId, beforeSeq: 100, limit: 50 })).messages,
+      1,
+    );
+    // Nobody else reads it, not even the owner, and nobody adds to it or renames it.
+    assert.strictEqual(yield* reason(groups.members([owner], { chatId })), "not_found");
+    assert.strictEqual(
+      yield* reason(chats.history([owner], { chatId, beforeSeq: 100, limit: 50 })),
+      "not_found",
+    );
+    for (const who of [priya, owner])
+      assert.include(
+        ["not_allowed", "not_found"],
+        yield* reason(
+          groups.addMember([who], {
+            chatId,
+            principal: { _tag: "person", personId: owner.personId },
+          }),
+        ),
+      );
+    assert.strictEqual(
+      yield* reason(groups.rename([priya], { chatId, title: "Ours" })),
+      "not_allowed",
+    );
+    // Not with yourself, and not with someone who isn't on the team.
+    assert.strictEqual(
+      yield* reason(groups.withPerson([priya], { orgId, personId: priya.personId })),
+      "invalid_state",
+    );
+    assert.strictEqual(
+      yield* reason(groups.withPerson([priya], { orgId, personId: KinPersonId.make("nobody") })),
+      "not_found",
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "a group message wakes the leads it names, else the group's lead, and a lead's message wakes nobody",
   () =>

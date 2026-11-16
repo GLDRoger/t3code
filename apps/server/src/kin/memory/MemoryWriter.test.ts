@@ -1071,32 +1071,30 @@ it.live.each([
       }
       const marker = `${root}/executed`;
       if (scenario === "B3-execution") {
+        // Editors and shell prompts run their own git in any repo they find (Cursor's git status
+        // ran this filter), so only a run descending from this test process counts, named in full.
+        const witness = `#!/bin/sh\np=$PPID\nwhile [ "\${p:-0}" -gt 1 ]; do\n  [ "$p" = ${process.pid} ] && { echo "$0 by $(ps -o command= -p $PPID)" >> '${marker}'; break; }\n  p=$(ps -o ppid= -p "$p" | tr -d ' ')\ndone\n`;
         const script = `${root}/attack.sh`;
-        yield* fs.writeFileString(
-          script,
-          `#!/bin/sh\ntouch '${marker}'\nprintf 'filtered attack\\n'\n`,
-        );
+        yield* fs.writeFileString(script, `${witness}printf 'filtered attack\\n'\n`);
         yield* fs.chmod(script, 0o755);
         for (const repo of [paths.read, paths.writer]) {
           yield* fs.makeDirectory(`${repo}/.git/hooks`, { recursive: true });
-          yield* fs.writeFileString(
-            `${repo}/.git/hooks/post-checkout`,
-            `#!/bin/sh\ntouch '${marker}'\n`,
-          );
+          yield* fs.writeFileString(`${repo}/.git/hooks/post-checkout`, witness);
           yield* fs.chmod(`${repo}/.git/hooks/post-checkout`, 0o755);
           yield* git(repo, ["config", "core.fsmonitor", script]);
         }
-        yield* fs.writeFileString(
-          `${paths.writer}/.git/hooks/reference-transaction`,
-          `#!/bin/sh\ntouch '${marker}'\n`,
-        );
+        yield* fs.writeFileString(`${paths.writer}/.git/hooks/reference-transaction`, witness);
         yield* fs.chmod(`${paths.writer}/.git/hooks/reference-transaction`, 0o755);
         yield* git(paths.writer, ["config", "filter.attack.clean", script]);
         yield* fs.writeFileString(`${paths.writer}/.git/info/attributes`, "*.md filter=attack\n");
         yield* git(paths.writer, ["config", "remote.origin.receivepack", script]);
         yield* git(paths.writer, ["config", "uploadpack.packObjectsHook", script]);
+        // A plain git from this process runs the plant, so the witness can see an execution.
+        yield* git(paths.writer, ["status"]);
+        expect(yield* fs.readFileString(marker)).toMatch(/attack\.sh by \S*git status/);
+        yield* fs.remove(marker);
         yield* memory.prepareWakeup(orgId);
-        expect(yield* fs.exists(marker)).toBe(false);
+        expect(yield* fs.readFileString(marker).pipe(Effect.orElseSucceed(() => ""))).toBe("");
       }
       let evil = "";
       if (scenario === "B4-pushurl") {
@@ -1237,7 +1235,8 @@ it.live.each([
           "1",
         );
         expect(yield* git(paths.writer, ["show", `${branch}:rules.md`])).toBe("Invented rules");
-        if (scenario === "B3-execution") expect(yield* fs.exists(marker)).toBe(false);
+        if (scenario === "B3-execution")
+          expect(yield* fs.readFileString(marker).pipe(Effect.orElseSucceed(() => ""))).toBe("");
         if (scenario === "B4-pushurl") {
           expect(
             yield* git(root, [`--git-dir=${remote}`, "rev-parse", `refs/heads/${branch}`]),

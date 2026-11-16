@@ -12,7 +12,7 @@ the phone and in a narrow window. It opens over whatever you're looking at; clos
 where you were. What you see in each depends on your place in the team; see
 [Who sees and does what](#who-sees-and-does-what).
 
-Settings has **You** (your profile and appearance) for everyone, and for the owner and co-owners
+Settings has **You** (your profile, notifications and appearance) for everyone, and for the owner and co-owners
 **Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
 computer Kin runs on, **This computer** holds the app's own settings, such as providers and models,
 and how much of each provider's usage your agents have spent.
@@ -36,6 +36,10 @@ name, skills, time zone and working hours, and in **How to talk to me** how you 
 write to you ("short, numbers first, nothing after 8 pm"). Only you can set that line. Agents read
 your profile when they decide who should do something, when to message you and how. An agent nudges you about the same thing at most once a day,
 inside your hours.
+
+**Settings → Notifications** sets how this device tells you about new messages. On the web and the
+desktop app it alerts you while Kin is open in a window you aren't looking at; on the phone it opens
+the phone's own notification settings. A message from a teammate always rings, even in quiet hours.
 
 ### Adding a teammate (owner and co-owners)
 
@@ -137,6 +141,12 @@ Merging a pull request, and changing what an agent may do, need more: an approva
 phone set up under **Settings → Approvals** in the Kin app. Until one is set up, nothing that needs
 approval can happen.
 
+## Messaging a teammate
+
+Anyone can message anyone else on the team: **New → Message a teammate**, or **Message** on their
+profile. It is a chat for the two of you, with no agent. Only you and they can read it, not the owner
+or a co-owner, and the chat says so at its top. Starting it again opens the same chat.
+
 ## Group chats and the company chat
 
 A group is one chat with any mix of agents and people (owner and co-owners: **New → New group**).
@@ -176,14 +186,18 @@ never counts as unread; a small dot means something new.
 
 ## Tasks
 
-Tasks holds everything someone owes someone. **Needs you** at the top is what wants your attention
-first: late or stuck work, quiet clients, projects with nothing moving. Choose **I've got it** when
-you're handling one.
+Tasks holds everything someone owes someone. Everyone's list reads the same way, so you can tell at
+a glance what waits on whom: **On me** is what you have to do; **On others** is what waits on a
+teammate, under each person; **On agents** is what an agent has; then everything else, by project.
+Each task says who has it first, agents by name, then when it's due and its project.
 
-Below it, everyone's list reads the same way, so you can tell at a glance what waits on whom:
-**On me** is what you have to do; **On others** is what waits on a teammate, under each person;
-**On agents** is what an agent has; then everything else, by project. Each task says who has it
-first, agents by name, then when it's due and its project.
+**On me** starts with what can't wait, each marked **Late**, **Due today** or **Stuck**. For
+teammates, the Tasks badge counts your late and due-today tasks.
+
+The owner and co-owners also see **Needs attention** at the top, for what wants attention across
+the company: other people's late or stuck work, quiet clients, projects with nothing moving. Each
+task shows in one place only, so your own stay under On me. Choose **I've got it** when you're
+handling one. When nothing needs attention, the section isn't there.
 
 - **New task** gives a task a title, a due day and someone to do it. Ask an agent instead and it
   writes the task for you.
@@ -203,7 +217,7 @@ the figures in the quote or the invoice.
 
 Clients lists each client and their projects, with when you last spoke to them and what's next.
 On a client, add contacts and **Log contact** after a call or meeting. If nothing is logged for a
-while, the client shows up under Needs you.
+while, the client shows up under Needs attention.
 
 A project has a lead, a target day, milestones and its tasks. Its page says whether it's on track,
 what's late or stuck, and who's on it. The owner, co-owners and the project's lead add milestones;
@@ -228,10 +242,11 @@ Most of the bookkeeping happens by telling an agent: "Acme paid ₹48,250 today"
 hosting", "the GST filing is due on the 20th". It records the entry and answers in a line.
 
 - **Quotes.** Ask for a quote and an agent makes it, numbered, from the company's template. It stays
-  a draft until it's sent. When the client says yes, ask for the invoice and it carries the quote's
-  lines over.
-- **Invoices.** Open an invoice and choose **Make its PDF**. **Record payment** marks money received;
-  an invoice paid in full becomes Paid. When an invoice goes overdue, the agent drafts a reminder in
+  a draft until it's sent. When the client says yes, choose **Make invoice** on the quote, or ask for
+  the invoice; it carries the quote's lines over, and the quote then shows which invoice it became.
+- **Invoices.** Open an invoice and choose **Make its PDF**; the PDF is filed in Docs and shows on the
+  invoice. **Record payment** marks money received; an invoice paid in full becomes Paid. A draft
+  isn't owed yet, so **Issue** it before recording a payment. When an invoice goes overdue, the agent drafts a reminder in
   the same email thread and waits for your Confirm.
 - **Receipts.** A receipt is made for each payment. For money received before any invoice, use
   **Add → New receipt**, then **Set against** an invoice of the same client when it's issued.
@@ -265,7 +280,8 @@ project's docs.
 **Playbooks** are how your company works: taking on a client, running a project, chasing money,
 reviewing code, and so on. Agents read the right playbook before they act. Change one by saying so
 in a chat: "chase invoices after 7 days" and the agent edits the playbook and tells you what
-changed. A teammate's suggestion goes to the owner as a question.
+changed. A teammate taps **Suggest a change** on the playbook: it opens their chat with the team agent
+with the playbook attached, and the suggestion goes to the owner as a question.
 
 Playbooks, like every company doc, are for the whole team to read: everyone with **Can see Docs**,
 and the agents working for them. Mark one private to keep it to the owner and co-owners; it then
@@ -367,6 +383,7 @@ on the projects they lead.
 | What                                                 | Owner and co-owners                 | Member                                                                           | Project lead, on top                                 |
 | ---------------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------- |
 | Chat with agents                                     | All of them                         | The team agent, and agents the owner lets them message                           |                                                      |
+| Message a teammate                                   | Yes                                 | Yes                                                                              |                                                      |
 | Start a group, create an agent, add a teammate       | Yes                                 | No                                                                               |                                                      |
 | Tasks                                                | All, including tasks marked private | What they hold, made or gave, their projects' and the team's                     |                                                      |
 | Mark a task **Only me**                              | Yes                                 | No                                                                               | Yes                                                  |
