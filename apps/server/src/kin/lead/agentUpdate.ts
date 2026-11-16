@@ -13,6 +13,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { turnAsker } from "./Audience.ts";
 import { leadsIn, update } from "./KinLeadProvision.ts";
+import { codexAgentsAllowed } from "./leadModels.ts";
 import type { resolveLead } from "./LeadMemory.ts";
 
 export const AgentUpdateInput = Schema.Struct({
@@ -27,18 +28,27 @@ const refused = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
 const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9.]+/g, "");
 
+/** Effort's option id: `effort` on Claude, `reasoningEffort` on Codex. */
+const EFFORT_OPTIONS = new Set(["effort", "reasoningEffort"]);
+
 /**
  * The Claude model this host offers that the owner's words name ("Sonnet", "opus 4.6"), with an
  * effort when that model has one by that name. Exact ids first, then the newest listed match.
+ * With the host's switch on (`codexAgentsAllowed`), Codex's models count too.
  */
 export const matchModel = (
   providers: ReadonlyArray<ServerProvider>,
   words: string,
   effort: string | undefined,
   current: ModelSelection,
+  codex = false,
 ): ModelSelection | string => {
   const offered = providers
-    .filter((provider) => provider.driver === "claudeAgent" && provider.enabled)
+    .filter(
+      (provider) =>
+        (provider.driver === "claudeAgent" || (codex && provider.driver === "codex")) &&
+        provider.enabled,
+    )
     .flatMap((provider) =>
       provider.models.map((model) => ({ instanceId: provider.instanceId, model })),
     );
@@ -51,7 +61,7 @@ export const matchModel = (
         ({ model }) => squash(model.name).includes(wanted) || squash(model.slug).includes(wanted),
       );
   if (found === undefined && words !== current.model)
-    return `This server offers no Claude model called ${words}. It has: ${offered
+    return `This server offers no ${codex ? "" : "Claude "}model called ${words}. It has: ${offered
       .filter(({ model }) => model.isLegacy !== true)
       .map(({ model }) => model.name)
       .join(", ")}.`;
@@ -59,7 +69,7 @@ export const matchModel = (
   const model = found?.model.slug ?? current.model;
   if (effort === undefined) return { instanceId, model };
   const choices =
-    found?.model.capabilities?.optionDescriptors?.find((one) => one.id === "effort") ?? null;
+    found?.model.capabilities?.optionDescriptors?.find((one) => EFFORT_OPTIONS.has(one.id)) ?? null;
   const choice =
     choices?.type === "select"
       ? choices.options.find(
@@ -69,7 +79,7 @@ export const matchModel = (
   if (choice === undefined) return `${found?.model.name ?? model} has no ${effort} effort here.`;
   return choice.id === "default"
     ? { instanceId, model }
-    : { instanceId, model, options: [{ id: "effort", value: choice.id }] };
+    : { instanceId, model, options: [{ id: choices!.id, value: choice.id }] };
 };
 
 /**
@@ -102,6 +112,7 @@ export const updateAgent = Effect.fn("KinAgentUpdate.update")(function* (
     input.model ?? agent.models.strong.model,
     input.effort,
     agent.models.strong,
+    yield* codexAgentsAllowed,
   );
   if (typeof strong === "string") return yield* refused("invalid_state", strong);
   yield* update({
@@ -118,7 +129,7 @@ export const updateAgent = Effect.fn("KinAgentUpdate.update")(function* (
         ),
     }),
   );
-  const effort = strong.options?.find((option) => option.id === "effort")?.value;
+  const effort = strong.options?.find((option) => EFFORT_OPTIONS.has(option.id))?.value;
   return {
     saved: `${agent.name} runs on ${strong.model}${typeof effort === "string" ? ` at ${effort} effort` : ""} from its next reply.`,
   };

@@ -41,7 +41,7 @@ const kinServer = Layer.succeed(KinServer, {
     Context.make(
       KinAgentSessionPolicy,
       KinAgentSessionPolicy.of({
-        refusal: () => Effect.succeed(undefined),
+        refusal: () => Effect.undefined,
         delegated: (threadId) => Effect.succeed(threadId === "task-from-lead"),
         toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
         agentName: () => Effect.succeed("Tech lead"),
