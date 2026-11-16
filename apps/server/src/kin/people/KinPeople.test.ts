@@ -520,8 +520,14 @@ it.effect(
       assert.isDefined(asCoOwner.profiles[0]?.load);
       // Their sheet offers Edit profile where updateProfile takes it: anyone but the owner.
       assert.deepStrictEqual(
-        asCoOwner.profiles.map((profile) => [profile.personId === identity.owner.personId, profile.canEdit]),
-        asCoOwner.profiles.map((profile) => [profile.personId === identity.owner.personId, profile.personId !== identity.owner.personId]),
+        asCoOwner.profiles.map((profile) => [
+          profile.personId === identity.owner.personId,
+          profile.canEdit,
+        ]),
+        asCoOwner.profiles.map((profile) => [
+          profile.personId === identity.owner.personId,
+          profile.personId !== identity.owner.personId,
+        ]),
       );
       // A co-owner hands out links and takes a member's access away like the owner...
       const link = yield* service.createInvite(raviSession, {

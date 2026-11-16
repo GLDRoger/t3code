@@ -351,8 +351,7 @@ export type KinWorkScreenState =
     };
 
 export const isKinChatError = Schema.is(KinChatError);
-export const isKinWorkAuthorizationError = Schema.is(EnvironmentAuthorizationError);
-const isAuthorizationError = isKinWorkAuthorizationError;
+const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
 /** The host said this viewer may not read Work. */
 export const kinWorkRefused = (error: unknown): boolean =>

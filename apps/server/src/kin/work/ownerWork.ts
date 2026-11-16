@@ -273,9 +273,7 @@ const filterRef = Effect.fn("KinWork.filterRef")(function* (
       ? false
       : list === "projects"
         ? yield* inProject(orgId, personId, row.recordId).pipe(workFailure)
-        : (yield* teamVisible(orgId, personId, [row.recordId]).pipe(workFailure)).has(
-            row.recordId,
-          );
+        : (yield* teamVisible(orgId, personId, [row.recordId]).pipe(workFailure)).has(row.recordId);
   return on && row !== undefined
     ? { id: row.recordId, none: false }
     : { id: undefined, none: true };
@@ -388,7 +386,11 @@ export const list = Effect.fn("KinWork.list")(function* (
   };
   const page =
     party.none || project.none
-      ? { rows: [], total: 0, seq: yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure) }
+      ? {
+          rows: [],
+          total: 0,
+          seq: yield* teamSeq(input.orgId, viewer.person.personId).pipe(workFailure),
+        }
       : yield* records.query(input.orgId, { ...filter, offset: cursor.offset, limit });
   // The sums are of every match and the same on each page, so only the first page pays for them.
   const totals =
