@@ -78,6 +78,7 @@ export const KIN_CLIENTS = {
   noNotes: "No notes.",
   recentContact: "Recent contact",
   logContact: "Log contact",
+  noneLogged: "None logged",
   noTouches: "Nothing logged yet. Log a call, meeting or email here, or tell an agent about it.",
   touchNote: "What happened",
   touchNotePlaceholder: "Spoke to Asha, they want the revised quote by Friday",
@@ -488,7 +489,9 @@ export function kinClientPageView(
         .join(" · ") || null,
     notes: notes === "" ? null : notes,
     touches,
-    lastContact: party.kind === "client" ? kinClientContactLine(party, touches?.[0], now) : null,
+    lastContact:
+      (party.kind === "client" ? kinClientContactLine(party, touches?.[0], now) : null) ??
+      (touches?.length === 0 ? KIN_CLIENTS.noneLogged : null),
   };
 }
 

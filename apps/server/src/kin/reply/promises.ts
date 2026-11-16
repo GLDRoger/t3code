@@ -5,6 +5,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 /** The message id prefix of a relay a wake-up made (`KinHandoff.relay`). */
 export const relayPrefix = (wakeupId: string) => `kin-relay:${wakeupId}:`;
+/** The message id prefix of a pulse nudge (`pulse/nudge.ts`). */
+export const NUDGE_PREFIX = "pulse-nudge:";
 
 const PROMISE =
   /\bI(?:'ll|’ll| will|'m going to|’m going to| am going to)\s+(?:now\s+|also\s+)?(?:put|pass|tell|ask|let|check with|flag|raise|forward|relay|mention|bring|nudge|ping|message|follow up with)\b[^.!?\n]{0,80}/gi;

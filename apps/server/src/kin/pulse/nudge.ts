@@ -12,6 +12,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { workingAt } from "../lead/peopleRead.ts";
+import { NUDGE_PREFIX } from "../reply/promises.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
 import { dayIn } from "../work/money.ts";
@@ -164,7 +165,7 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
     ON CONFLICT (org_id, person_id, day) DO NOTHING RETURNING day`;
   if (claimed.length === 0)
     return yield* refuse(`${person.name} was already nudged today. One nudge a day: leave it.`);
-  yield* input.post(chatId, `pulse-nudge:${personId}:${day}`, personId).pipe(
+  yield* input.post(chatId, `${NUDGE_PREFIX}${personId}:${day}`, personId).pipe(
     Effect.tapError(() =>
       sql`DELETE FROM kin_pulse_nudges
           WHERE org_id = ${orgId} AND person_id = ${personId} AND day = ${day}`.pipe(Effect.ignore),
