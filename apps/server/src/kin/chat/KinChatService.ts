@@ -1439,7 +1439,16 @@ const make = Effect.gen(function* () {
           };
         }),
       );
-      return { orgs, me: identities.map(({ orgId, personId }) => ({ orgId, personId })) };
+      const me = yield* Effect.forEach(identities, ({ orgId, personId }) =>
+        repo.getPerson({ orgId, personId }).pipe(
+          Effect.map((person) => ({
+            orgId,
+            personId,
+            ...(Option.isSome(person) ? { displayName: person.value.displayName } : {}),
+          })),
+        ),
+      );
+      return { orgs, me };
     }),
     mute: Effect.fn("KinChatService.mute")(function* (caller, input) {
       const identity = yield* personFor(caller, input);

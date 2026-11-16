@@ -53,6 +53,7 @@ kv as owner web click --name "Add task"    # exact name first; --role option, --
 kv as owner web type --name "What needs doing" "Check the logo files" --enter
 kv as zoya web wait "Check the logo files" # or --gone; 20 s by default
 kv as owner web screenshot /tmp/proof/new-task.png   # refuses any path under ~/.t3
+kv as owner web view --width 390 --dark       # phone width or wide, light or dark, for captures
 kv as dev rpc kin.work.list '{"project":"P-1"}'      # orgId is filled in
 kv tool finance money_summary '{}'                   # one real agent turn, no model
 kv tool chief kin_relay '{"to":"Zoya Sheikh","text":"…"}' --as-turn-of zoya
@@ -71,6 +72,8 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
   scripted agent (`scripts/kin-verify/script-agent.ts`), which calls the tool on `/kin/mcp` with the
   turn's own credentials, so the gate, levels and posting rules all apply. `"$event"` in the JSON
   becomes the turn's triggering event id; `"$chat"` the chat the turn replies to; `sourceEventId` is added when the tool takes one.
+- A check-in's reply (Run now) is `<instance>/verify/checkin-reply.md` when that file exists; the
+  scripted agent posts it once and deletes it, to show a brief.
 - `clock` stops the server, rewrites stored times in one transaction and starts it again. The
   server's own clock is untouched; `set-date` moves times so that today reads as that date.
 - `db` opens the database read-only. Write through RPCs or tools, never SQL.

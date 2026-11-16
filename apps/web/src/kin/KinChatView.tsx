@@ -839,6 +839,7 @@ function KinChatFeed(props: {
             widget={widget}
             environmentId={props.environmentId}
             viewerPersonId={props.viewer.personId}
+            firstName={props.viewer.firstName ?? null}
             heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
             orgId={props.orgId}
             reactions={chips}
@@ -894,7 +895,14 @@ function KinChatFeed(props: {
       case "day":
         return <KinDayRow label={item.label} />;
       case "draft":
-        return <KinDraftRow row={item} environmentId={props.environmentId} direct={props.direct} />;
+        return (
+          <KinDraftRow
+            row={item}
+            environmentId={props.environmentId}
+            orgId={props.orgId}
+            direct={props.direct}
+          />
+        );
     }
   };
 
