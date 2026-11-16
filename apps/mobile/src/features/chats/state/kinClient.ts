@@ -986,6 +986,7 @@ export const kinClient = {
       return { clients: clients.parties, projects: projects.projects };
     }),
     staleTimeMs: 30_000,
+    // Clients shows each project's task counts from these rows, so any change can move them.
     refreshTrigger: kinWorkRefreshOn("any", kinRefreshOn("workChoices")),
   }),
   workClientCreate: createKinRpcCommand(connectionAtomRuntime, {

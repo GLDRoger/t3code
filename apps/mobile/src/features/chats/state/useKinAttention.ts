@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinAttentionProblem, kinAttentionShown } from "@t3tools/client-runtime/kin/kinAttention";
 import { kinWorkAgent } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -20,6 +21,7 @@ import { appAtomRegistry } from "../../../state/atom-registry";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { setComposerDraftText } from "../../../state/use-composer-drafts";
 import { kinDraftKey } from "../components/KinComposer";
+import { connectionAtomRuntime } from "../../../connection/runtime";
 import { kinClient } from "./kinClient";
 import { useRereadOnChange } from "./useKinMoney";
 import { kinWorkLiveAtom, type KinWorkTarget } from "./useKinWork";
@@ -44,13 +46,16 @@ const answeredOf = ({ environmentId, orgId }: KinWorkTarget) =>
   answeredAtom(`${environmentId}:${orgId}`);
 
 /**
- * What needs attention, live over the host's pulse topic and read again whenever Work changes,
- * so a paid invoice or a moved date never leaves the old row behind; null until read.
+ * What needs attention, live over the host's pulse topic; null until read. The host's pulse moves
+ * that topic for any change to what it senses, which is all an owner-level viewer is shown. A
+ * member's view also turns on what is shared with them, so theirs is read again on Work's changes.
  */
 export function useKinAttention(target: KinWorkTarget, enabled = true) {
   const atom = enabled ? attentionAtom(target) : noAttentionAtom;
   const state = kinWorkReadState(useAtomValue(atom));
-  const reads = useAtomValue(kinClient.workRead.permissionAtom(target.environmentId)) && enabled;
+  const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, target.environmentId));
+  const reads =
+    useAtomValue(kinClient.workRead.permissionAtom(target.environmentId)) && enabled && !ownerLevel;
   const live = useAtomValue(reads ? kinWorkLiveAtom(target) : noLiveAtom);
   const seq = Option.getOrNull(AsyncResult.value(live))?.seq ?? null;
   useRereadOnChange(seq, () => appAtomRegistry.refresh(atom));

@@ -966,7 +966,8 @@ export const kinClient = {
       return { clients: clients.parties, projects: projects.projects };
     }),
     staleTimeMs: 30_000,
-    refreshTrigger: kinWorkRefreshOn("any", kinRefreshOn("workChoices")),
+    // The web shows only names, kinds and states from these rows, which only their own lists move.
+    refreshTrigger: kinWorkRefreshOn(["clients", "projects"], kinRefreshOn("workChoices")),
   }),
   workClientCreate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:client:create",

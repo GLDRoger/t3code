@@ -18,6 +18,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { goalsNow } from "../work/goals.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { buildPulseSection } from "./prompt.ts";
@@ -434,6 +435,30 @@ describe("KinPulse", () => {
       yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-INV-1'`;
       const later = yield* KinPulse.tick(orgId, at + 2 * MINUTE);
       assert.isAtLeast(later.cleared, 1);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a tick moves screens' pulse for a fact whose words changed, and not for nothing", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const touched: Array<string> = [];
+      const observed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.provideService(KinRefreshObserver, {
+            touch: (_org, topic) => Effect.sync(() => void touched.push(topic)),
+          }),
+        );
+      const at = B + 17 * DAY + 7 * MINUTE;
+      yield* observed(KinPulse.tick(orgId, at));
+      touched.length = 0;
+      yield* observed(KinPulse.tick(orgId, at));
+      assert.deepStrictEqual(touched, []);
+      // The same facts, one of them now worded with the invoice's new title.
+      yield* sql`UPDATE kin_records SET title = 'Invented renamed invoice' WHERE record_id = 'r-INV-1'`;
+      const renamed = yield* observed(KinPulse.tick(orgId, at));
+      assert.strictEqual(renamed.cleared, 0);
+      assert.deepStrictEqual(touched, ["pulse"]);
     }).pipe(Effect.provide(layer)),
   );
 
