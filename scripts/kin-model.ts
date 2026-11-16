@@ -6,6 +6,7 @@
 //   node scripts/kin-model.ts <name> --chart <file.md>    also draw the statechart to <file.md>
 //   node scripts/kin-model.ts <name> --broken <variant>   check a deliberately broken variant
 //   node scripts/kin-model.ts <name> --variants           every broken variant must break its rule
+//   node scripts/kin-model.ts <name> --if-java            skip, and pass, when no Java is installed
 //
 // TLC is the pinned tla2tools.jar, fetched once into ~/.cache/kin-model (or $KIN_MODEL_CACHE) and
 // checked against its sha256. It needs Java 11 or newer on PATH, or mise to run Temurin 21.
@@ -22,6 +23,48 @@ const TLC_SHA256 = "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e05
 const MISE_JAVA = "java@temurin-21";
 
 const ROOT = NodePath.resolve(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)), "..");
+
+/** The files each model stands for (its README's Covers), so `check:changed` runs it on a change. */
+export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
+  send: [
+    "apps/server/src/kin/connections/ConnectionsService.ts",
+    "apps/server/src/kin/connections/Sending.ts",
+    "apps/server/src/kin/work/cardAnswers.ts",
+    "apps/server/src/kin/layer.ts",
+  ],
+  reply: [
+    "apps/server/src/kin/reply/KinReplyBridge.ts",
+    "apps/server/src/kin/reply/promises.ts",
+    "apps/server/src/kin/lead/WakeupRunner.ts",
+    "apps/server/src/kin/lead/KinEventQueue.ts",
+    "apps/server/src/kin/floor/KinFloor.ts",
+    "apps/server/src/kin/lead/Handoff.ts",
+    "apps/server/src/kin/pulse/nudge.ts",
+  ],
+  checkin: [
+    "apps/server/src/scheduledTasks/Schedule.ts",
+    "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+    "apps/server/src/kin/pulse/checkIn.ts",
+    "apps/server/src/kin/pulse/checkIns.ts",
+    "apps/server/src/kin/pulse/checkInSeeds.ts",
+    "apps/server/src/kin/pulse/checkInCatchUp.ts",
+    "apps/server/src/kin/pulse/KinPulse.ts",
+    "apps/server/src/kin/triggers/scheduledTasks.ts",
+    "apps/server/src/kin/triggers/KinTriggerSink.ts",
+    "apps/server/src/kin/triggers/kinSchedules.ts",
+    "apps/server/src/kin/lead/KinEventQueue.ts",
+  ],
+};
+/** The models a change touches: a covered file, the model's own folder, or this runner. */
+export const modelsFor = (files: ReadonlyArray<string>) =>
+  Object.keys(MODEL_COVERS).filter((name) =>
+    files.some(
+      (file) =>
+        MODEL_COVERS[name]!.includes(file) ||
+        file.startsWith(`verification/kin/${name}/`) ||
+        file === "scripts/kin-model.ts",
+    ),
+  );
 const MODELS = NodePath.join(ROOT, "verification", "kin");
 
 export type Value = string | number | boolean | Value[] | { [key: string]: Value };
@@ -270,11 +313,15 @@ const javaMajor = (command: ReadonlyArray<string>) => {
   return version[1] === "1" ? Number(version[2] ?? 0) : Number(version[1]);
 };
 
+// Only a Java already there: `mise exec` would otherwise download one mid-check.
+const miseJavaInstalled = () =>
+  NodeChildProcess.spawnSync("mise", ["where", MISE_JAVA], { encoding: "utf8" }).status === 0;
 let javaCommand: ReadonlyArray<string> | undefined;
 const java = () => {
   if (javaCommand !== undefined) return javaCommand;
-  for (const candidate of [["java"], ["mise", "exec", MISE_JAVA, "--", "java"]])
-    if (javaMajor(candidate) >= 11) return (javaCommand = candidate);
+  if (javaMajor(["java"]) >= 11) return (javaCommand = ["java"]);
+  const mise = ["mise", "exec", MISE_JAVA, "--", "java"];
+  if (miseJavaInstalled() && javaMajor(mise) >= 11) return (javaCommand = mise);
   throw new Error(
     `TLC needs Java 11 or newer. Install one with: mise use -g ${MISE_JAVA}  (or brew install --cask temurin)`,
   );
@@ -522,6 +569,14 @@ const main = async (args: ReadonlyArray<string>) => {
       "Usage: node scripts/kin-model.ts <name> [--chart <file.md>] [--broken <variant>] [--variants]",
     );
     return 2;
+  }
+  if (args.includes("--if-java")) {
+    try {
+      java();
+    } catch {
+      console.log(`${name}: skipped: Java not found (install Java 11+ to check this model).`);
+      return 0;
+    }
   }
   const model = await loadModel(name);
   const { view } = model;

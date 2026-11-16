@@ -386,7 +386,10 @@ export class KinConnections extends Context.Service<
     ) => Effect.Effect<FreshAsk | undefined, KinChatError>;
     /** After the tap commits: sends a confirmed ask, once. */
     readonly sendAsk: (orgId: KinOrgId, askId: string) => Effect.Effect<AskOutcome, KinChatError>;
-    /** At start: asks a restart caught sending, failed, each with its card and its mail again. */
+    /**
+     * At start: asks a restart caught sending, failed, and failed asks whose new card never
+     * posted, each with its card and its mail again.
+     */
     readonly interruptedSends: (
       orgId: KinOrgId,
       before: number,
@@ -2192,7 +2195,7 @@ const make = Effect.gen(function* () {
       k.connection_id AS "connectionId", k.tool_name AS "toolName", k.pin_digest AS "pinDigest",
       k.payload_json AS payload, k.agent_id AS "agentId", k.chat_id AS "chatId", k.state,
       k.entry_record_id AS "entryRecordId", a.owner_person_id AS owner, l.thread_id AS "threadId",
-      k.widget_id AS "widgetId"
+      k.widget_id AS "widgetId", k.reason
     FROM kin_connection_asks k
     JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
     JOIN kin_leads l ON l.org_id = k.org_id AND l.agent_id = k.agent_id
@@ -2225,9 +2228,9 @@ const make = Effect.gen(function* () {
           reason: "widget_changed",
           message: "This was already answered.",
         });
-      const decide = (state: string, reason: string | null) =>
+      const decide = (state: string, reason: string | null, owes = false) =>
         tx`UPDATE kin_connection_asks SET state = ${state}, reason = ${reason},
-          decided_at = ${input.now}, decided_by = ${input.personId}
+          decided_at = ${input.now}, decided_by = ${input.personId}, owes_card = ${owes ? 1 : 0}
         WHERE org_id = ${input.orgId} AND ask_id = ${row.askId} AND state = 'open'`;
       if (!input.confirmed) {
         yield* decide("declined", null);
@@ -2261,20 +2264,20 @@ const make = Effect.gen(function* () {
         const again = reason.endsWith("A fresh card is below.");
         const newer = again && (yield* superseded(input.orgId, row.askId));
         const told = newer ? reason.replace("A fresh card is below.", REPLACED_SINCE) : reason;
-        yield* decide("stale", told);
+        const owes = prepared?._tag === "email" && again && !newer;
+        yield* decide("stale", told, owes);
         return {
           _tag: "stale" as const,
           askId: row.askId,
           reason: told,
-          fresh:
-            prepared?._tag === "email" && again && !newer
-              ? {
-                  prepared,
-                  row,
-                  label: connection?.label ?? "Gmail",
-                  account: connection?.accountLabel ?? null,
-                }
-              : undefined,
+          fresh: owes
+            ? {
+                prepared,
+                row,
+                label: connection?.label ?? "Gmail",
+                account: connection?.accountLabel ?? null,
+              }
+            : undefined,
         };
       }
       yield* decide("sending", null);
@@ -2283,6 +2286,11 @@ const make = Effect.gen(function* () {
     Effect.mapError((error) => (isChatError(error) ? error : unavailable)),
   );
 
+  /** A failed ask whose mail now stands on a card again owes none. */
+  const settled = (orgId: KinOrgId, askId: string) =>
+    sql`UPDATE kin_connection_asks SET owes_card = 0
+      WHERE org_id = ${orgId} AND ask_id = ${askId}`.pipe(Effect.asVoid);
+
   /** The fresh card for a stale ask: the same mail with each file as it is now. */
   const freshAsk = Effect.fn("KinConnections.freshAsk")(function* (
     orgId: KinOrgId,
@@ -2290,7 +2298,10 @@ const make = Effect.gen(function* () {
     now: number,
   ) {
     // A correction the agent made meanwhile stands; the older mail does not come back beside it.
-    if (yield* superseded(orgId, stale.row.askId)) return undefined;
+    if (yield* superseded(orgId, stale.row.askId)) {
+      yield* settled(orgId, stale.row.askId);
+      return undefined;
+    }
     const attachments = yield* Effect.forEach(stale.prepared.attachments, (one) =>
       attachmentOf(orgId, one.key).pipe(provideSql),
     );
@@ -2334,7 +2345,10 @@ const make = Effect.gen(function* () {
       card,
       bind: (widgetId: string) =>
         sql`UPDATE kin_connection_asks SET widget_id = ${widgetId}
-          WHERE org_id = ${orgId} AND ask_id = ${askId} AND widget_id IS NULL`.pipe(Effect.asVoid),
+          WHERE org_id = ${orgId} AND ask_id = ${askId} AND widget_id IS NULL`.pipe(
+          Effect.andThen(settled(orgId, stale.row.askId)),
+          sql.withTransaction,
+        ),
     };
   }, settle);
 
@@ -2350,10 +2364,12 @@ const make = Effect.gen(function* () {
       state: "sent" | "failed",
       reason: string | null,
       result: unknown,
+      owes = false,
     ) {
       const now = yield* Clock.currentTimeMillis;
       yield* sql`UPDATE kin_connection_asks SET state = ${state}, reason = ${reason},
-          result_json = ${result === null ? null : toJson(result)}, done_at = ${now}
+          result_json = ${result === null ? null : toJson(result)}, done_at = ${now},
+          owes_card = ${owes ? 1 : 0}
         WHERE org_id = ${orgId} AND ask_id = ${askId} AND state = 'sending'`;
       yield* touched(orgId);
       return { state, reason } satisfies AskOutcome;
@@ -2400,6 +2416,7 @@ const make = Effect.gen(function* () {
           "failed",
           `${after.accountLabel ?? after.label} needs signing in again in Settings › Connections, so nothing was sent. The same mail is below to Confirm once it's back.`,
           null,
+          true,
         );
         return {
           ...failed,
@@ -2412,7 +2429,12 @@ const make = Effect.gen(function* () {
           : "Kin couldn't send it.";
       if (prepared._tag !== "email") return yield* finish("failed", why, null);
       // A failed send never loses the mail: it comes back on a card for another Confirm.
-      const failed = yield* finish("failed", `${why} The same mail is below to try again.`, null);
+      const failed = yield* finish(
+        "failed",
+        `${why} The same mail is below to try again.`,
+        null,
+        true,
+      );
       return {
         ...failed,
         fresh: {
@@ -2479,7 +2501,7 @@ const make = Effect.gen(function* () {
         ? "Kin restarted while sending this, so it may or may not have gone. Check the account's sent mail before you confirm the same mail below."
         : "Kin restarted while sending this, so it may or may not have gone.";
       const [moved] = yield* sql<{ askId: string }>`UPDATE kin_connection_asks
-          SET state = 'failed', reason = ${reason}, done_at = ${now}
+          SET state = 'failed', reason = ${reason}, done_at = ${now}, owes_card = ${email ? 1 : 0}
         WHERE org_id = ${orgId} AND ask_id = ${row.askId} AND state = 'sending'
         RETURNING ask_id AS "askId"`;
       if (moved === undefined || row.widgetId === null) continue;
@@ -2497,6 +2519,31 @@ const make = Effect.gen(function* () {
               },
             }
           : {}),
+      });
+    }
+    // A failure recorded before the restart whose new card never posted: it posts now.
+    const owed = yield* sql<AskRow & { readonly widgetId: string; readonly reason: string | null }>`
+      ${askRow(sql, orgId)} AND k.owes_card = 1 AND k.state IN ('failed', 'stale')
+        AND k.widget_id IS NOT NULL AND COALESCE(k.done_at, k.decided_at) < ${before}
+      ORDER BY COALESCE(k.done_at, k.decided_at), k.ask_id`;
+    for (const row of owed) {
+      if (outcomes.some((one) => one.widgetId === row.widgetId)) continue;
+      const prepared = Option.getOrUndefined(decodePrepared(row.payload));
+      if (prepared?._tag !== "email") {
+        yield* settled(orgId, row.askId);
+        continue;
+      }
+      const connection = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
+      outcomes.push({
+        widgetId: row.widgetId,
+        state: "failed",
+        reason: row.reason,
+        fresh: {
+          prepared,
+          row,
+          label: connection?.label ?? "Gmail",
+          account: connection?.accountLabel ?? null,
+        },
       });
     }
     if (outcomes.length > 0) yield* touched(orgId);

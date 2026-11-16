@@ -63,7 +63,7 @@ import {
   type SetupFailure,
 } from "./classify.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
-import { NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
+import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
 
 /** One rescue turn asks for the reply the run owed; its text is posted like any other. */
 const RESCUE_PROMPT =
@@ -92,10 +92,11 @@ export type Lane = {
 // someone gave the lead and finished work wait on it too (`owedNotice`). Reminders, briefs and
 // scheduled runs owe theirs through `LeadDelivery`; the rest may end on NO_REPLY.
 
-export type FailedOutcome = "partway" | "retrying" | "gave_up" | SetupFailure;
+// `replied`: the turn failed after its reply answered every message it held.
+export type FailedOutcome = "partway" | "replied" | "retrying" | "gave_up" | SetupFailure;
 // Plain words with the lead's name: the inbox shows this as the chat's latest line.
 const failedNotices: Record<
-  Exclude<FailedOutcome, SetupFailure>,
+  Exclude<FailedOutcome, SetupFailure | "replied">,
   { prefix: string; body: (lead: string) => string }
 > = {
   partway: { prefix: "kin-partway", body: (lead) => `${lead} stopped partway.` },
@@ -174,6 +175,10 @@ type Wake = {
   // Keyed by the ordinal of the steered message a reply answers, -1 for the wake-up's own.
   readonly slots: Map<number, Slot>;
   readonly steers: Array<number>;
+  // The events the model had read by an ordinal: the claim's own at -1, then each steer's.
+  readonly heard: Array<{ readonly ordinal: number; readonly eventIds: ReadonlyArray<string> }>;
+  // Events a steer carries, by its number, until its message shows in the thread.
+  readonly steerEvents: Map<number, ReadonlyArray<string>>;
   movedNoticed: boolean;
   lastOutputAt: number;
   state: KinPresenceState;
@@ -232,12 +237,20 @@ export class KinReplyBridge extends Context.Service<
       readonly rootRunId: RunId;
       readonly rescueUntil: number | null;
     }) => Effect.Effect<void>;
-    /** A message was steered into the wake-up: re-reads its lane, which may now owe a reply. */
-    readonly steered: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
+    /**
+     * A message was steered into the wake-up: re-reads its lane, which may now owe a reply.
+     * `steer` names its number and events, so a reply after it marks them answered.
+     */
+    readonly steered: (
+      orgId: KinOrgId,
+      wakeupId: KinWakeupId,
+      steer?: { readonly n: number; readonly eventIds: ReadonlyArray<string> },
+    ) => Effect.Effect<void>;
     /**
      * The wake-up failed, in the lane read before the queue closed it: `partway` after
-     * something visible (not retried), `retrying` when it showed nothing and will run again,
-     * `gave_up` when that was its last try.
+     * something visible (not retried), `replied` when its reply already answered every message
+     * (a line only for a card the reply named and never posted, or a promise not kept),
+     * `retrying` when it showed nothing and will run again, `gave_up` when that was its last try.
      */
     readonly failed: (input: {
       readonly orgId: KinOrgId;
@@ -381,6 +394,22 @@ const make = Effect.gen(function* () {
       );
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin wake-up timing failed", { cause })),
+  );
+  // The moment a reply posts, the messages the model had read before it are answered for good.
+  const markReplied = Effect.fn("KinReplyBridge.markReplied")(
+    function* (wake: Wake, ordinal: number) {
+      const eventIds = wake.heard
+        .filter((one) => one.ordinal < ordinal)
+        .flatMap((one) => one.eventIds);
+      if (eventIds.length === 0) return;
+      const now = yield* Clock.currentTimeMillis;
+      yield* sql`UPDATE kin_events SET replied_at = COALESCE(replied_at, ${now})
+        WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}
+          AND event_id IN ${sql.in(eventIds)}`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinReplyBridge.markReplied")),
+      );
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin couldn't mark a reply", { cause })),
   );
   const journal = (wake: Wake, lines: ReadonlyArray<string>) =>
     Option.isSome(writer)
@@ -541,6 +570,7 @@ const make = Effect.gen(function* () {
       segment.outcome = "posted";
       wake.answered = true;
       wake.replied = true;
+      yield* markReplied(wake, segment.ordinal);
       return yield* end(null);
     }
     const key = slotKey(wake, segment.ordinal);
@@ -574,6 +604,7 @@ const make = Effect.gen(function* () {
         wake.chars += text.length;
         wake.answered = true;
         wake.replied = true;
+        yield* markReplied(wake, segment.ordinal);
         // Work after a reply is new work: its timer doesn't count against the answered message.
         wake.timerFrom = yield* Clock.currentTimeMillis;
         yield* stamp(wake, "posted_at");
@@ -649,7 +680,11 @@ const make = Effect.gen(function* () {
   // A message steered in after kin_end asks something new: the text answering it is a reply.
   const reopen = (wake: Wake, item: OrchestrationV2TurnItem) => {
     if (item.type !== "user_message" || !isSteerMessage(wake.wakeupId, item.messageId)) return;
-    if (!wake.steers.includes(item.ordinal)) wake.steers.push(item.ordinal);
+    if (!wake.steers.includes(item.ordinal)) {
+      wake.steers.push(item.ordinal);
+      const n = Number(item.messageId.slice(item.messageId.lastIndexOf(":") + 1));
+      wake.heard.push({ ordinal: item.ordinal, eventIds: wake.steerEvents.get(n) ?? [] });
+    }
     if (wake.endedAt !== null && item.ordinal > wake.endedAt) wake.endedAt = null;
   };
   const nextAfter = (wake: Wake, ordinal: number): SegmentNext | null => {
@@ -880,6 +915,18 @@ const make = Effect.gen(function* () {
     return rows.length > 0;
   });
 
+  const unsent = (
+    wake: { readonly orgId: KinOrgId; readonly wakeupId: KinWakeupId },
+    chatId: KinChatId,
+    name: string,
+  ) =>
+    chat.notice({
+      orgId: wake.orgId,
+      chatId,
+      audience: "chat",
+      messageId: KinMessageId.make(`kin-unsent:${wake.wakeupId}`),
+      body: `That did not reach ${name}; ask again or tell them directly.`,
+    });
   // "I'll tell Ishaan" with nothing sent: the asker hears it didn't reach him, not a false promise.
   const keptPromises = Effect.fn("KinReplyBridge.keptPromises")(
     function* (wake: Wake) {
@@ -887,13 +934,7 @@ const make = Effect.gen(function* () {
         Effect.provideService(SqlClient.SqlClient, sql),
       );
       if (name === undefined) return;
-      yield* chat.notice({
-        orgId: wake.orgId,
-        chatId: wake.lane.chatId,
-        audience: "chat",
-        messageId: KinMessageId.make(`kin-unsent:${wake.wakeupId}`),
-        body: `That did not reach ${name}; ask again or tell them directly.`,
-      });
+      yield* unsent(wake, wake.lane.chatId, name);
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin promise check failed", { cause })),
   );
@@ -908,8 +949,10 @@ const make = Effect.gen(function* () {
         ? joined
         : `${joined.slice(0, Math.max(0, Math.min(room, KIN_MESSAGE_BODY_MAX_LENGTH) - OVERFLOW_SUFFIX.length))}${OVERFLOW_SUFFIX}`;
     const result = yield* deliver(wake, `reply-overflow:${wake.wakeupId}`, body);
-    if (result._tag === "posted") wake.answered = true;
-    else {
+    if (result._tag === "posted") {
+      wake.answered = true;
+      yield* markReplied(wake, Infinity);
+    } else {
       wake.withheldWhy ??= result.why;
       wake.withheld ??= result.reason;
     }
@@ -1022,9 +1065,11 @@ const make = Effect.gen(function* () {
   const steered = Effect.fn("KinReplyBridge.steered")(function* (
     orgId: KinOrgId,
     wakeupId: KinWakeupId,
+    steer?: { readonly n: number; readonly eventIds: ReadonlyArray<string> },
   ) {
     const wake = byWakeup.get(wakeupId);
     if (wake === undefined || wake.orgId !== orgId) return;
+    if (steer !== undefined) wake.steerEvents.set(steer.n, steer.eventIds);
     const found = yield* lane(wake);
     // The queue steers only within the lane, so only the mode can change.
     if (Option.isSome(found) && found.value.chatId === wake.lane.chatId)
@@ -1067,6 +1112,7 @@ const make = Effect.gen(function* () {
         input.outcome === "program"
       )
         return yield* setupFailed({ ...input, outcome: input.outcome });
+      if (input.outcome === "replied") return yield* failedAfterReply(input);
       const notice = failedNotices[input.outcome];
       if (input.outcome === "retrying") {
         const agentId = yield* agentOf(input.orgId, input.wakeupId);
@@ -1083,6 +1129,42 @@ const make = Effect.gen(function* () {
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin failure notice failed", { cause })),
   );
+
+  // A reply already answered: a second line comes only when what it promised did not happen.
+  const failedAfterReply = Effect.fn("KinReplyBridge.failedAfterReply")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly wakeupId: KinWakeupId;
+    readonly lane: Lane;
+  }) {
+    const provide = Effect.provideService(SqlClient.SqlClient, sql);
+    if (yield* missingCard(input).pipe(provide))
+      return yield* chat.notice({
+        messageId: KinMessageId.make(`kin-no-card:${input.wakeupId}`),
+        orgId: input.orgId,
+        chatId: input.lane.chatId,
+        audience: "chat",
+        body: `${input.lane.leadName} stopped before posting the card it mentioned. Ask again for it.`,
+      });
+    const [wake] = yield* sql<{ agentId: KinAgentId; threadId: string | null; startedAt: number }>`
+      SELECT agent_id AS "agentId", thread_id AS "threadId", started_at AS "startedAt"
+      FROM kin_wakeups WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
+    const name =
+      wake === undefined || wake.threadId === null
+        ? undefined
+        : yield* unkeptPromise({
+            ...input,
+            agentId: wake.agentId,
+            threadId: wake.threadId,
+            startedAt: wake.startedAt,
+            chatId: input.lane.chatId,
+          }).pipe(provide);
+    // The same line, and id, the completed turn's check posts: it shows once.
+    if (name !== undefined) return yield* unsent(input, input.lane.chatId, name);
+    yield* Effect.logInfo("Kin turn failed after its reply; nothing it promised is missing", {
+      orgId: input.orgId,
+      wakeupId: input.wakeupId,
+    });
+  });
 
   const setupFailed = Effect.fn("KinReplyBridge.setupFailed")(function* (input: {
     readonly orgId: KinOrgId;
@@ -1184,6 +1266,8 @@ const make = Effect.gen(function* () {
       const found = yield* lane(input);
       if (Option.isNone(found)) return;
       const now = yield* Clock.currentTimeMillis;
+      const own = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+        WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'`;
       const wake: Wake = {
         ...input,
         lane: found.value,
@@ -1201,6 +1285,8 @@ const make = Effect.gen(function* () {
         withheldWhy: null,
         slots: new Map(),
         steers: [],
+        heard: [{ ordinal: -1, eventIds: own.map((row) => row.eventId) }],
+        steerEvents: new Map(),
         movedNoticed: false,
         lastOutputAt: now,
         state: "starting",

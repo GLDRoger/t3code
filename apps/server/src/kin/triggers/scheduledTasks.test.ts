@@ -682,6 +682,40 @@ it.effect(
   },
 );
 
+it.effect("a check-in the host slept through fires once when Kin is back that day", () => {
+  const { layer, kinTicks, workers } = harness(new Set<string>());
+  return Effect.gen(function* () {
+    yield* setup();
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_leads SET models_json = ${MODELS} WHERE org_id = ${orgId}`;
+    const tick = kinTicks.get("kin-scheduled-tasks")!;
+    yield* tick;
+    yield* CheckIns.save([owner], {
+      orgId,
+      agentId: KinAgentId.make("lead-a"),
+      title: "Evening check-in",
+      what: "Look over the day.",
+      at: "18:00",
+      days: [0, 1, 2, 3, 4, 5, 6],
+    });
+    const tasks = yield* ScheduledTaskService.ScheduledTaskService;
+    const evening = (yield* tasks.list()).tasks.find((row) => row.title === "Evening check-in")!;
+    const opens = Date.parse(evening.nextRunAt!);
+    // The host sleeps through the slot and wakes twelve minutes in: T3 skips the run as missed.
+    yield* TestClock.setTime(opens + 12 * 60_000);
+    yield* workers.get("scheduled-tasks")!;
+    const skipped = (yield* tasks.list()).tasks.find((row) => row.id === evening.id)!;
+    assert.isAbove(Date.parse(skipped.nextRunAt!), opens + 12 * 60_000);
+    yield* tick;
+    yield* tick;
+    assert.deepStrictEqual(
+      yield* sql`SELECT fire_id AS "fireId", consumed_at IS NOT NULL AS done
+        FROM kin_trigger_inbox WHERE fire_id LIKE ${`ns:${evening.id}:%`}`,
+      [{ fireId: `ns:${evening.id}:${opens}:scheduled`, done: 1 }],
+    );
+  }).pipe(Effect.provide(Layer.merge(layer, identity)));
+});
+
 it.effect(
   "a lead that has never woken gets its default check-ins, and Settings can add one",
   () => {

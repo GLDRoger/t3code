@@ -66,6 +66,11 @@ export const variants = [
     what: "a failed or out-of-date draft comes back beside the agent's correction (the code before this change)",
   },
   {
+    name: "no-owed-card",
+    breaks: "FailureComesBack",
+    what: "start-up no longer posts the card a failed mail still owes (the code before this change)",
+  },
+  {
     name: "no-resume",
     breaks: "ConfirmedSettles",
     what: "nothing settles a send a restart cut off (the code before this change)",
@@ -94,7 +99,7 @@ export const state = (vars: Vars) => {
     case "declined":
       return "Cancelled; nothing sent";
     default:
-      return job === "fresh"
+      return job === "fresh" || at(vars, "owes", c) === true
         ? "Failed or out of date; the mail is coming back"
         : "Failed; the mail is on no card";
   }
