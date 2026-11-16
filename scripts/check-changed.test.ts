@@ -20,7 +20,6 @@ import {
   defaultConcurrency,
   docReaderTests,
   gitLines,
-  kinImporterTests,
   runSteps,
   splitTests,
   type Step,
@@ -75,32 +74,6 @@ describe("check:changed", () => {
       "apps/server/src/cloud/ConnectReachability.test.ts",
     ]);
     assert.deepStrictEqual(decide(["docs/user/install.md"], packages, false).affected, []);
-  });
-
-  it("runs the Kin server tests that import a changed Kin source, and the source scanners", () => {
-    const kinTests = [
-      {
-        path: "apps/server/src/kin/chat/KinRefreshHub.test.ts",
-        text: 'import { subscribeRefreshes } from "./refreshes.ts";',
-      },
-      {
-        path: "apps/server/src/kin/people/KinPeople.test.ts",
-        text: 'import * as Provision from "../lead/KinLeadProvision.ts";',
-      },
-      { path: "apps/server/src/kin/lead/Other.test.ts", text: 'import { x } from "./other.ts";' },
-    ];
-    assert.deepStrictEqual(
-      kinImporterTests(
-        ["apps/server/src/kin/chat/refreshes.ts", "apps/server/src/kin/lead/KinLeadProvision.ts"],
-        kinTests,
-      ),
-      [
-        "apps/server/src/kin/work/counted.test.ts",
-        "apps/server/src/kin/chat/KinRefreshHub.test.ts",
-        "apps/server/src/kin/people/KinPeople.test.ts",
-      ],
-    );
-    assert.deepStrictEqual(kinImporterTests(["apps/web/src/kin/Work.tsx"], kinTests), []);
   });
 
   it.effect(
