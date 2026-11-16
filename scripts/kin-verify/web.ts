@@ -376,7 +376,10 @@ export async function view(
     await session.page.emulateMedia({ colorScheme: options.colorScheme });
     // The app keeps its own appearance, read at load.
     await session.page.evaluate(
-      (mode) => window.localStorage.setItem("t3code:theme-appearance-mode", mode),
+      (mode) =>
+        (
+          globalThis as unknown as { localStorage: { setItem(key: string, value: string): void } }
+        ).localStorage.setItem("t3code:theme-appearance-mode", mode),
       options.colorScheme,
     );
     await session.page.reload();
