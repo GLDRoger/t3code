@@ -207,3 +207,8 @@ export function useKinOpensClients(environmentId: EnvironmentId): boolean {
   const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
   return kinOwnerLevel(me?.access) || kinPlaceReach(me)?.clients === true;
 }
+
+/** Whether the host says the viewer is the owner or a co-owner here; false until it has. */
+export function useKinIsOwnerLevel(environmentId: EnvironmentId): boolean {
+  return kinOwnerLevel(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId))?.access);
+}

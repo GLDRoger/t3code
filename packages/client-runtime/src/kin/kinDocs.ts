@@ -56,6 +56,7 @@ export const KIN_DOCS = {
   changes: "See changes",
   ask: "Ask about this",
   change: "Change this",
+  suggest: "Suggest a change",
   copyLink: "Copy link",
   copied: "Link copied",
   export: "Export as Markdown",
@@ -708,7 +709,8 @@ export function kinDocRestoreOutcome(
 
 // Pointing at a part
 
-export type KinDocAsk = "ask" | "change";
+/** A teammate can't change a company doc; they suggest, and the agent asks the owner. */
+export type KinDocAsk = "ask" | "change" | "suggest";
 
 /** What a person pointed at, waiting above the composer of the chat it will be sent in. */
 export interface KinPendingRef {
@@ -748,8 +750,16 @@ export const kinDocRefInput = (ref: KinMessageRef): KinMessageRefInput => ({
 
 export const kinDocAskPlaceholder = (pending: KinPendingRef): string => {
   const about = pending.ref.sectionTitle ?? pending.ref.title;
-  return pending.intent === "ask" ? `Ask about ${about}` : `Say what to change in ${about}`;
+  return pending.intent === "ask"
+    ? `Ask about ${about}`
+    : pending.intent === "suggest"
+      ? `Say what you'd change in ${about}. The owner decides.`
+      : `Say what to change in ${about}`;
 };
+
+/** The line a teammate's suggestion starts with, ready in the box for them to finish. */
+export const kinDocSuggestStarter = (ref: Pick<KinMessageRef, "title" | "sectionTitle">) =>
+  `I'd like to suggest a change to ${kinDocRefLabel(ref)}: `;
 
 /** One waiting reference per chat, set where a doc is read and taken where the chat is typed. */
 export const kinPendingRefAtom = Atom.family((chat: string) =>

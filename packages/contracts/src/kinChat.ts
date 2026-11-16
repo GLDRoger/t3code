@@ -741,7 +741,10 @@ export const KinMessagesSendInput = Schema.Struct({
   ),
   mentions: Schema.optional(Schema.Array(KinMemberId)),
   replyTo: Schema.optional(KinMessageId),
-  /** Doc sections the message is about; the host quotes their text to the agent. Owner only. */
+  /**
+   * Doc sections the message is about; the host quotes their text to the agent. A teammate points
+   * only at docs everyone in the chat reads.
+   */
   refs: Schema.optional(
     Schema.Array(KinMessageRefInput).check(Schema.isMaxLength(KIN_MESSAGE_REFS_CAP)),
   ),
