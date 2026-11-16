@@ -62,6 +62,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
+import { KinAgentSections } from "./KinAgentSections";
 import { kinClient } from "./state/kinClient";
 import { kinRetiredWhenNow, useKinAgentRetire } from "./state/useKinAgentRetire";
 import { useKinHostAt } from "./state/useKinHost";
@@ -189,6 +190,7 @@ function KinLeadBody(props: {
                   )
                 }
               />
+              <KinAgentSections environmentId={environmentId} orgId={orgId} lead={lead} />
               <KinLeadNotifications
                 environmentId={environmentId}
                 orgId={lead.orgId}
@@ -540,7 +542,13 @@ export function KinLeadProfileView({
   const retired = lead.retired;
   const detail = kinSentenceParts([
     area.toLowerCase() === lead.name.trim().toLowerCase() ? null : area,
-    retired !== undefined ? kinRetiredWhenNow(retired.at) : lead.working ? "Working now" : null,
+    retired !== undefined
+      ? kinRetiredWhenNow(retired.at)
+      : lead.paused !== undefined
+        ? "Paused"
+        : lead.working
+          ? "Working now"
+          : null,
   ]);
   return (
     <>

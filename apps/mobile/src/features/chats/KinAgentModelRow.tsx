@@ -1,0 +1,68 @@
+import type { EnvironmentId, ModelSelection } from "@t3tools/contracts";
+import { KIN_AGENT_DRIVER } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { Pressable } from "react-native";
+
+import { AppText as Text } from "../../components/ui/AppText";
+import { SymbolView } from "../../components/ui/AppSymbol";
+import { Menu } from "../../components/ui/Menu";
+import { buildModelOptions, type ModelOption } from "../../lib/modelOptions";
+import { useEnvironmentServerConfig } from "../../state/entities";
+
+/** The Claude models this server offers, as T3's own model menu lists them: agents run on nothing else. */
+export function useKinAgentModelOptions(environmentId: EnvironmentId): ReadonlyArray<ModelOption> {
+  const config = useEnvironmentServerConfig(environmentId);
+  return buildModelOptions(config, null, undefined, null).filter(
+    (option) =>
+      option.providerDriver === KIN_AGENT_DRIVER && !option.isUnavailable && !option.isHidden,
+  );
+}
+
+/** One of an agent's models: a row that opens the server's Claude models as a menu. */
+export function KinAgentModelRow(props: {
+  readonly label: string;
+  readonly value: ModelSelection;
+  readonly options: ReadonlyArray<ModelOption>;
+  readonly disabled: boolean;
+  readonly borderTop?: boolean;
+  readonly onPick: (selection: ModelSelection) => void;
+}) {
+  const same = (option: ModelOption) =>
+    option.selection.instanceId === props.value.instanceId &&
+    option.selection.model === props.value.model;
+  const current = props.options.find(same);
+  // Two Claude accounts list the same models; the account then tells them apart.
+  const accounts = new Set(props.options.map((option) => option.providerKey)).size > 1;
+  const name = (option: ModelOption) =>
+    accounts ? `${option.label} · ${option.providerLabel}` : option.label;
+  return (
+    <Menu
+      accessible
+      accessibilityRole="button"
+      accessibilityLabel={`${props.label}: ${current === undefined ? props.value.model : name(current)}`}
+      actions={props.options.map((option) => ({
+        id: option.key,
+        title: name(option),
+        state: same(option) ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent }) => {
+        const picked = props.options.find((option) => option.key === nativeEvent.event);
+        if (picked !== undefined) props.onPick(picked.selection);
+      }}
+    >
+      <Pressable
+        disabled={props.disabled}
+        className={
+          props.borderTop
+            ? "flex-row items-center gap-3 border-t border-border-subtle px-4 py-3"
+            : "flex-row items-center gap-3 px-4 py-3"
+        }
+      >
+        <Text className="min-w-0 flex-1 text-base text-foreground">{props.label}</Text>
+        <Text className="shrink text-right text-base text-foreground-muted" numberOfLines={1}>
+          {current === undefined ? props.value.model : name(current)}
+        </Text>
+        <SymbolView name="chevron.down" size={13} tintColorClassName="accent-icon-muted" />
+      </Pressable>
+    </Menu>
+  );
+}

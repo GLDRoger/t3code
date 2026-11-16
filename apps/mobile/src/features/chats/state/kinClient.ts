@@ -30,6 +30,8 @@ import {
   type KinPeopleListInput,
   type KinChatId,
   type KinChatsSubscribeInput,
+  type KinAgentDefaultsInput,
+  type KinAgentPageInput,
   type KinLeadAccessInput,
   type KinBudgetGetInput,
   type KinCheckInsInput,
@@ -185,6 +187,16 @@ const leadAccessRead = createKinRpcCommand(connectionAtomRuntime, {
   tag: "kin.lead.access.list",
 });
 const readLeadAccess = guardedRead(leadAccessRead);
+const agentPageRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:agent-page:read",
+  tag: "kin.lead.page",
+});
+const readAgentPage = guardedRead(agentPageRead);
+const agentDefaultsRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:agent-defaults:read",
+  tag: "kin.agents.defaults",
+});
+const readAgentDefaults = guardedRead(agentDefaultsRead);
 const membersRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:chat-members:read",
   tag: KIN_CHAT_WS_METHODS.chatMembers,
@@ -546,6 +558,43 @@ export const kinClient = {
     concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
   }),
   /** Who besides the owner may message one of the owner's leads. */
+  /** One agent's whole page, for owner-level people. */
+  agentPage: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:agent-page",
+    execute: Effect.fn("KinClient.agentPage")(function* (input: KinAgentPageInput) {
+      return yield* readAgentPage(input);
+    }),
+    staleTimeMs: 15_000,
+    refreshTrigger: kinRefreshOn("leads"),
+  }),
+  agentDefaults: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:agent-defaults",
+    execute: Effect.fn("KinClient.agentDefaults")(function* (input: KinAgentDefaultsInput) {
+      return yield* readAgentDefaults(input);
+    }),
+    staleTimeMs: 15_000,
+    refreshTrigger: kinRefreshOn("leads"),
+  }),
+  characterSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:character",
+    tag: "kin.lead.character.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
+  agentDefaultsSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:agent-defaults:set",
+    tag: "kin.agents.defaults.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+  }),
+  leadPause: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:pause",
+    tag: "kin.lead.pause",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
+  leadResume: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:resume",
+    tag: "kin.lead.resume",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
   leadAccess: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
     label: "kin:lead-access",
     execute: Effect.fn("KinClient.leadAccess")(function* (input: KinLeadAccessInput) {
