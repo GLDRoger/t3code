@@ -36,6 +36,7 @@ import {
   refOrNull,
   resolveWho,
   retryKey,
+  unseenOf,
   viewOf,
   viewWriter,
   Who,
@@ -461,6 +462,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
       `${row.key} has no version ${input.version}; it is at ${latest.version}.`,
     );
   const name = yield* namer(lead);
+  const unseen = yield* unseenOf(lead, [row.partyId, row.projectId]);
   const parts = sectionsOf(version.body);
   const asked =
     input.sections === undefined
@@ -491,8 +493,12 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
       ? {}
       : { note: "A long doc: read the sections you need by id." }),
     owner: name(ownerOf(row)) ?? "someone",
-    ...(row.partyKey === null ? {} : { client: `${row.partyTitle} (${row.partyKey})` }),
-    ...(row.projectKey === null ? {} : { project: `${row.projectTitle} (${row.projectKey})` }),
+    ...(row.partyKey === null || unseen.has(row.partyId ?? "")
+      ? {}
+      : { client: `${row.partyTitle} (${row.partyKey})` }),
+    ...(row.projectKey === null || unseen.has(row.projectId ?? "")
+      ? {}
+      : { project: `${row.projectTitle} (${row.projectKey})` }),
     ...(row.state === "dropped" ? { archived: true as const } : {}),
     ...(sensitiveOf(row) ? { sensitive: true as const } : {}),
   };
@@ -539,12 +545,17 @@ const runMove = Effect.fnUntraced(function* (lead: Lead, input: typeof MoveInput
     ...(input.archived === undefined ? {} : { archived: input.archived }),
   });
   const name = yield* namer(lead);
+  const unseen = yield* unseenOf(lead, [row.partyId, row.projectId]);
   return {
     key: row.key,
     title: row.title,
     owner: name(ownerOf(row)) ?? "someone",
-    ...(row.partyKey === null ? {} : { client: `${row.partyTitle} (${row.partyKey})` }),
-    ...(row.projectKey === null ? {} : { project: `${row.projectTitle} (${row.projectKey})` }),
+    ...(row.partyKey === null || unseen.has(row.partyId ?? "")
+      ? {}
+      : { client: `${row.partyTitle} (${row.partyKey})` }),
+    ...(row.projectKey === null || unseen.has(row.projectId ?? "")
+      ? {}
+      : { project: `${row.projectTitle} (${row.projectKey})` }),
     archived: row.state === "dropped",
     ...filedOf(row),
     ...(sensitiveOf(row) ? { sensitive: true as const } : {}),

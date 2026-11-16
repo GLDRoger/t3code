@@ -685,26 +685,104 @@ const AMOUNT_WORDS = new RegExp(
   "i",
 );
 const MONEY_NUMBER = /\b[A-Z]{2,5}\/\d{2}-\d{2}\/\d+\b/;
+// "987.654,00": thousands by dots and a decimal comma is a sum of money, not a count.
+const EURO_FIGURE = /\b\d{1,3}(?:\.\d{3})+,\d{1,2}\b/;
+
+const SMALL: Readonly<Record<string, number>> = Object.fromEntries([
+  ..."zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen"
+    .split(" ")
+    .map((word, n) => [word, n] as const),
+  ..."twenty thirty forty fifty sixty seventy eighty ninety"
+    .split(" ")
+    .map((word, n) => [word, (n + 2) * 10] as const),
+]);
+const SCALE: Readonly<Record<string, number>> = {
+  thousand: 1e3,
+  lakh: 1e5,
+  lakhs: 1e5,
+  lac: 1e5,
+  lacs: 1e5,
+  million: 1e6,
+  crore: 1e7,
+  crores: 1e7,
+  billion: 1e9,
+};
+/** Every whole figure of four digits or more the text writes, in digits or in words. */
+const figuresIn = (text: string) => {
+  const found = new Set<number>();
+  const keep = (n: number) => {
+    if (Number.isSafeInteger(n) && n >= 1000) found.add(n);
+  };
+  for (const [run] of text.matchAll(/\d(?:[\d.,'’]*\d)?/g)) {
+    keep(Number(run.replace(/\D/g, "")));
+    keep(Number(run.replace(/[.,]\d{1,2}$/, "").replace(/\D/g, "")));
+  }
+  let total = 0;
+  let current = 0;
+  let inRun = false;
+  const end = () => {
+    if (inRun) keep(total + current);
+    total = 0;
+    current = 0;
+    inRun = false;
+  };
+  for (const word of text.toLowerCase().split(/[^a-z]+/)) {
+    if (word in SMALL) {
+      current += SMALL[word]!;
+      inRun = true;
+    } else if (word === "hundred" && inRun) current *= 100;
+    else if (word in SCALE && inRun) {
+      total += current * SCALE[word]!;
+      current = 0;
+    } else if (word !== "and" || !inRun) end();
+  }
+  end();
+  return [...found];
+};
 const ENTRY_KEY = /\b[A-Z]{1,4}-\d{1,6}\b/g;
 const fold = (text: string) => text.toLowerCase().replace(/\s+/g, " ");
 
 /**
- * Why `text` can't go to this person, or undefined when it can: what an owner-level turn writes
- * to someone else holds no amount, no invoice or quote number, no client's terms, and no key or
- * title of an entry they don't see. Checked on the text, so the message stands on its own.
+ * Why `text` can't go to this person, or undefined: no amount, money document number, client's
+ * terms, or key or title of an entry they don't see. `askedBy`, a teammate whose own words these
+ * are, is held only to what they see, so a refusal never says a guess matches something hidden.
  */
 export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   text: string,
+  askedBy?: KinPersonId,
 ) {
-  if (AMOUNT.test(text) || AMOUNT_WORDS.test(text) || MONEY_NUMBER.test(text))
-    return "it names an amount or a money document. Keep amounts out of a message to a teammate";
+  const amount =
+    "it names an amount or a money document. Keep amounts out of a message to a teammate";
+  if (
+    AMOUNT.test(text) ||
+    AMOUNT_WORDS.test(text) ||
+    MONEY_NUMBER.test(text) ||
+    EURO_FIGURE.test(text)
+  )
+    return amount;
   const sql = yield* SqlClient.SqlClient;
+  const known = askedBy === undefined ? sql`1 = 1` : personSees(sql, askedBy);
+  // A bare figure that is the sum on something they can't see, however it is written.
+  const figures = figuresIn(text);
+  if (figures.length > 0) {
+    const same = (column: Statement.Fragment) =>
+      sql`(${column} IN ${sql.in(figures)} OR ${column} / 100 IN ${sql.in(figures)})`;
+    const [hit] = yield* sql<{ hit: number }>`SELECT EXISTS (SELECT 1 FROM kin_records r
+        WHERE r.org_id = ${orgId} AND r.amount_minor IS NOT NULL
+          AND ${same(sql`r.amount_minor`)} AND NOT ${personSees(sql, personId)} AND ${known})
+      OR EXISTS (SELECT 1 FROM kin_record_payments p
+        JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+        WHERE p.org_id = ${orgId} AND ${same(sql`p.amount_minor`)}
+          AND NOT ${personSees(sql, personId)} AND ${known}) AS hit`;
+    if (hit?.hit === 1) return amount;
+  }
   const keys = [...new Set(text.match(ENTRY_KEY) ?? [])];
   if (keys.length > 0) {
     const rows = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(keys)} AND NOT ${personSees(sql, personId)}
+        AND ${known}
       ORDER BY r.key LIMIT 1`;
     if (rows[0] !== undefined) return `${rows[0].key} is something they can't see`;
   }
@@ -712,13 +790,20 @@ export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   // Labelled entries they can't see, and every client's terms, by their words.
   const hidden = yield* sql<{ words: string | null }>`SELECT r.title AS words FROM kin_records r
       WHERE r.org_id = ${orgId} AND ${sensitiveNow(sql)} AND NOT ${personSees(sql, personId)}
-        AND length(r.title) >= 6
+        AND length(r.title) >= 6 AND ${known}
     UNION ALL SELECT json_extract(r.fields_json, '$.terms') FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
-        AND length(json_extract(r.fields_json, '$.terms')) >= 10
+        AND length(json_extract(r.fields_json, '$.terms')) >= 10 AND ${known}
     LIMIT 2000`;
   const named = hidden.find((row) => row.words !== null && folded.includes(fold(row.words)));
-  return named === undefined
-    ? undefined
-    : "it repeats a private entry or a client's terms they can't see";
+  if (named !== undefined) return "it repeats a private entry or a client's terms they can't see";
+  const termsFigures = yield* sql<{ terms: string }>`SELECT json_extract(r.fields_json, '$.terms')
+      AS terms FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'clients'
+      AND json_extract(r.fields_json, '$.terms') GLOB '*[0-9]*' AND ${known}
+    LIMIT 2000`;
+  return figures.length > 0 &&
+    termsFigures.some((row) => figuresIn(row.terms).some((n) => figures.includes(n)))
+    ? amount
+    : undefined;
 });

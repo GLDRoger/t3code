@@ -18,7 +18,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { quote } from "../lead/LeadPrompt.ts";
 import { turnFiles } from "./leadFields.ts";
-import { admitted, type Lead, leadTool, sourceOf } from "./leadWork.ts";
+import { admitted, type Lead, leadTool, ownerTurn, sourceOf } from "./leadWork.ts";
 import { formatMoney } from "./money.ts";
 import { bankStates, findBankList, originKeyOf, rowFingerprints } from "./statements/bankList.ts";
 import {
@@ -608,6 +608,7 @@ export const RowsResult = Schema.Struct({
 });
 
 const runRows = Effect.fnUntraced(function* (lead: Lead, input: typeof RowsInput.Type) {
+  yield* ownerTurn(lead);
   const stored = yield* statementRow(lead.orgId, input.statement);
   if (stored === undefined || stored.agentId !== lead.agentId)
     return yield* new KinChatError({

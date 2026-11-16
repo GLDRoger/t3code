@@ -10,7 +10,7 @@ kv() { node "$ROOT/scripts/kin-verify.ts" --instance "$INSTANCE" "$@"; }
 SCRIPTS=("$@")
 [[ ${#SCRIPTS[@]} -eq 0 ]] && SCRIPTS=(assign-member-sees relay-owner-to-member member-request-to-owner
   private-task-hidden member-no-money send-card-once overdue-invoice-reminder checkin-new-agent
-  lead-adds-milestone owner-money-forms)
+  lead-adds-milestone owner-money-forms private-client-unnamed)
 trap 'kv down >/dev/null' EXIT
 started=$SECONDS
 kv up --fresh || exit 1

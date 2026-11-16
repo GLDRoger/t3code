@@ -1151,6 +1151,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
     /** Who the next Google sign-in signs in as, and each other account's access token. */
     signInAs: OWNER_MAIL,
     accounts: new Map<string, string>(),
+    /** Google's profile lookup fails, as it can for a moment. */
+    profileDown: false,
   };
   const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
     new Response(JSON.stringify(body), {
@@ -1327,6 +1329,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
         if (!bearer(request) && other === undefined) return json({ error: { code: 401 } }, 401);
         const account = other ?? OWNER_MAIL;
         const path = url.pathname;
+        if (vendor.profileDown && path.endsWith("/users/me/profile"))
+          return json({ error: { code: 503 } }, 503);
         if (other !== undefined && request.method === "GET") {
           if (path.endsWith("/users/me/profile")) return json({ emailAddress: other });
           if (path.endsWith("/users/me/settings/sendAs")) return json({ sendAs: WORK_SEND_AS });
@@ -1998,6 +2002,68 @@ const header = (message: string, name: string) =>
   new RegExp(`^${name}: (.*)$`, "m").exec(message)?.[1]?.trimEnd();
 
 describe("KinConnections accounts", () => {
+  it.effect("a card sends only from the account it showed, whatever a sign-in again did", () =>
+    withGoogle((vendor, cards) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const sql = yield* SqlClient.SqlClient;
+        const { connectionId } = yield* connectGoogle(vendor);
+        const card = (subject: string) =>
+          sendCall("mail_send", { to: ["ana@client.example"], subject, body: "x" }).pipe(
+            Effect.map(() => cards.at(-1)!),
+          );
+        const open = yield* card("Open");
+        const sending = yield* answer((yield* card("Sending")).widgetId, ownerId, true);
+        const again = connections.signInStart(owner, { orgId, connectionId, returnTo: "web" }).pipe(
+          Effect.flatMap((started) =>
+            connections.signInFinish(owner, {
+              orgId,
+              response: vendor.approve(started.authorizationUrl, null),
+            }),
+          ),
+        );
+
+        // Another account whose profile can't be read: refused before its tokens are kept.
+        vendor.vendor.signInAs = WORK_MAIL;
+        vendor.vendor.profileDown = true;
+        assert.strictEqual(
+          (yield* Effect.flip(again)).message,
+          "Couldn't confirm which account that was. Nothing changed; try again.",
+        );
+        vendor.vendor.profileDown = false;
+        // Known as another account: refused, as before.
+        assert.include((yield* Effect.flip(again)).message, `this connection is ${OWNER_MAIL}`);
+        // The same account again is fine, and cards made before it still stand.
+        vendor.vendor.signInAs = OWNER_MAIL;
+        yield* again;
+        yield* connections.sendAsk(orgId, sending!.askId);
+        const confirmed = yield* answer(open.widgetId, ownerId, true);
+        assert.strictEqual(confirmed?._tag, "send");
+        yield* connections.sendAsk(orgId, confirmed!.askId);
+        assert.deepStrictEqual(
+          vendor.vendor.sent.map((one) => one.account),
+          [OWNER_MAIL, OWNER_MAIL],
+        );
+
+        // A sign-in no one could name moves the generation: an open card and one already
+        // sending both fail safe, nothing goes, and the mail comes back on a card naming it.
+        const later = yield* card("Later");
+        const inFlight = yield* answer((yield* card("In flight")).widgetId, ownerId, true);
+        yield* sql`UPDATE kin_connections SET sign_in_gen = sign_in_gen + 1
+          WHERE connection_id = ${connectionId}`;
+        const stale = yield* answer(later.widgetId, ownerId, true);
+        assert.strictEqual(stale?._tag, "stale");
+        assert.include(stale?._tag === "stale" ? stale.reason : "", `signed in as ${OWNER_MAIL}`);
+        assert.strictEqual(stale?._tag === "stale" ? stale.fresh?.account : null, OWNER_MAIL);
+        const outcome = yield* connections.sendAsk(orgId, inFlight!.askId);
+        assert.strictEqual(outcome.state, "failed");
+        assert.include(outcome.reason ?? "", "since this card was made, so nothing was sent");
+        assert.strictEqual("fresh" in outcome ? outcome.fresh?.account : null, OWNER_MAIL);
+        assert.lengthOf(vendor.vendor.sent, 2);
+      }),
+    ),
+  );
+
   it.effect("keeps each Google account apart: its addresses, its threads, its From", () =>
     withGoogle((vendor, cards) =>
       Effect.gen(function* () {

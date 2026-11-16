@@ -551,17 +551,21 @@ const atOf = (text: string) => {
     ? Effect.succeed(ms)
     : Effect.fail(invalid(`at ${text.slice(0, 40)} is not a time with its offset.`));
 };
-const spineOf = (
+const spineOf = Effect.fnUntraced(function* (
   lead: Lead,
   def: ListDef,
   row: Parameters<typeof spineFields>[1],
   projectId: string | null | undefined,
-) =>
-  spineFields(lead.orgId, row, projectId, {
-    who: (text) => resolveWho(lead, text),
-    at: atOf,
-    currency: def.currency,
-  });
+) {
+  const team = yield* viewOf(lead);
+  return yield* spineFields(
+    lead.orgId,
+    row,
+    projectId,
+    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
+    { who: (text) => resolveWho(lead, text), at: atOf, currency: def.currency },
+  );
+});
 
 const dueOf = Effect.fn("KinWorkTools.dueOf")(function* (orgId: KinOrgId, due: string | null) {
   if (due === null) return { dueAt: null, dueAllDay: false };
@@ -631,7 +635,8 @@ const shownFields = (
             ? { _tag: "agent", agentId: KinAgentId.make(id) }
             : { _tag: "person", personId: KinPersonId.make(id) },
         ) ?? "someone";
-    } else if (spec?.type === "link") shown[key] = keys.get(value as string) ?? "a removed entry";
+    } else if (spec?.type === "link")
+      shown[key] = keys.get(value as string) ?? "an entry not shown here";
     else shown[key] = value as string;
   }
   return Object.keys(shown).length === 0 ? {} : { fields: shown };
@@ -643,14 +648,9 @@ const dayOrTime = (at: string, allDay: boolean, zone: string) =>
 const shownRepeatRule = (rule: KinRepeatRule) =>
   rule.every === "days" ? `every ${rule.days} days` : `every ${rule.every}`;
 
-/** Keys of the clients and projects a page's link fields point at, in one read. */
-const linkKeys = Effect.fn("KinWorkTools.linkKeys")(function* (
-  lead: Lead,
-  rows: ReadonlyArray<RecordRow>,
-  lists: Lists,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const ids = rows.flatMap((row) => {
+/** The ids a page's link fields point at. */
+const linkIds = (rows: ReadonlyArray<RecordRow>, lists: Lists) =>
+  rows.flatMap((row) => {
     const def = defOf(lists, row);
     if (def === undefined || def.builtIn !== null) return [];
     const fields = parseFields(row.fieldsJson);
@@ -659,10 +659,39 @@ const linkKeys = Effect.fn("KinWorkTools.linkKeys")(function* (
       return spec.type === "link" && typeof value === "string" ? [value] : [];
     });
   });
-  if (ids.length === 0) return new Map<string, string>();
+
+/**
+ * Of these entries, the ones a turn others read may not name: those not every person behind it
+ * sees. None in the owner's own turn. A row read whole names its client, project and links only
+ * past this.
+ */
+export const unseenOf = Effect.fn("KinWorkTools.unseenOf")(function* (
+  lead: Lead,
+  ids: ReadonlyArray<string | null>,
+) {
+  const team = yield* viewOf(lead);
+  const wanted = [...new Set(ids.filter((id): id is string => id !== null))];
+  if (team === undefined || wanted.length === 0) return new Set<string>();
+  const sql = yield* SqlClient.SqlClient;
+  const seen = yield* sql<{ id: string }>`SELECT r.record_id AS id FROM kin_records r
+    WHERE r.org_id = ${lead.orgId} AND r.record_id IN ${sql.in(wanted)}
+      AND ${viewSees(sql, team.people)} ORDER BY r.record_id`;
+  const visible = new Set(seen.map((row) => row.id));
+  return new Set(wanted.filter((id) => !visible.has(id)));
+});
+
+/** Keys of the clients and projects a page's link fields point at, in one read. */
+const linkKeys = Effect.fn("KinWorkTools.linkKeys")(function* (
+  lead: Lead,
+  ids: ReadonlyArray<string>,
+  unseen: ReadonlySet<string>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const shown = [...new Set(ids)].filter((id) => !unseen.has(id));
+  if (shown.length === 0) return new Map<string, string>();
   const found = yield* sql<{ id: string; label: string }>`SELECT record_id AS id,
       title || ' (' || key || ')' AS label FROM kin_records
-    WHERE org_id = ${lead.orgId} AND record_id IN ${sql.in([...new Set(ids)])} ORDER BY record_id`;
+    WHERE org_id = ${lead.orgId} AND record_id IN ${sql.in(shown)} ORDER BY record_id`;
   return new Map(found.map((row) => [row.id, row.label]));
 });
 
@@ -671,17 +700,25 @@ type Shown = {
   readonly lists: Lists;
   readonly keys: ReadonlyMap<string, string>;
   readonly zone: string;
+  /** Clients, projects and link targets on these rows the turn's people may not name. */
+  readonly unseen: ReadonlySet<string>;
 };
 const viewFor = Effect.fn("KinWorkTools.view")(function* (
   lead: Lead,
   rows: ReadonlyArray<RecordRow>,
 ) {
   const lists = yield* allLists(lead.orgId);
+  const links = linkIds(rows, lists);
+  const unseen = yield* unseenOf(lead, [
+    ...rows.flatMap((row) => [row.partyId, row.projectId]),
+    ...links,
+  ]);
   return {
     name: yield* namer(lead),
     lists,
-    keys: yield* linkKeys(lead, rows, lists),
+    keys: yield* linkKeys(lead, links, unseen),
     zone: yield* ownerZone(lead.orgId),
+    unseen,
   } satisfies Shown;
 });
 
@@ -724,10 +761,10 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...(record.confirmed ? {} : { suggested: true as const }),
     ...(record.working ? { working: true as const } : {}),
     ...(record.pullRequest === null ? {} : { pullRequest: record.pullRequest.url }),
-    ...(record.party === undefined
+    ...(record.party === undefined || (row.partyId !== null && view.unseen.has(row.partyId))
       ? {}
       : { client: `${record.party.title} (${record.party.key})` }),
-    ...(record.project === undefined
+    ...(record.project === undefined || (row.projectId !== null && view.unseen.has(row.projectId))
       ? {}
       : { project: `${record.project.title} (${record.project.key})` }),
     ...(row.side === "theirs" && list === "work" ? { side: "theirs" as const } : {}),
@@ -754,34 +791,34 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
   } as typeof Row.Type;
 };
 
-/** A client or project the lead named by key, or by name as typed, among the active ones. */
-const resolveRef = Effect.fn("KinWorkTools.resolveRef")(function* (
+/**
+ * A client or project the lead named by key, or by name as typed, among the active ones. In a turn
+ * others read, one they may not all see answers exactly as one that doesn't exist.
+ */
+export const refRecord = Effect.fn("KinWorkTools.refRecord")(function* (
   lead: Lead,
   text: string,
   list: "clients" | "projects",
 ) {
   const sql = yield* SqlClient.SqlClient;
-  // In a turn others read, one they may not all see is never named, and never denied either.
   const team = yield* viewOf(lead);
   const rows = yield* sql<{
     recordId: string;
     key: string;
     name: string;
+    createdAt: number;
     active: number;
-    seen: number;
   }>`
-    SELECT r.record_id AS "recordId", r.key, r.title AS name,
-      r.state NOT IN ('done', 'dropped') AS active,
-      ${team === undefined ? sql`1` : viewSees(sql, team.people)} AS seen
+    SELECT r.record_id AS "recordId", r.key, r.title AS name, r.created_at AS "createdAt",
+      r.state NOT IN ('done', 'dropped') AS active
     FROM kin_records r WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list}
+      AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
     ORDER BY r.key LIMIT ${REF_CANDIDATES}`;
-  const candidates = (seen: boolean) =>
-    rows.filter(
-      (row) => (row.seen === 1) === seen && (row.active === 1 || row.key === text.toUpperCase()),
-    );
-  const noun = LISTS[list].noun;
-  const match = matchName(text, candidates(true));
-  if (match._tag === "found") return match.item.recordId;
+  const match = matchName(
+    text,
+    rows.filter((row) => row.active === 1 || row.key === text.toUpperCase()),
+  );
+  if (match._tag === "found") return match.item;
   if (match._tag === "ambiguous")
     return yield* invalid(
       `Several ${list} could be ${text.slice(0, 60)}: ${match.items
@@ -789,20 +826,20 @@ const resolveRef = Effect.fn("KinWorkTools.resolveRef")(function* (
         .map((row) => `${row.name} (${row.key})`)
         .join(", ")}. Ask which one is meant, or use the key.`,
     );
-  if (matchName(text, candidates(false))._tag !== "none")
-    return yield* new KinChatError({
-      reason: "not_found",
-      message: `No ${noun} ${text.slice(0, 60)} that everyone in this chat may see. One may exist that someone here can't see, so don't say there is none and don't add it again: leave it off here, or ask the owner in his own chat.`,
-    });
+  const nearest =
+    match.nearest.length === 0
+      ? ""
+      : ` Nearest: ${match.nearest.map((row) => `${row.name} (${row.key})`).join(", ")}; ask "did you mean …?" if one may be it.`;
   return yield* new KinChatError({
     reason: "not_found",
-    message: `No ${noun} called ${text.slice(0, 60)}.${
-      match.nearest.length === 0
-        ? ""
-        : ` Nearest: ${match.nearest.map((row) => `${row.name} (${row.key})`).join(", ")}; ask "did you mean …?" if one may be it.`
-    } Find it with records_query list ${list}, or create it if it's new.`,
+    message:
+      team === undefined
+        ? `No ${LISTS[list].noun} called ${text.slice(0, 60)}.${nearest} Find it with records_query list ${list}, or create it if it's new.`
+        : `No ${LISTS[list].noun} called ${text.slice(0, 60)} that everyone in this chat may see.${nearest} Leave it off here, or ask the owner in his own chat; don't add it again.`,
   });
 });
+const resolveRef = (lead: Lead, text: string, list: "clients" | "projects") =>
+  refRecord(lead, text, list).pipe(Effect.map((row) => row.recordId));
 const REF_CANDIDATES = 2000;
 export const refOrNull = Effect.fn("KinWorkTools.refOrNull")(function* (
   lead: Lead,
@@ -811,6 +848,12 @@ export const refOrNull = Effect.fn("KinWorkTools.refOrNull")(function* (
 ) {
   if (text === undefined || text === null) return text;
   return yield* resolveRef(lead, text, list);
+});
+
+/** Refused unless only the owner level reads this turn: for tools `SHARED_TOOLS` refuses. */
+export const ownerTurn = Effect.fn("KinWorkTools.ownerTurn")(function* (lead: Lead) {
+  if ((yield* effectiveAudience(lead)) !== "owner_only")
+    return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
 });
 
 /** The built-in list's own fields a row or an update names; `null` clears one. */
@@ -1275,6 +1318,10 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const list = row.registerId;
   const sensitive = new Set(marksOf(view.lists, row).sensitiveFields ?? []);
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const hiddenLinks = yield* unseenOf(
+    lead,
+    detail.links.flatMap((link) => (link.kind === "record" ? [link.target] : [])),
+  );
   const page = list === "clients" ? yield* partyPage(row, now, 0, viewer) : undefined;
   const project = list === "projects" ? yield* projectDetail(row, now, viewer) : undefined;
   const specChanged = list === "work" && (yield* taskSpecChanged(row, viewer));
@@ -1330,12 +1377,23 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
         }),
     notes: detail.notes,
     ...(assignedBy === undefined ? {} : { assignedBy }),
-    links: detail.links.map((link) => ({
+    links: (team === undefined
+      ? detail.links
+      : detail.links.filter(
+          (link) =>
+            link.kind === "pull_request" ||
+            link.kind === "url" ||
+            (link.kind === "record" && !hiddenLinks.has(link.target)),
+        )
+    ).map((link) => ({
       kind: link.kind,
       relation: link.relation,
       target: link.label ?? link.target,
     })),
-    history: detail.changes.map((change) => ({
+    history: (team === undefined
+      ? detail.changes
+      : detail.changes.filter((change) => change.kind !== "linked")
+    ).map((change) => ({
       at: change.at,
       by: actor(change.by),
       change:
@@ -1500,10 +1558,15 @@ const sameNamed = Effect.fn("KinWorkTools.sameNamed")(function* (
   partyId: string | null,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ key: string; title: string }>`SELECT key, title FROM kin_records
-    WHERE org_id = ${lead.orgId} AND register_id = ${list} AND state NOT IN ('done', 'dropped')
-      AND lower(title) = lower(${title}) AND (${list} != 'contacts' OR party_id IS ${partyId})
-    ORDER BY key LIMIT 1`;
+  // In a turn others read, one they can't see is not there: the write's own guard then decides.
+  const team = yield* viewOf(lead);
+  const [row] = yield* sql<{ key: string; title: string }>`SELECT r.key, r.title
+    FROM kin_records r
+    WHERE r.org_id = ${lead.orgId} AND r.register_id = ${list}
+      AND r.state NOT IN ('done', 'dropped') AND lower(r.title) = lower(${title})
+      AND (${list} != 'contacts' OR r.party_id IS ${partyId})
+      AND ${team === undefined ? sql`1 = 1` : viewSees(sql, team.people)}
+    ORDER BY r.key LIMIT 1`;
   return row;
 });
 

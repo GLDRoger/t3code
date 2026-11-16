@@ -489,7 +489,8 @@ it.effect("a turn others read reaches only docs they all see, and restores none"
         operations: [{ op: "append", text: "More." }],
       }),
     );
-    assert.strictEqual(reasonOf(edited), "not_allowed");
+    assert.strictEqual(reasonOf(edited), "not_found");
+    assert.include(String(edited), `No doc ${created.row.key}`);
     assert.strictEqual((yield* Docs.versionOf(orgId, created.row.recordId))!.version, 1);
     // A member reaches the doc reads, where the service shows them only their docs.
     const reads = ["kin.docs.list", "kin.docs.get", "kin.docs.history", "kin.docs.diff"];

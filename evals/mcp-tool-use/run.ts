@@ -28,6 +28,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -129,7 +130,7 @@ const isCodex = (model: Model): model is Extract<Model, `gpt-${string}`> =>
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 // USD per million tokens. Cache writes use the 5-minute rate.
 const PRICES = {
-  "claude-sonnet-5-5": { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 },
+  "claude-sonnet-5-5": { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.1 },
   "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheWrite: 0.125, cacheRead: 0.01 },
   "claude-opus-5-5": { input: 4, output: 20, cacheWrite: 5, cacheRead: 0.2 },
 };
@@ -439,9 +440,18 @@ export const normalizeToolName = (name: string) => {
     ? bare.slice(T3_PREFIX.length)
     : (CODEX_NAMES[bare] ?? bare.slice(bare.lastIndexOf("_") + 1));
 };
+// Decoding wraps secrets such as a statement password in Redacted; grade the value the agent sent.
+const unredact = (value: unknown): unknown =>
+  Redacted.isRedacted(value)
+    ? Redacted.value(value)
+    : Array.isArray(value)
+      ? value.map(unredact)
+      : isRecord(value)
+        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, unredact(item)]))
+        : value;
 export const normalizeToolInput = (name: string, input: unknown) => {
   const decode = t3InputDecoders.get(normalizeToolName(name));
-  if (decode !== undefined) return Option.getOrElse(decode(input), () => input);
+  if (decode !== undefined) return unredact(Option.getOrElse(decode(input), () => input));
   return normalizeToolName(name) === "Bash" && isRecord(input)
     ? { ...input, command: input.command ?? input.cmd }
     : typeof input === "string" && normalizeToolName(name) === "Edit"
@@ -1613,6 +1623,11 @@ type Config = {
   readonly apiKey: string;
   readonly model: Model;
   readonly proxy?: { readonly url: string; readonly headers: Readonly<Record<string, string>> };
+  /** An Anthropic-compatible gateway from `ANTHROPIC_BASE_URL`, used when there is no API key. */
+  readonly anthropic?: {
+    readonly url: string;
+    readonly headers: Readonly<Record<string, string>>;
+  };
   readonly effort: string;
   readonly maxSteps: number;
   readonly shellModel: ShellModel;
@@ -1638,7 +1653,11 @@ const simulate = Effect.fn("evaluateMcpToolUse.simulate")(function* (
   if (output === undefined) {
     const body = shellRequest(sample, call, config.shellModel);
     const response = isPricedModel(config.shellModel)
-      ? yield* callModel(config.apiKey, body, config.apiKey ? undefined : config.proxy)
+      ? yield* callModel(
+          config.apiKey,
+          body,
+          config.apiKey ? undefined : (config.anthropic ?? config.proxy),
+        )
       : yield* callCodex(config, shellResponsesRequest(body));
     addUsage(sample.shellUsage, response.usage);
     output = shellOutput(response.content);
@@ -1751,6 +1770,8 @@ const matches = (expected: unknown, actual: unknown): boolean => {
     const limit = Number(bound[2]);
     return typeof actual === "number" && (bound[1] === "<=" ? actual <= limit : actual >= limit);
   }
+  // A bare "~" asks only that the field is there.
+  if (expected === "~") return actual !== undefined && actual !== null && actual !== "";
   if (typeof expected === "string" && expected.startsWith("~")) {
     return valueText(actual).toLowerCase().includes(expected.slice(1).toLowerCase());
   }
@@ -1929,7 +1950,16 @@ export const gradeSample = (expect: McpToolUseCase["expect"], run: SampleRun, pa
       `shellMust /${p}/`,
       shell.some((c) => test(p, c) || test(p, argvForm(c))),
     );
-  for (const p of expect.textMust ?? []) add(`textMust /${p}/`, test(p, run.text));
+  // A Kin card's question is posted to the chat and stands for the turn's message, so it counts.
+  const shown = [
+    run.text,
+    ...calls.flatMap((call) =>
+      call.tool === "kin_ask" && isRecord(call.input) && typeof call.input.question === "string"
+        ? [call.input.question]
+        : [],
+    ),
+  ].join("\n\n");
+  for (const p of expect.textMust ?? []) add(`textMust /${p}/`, test(p, shown));
   for (const p of expect.textMustNot ?? []) add(`textMustNot /${p}/`, !test(p, run.text));
   for (const p of expect.finalTextMust ?? [])
     add(`finalTextMust /${p}/`, run.stopReason === "end_turn" && test(p, run.finalText ?? ""));
@@ -1960,12 +1990,18 @@ export const failedEarly = (expect: McpToolUseCase["expect"], run: SampleRun, pa
     pasted,
   ).some((check) => !check.pass && SETTLED.test(check.check));
 
-const requestBody = ({ base, tools }: Sample, effort: string, messages: unknown) => ({
+const requestBody = (
+  { base, tools }: Sample,
+  effort: string,
+  messages: unknown,
+  gateway = false,
+) => ({
   model: base.model,
   max_tokens: 16_000,
   thinking: { type: "adaptive", display: "summarized" },
   output_config: { effort },
-  cache_control: { type: "ephemeral" },
+  // The Anthropic gateway marks the last message for a 1h cache itself and rejects a second mark.
+  ...(gateway ? {} : { cache_control: { type: "ephemeral" } }),
   // Like Claude Code, cache the shared system prompt so every sample reuses it.
   system: base.system.map((block, i) =>
     i === base.system.length - 1 ? { ...block, cache_control: { type: "ephemeral" } } : block,
@@ -2203,7 +2239,11 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   for (let step = 0; step < maxSteps; step++) {
     const response = input
       ? yield* callCodex(config, codexRequest(base, input))
-      : yield* callModel(config.apiKey, requestBody(sample, config.effort, messages));
+      : yield* callModel(
+          config.apiKey,
+          requestBody(sample, config.effort, messages, config.anthropic !== undefined),
+          config.anthropic,
+        );
     addUsage(usage, response.usage);
     if ("raw" in response) {
       input?.push(...response.raw);
@@ -2673,14 +2713,24 @@ const main = Effect.gen(function* () {
     return;
   }
   const apiKey = yield* Config.String("ANTHROPIC_API_KEY").pipe(Config.withDefault(""));
+  const authToken = yield* Config.String("ANTHROPIC_AUTH_TOKEN").pipe(Config.withDefault(""));
+  const baseUrl = yield* Config.String("ANTHROPIC_BASE_URL").pipe(Config.withDefault(""));
+  const anthropic =
+    !apiKey && authToken && baseUrl
+      ? {
+          url: `${baseUrl.replace(/\/+$/, "")}/v1`,
+          headers: { Authorization: `Bearer ${authToken}` },
+        }
+      : undefined;
   const out = flags.out;
-  if ((!apiKey && !codex) || out === undefined) {
+  if ((!apiKey && !anthropic && !codex) || out === undefined) {
     const message =
-      "Set ANTHROPIC_API_KEY and pass --out <directory>. ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL are never used.";
+      "Set ANTHROPIC_API_KEY, or ANTHROPIC_BASE_URL with ANTHROPIC_AUTH_TOKEN, and pass --out <directory>.";
     return yield* Effect.die(new Error(message));
   }
   const config: Config = {
     apiKey,
+    ...(anthropic ? { anthropic } : {}),
     model: flags.model,
     ...(codex || !isPricedModel(flags["shell-model"]) ? { proxy: proxyConfig() } : {}),
     effort,
@@ -2712,7 +2762,11 @@ const main = Effect.gen(function* () {
     const { id, kind, pattern } = testCase;
     const identity = { id, kind, pattern, role: testCase.setup.role };
     const usage = { usage: emptyUsage(), shellUsage: emptyUsage() };
-    const privateValues = [config.apiKey, ...Object.values(config.proxy?.headers ?? {})]
+    const privateValues = [
+      config.apiKey,
+      ...Object.values(config.proxy?.headers ?? {}),
+      ...Object.values(config.anthropic?.headers ?? {}),
+    ]
       .flatMap((value) => [value, value.replace(/^Bearer /i, "")])
       .filter(Boolean);
     return runSample(testCase, config, baseFor(testCase), usage).pipe(
