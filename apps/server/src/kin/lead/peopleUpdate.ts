@@ -11,7 +11,8 @@ import { profileSets } from "../people/profileFields.ts";
 import { turnAsker } from "./Audience.ts";
 import type { resolveLead } from "./LeadMemory.ts";
 
-const { displayName, roleTags, skills, timeZone, workHours } = KinPeopleUpdateProfileInput.fields;
+const { displayName, roleTags, skills, timeZone, workHours, talkStyle } =
+  KinPeopleUpdateProfileInput.fields;
 export const PeopleUpdateInput = Schema.Struct({
   person: Schema.optional(Schema.String).annotate({
     description:
@@ -22,6 +23,7 @@ export const PeopleUpdateInput = Schema.Struct({
   skills,
   timeZone,
   workHours,
+  talkStyle,
 });
 export type PeopleUpdateInput = typeof PeopleUpdateInput.Type;
 export const PeopleUpdateResult = Schema.Struct({ saved: Schema.String });
@@ -64,6 +66,8 @@ export const updatePeople = Effect.fn("KinPeopleUpdate.update")(function* (
                   ),
             ),
           );
+  if (target.personId !== asker && input.talkStyle !== undefined)
+    return yield* refused("Only they can say how they like to be spoken to.");
   if (target.personId !== asker) {
     const level = (person: KinPersonId) => ownerLevel(lead.orgId, person);
     if (!(yield* level(asker))) return yield* refused("A teammate changes only their own profile.");
@@ -86,6 +90,7 @@ export const updatePeople = Effect.fn("KinPeopleUpdate.update")(function* (
     input.skills === undefined ? null : "skills",
     input.timeZone === undefined ? null : "time zone",
     input.workHours === undefined ? null : "working hours",
+    input.talkStyle === undefined ? null : "how they like to be spoken to",
   ].filter((part) => part !== null);
   return { saved: `Saved ${saved?.name ?? "their"}'s ${changed.join(", ")}.` };
 });

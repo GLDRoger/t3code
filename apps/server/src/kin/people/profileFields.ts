@@ -8,7 +8,7 @@ const encodeWorkHours = Schema.encodeEffect(Schema.fromJsonString(KinWorkHours))
 
 export type ProfileFields = Pick<
   KinPeopleUpdateProfileInput,
-  "displayName" | "roleTags" | "skills" | "timeZone" | "workHours"
+  "displayName" | "roleTags" | "skills" | "timeZone" | "workHours" | "talkStyle"
 >;
 
 /** The `kin_people` assignments for the given profile fields, stamped `profile_updated_at`. */
@@ -31,6 +31,7 @@ export const profileSets = Effect.fn("KinPeople.profileSets")(function* (
     fields.skills === undefined ? null : sql`skills = ${fields.skills.trim()}`,
     fields.timeZone === undefined ? null : sql`time_zone = ${fields.timeZone}`,
     workHours === undefined ? null : sql`work_hours_json = ${workHours}`,
+    fields.talkStyle === undefined ? null : sql`talk_style = ${fields.talkStyle.trim()}`,
     sql`profile_updated_at = ${now}`,
   ].filter((part) => part !== null);
 });

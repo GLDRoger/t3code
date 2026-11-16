@@ -28,6 +28,7 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuthRuntime.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 import type * as Provision from "../lead/KinLeadProvision.ts";
 import { announceToServer, cliChanges } from "./announce.ts";
+import { characterCommand } from "./characterCommand.ts";
 import { githubCommand } from "./githubWebhook.ts";
 import { importCommand } from "./importCommand.ts";
 import { statementCommand } from "./statementCommand.ts";
@@ -354,7 +355,7 @@ export const kinCommand = Command.make("kin").pipe(
   Command.withSubcommands([
     Command.make("lead").pipe(
       Command.withDescription(
-        "Create, list and retire this host's Kin agents, and set their worker projects and charters.",
+        "Create, list and retire this host's Kin agents, and set their worker projects, charters and characters.",
       ),
       Command.withSubcommands([
         createCommand,
@@ -363,6 +364,7 @@ export const kinCommand = Command.make("kin").pipe(
         restoreCommand,
         projectsCommand,
         charterCommand,
+        characterCommand,
       ]),
     ),
     githubCommand,
