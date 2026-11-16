@@ -36,6 +36,7 @@ import * as OwnerDocs from "./ownerDocs.ts";
 import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
 import { search } from "./search.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 
 // Invented org, people and docs only; nothing here reads a real database or memory.
 const orgId = KinOrgId.make("org");
@@ -422,7 +423,7 @@ it.effect("a version's provenance comes from stored rows, never from what the ag
       audience: "shared",
     } as typeof LeadDocs.CreateInput.Type;
     const made = yield* LeadDocs.create(scopeOf(lead), forged);
-    const row = yield* Docs.docRow(orgId, { key: made.key });
+    const row = yield* Docs.docRow(orgId, { key: made.key }, KIN_OWNER_LEVEL);
     const version = Docs.toVersion((yield* Docs.versionOf(orgId, row.recordId))!);
     assert.deepStrictEqual(version.provenance, {
       by: { _tag: "agent", agentId: lead },
@@ -589,7 +590,7 @@ it.effect(
       yield* turn();
       const sql = yield* SqlClient.SqlClient;
       const label = (key: string) =>
-        Docs.docRow(orgId, { key }).pipe(Effect.map((row) => row.sensitive));
+        Docs.docRow(orgId, { key }, KIN_OWNER_LEVEL).pipe(Effect.map((row) => row.sensitive));
       // The turn has read a price: the PRD it writes and edits stays readable by the team (H04).
       yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
         VALUES (${orgId}, 'wake', 0)`;
@@ -647,7 +648,7 @@ it.effect(
       yield* sql`UPDATE kin_records SET project_id = ${project.row.recordId}
         WHERE key IN (${prd.key}, ${made.key})`;
       const seen = (key: string) =>
-        Docs.docRow(orgId, { key }, mateId).pipe(
+        Docs.docRow(orgId, { key }, viewerOfPeople([mateId])).pipe(
           Effect.as(true),
           Effect.orElseSucceed(() => false),
         );
@@ -693,7 +694,10 @@ it.effect("another org's doc, by key or id, looks like no doc at all", () =>
     const created = yield* newDoc();
     const { key, recordId } = created.row;
     for (const ref of [{ key }, { recordId }])
-      assert.strictEqual(reasonOf(yield* Effect.flip(Docs.docRow(elsewhere, ref))), "not_found");
+      assert.strictEqual(
+        reasonOf(yield* Effect.flip(Docs.docRow(elsewhere, ref, KIN_OWNER_LEVEL))),
+        "not_found",
+      );
     const edit: KinChatError = yield* Effect.flip(
       Docs.edit(
         elsewhere,
@@ -710,7 +714,12 @@ it.effect("another org's doc, by key or id, looks like no doc at all", () =>
     assert.strictEqual(edit.reason, "not_found");
     assert.isUndefined(yield* Docs.versionOf(elsewhere, recordId));
     assert.lengthOf(
-      (yield* search(elsewhere, { text: "pricing", limit: 10, viewer: "owner" })).hits,
+      (yield* search(elsewhere, {
+        text: "pricing",
+        limit: 10,
+        viewer: "owner",
+        scope: KIN_OWNER_LEVEL,
+      })).hits,
       0,
     );
     // A Work entry is not a doc either.
@@ -721,7 +730,7 @@ it.effect("another org's doc, by key or id, looks like no doc at all", () =>
       owner: { _tag: "agent", agentId: lead },
     });
     assert.strictEqual(
-      reasonOf(yield* Effect.flip(Docs.docRow(orgId, { key: entry.row.key }))),
+      reasonOf(yield* Effect.flip(Docs.docRow(orgId, { key: entry.row.key }, KIN_OWNER_LEVEL))),
       "not_found",
     );
   }).pipe(Effect.provide(layer)),
@@ -763,7 +772,7 @@ it.effect("one search finds entries and docs, and the team view hides what label
       sensitive: true,
     });
     const found = (viewer: "owner" | "team") =>
-      search(orgId, { text: "pricing", limit: 20, viewer }).pipe(
+      search(orgId, { text: "pricing", limit: 20, viewer, scope: KIN_OWNER_LEVEL }).pipe(
         Effect.map(({ hits, indexed }) => ({
           indexed,
           hits: hits.map((hit) => [hit.title, hit.kind, hit.sensitive, hit.section?.id ?? null]),

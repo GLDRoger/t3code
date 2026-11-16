@@ -1,5 +1,6 @@
 import { definePlugin } from "@oxlint/plugins";
 
+import kinViewerScopedReads from "./rules/kin-viewer-scoped-reads.ts";
 import maxSettingsDescriptionLength from "./rules/max-settings-description-length.ts";
 import namespaceNodeImports from "./rules/namespace-node-imports.ts";
 import noDomTestEnvironment from "./rules/no-dom-test-environment.ts";
@@ -39,6 +40,7 @@ export default definePlugin({
     name: "t3code",
   },
   rules: {
+    "kin-viewer-scoped-reads": kinViewerScopedReads,
     "max-settings-description-length": maxSettingsDescriptionLength,
     "namespace-node-imports": namespaceNodeImports,
     "no-dom-test-environment": noDomTestEnvironment,

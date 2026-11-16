@@ -48,7 +48,7 @@ import {
 import { buildWeeklySection, isMorningCheckIn, wantsWeekly, WEEKLY_RULE } from "../pulse/weekly.ts";
 import { playbookIndex } from "../work/playbooks.ts";
 import { entriesShown, sensitiveShown, sourcesShown } from "../work/workerAttempts.ts";
-import { personSees } from "../work/teamView.ts";
+import { KIN_OWNER_LEVEL, personSees } from "../work/teamView.ts";
 import { promptLine as connectionsLine } from "../connections/ConnectionRows.ts";
 import { inheritOutside } from "./OutsideContent.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
@@ -1073,7 +1073,10 @@ export class KinLeadPrompt extends Context.Service<
               (event._tag === "routine" && event.routine === "morning_brief") ||
               isMorningCheckIn(event),
           )
-            ? yield* Effect.all([moneySummary(orgId, now), budgetFlags(orgId, now)]).pipe(
+            ? yield* Effect.all([
+                moneySummary(orgId, now, KIN_OWNER_LEVEL),
+                budgetFlags(orgId, now),
+              ]).pipe(
                 Effect.map(([summary, budgets]) => {
                   const section = moneySection(summary, summary.timeZone);
                   return budgets === undefined

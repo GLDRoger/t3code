@@ -121,6 +121,7 @@ export type Writer = {
   /** Shared with the team when made; a turn others read shares its tasks too (`ROOM_LISTS`). */
   readonly teamShared?: boolean;
   /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
+  // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- a write's guard, not a read; absent is an owner-level writer.
   readonly view?: {
     readonly people: ReadonlyArray<KinPersonId>;
     readonly askers: ReadonlyArray<KinPersonId>;
@@ -214,8 +215,10 @@ export type QueryInput = {
   /** The time `late` is judged at; a later page passes the first page's so offsets hold. */
   readonly at?: number;
   /** Only what this teammate may see (`teamView.ts`), and the change number of only that. */
+  // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- the owner-level primitive; person reads reach it only through ownerWork/leadWork, which set it.
   readonly team?: KinPersonId;
   /** Only what every one of these people may see (`viewSees`). */
+  // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- the owner-level primitive; person reads and writes reach it through ownerWork/leadWork, which set it.
   readonly view?: ReadonlyArray<KinPersonId>;
 };
 

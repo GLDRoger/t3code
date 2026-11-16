@@ -54,7 +54,9 @@ import {
   workFailure,
 } from "./recordRows.ts";
 import {
+  KIN_OWNER_LEVEL,
   TEAM_REFUSED,
+  viewerOfPeople,
   ledProjects,
   teamDetail,
   teamKeys,
@@ -348,7 +350,10 @@ export const get = Effect.fn("KinWork.get")(function* (
     input,
     seq,
   );
-  const { milestone, tasks } = yield* milestoneLinks(row).pipe(workFailure);
+  const { milestone, tasks } = yield* milestoneLinks(
+    row,
+    viewer.teammate ? viewerOfPeople([viewer.person.personId]) : KIN_OWNER_LEVEL,
+  ).pipe(workFailure);
   const linked = [
     ...(milestone === undefined ? [] : [milestone.recordId]),
     ...(tasks ?? []).map((task) => task.recordId),

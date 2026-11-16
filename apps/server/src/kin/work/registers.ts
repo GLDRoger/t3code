@@ -16,11 +16,11 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import type * as Statement from "effect/sql/Statement";
 
 import { type FieldValue, isMoney, LISTS, type ListName, sensitiveFields } from "./lists.ts";
 import { DEFAULT_CURRENCY, isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
+import { seenBy, type KinViewer } from "./teamView.ts";
 
 /**
  * KinRegisters: what a list is. Work and the light CRM are fixed in code; every other list,
@@ -956,13 +956,15 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
 /** Open entries per list, for the definitions the owner sees. */
 export const openCounts = Effect.fn("KinRegisters.openCounts")(function* (
   orgId: KinOrgId,
-  /** Only entries someone besides the owner may see (`personSees`), lists with none left out. */
-  sees?: Statement.Fragment,
+  /** For a person, only entries they see, and lists with none left out. */
+  viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ id: string; open: number }>`SELECT r.register_id AS id,
       SUM(r.state NOT IN ('done', 'dropped')) AS open FROM kin_records r
-    WHERE r.org_id = ${orgId} AND ${sees ?? sql`r.state NOT IN ('done', 'dropped')`}
+    WHERE r.org_id = ${orgId} AND ${
+      viewer._tag === "ownerLevel" ? sql`r.state NOT IN ('done', 'dropped')` : seenBy(sql, viewer)
+    }
     GROUP BY r.register_id ORDER BY r.register_id`;
   return new Map(rows.map((row) => [row.id, row.open]));
 });
