@@ -107,8 +107,8 @@ export const sayRefusal = (d: Discussion, said: Said): string | null => {
   const kind = d.turn.kind;
   if (kind === "closing" && said.end === null)
     return "This is the closing turn: decide, park it or bring it to the owner.";
-  if (kind === "object" && said.intent !== "objection")
-    return "The decision stands unless you object: object once with intent objection, or pass by ending without team_say.";
+  if (kind === "object" && (said.intent !== "objection" || said.end !== null))
+    return "The decision stands unless you object: object once with intent objection and no end, or pass by ending without team_say.";
   if (said.widen && (d.widened || (said.agentId !== d.decider && said.agentId !== d.chair)))
     return d.widened
       ? "The question was widened once already. A new question needs its own discussion."
@@ -199,7 +199,8 @@ export const afterSay = (d: Discussion, said: Said): Discussion => {
   if (said.end === "decide") {
     // The one objection: offered to someone the matter touches who isn't the decider.
     const objector =
-      wasClosing || d.objectionUsed
+      // At the message limit a decision stands: an objection would run past it.
+      wasClosing || d.objectionUsed || base.messages >= TEAM_MAX_MESSAGES
         ? undefined
         : [...said.stakes, ...base.speakers.toReversed()].find(
             (agentId) => agentId !== said.agentId && agentId !== d.chair,

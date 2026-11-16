@@ -1,4 +1,4 @@
-import { it } from "@effect/vitest";
+import { assert, it } from "@effect/vitest";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Schema from "effect/Schema";
 
@@ -140,3 +140,31 @@ it.prop(
     );
   },
 );
+
+// The model check (verification/kin/discussion): an objection that also decided invited a second
+// objection, and a decision at the message limit invited one that ran past it.
+it("an objection can't also decide, and a decision at the limit stands", () => {
+  const said = (agentId: string, extra: Partial<Turns.Said> = {}): Turns.Said => ({
+    agentId,
+    intent: "answer",
+    to: [],
+    widen: false,
+    end: null,
+    stakes: [],
+    ...extra,
+  });
+  let d = Turns.opened({ openedBy: "social", decider: "finance", chair: "chief" });
+  d = Turns.afterSay(d, said("social"));
+  d = Turns.afterSay(d, said("finance", { end: "decide", intent: "decision" }));
+  assert.deepStrictEqual(d.turn, { agentId: "social", kind: "object" });
+  assert.isNotNull(Turns.sayRefusal(d, said("social", { intent: "objection", end: "decide" })));
+  const full = {
+    ...Turns.opened({ openedBy: "social", decider: "finance", chair: "chief" }),
+    messages: Turns.TEAM_MAX_MESSAGES - 1,
+    speakers: ["social"],
+    turn: { agentId: "finance", kind: "decider" as const },
+  };
+  const decided = Turns.afterSay(full, said("finance", { end: "decide", intent: "decision" }));
+  assert.isTrue(decided.final);
+  assert.strictEqual(decided.state, "decided");
+});

@@ -64,11 +64,9 @@ export const TeamOpenInput = Schema.Struct({
     description: "Your opening message, with what you already know.",
   }),
   to: Schema.optional(
-    Schema.Array(Name)
-      .check(Schema.isMaxLength(2))
-      .annotate({
-        description: "Up to two agents your message asks. Leave out to ask the decider.",
-      }),
+    Schema.Array(Name).check(Schema.isMaxLength(2)).annotate({
+      description: "Up to two agents your message asks. Leave out to ask the decider.",
+    }),
   ),
 });
 export const TeamSayInput = Schema.Struct({
