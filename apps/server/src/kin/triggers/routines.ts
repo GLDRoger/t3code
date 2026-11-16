@@ -24,6 +24,7 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 import * as KinTriggerScheduler from "./KinTriggerScheduler.ts";
+import { KIN_DEFAULT_QUIET_HOURS } from "./quietHours.ts";
 import * as OwnerCheck from "./ownerCheck.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { unsetOwnerZone } from "../work/recordRows.ts";
@@ -147,7 +148,7 @@ const make = Effect.gen(function* () {
             fullRebuildWeekday: 0,
             ownerCheckWeekday: 1,
             ownerCheck: "09:00",
-            quietHours: { from: "21:00", to: "08:00" },
+            quietHours: KIN_DEFAULT_QUIET_HOURS,
           }
         : {
             orgId,

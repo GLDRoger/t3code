@@ -697,6 +697,9 @@ it.effect(
           VALUES ('zoya', ${orgId}, 'zoya', 'Zoya Sheikh', ${at})`;
         yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
           VALUES (${orgId}, ${chief}, ${owner.personId}, 0)`;
+        // The clock reads 16:00 on the owner's Pacific clock: outside 22:00 to 08:00.
+        yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'America/Los_Angeles',
+          '08:30', '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"08:00"}')`;
         const [me] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
           WHERE person_id = ${owner.personId}`;
         const sent: Array<{ personId: string; chatId: string; body: string }> = [];
@@ -720,6 +723,18 @@ it.effect(
         assert.deepStrictEqual(sent, [
           { personId: "zoya", chatId: theirs!.chatId, body: "Ishaan moved W-7 to 1 February." },
         ]);
+        // Inside her quiet hours (15:00 to 17:00 here) it is held: nothing reaches her until 17:00.
+        yield* sql`UPDATE kin_trigger_settings SET quiet_hours_json = '{"from":"15:00","to":"17:00"}'`;
+        const held = yield* Effect.flip(handoff.relay(scopeFor(chief), answer, postTo));
+        assert.include(held.message, "quiet hours until 1970-01-01T01:00:00.000Z");
+        assert.lengthOf(sent, 1);
+        // Marked urgent, with its reason, it goes now.
+        yield* Effect.exit(
+          handoff.relay(scopeFor(chief), { ...answer, urgent: "Invented site is down" }, postTo),
+        );
+        assert.lengthOf(sent, 2);
+        sent.pop();
+        yield* sql`UPDATE kin_trigger_settings SET quiet_hours_json = '{"from":"22:00","to":"08:00"}'`;
         const toOwner = yield* Effect.flip(
           handoff.relay(scopeFor(chief), { ...answer, to: me!.name }, postTo),
         );
