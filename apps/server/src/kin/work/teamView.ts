@@ -508,8 +508,17 @@ export const dependents = Effect.fn("KinTeamView.dependents")(function* (
   orgId: KinOrgId,
   recordId: string,
 ) {
+  return (yield* dependentRows(orgId, recordId)).map((row) => row.recordId);
+});
+
+/** `dependents`, with each entry's key and list. */
+export const dependentRows = Effect.fn("KinTeamView.dependentRows")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ recordId: string }>`SELECT r.record_id AS "recordId" FROM kin_records r
+  return yield* sql<{ recordId: string; key: string; registerId: string }>`SELECT
+      r.record_id AS "recordId", r.key, r.register_id AS "registerId" FROM kin_records r
     WHERE r.org_id = ${orgId} AND (r.party_id = ${recordId}
       OR r.project_id = ${recordId} OR r.project_id IN (SELECT p.record_id FROM kin_records p
         WHERE p.org_id = r.org_id AND p.register_id = 'projects' AND p.party_id = ${recordId})
@@ -518,7 +527,6 @@ export const dependents = Effect.fn("KinTeamView.dependents")(function* (
       OR (r.register_id = 'contacts' AND r.party_id IN (SELECT p.party_id FROM kin_records p
         WHERE p.org_id = r.org_id AND p.record_id = ${recordId})))
     ORDER BY r.record_id`;
-  return rows.map((row) => row.recordId);
 });
 
 /**
@@ -575,6 +583,18 @@ export const teamKeys = Effect.fn("KinTeamView.keys")(function* (
   const rows = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
     WHERE r.org_id = ${orgId} AND ${personSees(sql, personId)} ORDER BY r.key`;
   return new Set(rows.map((row) => row.key));
+});
+
+/** `teamKeys`, with each entry's list. */
+export const teamKeyLists = Effect.fn("KinTeamView.keyLists")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ key: string; registerId: string }>`SELECT r.key,
+      r.register_id AS "registerId" FROM kin_records r
+    WHERE r.org_id = ${orgId} AND ${personSees(sql, personId)} ORDER BY r.key`;
+  return new Map(rows.map((row) => [row.key, row.registerId]));
 });
 
 /** A Work task as a teammate reads it: no client, project, money, list fields, files or payments. */
