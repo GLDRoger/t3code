@@ -50,13 +50,15 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
   input: KinPulseListInput,
 ) {
   const { viewer } = yield* viewerIn(people, input.orgId);
-  return yield* KinPulse.read({
+  const read = yield* KinPulse.read({
     orgId: input.orgId,
     at: yield* Clock.currentTimeMillis,
     viewer,
     includeHandled: input.includeHandled,
     limit: SCREEN_CAP,
   }).pipe(Effect.catchTags({ SqlError: unavailableOn }));
+  // Screens show the consequence, which already says the measure; agents' reads keep it.
+  return { ...read, facts: read.facts.map(({ measure: _measure, ...fact }) => fact) };
 });
 
 export const handle = Effect.fn("KinPulsePeople.handle")(function* (

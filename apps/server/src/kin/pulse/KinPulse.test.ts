@@ -21,6 +21,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { buildPulseSection } from "./prompt.ts";
+import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, renderWeekly, wantsWeekly } from "./weekly.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
@@ -661,5 +662,56 @@ describe("KinPulse", () => {
       assert.isTrue(wantsWeekly([checkIn("checkin-weekly")]));
       assert.isFalse(wantsWeekly([checkIn("checkin-morning")]));
     }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("project_quiet's last change", () => {
+  // A seeded generator, so a failing company can be built again from its number.
+  const random = (seed: number) => {
+    let state = seed;
+    return (below: number) => {
+      state = (state * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return state % below;
+    };
+  };
+
+  it.effect(
+    "is what one query over the project and its entries together says, for any company",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        for (let company = 0; company < 25; company += 1) {
+          const next = random(company + 1);
+          const projects = Array.from({ length: 1 + next(6) }, (_, n) => `PX${company}-${n}`);
+          for (const id of projects) {
+            yield* insert({ id, list: "projects", state: next(4) === 0 ? "done" : "open" });
+            if (next(3) === 0) yield* change(id, B - next(40) * DAY);
+            for (let task = 0; task < next(5); task += 1) {
+              const taskId = `${id}-W${task}`;
+              yield* insert({ id: taskId, projectId: id, state: next(3) === 0 ? "done" : "open" });
+              for (let moved = 0; moved < next(4); moved += 1)
+                yield* change(taskId, B - next(60) * DAY - next(DAY));
+            }
+          }
+          const ours = yield* sql<{ key: string; lastAt: number }>`SELECT r.key,
+            ${projectLastMoved(sql)} AS "lastAt"
+          FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'projects'
+          ORDER BY r.key`;
+          // How project_quiet read it before: right, but a scan of every change per project.
+          const reference = yield* sql<{ key: string; lastAt: number | null }>`SELECT r.key,
+            (SELECT MAX(ch.at) FROM kin_record_changes ch
+              JOIN kin_records t ON t.org_id = ch.org_id AND t.record_id = ch.record_id
+              WHERE ch.org_id = r.org_id AND (t.record_id = r.record_id OR t.project_id = r.record_id))
+              AS "lastAt"
+          FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'projects'
+          ORDER BY r.key`;
+          assert.deepStrictEqual(
+            ours.map((row) => [row.key, row.lastAt === -1 ? null : row.lastAt]),
+            reference.map((row) => [row.key, row.lastAt]),
+            `company ${company}`,
+          );
+        }
+      }).pipe(Effect.provide(layer)),
   );
 });

@@ -173,30 +173,42 @@ export const playbookThreshold = Effect.fn("KinPlaybooks.threshold")(function* (
   key: PlaybookKey,
   clientId?: string,
 ) {
+  return (yield* playbookThresholds(orgId))(key, clientId);
+});
+
+/**
+ * `playbookThreshold` for many keys and clients over one read of the playbooks, for a sweep that
+ * asks once per client or project.
+ */
+export const playbookThresholds = Effect.fn("KinPlaybooks.thresholds")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* livePlaybooks(sql, orgId);
-  const pick = (party: string | null) => {
-    for (const row of rows) {
-      if (row.partyId !== party) continue;
-      const parsed = parseKinBlocks(row.body);
-      const value = parsed._tag === "ok" ? parsed.values.get(key) : undefined;
-      if (value !== undefined)
-        return {
-          value,
-          from: { _tag: "playbook" as const, key: row.key, title: row.title },
-        };
-    }
-    return undefined;
+  const rows = (yield* livePlaybooks(sql, orgId)).map((row) => {
+    const parsed = parseKinBlocks(row.body);
+    return { row, values: parsed._tag === "ok" ? parsed.values : undefined };
+  });
+  return (key: PlaybookKey, clientId?: string) => {
+    const pick = (party: string | null) => {
+      for (const { row, values } of rows) {
+        if (row.partyId !== party) continue;
+        const value = values?.get(key);
+        if (value !== undefined)
+          return {
+            value,
+            from: { _tag: "playbook" as const, key: row.key, title: row.title },
+          };
+      }
+      return undefined;
+    };
+    const def: KeyDef = PLAYBOOK_KEYS[key];
+    const scoped = clientId === undefined || def.client !== true ? undefined : pick(clientId);
+    return (
+      scoped ??
+      pick(null) ?? {
+        value: def.default,
+        from: { _tag: "default" } as ThresholdSource,
+      }
+    );
   };
-  const def: KeyDef = PLAYBOOK_KEYS[key];
-  const scoped = clientId === undefined || def.client !== true ? undefined : pick(clientId);
-  return (
-    scoped ??
-    pick(null) ?? {
-      value: def.default,
-      from: { _tag: "default" } as ThresholdSource,
-    }
-  );
 });
 
 const INDEX_MAX = 40;
