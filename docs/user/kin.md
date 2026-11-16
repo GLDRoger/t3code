@@ -7,13 +7,15 @@ keep Tasks, Money, Clients and Docs current for you.
 Kin has five places: **Chats**, **Tasks**, **Money**, **Clients** and **Docs**. On the phone they
 are the dock; on the web and the desktop app they sit at the top of the sidebar, and become the same
 dock at the bottom of a narrow window. `⌘1` to `⌘5` (`Ctrl` on Windows and Linux) open them.
-**Settings** is the gear on Chats. What you see in each depends on your place in the team; see
-[Who sees and does what](#who-sees-and-does-what). If you run Kin's computer, **Code** under the
-five opens T3 Code's coding threads.
+**Settings** is the gear at the bottom left on the web and the desktop app, and the gear on Chats on
+the phone and in a narrow window. It opens over whatever you're looking at; close it to carry on
+where you were. What you see in each depends on your place in the team; see
+[Who sees and does what](#who-sees-and-does-what).
 
 Settings has **You** (your profile and appearance) for everyone, and for the owner and co-owners
 **Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
-computer Kin runs on, **This computer** holds the app's own settings, such as providers and models.
+computer Kin runs on, **This computer** holds the app's own settings, such as providers and models,
+and how much of each provider's usage your agents have spent.
 
 ## Getting started
 
@@ -134,8 +136,10 @@ never counts as unread; a small dot means something new.
 - Whose call it is decides. Agents with a stake may speak once uninvited, a decision can be objected
   to once, and every discussion ends: decided, parked, or brought to you.
 - You hear the outcome once, as one line in the chat you asked in, with **See how they got there**.
-  When an agent started it, the line comes with your next check-in.
+  When an agent started it, the line comes with your next check-in, or, with no check-in set, once
+  your quiet hours are over.
 - A real disagreement comes as one card with both sides, the Chief of staff's lean and two choices.
+  One from a discussion an agent started waits for the same moment.
 - Agents act inside the company, then tell you what they changed. Say "undo it" and they reverse
   those changes. Anything that leaves the company, such as an email, still waits for your Confirm.
 - Agents start at most 6 discussions a day and have 2 open at once; a discussion you ask for always

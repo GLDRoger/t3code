@@ -1,4 +1,5 @@
 import type { KinAgentId, KinOrgId, ThreadId } from "@t3tools/contracts";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -23,6 +24,7 @@ import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
+import { listedOnSharedThread } from "./SharedTools.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 
 const leadT3Tools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
@@ -119,22 +121,35 @@ export const delegatedFromLead = Effect.fn("KinAgentSession.delegatedFromLead")(
   ),
 );
 
+/** Kin's GitHub tools answer only "not connected" without the Kin App (`layer.ts` `repoReads`). */
+const isKinGitHubTool = (name: string) => name.startsWith("kin_github_");
+const kinAppConfigured = Config.option(Config.String("KIN_GITHUB_APP_ID")).pipe(
+  Effect.map(Option.isSome),
+  Effect.orElseSucceed(() => false),
+);
+
 /**
- * What the Kin endpoint lists and lets a session call. A T3 tool shows only on a thread whose turns
- * only the owner level reads; `kin_delegate` never shows: longer work is a T3 delegated task. The
- * gate (`KinToolGate`) still checks each call against the running turn.
+ * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
+ * Shared threads list only what shared turns may run; T3 tools show only on an owner-only thread;
+ * `kin_delegate` never shows, as longer work is a T3 delegated task. `KinToolGate` checks each call.
  */
-export const visibleOnKinEndpoint = (name: string, threadId: ThreadId) => {
+export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(function* (
+  name: string,
+  threadId: ThreadId,
+) {
+  const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
+  if (shared && !listedOnSharedThread(name)) return false;
+  if (isKinGitHubTool(name)) return yield* kinAppConfigured;
   if (name === "kin_delegate") return false;
   if (!isT3Tool(name)) return true;
-  return leadT3Tools.has(name) && !threadId.startsWith(SHARED_THREAD_PREFIX);
-};
+  return leadT3Tools.has(name) && !shared;
+});
 
 export const endpointVisibility = McpHttpServer.toolVisibility((name) =>
   Effect.gen(function* () {
     const scope = yield* Effect.serviceOption(McpInvocationContext);
     if (Option.isNone(scope) || scope.value.thread === undefined) return false;
-    return visibleOnKinEndpoint(name, scope.value.thread.threadId);
+    return yield* visibleOnKinEndpoint(name, scope.value.thread.threadId);
   }),
 );
 
