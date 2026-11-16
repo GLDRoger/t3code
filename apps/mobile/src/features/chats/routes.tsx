@@ -28,6 +28,7 @@ import { KinMemoryScreen } from "./KinMemoryScreen";
 import { KinRatesScreen } from "./KinMoneyEstimate";
 import { KinSubscriptionsScreen } from "./KinSubscriptions";
 import { KinProjectLeadScreen } from "./KinProjectLeadScreen";
+import { KinProjectPeopleScreen } from "./KinProjectPeopleScreen";
 import { KinProjectScreen } from "./KinProjectScreen";
 import { KinSettingsScreen } from "./KinSettings";
 import { KinCheckInFormScreen } from "./KinCheckIns";
@@ -245,6 +246,10 @@ export const KIN_SCREENS = {
   }),
   KinProjectLead: createNativeStackScreen({
     screen: KinProjectLeadScreen,
+    options: sheetRoute({ detent: 0.75 }),
+  }),
+  KinProjectPeople: createNativeStackScreen({
+    screen: KinProjectPeopleScreen,
     options: sheetRoute({ detent: 0.75 }),
   }),
   KinTeammate: createNativeStackScreen({

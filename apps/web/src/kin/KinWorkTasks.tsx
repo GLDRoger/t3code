@@ -36,6 +36,12 @@ import {
   kinWorkFilterLabel,
   kinWorkOwnerSelected,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
+import {
+  kinWorkGroupWithin,
+  kinWorkGroups,
+  kinWorkGroupsShown,
+  type KinWorkGroupItem,
+} from "@t3tools/client-runtime/kin/kinWorkGroups";
 import { kinWorkListsMoved, type KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinRecord, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
@@ -57,6 +63,7 @@ import {
   type KinFilterGroup,
   KinLoadFailed,
 } from "./KinWorkParts";
+import { KinAvatar } from "./KinAvatar";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
@@ -152,8 +159,16 @@ export function KinWorkTaskList(
     showsNeedsYou ? names.me : null,
     props.stale ? null : kinWorkListsMoved(live, ["work"]),
   );
-  const rows = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null).map((record) =>
-    kinWorkRow(record, names, now, filter),
+  const beside = kinWorkBesideNeedsYou(records, showsNeedsYou ? mine : null);
+  // The plain list reads by whom each task waits on; a filtered one stays one list.
+  const items: ReadonlyArray<KinWorkGroupItem<KinRecord>> =
+    props.within === undefined && kinWorkGroupsShown(filter, names.me)
+      ? kinWorkGroups(beside, names)
+      : beside.map((record) => ({ type: "task", key: record.key, record, section: null }));
+  const rows: ReadonlyArray<KinWorkListItem> = items.map((item) =>
+    item.type === "task"
+      ? { ...item, row: kinWorkRow(item.record, names, now, kinWorkGroupWithin(item, filter)) }
+      : item,
   );
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = records.find((held) => held.key === key);
@@ -170,9 +185,10 @@ export function KinWorkTaskList(
     hostEdits,
   );
   return (
-    <LegendList<KinWorkRowView>
+    <LegendList<KinWorkListItem>
       data={rows}
-      keyExtractor={(row) => row.key}
+      keyExtractor={(item) => item.key}
+      getItemType={(item) => item.type}
       extraData={[listState, changed]}
       recycleItems
       onEndReached={() => void list.loadMore()}
@@ -260,17 +276,31 @@ export function KinWorkTaskList(
           </div>
         )
       }
-      renderItem={({ item: row }) => (
-        <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4">
-          <KinWorkRow
-            row={row}
-            saving={changed.pending[row.key] !== undefined}
-            selected={row.key === props.openKey}
-            onOpen={() => props.onOpen(row.key)}
-            onAct={canChange ? (action) => act(row.key, action) : null}
-          />
-        </div>
-      )}
+      renderItem={({ item }) =>
+        item.type === "section" ? (
+          <div className="mx-auto flex w-full max-w-3xl items-baseline gap-2 px-6 pt-5 pb-1">
+            <h3 className="min-w-0 truncate text-sm font-medium text-foreground">{item.title}</h3>
+            <span className="text-xs text-muted-foreground tabular-nums">{item.count}</span>
+          </div>
+        ) : item.type === "who" ? (
+          <div className="mx-auto flex w-full max-w-3xl items-center gap-2 px-6 pt-2 pb-0.5">
+            <KinAvatar avatar={item.avatar} size="xs" />
+            <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">
+              {item.name}
+            </span>
+          </div>
+        ) : (
+          <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4">
+            <KinWorkRow
+              row={item.row}
+              saving={changed.pending[item.key] !== undefined}
+              selected={item.key === props.openKey}
+              onOpen={() => props.onOpen(item.key)}
+              onAct={canChange ? (action) => act(item.key, action) : null}
+            />
+          </div>
+        )
+      }
       estimatedItemSize={60}
       drawDistance={640}
       className={cn(
@@ -281,6 +311,13 @@ export function KinWorkTaskList(
     />
   );
 }
+
+/** A line of the list: a part's heading, whom a run waits on, or a task with its row. */
+type KinWorkListItem =
+  | Exclude<KinWorkGroupItem<KinRecord>, { readonly type: "task" }>
+  | (Extract<KinWorkGroupItem<KinRecord>, { readonly type: "task" }> & {
+      readonly row: KinWorkRowView;
+    });
 
 const EVERYONE = "all";
 
@@ -457,7 +494,17 @@ export function KinWorkRow(props: {
       >
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>
-          <span className="truncate text-xs text-muted-foreground">{row.line}</span>
+          {/* Who has it never gives way: the rest of the line cuts off before it does. */}
+          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+            <KinAvatar avatar={row.ownerAvatar} size="xs" />
+            <span className="max-w-[60%] shrink-0 truncate text-foreground/80">{row.holder}</span>
+            {row.detail === "" ? null : (
+              <span className="min-w-0 truncate">
+                <span aria-hidden>· </span>
+                {row.detail}
+              </span>
+            )}
+          </span>
         </span>
         {row.late ? (
           <Badge size="sm" variant="error">

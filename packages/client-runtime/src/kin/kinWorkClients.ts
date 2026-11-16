@@ -16,13 +16,16 @@ import type {
   KinProjectsInput,
   KinRecordKey,
   KinWorkHistoryItem,
+  KinWorkPrincipal,
 } from "@t3tools/contracts";
 
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { kinMoneyText } from "./kinLists.ts";
-import { formatKinTime } from "./kinScreenState.ts";
+import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import {
   kinWorkAllDay,
+  kinWorkAvatar,
+  kinWorkPrincipalKey,
   kinWorkChangeText,
   kinWorkDueText,
   kinWorkName,
@@ -45,6 +48,82 @@ export const KIN_PROJECT_LEAD = {
   save: "Make lead",
   failed: "The lead didn't change.",
 } as const;
+
+/** Who is on a project: they see its tasks, milestones and docs. */
+export const KIN_PROJECT_PEOPLE = {
+  add: "Add people",
+  choose: "Who's on this project",
+  detail:
+    "People on a project see its tasks, milestones and docs, and are told they were added. Taken off, its tasks leave their list at once.",
+  agents: "Agents",
+  people: "People",
+  nobodyLeft: "Everyone is already on it.",
+  save: "Add",
+  remove: (name: string) => `Take ${name} off`,
+  failed: "Who's on it didn't change.",
+  none: "Nobody else is on it yet.",
+} as const;
+
+/**
+ * Who could still be put on a project: teammates and agents at work, not already on it, by name.
+ * The lead is on it by leading it.
+ */
+export function kinProjectPeopleChoices(input: {
+  readonly people: ReadonlyArray<KinPerson> | null;
+  readonly names: Pick<KinWorkNames, "agents" | "retired">;
+  readonly on: ReadonlyArray<KinWorkPrincipal>;
+}): ReadonlyArray<{
+  readonly who: KinWorkPrincipal;
+  readonly key: string;
+  readonly name: string;
+  readonly agent: boolean;
+}> {
+  const taken = new Set(input.on.map(kinWorkPrincipalKey));
+  const people = (input.people ?? []).map((person) => ({
+    who: { _tag: "person", personId: person.personId } as const,
+    name: person.displayName,
+  }));
+  const agents = [...input.names.agents]
+    .filter(([agentId]) => input.names.retired?.has(agentId) !== true)
+    .map(([agentId, name]) => ({ who: { _tag: "agent", agentId } as KinWorkPrincipal, name }));
+  return [...people, ...agents]
+    .map((one) => ({ ...one, key: kinWorkPrincipalKey(one.who), agent: one.who._tag === "agent" }))
+    .filter((one) => !taken.has(one.key))
+    .sort((a, b) => Number(a.agent) - Number(b.agent) || a.name.localeCompare(b.name));
+}
+
+/** A teammate's projects on their sheet, and the ones they could be put on. */
+export const KIN_TEAMMATE_PROJECTS = {
+  title: "Projects",
+  none: "Not on any project yet. They see its tasks once they're on one.",
+  lead: "Lead",
+  on: "On it",
+  add: "Add to a project",
+  leadHint: "A project's lead is set on its page.",
+} as const;
+
+export function kinTeammateProjects(
+  personId: KinPersonId,
+  theirs: ReadonlyArray<KinProjectRow>,
+  open: ReadonlyArray<KinProjectRow>,
+) {
+  const on = new Set(theirs.map((row) => row.key));
+  return {
+    rows: theirs.map((row) => {
+      const leads = row.owner._tag === "person" && row.owner.personId === personId;
+      return {
+        key: row.key,
+        title: row.name,
+        line: leads ? KIN_TEAMMATE_PROJECTS.lead : KIN_TEAMMATE_PROJECTS.on,
+        /** On it by name: the lead stays on it by leading it. */
+        removable: !leads,
+      };
+    }),
+    addable: open
+      .filter((row) => !on.has(row.key))
+      .map((row) => ({ key: row.key, title: row.name })),
+  };
+}
 
 /** Everyone who can lead a project, by name. */
 export const kinProjectLeadChoices = (people: ReadonlyArray<KinPerson> | null) =>
@@ -711,10 +790,16 @@ export interface KinProjectPageView {
   readonly milestones: ReadonlyArray<KinMilestoneView>;
   readonly people: ReadonlyArray<{
     readonly key: string;
+    readonly who: KinWorkPrincipal;
     readonly name: string;
+    readonly avatar: KinAvatarView;
     /** "Lead · 3 open, 1 late". */
     readonly line: string;
+    /** On it by name, not by leading it or holding a task in it: theirs to take off. */
+    readonly member: boolean;
   }>;
+  /** This reader may put people on it and take them off (the host's `can`). */
+  readonly changesPeople: boolean;
   readonly meetings: ReadonlyArray<KinWorkRowView>;
   readonly specChanged: ReadonlyArray<{
     readonly key: KinRecordKey;
@@ -893,9 +978,13 @@ export function kinProjectPageView(
     notes: notes === "" ? null : notes,
     terms: projectTerms(project, target),
     milestones: (page.milestones ?? []).map((one) => kinMilestoneView(one, names, now)),
+    changesPeople: page.can?.people === true,
     people: (page.people ?? []).map((one) => ({
-      key: one.who._tag === "agent" ? `agent:${one.who.agentId}` : `person:${one.who.personId}`,
+      key: kinWorkPrincipalKey(one.who),
+      who: one.who,
       name: kinWorkName(one.who, names),
+      avatar: kinWorkAvatar(one.who),
+      member: one.member && !one.lead,
       line: [
         one.lead ? "Lead" : one.member ? "Member" : null,
         one.open === 0

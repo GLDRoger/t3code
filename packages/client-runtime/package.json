@@ -755,6 +755,10 @@
       "types": "./src/kin/kinWorkList.ts",
       "default": "./src/kin/kinWorkList.ts"
     },
+    "./kin/kinWorkGroups": {
+      "types": "./src/kin/kinWorkGroups.ts",
+      "default": "./src/kin/kinWorkGroups.ts"
+    },
     "./kin/kinWorkClients": {
       "types": "./src/kin/kinWorkClients.ts",
       "default": "./src/kin/kinWorkClients.ts"

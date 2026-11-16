@@ -665,6 +665,7 @@ function KinPlaceView({
           editing={null}
           party={null}
           choices={choices}
+          directory={directory}
           onSaved={(key) => {
             setAdding(null);
             openProject(key);
