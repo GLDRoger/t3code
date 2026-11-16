@@ -93,19 +93,21 @@ type Resolve<E, R> = {
   readonly at: (text: string) => Effect.Effect<number, KinChatError>;
 };
 
-/** A milestone by key, or by exact name within the project, in this org. */
+/** A milestone by key, or by exact name within the project, among those the viewer sees. */
 const milestoneRow = Effect.fn("KinLeadSpine.milestone")(function* (
   orgId: KinOrgId,
   text: string,
   projectId: string | null | undefined,
+  viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const all = yield* sql<{ key: string; name: string; projectId: string | null }>`SELECT key,
-      title AS name, project_id AS "projectId" FROM kin_records
-    WHERE org_id = ${orgId} AND register_id = 'milestones'
-      AND (key = ${text.toUpperCase()}
-        OR ${projectId ?? null} IS NULL OR project_id = ${projectId ?? null})
-    ORDER BY key LIMIT 2000`;
+  const all = yield* sql<{ key: string; name: string; projectId: string | null }>`SELECT r.key,
+      r.title AS name, r.project_id AS "projectId" FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'milestones'
+      AND (r.key = ${text.toUpperCase()}
+        OR ${projectId ?? null} IS NULL OR r.project_id = ${projectId ?? null})
+      AND ${seenBy(sql, viewer)}
+    ORDER BY r.key LIMIT 2000`;
   const match = matchName(text, all);
   const rows =
     match._tag === "found" ? [match.item] : match._tag === "ambiguous" ? match.items : [];
@@ -125,15 +127,16 @@ const milestoneRow = Effect.fn("KinLeadSpine.milestone")(function* (
   return rows[0]!;
 });
 
-/** The section's hash now, so a later edit of it shows. */
+/** The section's hash now, so a later edit of it shows; a doc the viewer can't see is none. */
 const anchorOf = Effect.fn("KinLeadSpine.anchor")(function* (
   orgId: KinOrgId,
   from: { readonly doc: string; readonly section: string },
+  viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [doc] = yield* sql<{ recordId: string; key: string }>`SELECT record_id AS "recordId", key
-    FROM kin_records WHERE org_id = ${orgId} AND register_id = 'docs'
-      AND key = ${from.doc.toUpperCase()} ORDER BY key LIMIT 1`;
+  const [doc] = yield* sql<{ recordId: string; key: string }>`SELECT r.record_id AS "recordId",
+      r.key FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'docs'
+      AND r.key = ${from.doc.toUpperCase()} AND ${seenBy(sql, viewer)} ORDER BY r.key LIMIT 1`;
   if (doc === undefined)
     return yield* new KinChatError({ reason: "not_found", message: `No doc ${from.doc}.` });
   const version = yield* versionOf(orgId, doc.recordId);
@@ -158,6 +161,7 @@ export const spineFields = Effect.fn("KinLeadSpine.fields")(function* <E, R>(
   orgId: KinOrgId,
   row: SpineRow,
   projectId: string | null | undefined,
+  viewer: KinViewer,
   resolve: Resolve<E, R> & { readonly currency: string },
 ) {
   const fields: Record<string, FieldValue | null> = {};
@@ -165,7 +169,7 @@ export const spineFields = Effect.fn("KinLeadSpine.fields")(function* <E, R>(
   if (row.milestone !== undefined) {
     if (row.milestone === null) fields.milestone = null;
     else {
-      const found = yield* milestoneRow(orgId, row.milestone, projectId);
+      const found = yield* milestoneRow(orgId, row.milestone, projectId, viewer);
       if (projectId !== undefined && projectId !== null && found.projectId !== projectId)
         return yield* invalid(`${found.key} is another project's milestone.`);
       fields.milestone = found.key;
@@ -177,7 +181,7 @@ export const spineFields = Effect.fn("KinLeadSpine.fields")(function* <E, R>(
     const anchor =
       row.from === null
         ? { fromDoc: null, fromSection: null, fromHash: null }
-        : yield* anchorOf(orgId, row.from);
+        : yield* anchorOf(orgId, row.from, viewer);
     Object.assign(fields, anchor);
   }
   const people = (list: ReadonlyArray<string>) =>

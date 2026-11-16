@@ -218,12 +218,25 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const clients = new Map<string | null, typeof owing>();
   for (const invoice of owing)
     clients.set(invoice.partyId, [...(clients.get(invoice.partyId) ?? []), invoice]);
+  // An invoice they see may be a client's they don't (a sensitive client of a led project).
+  const partyIds = [...clients.keys()].filter((id): id is string => id !== null);
+  const named =
+    viewer._tag === "ownerLevel" || partyIds.length === 0
+      ? undefined
+      : new Set(
+          (yield* sql<{ id: string }>`SELECT r.record_id AS id FROM kin_records r
+            WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(partyIds)} AND ${seen}
+            ORDER BY r.record_id`).map((row) => row.id),
+        );
   const byClient = [...clients].map(([partyId, members]) => {
     const first = members[0]!;
     const late = members.filter((one) => one.overdue);
     const oldest = Math.min(...late.map((one) => one.dueAt ?? now));
     const party: KinRecordRef | null =
-      partyId === null || first.partyKey === null || first.partyTitle === null
+      partyId === null ||
+      first.partyKey === null ||
+      first.partyTitle === null ||
+      (named !== undefined && !named.has(partyId))
         ? null
         : { recordId: KinRecordId.make(partyId), key: first.partyKey, title: first.partyTitle };
     return {

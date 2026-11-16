@@ -395,9 +395,10 @@ const make = Effect.gen(function* () {
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin wake-up timing failed", { cause })),
   );
-  // The moment a reply posts, the messages the model had read before it are answered for good.
-  const markReplied = Effect.fn("KinReplyBridge.markReplied")(
-    function* (wake: Wake, ordinal: number) {
+  // The messages the model had read before a reply are answered for good, in the reply's own
+  // transaction (the gate's `bind`): no restart finds the reply stored and its message unanswered.
+  const repliedBy = (wake: Wake, ordinal: number) => () =>
+    Effect.gen(function* () {
       const eventIds = wake.heard
         .filter((one) => one.ordinal < ordinal)
         .flatMap((one) => one.eventIds);
@@ -405,9 +406,11 @@ const make = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       yield* sql`UPDATE kin_events SET replied_at = COALESCE(replied_at, ${now})
         WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}
-          AND event_id IN ${sql.in(eventIds)}`.pipe(
-        Effect.mapError(toPersistenceSqlError("KinReplyBridge.markReplied")),
-      );
+          AND event_id IN ${sql.in(eventIds)}`;
+    });
+  const markReplied = Effect.fn("KinReplyBridge.markReplied")(
+    function* (wake: Wake, ordinal: number) {
+      yield* repliedBy(wake, ordinal)();
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin couldn't mark a reply", { cause })),
   );
@@ -480,6 +483,7 @@ const make = Effect.gen(function* () {
     wake: Wake,
     clientMessageId: string,
     body: string,
+    ordinal: number,
   ) {
     const lead = yield* agent(wake);
     if (lead === undefined)
@@ -490,12 +494,16 @@ const make = Effect.gen(function* () {
         moved: false,
       };
     return yield* gate
-      .post(lead, {
-        chatId: wake.lane.chatId,
-        clientMessageId,
-        body: capBody(body),
-        intent: wake.lane.mode === "reply" ? "answer" : "evidence",
-      })
+      .post(
+        lead,
+        {
+          chatId: wake.lane.chatId,
+          clientMessageId,
+          body: capBody(body),
+          intent: wake.lane.mode === "reply" ? "answer" : "evidence",
+        },
+        repliedBy(wake, ordinal),
+      )
       .pipe(
         Effect.map((result) => ({ _tag: "posted" as const, messageId: result.messageId })),
         Effect.catch((error) =>
@@ -514,6 +522,7 @@ const make = Effect.gen(function* () {
     wake: Wake,
     slot: Slot,
     text: string,
+    ordinal: number,
   ) {
     const joined = `${slot.body}\n\n${text}`;
     const body =
@@ -532,7 +541,11 @@ const make = Effect.gen(function* () {
         moved: false,
       };
     return yield* gate
-      .extend(lead, { chatId: wake.lane.chatId, messageId: slot.messageId, body })
+      .extend(
+        lead,
+        { chatId: wake.lane.chatId, messageId: slot.messageId, body },
+        repliedBy(wake, ordinal),
+      )
       .pipe(
         Effect.map(() => {
           slot.body = body;
@@ -588,8 +601,8 @@ const make = Effect.gen(function* () {
     }
     const result =
       slot === undefined
-        ? yield* deliver(wake, `reply:${segment.id}`, text)
-        : yield* extend(wake, slot, text);
+        ? yield* deliver(wake, `reply:${segment.id}`, text, segment.ordinal)
+        : yield* extend(wake, slot, text, segment.ordinal);
     switch (result._tag) {
       case "full":
         segment.outcome = "dropped";
@@ -604,7 +617,6 @@ const make = Effect.gen(function* () {
         wake.chars += text.length;
         wake.answered = true;
         wake.replied = true;
-        yield* markReplied(wake, segment.ordinal);
         // Work after a reply is new work: its timer doesn't count against the answered message.
         wake.timerFrom = yield* Clock.currentTimeMillis;
         yield* stamp(wake, "posted_at");
@@ -948,10 +960,9 @@ const make = Effect.gen(function* () {
       joined.length <= Math.min(room, KIN_MESSAGE_BODY_MAX_LENGTH)
         ? joined
         : `${joined.slice(0, Math.max(0, Math.min(room, KIN_MESSAGE_BODY_MAX_LENGTH) - OVERFLOW_SUFFIX.length))}${OVERFLOW_SUFFIX}`;
-    const result = yield* deliver(wake, `reply-overflow:${wake.wakeupId}`, body);
+    const result = yield* deliver(wake, `reply-overflow:${wake.wakeupId}`, body, Infinity);
     if (result._tag === "posted") {
       wake.answered = true;
-      yield* markReplied(wake, Infinity);
     } else {
       wake.withheldWhy ??= result.why;
       wake.withheld ??= result.reason;

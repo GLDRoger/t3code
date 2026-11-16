@@ -39,6 +39,7 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/lead/KinEventQueue.ts",
     "apps/server/src/kin/floor/KinFloor.ts",
     "apps/server/src/kin/lead/Handoff.ts",
+    "apps/server/src/kin/lead/LevelGate.ts",
     "apps/server/src/kin/pulse/nudge.ts",
   ],
   checkin: [

@@ -355,6 +355,48 @@ describe("ChatWake", () => {
       }).pipe(Effect.provide(services)),
   );
 
+  it.effect(
+    "a member's direct chat wakes the lead while they are a co-owner, and stops once demoted",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* seed("a");
+        // A member with no grant to this lead: only promotion lets their direct chat wake it.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('mate-a', 'a', 'mate', 'Mate', ${createdAt}, 'member')`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES ('mate-chat-a', 'a', 'direct', 'direct-mate-a', 0, ${createdAt})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES ('mate-member-a', 'a', 'mate-chat-a', 'person', 'mate-a', 'member', ${createdAt})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+          VALUES ('lead-mate-member-a', 'a', 'mate-chat-a', 'agent', 'lead-a', 'member', ${createdAt})`;
+        const { results, settle } = yield* start();
+        const hub = yield* Hub.KinChatHub;
+        const fromMate = (messageId: string, seq: number) =>
+          hub.publish({
+            type: "message.posted",
+            orgId: KinOrgId.make("a"),
+            message: decodeMessage({
+              ...message("a", messageId, { chat: "mate-chat-a", seq }),
+              author: { _tag: "human", personId: "mate-a", memberId: "mate-member-a" },
+              authorRole: "member",
+            }),
+          });
+        const woke = () => results.map((result) => result.event.dedupeKey);
+        yield* fromMate("before", 1);
+        yield* settle;
+        assert.deepStrictEqual(woke(), []);
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = 'mate-a'`;
+        yield* fromMate("promoted", 2);
+        yield* settle;
+        assert.deepStrictEqual(woke(), ["chat-message:promoted:lead-a"]);
+        yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'mate-a'`;
+        yield* fromMate("demoted", 3);
+        yield* settle;
+        assert.deepStrictEqual(woke(), ["chat-message:promoted:lead-a"]);
+      }).pipe(Effect.provide(services)),
+  );
+
   it.effect("never wakes a lead for its own posts or after retirement, live or on catch-up", () =>
     Effect.gen(function* () {
       yield* seed("a");
