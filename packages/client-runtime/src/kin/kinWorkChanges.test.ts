@@ -387,6 +387,7 @@ describe("kinWorkStatusOffer", () => {
     edit: false,
     party: false,
     project: false,
+    clearProject: false,
     give: false,
     takeBack: false,
     mark: false,

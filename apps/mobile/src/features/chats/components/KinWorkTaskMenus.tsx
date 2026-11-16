@@ -147,6 +147,8 @@ export function KinWorkPlaceRow(props: {
   readonly choices: ReadonlyArray<KinWorkRef>;
   readonly disabled: boolean;
   readonly onPick: (ref: KinWorkRef | null) => void;
+  /** Whether "None" is offered: the host may let a value change but not be cleared. */
+  readonly clearable?: boolean;
   readonly onOpen?: () => void;
   readonly side?: {
     readonly value: "ours" | "theirs";
@@ -174,7 +176,15 @@ export function KinWorkPlaceRow(props: {
           title: choice.title,
           state: choice.key === held?.key ? ("on" as const) : ("off" as const),
         })),
-        { id: NONE, title: props.none, state: held === null ? ("on" as const) : ("off" as const) },
+        ...(props.clearable === false && held !== null
+          ? []
+          : [
+              {
+                id: NONE,
+                title: props.none,
+                state: held === null ? ("on" as const) : ("off" as const),
+              },
+            ]),
         ...(held === null || side === undefined
           ? []
           : [

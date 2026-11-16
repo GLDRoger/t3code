@@ -579,6 +579,7 @@ function KinWorkItemBody(props: ItemTarget) {
               none={KIN_WORK_NEW_COPY.none}
               held={view.project}
               choices={choices.projects}
+              clearable={view.can.clearProject}
               disabled={saving}
               onPick={(project) => act({ type: "place", project })}
               onOpen={openProject}

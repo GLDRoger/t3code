@@ -172,6 +172,7 @@ const NOTHING: KinRecordCan = {
   edit: false,
   party: false,
   project: false,
+  clearProject: false,
   give: false,
   takeBack: false,
   mark: false,
@@ -213,6 +214,7 @@ const cansOf = Effect.fn("KinWork.cansOf")(function* (
         edit: edits,
         party: edits,
         project: edits,
+        clearProject: edits,
         give: edits && open,
         takeBack:
           edits &&

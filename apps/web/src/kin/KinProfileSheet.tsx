@@ -1,3 +1,4 @@
+import { useRouter } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DAY_LABELS,
@@ -21,7 +22,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -71,6 +72,12 @@ export const openKinProfile = (target: KinProfileTarget) =>
 
 export function KinProfileSheetHost() {
   const target = useAtomValue(kinProfileSheetAtom);
+  const router = useRouter();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the sheet isn't in the address, so any navigation, Back included, closes it rather than leaving it over another screen
+  useEffect(
+    () => router.history.subscribe(() => appAtomRegistry.set(kinProfileSheetAtom, null)),
+    [router],
+  );
   if (target === null) return null;
   return (
     <KinProfileSheet

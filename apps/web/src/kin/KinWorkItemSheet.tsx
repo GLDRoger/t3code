@@ -568,6 +568,7 @@ function KinWorkItem(
                     value={view.project}
                     choices={choices.projects}
                     saving={saving}
+                    clearable={view.can.clearProject}
                     onPick={
                       change === null || !view.can.project
                         ? null
@@ -808,6 +809,8 @@ function PlaceMenu(props: {
   readonly saving: boolean;
   /** Null where the task can't be changed, which leaves only opening it. */
   readonly onPick: ((value: KinWorkRef | null) => void) | null;
+  /** Whether "None" is offered: the host may let a value change but not be cleared. */
+  readonly clearable?: boolean;
   readonly onOpen: () => void;
   /** A client's: who owes the task, us or them. */
   readonly side?: {
@@ -854,7 +857,7 @@ function PlaceMenu(props: {
             <span className={PLACE_ROW}>{choice.title}</span>
           </MenuItem>
         ))}
-        {value === null ? null : (
+        {value === null || props.clearable === false ? null : (
           <>
             {props.choices.length === 0 ? null : <MenuSeparator />}
             <MenuItem onClick={() => onPick(null)}>{KIN_WORK_NEW_COPY.none}</MenuItem>

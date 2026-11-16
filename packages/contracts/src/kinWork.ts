@@ -114,6 +114,8 @@ export const KinRecordCan = Schema.Struct({
   /** Its client, and its project. */
   party: Schema.Boolean,
   project: Schema.Boolean,
+  /** Take it out of its project; a lead may move a task into his project but not out. */
+  clearProject: Schema.Boolean,
   /** Give it to someone else; take it back to themselves. */
   give: Schema.Boolean,
   takeBack: Schema.Boolean,

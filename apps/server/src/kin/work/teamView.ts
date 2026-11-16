@@ -465,6 +465,7 @@ export const teamCan = Effect.fn("KinTeamView.can")(function* (
         edit: moves,
         party: takes({ partyId: "" }),
         project: led !== undefined && takes({ projectId: led }),
+        clearProject: takes({ projectId: null }),
         give: open && moves,
         takeBack: open && moves && !samePrincipal(row.owner, { _tag: "person", personId }),
         mark: takes({ sensitive: true }),

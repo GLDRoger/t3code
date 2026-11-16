@@ -54,12 +54,10 @@ const screen = extract((state) => {
     url.pathname.endsWith("/tasks") && !url.search && !searched && !/Clear filter/.test(mainText);
   // Rows follow "Filter" directly; a chosen filter ("Late", "Due this week") sits between them.
   const listed = onTasks ? after(/^Filter$/) : null;
-  // "Handled (n)" folds away nudges set aside with "I've got it"; some may be open tasks.
+  // "Handled (n)" holds nudges set aside with "I've got it"; some may be open tasks, and open or
+  // folded, those rows name no task key, so the list below never counts them.
   const handledAt = lines.findIndex((l) => /^Handled \(\d+\)$/.test(l));
-  const handledHidden =
-    handledAt !== -1 && lines[handledAt + 1] === "Filter"
-      ? Number(/\d+/.exec(lines[handledAt])![0])
-      : 0;
+  const handledHidden = handledAt === -1 ? 0 : Number(/\d+/.exec(lines[handledAt])![0]);
   // A task under "Needs you" is not repeated in the rows below the filter.
   const keysIn = (ls: string[]) =>
     new Set(ls.flatMap((l) => [...l.matchAll(/(?:^|· )(W-\d+)\b/g)].map((m) => m[1])));

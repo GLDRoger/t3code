@@ -1241,6 +1241,7 @@ const olderHostCan = (
   edit: editable,
   party: editable,
   project: editable,
+  clearProject: editable,
   give: !closed,
   takeBack: !closed && !isMe(item.owner, names),
   mark: editable,

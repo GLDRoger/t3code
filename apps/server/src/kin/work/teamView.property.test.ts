@@ -483,6 +483,7 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
               ...can.states.map((state) => [true, { state }] as const),
               [can.edit, { title: "Renamed" }],
               [can.project, { projectId: led?.id ?? null }],
+              [can.clearProject, { projectId: null }],
               [can.give, { owner: { _tag: "person", personId: KinPersonId.make(other) } }],
               [can.takeBack, { owner: { _tag: "person", personId } }],
               [can.mark, { sensitive: true }],
