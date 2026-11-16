@@ -60,7 +60,7 @@ const JUDGEMENT_SENSES: ReadonlySet<string> = new Set([
   "milestone_late",
   "meeting_passed",
 ]);
-export const needsJudgement = (facts: ReadonlyArray<Pick<KinPulseFact, "sense">>) =>
+const needsJudgement = (facts: ReadonlyArray<Pick<KinPulseFact, "sense">>) =>
   facts.some((fact) => JUDGEMENT_SENSES.has(fact.sense));
 const encodeScope = Schema.encodeEffect(Schema.fromJsonString(KinPulseFact.fields.scope));
 

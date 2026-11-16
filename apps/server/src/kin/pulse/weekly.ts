@@ -2,6 +2,7 @@ import type { KinEvent, KinMoney, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { sentMail } from "../connections/Sending.ts";
 import { goalLine, goalsNow } from "../work/goals.ts";
 import { addUp, dayIn, formatMoney } from "../work/money.ts";
 import { playbookThreshold } from "../work/playbooks.ts";
@@ -16,7 +17,7 @@ import * as KinPulse from "./KinPulse.ts";
 import { DAY_MS } from "./thresholds.ts";
 
 export const WEEKLY_RULE =
-  "This is the weekly brief. Kin posted the week's figures from these rows in the chat just before your turn: goals, money still to come and overdue, open quotes, renewals this month, cold clients and meetings. Don't retype them. Add your judgement under it in a few short lines: what matters most this week and why, what you would do, and each decision as one plain question. A meeting that already happened is not coming up; a follow-up you set is not a meeting.";
+  "This is the weekly brief. Kin posted the week's figures from these rows in the chat just before your turn: goals, money still to come and overdue, open quotes, renewals this month, cold clients and meetings. Don't retype them. Add your judgement under it in a few short lines: what matters most this week and why, what you would do, and each decision as one plain question. A meeting that already happened is not coming up; a follow-up you set is not a meeting. Each overdue line says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
 /** The seeded weekly check-in's schedule (`checkin-<slug>`), which arrives as a pulse event. */
 const WEEKLY_CHECK_IN = "checkin-weekly";
 export const wantsWeekly = (events: ReadonlyArray<KinEvent>) =>
@@ -136,6 +137,26 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
     ORDER BY r.key`;
   const owed = (yield* owedInvoices({ orgId, now })).slice(0, CAP);
   const isOverdue = (one: (typeof owed)[number]) => one.overdue;
+  // What went out about an overdue invoice, and what waits on a Confirm, as recorded now.
+  const recent = owed.some(isOverdue) ? yield* sentMail({ orgId, limit: 50 }) : [];
+  const mailState = Effect.fnUntraced(function* (one: (typeof owed)[number]) {
+    const [first] = yield* sentMail({ orgId, recordIds: [one.recordId], limit: 1 });
+    if (first === undefined) return "no mail with it on record";
+    const thread = first.threadId;
+    const later = recent.find((mail) => mail.threadId === thread && mail.at > first.at);
+    const waiting =
+      thread === null
+        ? []
+        : yield* sql`SELECT 1 FROM kin_connection_asks WHERE org_id = ${orgId}
+            AND state = 'open' AND json_extract(payload_json, '$.threadId') = ${thread} LIMIT 1`;
+    return [
+      `sent ${first.at.slice(0, 10)} from ${first.from}`,
+      later === undefined ? "no reminder since" : `reminder sent ${later.at.slice(0, 10)}`,
+      ...(waiting.length > 0 ? ["a reply waits on the owner's Confirm"] : []),
+    ].join(", ");
+  });
+  const overdueMail = new Map<string, string>();
+  for (const one of owed.filter(isOverdue)) overdueMail.set(one.recordId, yield* mailState(one));
 
   const quotes = yield* sql<{
     key: string;
@@ -237,7 +258,7 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
             one.dueAt === null
               ? "unpaid, no due date"
               : isOverdue(one)
-                ? `unpaid, ${one.daysOverdue} days past due`
+                ? `unpaid, ${one.daysOverdue} days past due; ${overdueMail.get(one.recordId)}`
                 : `due ${dayIn(one.dueAt, zone)}`
           }`,
       ),
