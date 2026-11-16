@@ -371,7 +371,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
                 key={option.id}
                 label={option.label}
                 accessibilityHint="Sends this as your reply"
-                tone="secondary"
+                tone="outline"
                 size="compact"
                 fullWidth
                 loading={pending === option.id}

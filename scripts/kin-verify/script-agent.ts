@@ -102,37 +102,50 @@ function promptText(params: Record<string, unknown>): string {
   return blocks.map((block) => (block.type === "text" ? (block.text ?? "") : "")).join("\n");
 }
 
-async function runTurn(server: McpServer | undefined, prompt: string): Promise<string> {
+interface Turn {
+  readonly reply: string;
+  /** Ends the turn the way a real agent does, after its reply: kin_end saves what it staged. */
+  readonly end: () => Promise<void>;
+}
+const noEnd = async () => {};
+
+async function runTurn(server: McpServer | undefined, prompt: string): Promise<Turn> {
   // The prompt may quote earlier messages; the newest marker is this turn's.
   const id = [...prompt.matchAll(MARKER)].at(-1)?.[1];
-  if (id === undefined) return "Noted.";
+  if (id === undefined) return { reply: "Noted.", end: noEnd };
   const scriptPath = NodePath.join(verifyDir, "turns", `${id}.json`);
   const resultPath = NodePath.join(verifyDir, "turns", `${id}.result.json`);
   // A turn re-run after a restart must not repeat its tool calls.
-  if (NodeFS.existsSync(resultPath)) return "Done.";
+  if (NodeFS.existsSync(resultPath)) return { reply: "Done.", end: noEnd };
   let script: TurnScript;
   try {
     script = JSON.parse(NodeFS.readFileSync(scriptPath, "utf8")) as TurnScript;
   } catch {
-    return `No script for ${id}.`;
+    return { reply: `No script for ${id}.`, end: noEnd };
   }
   NodeFS.writeFileSync(NodePath.join(verifyDir, "turns", `${id}.prompt.txt`), prompt);
-  // A real agent copies the id of the event it answers from its prompt; "$event" asks for that.
+  // A real agent copies the event it answers and the chat it replies to from its prompt;
+  // "$event" and "$chat" ask for those.
   const before = prompt.slice(0, prompt.lastIndexOf(`[kv:${id}]`));
   const eventId = [...before.matchAll(/"event"\s*:\s*"([^"]+)"/g)].at(-1)?.[1];
+  const chatId = /Your reply goes to chat "([^"]+)"/.exec(prompt)?.[1];
   const fill = (value: unknown): unknown =>
     value === "$event"
       ? eventId
-      : Array.isArray(value)
-        ? value.map(fill)
-        : typeof value === "object" && value !== null
-          ? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, fill(entry)]))
-          : value;
+      : value === "$chat"
+        ? chatId
+        : Array.isArray(value)
+          ? value.map(fill)
+          : typeof value === "object" && value !== null
+            ? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, fill(entry)]))
+            : value;
   const results: Array<unknown> = [];
+  let mcp: Awaited<ReturnType<typeof mcpClient>> | undefined;
   try {
     if (server === undefined) throw new Error("no MCP server in this session");
-    const mcp = await mcpClient(server);
-    const listed = (await mcp.list()) as {
+    const client = await mcpClient(server);
+    mcp = client;
+    const listed = (await client.list()) as {
       result?: { tools?: ReadonlyArray<{ name: string; inputSchema?: { properties?: object } }> };
     };
     // Most Kin tools take the event the turn answers, which a real agent copies from its prompt.
@@ -149,14 +162,21 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<s
           : args;
       results.push({
         name: call.name,
-        response: call.name === "tools/list" ? listed : await mcp.call(call.name, fill(withEvent)),
+        response:
+          call.name === "tools/list" ? listed : await client.call(call.name, fill(withEvent)),
       });
     }
   } catch (error) {
     results.push({ error: String(error) });
   }
   NodeFS.writeFileSync(resultPath, JSON.stringify({ results }, null, 2));
-  return script.reply ?? "Done.";
+  const ends = (script.calls ?? []).some((call) => call.name === "kin_end");
+  return {
+    reply: script.reply ?? "Done.",
+    end: async () => {
+      if (mcp !== undefined && !ends) await mcp.call("kin_end", { summary: `kin-verify ${id}` });
+    },
+  };
 }
 
 function main(): void {
@@ -193,17 +213,18 @@ function main(): void {
       }
       case "session/prompt": {
         const sessionId = String(params.sessionId);
-        const reply = await runTurn(sessions.get(sessionId)?.server, promptText(params));
+        const turn = await runTurn(sessions.get(sessionId)?.server, promptText(params));
         send({
           method: "session/update",
           params: {
             sessionId,
             update: {
               sessionUpdate: "agent_message_chunk",
-              content: { type: "text", text: reply },
+              content: { type: "text", text: turn.reply },
             },
           },
         });
+        await turn.end().catch(() => undefined);
         return { stopReason: "end_turn" };
       }
       case "session/close":

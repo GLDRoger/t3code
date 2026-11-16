@@ -65,7 +65,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   clock advance <90m|12h|3d|2w> | clock set-date <YYYY-MM-DD>
   db "<select …>"                         read-only SQL on this instance's database
   phone pair [--android] [--as <person>]  deep link that pairs the dev client to this instance
-  phone metro                             start Metro for this checkout (stopped by down)`;
+  phone metro [--full-app]                Metro for this checkout, as the Kin app (stopped by down)`;
 
 interface Args {
   readonly positional: Array<string>;
@@ -421,6 +421,8 @@ async function phone(instance: Instance, args: Args) {
     const log = NodeFS.openSync(logFile, "a");
     const child = NodeChildProcess.spawn("vp", ["run", "dev:client"], {
       cwd: NodePath.join(ROOT, "apps", "mobile"),
+      // The owner's phone runs the Kin-only build; --full-app shows Kin inside the T3 Code shell.
+      env: args.flags.has("full-app") ? process.env : { ...process.env, EXPO_PUBLIC_KIN_ONLY: "1" },
       detached: true,
       stdio: ["ignore", log, log],
     });
@@ -446,7 +448,7 @@ async function phone(instance: Instance, args: Args) {
     }
     throw new VerifyError(`Metro did not start; see ${logFile}`);
   }
-  throw new VerifyError("phone pair [--android] [--as <person>] | phone metro");
+  throw new VerifyError("phone pair [--android] [--as <person>] | phone metro [--full-app]");
 }
 
 async function main() {
