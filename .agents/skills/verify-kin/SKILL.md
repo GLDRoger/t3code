@@ -73,6 +73,10 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
   scripted agent (`scripts/kin-verify/script-agent.ts`), which calls the tool on `/kin/mcp` with the
   turn's own credentials, so the gate, levels and posting rules all apply. `"$event"` in the JSON
   becomes the turn's triggering event id; `"$chat"` the chat the turn replies to; `sourceEventId` is added when the tool takes one.
+- A Team-room discussion plays from `<verify dir>/team-play.json`, `{"steps": [{"agent": "Finance",
+  "calls": [...]}, {"agent": "Growth", "pass": true}]}`, in the order Kin must wake them. A woken
+  agent that isn't the next step passes and logs a mismatch in `team-play.log.jsonl`, so a wrong
+  turn order fails the script. `"$key"` in a later call is the record key an earlier one made.
 - A check-in's reply (Run now) is `<instance>/verify/checkin-reply.md` when that file exists; the
   scripted agent posts it once and deletes it, to show a brief.
 - `clock` stops the server, rewrites stored times in one transaction and starts it again. The
@@ -86,26 +90,28 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
 instance.
 
 ```bash
-.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, all thirteen, down; ~13 min
+.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, every script, down; ~17 min
 .agents/skills/verify-kin/scripts/run-all.sh send-card-once private-task-hidden
 bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the running instance
 ```
 
-| Script                     | Proves                                                                                                                                                       |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `assign-member-sees`       | owner's New task sheet gives Zoya a task; it is in her Tasks and her chat, not Arjun's                                                                       |
-| `relay-owner-to-member`    | `kin_relay` in the owner's turn lands in Zoya's chat only                                                                                                    |
-| `member-request-to-owner`  | `kin_relay` in Zoya's turn lands in the owner's chat, attributed to her                                                                                      |
-| `private-task-hidden`      | "Only me" hides W-6 from the lead and members: Tasks, project page and count, search, pulse                                                                  |
-| `member-no-money`          | 12 screens each for two members show no amount, invoice or quote                                                                                             |
-| `send-card-once`           | one Confirm on a send card sends exactly one mail; a second confirm is refused                                                                               |
-| `overdue-invoice-reminder` | INV-1's overdue fact reaches the owner only; the reminder is a reply in the invoice's thread                                                                 |
-| `checkin-new-agent`        | a new agent gets a check-in from the Settings dialog; Kin settings are owner-level; Run now wakes it                                                         |
-| `lead-adds-milestone`      | members see P-1's milestones and no Add; Dev, its lead, adds one and they see it                                                                             |
-| `owner-money-forms`        | a goal, the coming-up dates, an advance set against INV-1 once; members are refused                                                                          |
-| `private-client-unnamed`   | C-3 marked private: in Zoya's turn touch_log, record_get, records_query answer as for no client                                                              |
-| `told-once-quiet-hours`    | a late task is told once, an unchanged one starts no turn, a change is told; at 23:00 a check-in waits for quiet hours to end, survives a restart, runs once |
-| `work-change-five-people`  | five people with Tasks open: a new task, its assignment and its return reach each page as the task itself or nothing, with no Work read                      |
+| Script                     | Proves                                                                                                                                                                                                                                                                                                    |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `assign-member-sees`       | owner's New task sheet gives Zoya a task; it is in her Tasks and her chat, not Arjun's                                                                                                                                                                                                                    |
+| `relay-owner-to-member`    | `kin_relay` in the owner's turn lands in Zoya's chat only                                                                                                                                                                                                                                                 |
+| `member-request-to-owner`  | `kin_relay` in Zoya's turn lands in the owner's chat, attributed to her                                                                                                                                                                                                                                   |
+| `private-task-hidden`      | "Only me" hides W-6 from the lead and members: Tasks, project page and count, search, pulse                                                                                                                                                                                                               |
+| `member-no-money`          | 12 screens each for two members show no amount, invoice or quote                                                                                                                                                                                                                                          |
+| `send-card-once`           | one Confirm on a send card sends exactly one mail; a second confirm is refused                                                                                                                                                                                                                            |
+| `overdue-invoice-reminder` | INV-1's overdue fact reaches the owner only; the reminder is a reply in the invoice's thread                                                                                                                                                                                                              |
+| `checkin-new-agent`        | a new agent gets a check-in from the Settings dialog; Kin settings are owner-level; Run now wakes it                                                                                                                                                                                                      |
+| `lead-adds-milestone`      | members see P-1's milestones and no Add; Dev, its lead, adds one and they see it                                                                                                                                                                                                                          |
+| `owner-money-forms`        | a goal, the coming-up dates, an advance set against INV-1 once; members are refused                                                                                                                                                                                                                       |
+| `private-client-unnamed`   | C-3 marked private: in Zoya's turn touch_log, record_get, records_query answer as for no client                                                                                                                                                                                                           |
+| `told-once-quiet-hours`    | a late task is told once, an unchanged one starts no turn, a change is told; at 23:00 a check-in waits for quiet hours to end, survives a restart, runs once                                                                                                                                              |
+| `team-room-discussion`     | the brochure discussion: Growth pitches in, Finance widens once and decides, Social objects once; one "Finance replied" line with a link in Social's chat, "Sent by Social" in Finance's; Meera has the room with no count, Dev can't read it; "undo it" drops the task; a disagreement comes as one card |
+| `character-and-undo`       | Finance's character changes by chat, carries into the next turn and restores from history; Zoya can't read it; "undo it" puts back a linked move                                                                                                                                                          |
+| `work-change-five-people`  | five people with Tasks open: a new task, its assignment and its return reach each page as the task itself or nothing, with no Work read                                                                                                                                                                   |
 
 `node scripts/kin-release-check.ts` runs all ten with the models, property tests and UI fuzz before a release ([Releasing Kin](../../../docs/operations/kin-release.md)).
 

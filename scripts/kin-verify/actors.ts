@@ -63,11 +63,22 @@ export function agentOf(instance: Instance, agent: string) {
   const found =
     seed?.agents[agent] ??
     Object.values(seed?.agents ?? {}).find((one) => one.agentId === agent || one.name === agent);
-  if (found === undefined)
-    throw new VerifyError(
-      `no agent "${agent}"; agents: ${Object.keys(seed?.agents ?? {}).join(", ") || "none"}`,
-    );
-  return found;
+  if (found !== undefined) return found;
+  // An agent a script made after the seed, by its name or id.
+  const db = database(instance);
+  try {
+    const row = db
+      .prepare(
+        "SELECT agent_id AS agentId, name FROM kin_leads WHERE agent_id = ? OR lower(name) = lower(?) LIMIT 1",
+      )
+      .get(agent, agent) as { agentId: string; name: string } | undefined;
+    if (row !== undefined) return row;
+  } finally {
+    db.close();
+  }
+  throw new VerifyError(
+    `no agent "${agent}"; agents: ${Object.keys(seed?.agents ?? {}).join(", ") || "none"}`,
+  );
 }
 
 /** A new link for an existing person, the "another device" invite the Team page makes. */
@@ -150,6 +161,8 @@ export async function runTurn(
     readonly person: string;
     readonly calls: ReadonlyArray<ToolCall>;
     readonly reply?: string;
+    /** What the person says with the marker, such as "undo it", for rules that read their words. */
+    readonly say?: string;
     /** Seconds the agent stays working before it replies, to watch the turn run. */
     readonly holdSeconds?: number;
     /** The turn fails after its calls instead of replying, as a model error would. */
@@ -178,7 +191,7 @@ export async function runTurn(
     const sent = (await rpc.call("kin.messages.send", {
       chatId,
       clientMessageId: `kin-verify-${id}`,
-      body: `[kv:${id}] ${input.calls.map((call) => call.name).join(", ") || "reply"}`,
+      body: `[kv:${id}] ${input.say ?? (input.calls.map((call) => call.name).join(", ") || "reply")}`,
     })) as { seq: number };
     seq = sent.seq;
   } finally {

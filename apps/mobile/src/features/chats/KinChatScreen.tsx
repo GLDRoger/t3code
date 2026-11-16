@@ -23,6 +23,7 @@ import {
   type KinWidget,
   type KinPresence,
   type KinWakeupId,
+  KIN_TEAM_ROOM_TEAM_ID,
 } from "@t3tools/contracts";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -97,6 +98,7 @@ import {
   KinMessageBubble,
   KinPendingBubble,
   KinSystemLine,
+  KinRelayBubble,
 } from "./components/KinMessageBubble";
 import {
   kinChatGoneCopy,
@@ -111,6 +113,7 @@ import {
   kinMarkReadRearms,
   kinRowSeq,
   kinSeqToMarkRead,
+  kinUnreadToMark,
   kinUnseenCount,
   latestKinSeq,
   mergeKinFeed,
@@ -278,6 +281,12 @@ function KinLiveChat(props: {
       ? inbox.value.value.chats.find((chat) => chat.chatId === chatId)
       : undefined;
   // The owner's own lead in their direct chat: the only one they can stop.
+  const teamRoomId =
+    inbox?._tag === "Success"
+      ? (inbox.value.value.chats.find(
+          (chat) => chat.orgId === props.orgId && chat.teamId === KIN_TEAM_ROOM_TEAM_ID,
+        )?.chatId ?? null)
+      : null;
   const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(props.environmentId));
   const retire = useKinAgentRetire(props.environmentId);
@@ -360,7 +369,8 @@ function KinLiveChat(props: {
               )
         }
         agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
-        unread={summary?.unread ?? null}
+        unread={kinUnreadToMark(summary)}
+        teamRoomId={teamRoomId}
         mute={
           environmentId === null || chatId === null || summary === undefined || !canMute
             ? null
@@ -628,6 +638,8 @@ function KinChatPage(props: {
   readonly agentName: string | null;
   /** The inbox's unread count for this chat; null until the inbox loads. */
   readonly unread: number | null;
+  /** The org's Team room, where a discussion's outcome links to. */
+  readonly teamRoomId?: KinChatId | null;
   /** Null where nothing can be marked, such as the dev fixture. */
   readonly markRead: MarkRead | null;
   /** Interrupts the lead's current wake-up; null unless the viewer owns it and may stop it. */
@@ -711,6 +723,7 @@ function KinChatPage(props: {
             viewer={props.viewer}
             readHistory={props.readHistory}
             unread={props.unread}
+            teamRoomId={props.teamRoomId ?? null}
             markRead={props.markRead}
             presence={livePresence(state)}
             stopLead={props.stopLead ?? null}
@@ -873,6 +886,7 @@ function KinChatFeed(props: {
   readonly viewer: KinFeedViewer;
   readonly readHistory: ReadHistory | null;
   readonly unread: number | null;
+  readonly teamRoomId: KinChatId | null;
   readonly markRead: MarkRead | null;
   readonly presence: KinPresence | undefined;
   readonly stopLead: StopLead | null;
@@ -995,6 +1009,7 @@ function KinChatFeed(props: {
     expandedRuns,
     new Date(dayStartMs),
     live.drafts,
+    props.chatId === props.teamRoomId,
   );
   const [stop, setStop] = useState<{ readonly wakeupId: string; readonly state: KinStopState }>({
     wakeupId: "",
@@ -1280,6 +1295,25 @@ function KinChatFeed(props: {
       }
       case "fold":
         return <KinFoldLine row={item} onToggle={() => toggleRun(item.runId)} />;
+      case "relay": {
+        const room = props.teamRoomId;
+        return (
+          <KinRelayBubble
+            row={item}
+            environmentId={props.environmentId}
+            onOpenDiscussion={
+              room === null
+                ? null
+                : () =>
+                    navigation.navigate("KinChat", {
+                      environmentId: props.environmentId,
+                      orgId: props.orgId,
+                      chatId: room,
+                    })
+            }
+          />
+        );
+      }
       case "pending":
         return (
           <KinPendingBubble

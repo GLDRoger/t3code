@@ -183,6 +183,7 @@ export type KinAccessMeResult = typeof KinAccessMeResult.Type;
 
 export const KIN_PROFILE_NAME_MAX = 80;
 export const KIN_PROFILE_SKILLS_MAX = 300;
+export const KIN_PROFILE_TALK_MAX = 200;
 /** Days are 0 (Sunday) to 6; start and end are local times in the person's time zone. */
 export const KinWorkHours = Schema.Struct({
   days: Schema.Array(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 6 }))).check(
@@ -204,6 +205,8 @@ export const KinPersonProfile = Schema.Struct({
   skills: Schema.String,
   timeZone: Schema.NullOr(TimeZone),
   workHours: Schema.NullOr(KinWorkHours),
+  /** How they like to be spoken to, in their own words; absent from older hosts. */
+  talkStyle: Schema.optional(Schema.String),
   /** The tasks they hold now; only the owner reads it. */
   load: Schema.optional(Schema.Struct({ open: NonNegativeInt, late: NonNegativeInt })),
   /** The reader may change this profile (the check `kin.people.updateProfile` runs); absent from older hosts. */
@@ -228,6 +231,7 @@ export const KinPeopleUpdateProfileInput = Schema.Struct({
   skills: Schema.optional(Schema.String.check(Schema.isMaxLength(KIN_PROFILE_SKILLS_MAX))),
   timeZone: Schema.optional(Schema.NullOr(TimeZone)),
   workHours: Schema.optional(Schema.NullOr(KinWorkHours)),
+  talkStyle: Schema.optional(Schema.String.check(Schema.isMaxLength(KIN_PROFILE_TALK_MAX))),
   picture: Schema.optional(Schema.NullOr(KinAttachment)),
 });
 export type KinPeopleUpdateProfileInput = typeof KinPeopleUpdateProfileInput.Type;

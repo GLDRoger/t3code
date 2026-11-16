@@ -88,12 +88,17 @@ const decodeProfile = (row: {
   readonly skills: string;
   readonly timeZone: string | null;
   readonly workHours: string | null;
-}) =>
-  decodeProfileRow({
-    ...row,
+  readonly talkStyle: string;
+}) => {
+  // An unset field stays off the wire, so the Team list's answer doesn't grow for nothing.
+  const { talkStyle, ...rest } = row;
+  return decodeProfileRow({
+    ...rest,
+    ...(talkStyle === "" ? {} : { talkStyle }),
     roleTags: JSON.parse(row.roleTags),
     workHours: row.workHours === null ? null : JSON.parse(row.workHours),
   });
+};
 
 export class KinPeople extends Context.Service<
   KinPeople,
@@ -797,7 +802,8 @@ export const make = Effect.gen(function* () {
   const profileRows = (orgId: KinOrgId, personId?: KinPersonId) =>
     sql<Parameters<typeof decodeProfile>[0]>`SELECT person_id AS "personId",
         display_name AS "displayName", handle, avatar_attachment_id AS "pictureId",
-        role_tags_json AS "roleTags", skills, time_zone AS "timeZone", work_hours_json AS "workHours"
+        role_tags_json AS "roleTags", skills, time_zone AS "timeZone", work_hours_json AS "workHours",
+        talk_style AS "talkStyle"
       FROM kin_people WHERE org_id = ${orgId}
         ${personId === undefined ? sql`` : sql`AND person_id = ${personId}`}
       ORDER BY display_name, person_id`.pipe(
@@ -872,6 +878,11 @@ export const make = Effect.gen(function* () {
     // Anyone edits their own; owner-level people edit whoever they may act on.
     if (caller.personId !== input.personId)
       yield* mayActOn(yield* owner(session, input.orgId), input.orgId, input.personId);
+    if (caller.personId !== input.personId && input.talkStyle !== undefined)
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: "Only they can say how they like to be spoken to.",
+      });
     const picture = input.picture;
     if (picture != null && picture.type !== "image")
       return yield* new KinChatError({

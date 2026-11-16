@@ -55,11 +55,13 @@ describe("kinMessageLayout", () => {
     expect(kinMessageLayout(said(body))).toBe(layout);
   });
 
-  it("keeps people's messages and deleted ones as bubbles, and a brief as a brief", () => {
+  it("keeps people's messages and deleted ones as bubbles, and a brief with a section as a brief", () => {
     expect(kinMessageLayout(said("## Plan\nShip.", { author: human }))).toBe("bubble");
     expect(kinMessageLayout(said("## Plan\nShip.", { status: "deleted" }))).toBe("bubble");
+    expect(kinMessageLayout(said(BRIEF, { form: "brief" }))).toBe("brief");
+    // A one-line check-in reply has nothing for the big greeting to head.
     expect(kinMessageLayout(said("Quiet day. Nothing needs you.", { form: "brief" }))).toBe(
-      "brief",
+      "bubble",
     );
   });
 });

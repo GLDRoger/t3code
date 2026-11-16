@@ -40,6 +40,11 @@ export const KinWaitingId = TrimmedNonEmptyString.pipe(Schema.brand("KinWaitingI
 export type KinWaitingId = typeof KinWaitingId.Type;
 export const KinWakeupId = TrimmedNonEmptyString.pipe(Schema.brand("KinWakeupId"));
 export type KinWakeupId = typeof KinWakeupId.Type;
+/** A Team room discussion, such as `TD-3`. */
+export const KinDiscussionId = Schema.String.check(Schema.isPattern(/^TD-[1-9]\d{0,8}$/)).pipe(
+  Schema.brand("KinDiscussionId"),
+);
+export type KinDiscussionId = typeof KinDiscussionId.Type;
 
 // Markdown keeps its whitespace, so this checks blank without trimming.
 const isBlankBody = (value: string) => value.trim().length === 0;
@@ -226,6 +231,17 @@ export type KinMessageKind = typeof KinMessageKind.Type;
 export const KinMessageStatus = Schema.Literals(["posted", "suggested", "dismissed", "deleted"]);
 export type KinMessageStatus = typeof KinMessageStatus.Type;
 
+/**
+ * A message one agent sent into another's chat (`sent_by`, drawn on the viewer's side as "Sent by
+ * <agent>", as a T3 thread draws a message from another thread), or the answer carried back to the
+ * agent that asked (`reply_from`, a small callout naming who replied).
+ */
+export const KinMessageRelay = Schema.Struct({
+  kind: Schema.Literals(["sent_by", "reply_from"]),
+  agentId: KinAgentId,
+});
+export type KinMessageRelay = typeof KinMessageRelay.Type;
+
 export const KinMessage = Schema.Struct({
   orgId: KinOrgId,
   chatId: KinChatId,
@@ -254,6 +270,10 @@ export const KinMessage = Schema.Struct({
   sentBy: Schema.NullOr(KinPersonId),
   createdAt: IsoDateTime,
   editedAt: Schema.NullOr(IsoDateTime),
+  // The Team room discussion it is part of, or an outcome or row that links to. Absent elsewhere.
+  discussionId: Schema.optional(KinDiscussionId),
+  // Absent on a message no agent sent across.
+  relay: Schema.optional(KinMessageRelay),
 });
 export type KinMessage = typeof KinMessage.Type;
 
@@ -537,6 +557,8 @@ export const KinChatSummary = Schema.Struct({
   unread: NonNegativeInt,
   /** An agent in the chat is on a live wake-up. Absent from servers without it. */
   working: Schema.optional(Schema.Boolean),
+  /** The Team room has something the viewer hasn't read: a quiet dot, never a count. */
+  fresh: Schema.optional(Schema.Boolean),
 });
 export type KinChatSummary = typeof KinChatSummary.Type;
 
@@ -656,6 +678,11 @@ export type KinGroupDeleteInput = typeof KinGroupDeleteInput.Type;
 export const KinGroupDone = Schema.Struct({});
 /** `KinChat.teamId` of the company chat while it is on: the one group everyone on the team is in. */
 export const KIN_COMPANY_CHAT_TEAM_ID = "company";
+/**
+ * `KinChat.teamId` of the Team room: the agents and the owner-level people, where agents hold
+ * discussions with each other. It never notifies or counts as unread, and teammates are never in it.
+ */
+export const KIN_TEAM_ROOM_TEAM_ID = "team-room";
 /** Turns the company chat on with this agent answering by default, or off with null. Owner only. */
 export const KinGroupSetCompanyInput = Schema.Struct({
   orgId: KinOrgId,

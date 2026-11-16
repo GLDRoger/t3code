@@ -5,6 +5,7 @@ import {
   KIN_PROFILE_COPY,
   KIN_PROFILE_NAME_MAX,
   KIN_PROFILE_SKILLS_MAX,
+  KIN_PROFILE_TALK_MAX,
   kinHoursLine,
   kinMayEditProfile,
   kinPersonSeed,
@@ -173,6 +174,18 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
           </Text>
         </View>
       </ListSection>
+      <ListSection title={KIN_PROFILE_COPY.talkLabel}>
+        <View className="px-4 py-3">
+          <Text
+            textRole="body"
+            className={
+              (profile.talkStyle ?? "") === "" ? "text-foreground-muted" : "text-foreground"
+            }
+          >
+            {(profile.talkStyle ?? "") === "" ? KIN_PROFILE_COPY.noTalk : profile.talkStyle}
+          </Text>
+        </View>
+      </ListSection>
       <ListSection title={KIN_PROFILE_COPY.hoursLabel}>
         <View className="gap-0.5 px-4 py-3">
           <Text
@@ -211,13 +224,17 @@ export function KinProfileEditScreen({ route }: StaticScreenProps<KinProfilePara
         <Missing loading={target.loading} failed={target.failed} />
       </Frame>
     );
-  return <ProfileForm environmentId={environmentId} orgId={orgId} profile={profile} />;
+  return (
+    <ProfileForm environmentId={environmentId} orgId={orgId} profile={profile} mine={target.mine} />
+  );
 }
 
 function ProfileForm(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly profile: KinPersonProfile;
+  /** Only the person says how they like to be spoken to. */
+  readonly mine: boolean;
 }) {
   const navigation = useNavigation();
   const { environmentId, orgId, profile } = props;
@@ -350,6 +367,21 @@ function ProfileForm(props: {
           className="min-h-24 px-4 py-3 font-sans text-base leading-normal text-foreground"
         />
       </ListSection>
+      {props.mine ? (
+        <ListSection title={KIN_PROFILE_COPY.talkLabel} footer={KIN_PROFILE_COPY.talkHint}>
+          <TextInput
+            multiline
+            accessibilityLabel={KIN_PROFILE_COPY.talkLabel}
+            value={draft.talkStyle}
+            maxLength={KIN_PROFILE_TALK_MAX}
+            onChangeText={(talkStyle) => set({ talkStyle })}
+            placeholder={KIN_PROFILE_COPY.talkPlaceholder}
+            placeholderTextColorClassName="accent-placeholder"
+            textAlignVertical="top"
+            className="min-h-20 px-4 py-3 font-sans text-base leading-normal text-foreground"
+          />
+        </ListSection>
+      ) : null}
       <ListSection title={KIN_PROFILE_COPY.hoursLabel}>
         <View className="flex-row flex-wrap gap-1.5 px-4 py-3">
           {KIN_DAY_LABELS.map((label, day) => (

@@ -23,8 +23,9 @@ use stay signed in.
 ### Your profile
 
 Open your profile (your name in the Chats list on the web, **Settings** on the phone) to set your
-name, skills, time zone and working hours. Agents read them when they decide who should do
-something and when to message you. An agent nudges you about the same thing at most once a day,
+name, skills, time zone and working hours, and in **How to talk to me** how you like agents to
+write to you ("short, numbers first, nothing after 8 pm"). Only you can set that line. Agents read
+your profile when they decide who should do something, when to message you and how. An agent nudges you about the same thing at most once a day,
 inside your hours.
 
 ### Adding a teammate (owner and co-owners)
@@ -42,6 +43,15 @@ turn on what they can see (Money, Clients, Docs), to choose which agents they ca
 Open an agent in Chats and write to it as you would to a colleague: "what's late this week?",
 "remind me to call Orbit at 4", "draft the November invoice for Acme". It answers in the same chat.
 
+- **Each agent has a character.** Finance is exact and wary of promises, Growth sees upside
+  everywhere, Social lives online. An agent has views, says when it disagrees with you, and then
+  does what you decide. To change how one sounds, tell it in its chat ("be warmer with me"); it
+  rewrites its character and says so in a line. The character is a private doc in **Docs**, and its
+  history brings an older one back. A character never changes what an agent may do.
+- **It does, then tells.** Inside the company an agent acts and tells you in a line: it moves a
+  task, drafts a doc, fixes a record. It asks only what only you know, once, with the default it
+  will take. Say "undo it" and it puts back what it just changed. To let it do something without
+  asking every time, say so ("Finance may always draft payment reminders"); it remembers.
 - **One reply per message.** Each message gets one answer. If the agent starts something longer,
   such as a coding job, it says so and comes back in the chat when there's news.
 - **It works with what you can see.** An agent answering you sees only what you may see.
@@ -61,8 +71,9 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   "Every weekday at 9, tell me what's late" sets a repeating one, shown as a card you can **Run
   now**, **Pause**, **Edit** or **Delete**. Only the owner and co-owners can set repeating ones.
 - **It passes things on.** Ask one agent about another's area and it hands it over and tells you
-  so. Ask it to tell a teammate something and the message arrives in that teammate's chat, marked as
-  from you.
+  so. The request shows in the other agent's chat as **Sent by** the first, and the answer comes back
+  to the agent you asked, in your chat with it. Ask it to tell a teammate something and the message
+  arrives in that teammate's chat, marked as from you.
 - **It does engineering work.** An agent that looks after engineering reads your GitHub repos, pull
   requests and checks, reviews pull requests, and starts coding work in T3 Code. It never merges
   without the owner's approval.
@@ -75,6 +86,8 @@ An agent prepares; a person decides. These wait for the owner's or a co-owner's 
 card, and typing "yes" in the chat doesn't count:
 
 - sending or replying to an email, or saving a calendar invite;
+- posting on any social account, the company's own included, or commenting publicly on someone
+  else's repository;
 - recording what a bank statement shows (see [Bank and card statements](./kin-statements.md));
 - recording money received for a receipt that has no payment yet;
 - changing the company details.
@@ -100,6 +113,23 @@ page and pick which agent answers when nobody is named.
 
 The **team agent**, set on the Team page, is the one every teammate can chat with. It sees only
 what each person may see.
+
+### The Team room
+
+Your agents settle things between them in the **Team room**: say "sort it out with Finance", or an
+agent opens a discussion itself when something crosses into another agent's area. Only you and
+co-owners can read it; teammates never see it, so exact figures can be said there. It is muted and
+never counts as unread; a small dot means something new.
+
+- Whose call it is decides. Agents with a stake may speak once uninvited, a decision can be objected
+  to once, and every discussion ends: decided, parked, or brought to you.
+- You hear the outcome once, as one line in the chat you asked in, with **See how they got there**.
+  When an agent started it, the line comes with your next check-in.
+- A real disagreement comes as one card with both sides, the Chief of staff's lean and two choices.
+- Agents act inside the company, then tell you what they changed. Say "undo it" and they reverse
+  those changes. Anything that leaves the company, such as an email, still waits for your Confirm.
+- Agents start at most 6 discussions a day and have 2 open at once; a discussion you ask for always
+  starts.
 
 ## Tasks
 
@@ -262,3 +292,6 @@ reach it the way any remote client does: T3 Connect, your local network, or Tail
 [Remote access](./remote-access.md). Keep the computer on and awake while the team works; see
 [Run T3 Code in the background](./background-service.md). Make join links from the address
 teammates will use.
+
+To give agents characters you wrote yourself, see
+[Setting agents' characters from the host](../operations/kin-characters.md).

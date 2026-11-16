@@ -13,6 +13,7 @@ import {
   kinFeedViewer,
   kinMarkReadRearms,
   kinSeqToMarkRead,
+  kinUnreadToMark,
   kinUnseenCount,
   latestKinSeq,
   mergeKinFeed,
@@ -80,6 +81,7 @@ import {
   kinPendingRefKey,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import {
+  KIN_TEAM_ROOM_TEAM_ID,
   KinChatId,
   type EnvironmentId,
   type KinAttachment,
@@ -157,6 +159,7 @@ import {
   KinDocRefMark,
   KinDraftRow,
   KinFoldRow,
+  KinRelayRow,
   KinMessageRow,
   KinPendingRow,
   KinSystemRow,
@@ -243,6 +246,12 @@ export function KinChatView(props: {
     inbox?._tag === "Success"
       ? inbox.value.value.chats.find((chat) => chat.chatId === chatId)
       : undefined;
+  const teamRoomId =
+    inbox?._tag === "Success"
+      ? (inbox.value.value.chats.find(
+          (chat) => chat.orgId === props.orgId && chat.teamId === KIN_TEAM_ROOM_TEAM_ID,
+        )?.chatId ?? null)
+      : null;
   const ownedAgentId = summary === undefined ? null : kinOwnedLeadAgentId(summary, viewer.personId);
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(props.environmentId));
   // A direct chat's lead has details to open: the viewer's own, or one they were let message.
@@ -387,7 +396,7 @@ export function KinChatView(props: {
             isGroup ? { ...viewer, memberNames: kinMemberNames(group?.members ?? null) } : viewer
           }
           mentionable={mentionable}
-          unread={summary?.unread ?? null}
+          unread={kinUnreadToMark(summary)}
           presence={presence}
           stopLead={
             summary === undefined || ownedAgentId === null || !canInterrupt || retiredName !== null
@@ -403,6 +412,7 @@ export function KinChatView(props: {
           charter={lead === null ? null : kinIntroCharter(lead.charter)}
           members={group?.members ?? summary?.members ?? []}
           direct={summary?.kind === "direct"}
+          teamRoomId={teamRoomId}
           ownsLead={ownedAgentId !== null}
           about={contact === null || contact.intro.trim() === "" ? null : contact.intro}
           readOnly={readOnly}
@@ -565,6 +575,8 @@ function KinChatFeed(props: {
   /** A group's leads, which the composer offers on `@`. */
   readonly mentionable: ReadonlyArray<KinMentionCandidate>;
   readonly direct: boolean;
+  /** The org's Team room, where a discussion's outcome links to. */
+  readonly teamRoomId: KinChatId | null;
   readonly ownsLead: boolean;
   /** What the owner of someone else's lead wrote for the people it talks to. */
   readonly about: string | null;
@@ -628,6 +640,7 @@ function KinChatFeed(props: {
     expandedRuns,
     dayStart,
     live.drafts,
+    props.chatId === props.teamRoomId,
   );
   const display = kinFeedDisplay({
     rows: feedRows,
@@ -868,6 +881,15 @@ function KinChatFeed(props: {
       }
       case "fold":
         return <KinFoldRow row={item} onToggle={() => toggleRun(item.runId)} />;
+      case "relay":
+        return (
+          <KinRelayRow
+            row={item}
+            environmentId={props.environmentId}
+            orgId={props.orgId}
+            teamRoomId={props.teamRoomId}
+          />
+        );
       case "pending":
         return (
           <KinPendingRow

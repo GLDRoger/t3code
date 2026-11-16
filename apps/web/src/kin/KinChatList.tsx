@@ -423,6 +423,12 @@ function KinChatListItem(props: {
               </Badge>
             ) : null}
             {unread ? <Badge size="sm">{view.unread}</Badge> : null}
+            {row.quietNew ? (
+              <span
+                aria-hidden
+                className="size-2 shrink-0 rounded-full bg-sidebar-muted-foreground"
+              />
+            ) : null}
           </span>
           {row.company && props.me !== undefined ? (
             <KinRoomLine environmentId={props.environmentId} chat={chat} me={props.me} />

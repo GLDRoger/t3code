@@ -24,16 +24,19 @@ Evals call paid models, so CI does not run them. CI typechecks this package and 
 
 ## Kin baseline
 
-Kin's agent cases live in `mcp-tool-use`: `cases/kin.ndjson` and `cases/kin-owed.ndjson`, one area per group of behaviours (`kin/owner-chat`, `kin/mail` and the rest). Run them once per model before changing Kin's instructions or tool descriptions, and compare later runs against that baseline. From `evals/`:
+Kin's agent cases live in `mcp-tool-use`: `cases/kin.ndjson`, `cases/kin-owed.ndjson` and `cases/kin-characters.ndjson`, one area per group of behaviours (`kin/owner-chat`, `kin/mail` and the rest). Run them once per model before changing Kin's instructions or tool descriptions, and compare later runs against that baseline. From `evals/`:
 
-| Command                                              | Calls a model | What it does                                                                       |
-| ---------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------- |
-| `pnpm kin:dry`                                       | no            | Builds every Kin request, fails on a malformed case, and prints the cost estimate. |
-| `pnpm kin:subset --model <id> --out runs/kin-subset` | yes           | The first case of each group, 3 samples each.                                      |
-| `pnpm kin:baseline --model <id> --out runs/kin-<id>` | yes           | Every Kin case, 3 samples each, on one model.                                      |
-| `pnpm kin:baseline:all`                              | yes           | The same on Opus, Sonnet and Haiku, into `runs/kin-baseline-<model>`.              |
+| Command                                                      | Calls a model | What it does                                                                                      |
+| ------------------------------------------------------------ | ------------- | ------------------------------------------------------------------------------------------------- |
+| `pnpm kin:dry`                                               | no            | Builds every Kin request, fails on a malformed case, and prints the cost estimate.                |
+| `pnpm kin:subset --model <id> --out runs/kin-subset`         | yes           | The first case of each group, 3 samples each.                                                     |
+| `pnpm kin:characters --model <id> --out runs/kin-characters` | yes           | The character cases: five voices on one question, act then tell, undo, Confirm on mail and posts. |
+| `pnpm kin:baseline --model <id> --out runs/kin-<id>`         | yes           | Every Kin case, 3 samples each, on one model.                                                     |
+| `pnpm kin:baseline:all`                                      | yes           | The same on Opus, Sonnet and Haiku, into `runs/kin-baseline-<model>`.                             |
 
 `summary.md` gives the pass rate per case and per pattern. The `mcp-tool-use` README covers the case format.
+
+A case's `{{CHARACTER:<domain>}}` and `{{COLLEAGUES:<domain>}}` are a standard agent's default character and the others' one-liners, as Kin builds them. Where no regex can judge a reply (does it sound like this character?), `expect.rubric` asks the shell model yes/no questions about the visible reply and its calls; each answer is one check. A rubric costs one small call per sample.
 
 ## The shape of an eval
 

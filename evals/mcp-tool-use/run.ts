@@ -54,6 +54,7 @@ import { withInlineContext } from "../../apps/server/src/orchestration-v2/Contex
 import {
   groupRules as kinGroupRules,
   instructions as kinLeadInstructions,
+  teamRules as kinTeamRules,
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
@@ -74,6 +75,10 @@ import { HANDED_BACK_WORK, SHARED_TURN_LINE } from "../../apps/server/src/kin/le
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
+import { UNDO_RULE } from "../../apps/server/src/kin/lead/undoSection.ts";
+import { defaultCharacterFor } from "../../apps/server/src/kin/lead/characterDefaults.ts";
+import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/characters.ts";
+import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import {
   CAPTION_PROMPT,
   classifySegment,
@@ -257,6 +262,8 @@ const McpToolUseExpect = Schema.Struct({
    * files request_secret returned were read. See `SecretExpect` in secret-grading.ts.
    */
   secret: Schema.optional(SecretExpect),
+  /** Yes/no questions a judge model answers about the visible reply. See rubric.ts. */
+  rubric: Schema.optional(Rubric),
 });
 
 /**
@@ -1085,14 +1092,37 @@ const loadTools = (tools: Array<ApiTool>, id: string, found: ReadonlyArray<ApiTo
  * A lead case writes `{{WORK_RULE}}`, `{{SHARED_TURN}}` and Kin's other rule lines where Kin puts
  * them, in its prompt or a prior turn, so it tests the current text.
  */
-const fillKinRules = (prompt: string) =>
+const STANDARD_SEATS = ["chief-of-staff", "finance", "engineering", "growth", "social"];
+const seatCharacter = (domain: string) => {
+  const body = defaultCharacterFor(domain);
+  if (body === undefined) throw new Error(`No default character for ${domain}.`);
+  return { body, name: /^# (.+)$/m.exec(body)?.[1] ?? domain };
+};
+/**
+ * `{{CHARACTER:<domain>}}` is that default character as its agent's own owner-only turn carries
+ * it; `{{COLLEAGUES:<domain>}}` the other standard agents' lines, as Kin gives them.
+ */
+const fillCharacters = (prompt: string) =>
   prompt
+    .replace(/\{\{CHARACTER:([a-z-]+)\}\}/g, (_, domain: string) =>
+      characterForTurn({ key: "D-12", body: seatCharacter(domain).body }, true),
+    )
+    .replace(/\{\{COLLEAGUES:([a-z-]+)\}\}/g, (_, domain: string) =>
+      STANDARD_SEATS.filter((seat) => seat !== domain)
+        .map((seat) => colleagueLine(seatCharacter(seat).name, seatCharacter(seat).body))
+        .join("\n"),
+    );
+
+const fillKinRules = (prompt: string) =>
+  fillCharacters(prompt)
+    .replaceAll("{{UNDO_RULE}}", UNDO_RULE)
     .replaceAll("{{WORK_RULE}}", WORK_RULE)
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
+    .replaceAll("{{TEAM_RULES}}", kinTeamRules)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
@@ -2267,6 +2297,34 @@ const callModel = (apiKey: string, body: unknown, proxy?: Config["proxy"]) =>
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ApiResponse))),
   );
 
+/** The rubric's checks, answered by the shell model about the turn's visible reply and calls. */
+const judged = Effect.fn("evaluateMcpToolUse.rubric")(function* (
+  testCase: McpToolUseCase,
+  sample: SampleRun,
+  config: Config,
+  usage: Usage,
+) {
+  const { rubric } = testCase.expect;
+  if (rubric === undefined) return [];
+  if (!isPricedModel(config.shellModel))
+    return yield* Effect.die(new Error("A rubric needs a Claude shell model."));
+  const turn = {
+    text: sample.text,
+    calls: sample.calls.map((call) => `${call.tool} ${valueText(call.input).slice(0, 600)}`),
+  };
+  const response = yield* callModel(
+    config.apiKey,
+    rubricRequest(
+      config.shellModel,
+      rubric.context === undefined ? rubric : { ...rubric, context: fillKinRules(rubric.context) },
+      turn,
+    ),
+    config.apiKey ? undefined : (config.anthropic ?? config.proxy),
+  );
+  addUsage(usage, response.usage);
+  return rubricChecks(rubric, response.content);
+});
+
 /** A tool call as graded. Claude Code runs an `Agent` in the background unless told otherwise. */
 const recordedCall = (step: number, use: typeof ToolUse.Type): Call => {
   const tool = normalizeToolName(use.name);
@@ -2881,6 +2939,11 @@ const main = Effect.gen(function* () {
       .filter(Boolean);
     return runSample(testCase, config, baseFor(testCase), usage).pipe(
       inFlight.withPermits(1),
+      Effect.flatMap((sample) =>
+        judged(testCase, sample, config, usage.shellUsage).pipe(
+          Effect.map((rubric) => ({ sample, rubric })),
+        ),
+      ),
       Effect.matchCause({
         // Not graded: a sample that errors is left out of pass rates, with its tokens so far.
         onFailure: (cause) => ({
@@ -2892,8 +2955,8 @@ const main = Effect.gen(function* () {
             Cause.pretty(cause),
           ),
         }),
-        onSuccess: (sample) => {
-          const checks = gradeSample(testCase.expect, sample, pastedText(testCase));
+        onSuccess: ({ sample, rubric }) => {
+          const checks = [...gradeSample(testCase.expect, sample, pastedText(testCase)), ...rubric];
           const { secret } = testCase.expect;
           return {
             ...identity,

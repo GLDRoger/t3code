@@ -35,6 +35,7 @@ import * as LeadDocs from "./leadDocs.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
+import { characters, parseCharacter, seedCharacters, setCharacter } from "../lead/characters.ts";
 import { search } from "./search.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 
@@ -1215,6 +1216,47 @@ it.effect(
         "default",
       );
       assert.strictEqual((yield* playbookThreshold(elsewhere, "overloaded_load")).value, 8);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "every live agent gets a character only owner-level people read, and a host set keeps its history",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_leads SET domain = 'finance' WHERE agent_id = ${lead}`;
+      yield* sql`UPDATE kin_leads SET domain = 'invented-seat' WHERE agent_id = ${other}`;
+      assert.strictEqual(yield* seedCharacters(orgId), 2);
+      assert.strictEqual(yield* seedCharacters(orgId), 0);
+      const [mine, theirs] = yield* characters(orgId);
+      // The finance default for the finance seat; a starter, from its charter, for the other.
+      assert.include(mine!.body, "Money is real when it is in the bank");
+      assert.include(theirs!.body, "This is a starter character.");
+      assert.strictEqual(
+        parseCharacter(mine!.body).colleagues?.startsWith("Cynical and exact"),
+        true,
+      );
+      assert.notInclude(parseCharacter(mine!.body).voice, "## Examples");
+      // A teammate can't find it, by key or by search; the owner's level can.
+      const hidden = yield* Effect.flip(
+        Docs.docRow(orgId, { key: mine!.key }, viewerOfPeople([mateId])),
+      );
+      assert.strictEqual(hidden.reason, "not_found");
+      assert.strictEqual(
+        (yield* Docs.docRow(orgId, { key: mine!.key }, KIN_OWNER_LEVEL)).key,
+        mine!.key,
+      );
+      // The owner's own text from the host is a new version; the old one stays in its history.
+      const own = "# Finance\n\nTo colleagues: Invented line.\n\nInvented voice.\n";
+      assert.strictEqual((yield* setCharacter(orgId, lead, own)).outcome, "set");
+      assert.strictEqual((yield* setCharacter(orgId, lead, own)).outcome, "unchanged");
+      const record = yield* Docs.docRow(orgId, { key: mine!.key }, KIN_OWNER_LEVEL);
+      assert.deepStrictEqual(
+        (yield* Docs.history(orgId, record.recordId, { limit: 5 })).map((one) => one.version),
+        [2, 1],
+      );
+      assert.include((yield* characters(orgId))[0]!.body, "Invented voice.");
     }).pipe(Effect.provide(layer)),
 );
 

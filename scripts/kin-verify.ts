@@ -67,7 +67,7 @@ const HELP = `kin-verify [--instance <name>] <command>
                                           the RPC as that person; prints what each watcher's open
                                           page received over its socket meanwhile, one JSON line each
                                           (found: frames in that carried the text)
-  tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--reply "<text>"] [--hold <s>] [--fail] [--raw]
+  tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--say "<text>"] [--reply "<text>"] [--hold <s>] [--fail] [--raw]
                                           one real turn, no model: the agent calls the tool
   mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
   mail expire <address> [--back]          the account's sign-in stops working (or works again)
@@ -437,6 +437,7 @@ async function tool(instance: Instance, args: Args) {
     person: flag(args, "as-turn-of") ?? "owner",
     calls: [{ name, arguments: json === undefined ? {} : JSON.parse(json) }],
     ...(flag(args, "reply") === undefined ? {} : { reply: flag(args, "reply")! }),
+    ...(flag(args, "say") === undefined ? {} : { say: flag(args, "say")! }),
     ...(flag(args, "hold") === undefined ? {} : { holdSeconds: Number(flag(args, "hold")) }),
     ...(args.flags.has("fail") ? { fail: true } : {}),
   });

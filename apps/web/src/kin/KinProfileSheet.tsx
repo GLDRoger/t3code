@@ -5,6 +5,7 @@ import {
   KIN_PROFILE_COPY,
   KIN_PROFILE_NAME_MAX,
   KIN_PROFILE_SKILLS_MAX,
+  KIN_PROFILE_TALK_MAX,
   kinHoursLine,
   kinMayEditProfile,
   kinPersonSeed,
@@ -191,6 +192,7 @@ function KinProfileSheet(props: {
               environmentId={environmentId}
               orgId={orgId}
               profile={profile}
+              mine={mine}
               onDone={() => setEditing(false)}
             />
           ) : (
@@ -246,6 +248,15 @@ function KinProfileRead(props: {
           )}
         </p>
       </Field>
+      <Field label={KIN_PROFILE_COPY.talkLabel}>
+        <p className="whitespace-pre-wrap text-sm text-foreground">
+          {(props.profile.talkStyle ?? "") === "" ? (
+            <span className="text-muted-foreground">{KIN_PROFILE_COPY.noTalk}</span>
+          ) : (
+            props.profile.talkStyle
+          )}
+        </p>
+      </Field>
       <Field label={KIN_PROFILE_COPY.hoursLabel}>
         <p className="text-sm text-foreground">
           {hours === null ? (
@@ -276,6 +287,8 @@ function KinProfileForm(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly profile: KinPersonProfile;
+  /** Only the person says how they like to be spoken to. */
+  readonly mine: boolean;
   readonly onDone: () => void;
 }) {
   const { environmentId, orgId, profile } = props;
@@ -409,6 +422,19 @@ function KinProfileForm(props: {
         />
         <p className="text-xs text-muted-foreground">{KIN_PROFILE_COPY.skillsHint}</p>
       </div>
+      {props.mine ? (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="kin-profile-talk">{KIN_PROFILE_COPY.talkLabel}</Label>
+          <Textarea
+            id="kin-profile-talk"
+            value={draft.talkStyle}
+            maxLength={KIN_PROFILE_TALK_MAX}
+            placeholder={KIN_PROFILE_COPY.talkPlaceholder}
+            onChange={(event) => set({ talkStyle: event.target.value })}
+          />
+          <p className="text-xs text-muted-foreground">{KIN_PROFILE_COPY.talkHint}</p>
+        </div>
+      ) : null}
       <fieldset className="flex flex-col gap-2">
         <legend className="mb-1.5 text-sm font-medium text-foreground">
           {KIN_PROFILE_COPY.hoursLabel}

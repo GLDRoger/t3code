@@ -15,7 +15,7 @@ const decodeHours = Schema.decodeUnknownEffect(Schema.fromJsonString(KinWorkHour
 export const PeopleReadResult = Schema.Struct({ quoted: Schema.String });
 
 /** "Mon–Fri 10:00–19:00", or each day listed when they don't run on. */
-const describeHours = (hours: KinWorkHours) => {
+export const describeHours = (hours: KinWorkHours) => {
   const days = [...new Set(hours.days)].toSorted((a, b) => a - b);
   const run =
     days.length > 2 &&
@@ -47,7 +47,7 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
  * What each person and agent holds in Work now, counted on read: open tasks, late ones, due
  * within a week, open work by size, and whether that reaches the playbook's overloaded mark.
  */
-const loads = Effect.fn("KinPeopleRead.loads")(function* (orgId: KinOrgId, now: number) {
+export const loads = Effect.fn("KinPeopleRead.loads")(function* (orgId: KinOrgId, now: number) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
     kind: string;

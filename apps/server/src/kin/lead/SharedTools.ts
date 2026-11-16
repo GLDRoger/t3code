@@ -142,6 +142,9 @@ export const SHARED_TOOLS = {
   kin_take_private: "allowed",
   // The asker's request, quoted as theirs, to someone who decides for them (`KinHandoff.relay`).
   kin_relay: "allowed",
+  // The Team room is owner-level: a turn someone else reads neither opens nor speaks there.
+  team_open: "refused",
+  team_say: "refused",
   memory_search: "team_memory",
   memory_read: "team_memory",
   memory_write: "team_memory",

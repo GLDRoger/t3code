@@ -1,6 +1,7 @@
 import {
   KIN_PROFILE_NAME_MAX,
   KIN_PROFILE_SKILLS_MAX,
+  KIN_PROFILE_TALK_MAX,
   KIN_ROLE_TAGS_MAX,
   type KinAgentId,
   type KinLeadProfile,
@@ -8,7 +9,7 @@ import {
   type KinWorkHours,
 } from "@t3tools/contracts";
 
-export { KIN_PROFILE_NAME_MAX, KIN_PROFILE_SKILLS_MAX };
+export { KIN_PROFILE_NAME_MAX, KIN_PROFILE_SKILLS_MAX, KIN_PROFILE_TALK_MAX };
 
 export const KIN_PROFILE_COPY = {
   title: "Profile",
@@ -23,6 +24,10 @@ export const KIN_PROFILE_COPY = {
   tagsHint: "Short words such as tech, design or sales. Separate them with commas.",
   skillsLabel: "Skills",
   skillsHint: "Everyone on the team and their agents can read this.",
+  talkLabel: "How to talk to me",
+  talkHint: "Agents read this before they write to you. Only you can change it.",
+  talkPlaceholder: "Short and direct. Numbers first. No messages after 8 pm.",
+  noTalk: "Not said yet",
   hoursLabel: "Working hours",
   timeZoneLabel: "Time zone",
   noHours: "Not set",
@@ -99,6 +104,7 @@ export interface KinProfileDraft {
   readonly displayName: string;
   readonly tags: string;
   readonly skills: string;
+  readonly talkStyle: string;
   readonly days: ReadonlyArray<number>;
   readonly start: string;
   readonly end: string;
@@ -118,6 +124,7 @@ export function kinProfileDraft(profile: KinPersonProfile): KinProfileDraft {
     displayName: profile.displayName,
     tags: profile.roleTags.join(", "),
     skills: profile.skills,
+    talkStyle: profile.talkStyle ?? "",
     days: profile.workHours?.days ?? [1, 2, 3, 4, 5],
     start: profile.workHours?.start ?? "09:00",
     end: profile.workHours?.end ?? "18:00",
@@ -141,6 +148,7 @@ export function kinProfileChanges(
         displayName?: string;
         roleTags?: ReadonlyArray<string>;
         skills?: string;
+        talkStyle?: string;
         timeZone?: string | null;
         workHours?: KinWorkHours | null;
       };
@@ -153,6 +161,9 @@ export function kinProfileChanges(
   const skills = draft.skills.trim();
   if (skills.length > KIN_PROFILE_SKILLS_MAX)
     return { ok: false, problem: `Keep skills under ${KIN_PROFILE_SKILLS_MAX} characters.` };
+  const talkStyle = draft.talkStyle.trim();
+  if (talkStyle.length > KIN_PROFILE_TALK_MAX)
+    return { ok: false, problem: `Keep this under ${KIN_PROFILE_TALK_MAX} characters.` };
   if (draft.days.length > 0 && (!TIME.test(draft.start) || !TIME.test(draft.end)))
     return { ok: false, problem: "Write times as 24-hour HH:MM, such as 09:30." };
   const roleTags = kinParseRoleTags(draft.tags);
@@ -172,6 +183,7 @@ export function kinProfileChanges(
       ...(displayName === profile.displayName ? {} : { displayName }),
       ...(same(roleTags, profile.roleTags) ? {} : { roleTags }),
       ...(skills === profile.skills ? {} : { skills }),
+      ...(talkStyle === (profile.talkStyle ?? "") ? {} : { talkStyle }),
       ...(timeZone === profile.timeZone ? {} : { timeZone }),
       ...(same(workHours, profile.workHours) ? {} : { workHours }),
     },

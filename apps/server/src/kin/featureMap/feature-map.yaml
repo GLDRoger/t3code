@@ -36,6 +36,23 @@ features:
       - apps/server/src/kin/chat/KinChatService.test.ts
       - apps/server/src/kin/lead/ChatWake.test.ts
 
+  - id: chat-character
+    name: Each agent's own voice, and "undo it"
+    tab: chats
+    web: [home, chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: none, lead: none, member: none }
+    note: >-
+      Each agent's character is a private company doc it owns (Docs, owner level). The owner changes
+      it by telling the agent in its chat, or from the host with `kin lead character`; its history
+      brings back an older one. Other people's turns carry only its voice. "Undo it" in the owner's
+      chat shows the agent what it changed lately, so it can put it back.
+    tools: [doc_edit, doc_restore, record_update, record_assign]
+    proof:
+      - apps/server/src/kin/lead/LeadPrompt.test.ts
+      - apps/server/src/kin/work/docs.test.ts
+      - .agents/skills/verify-kin/scripts/character-and-undo.sh
+
   - id: chat-cards
     name: Questions, charts and visuals in a chat
     tab: chats
@@ -79,6 +96,21 @@ features:
       - apps/server/src/kin/contract/relay.kin-contract.test.ts
       - .agents/skills/verify-kin/scripts/relay-owner-to-member.sh
       - .agents/skills/verify-kin/scripts/member-request-to-owner.sh
+      - .agents/skills/verify-kin/scripts/team-room-discussion.sh
+
+  - id: team-room
+    name: Agents settle something in the Team room and tell the owner once
+    tab: chats
+    web: [home, chat]
+    phone: [tab:chats, KinChat]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [team_open, team_say]
+    note: Teammates never read the room, whoever its members are. The outcome line's link opens it.
+    proof:
+      - apps/server/src/kin/team/KinTeam.test.ts
+      - apps/server/src/kin/team/turns.property.test.ts
+      - verification/kin/discussion/Discussion.tla
+      - .agents/skills/verify-kin/scripts/team-room-discussion.sh
 
   - id: coding-workers
     name: An agent starts coding workers and follows up
@@ -759,13 +791,16 @@ features:
     proof: [packages/client-runtime/src/kin/kinProfiles.test.ts]
 
   - id: profile
-    name: Your profile, name, time zone and hours
+    name: Your profile, name, time zone, hours and how to talk to you
     tab: settings
     web: [home, sheet:Profile]
     phone: [SettingsKin, KinProfile, KinProfileEdit]
     form: true
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    proof: [packages/client-runtime/src/kin/kinProfiles.test.ts]
+    note: Only the person sets how they like to be spoken to; others see it read-only.
+    proof:
+      - packages/client-runtime/src/kin/kinProfiles.test.ts
+      - apps/server/src/kin/people/KinPeople.test.ts
 
   # ── Joining ────────────────────────────────────────────────────────────────────────────────
   - id: join

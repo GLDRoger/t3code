@@ -1,6 +1,7 @@
 import { sessionUploadOwner } from "../../assets/AttachmentUpload.ts";
 import { KinChatAndBudgetRpcs, KinChatError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -10,6 +11,7 @@ import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
+import { seedCharacters } from "../lead/characters.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinOwnerTimeZone } from "../triggers/ownerTimeZone.ts";
@@ -313,6 +315,13 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
             }).pipe(
               Effect.provideContext(kin.value.services.value),
               Effect.provideService(ServerSettingsService, settings.value),
+            );
+            // No agent goes without a character; a failure leaves the next start to write it.
+            yield* seedCharacters(lead.orgId).pipe(
+              Effect.provideContext(kin.value.services.value),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin character not written", Cause.pretty(cause)),
+              ),
             );
             return {
               outcome: _tag,

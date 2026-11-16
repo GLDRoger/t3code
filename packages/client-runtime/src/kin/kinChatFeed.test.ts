@@ -32,6 +32,7 @@ import {
   kinMarkReadRearms,
   kinRowSeq,
   kinSeqToMarkRead,
+  kinUnreadToMark,
   kinUnseenCount,
   mergeKinFeed,
   type KinFeedRow,
@@ -359,6 +360,39 @@ describe("rows", () => {
       type: "message",
       message: { body: "Screenshots from Test PR 7", attachments: [{ name: "01-home.png" }] },
     });
+  });
+
+  it("draws one agent's words in another's chat by who sent or answered them, and opens Team-room runs", () => {
+    const system = { kind: "system" as const, author: { _tag: "system" as const } };
+    const rows = messageRows(
+      [
+        agentMessage(1, { ...system, relay: { kind: "sent_by", agentId: KIN_FIXTURE_AGENT } }),
+        agentMessage(2, {
+          ...system,
+          relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
+          discussionId: "TD-1" as KinMessage["discussionId"],
+        }),
+      ],
+      viewer,
+      new Set(),
+    );
+    expect(rows).toMatchObject([
+      { type: "relay", relay: "sent_by", agentLabel: "Tech lead", discussionId: null },
+      { type: "relay", relay: "reply_from", agentLabel: "Tech lead", discussionId: "TD-1" },
+    ]);
+    // In the Team room a discussion is open under its line until the viewer closes it.
+    const room = all.slice(19, 26);
+    const open = (closed: ReadonlySet<string>) =>
+      buildKinFeedRows(room, viewer, closed, new Date(0), [], true).filter(
+        (row) => row.type !== "day",
+      );
+    expect(
+      open(new Set()).map((row) => (row.type === "message" ? row.message.seq : row.type)),
+    ).toEqual([20, 21, "fold", 22, 23, 24, 25, 26]);
+    // Closed, it reads as a run does anywhere else.
+    expect(open(new Set(["run-0"])).map((row) => row.key)).toEqual(
+      messageRows(room, viewer, new Set(), new Date(0)).map((row) => row.key),
+    );
   });
 
   it("offers to resend the owner's last message on a no-reply notice until the owner writes again", () => {
@@ -815,6 +849,11 @@ describe("kinSeqToMarkRead", () => {
     ["marks before the inbox has counted unread", { ...base, unread: null }, 9],
     ["doesn't resend a seq the host refused", { ...base, attemptedSeq: 9 }, null],
     ["sends a seq that arrived after a refusal", { ...base, attemptedSeq: 7 }, 9],
+    [
+      "clears the Team room's new dot, which shows no count",
+      { ...base, unread: kinUnreadToMark({ unread: 0, fresh: true }) },
+      9,
+    ],
   ] as const)("%s", (_name, input, seq) => {
     expect(kinSeqToMarkRead(input)).toBe(seq);
   });

@@ -92,6 +92,13 @@ export function KinChatRow(props: {
               Needs you
             </Text>
           ) : null}
+          {row.quietNew ? (
+            <View
+              accessibilityElementsHidden
+              importantForAccessibility="no"
+              className="size-2 rounded-full bg-foreground-muted"
+            />
+          ) : null}
           {unread ? (
             <View className="min-w-5 items-center rounded-full bg-primary px-1.5 py-0.5">
               <Text textRole="caption" className="font-t3-bold text-primary-foreground">
