@@ -48,6 +48,7 @@ import { authorise, fingerprint, storedLabels, visibility } from "../memory/sens
 import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { KinHandoff } from "./Handoff.ts";
+import { KinTeam } from "../team/KinTeam.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
 import * as Lead from "./LeadMemory.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
@@ -86,6 +87,7 @@ const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers)
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provide(Layer.mock(KinWorkers)({})),
   Layer.provide(Layer.mock(KinHandoff)({})),
+  Layer.provide(Layer.mock(KinTeam)({})),
   Layer.provide(Layer.mock(KinReplyBridge)({ silentEnd: () => Effect.succeed(false) })),
   Layer.provide(KinRepoReads.notConnectedLayer),
   Layer.provide(PullRequestCare.notConnectedLayer),

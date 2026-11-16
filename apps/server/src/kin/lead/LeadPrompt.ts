@@ -28,6 +28,7 @@ import { buildTeamIndex } from "../memory/buildIndex.ts";
 import { reaches, reaching, shareable, storedLabels } from "../memory/sensitivity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { PRIVATE_DOC, sensitiveDocs } from "../chat/privateDocs.ts";
+import { teamTurnFacts } from "../team/prompt.ts";
 import { accessSql, isOwnerHimself, ownerLevel, ownerLevelPeople } from "../people/KinAccess.ts";
 import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
 import { historyFloor } from "../chat/sharing.ts";
@@ -162,6 +163,12 @@ export class KinLeadPrompt extends Context.Service<
         });
         return yield* read.pipe(Effect.orElseSucceed(() => undefined));
       });
+      const agentName = (orgId: KinOrgId, agentId: string) =>
+        sql<{ name: string }>`SELECT name FROM kin_leads
+          WHERE org_id = ${orgId} AND agent_id = ${agentId}`.pipe(
+          Effect.map((rows) => rows[0]?.name),
+          Effect.orElseSucceed(() => undefined),
+        );
       // The section a message points at, as stored at that version: quoted, never summarised.
       // Docs are the owner's until the teammate view, so a turn others read gets only the name.
       const quotedRef = Effect.fnUntraced(function* (
@@ -501,12 +508,28 @@ export class KinLeadPrompt extends Context.Service<
                         ? {}
                         : { name: input.names.get(message.author.memberId) }),
                     }),
+                ...(message.relay === undefined
+                  ? {}
+                  : {
+                      [message.relay.kind === "sent_by" ? "sentBy" : "answerFrom"]:
+                        (yield* agentName(orgId, message.relay.agentId)) ?? "another agent",
+                    }),
                 body: spoken(message),
                 ...attachedNames(message),
               },
               true,
             ),
           );
+          if (message.discussionId !== undefined && message.author._tag === "agent") {
+            const turn = yield* teamTurnFacts(orgId, agentId, message.discussionId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.mapError(
+                (cause) =>
+                  new KinLeadPromptError({ orgId, reason: "Could not read discussion", cause }),
+              ),
+            );
+            if (turn !== undefined) events.push(quote("Team room turn", turn, true));
+          }
           for (const ref of message.refs ?? [])
             events.push(yield* quotedRef(orgId, ref, (owner || coOwner) && ownerOnly));
         }

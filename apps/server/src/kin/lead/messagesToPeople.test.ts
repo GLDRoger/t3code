@@ -41,6 +41,7 @@ import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "./Handoff.ts";
+import * as Team from "../team/KinTeam.ts";
 import { LeadMemory } from "./LeadMemory.ts";
 import { handlers as leadHandlers } from "./mcp/handlers.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
@@ -77,6 +78,7 @@ const kinServices = Layer.unwrap(
     const services = Option.getOrThrow((yield* Kin.KinServer).services);
     return Layer.mergeAll(
       Handoff.layer,
+      Team.layer,
       Layer.mock(KinWorkers)({}),
       Layer.mock(LeadMemory)({}),
       Layer.mock(KinReplyBridge)({ silentEnd: () => Effect.succeed(false) }),

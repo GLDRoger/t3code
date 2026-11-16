@@ -9,6 +9,7 @@ import {
   KinPersonId,
   KinWakeupId,
   TrimmedNonEmptyString,
+  type KinOrgId,
 } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
@@ -207,6 +208,15 @@ export class KinHandoff extends Context.Service<
       input: typeof RelayInput.Type,
       postTo: PostTo,
     ) => Effect.Effect<typeof RelayResult.Type, KinChatError>;
+    /**
+     * A wake-up that answered a hand-off ended: its last reply in that chat goes back to the agent
+     * that passed it on, as a quiet callout naming who answered, and wakes that agent to carry on.
+     */
+    readonly reportBack: (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: string;
+    }) => Effect.Effect<void>;
   }
 >()("t3/kin/lead/Handoff/KinHandoff") {}
 
@@ -616,9 +626,9 @@ const make = Effect.gen(function* () {
     const id = NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
     const messageId = KinMessageId.make(`kin-handoff:${id}`);
     const claimed = yield* sql`INSERT INTO kin_handoffs
-        (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at)
+        (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, to_chat_id)
       VALUES (${ctx.orgId}, ${messageId}, ${ctx.agentId}, ${target.agentId}, ${`handoff-${id}`},
-        ${now})
+        ${now}, ${target.ownerChatId})
       ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id`;
     if (claimed.length === 0) return { to: target.name, passed: true as const };
     const about =
@@ -626,18 +636,20 @@ const make = Effect.gen(function* () {
         ? fact.subject.title
         : `${fact.subject.key} ${fact.subject.title}`;
     const body = [
-      `Passed on by ${self.name} from ${event.checkIn?.title ?? "Kin's facts"}`,
-      `${about}: ${fact.consequence} (${fact.key})`,
-      `${self.name} adds: ${input.request.replace(/\s+/g, " ")}`,
+      input.request.replace(/\s+/g, " "),
+      `From ${event.checkIn?.title ?? "Kin's facts"}: ${about}: ${fact.consequence} (${fact.key})`,
     ]
       .join("\n")
       .slice(0, messageBodyLimit);
+    // Shown the T3 way, on the owner's side as sent by the passing agent; he didn't write it.
     const { message } = yield* chat.notice({
       orgId: ctx.orgId,
       chatId: target.ownerChatId,
       audience: "owner",
       messageId,
       body,
+      relay: { kind: "sent_by", agentId: ctx.agentId },
+      silent: true,
     });
     yield* queue.enqueue({
       _tag: "chat.message",
@@ -731,26 +743,26 @@ const make = Effect.gen(function* () {
         if (before !== undefined) return before;
         const dedupeKey = `handoff:${event.messageId}`;
         const id = NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32);
-        // The owner's words whole, then one line named as the lead's, so neither passes for the
-        // other or for Kin's.
+        // The lead's own words, then the owner's whole, quoted, so neither passes for the other.
+        // Who sent it travels as the row's sender (`relay`), drawn the way T3 draws a message
+        // another thread sent.
         const note = input.request.replace(/\s+/g, " ");
-        const head = `Passed on by ${self.name}`;
-        const quoted = `"${asked.body}"`;
-        const adds = fold(note) === fold(asked.body) ? [] : [`${self.name} adds: ${note}`];
-        const body = [head, quoted, ...adds].join("\n");
+        const quoted = `The owner wrote: "${asked.body}"`;
+        const adds = fold(note) === fold(asked.body) ? [] : [note];
+        const body = [...adds, quoted].join("\n");
         // The other lead is shown no more than this of a message; Kin won't pass on part of one.
         if (body.length > messageBodyLimit)
           return yield* refuse(
-            [head, quoted].join("\n").length > messageBodyLimit
+            quoted.length > messageBodyLimit
               ? "The owner's message is too long for another agent to be shown whole, and Kin won't pass on part of it. Say in one line which agent owns it, so the owner can send it there."
               : "With what you add, this is too long for another agent to be shown whole. Add less and call again.",
           );
         // One hand-off per owner message, whatever words, lead name or wake-up a retry uses. The
         // row is claimed before anything is posted, so a second destination never gets it.
         const claimed = yield* sql<{ toAgentId: KinAgentId }>`INSERT INTO kin_handoffs
-            (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at)
+            (org_id, message_id, from_agent_id, to_agent_id, event_id, created_at, to_chat_id)
           VALUES (${ctx.orgId}, ${event.messageId}, ${ctx.agentId}, ${target.agentId},
-            ${`handoff-${id}`}, ${yield* Clock.currentTimeMillis})
+            ${`handoff-${id}`}, ${yield* Clock.currentTimeMillis}, ${target.ownerChatId})
           ON CONFLICT (org_id, message_id) DO NOTHING RETURNING to_agent_id AS "toAgentId"`;
         if (claimed.length === 0) return (yield* already()) ?? (yield* unavailable());
         const { message } = yield* chat.notice({
@@ -759,6 +771,8 @@ const make = Effect.gen(function* () {
           audience: "owner",
           messageId: KinMessageId.make(`kin-handoff:${id}`),
           body,
+          relay: { kind: "sent_by", agentId: ctx.agentId },
+          silent: true,
         });
         yield* queue.enqueue({
           _tag: "chat.message",
@@ -789,7 +803,90 @@ const make = Effect.gen(function* () {
     );
   }, guarded("KinHandoff.handOff"));
 
-  return KinHandoff.of({ leads, handOff, takePrivate, relay });
+  const reportBack = Effect.fn("KinHandoff.reportBack")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly agentId: KinAgentId;
+      readonly wakeupId: string;
+    }) {
+      const owed = yield* sql<{
+        messageId: string;
+        fromAgentId: KinAgentId;
+        toChatId: KinChatId;
+        noticeSeq: number;
+      }>`SELECT h.message_id AS "messageId", h.from_agent_id AS "fromAgentId",
+          h.to_chat_id AS "toChatId",
+          COALESCE((SELECT n.seq FROM kin_messages n WHERE n.org_id = h.org_id
+            AND n.message_id = json_extract(e.json, '$.messageId')), 0) AS "noticeSeq"
+        FROM kin_handoffs h JOIN kin_events e ON e.org_id = h.org_id AND e.event_id = h.event_id
+        WHERE h.org_id = ${input.orgId} AND h.to_agent_id = ${input.agentId}
+          AND e.wakeup_id = ${input.wakeupId} AND h.reply_message_id IS NULL
+          AND h.to_chat_id IS NOT NULL
+        ORDER BY h.created_at`;
+      for (const handoff of owed) {
+        // Its last word there in this wake-up: the reply grows in place, so the finished one.
+        const [reply] = yield* sql<{ messageId: KinMessageId }>`SELECT m.message_id AS "messageId"
+          FROM kin_messages m JOIN kin_wakeups w ON w.org_id = m.org_id
+            AND w.wakeup_id = ${input.wakeupId} AND w.thread_id = m.author_thread_id
+          WHERE m.org_id = ${input.orgId} AND m.chat_id = ${handoff.toChatId}
+            AND m.author_kind = 'agent' AND m.author_agent_id = ${input.agentId}
+            AND m.status = 'posted' AND m.kind = 'text' AND m.seq > ${handoff.noticeSeq}
+          ORDER BY m.seq DESC LIMIT 1`;
+        if (reply === undefined) continue;
+        const message = yield* repo.getMessage({ orgId: input.orgId, messageId: reply.messageId });
+        if (Option.isNone(message) || message.value.author._tag !== "agent") continue;
+        const author = message.value.author;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const claimed = yield* sql`UPDATE kin_handoffs SET reply_message_id = ${reply.messageId}
+              WHERE org_id = ${input.orgId} AND message_id = ${handoff.messageId}
+                AND reply_message_id IS NULL RETURNING message_id`;
+            if (claimed.length === 0) return;
+            const [asker] = yield* sql<{ ownerChatId: KinChatId }>`SELECT l.owner_chat_id AS "ownerChatId"
+              FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+                AND a.retired_at IS NULL
+              WHERE l.org_id = ${input.orgId} AND l.agent_id = ${handoff.fromAgentId}`;
+            if (asker === undefined) return;
+            const key = `handoff-back:${handoff.messageId}`;
+            const id = NodeCrypto.createHash("sha256").update(key).digest("hex").slice(0, 32);
+            const { message: back } = yield* chat.notice({
+              orgId: input.orgId,
+              chatId: asker.ownerChatId,
+              audience: "owner",
+              messageId: KinMessageId.make(`kin-handoff-back:${id}`),
+              body: message.value.body.slice(0, messageBodyLimit),
+              relay: { kind: "reply_from", agentId: input.agentId },
+              silent: true,
+            });
+            // The asker carries on from the answer, in its own chat with the owner.
+            yield* queue
+              .enqueue({
+                _tag: "chat.message",
+                orgId: input.orgId,
+                eventId: KinEventId.make(`handoff-back-${id}`),
+                agentId: handoff.fromAgentId,
+                receivedAt: DateTime.makeUnsafe(back.createdAt),
+                dedupeKey: key,
+                provenance: author,
+                chatId: asker.ownerChatId,
+                messageId: back.messageId,
+                origin: { agentId: handoff.fromAgentId, chatId: asker.ownerChatId },
+              })
+              .pipe(
+                Effect.catchTags({
+                  KinEventQueueConflict: () => Effect.void,
+                  KinEventQueueRetiredAgent: () => Effect.void,
+                  KinEventQueueUnknownAgent: () => Effect.void,
+                }),
+              );
+          }),
+        );
+      }
+    },
+    Effect.catchCause((cause) => Effect.logError("Kin hand-off report-back failed", { cause })),
+  );
+
+  return KinHandoff.of({ leads, handOff, takePrivate, relay, reportBack });
 });
 
 export const layer = Layer.effect(KinHandoff, make);

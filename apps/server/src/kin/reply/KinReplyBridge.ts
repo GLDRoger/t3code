@@ -1,6 +1,7 @@
 import {
   CommandId,
   KIN_MESSAGE_BODY_MAX_LENGTH,
+  KIN_TEAM_ROOM_TEAM_ID,
   KinChatId,
   KinMessageId,
   MessageId,
@@ -90,6 +91,8 @@ export type Lane = {
   readonly mode: "reply" | "notice";
   readonly owed: boolean;
   readonly leadName: string;
+  /** A Team-room turn: it speaks only through `team_say`, and passing says nothing. */
+  readonly team?: true;
 };
 
 // Which wake-ups owe words: a message, card tap or reaction asked in its chat (`reply`); an entry
@@ -365,6 +368,22 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
       ORDER BY priority, received_at, event_id LIMIT 1`;
     const chatId = first?.chatId ?? lead?.ownerChatId;
     if (chatId === undefined) return Option.none<Lane>();
+    // Another agent's turn handed on in the Team room, and no person's message with it.
+    const [team] = yield* sql<{ people: number }>`SELECT COUNT(e.event_id) FILTER (
+        WHERE json_extract(e.json, '$.provenance._tag') = 'human') AS people
+      FROM kin_events e JOIN kin_chats c ON c.org_id = e.org_id
+        AND c.chat_id = json_extract(e.json, '$.chatId') AND c.team_id = ${KIN_TEAM_ROOM_TEAM_ID}
+      WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
+        AND e.wakeup_id = ${input.wakeupId} AND c.chat_id = ${chatId}
+      HAVING COUNT(e.event_id) > 0`;
+    if (team !== undefined && team.people === 0)
+      return Option.some<Lane>({
+        chatId: KinChatId.make(chatId),
+        mode: "notice",
+        owed: false,
+        leadName: lead?.name ?? "Agent",
+        team: true,
+      });
     const mode = first !== undefined && first.asked === 1 ? "reply" : "notice";
     const waiting = yield* sql`SELECT 1 FROM kin_events e
       WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
@@ -586,6 +605,11 @@ const make = Effect.gen(function* () {
       segment.drafting
         ? presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, messageId)
         : Effect.void;
+    // In the Team room an agent speaks with team_say; what else it writes is its own thinking.
+    if (wake.lane.team === true) {
+      segment.outcome = "dropped";
+      return yield* end(null);
+    }
     const text = withoutAsked(
       stripTrailingSilenceMarker(segment.text.trim()),
       yield* asked(wake).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])),

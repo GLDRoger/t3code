@@ -60,6 +60,7 @@ import { environment } from "../chat/TaskCard.testkit.ts";
 import { notConnectedLayer as repoReadsOff } from "../github/KinRepoReads.ts";
 import { notConnectedLayer as pullRequestCareOff } from "../github/PullRequestCare.ts";
 import { KinHandoff } from "../lead/Handoff.ts";
+import { KinTeam } from "../team/KinTeam.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
@@ -1666,6 +1667,7 @@ const endTool = Effect.fn("test.endTool")(function* (
           Layer.mock(LeadMemory)({ end: () => Effect.void }),
           Layer.mock(KinWorkers)({}),
           Layer.mock(KinHandoff)({}),
+          Layer.mock(KinTeam)({}),
           repoReadsOff,
           pullRequestCareOff,
           Layer.mock(ThreadManagement.ThreadManagementService)({

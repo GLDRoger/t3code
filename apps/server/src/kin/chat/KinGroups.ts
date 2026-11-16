@@ -1,5 +1,6 @@
 import {
   KIN_COMPANY_CHAT_TEAM_ID,
+  KIN_TEAM_ROOM_TEAM_ID,
   KIN_GROUP_MAX_MEMBERS,
   KinAgentId,
   KinChatError,
@@ -568,6 +569,12 @@ const make = Effect.gen(function* () {
 
     addMember: Effect.fn("KinGroups.addMember")(function* (caller, input) {
       const { chat } = yield* ownedGroup(caller, input.chatId);
+      // Kin keeps the Team room's members itself: the agents, the owner and co-owners.
+      if (chat.teamId === KIN_TEAM_ROOM_TEAM_ID)
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: "The Team room is your agents' room; only you and co-owners read it.",
+        });
       return yield* admit(chat, input.principal);
     }, transaction),
 

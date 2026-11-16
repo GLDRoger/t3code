@@ -316,6 +316,13 @@ const make = Effect.gen(function* () {
               // The owner's request, passed on by another lead: it waits its turn as a due
               // reminder does, and never jumps the budget as the owner's own message would.
               if (event._tag === "chat.message" && event.origin !== undefined) priority = "P1";
+              // A Team-room turn that must argue or end it runs on the strong model; a pitch-in,
+              // a chair check or an objection is a speak-or-pass check and stays cheap.
+              else if (
+                event._tag === "chat.message" &&
+                /^team:.*:(named|decider|closing)$/.test(event.dedupeKey ?? "")
+              )
+                priority = "P1";
               else if (event.provenance._tag === "human") {
                 const owners = yield* sql`
             SELECT 1 FROM kin_chat_members
