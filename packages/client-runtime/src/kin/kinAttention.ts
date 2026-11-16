@@ -1,5 +1,13 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host times and local days for React render, outside an Effect runtime.
-import type { KinGoal, KinPulseFact, KinPulseRead, KinRecordKey } from "@t3tools/contracts";
+import {
+  KIN_PULSE_URGENT,
+  kinPulseFactRecord,
+  type KinGoal,
+  type KinPulseFact,
+  type KinPulseScope,
+  type KinPulseScreenRead,
+  type KinRecordKey,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 import { kinMoneyDraft, kinMoneyText } from "./kinLists.ts";
@@ -57,15 +65,10 @@ export type KinAttentionScope =
   | { readonly type: "client"; readonly key: KinRecordKey }
   | { readonly type: "money" };
 
-const URGENT = new Set<KinPulseFact["sense"]>([
-  "task_late",
-  "theirs_late",
-  "invoice_overdue",
-  "budget_over",
-  "worker_failed",
-  "goal_behind",
-  "milestone_late",
-]);
+const URGENT = KIN_PULSE_URGENT;
+
+/** Open facts Needs you asks for: the rows it shows before "See all", and some to spare. */
+export const KIN_NEEDS_YOU_PAGE = 8;
 
 /** A client's own matters; its late or due tasks are Tasks', so the client page doesn't repeat them. */
 const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
@@ -78,6 +81,16 @@ const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
   "retainer_due",
   "renewal_due",
 ]);
+
+/** The host's filter for a scope: what it sends covers what `inScope` keeps. */
+export const kinPulseScopeOf = (scope: KinAttentionScope): KinPulseScope =>
+  scope.type === "project"
+    ? { project: scope.key }
+    : scope.type === "client"
+      ? { client: scope.key }
+      : scope.type === "money"
+        ? { family: "money" }
+        : {};
 
 const inScope = (fact: KinPulseFact, scope: KinAttentionScope) => {
   switch (scope.type) {
@@ -190,7 +203,7 @@ function kinAttentionRow(
  * handled, for the Handled list and its Undo. Null while nothing has been read.
  */
 export function kinAttention(
-  read: KinPulseRead | null,
+  read: KinPulseScreenRead | null,
   input: {
     readonly scope: KinAttentionScope;
     readonly names: ReadonlyMap<string, string>;
@@ -212,15 +225,26 @@ export function kinAttention(
   };
 }
 
-/** Tasks shows what isn't money row by row, and money as one count that opens Money. */
-export function kinTasksAttention(open: ReadonlyArray<KinAttentionRow>): {
+/**
+ * Tasks shows what isn't money row by row, and money as one count that opens Money. From a paged
+ * read (`outline`), `hidden` counts the open rows past the page.
+ */
+export function kinTasksAttention(
+  open: ReadonlyArray<KinAttentionRow>,
+  read?: KinPulseScreenRead | null,
+): {
   readonly rows: ReadonlyArray<KinAttentionRow>;
+  readonly hidden: number;
   readonly money: number;
   readonly moneyRow: KinNeedsYouRow | null;
 } {
-  const money = open.filter((row) => row.money).length;
+  const outline = read?.outline;
+  const rows = open.filter((row) => !row.money);
+  const money = outline?.money ?? open.filter((row) => row.money).length;
+  const late = outline?.moneyUrgent ?? open.some((row) => row.money && row.urgent);
   return {
-    rows: open.filter((row) => !row.money),
+    rows,
+    hidden: outline === undefined ? 0 : Math.max(0, outline.open - outline.money - rows.length),
     money,
     moneyRow:
       money === 0
@@ -230,7 +254,7 @@ export function kinTasksAttention(open: ReadonlyArray<KinAttentionRow>): {
             kind: "money",
             title: "Money",
             detail: money === 1 ? "1 thing needs attention" : `${money} things need attention`,
-            late: open.some((row) => row.money && row.urgent),
+            late,
             open: { type: "money" },
           },
   };
@@ -241,12 +265,29 @@ export function kinTasksAttention(open: ReadonlyArray<KinAttentionRow>): {
  * the live read brings it back, as handled or open again (after an Undo), when it changes.
  */
 export function kinAttentionShown(
-  read: KinPulseRead | null,
+  read: KinPulseScreenRead | null,
   answered: ReadonlySet<string>,
-): KinPulseRead | null {
+): KinPulseScreenRead | null {
   if (read === null || answered.size === 0) return read;
+  const gone = read.facts.filter((fact) => fact.handled === null && answered.has(fact.key));
+  if (gone.length === 0) return read;
   const facts = read.facts.filter((fact) => fact.handled !== null || !answered.has(fact.key));
-  return facts.length === read.facts.length ? read : { ...read, facts };
+  const { outline } = read;
+  if (outline === undefined) return { ...read, facts };
+  const money = gone.filter((fact) => fact.family === "money").length;
+  return {
+    ...read,
+    facts,
+    outline: {
+      ...outline,
+      open: Math.max(0, outline.open - gone.length),
+      money: Math.max(0, outline.money - money),
+      // As a full read would: an answered fact covers its task only once it is back as handled.
+      records: outline.records.filter(
+        (key) => !gone.some((fact) => kinPulseFactRecord(fact) === key),
+      ),
+    },
+  };
 }
 
 /**
@@ -260,8 +301,10 @@ export function kinAttentionProblem(failure: unknown | null): string | null {
 }
 
 /** The badge on Tasks: what needs attention and nobody has in hand yet. */
-export const kinAttentionCount = (read: KinPulseRead | null) =>
-  read === null ? 0 : read.facts.filter((fact) => fact.handled === null).length;
+export const kinAttentionCount = (read: KinPulseScreenRead | null) =>
+  read === null
+    ? 0
+    : (read.outline?.open ?? read.facts.filter((fact) => fact.handled === null).length);
 
 /** The badge's text: nothing at zero, and "99+" past what fits. */
 export const kinAttentionBadge = (count: number) =>
@@ -274,13 +317,17 @@ export const kinAttentionBadge = (count: number) =>
 export function kinNeedsYouBeside(
   rows: ReadonlyArray<KinNeedsYouRow>,
   { open, handled }: ReturnType<typeof kinAttention>,
+  read?: KinPulseScreenRead | null,
 ): ReadonlyArray<KinNeedsYouRow> {
   // Something already answered stays answered here too, not back as a plain row.
   const attention = [...open, ...handled];
-  const covered = new Set(
-    attention.flatMap((row) => (row.open.type === "record" ? [row.open.key] : [])),
+  const outline = read?.outline;
+  const covered = new Set<string>(
+    outline?.records ??
+      attention.flatMap((row) => (row.open.type === "record" ? [row.open.key] : [])),
   );
-  const money = attention.some((row) => row.factKey.startsWith("invoice_overdue:"));
+  const money =
+    outline?.invoiceOverdue ?? attention.some((row) => row.factKey.startsWith("invoice_overdue:"));
   return rows.filter(
     (row) =>
       !(row.open.type === "task" && covered.has(row.open.key)) &&

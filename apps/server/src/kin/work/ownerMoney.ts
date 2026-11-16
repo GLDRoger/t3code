@@ -29,6 +29,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { readableFrom } from "../chat/sharing.ts";
 import { remakeForEntry } from "../gendocs/make.ts";
@@ -199,6 +200,7 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             })},
             rev = rev + 1
           WHERE org_id = ${input.orgId} AND register_id = ${def.id}`;
+        yield* (yield* KinRefreshObserver).touch(input.orgId, "workLists");
       }
       const next = yield* listDef(input.orgId, def.id);
       if (next === undefined) return yield* unknownList(def.id);
@@ -254,11 +256,12 @@ export const money = Effect.fn("KinMoney.summary")(function* (
   input: KinMoneySummaryInput,
 ) {
   const team = yield* moneyReader(people, input.orgId);
-  return yield* moneySummary(
+  const summary = yield* moneySummary(
     input.orgId,
     yield* Clock.currentTimeMillis,
     team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
   );
+  return input.upcomingRows === false ? { ...summary, upcoming: [] } : summary;
 }, workFailure);
 
 const noMoney = new KinChatError({

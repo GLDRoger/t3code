@@ -19,7 +19,6 @@ import {
 import { Badge } from "../components/ui/badge";
 import { KIN_PLACE_PATH, type KinPlace } from "./kinPlaces";
 import { useKinAttention } from "./useKinAttention";
-import { useNowMinuteMs } from "./useKinClock";
 import { useKinMoneySummary } from "./useKinMoney";
 import { useKinClientCounts, useKinDocsRecent } from "./useKinPlaces";
 import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
@@ -101,7 +100,7 @@ export function KinPlaceEntries(props: KinWorkTarget & { readonly onOpen: () => 
 function TasksEntry(
   props: KinWorkTarget & { readonly line: string | null; readonly onOpen: () => void },
 ) {
-  const attention = useKinAttention(props);
+  const attention = useKinAttention(props, true, true);
   return (
     <PlaceEntry {...props} place="tasks" badge={kinAttentionBadge(kinAttentionCount(attention))} />
   );
@@ -143,14 +142,13 @@ function ClientsEntry(
 }
 
 function DocsEntry(props: KinWorkTarget & { readonly onOpen: () => void }) {
-  const now = new Date(useNowMinuteMs());
   const { refused, docs } = useKinDocsRecent(props);
   if (refused) return null;
   return (
     <PlaceEntry
       {...props}
       place="docs"
-      line={docs === null ? null : kinDocsLine(docs.total, docs.docs, now)}
+      line={docs === null ? null : kinDocsLine(docs.total, docs.changed)}
     />
   );
 }

@@ -84,6 +84,8 @@ export const subscribeRefreshes = (
               people: now.people,
               leads,
               pulse: now.pulse,
+              // Says only that a definition moved; their own read of lists is filtered.
+              workLists: now.workLists,
             } satisfies KinRefreshes;
           }),
         ),

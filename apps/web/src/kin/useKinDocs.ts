@@ -19,7 +19,7 @@ import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { createKinPagedList, mapPage } from "@t3tools/client-runtime/kin/kinWorkList";
 import type {
   KinDocDetail,
-  KinDocRow,
+  KinDocListRow,
   KinDocVersion,
   KinDocsListResult,
   KinMessageRef,
@@ -58,7 +58,7 @@ export function useKinDocsLive(target: KinWorkTarget) {
 
 /** Every doc, or the archived ones, latest change first, a page at a time. */
 export function useKinDocsList({ environmentId, orgId }: KinWorkTarget, seq: number | null) {
-  return useKinPagedList<KinDocsFilter, KinDocRow>(
+  return useKinPagedList<KinDocsFilter, KinDocListRow>(
     KIN_DOCS_DEFAULT_FILTER,
     (onChange) =>
       createKinPagedList({

@@ -31,7 +31,7 @@ features:
     web: [home, chat]
     phone: [tab:chats, KinChat]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    tools: [kin_chat_post, kin_chat_read, kin_react, kin_end]
+    tools: [kin_chat_post, kin_chat_read, kin_react]
     proof:
       - apps/server/src/kin/chat/KinChatService.test.ts
       - apps/server/src/kin/lead/ChatWake.test.ts
@@ -48,6 +48,16 @@ features:
       - apps/server/src/kin/visualSeal.test.ts
       - packages/client-runtime/src/kin/kinCardPresentation.test.ts
       - .agents/skills/verify-kin/scripts/card-gallery.sh
+
+  - id: chat-pages
+    name: Long replies as pages, briefs, and names that open what they name
+    tab: chats
+    web: [chat, section:Needs you]
+    phone: [tab:chats, KinChat, section:Needs you]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    proof:
+      - apps/server/src/kin/chat/messageLinks.test.ts
+      - packages/client-runtime/src/kin/kinMessagePage.test.ts
 
   - id: waiting-on-you
     name: Waiting on you

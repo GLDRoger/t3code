@@ -1,4 +1,5 @@
 import {
+  kinPageShape,
   KIN_REACTION_EMOJI,
   type EnvironmentId,
   type KinAttachment,
@@ -46,11 +47,13 @@ import {
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { kinMessageLayout } from "@t3tools/client-runtime/kin/kinMessagePage";
 import { MessageAttachmentList } from "../../threads/ThreadFeed";
 import { attachmentImageGallery } from "../../threads/messageImageGallery";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 import { KinAvatar } from "./KinAvatar";
 import { KinDocRefs } from "./KinDocRefs";
+import { KinLinkedText, KinMessagePage, useKinOpenTarget } from "./KinMessagePage";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type SystemRow = Extract<KinFeedRow, { readonly type: "system" }>;
@@ -76,6 +79,8 @@ const renderImageAsText: MarkdownImageRenderer = (image) => (
 );
 
 const NO_PLAYBACK = () => undefined;
+// A reply still being written has no links yet.
+const NO_TARGET = () => undefined;
 
 /** A message's files, drawn by the thread feed's own attachment views at a bubble's width. */
 function KinAttachments(props: {
@@ -169,8 +174,11 @@ export function KinMessageBubble(props: {
   readonly onPressPreview: (source: FilePreviewSource) => void;
   /** Opens a teammate's profile from their name. */
   readonly onOpenPerson?: (personId: KinPersonId) => void;
+  /** The reader's first name, for a brief's greeting. */
+  readonly firstName?: string | null;
 }) {
   const { row, onReact, onOpenActions } = props;
+  const onOpenTarget = useKinOpenTarget(props.environmentId, row.message.orgId);
   const { message } = row;
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
@@ -183,6 +191,8 @@ export function KinMessageBubble(props: {
     kinTableWiderThan(message.body, (window.width * 0.88 - 64) / (17 * window.fontScale * 0.55));
   // The bubble reads as one element, so its links are reachable as VoiceOver actions.
   const links = hasBody ? kinMessageLinks(message.body) : [];
+  const inApp = hasBody ? (message.links ?? []) : [];
+  const layout = row.own || !hasBody ? "bubble" : kinMessageLayout(message);
   const hasCard =
     !deleted &&
     message.widgetId !== null &&
@@ -204,75 +214,112 @@ export function KinMessageBubble(props: {
     ...(hasBody ? [{ name: "copy", label: "Copy" }] : []),
   ];
 
-  const bubble = hasBubble ? (
-    <View
-      accessible
-      accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
-      accessibilityActions={[
-        ...links.map((link, index) => ({ name: `link-${index}`, label: `Open ${link.label}` })),
-        ...sheetActions,
-      ]}
-      onAccessibilityAction={(event) => {
-        const name = event.nativeEvent.actionName;
-        if (name === "copy") {
-          copyTextWithHaptic(message.body, { target: "kin-message" });
-          return;
-        }
-        if (name.startsWith("react-")) {
-          const emoji = KIN_REACTION_EMOJI.find((candidate) => name === `react-${candidate}`);
-          if (emoji !== undefined) onReact?.(emoji);
-          return;
-        }
-        const link = links[Number(name.slice("link-".length))];
-        if (link !== undefined) props.onLinkPress(link.href);
-      }}
-      className={cn("gap-1", row.own ? OWN_BUBBLE_CLASS_NAME : OTHER_BUBBLE_CLASS_NAME)}
-    >
-      {hasBody ? (
-        <SelectableMarkdownText
-          markdown={kinBodyMarkdown(message.body)}
-          textStyle={row.own ? props.ownMarkdownStyle : props.markdownStyle}
-          // A long press opens the sheet, whose Select text offers selection instead.
-          selectable={onOpenActions === null}
-          preserveSoftBreaks
-          inlineWebLinks
+  const page =
+    hasBubble && layout !== "bubble" ? (
+      <View className="w-full gap-1">
+        <KinMessagePage
+          body={message.body}
+          links={message.links}
+          textStyle={props.markdownStyle}
           onLinkPress={props.onLinkPress}
-          renderImage={renderImageAsText}
-          resolveImageSource={kinImageSource}
+          onOpenTarget={onOpenTarget}
+          brief={
+            layout === "brief"
+              ? { createdAt: message.createdAt, firstName: props.firstName ?? null }
+              : null
+          }
         />
-      ) : deleted ? (
-        <Text
-          textRole="body"
-          className={cn(
-            "italic",
-            row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted",
-          )}
-        >
-          Message deleted
-        </Text>
-      ) : null}
-      {wideTable ? (
-        <Text
-          textRole="caption"
-          className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
-        >
-          Swipe the table sideways to see all of it
-        </Text>
-      ) : null}
-      {suggested || message.editedAt !== null ? (
-        <Text
-          textRole="caption"
-          className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
-        >
-          {suggested ? "Suggestion, not sent yet" : "Edited"}
-        </Text>
-      ) : null}
-    </View>
-  ) : null;
+        {wideTable ? (
+          <Text textRole="caption" className="text-foreground-muted">
+            Swipe the table sideways to see all of it
+          </Text>
+        ) : null}
+        {message.editedAt !== null ? (
+          <Text textRole="caption" className="text-foreground-muted">
+            Edited
+          </Text>
+        ) : null}
+      </View>
+    ) : null;
+  const bubble =
+    hasBubble && page === null ? (
+      <View
+        accessible
+        accessibilityLabel={kinMessageLabel(row, formatTime(message.createdAt))}
+        accessibilityActions={[
+          ...inApp.map((link, index) => ({ name: `kin-${index}`, label: `Open ${link.text}` })),
+          ...links.map((link, index) => ({ name: `link-${index}`, label: `Open ${link.label}` })),
+          ...sheetActions,
+        ]}
+        onAccessibilityAction={(event) => {
+          const name = event.nativeEvent.actionName;
+          if (name === "copy") {
+            copyTextWithHaptic(message.body, { target: "kin-message" });
+            return;
+          }
+          if (name.startsWith("react-")) {
+            const emoji = KIN_REACTION_EMOJI.find((candidate) => name === `react-${candidate}`);
+            if (emoji !== undefined) onReact?.(emoji);
+            return;
+          }
+          if (name.startsWith("kin-")) {
+            const target = inApp[Number(name.slice("kin-".length))];
+            if (target !== undefined) onOpenTarget(target.to);
+            return;
+          }
+          const link = links[Number(name.slice("link-".length))];
+          if (link !== undefined) props.onLinkPress(link.href);
+        }}
+        className={cn("gap-1", row.own ? OWN_BUBBLE_CLASS_NAME : OTHER_BUBBLE_CLASS_NAME)}
+      >
+        {hasBody ? (
+          <KinLinkedText
+            markdown={message.body}
+            links={message.links}
+            textStyle={row.own ? props.ownMarkdownStyle : props.markdownStyle}
+            // A long press opens the sheet, whose Select text offers selection instead.
+            selectable={onOpenActions === null}
+            onLinkPress={props.onLinkPress}
+            onOpenTarget={onOpenTarget}
+          />
+        ) : deleted ? (
+          <Text
+            textRole="body"
+            className={cn(
+              "italic",
+              row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted",
+            )}
+          >
+            Message deleted
+          </Text>
+        ) : null}
+        {wideTable ? (
+          <Text
+            textRole="caption"
+            className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
+          >
+            Swipe the table sideways to see all of it
+          </Text>
+        ) : null}
+        {suggested || message.editedAt !== null ? (
+          <Text
+            textRole="caption"
+            className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
+          >
+            {suggested ? "Suggestion, not sent yet" : "Edited"}
+          </Text>
+        ) : null}
+      </View>
+    ) : null;
 
   return (
     <View
-      className={cn("gap-1 px-4", rowSpacing(row.continues), row.own ? "items-end" : "items-start")}
+      className={cn(
+        "gap-1 px-4",
+        // A page starts a new block even inside one author's run.
+        layout === "bubble" ? rowSpacing(row.continues) : "pt-5",
+        row.own ? "items-end" : "items-start",
+      )}
     >
       {row.showAuthor && !props.direct && message.author._tag !== "system" ? (
         <KinAuthorLine
@@ -300,6 +347,21 @@ export function KinMessageBubble(props: {
           orgId={message.orgId}
           own={row.own}
         />
+      )}
+      {page === null ? null : onOpenActions === null ? (
+        page
+      ) : (
+        // The page's own headings and text stay VoiceOver's, in order; this only takes the long press.
+        <Pressable
+          accessible={false}
+          onLongPress={() => {
+            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            onOpenActions();
+          }}
+          className="w-full"
+        >
+          {page}
+        </Pressable>
       )}
       {bubble === null ? null : onOpenActions === null ? (
         <View className={row.own ? OWN_WIDTH_CLASS_NAME : OTHER_WIDTH_CLASS_NAME}>{bubble}</View>
@@ -377,16 +439,31 @@ export function KinDraftBubble(props: {
           kinPlainText(row.draft.text),
           "Still writing",
         ])}
-        className={cn("gap-1", OTHER_WIDTH_CLASS_NAME, OTHER_BUBBLE_CLASS_NAME)}
+        className={
+          kinPageShape(row.draft.text) === "page"
+            ? "w-full"
+            : cn("gap-1", OTHER_WIDTH_CLASS_NAME, OTHER_BUBBLE_CLASS_NAME)
+        }
       >
-        <SelectableMarkdownText
-          markdown={kinBodyMarkdown(row.draft.text)}
-          textStyle={props.markdownStyle}
-          preserveSoftBreaks
-          onLinkPress={props.onLinkPress}
-          renderImage={renderImageAsText}
-          resolveImageSource={kinImageSource}
-        />
+        {kinPageShape(row.draft.text) === "page" ? (
+          <KinMessagePage
+            body={row.draft.text}
+            links={undefined}
+            textStyle={props.markdownStyle}
+            onLinkPress={props.onLinkPress}
+            onOpenTarget={NO_TARGET}
+            brief={null}
+          />
+        ) : (
+          <SelectableMarkdownText
+            markdown={kinBodyMarkdown(row.draft.text)}
+            textStyle={props.markdownStyle}
+            preserveSoftBreaks
+            onLinkPress={props.onLinkPress}
+            renderImage={renderImageAsText}
+            resolveImageSource={kinImageSource}
+          />
+        )}
       </View>
     </View>
   );

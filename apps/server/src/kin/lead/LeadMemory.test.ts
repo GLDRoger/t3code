@@ -1,5 +1,4 @@
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
-import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { kinSecretsTest } from "./layer.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -86,7 +85,6 @@ const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers)
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provide(Layer.mock(KinWorkers)({})),
   Layer.provide(Layer.mock(KinHandoff)({})),
-  Layer.provide(Layer.mock(KinReplyBridge)({ silentEnd: () => Effect.succeed(false) })),
   Layer.provide(KinRepoReads.notConnectedLayer),
   Layer.provide(PullRequestCare.notConnectedLayer),
   Layer.provide(
@@ -395,7 +393,6 @@ it.live(
           "kin_github_runs",
           "kin_github_review",
           "kin_github_link",
-          "kin_end",
         ]);
         for (const thread of [
           undefined,
@@ -837,16 +834,6 @@ it.live(
           did: ["Wrote memory"],
           skipped: ["No external work"],
         });
-        // The reply bridge owns owed replies now, so ending before any post is allowed.
-        yield* service.end(scope, { summary: "Finished fixture" });
-        yield* service.end(scope, { summary: "Finished fixture" });
-        // F08: a second kin_end, after Claude's "no visible output" nudge, changes nothing.
-        yield* service.end(scope, { summary: "Changed" });
-        // After kin_end the refusal is about authority, so it stays unexplained.
-        assert.strictEqual(
-          (yield* service.write(scope, input).pipe(Effect.flip)).message,
-          "Agent operation is not allowed.",
-        );
         const committed = yield* (yield* Writer.MemoryWriter).commitWakeup(
           orgId,
           "fixture-wakeup",
@@ -905,17 +892,12 @@ it.live(
         assert.match(shared, new RegExp(`shared_by:\\n\\s+person: ${person!.personId}\\n\\s+at: `));
         const journal = yield* git(remote, ["show", `${committed.commit}:journal/2026/11-08.md`]);
         assert.include(journal, "Saw: Invented request");
-        assert.include(journal, "Summary: Finished fixture");
-        assert.strictEqual(journal.split("Summary: Finished fixture").length, 2);
         const writerService = yield* Writer.MemoryWriter;
-        // F08: after the commit, a late kin_end and the bridge's note on text after it are no
-        // restart, even when the branch they would check no longer shows the commit.
+        // F08: after the commit, a late journal line from the bridge is no restart, even when
+        // the branch it would check no longer shows the commit.
         yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
         yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) VALUES (${orgId}, ${agentId}, ${chat.chatId}, 'L0', 0)`;
-        yield* service.end(scope, { summary: "After the nudge" });
-        yield* writerService.appendJournal(orgId, "fixture-wakeup", [
-          "Dropped after kin_end: Done.",
-        ]);
+        yield* writerService.appendJournal(orgId, "fixture-wakeup", ["Note: Done."]);
         assert.isFalse(notices.some((notice) => notice.includes("lost on restart")));
         yield* sql`DELETE FROM kin_chat_levels WHERE org_id = ${orgId} AND chat_id = ${chat.chatId}`;
         yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
@@ -970,9 +952,8 @@ it.live(
         // In a chat at L0 the lead writes and reads its shadow branch, and its deferral arms from
         // there. The owner's DM works at L2 from creation, so the owner lowered it here.
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'restart-wakeup'`;
-        // QA Q1: a teammate's turn ends with kin_end, which stages nothing; that is no restart.
+        // QA Q1: a teammate's turn that staged nothing is no restart.
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'shared-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', '[]', 'shared' FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
-        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'shared-wakeup', 'end', 'fixture-hash')`;
         const noticesBefore = notices.length;
         assert.isFalse(yield* writerService.staged(orgId, "shared-wakeup"));
         assert.strictEqual(notices.length, noticesBefore);

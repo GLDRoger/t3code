@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { workFailure } from "./recordRows.ts";
 import { searchIndexed } from "./searchIndex.ts";
 
@@ -316,6 +317,7 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
         if (one.action === "remove") {
           yield* sql`DELETE FROM kin_registers WHERE org_id = ${orgId} AND register_id = ${one.list}
             AND NOT EXISTS (SELECT 1 FROM kin_records WHERE org_id = ${orgId} AND register_id = ${one.list})`;
+          yield* (yield* KinRefreshObserver).touch(orgId, "workLists");
         }
       const finished = yield* Clock.currentTimeMillis;
       yield* sql`INSERT INTO kin_import_runs (org_id, batch, action, person_id, started_at,
