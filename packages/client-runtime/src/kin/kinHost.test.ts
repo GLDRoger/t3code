@@ -253,11 +253,18 @@ describe("resolveKinHost", () => {
     expect(
       resolve({ [b]: ready, [c]: ready }, { savedHostId: c, previous: standing }),
     ).toMatchObject({ environmentId: c, connected: true });
-    // A stand-in that dropped too leaves the saved host's cache.
+    // The stand-in restarts too; it holds through its own blip.
     expect(
       resolve(
         { [b]: ready },
         { savedHostId: c, phases: { ...retry, [b]: retry[c] }, previous: standing },
+      ),
+    ).toMatchObject({ environmentId: b, standInFor: c, probe: ready });
+    // A stand-in that is really down leaves the saved host's cache.
+    expect(
+      resolve(
+        { [b]: ready },
+        { savedHostId: c, phases: { ...retry, [b]: failing[c] }, previous: standing },
       ),
     ).toMatchObject({ environmentId: c, connected: false });
   });

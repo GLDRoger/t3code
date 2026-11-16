@@ -137,15 +137,20 @@ export function resolveKinHost(input: {
   let fallback: KinHost | null = null;
   if (saved !== undefined) {
     const { previous } = input;
-    // Coming to the front, a down host starts over as a first attempt, which looks like a blip.
-    if (
-      !saved.connected &&
-      previous?._tag === "host" &&
-      previous.standInFor === saved.environmentId &&
-      input.candidates.some((c) => c.environmentId === previous.environmentId && c.connected) &&
-      input.probe(previous.environmentId)._tag === "ready"
-    )
-      return { ...previous, probe: input.probe(previous.environmentId) };
+    // Coming to the front, every socket starts over as a first attempt, which looks like a blip:
+    // the stand-in holds through its own blip too, and leaves only once it is really down.
+    const standIn =
+      !saved.connected && previous?._tag === "host" && previous.standInFor === saved.environmentId
+        ? input.candidates.find((c) => c.environmentId === previous.environmentId && !c.down)
+        : undefined;
+    if (previous?._tag === "host" && standIn !== undefined) {
+      const probe = input.probe(standIn.environmentId);
+      return {
+        ...previous,
+        connected: standIn.connected,
+        probe: standIn.connected && probe._tag === "ready" ? probe : previous.probe,
+      };
+    }
     if (!saved.connected) {
       // A live host stands in for one that is down, awaiting earlier probes like the search below
       // so it doesn't pick one and switch; a blip shows the saved host's cache.

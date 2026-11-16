@@ -29,7 +29,9 @@ export function KinTimeZonePicker(props: {
       {!open ? null : (
         <>
           <View className="flex-row px-4 py-2">
+            {/* Unfocused: the keyboard would cover the zones it lists. */}
             <SearchField
+              autoFocus={false}
               inputRef={inputRef}
               accessibilityLabel="Search time zones"
               clearAccessibilityLabel="Clear search"
