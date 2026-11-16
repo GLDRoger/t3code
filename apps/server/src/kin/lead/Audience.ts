@@ -455,6 +455,16 @@ export const AUDIENCE_MOVED =
   "Someone else joined this chat while you were working, so nothing was sent.";
 /** The one line a tool refused in a chat other people can read answers with. */
 export const SHARED_REFUSAL = "I can't do that in a chat other people can read.";
+/** Why a full session's hook refused a shell, edit, web or sub-agent call: the model reads it. */
+export const SESSION_REFUSAL = {
+  shared:
+    "Blocked: other people can read this chat, so it has no shell. Ask the owner in their own chat.",
+  aborted:
+    "Blocked: someone else joined this chat, so this turn stopped. Ask the owner in their own chat.",
+  outside:
+    "Blocked: this turn read outside content, so it has no shell now. Ask the owner to start it in a fresh turn.",
+  none: "Blocked: no owner's turn backs this session, so it has no shell. Ask the owner in their own chat.",
+} as const;
 export const SHARED_ELSEWHERE =
   "In a chat with other people you post only in the chat you were asked in. Nothing was sent.";
 export const PRIVATE_DESTINATION =
