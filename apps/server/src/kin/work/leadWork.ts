@@ -79,7 +79,7 @@ import {
   stateLabel,
   unknownList,
 } from "./registers.ts";
-import { isSensitiveRefusal, sensitiveShown, showsSensitive } from "./workerAttempts.ts";
+import { isSensitiveRefusal, sensitiveShown, showsSensitive } from "./sensitiveReads.ts";
 import {
   KIN_OWNER_LEVEL,
   ledProjects,

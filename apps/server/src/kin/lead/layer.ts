@@ -70,14 +70,11 @@ import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Handoff from "./Handoff.ts";
 import * as Team from "../team/KinTeam.ts";
-import * as Workers from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
 import * as GitHubWatch from "../github/GitHubWatch.ts";
 import * as PullRequestCare from "../github/PullRequestCare.ts";
 import * as TaskWake from "./TaskWake.ts";
-import * as WorkerTracker from "./WorkerTracker.ts";
-import * as WorkerEnvironment from "./workerEnvironment.ts";
-import * as WorkerPublish from "./workerPublish.ts";
+import * as DelegatedTasks from "./DelegatedTasks.ts";
 import * as ChatWake from "./ChatWake.ts";
 
 export class KinLeadStartupError extends Schema.TaggedError<KinLeadStartupError>()(
@@ -357,29 +354,6 @@ const toolkit = LeadMemory.layer.pipe(
 );
 
 export const layer = withServices(Layer.merge(runner, ChatWake.layer));
-// Workers hold no GitHub write credential; without the Kin App, their branches stay there.
-const workerPublish = Layer.unwrap(
-  Effect.gen(function* () {
-    const off = "finished workers' branches stay in the worker environment";
-    if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID")))) {
-      yield* Effect.logWarning(
-        `Kin worker publishing is off: KIN_GITHUB_APP_ID is unset, so ${off}`,
-      );
-      return Layer.empty;
-    }
-    return WorkerPublish.layer.pipe(
-      Layer.provide(GithubReaders.appLayer),
-      Layer.catchCause((cause) =>
-        Layer.effectDiscard(
-          Effect.logWarning(
-            `Kin worker publishing is off: the Kin GitHub App is unavailable, so ${off}`,
-            Cause.pretty(cause),
-          ),
-        ),
-      ),
-    );
-  }),
-);
 // A lead's GitHub read tools; without the Kin App they answer that GitHub isn't connected.
 const repoReads = Layer.unwrap(
   Effect.gen(function* () {
@@ -400,21 +374,9 @@ const repoReads = Layer.unwrap(
     );
   }),
 );
-// Workers run only in the linked worker environment; see workerEnvironment.ts.
-const workers = Workers.layer.pipe(
-  Layer.provideMerge(WorkerTracker.layer.pipe(Layer.provide(workerPublish))),
-  Layer.provideMerge(Render.layer),
+// Documents render on this server; agents' own files and recipe drafts come through it too.
+const documents = Render.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(Workspace.layer, Toolchain.layer)),
-  Layer.provideMerge(WorkerEnvironment.layer),
-  // The repositories the owner connected are part of where the owner's own work may start.
-  Layer.provide(GithubEvents.repoScopeLayer),
-  Layer.provide(pullRequestCare),
-);
-const tracker = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const tracker = yield* WorkerTracker.WorkerTracker;
-    yield* tracker.start.pipe(forkParked);
-  }),
 );
 // Once per item, at every start: what leads tracked before Work existed becomes entries.
 const workImport = Layer.effectDiscard(
@@ -430,7 +392,7 @@ const workImport = Layer.effectDiscard(
             orgId,
             items.map((item) => item.head),
           );
-          if (imported.workers + imported.memory > 0)
+          if (imported.memory > 0)
             yield* Effect.logInfo("Kin brought earlier tracking into Work", { orgId, ...imported });
         }).pipe(
           Effect.catchCause((cause) =>
@@ -488,12 +450,12 @@ const production = withServices(
     runner,
     ChatWake.layer,
     registration,
-    tracker,
     TaskWake.layer,
+    DelegatedTasks.layer,
     workImport,
     issuedAmounts,
   ).pipe(
-    Layer.provideMerge(workers),
+    Layer.provideMerge(documents),
     Layer.provideMerge(Team.layer),
     Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),

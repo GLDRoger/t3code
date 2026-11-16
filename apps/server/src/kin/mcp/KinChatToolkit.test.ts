@@ -53,6 +53,8 @@ import {
   SHARED_REFUSAL,
 } from "../lead/Audience.ts";
 import * as KinToolGate from "./KinToolGate.ts";
+import { taskAdmitted } from "./KinToolGate.ts";
+import { KinBudget } from "../lead/KinBudget.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { KinChatToolkit, handlers, agentServices } from "./KinChatToolkit.ts";
@@ -532,6 +534,41 @@ it.effect("every tool call passes the gate, which holds a turn a teammate reads 
   }).pipe(Effect.provide(gatedLayer)),
 );
 
+it.effect(
+  "a task delegated past the owner's daily limit for tasks is refused before it starts",
+  () =>
+    Effect.gen(function* () {
+      const { chat: direct, person, chatService, sql } = yield* seed();
+      const kin = yield* Kin.KinServer;
+      const services = Option.getOrThrow(kin.services);
+      const budget = Context.get(services, KinBudget);
+      const asked = yield* chatService.send(person, {
+        chatId: direct.chatId,
+        body: "Invented build request",
+        clientMessageId: "task-ask",
+      });
+      yield* startAgentWakeup({ orgId: person.orgId, agentId, threadId, message: asked });
+      const [wake] = yield* sql<{
+        wakeupId: string;
+      }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
+      WHERE agent_id = ${agentId} AND status = 'running' ORDER BY wakeup_id`;
+      const turn = { orgId: person.orgId, agentId, wakeupId: wake!.wakeupId };
+      const admitted = (tool: string) =>
+        taskAdmitted(turn, tool, {}).pipe(Effect.provideContext(services));
+      yield* budget.set([person], {
+        orgId: person.orgId,
+        limits: { leadUnits: null, workerUnits: 0 },
+      });
+      assert.isFalse(yield* admitted("delegate_task"));
+      assert.isTrue(yield* admitted("kin_chat_post"));
+      yield* budget.set([person], {
+        orgId: person.orgId,
+        limits: { leadUnits: null, workerUnits: null },
+      });
+      assert.isTrue(yield* admitted("delegate_task"));
+    }).pipe(Effect.provide(gatedLayer)),
+);
+
 // A turn built with the owner's notes in mind can't go on once a teammate can read its chat.
 it.effect("a teammate joining aborts the owner-only turn, and leaving reopens nothing", () =>
   Effect.gen(function* () {
@@ -567,8 +604,7 @@ it.effect("a teammate joining aborts the owner-only turn, and leaving reopens no
     });
     assert.isNotNull((yield* abortedAt)[0]?.abortedAt);
     const calls = [
-      ["kin_delegate", { kind: "build", title: "Invented", brief: "Invented", memoryItemIds: [] }],
-      ["kin_follow_up", { workerId: "worker", brief: "Invented" }],
+      ["delegate_task", { prompt: "Invented" }],
       ["kin_chat_post", { chatId: "room", body: "Invented", intent: "evidence" }],
       ["kin_widget_upsert", { chatId: "room", type: "task", state: taskState }],
       ["kin_hand_off", { toAgentId: "other", brief: "Invented" }],
@@ -589,7 +625,7 @@ it.effect("a teammate joining aborts the owner-only turn, and leaving reopens no
       memberId: mate.memberId,
     });
     assert.strictEqual(
-      (yield* gated("kin_chat_post", calls[2][1]).pipe(Effect.flip)).message,
+      (yield* gated("kin_chat_post", calls[1][1]).pipe(Effect.flip)).message,
       SHARED_REFUSAL,
     );
     assert.isNotNull((yield* abortedAt)[0]?.abortedAt);

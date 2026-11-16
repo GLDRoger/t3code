@@ -38,7 +38,6 @@ import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
-import { KinWorkers } from "../lead/Workers.ts";
 import * as Team from "../team/KinTeam.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Questions from "./openQuestions.ts";
@@ -76,7 +75,6 @@ const kinServices = Layer.unwrap(
     return Layer.mergeAll(
       Handoff.layer,
       Team.layer,
-      Layer.mock(KinWorkers)({}),
       Layer.mock(LeadMemory)({}),
       repoReadsOff,
       pullRequestCareOff,

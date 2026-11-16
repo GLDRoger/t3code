@@ -21,7 +21,6 @@ import { instructions } from "./instructions.ts";
 import { SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { GH_SIGN_FOLDER } from "./LeadIsolation.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
-import { isWorkThread } from "./workThread.ts";
 
 type Json = Schema.Json;
 type Params = Readonly<Record<string, unknown>>;
@@ -420,7 +419,7 @@ export const codexClientFactory = <E, R>(
             params: Params,
           ) {
             const thread = t3Thread(params);
-            if (thread.startsWith(dreamThreadPrefix) || isWorkThread(thread)) return null;
+            if (thread.startsWith(dreamThreadPrefix)) return null;
             const cwd = typeof params.cwd === "string" ? params.cwd : input.runtimePolicy.cwd;
             if (cwd != null && (yield* isKinFolder(cwd))) {
               const seat: Seat = {

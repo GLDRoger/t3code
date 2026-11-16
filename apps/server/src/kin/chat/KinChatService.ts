@@ -18,7 +18,6 @@ import {
   KIN_MEMORY_CHANGES_CARD,
   KIN_DOC_CARD,
   type KinMessageRefInput,
-  KIN_WORKER_PUBLISH_CARD,
   KIN_SOCIAL_PACK_CARD,
   KIN_SOCIAL_WEEK_CARD,
   KinMessagesReactInput,
@@ -31,8 +30,7 @@ import {
   type KinAuthor,
   type KinAgentId,
   type ThreadId,
-  type EnvironmentId,
-  type KinTaskCardState,
+  type NodeId,
   type KinChat,
   type KinChatListEvent,
   type KinChatStreamEvent,
@@ -90,7 +88,6 @@ import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
 import * as SocialCards from "../social/cards.ts";
-import * as PublishCard from "../widgets/workerPublishCard.ts";
 import { answerChange } from "../work/companyProfile.ts";
 import { KinRefreshObserver } from "./KinRefreshHub.ts";
 import { docsForViewer } from "./privateDocs.ts";
@@ -100,7 +97,7 @@ import { effectiveAudience } from "../lead/Audience.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
 import { docPageSources } from "../work/docFiles.ts";
-import { turnSensitive } from "../work/workerAttempts.ts";
+import { turnSensitive } from "../work/sensitiveReads.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { WriteAudience } from "./KinChatRepository.ts";
 import { KinAttachmentStore } from "./KinAttachmentStore.ts";
@@ -264,22 +261,11 @@ export class KinChatService extends Context.Service<
       readonly audience: WriteAudience;
       readonly authorAgentId: KinAgentId;
       readonly threadId: ThreadId;
+      /** T3's id for the delegated task, which task_cancel takes; else the thread's. */
+      readonly taskId?: NodeId;
       readonly title: string;
       readonly model: string | null;
-      /** A thread in a linked environment: no thread here to read, so the caller says its status. */
-      readonly remote?: {
-        readonly environmentId: EnvironmentId;
-        readonly status: KinTaskCardState["status"];
-      };
     }) => Effect.Effect<KinWidget, ServiceError, OrchestratorV2 | ServerEnvironment>;
-    /** Server-only, like createTaskCard: Kin's worker launcher closes and reopens worker cards. */
-    readonly setTaskCardClosed: (input: {
-      readonly orgId: KinOrgId;
-      readonly chatId: KinChatId;
-      readonly audience: WriteAudience;
-      readonly threadId: ThreadId;
-      readonly closed: boolean;
-    }) => Effect.Effect<KinWidget, ServiceError>;
     /**
      * Server-only: closes an unanswered choice card, as replaced by a newer one for the same
      * thing, or with `outcome` saying what became of it (an open question's default taken).
@@ -305,22 +291,6 @@ export class KinChatService extends Context.Service<
       readonly revision: number;
       readonly detail: string;
       readonly send: KinSendCard;
-    }) => Effect.Effect<KinWidget, ServiceError>;
-    /** Server-only: a remote card's live fields, which no thread here can refresh. */
-    readonly setTaskCardState: (input: {
-      readonly orgId: KinOrgId;
-      readonly chatId: KinChatId;
-      readonly audience: WriteAudience;
-      readonly threadId: ThreadId;
-      readonly state: Pick<KinTaskCardState, "status" | "pullRequests" | "lastError">;
-    }) => Effect.Effect<KinWidget, ServiceError>;
-    /** The docs a document job made, from the job's stored row; on this server's own cards. */
-    readonly setTaskCardDocuments: (input: {
-      readonly orgId: KinOrgId;
-      readonly chatId: KinChatId;
-      readonly threadId: ThreadId;
-      readonly documents: NonNullable<KinTaskCardState["documents"]>;
-      readonly lastError: string | null;
     }) => Effect.Effect<KinWidget, ServiceError>;
     readonly act: (
       identity: PersonCaller,
@@ -888,10 +858,6 @@ const make = Effect.gen(function* () {
             request.value,
           ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(cardTapError))
         : null;
-    const publishTap =
-      widget.type === KIN_WORKER_PUBLISH_CARD
-        ? yield* PublishCard.describePublishTap(widget, request.actionId, request.value)
-        : null;
     const socialTap =
       widget.type === KIN_SOCIAL_WEEK_CARD
         ? yield* SocialCards.describeWeekTap(widget, request.actionId, request.value)
@@ -900,7 +866,7 @@ const make = Effect.gen(function* () {
       widget.type === KIN_SOCIAL_PACK_CARD
         ? yield* SocialCards.describePackTap(widget, request.actionId)
         : null;
-    const tap = choice ?? reminder ?? scheduled ?? publishTap ?? socialTap ?? packTap;
+    const tap = choice ?? reminder ?? scheduled ?? socialTap ?? packTap;
     const body = yield* encodeAction({
       widgetId: request.widgetId,
       revision: request.revision,
@@ -908,9 +874,7 @@ const make = Effect.gen(function* () {
       ...(request.value === undefined ? {} : { value: request.value }),
       ...(tap === null ? {} : { text: tap.text }),
       // The server finished this tap itself, so it doesn't wake the lead.
-      ...((reminder ?? scheduled ?? publishTap ?? socialTap ?? packTap)?.wake === false
-        ? { handled: true }
-        : {}),
+      ...((reminder ?? scheduled ?? socialTap ?? packTap)?.wake === false ? { handled: true } : {}),
     }).pipe(Effect.mapError(() => invalidState));
     const previous = yield* repo.findClientMessage({
       ...member,
@@ -965,16 +929,10 @@ const make = Effect.gen(function* () {
         hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
       );
     }
-    const ownerCard = publishTap !== null || socialTap !== null || packTap !== null;
+    const ownerCard = socialTap !== null || packTap !== null;
     if (reminder !== null || scheduled !== null || ownerCard) {
       const nowMs = yield* Clock.currentTimeMillis;
       let applied: { readonly state: unknown; readonly closed: boolean } | null = null;
-      // The owner's decision binds to the commit and title the card shows; the follower publishes.
-      if (publishTap !== null)
-        applied = yield* PublishCard.applyPublishTap(widget, publishTap, identity.personId).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.mapError(cardTapError),
-        );
       // The owner's Confirm binds to the posts the card shows; the scheduler hands them over.
       if (socialTap !== null)
         applied = yield* SocialCards.applyWeekTap(widget, socialTap, identity.personId).pipe(
@@ -1003,10 +961,10 @@ const make = Effect.gen(function* () {
         const at = yield* now;
         const updated = yield* repo.updateWidget({
           ...widget,
-          // A publish card quotes the lead's title, so only the owner's chat may hold it.
+          // Social's cards quote the owner's drafts, so only the owner's chat may hold them.
           audience: ownerCard ? "owner" : "chat",
           state: applied.state,
-          ...(publishTap === null && socialTap?.action !== "confirm" ? {} : { awaiting: [] }),
+          ...(socialTap?.action !== "confirm" ? {} : { awaiting: [] }),
           expectedRevision: widget.revision,
           closedAt: applied.closed ? at : widget.closedAt,
           updatedAt: at,
@@ -2209,12 +2167,9 @@ const make = Effect.gen(function* () {
       if (input.orgId !== "kin-default") return yield* notFound;
       const environment = yield* ServerEnvironment;
       const orchestrator = yield* OrchestratorV2;
-      const shell =
-        input.remote === undefined
-          ? yield* orchestrator
-              .getThreadShell(input.threadId)
-              .pipe(Effect.orElseSucceed(() => null))
-          : undefined;
+      const shell = yield* orchestrator
+        .getThreadShell(input.threadId)
+        .pipe(Effect.orElseSucceed(() => null));
       if (shell === null) return yield* notFound;
       const agent = yield* requireRecord(
         repo.getAgent({ orgId: input.orgId, agentId: input.authorAgentId }),
@@ -2252,13 +2207,13 @@ const make = Effect.gen(function* () {
       }
       const updatedAt = yield* now;
       const state = yield* TaskCard.decodeTaskCardEffect({
-        taskId: input.threadId,
+        taskId: input.taskId ?? input.threadId,
         environmentId: yield* environment.getEnvironmentId,
         threadId: input.threadId,
-        remoteEnvironmentId: input.remote?.environmentId ?? null,
+        remoteEnvironmentId: null,
         title: input.title,
         model: input.model,
-        status: input.remote?.status ?? "waiting",
+        status: "waiting",
         pullRequests: [],
         lastError: null,
         updatedAt,
@@ -2297,7 +2252,7 @@ const make = Effect.gen(function* () {
         widgetClass: "native",
         type: "task",
         revision: 1,
-        state: shell === undefined ? state : TaskCard.taskCardState(state, shell, updatedAt),
+        state: TaskCard.taskCardState(state, shell, updatedAt),
         source: null,
         feed: null,
         awaiting: [],
@@ -2312,26 +2267,6 @@ const make = Effect.gen(function* () {
       yield* hub.publish({ type: "message.posted", orgId: input.orgId, message: anchor });
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       yield* sql.afterCommit(cards.track(widget));
-      return widget;
-    }, transaction),
-    setTaskCardClosed: Effect.fn("KinChatService.setTaskCardClosed")(function* (input) {
-      const existing = yield* requireRecord(
-        repo.getWidget({ orgId: input.orgId, widgetId: yield* taskCardWidgetId(input) }),
-      );
-      if (existing.type !== "task" || existing.chatId !== input.chatId) return yield* notFound;
-      if ((existing.closedAt !== null) === input.closed) return existing;
-      const widget = yield* repo.updateWidget({
-        ...existing,
-        audience: input.audience,
-        awaiting: input.closed ? [] : existing.awaiting,
-        expectedRevision: existing.revision,
-        closedAt: input.closed ? yield* now : null,
-        updatedAt: yield* now,
-      });
-      if (input.closed)
-        for (const item of yield* repo.waitingForWidget(widget)) yield* resolve(item, "closed");
-      yield* sql.afterCommit(cards.track(widget));
-      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       return widget;
     }, transaction),
     closeReplaced: Effect.fn("KinChatService.closeReplaced")(function* (input) {
@@ -2406,55 +2341,6 @@ const make = Effect.gen(function* () {
       yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
       return widget;
     }, transaction),
-    setTaskCardState: Effect.fn("KinChatService.setTaskCardState")(function* (input) {
-      const existing = yield* requireRecord(
-        repo.getWidget({ orgId: input.orgId, widgetId: yield* taskCardWidgetId(input) }),
-      );
-      if (existing.type !== "task" || existing.chatId !== input.chatId) return yield* notFound;
-      const previous = yield* TaskCard.decodeTaskCardEffect(existing.state).pipe(
-        Effect.mapError(() => invalidState),
-      );
-      if (previous.remoteEnvironmentId === null) return yield* invalidState;
-      const next = { ...previous, ...input.state };
-      if (existing.closedAt !== null || TaskCard.taskCardEquivalent(next, previous))
-        return existing;
-      const updatedAt = yield* now;
-      const widget = yield* repo.updateWidget({
-        ...existing,
-        audience: input.audience,
-        state: { ...next, updatedAt },
-        expectedRevision: existing.revision,
-        updatedAt,
-      });
-      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
-      return widget;
-    }, transaction),
-    setTaskCardDocuments: Effect.fn("KinChatService.setTaskCardDocuments")(function* (input) {
-      const existing = yield* requireRecord(
-        repo.getWidget({ orgId: input.orgId, widgetId: yield* taskCardWidgetId(input) }),
-      );
-      if (existing.type !== "task" || existing.chatId !== input.chatId) return yield* notFound;
-      const previous = yield* TaskCard.decodeTaskCardEffect(existing.state).pipe(
-        Effect.mapError(() => invalidState),
-      );
-      if (previous.remoteEnvironmentId !== null) return yield* invalidState;
-      const next = {
-        ...previous,
-        documents: input.documents,
-        ...(input.lastError === null ? {} : { lastError: input.lastError }),
-      };
-      if (TaskCard.taskCardEquivalent(next, previous)) return existing;
-      const updatedAt = yield* now;
-      const widget = yield* repo.updateWidget({
-        ...existing,
-        audience: "owner",
-        state: { ...next, updatedAt },
-        expectedRevision: existing.revision,
-        updatedAt,
-      });
-      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
-      return widget;
-    }, transaction),
     upsertWidget: Effect.fn("KinChatService.upsertWidget")(function* (identity, input) {
       const member = yield* memberFor(identity, input.chatId);
       yield* canWrite(identity, member);
@@ -2466,8 +2352,6 @@ const make = Effect.gen(function* () {
       if (
         input.type === "owner_check" ||
         input.type === "deferral" ||
-        // Only Kin's publish gate writes one, from its own git and GitHub.
-        input.type === KIN_WORKER_PUBLISH_CARD ||
         // Only Kin draws Social's cards, from its stored drafts and the service's own names.
         input.type === KIN_SOCIAL_WEEK_CARD ||
         input.type === KIN_SOCIAL_PACK_CARD ||
@@ -2630,7 +2514,6 @@ const make = Effect.gen(function* () {
       if (
         (widget.type === "reminder" ||
           widget.type === "scheduled_task" ||
-          widget.type === KIN_WORKER_PUBLISH_CARD ||
           widget.type === KIN_SOCIAL_WEEK_CARD ||
           widget.type === KIN_SOCIAL_PACK_CARD) &&
         !owning &&

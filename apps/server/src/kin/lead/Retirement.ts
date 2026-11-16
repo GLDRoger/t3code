@@ -4,7 +4,6 @@ import {
   KinMessageId,
   type KinOrgId,
   KinWakeupId,
-  type KinWorkerId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -12,17 +11,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
 import type { PersistenceDecodeError, PersistenceSqlError } from "../../persistence/Errors.ts";
-import { stopAttempt } from "../work/workerAttempts.ts";
 
 /**
  * What retiring an agent does to everything it has in flight, inside the transaction that sets
  * `retired_at`, and what restoring it undoes. Its chats, history, memory and Work entries stay.
  */
 
-/** Why its open workers stopped; the owner's stop notice quotes it. */
-export const RETIRED_WORKER_REASON = "This agent was retired.";
-export const retiredWorkerKey = (workerId: KinWorkerId, retiredAt: string) =>
-  `kin-retired:${workerId}:${retiredAt}`;
 /** Why its approval requests closed, on the request and in the audit log. */
 export const RETIRED_ACTION_REASON = "agent_retired";
 
@@ -95,19 +89,6 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (input: {
       OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = e.org_id
         AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
     RETURNING event_id`;
-  // Stored before anything is interrupted, so nothing of theirs publishes from here on.
-  const workers = yield* sql<{ workerId: KinWorkerId }>`SELECT worker_id AS "workerId"
-    FROM kin_workers WHERE org_id = ${orgId} AND agent_id = ${agentId} AND ended_at IS NULL
-    ORDER BY worker_id`;
-  for (const { workerId } of workers)
-    yield* stopAttempt({
-      orgId,
-      agentId,
-      workerId,
-      reason: RETIRED_WORKER_REASON,
-      key: retiredWorkerKey(workerId, input.retiredAt),
-      at: now,
-    });
   // Kin-clock timers in chats no live agent answers: deferrals, reminders and scheduled runs.
   const chats = heldChats(sql, orgId, agentId);
   yield* sql`INSERT INTO kin_retirement_holds
@@ -149,7 +130,7 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (input: {
 /**
  * In the restore's transaction: the timers and schedules retiring paused run again (a due one
  * fires late, once; a scheduled run more than two hours late is skipped instead).
- * Stopped workers, expired events and closed requests stay as they are.
+ * Expired events and closed requests stay as they are.
  */
 export const restore = Effect.fn("KinRetirement.restore")(function* (input: {
   readonly orgId: KinOrgId;

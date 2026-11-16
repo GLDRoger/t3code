@@ -16,7 +16,7 @@ import { touchesBetween } from "../work/touches.ts";
 /** One original the dream may cite. `saidBy` and `trust` come from server records, never the model. */
 export interface MaterialEntry {
   readonly ref: string;
-  readonly kind: "journal" | "chat" | "github" | "worker_report" | "item" | "touch";
+  readonly kind: "journal" | "chat" | "github" | "item" | "touch";
   readonly saidBy: string;
   readonly trust: MemoryTrust;
   readonly at: string;
@@ -33,7 +33,6 @@ const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
 const ownerOnlyChat = (sql: SqlClient.SqlClient, chatId: Statement.Fragment) =>
   sql`NOT EXISTS (SELECT 1 FROM kin_chat_members cm WHERE cm.chat_id = ${chatId}
     AND cm.principal_kind = 'person' AND cm.role <> 'owner')`;
-const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const ownerDate = (ms: number, timeZone: string) =>
   DateTime.formatIsoDate(DateTime.makeZonedUnsafe(ms, { timeZone }));
@@ -64,7 +63,7 @@ const journalEntries = (text: string) => {
 };
 
 /**
- * Originals in `(from, until]`: journal files, chat messages, worker reports and GitHub events.
+ * Originals in `(from, until]`: journal files, chat messages and GitHub events.
  * Briefs, summaries and earlier dream output are never material. `full` adds every item, and
  * every night adds the items still unlabelled. What a chat other people read left in memory is
  * never material: it stays that person's claim, and no dream folds it into the owner's notes.
@@ -159,26 +158,20 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
     }
     const events = yield* sql<{
       json: string;
-    }>`SELECT e.json FROM kin_events e WHERE e.org_id = ${orgId} AND e.tag IN ('github', 'worker.report')
+    }>`SELECT e.json FROM kin_events e WHERE e.org_id = ${orgId} AND e.tag = 'github'
       AND e.received_at > ${from} AND e.received_at <= ${until}
-      AND (e.tag = 'github' OR NOT EXISTS (SELECT 1 FROM kin_workers k
-        WHERE k.org_id = e.org_id AND k.worker_id = json_extract(e.json, '$.workerId')
-          AND k.chat_id IS NOT NULL AND NOT ${ownerOnlyChat(sql, sql`k.chat_id`)}))
       ORDER BY e.received_at, e.event_id`;
     for (const row of events) {
       const event = yield* decodeEvent(row.json);
-      if (event._tag !== "github" && event._tag !== "worker.report") continue;
+      if (event._tag !== "github") continue;
       const who = event.provenance;
       entries.push({
         ref: `kin:event:${event.eventId}`,
-        kind: event._tag === "github" ? "github" : "worker_report",
+        kind: "github",
         saidBy: who._tag === "agent" ? who.agentId : "external",
         trust: who._tag === "agent" ? "agent" : "external",
         at: DateTime.formatIso(event.receivedAt),
-        text:
-          event._tag === "github"
-            ? `${event.eventName} ${event.repo}: ${event.summary}`
-            : yield* encodeJson(event.report),
+        text: `${event.eventName} ${event.repo}: ${event.summary}`,
       });
     }
     // Contact with clients, for their relationship files: logged by a person, or Kin's records.

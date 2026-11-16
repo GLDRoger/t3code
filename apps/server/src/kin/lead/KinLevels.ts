@@ -38,8 +38,8 @@ export class KinLevelRefused extends Schema.TaggedError<KinLevelRefused>()("KinL
 const decodeLevel = Schema.decodeUnknownEffect(KinLevel);
 
 /**
- * What a lead may do in a chat its owner placed it in: post, ping, start workers and open draft
- * PRs. Merges and other privileged actions still need the owner's signed approval.
+ * What a lead may do in a chat its owner placed it in: post, ping and start work. Merges and other
+ * privileged actions still need the owner's signed approval.
  */
 const OWNER_PLACED_LEVEL: KinLevel = "L2";
 
@@ -202,28 +202,10 @@ export const askers = Effect.fn("KinLevels.askers")(function* (input: {
 });
 
 /**
- * Whether the lead's owner placed it in `chatId` (`ownerPlacedSql`). False for a retired lead or a
- * chat in another org.
+ * The chats the wake-up's due deferrals, passed-on requests and teammates' tasks were first
+ * asked in, read from the stored events only. The level cap reads this, so it can't drop one.
  */
-export const ownerPlaced = Effect.fn("KinLevels.ownerPlaced")(function* (
-  orgId: KinOrgId,
-  origin: KinOrigin,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ ownerPlaced: number }>`
-    SELECT ${ownerPlacedSql(sql, origin.chatId)} AS "ownerPlaced" FROM kin_leads l
-    JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
-    WHERE l.org_id = ${orgId} AND l.agent_id = ${origin.agentId}
-      AND a.role = 'lead' AND a.retired_at IS NULL
-    ORDER BY l.agent_id`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.ownerPlaced")));
-  return row?.ownerPlaced === 1;
-});
-
-/**
- * The chats the wake-up's due deferrals, passed-on requests and teammates' tasks were first asked in, read from the
- * stored events only. Both the level cap and worker reach read this, so neither can drop one.
- */
-export const origins = Effect.fn("KinLevels.origins")(function* (input: {
+const origins = Effect.fn("KinLevels.origins")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly wakeupId: string;
@@ -238,7 +220,7 @@ export const origins = Effect.fn("KinLevels.origins")(function* (input: {
       json_extract(json, '$.origin.chatId') AS "chatId",
       json_extract(json, '$.origin.personId') AS "personId" FROM kin_events
     WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
-      AND tag IN ('deferral.due', 'chat.message', 'worker.report', 'record.changed')
+      AND tag IN ('deferral.due', 'chat.message', 'record.changed')
       AND json_extract(json, '$.origin.chatId') IS NOT NULL
     ORDER BY 1, 2, 3`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.origins")));
   return rows.map(({ personId, ...origin }): KinOrigin =>

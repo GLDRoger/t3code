@@ -68,7 +68,7 @@ export const mayActAsOwner = Effect.fn("KinAccess.mayActAsOwner")(function* (
 
 /**
  * The owner himself, never a co-owner. Only for what is his alone: his private chats and own
- * leads, statement notices, his host's local workers, and managing co-owners.
+ * leads, statement notices, and managing co-owners.
  */
 export const isOwnerHimself = (
   owner: { readonly personId: string },

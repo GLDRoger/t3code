@@ -32,7 +32,6 @@ import type * as KinLevels from "../lead/KinLevels.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
-import { workersConfigured } from "../lead/workerEnvironment.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { readGithubLinks } from "./deferralGithub.ts";
@@ -343,7 +342,6 @@ const make = Effect.gen(function* () {
       gates.push(...snapshotChanges(snapshot, item, github));
       if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
         gates.push("the stop switch is on");
-      if (!(yield* workersConfigured)) gates.push("workers can't launch yet");
     }
     // A reminder is the lead's to write when a wake-up can run; budget is read outside the writer.
     const ownChat = onDue === "remind" ? yield* askersChat(sql, orgId, item?.chat) : undefined;

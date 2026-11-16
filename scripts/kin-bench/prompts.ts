@@ -257,14 +257,6 @@ export async function capturePrompts(
         agentName(kinPart(prompt)) === "Finance" && prompt.includes("bench-handover"),
     },
     {
-      kind: "Worker report",
-      agent: "chief",
-      // Workers here take only build tasks and PR reviews on a real repository (Workers.ts).
-      skip: "workers on this host only take build tasks and pull-request reviews on a real repository, which a no-model run can't give them",
-      run: async () => undefined,
-      match: () => false,
-    },
-    {
       kind: "Outside-mail wake",
       agent: "finance",
       run: async () => {

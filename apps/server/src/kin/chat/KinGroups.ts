@@ -37,7 +37,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
-import { freezeMovedCard, onPersonJoined, settleCards, workerChat } from "../lead/ChatSharing.ts";
+import { freezeMovedCard, onPersonJoined, settleCards } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
@@ -260,8 +260,8 @@ const make = Effect.gen(function* () {
   /**
    * In the join's transaction (`onPersonJoined`): a turn that may hold the owner's context, or
    * that read the chat before it was shared, never continues once someone else can read it; its
-   * run stops after commit. What was asked there before stays the owner's: it expires, and private
-   * work there answers in the owner's chat, its card here frozen.
+   * run stops after commit. What was asked there before stays the owner's: it expires, and a task
+   * delegated there answers in the owner's chat, its card here frozen.
    */
   const shareWith = Effect.fn("KinGroups.shareWith")(function* (
     chat: Pick<KinChat, "orgId" | "chatId">,
@@ -289,26 +289,19 @@ const make = Effect.gen(function* () {
         SqlError: (cause) => Effect.fail(toPersistenceSqlError("KinGroups.settleCards")(cause)),
       }),
     );
-    for (const worker of shared.moved) {
-      const route = yield* query("KinGroups.workerChat")(
-        workerChat({ orgId: chat.orgId, workerId: worker.workerId }).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        ),
-      );
-      if (route?.moved === undefined) continue;
+    for (const task of shared.moved)
       yield* withChat(
         freezeMovedCard({
           orgId: chat.orgId,
           chatId: chat.chatId,
-          threadId: worker.threadId,
-          leadName: route.moved.leadName,
+          threadId: task.threadId,
+          leadName: task.leadName,
         }),
       ).pipe(
         Effect.catchTags({
           SqlError: (cause) => Effect.fail(toPersistenceSqlError("KinGroups.freezeCard")(cause)),
         }),
       );
-    }
     if (shared.expired.length > 0 && Option.isSome(presence)) {
       const line = presence.value;
       yield* sql.afterCommit(

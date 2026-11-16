@@ -118,16 +118,6 @@ const setup = Effect.fn(function* (
 });
 
 describe("ProjectSetupScriptRunner", () => {
-  it.effect.each(["setup", "settle"] as const)(
-    "runs no %s script for a Kin work thread, which has no shell",
-    (trigger) =>
-      Effect.gen(function* () {
-        const { start, writes } = yield* makeHarness({ threadId: "kin-work:wk-fixture", trigger });
-        expect(yield* start).toEqual({ status: "skipped-for-link" });
-        expect(yield* Queue.size(writes)).toBe(0);
-      }),
-  );
-
   it.effect("writes immediately when the spawned fallback is PowerShell", () =>
     Effect.gen(function* () {
       const { writes } = yield* setup({

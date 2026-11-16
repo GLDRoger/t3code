@@ -2,7 +2,6 @@ import {
   GithubRepoSlug,
   KinEvent,
   KinEventId,
-  type KinWorkerId,
   KinOrgId,
   type KinGithubEvent,
   type KinTriggerFired,
@@ -26,7 +25,6 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
-import { publishBranch } from "../lead/workerPublish.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import {
   configuredRepositories,
@@ -38,7 +36,7 @@ import { relevant } from "./githubInterest.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import { isPermanent } from "./routines.ts";
 import { KinRecords } from "../work/KinRecords.ts";
-import { githubClosed } from "../work/workerEntries.ts";
+import { githubClosed } from "../work/githubEntries.ts";
 import { KinPullRequestCare } from "../github/PullRequestCare.ts";
 import { recordPullRequestEvent } from "../github/pullRequestState.ts";
 
@@ -403,21 +401,7 @@ const make = Effect.gen(function* () {
         });
       } else {
         const { event } = outcome;
-        const workers = yield* sql<{
-          workerId: KinWorkerId;
-          pullRequestNumber: number | null;
-          repositoryKey: string | null;
-        }>`
-          SELECT worker_id AS "workerId", pull_request_number AS "pullRequestNumber", repository_key AS "repositoryKey" FROM kin_workers
-          WHERE org_id = ${orgId} AND agent_id = ${lead.agentId} ORDER BY worker_id`;
-        if (
-          !relevant(
-            event,
-            source?.bot_login ?? "",
-            outcome.items,
-            workers.map((row) => ({ ...row, branch: publishBranch(row.workerId) })),
-          )
-        ) {
+        if (!relevant(event, source?.bot_login ?? "", outcome.items)) {
           yield* Effect.logDebug("Kin GitHub event dropped", {
             orgId,
             fireId: fire.fireId,

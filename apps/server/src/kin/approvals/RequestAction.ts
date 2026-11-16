@@ -56,7 +56,7 @@ type PullRequestFacts = Extract<KinResolvedTarget, { readonly _tag: "pull_reques
 
 /**
  * What the server reads from GitHub itself; the agent only names the PR. `target` comes back
- * with the worker project's spelling of the repository, so one PR keys one action.
+ * with the project's spelling of the repository, so one PR keys one action.
  */
 export class KinPullRequestFacts extends Context.Service<
   KinPullRequestFacts,
@@ -91,16 +91,16 @@ export const layerPullRequestFacts = Layer.effect(
     // One refusal for "not this lead's repo" and "no such PR", so private repos can't be probed.
     const notFound = new KinApprovalError({
       reason: "not_found",
-      message: "No such pull request in this agent's worker projects.",
+      message: "No such pull request in this agent's projects.",
     });
-    // Public GitHub reads through any project, so the lead's worker projects are the allowlist.
+    // Public GitHub reads through any project, so the lead's projects are the allowlist.
     const project = Effect.fn("KinPullRequestFacts.project")(function* (
       target: PullRequestTarget,
       projectIds: ReadonlyArray<ProjectId>,
     ) {
       const shells = yield* projects
         .listShells({ projectIds })
-        .pipe(Effect.mapError(() => unavailable("This agent's worker projects can't be read.")));
+        .pipe(Effect.mapError(() => unavailable("This agent's projects can't be read.")));
       const match = shells
         .filter((shell) => projectIds.includes(shell.id))
         .map((shell) => ({
@@ -396,7 +396,7 @@ const make = Effect.gen(function* () {
           if (current.lead.worker_projects_json !== lead.worker_projects_json)
             return yield* refuse(
               "invalid_state",
-              "This agent's worker projects changed while GitHub answered. Try again.",
+              "This agent's projects changed while GitHub answered. Try again.",
             );
           if (!KinLevels.atLeast(level, PRIVILEGED_LEVEL))
             return yield* refuse("invalid_state", NOT_OPEN);

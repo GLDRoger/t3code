@@ -691,10 +691,8 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
       kinSession,
     }).nativeTools.map((tool) => tool.name);
   const [before, after] = [names(false), names(true)];
-  assert.include(before, "mcp__t3-code__kin_delegate");
   assert.notInclude(before, "mcp__t3-code__delegate_task");
   assert.isFalse(before.some((name) => name.endsWith("Bash")));
-  assert.notInclude(after, "mcp__t3-code__kin_delegate");
   for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
     assert.include(after, name);
   for (const name of ["Bash"])

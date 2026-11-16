@@ -169,4 +169,4 @@ export const MONEY_RULE =
   "Kin calculated these figures from the records, exactly and per currency. Quote what needs the owner, such as what is overdue and dates coming up; never add, convert or estimate figures yourself.";
 
 /** The event line for an open entry the owner closed or took back while this lead held it. */
-export const WITHDRAWN_WORK = `The owner closed this Work entry or took it back from you, and Kin has already stopped any worker of yours that was running on it, so there is nothing to stop or restart. Leave the entry as it is. Reply only if the owner needs to know something about it, in one line; otherwise write exactly ${SILENT_REPLY}.`;
+export const WITHDRAWN_WORK = `The owner closed this Work entry or took it back from you. If a task you started for it is still working, stop it with task_cancel; start nothing new and leave the entry as it is. Reply only if the owner needs to know something about it, in one line; otherwise write exactly ${SILENT_REPLY}.`;

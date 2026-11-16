@@ -6,7 +6,6 @@ import {
   KinMessageId,
   KinOrgId,
   KinWakeupId,
-  type KinWorkerId,
   MessageId,
   ModelSelection,
   ProjectId,
@@ -70,8 +69,6 @@ import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
 import { isMorningCheckIn } from "../pulse/weekly.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
-import { RETIRED_WORKER_REASON, retiredWorkerKey } from "./Retirement.ts";
-import { WorkerTracker } from "./WorkerTracker.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { KinTeam } from "../team/KinTeam.ts";
@@ -161,7 +158,6 @@ const ulid = Effect.gen(function* () {
 const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const bridge = yield* Effect.serviceOption(KinReplyBridge);
-  const tracker = yield* Effect.serviceOption(WorkerTracker);
   const team = yield* Effect.serviceOption(KinTeam);
   const handoff = yield* Effect.serviceOption(KinHandoff);
   const endReply = (row: {
@@ -306,30 +302,6 @@ const make = Effect.gen(function* () {
     const pass = `${record.agentId}:${record.retiredAt}`;
     if (retired.has(pass)) return;
     yield* queue.expireAgent(record.orgId, record.agentId);
-    // Their stops were stored when it was retired (`Retirement.retire`); this sends them.
-    if (Option.isSome(tracker))
-      for (const worker of yield* sql<{ workerId: KinWorkerId; startedAt: number }>`
-          SELECT worker_id AS "workerId", started_at AS "startedAt" FROM kin_workers
-          WHERE org_id = ${record.orgId} AND agent_id = ${record.agentId} AND ended_at IS NULL
-          ORDER BY worker_id`)
-        yield* tracker.value
-          .stop({
-            orgId: record.orgId,
-            agentId: record.agentId,
-            workerId: worker.workerId,
-            startedAt: worker.startedAt,
-            reason: RETIRED_WORKER_REASON,
-            key: retiredWorkerKey(worker.workerId, record.retiredAt),
-          })
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Kin could not stop a retired agent's worker", {
-                orgId: record.orgId,
-                workerId: worker.workerId,
-                cause,
-              }),
-            ),
-          );
     // The owner's thread and every chat's.
     const live = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
       FROM kin_agent_threads WHERE org_id = ${record.orgId} AND agent_id = ${record.agentId}
@@ -338,6 +310,17 @@ const make = Effect.gen(function* () {
       ...(record.threadId === null ? [] : [record.threadId]),
       ...live.map((row) => row.threadId),
     ])) {
+      yield* threads
+        .stopDelegatedTasks({
+          threadId,
+          commandId: CommandId.make(`kin-retired:${threadId}:${record.retiredAt}`),
+          reason: "This agent was retired.",
+        })
+        .pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin could not stop a retired agent's tasks", { threadId, cause }),
+          ),
+        );
       const stopped = yield* threads.forceStopThread({ threadId });
       if (stopped.outcome === "releasing") return;
       yield* identity

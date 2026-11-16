@@ -136,7 +136,7 @@ export const KIN_PULSE_URGENT: ReadonlySet<KinPulseFact["sense"]> = new Set<KinP
   "theirs_late",
   "invoice_overdue",
   "budget_over",
-  "worker_failed",
+  "task_stuck",
   "goal_behind",
   "milestone_late",
 ]);

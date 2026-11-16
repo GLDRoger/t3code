@@ -20,7 +20,6 @@ import * as Queue from "../lead/KinEventQueue.ts";
 import * as OwnerCheck from "./ownerCheck.ts";
 import { fixture, seed, orgId, otherOrg, item } from "./routines.testkit.ts";
 
-const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeCard = Schema.decodeSync(Schema.fromJsonString(KinOwnerCheckCard));
 const decodeEvent = Schema.decodeSync(KinEvent);
 const now = Date.parse("2026-11-09T09:00:00.000Z");
@@ -37,20 +36,6 @@ const memoryItems = [
 it.effect("picks five distinct, valid same-org items in the specified category order", () =>
   Effect.gen(function* () {
     yield* seed();
-    const sql = yield* SqlClient.SqlClient;
-    const report = {
-      result: "done",
-      summary: "Done",
-      evidence: [],
-      openQuestions: [],
-      memorySuggestions: [],
-      misleadingMemory: [{ itemId: "misleading", why: "Wrong evidence" }],
-      parsed: true,
-    };
-    const json = yield* encodeJson(report);
-    yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, 'worker-wakeup', 'lead-a', 'fixture', 0, 'completed', '[]')`;
-    yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, thread_id, kind, model_json, provenance_json, status, report_json, started_at, ended_at) VALUES ('worker', ${orgId}, 'lead-a', 'worker-wakeup', 'thread', 'research', '{}', '{}', 'done', ${json}, 0, ${now})`;
-    yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, thread_id, kind, model_json, provenance_json, status, report_json, started_at, ended_at) VALUES ('ancient-worker', ${orgId}, 'lead-a', 'worker-wakeup', 'thread-old', 'research', '{}', '{}', 'done', 'invalid ancient report', 0, ${now - 91 * 86_400_000})`;
     yield* TestClock.setTime(now);
     const service = yield* OwnerCheck.OwnerCheck;
     const selected = yield* service.select(orgId);
@@ -59,13 +44,13 @@ it.effect("picks five distinct, valid same-org items in the specified category o
       [
         ["old-review", "past_review"],
         ["last-review", "past_review"],
-        ["misleading", "misleading"],
         ["low-trust", "old_low_trust"],
         ["no-evidence", "no_evidence"],
+        ["sixth", "no_evidence"],
       ],
     );
     assert.deepEqual(
-      OwnerCheck.pickOwnerCheckItems(orgId, memoryItems.toReversed(), new Set(["misleading"]), now),
+      OwnerCheck.pickOwnerCheckItems(orgId, memoryItems.toReversed(), now),
       selected,
     );
   }).pipe(Effect.provide(fixture(memoryItems))),

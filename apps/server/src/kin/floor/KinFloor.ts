@@ -59,7 +59,6 @@ const NOTICE_TAGS = [
   "routine",
   "github",
   "deferral.due",
-  "worker.report",
   "watchdog",
   "pulse",
   "action.resolved",
@@ -79,7 +78,7 @@ const NOTICE_WINDOW_MS = 3_600_000;
  * For an event row aliased `alias`: work someone gave the lead, whose report or assignment waits
  * on its words. The hourly notice limit never refuses those.
  */
-export const owedNotice = (alias: string) => `(${alias}.tag IN ('worker.report', 'task.finished')
+export const owedNotice = (alias: string) => `(${alias}.tag = 'task.finished'
   OR (${alias}.tag = 'record.changed' AND json_extract(${alias}.json, '$.reason') = 'assigned'))`;
 const notGranted = new KinChatError({
   reason: "floor_not_granted",
@@ -128,7 +127,7 @@ export class KinFloor extends Context.Service<
     /**
      * Whether the running wake-up holds only server notices, and requests other leads passed on
      * (`passed_on`, which it may answer): posts then need no floor grant. `owed`: one of them
-     * waits on words, a passed-on request, a worker's report or an assigned entry.
+     * waits on words, a passed-on request, a finished task or an assigned entry.
      */
     readonly noticeOnly: (
       identity: AgentIdentity,

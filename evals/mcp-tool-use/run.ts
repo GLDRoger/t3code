@@ -76,7 +76,6 @@ import {
   WITHDRAWN_WORK,
   WORK_RULE,
 } from "../../apps/server/src/kin/work/workPrompt.ts";
-import { OWNER_DECLINED, WAITING_FOR_OWNER } from "../../apps/server/src/kin/lead/workerBrief.ts";
 import {
   githubTriggerEvent,
   HANDED_BACK_WORK,
@@ -625,10 +624,9 @@ const visibleT3Tools = (options: {
       // A turn others read runs on a shared thread, which lists only what it may run (AgentSession).
       !(options.kinShared === true && !listedOnSharedThread(tool.name.slice(T3_PREFIX.length))) &&
       (options.kinAgent === true || options.kinLead === true
-        ? // An owner-only turn's session: T3's lead tools join and kin_delegate goes (AgentSession).
+        ? // An owner-only turn's session: T3's lead tools join (AgentSession).
           (options.kinSession === true
-            ? tool.name !== `${T3_PREFIX}kin_delegate` &&
-              (LEAD_T3_TOOLS as ReadonlyArray<string>).some(
+            ? (LEAD_T3_TOOLS as ReadonlyArray<string>).some(
                 (name) => tool.name === `${T3_PREFIX}${name}`,
               )
             : false) ||
@@ -636,7 +634,6 @@ const visibleT3Tools = (options: {
             (name) => tool.name === `${T3_PREFIX}${name}`,
           ) ||
           (options.kinLead === true &&
-            !(options.kinSession === true && tool.name === `${T3_PREFIX}kin_delegate`) &&
             [
               ...Object.keys(KinLeadToolkit.tools),
               ...Object.keys(KinWorkToolkit.tools),
@@ -1233,9 +1230,7 @@ const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) 
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
-    .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
-    .replaceAll("{{WAITING_FOR_OWNER}}", JSON.stringify(WAITING_FOR_OWNER).slice(1, -1))
-    .replaceAll("{{OWNER_DECLINED}}", JSON.stringify(OWNER_DECLINED).slice(1, -1));
+    .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK);
 
 export const buildMessages = (sample: Sample) => {
   const { testCase, base, tools } = sample;
