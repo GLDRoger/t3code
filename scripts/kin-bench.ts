@@ -685,6 +685,7 @@ async function main() {
         change,
         clients: [...probes].map(([person, one]) => {
           const frames = one.frames.slice(marks.get(person));
+          const asked = frames.filter((frame) => frame.dir === "out");
           return {
             person,
             framesIn: frames.filter((frame) => frame.dir === "in").length,
@@ -697,9 +698,9 @@ async function main() {
             methods: Object.fromEntries(
               [
                 ...new Set(
-                  frames.flatMap((frame) => (frame.method === undefined ? [] : [frame.method])),
+                  asked.flatMap((frame) => (frame.method === undefined ? [] : [frame.method])),
                 ),
-              ].map((method) => [method, frames.filter((frame) => frame.method === method).length]),
+              ].map((method) => [method, asked.filter((frame) => frame.method === method).length]),
             ),
           };
         }),
