@@ -94,7 +94,7 @@ We considered GBrain (MIT, the same Markdown-first design, with vector search an
    - `rules.md` is never changed by a dream.
 6. **Once a week, do a full rebuild** from all items, to catch slow drift.
 
-A cheap model does extraction and merging; a stronger one handles contradictions. A dream that fails leaves memory untouched and posts what went wrong. Anthropic's Dreaming for Managed Agents (research preview) and GBrain's dream cycle do similar consolidation. Kin's version also keeps the result as a git diff, records who said what, and asks a human before changing anything that matters.
+One turn does extraction and merging; a second turn on the same model handles contradictions. A dream that fails leaves memory untouched and posts what went wrong. Anthropic's Dreaming for Managed Agents (research preview) and GBrain's dream cycle do similar consolidation. Kin's version also keeps the result as a git diff, records who said what, and asks a human before changing anything that matters.
 
 **Measuring it:** from the pilot, collect questions with known answers ("What did we defer to Friday?", "Who promised the migration?", "Did we settle caching?"), and run them every week. Change the memory design only when those results show a need. Section 4 sits behind a `Memory` interface, so a vector index can be added later without touching the items.
 

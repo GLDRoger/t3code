@@ -8,7 +8,7 @@ import {
   kinLeadDraftCheck,
   kinLeadDraftOf,
   kinLeadModelName,
-  kinLeadStartingModels,
+  kinLeadStartingModel,
   kinLeadTrackingDetail,
 } from "./kinLeadPresentation.ts";
 
@@ -134,22 +134,19 @@ describe("lead model", () => {
   });
 });
 
-describe("a first agent's models", () => {
+describe("a first agent's model", () => {
   const claude = ProviderInstanceId.make("claudeAgent");
   const model = (slug: string) => ({ instanceId: claude, model: slug });
 
-  it("starts on the strongest for harder work and the quickest for replies", () => {
+  it("starts on the strongest offered", () => {
     expect(
-      kinLeadStartingModels([
+      kinLeadStartingModel([
         model("claude-sonnet-4-5"),
         model("claude-haiku-4-5"),
         model("claude-opus-4-6"),
       ]),
-    ).toEqual({ strong: model("claude-opus-4-6"), cheap: model("claude-haiku-4-5") });
-    expect(kinLeadStartingModels([model("claude-custom")])).toEqual({
-      strong: model("claude-custom"),
-      cheap: model("claude-custom"),
-    });
-    expect(kinLeadStartingModels([])).toBeNull();
+    ).toEqual(model("claude-opus-4-6"));
+    expect(kinLeadStartingModel([model("claude-custom")])).toEqual(model("claude-custom"));
+    expect(kinLeadStartingModel([])).toBeNull();
   });
 });

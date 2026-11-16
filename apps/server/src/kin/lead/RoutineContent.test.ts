@@ -205,8 +205,7 @@ const withFixture = <A, E>(
     return yield* test.pipe(Effect.provide(layer));
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
-const OTHER_MODELS =
-  '{"strong":{"instanceId":"codex","model":"gpt-5.1-codex"},"cheap":{"instanceId":"codex","model":"gpt-5.1-codex-mini"}}';
+const OTHER_MODELS = '{"instanceId":"codex","model":"gpt-5.1-codex"}';
 const otherReport = JSON.stringify({
   result: "done",
   summary: "Other org shipped",

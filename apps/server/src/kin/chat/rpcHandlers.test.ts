@@ -927,7 +927,7 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       name: "Growth",
       domain: "growth",
       charter: "Grow signups.",
-      models: { strong: claude, cheap: claude },
+      model: claude,
     };
     const growth = yield* client["kin.lead.create"](input);
     assert.include(growth, {
@@ -936,10 +936,10 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       level: "L0",
       createdByPersonId: person.personId,
     });
-    // The third lead copies the first lead's models.
-    const { models: _models, ...noModels } = input;
+    // The third lead copies the first lead's model.
+    const { model: _model, ...noModel } = input;
     const social = yield* client["kin.lead.create"]({
-      ...noModels,
+      ...noModel,
       name: "Social",
       domain: "social-media",
     });
@@ -1150,7 +1150,7 @@ it.effect(
           domain,
           charter: `Private to the owner: ${name}.`,
           intro: `${name} questions.`,
-          models: { strong: claude, cheap: claude },
+          model: claude,
         });
       const finance = yield* make("Finance", "finance");
       const growth = yield* make("Growth", "growth");

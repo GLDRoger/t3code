@@ -155,7 +155,7 @@ export const everyOf = (
   };
 };
 
-const decodeModels = Schema.decodeUnknownEffect(Schema.fromJsonString(KinLead.fields.models));
+const decodeModel = Schema.decodeUnknownEffect(Schema.fromJsonString(KinLead.fields.model));
 const decodeUpsert = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
@@ -231,17 +231,17 @@ const make = Effect.gen(function* () {
 
   const save = Effect.fn("KinSchedules.save")(function* (input: SaveInput) {
     const taskId = scheduleTaskId(input.orgId, input.scheduleId);
-    const [lead] = yield* sql<{ models: string }>`SELECT models_json AS models FROM kin_leads
+    const [lead] = yield* sql<{ model: string }>`SELECT models_json AS model FROM kin_leads
       WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}`.pipe(
       Effect.mapError(sqlError),
     );
     if (lead === undefined) return yield* invalid("There is no agent to run it.");
-    const models = yield* decodeModels(lead.models).pipe(
+    const model = yield* decodeModel(lead.model).pipe(
       Effect.catch(failed("The schedule could not be saved.")),
     );
     // The lead's own project, as its wake-ups use; the scheduled-tasks tick makes it before any.
     const projectId = leadProjectId(input.orgId, input.agentId);
-    const inbox = yield* inboxThread(input.orgId, input.agentId, projectId, models.cheap).pipe(
+    const inbox = yield* inboxThread(input.orgId, input.agentId, projectId, model).pipe(
       Effect.catch(failed("The schedule could not be saved.")),
     );
     const existing = input.existing ? yield* readNativeTask(sql, taskId) : undefined;
@@ -263,7 +263,7 @@ const make = Effect.gen(function* () {
       threadId: null,
       threadMode: "new_thread",
       workspaceStrategy: { type: "root" },
-      modelSelection: models.cheap,
+      modelSelection: model,
       runtimeMode: "approval-required",
       interactionMode: "plan",
       createdBy: "system",

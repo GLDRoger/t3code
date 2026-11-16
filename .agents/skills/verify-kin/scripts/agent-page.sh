@@ -7,17 +7,17 @@ q() { kv db "$1" | tail -1; }
 FIN="$(q "select agent_id from kin_leads where name = 'Finance'")"
 page() { kv as owner rpc kin.lead.page "{\"agentId\":\"$FIN\"}"; }
 last_model() { q "select model from kin_wakeups where agent_id = '$FIN' order by started_at desc, rowid desc limit 1"; }
-script_models() { echo "{\"strong\":{\"instanceId\":\"kinVerifyScript\",\"model\":\"$1\"},\"cheap\":{\"instanceId\":\"kinVerifyScript\",\"model\":\"script\"}}"; }
+script_model() { echo "{\"instanceId\":\"kinVerifyScript\",\"model\":\"$1\"}"; }
 
 # A new model applies on the next turn, with no restart.
-kv as owner rpc kin.lead.update "{\"agentId\":\"$FIN\",\"models\":$(script_models script-b)}" >/dev/null ||
+kv as owner rpc kin.lead.update "{\"agentId\":\"$FIN\",\"model\":$(script_model script-b)}" >/dev/null ||
   fail "the owner couldn't change Finance's model"
-expect_in "$(page)" "\"runsOn\":{\"strong\":{\"instanceId\":\"kinVerifyScript\",\"model\":\"script-b\"}" "the page doesn't show the new model"
+expect_in "$(page)" "\"runsOn\":{\"instanceId\":\"kinVerifyScript\",\"model\":\"script-b\"}" "the page doesn't show the new model"
 kv tool finance money_summary '{}' --say "where are we this month?" >/dev/null
 [[ "$(last_model)" == "script-b" ]] || fail "the next turn ran on $(last_model), not script-b"
 
 # A model this server doesn't have is refused, and Finance keeps the one it had.
-refused="$(kv as owner rpc kin.lead.update "{\"agentId\":\"$FIN\",\"models\":{\"strong\":{\"instanceId\":\"codex\",\"model\":\"gpt-5\"},\"cheap\":{\"instanceId\":\"codex\",\"model\":\"gpt-5\"}}}" 2>&1 || true)"
+refused="$(kv as owner rpc kin.lead.update "{\"agentId\":\"$FIN\",\"model\":{\"instanceId\":\"codex\",\"model\":\"gpt-5\"}}" 2>&1 || true)"
 expect_in "$refused" "Claude" "a non-Claude model was accepted"
 expect_in "$(page)" "script-b" "a refused change still changed the model"
 
@@ -25,7 +25,7 @@ expect_in "$(page)" "script-b" "a refused change still changed the model"
 # Claude, so Finance goes straight back to the scripted model before it takes another turn.
 out="$(kv tool chief agent_update '{"agent":"Finance","model":"sonnet"}' --say "run Finance on Sonnet" --reply "Done.")"
 contains "$out" "agent_update: ok" || expect_in "$out" "isn't available" "the owner's chat change was refused"
-kv as owner rpc kin.lead.update "{\"agentId\":\"$FIN\",\"models\":$(script_models script)}" >/dev/null
+kv as owner rpc kin.lead.update "{\"agentId\":\"$FIN\",\"model\":$(script_model script)}" >/dev/null
 out="$(kv tool chief agent_update '{"agent":"Finance","model":"sonnet"}' --as-turn-of zoya)"
 expect_not_in "$out" "agent_update: ok" "a member's turn changed Finance's model"
 
@@ -61,11 +61,11 @@ expect_not_in "$(page)" "\"retired\":{" "Finance is still retired"
 # A member gets neither the page (model, character, access) nor any way to change it.
 for method in kin.lead.page kin.lead.pause kin.lead.access.list; do
   out="$(kv as zoya rpc "$method" "{\"agentId\":\"$FIN\"}" 2>&1 || true)"
-  expect_not_in "$out" "\"models\"" "Zoya read Finance's models through $method"
+  expect_not_in "$out" "\"runsOn\"" "Zoya read Finance's model through $method"
   expect_not_in "$out" "\"character\"" "Zoya read Finance's character through $method"
   [[ "$(q "select count(*) from kin_agents where agent_id = '$FIN' and paused_at is not null")" == 0 ]] || fail "Zoya paused Finance"
 done
-out="$(kv as zoya rpc kin.lead.update "{\"agentId\":\"$FIN\",\"models\":$(script_models "zoya-$RUN")}" 2>&1 || true)"
+out="$(kv as zoya rpc kin.lead.update "{\"agentId\":\"$FIN\",\"model\":$(script_model "zoya-$RUN")}" 2>&1 || true)"
 expect_not_in "$(page)" "zoya-$RUN" "Zoya changed Finance's model"
 out="$(kv as zoya rpc kin.lead.character.set "{\"agentId\":\"$FIN\",\"body\":\"zoya-$RUN\"}" 2>&1 || true)"
 [[ "$(latest)" == "$((EDITED + 1))" ]] || fail "Zoya's character change made a version"

@@ -242,7 +242,7 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
         next: "Finance",
         state: "open",
       });
-      // Finance is woken on the strong model; nobody else is, and nothing rings.
+      // Finance is woken first; nobody else is, and nothing rings.
       assert.deepStrictEqual(
         (yield* teamWakes(sql, orgId)).map(({ agent, priority }) => [agent, priority]),
         [["finance", "P1"]],

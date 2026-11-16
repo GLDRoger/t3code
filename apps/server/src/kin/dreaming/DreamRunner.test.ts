@@ -43,8 +43,7 @@ const journalRef = "memory:journal/2026/11-07.md";
 const timestamp = "2026-11-07T00:00:00.000Z";
 const encodeFire = Schema.encodeEffect(Schema.fromJsonString(KinTriggerFired));
 const gitLayer = Vcs.layer.pipe(Layer.provide(NodeServices.layer));
-const cheap = { instanceId: "codex", model: "gpt-5.1-codex-mini" };
-const strong = { instanceId: "codex", model: "gpt-5.1-codex" };
+const model = { instanceId: "codex", model: "gpt-5.1-codex" };
 
 const liveToken = `${"t".repeat(20)}_${"Q".repeat(22)}`;
 
@@ -304,7 +303,7 @@ const fixture = <A, E>(
             admit: () =>
               Effect.sync(() => ({
                 allowed: budgetAllowed,
-                cheapOnly: false,
+                atLimit: false,
                 nextReset: 0,
                 remaining: 1,
                 heldBy: budgetAllowed ? null : ("org" as const),
@@ -324,7 +323,7 @@ const fixture = <A, E>(
     );
     return yield* Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      const models = JSON.stringify({ strong, cheap });
+      const models = JSON.stringify(model);
       yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Org', ${timestamp})`;
       yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('owner', ${orgId}, 'owner', 'Owner', ${timestamp})`;
       yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES ('lead', ${orgId}, 'Lead', 'lead', 'owner', ${timestamp})`;
@@ -450,7 +449,7 @@ it.live("a fixture dream pushes dream/<date> with its changes and records dream.
         "journal/2026/11-07.md",
       ]);
       expect(turns.map((turn) => [turn.turn, turn.model.model])).toEqual([
-        ["extract", cheap.model],
+        ["extract", model.model],
       ]);
       const [row] = yield* runRow();
       expect(row).toMatchObject({
@@ -616,7 +615,7 @@ it.live.each([
     ),
 );
 
-it.live("unresolved contradictions go to the strong model before the checks", () =>
+it.live("unresolved contradictions get a resolve turn on the same model before the checks", () =>
   fixture(({ behave, turns }) =>
     Effect.gen(function* () {
       behave("contradiction");
@@ -626,8 +625,8 @@ it.live("unresolved contradictions go to the strong model before the checks", ()
       if (outcome._tag === "succeeded")
         expect(outcome.dream.contradictions[0]?.question).toBe("Which ship date is right?");
       expect(turns.map((turn) => [turn.turn, turn.model.model])).toEqual([
-        ["extract", cheap.model],
-        ["resolve", strong.model],
+        ["extract", model.model],
+        ["resolve", model.model],
       ]);
     }),
   ),
