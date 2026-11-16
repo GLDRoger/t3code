@@ -249,8 +249,12 @@ export type Tick = {
   readonly seq: number;
   readonly key?: string;
   readonly registerId?: string;
+  /** The change made the entry. */
+  readonly created?: true;
   /** Each person who could see what changed, before or after it, and their own number now. */
   readonly team?: ReadonlyMap<string, number>;
+  /** People whose level or places changed, so what they may see may have (`peopleMoved`). */
+  readonly people?: ReadonlyArray<string>;
 };
 /** Whose view of Work a change can move: the entries it may show or hide, and who saw them before. */
 type TeamScope = {
@@ -485,6 +489,14 @@ export class KinRecords extends Context.Service<
     readonly changes: (orgId: KinOrgId) => Stream.Stream<Tick, KinChatError>;
     /** Tells `changes` an org's entries moved with no change logged here: an undo, another process. */
     readonly announce: (orgId: KinOrgId) => Effect.Effect<void, KinChatError>;
+    /**
+     * In the caller's transaction: these people's level or places changed, so what they may see
+     * may have. Moves their own change numbers and tells `changes` once it commits.
+     */
+    readonly peopleMoved: (
+      orgId: KinOrgId,
+      personIds: ReadonlyArray<string>,
+    ) => Effect.Effect<void, KinChatError>;
     /** The lead runtime stops a withdrawn entry's workers; the WS side has no thread services. */
     readonly attachWithdrawals: (
       onWithdrawn: (withdrawal: Withdrawal) => Effect.Effect<void>,
@@ -586,6 +598,7 @@ const make = Effect.gen(function* () {
         seq,
         key: row.key,
         ...(stored === undefined ? {} : { registerId: stored.registerId }),
+        ...(kind === "created" ? { created: true as const } : {}),
         team: numbers,
       }),
     );
@@ -1504,13 +1517,14 @@ const make = Effect.gen(function* () {
         set("rev", rev);
         set("updated_at", now);
         // Who saw what before this change, for who it moves: the entry, and what a client's or
-        // project's label, client or lead shows or hides.
+        // project's label, client, lead or people show or hide.
         const scope = [
           row.recordId,
           ...((list === "clients" || list === "projects") &&
           (patch.sensitive !== undefined ||
             patch.partyId !== undefined ||
-            patch.owner !== undefined)
+            patch.owner !== undefined ||
+            (list === "projects" && patch.fields?.["members"] !== undefined))
             ? yield* dependents(orgId, row.recordId).pipe(provideSql)
             : []),
         ];
@@ -2029,9 +2043,11 @@ const make = Effect.gen(function* () {
     return yield* failed(
       Effect.gen(function* () {
         const now = input.at ?? (yield* Clock.currentTimeMillis);
-        // A teammate's number is read first: a change landing during the read then reads as newer.
-        const team =
-          input.team === undefined ? undefined : yield* teamSeq(orgId, input.team).pipe(provideSql);
+        // The number is read first: a change landing during the read then reads as newer.
+        const seq =
+          input.team === undefined
+            ? yield* latestSeq(orgId).pipe(provideSql)
+            : yield* teamSeq(orgId, input.team).pipe(provideSql);
         const filter = filterOf(orgId, input, now);
         const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM kin_records r
           WHERE ${filter}`;
@@ -2050,7 +2066,6 @@ const make = Effect.gen(function* () {
         const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${filter}
           ORDER BY ${order}
           LIMIT ${limit} OFFSET ${Math.max(input.offset ?? 0, 0)}`;
-        const seq = team ?? (yield* latestSeq(orgId).pipe(provideSql));
         return { rows, total: count?.total ?? 0, seq };
       }),
     );
@@ -2144,7 +2159,25 @@ const make = Effect.gen(function* () {
           WHERE name = 'kin_record_changes' RETURNING seq`,
       );
       const seq = taken?.seq ?? (yield* failed(latestSeq(orgId).pipe(provideSql)));
-      yield* PubSub.publish(ticks, { orgId, seq });
+      // Anyone's view may have moved, so every teammate's own number moves too: one who resumes
+      // later is behind, not told nothing changed.
+      const everyone = yield* failed(
+        sql<{ personId: string }>`SELECT person_id AS "personId" FROM kin_people
+          WHERE org_id = ${orgId}`,
+      );
+      const team = yield* failed(
+        bumpTeamSeqs(
+          orgId,
+          everyone.map((one) => one.personId),
+        ).pipe(provideSql),
+      );
+      yield* PubSub.publish(ticks, { orgId, seq, team });
+    }),
+    peopleMoved: Effect.fn("KinRecords.peopleMoved")(function* (orgId, personIds) {
+      if (personIds.length === 0) return;
+      const team = yield* failed(bumpTeamSeqs(orgId, personIds).pipe(provideSql));
+      const seq = yield* failed(latestSeq(orgId).pipe(provideSql));
+      yield* sql.afterCommit(PubSub.publish(ticks, { orgId, seq, team, people: personIds }));
     }),
   });
 });

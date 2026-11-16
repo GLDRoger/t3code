@@ -31,6 +31,7 @@ import * as Money from "./ownerMoney.ts";
 import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as Statements from "./ownerStatements.ts";
 import * as Work from "./ownerWork.ts";
+import * as WorkStream from "./workStream.ts";
 
 const group = RpcGroup.make(...KinWorkRpcs, ...KinDocsRpcs);
 const finance = RpcGroup.make(...KinFinanceRpcs);
@@ -94,7 +95,13 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.get": Effect.fn("KinWork.rpc.get")(function* (input) {
         return yield* call((people) => Work.get(people, input));
       }),
-      "kin.work.subscribe": (input) => stream((people) => Work.subscribe(people, input)),
+      // Rows only for a client that asks: an older phone keeps getting `changed`.
+      "kin.work.subscribe": (input) =>
+        stream((people) =>
+          input.acceptRows === true
+            ? WorkStream.subscribeRows(people, input)
+            : Work.subscribe(people, input),
+        ),
       "kin.work.create": Effect.fn("KinWork.rpc.create")(function* (input) {
         return yield* call((people) => Work.create(people, input));
       }),

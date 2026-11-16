@@ -1,4 +1,12 @@
-import type { KinRecordKey, KinWorkEvent, KinWorkSummary } from "@t3tools/contracts";
+import {
+  KinOrgId,
+  KinPersonId,
+  KinRecordId,
+  type KinRecordCompact,
+  type KinRecordKey,
+  type KinWorkEvent,
+  type KinWorkSummary,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -15,6 +23,7 @@ import {
   kinWorkLiveFold,
   kinWorkNote,
   type KinWorkLive,
+  type KinWorkResume,
 } from "./kinWorkStream.ts";
 
 const summary = (seq: number, open: number) =>
@@ -35,11 +44,18 @@ const changed = (seq: number, key?: string): KinWorkEvent =>
   key === undefined ? { _tag: "changed", seq } : { _tag: "changed", seq, key: key as KinRecordKey };
 
 /** Changes the test sends, reads it answers one by one, and what the stream emits. */
-const harness = (reads: Array<Effect.Effect<KinWorkSummary, string>>) =>
+const harness = (
+  reads: Array<Effect.Effect<KinWorkSummary, string>>,
+  rowsOf?: { readonly orgId: KinOrgId; readonly resume: KinWorkResume },
+) =>
   Effect.gen(function* () {
     const events = yield* Queue.unbounded<Event>();
     const out = yield* Queue.unbounded<KinWorkLive>();
-    yield* kinWorkLiveFold(Stream.fromQueue(events), () => reads.shift() ?? Effect.never).pipe(
+    yield* kinWorkLiveFold(
+      Stream.fromQueue(events),
+      () => reads.shift() ?? Effect.never,
+      rowsOf,
+    ).pipe(
       Stream.runForEach((live) => Queue.offer(out, live)),
       Effect.forkScoped,
     );
@@ -126,6 +142,104 @@ describe("kinWorkLiveFold", () => {
           summary: { open: 13 },
           changed: { "W-5": 5 },
         });
+      }),
+    ),
+  );
+});
+
+describe("kinWorkLiveFold, from a host that sends rows", () => {
+  const orgId = KinOrgId.make("invented-org");
+  const task = (key: string): KinRecordCompact => ({
+    recordId: KinRecordId.make(`rec-${key}`),
+    key,
+    title: `Invented ${key}`,
+    state: "open",
+    owner: { _tag: "person", personId: KinPersonId.make("invented-owner") },
+    side: "ours",
+    rev: 1,
+    createdAt: "2026-11-12T05:00:00.000Z",
+    updatedAt: "2026-11-12T05:00:00.000Z",
+  });
+  const whole = (seq: number, open: number, team?: true): KinWorkEvent => ({
+    _tag: "counts",
+    seq,
+    ...(team ? { team } : {}),
+    asOf: "2026-11-12T05:00:00.000Z",
+    open,
+    doing: 0,
+    waiting: 0,
+    late: 0,
+    dueThisWeek: 0,
+    whole: true,
+    owners: [],
+  });
+
+  it.effect("applies tasks and moved counts without a read, and resumes from the last counts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const resume: KinWorkResume = { at: null };
+        const h = yield* harness([], { orgId, resume });
+        yield* h.send(whole(7, 12));
+        expect(yield* h.next).toMatchObject({ seq: 7, summary: { open: 12, seq: 7 } });
+
+        yield* h.send({ _tag: "upsert", seq: 8, list: "work", record: task("W-8"), fresh: true });
+        yield* h.send({
+          _tag: "counts",
+          seq: 8,
+          asOf: "2026-11-12T05:00:01.000Z",
+          open: 13,
+          doing: 0,
+          waiting: 0,
+          late: 0,
+          dueThisWeek: 0,
+        });
+        const live = yield* h.next;
+        expect(live).toMatchObject({ seq: 8, summary: { open: 13 }, lists: { work: 8 } });
+        expect(live.rows?.entries.get("W-8")).toMatchObject({ seq: 8, freshAt: 8 });
+        expect(resume.at).toEqual({ seq: 8, team: false });
+
+        // Nothing changed while away: the stream says so and nothing is read.
+        yield* h.send({ _tag: "synchronized", seq: 8 });
+        yield* h.send({ _tag: "removed", seq: 9, key: "W-8", list: "work" });
+        yield* h.send({ _tag: "synchronized", seq: 9 });
+        expect((yield* h.next).rows?.entries.get("W-8")).toMatchObject({ record: null });
+      }),
+    ),
+  );
+
+  it.effect("starts over at a new epoch when the host can't say what changed", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const resume: KinWorkResume = { at: null };
+        const h = yield* harness([], { orgId, resume });
+        yield* h.send(whole(7, 12));
+        yield* h.next;
+        yield* h.send({ _tag: "snapshot-required", seq: 3, team: true });
+        yield* h.send(whole(3, 2, true));
+        const live = yield* h.next;
+        // Every read covering any list moves, so each screen reads its own view again.
+        expect(live).toMatchObject({ seq: 3, unnamed: 3, summary: { open: 2 } });
+        expect(live.rows).toMatchObject({ epoch: 1, floor: 3 });
+        expect(resume.at).toEqual({ seq: 3, team: true });
+      }),
+    ),
+  );
+
+  it.effect("reads the counts when moved ones arrive with none held", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const h = yield* harness([Effect.succeed(summary(5, 40))], { orgId, resume: { at: null } });
+        yield* h.send({
+          _tag: "counts",
+          seq: 5,
+          asOf: "2026-11-12T05:00:00.000Z",
+          open: 40,
+          doing: 0,
+          waiting: 0,
+          late: 0,
+          dueThisWeek: 0,
+        });
+        expect(yield* h.next).toMatchObject({ seq: 5, summary: { open: 40 }, failed: false });
       }),
     ),
   );

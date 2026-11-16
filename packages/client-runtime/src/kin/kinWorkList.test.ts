@@ -1,11 +1,15 @@
 import {
   KinChatError,
+  kinApplyWorkRow,
+  kinCompactRecord,
+  kinWorkRowsStart,
   KinOrgId,
   KinPersonId,
   KinRecordId,
   type KinRecord,
   type KinWorkListInput,
   type KinWorkListResult,
+  type KinWorkRows,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -47,7 +51,7 @@ const page = (from: number, count: number, total: number, seq: number): KinWorkL
 });
 
 /** A host whose answers the test releases one at a time, and a clock it winds by hand. */
-function harness() {
+function harness(rows?: () => KinWorkRows | null) {
   const states: Array<KinWorkListState> = [];
   const asked: Array<KinWorkListInput> = [];
   const waiting: Array<(result: KinWorkListResult | null) => void> = [];
@@ -75,6 +79,7 @@ function harness() {
       timers.push(run);
       return () => timers.splice(timers.indexOf(run), 1);
     },
+    ...(rows === undefined ? {} : { rows }),
   });
   const answer = async (result: KinWorkListResult | null) => {
     waiting.shift()?.(result);
@@ -222,5 +227,31 @@ describe("createKinWorkList", () => {
     expect(h.state()).toMatchObject({ loading: true, failed: null });
     await h.answer(page(1, 2, 2, 7));
     expect(h.state().records).toHaveLength(2);
+  });
+
+  it("applies the tasks the stream sent in place, and reads again when the stream starts over", async () => {
+    let rows = kinWorkRowsStart(7);
+    const h = harness(() => rows);
+    h.list.start();
+    await h.answer(page(1, 3, 3, 7));
+    await Promise.resolve();
+
+    const added = { ...record(9), createdAt: "2026-11-11T09:00:00.000Z" };
+    rows = kinApplyWorkRow(
+      rows,
+      { _tag: "upsert", seq: 8, list: "work", record: kinCompactRecord(added), fresh: true },
+      orgId,
+    );
+    h.list.changed(8);
+    rows = kinApplyWorkRow(rows, { _tag: "removed", seq: 9, key: "W-2", list: "work" }, orgId);
+    h.list.changed(9);
+    expect(h.asked).toHaveLength(1);
+    expect(h.state().records.map((held) => held.key)).toEqual(["W-1", "W-3", "W-9"]);
+    expect(h.state()).toMatchObject({ total: 3, seq: 9, more: false });
+
+    // The host couldn't say what changed: the same number still reads everything again.
+    rows = kinWorkRowsStart(9, 1);
+    h.list.changed(9);
+    expect(h.asked).toHaveLength(2);
   });
 });
