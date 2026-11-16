@@ -969,16 +969,27 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     if (post.atMs < now - LATE_MS && (post.confirmedAt ?? 0) < post.atMs)
       return yield* setPost(post, {
         state: "failed",
-        reason: "Kin was off at its time, so it wasn't sent. Retry posts it now.",
+        reason:
+          post.attemptAt === null
+            ? "Kin was off at its time, so it wasn't sent. Retry posts it now."
+            : `Kin was off at its time and can't tell if ${provider.label} posted it. Retry posts it now, never twice.`,
       });
+    // "Nothing was sent" holds only when no earlier attempt may have reached the service.
+    const unsure =
+      post.attemptAt === null
+        ? "so nothing was sent."
+        : `and an earlier attempt may have reached ${provider.label}: check the post there.`;
     if (post.accountId === null || !live.has(post.accountId))
       return yield* setPost(post, {
         state: "failed",
-        reason: `This account isn't in ${group.label}'s profile at ${provider.label} any more, so nothing was sent.`,
+        reason: `This account isn't in ${group.label}'s profile at ${provider.label} any more, ${unsure}`,
       });
     const account = accountsOf(group).find((one) => one.accountId === post.accountId);
     if (account === undefined)
-      return yield* setPost(post, { state: "failed", reason: "Kin no longer knows this account." });
+      return yield* setPost(post, {
+        state: "failed",
+        reason: `Kin no longer knows this account, ${unsure}`,
+      });
     const media = mediaOf(post);
     const uploaded =
       media === null
@@ -1006,6 +1017,9 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
         idempotencyKey: idempotencyKey(post),
       }),
     );
+    // Saved whatever the post's state now: an Undo may have landed during the call.
+    yield* sql`UPDATE kin_social_posts SET service_post_id = ${made.id}
+        WHERE org_id = ${post.orgId} AND post_id = ${post.postId}`;
     return yield* setPost(post, {
       state: "scheduled",
       servicePostId: made.id,
@@ -1060,6 +1074,10 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
             idempotencyKey: idempotencyKey(post),
           }),
         )).id;
+      // Kept first, so an Undo that can't go through still leaves a post Kin reads.
+      if (id !== null)
+        yield* sql`UPDATE kin_social_posts SET service_post_id = ${id}
+            WHERE org_id = ${post.orgId} AND post_id = ${post.postId}`;
     }
     if (id !== null)
       yield* run(provider.cancel(key, id)).pipe(

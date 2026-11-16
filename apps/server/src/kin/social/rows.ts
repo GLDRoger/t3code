@@ -311,7 +311,7 @@ export const duePosts = Effect.fn("KinSocialRows.due")(function* (now: number) {
   return yield* sql<PostRow>`SELECT ${postColumns(sql)} FROM kin_social_posts
     WHERE kind = 'post' AND (state IN ('scheduling', 'undoing')
       OR (state = 'scheduled' AND at_ms + ${READ_AFTER_MS} <= ${now}
-        AND at_ms > ${now - GIVE_UP_READING_MS}
+        AND MAX(at_ms, COALESCE(confirmed_at, 0)) > ${now - GIVE_UP_READING_MS}
         AND (polled_at IS NULL OR polled_at + ${REREAD_MS} <= ${now})))
     ORDER BY at_ms, org_id, post_id LIMIT 100`;
 });

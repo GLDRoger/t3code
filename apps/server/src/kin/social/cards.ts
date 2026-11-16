@@ -392,8 +392,10 @@ export const applyWeekTap = Effect.fn("KinSocialCards.applyWeek")(function* (
     }
     case "retry": {
       if (row?.state !== "failed") return yield* invalid("Only a failed post can be retried.");
+      // A fresh go-ahead: confirmed now, so a post whose time passed goes out now. attempt_at stays,
+      // so an Undo still finds what an earlier attempt may have made.
       yield* sql`UPDATE kin_social_posts SET state = 'scheduling', reason = NULL,
-          attempt_at = NULL, updated_at = ${now}
+          confirmed_at = ${now}, confirmed_by = ${personId}, updated_at = ${now}
         WHERE org_id = ${orgId} AND post_id = ${row.postId} AND state = 'failed'`;
       break;
     }

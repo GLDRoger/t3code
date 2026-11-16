@@ -471,6 +471,33 @@ it.effect(
         [card] = yield* weekCard;
         assert.equal(card!.card.posts.find((post) => post.postId === ids[1])?.state, "posted");
         assert.lengthOf(fake.load().posts, 4);
+
+        // The client's post: Kin restarted after handing it over but before saving the answer,
+        // and was off at its time. It can't tell if it went, says so, and Retry finds it.
+        let [, client] = yield* weekCard;
+        yield* sql`UPDATE kin_social_posts SET state = 'scheduling', service_post_id = NULL
+          WHERE card_id = ${client!.widgetId}`;
+        yield* social.runDue;
+        [, client] = yield* weekCard;
+        assert.equal(client!.card.posts[0]?.state, "failed");
+        assert.match(client!.card.posts[0]?.reason ?? "", /can't tell/);
+        yield* tap(client!, "retry", client!.card.posts[0]!.postId);
+        yield* social.runDue;
+        yield* social.runDue;
+        [, client] = yield* weekCard;
+        assert.equal(client!.card.posts[0]?.state, "posted");
+        assert.lengthOf(fake.load().posts, 4);
+
+        // Lost again, and the account moved out of the client's profile: refused, and the card
+        // doesn't claim nothing went, since the earlier attempt may have.
+        yield* sql`UPDATE kin_social_posts SET state = 'scheduling', service_post_id = NULL,
+          confirmed_at = ${clock} WHERE card_id = ${client!.widgetId}`;
+        Object.assign(lumenIg, { profileId: "prof_elsewhere" });
+        yield* social.runDue;
+        [, client] = yield* weekCard;
+        assert.equal(client!.card.posts[0]?.state, "failed");
+        assert.match(client!.card.posts[0]?.reason ?? "", /earlier attempt may have reached/);
+        assert.lengthOf(fake.load().posts, 4);
       }),
     );
   },
