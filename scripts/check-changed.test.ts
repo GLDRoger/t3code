@@ -42,6 +42,7 @@ describe("check:changed", () => {
     assert.deepStrictEqual(modelsFor(["apps/server/src/kin/work/cardAnswers.ts"]), [
       "send",
       "money",
+      "questions",
     ]);
     assert.deepStrictEqual(modelsFor(["apps/server/src/kin/people/personNamed.ts"]), ["people"]);
     // The queue stands in both the reply and the check-in.
