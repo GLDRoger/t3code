@@ -246,9 +246,9 @@ features:
     note: >-
       The owner and co-owners see and change everything on it: model and effort, character with its
       history, check-ins, access, pause and resume, retire and restore. Leads and members get a short
-      read-only card. New agents start on the company default model (Settings, Company, Agents); a
+      read-only card. New agents start on the company default model (Settings, Agents); a
       model this server no longer has falls back to it and the page says so. Also opens from an
-      agent's name in a message, Settings, Company, Agents, and the command palette.
+      agent's name in a message, Settings, Agents, and the command palette.
     tools: [kin_leads, agent_update]
     proof:
       - packages/client-runtime/src/kin/kinAgentRetire.test.ts

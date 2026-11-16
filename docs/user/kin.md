@@ -93,14 +93,14 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
 ### An agent's page
 
 Tap an agent's name at the top of its chat, or in any message, to open its page. It's also under
-**Settings → Company → Agents** and in the command palette. The owner and co-owners can change
+**Settings → Agents** and in the command palette. The owner and co-owners can change
 everything there; anyone else sees a short card with what the agent looks after and a way to
 message it.
 
 - **Model.** Each agent runs on a Claude model: a stronger one for your messages and urgent work,
   a cheaper one for the rest. A change applies from its next reply. You can also say it in a
   chat: "run Finance on Sonnet". New agents start on the company default, set under
-  **Settings → Company → Agents**. If a model goes away from your server, the agent runs on the
+  **Settings → Agents**. If a model goes away from your server, the agent runs on the
   default and its page says so. The page also shows what the agent has spent this month.
 - **Character.** Read it, **Edit** it, open its **History** to bring an older one back, or **Ask it
   to rewrite itself**, which starts a message in its chat for you to finish.
