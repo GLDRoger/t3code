@@ -11,7 +11,7 @@ import {
   KinWidgetId,
   KinAgentId,
   KinOrgId,
-  type KinPersonId,
+  KinPersonId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -36,6 +36,7 @@ import {
   askedIn,
   destination,
   effectiveAudience,
+  turnPeople,
 } from "./Audience.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { directKey } from "./LeadAccess.ts";
@@ -159,6 +160,30 @@ const make = Effect.gen(function* () {
   );
 
   // The running wake-up of the calling lead thread; the reply bridge names its own.
+  /**
+   * A page in a turn others read carries only figures every one of them may see, as a message
+   * to each would; the page's text and data are read as its words.
+   */
+  const everyoneSees = Effect.fn("KinLevelGate.everyoneSees")(
+    function* (agent: AgentIdentity, text: string) {
+      const turn = yield* turnOf(agent);
+      if (turn === undefined || (yield* effectiveAudience(turn)) !== "shared") return;
+      for (const person of (yield* turnPeople(turn))?.people ?? [])
+        if ((yield* unreadableBy(agent.orgId, KinPersonId.make(person), text)) !== undefined)
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message:
+              "Nothing was posted: this picture has figures not everyone in this chat may see. Make it from what they all see, or show it to the owner in their own chat.",
+          });
+    },
+    Effect.provideService(SqlClient.SqlClient, sql),
+    Effect.mapError((error) =>
+      isChatError(error)
+        ? error
+        : new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+    ),
+  );
+
   const turnOf = Effect.fn("KinLevelGate.turnOf")(
     function* (agent: AgentIdentity) {
       if (agent.wakeupId !== undefined)
@@ -436,9 +461,10 @@ const make = Effect.gen(function* () {
     chart: Effect.fn("KinLevelGate.chart")((agent, input) =>
       gated("gated chart", agent, input.chatId, chat.chart(agent, input)),
     ),
-    visual: Effect.fn("KinLevelGate.visual")((agent, input) =>
-      gated("gated visual", agent, input.chatId, chat.visual(agent, input)),
-    ),
+    visual: Effect.fn("KinLevelGate.visual")(function* (agent, input) {
+      yield* everyoneSees(agent, `${input.title}\n${input.html.replace(/<[^>]*>/g, " ")}`);
+      return yield* gated("gated visual", agent, input.chatId, chat.visual(agent, input));
+    }),
     react: Effect.fn("KinLevelGate.react")((agent, input) =>
       gated("gated reaction", agent, input.chatId, chat.react(agent, { ...input, on: true })),
     ),

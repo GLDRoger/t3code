@@ -778,6 +778,7 @@ export const answerCurrencyCard = Effect.fn("KinStatements.answerCurrency")(func
     review: next,
     now: input.now,
   });
+  return input.code;
 });
 
 const PASSWORD_TEXT =

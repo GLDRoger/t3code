@@ -58,10 +58,11 @@ const HELP = `kin-verify [--instance <name>] <command>
   as <person> web snapshot [--full]       accessibility tree of the open sheet/dialog, else main
   as <person> web click --name "<name>" [--role r] [--nth n] [--within "<card or section name>"]
   as <person> web type [--name "<field>"] "<text>" [--enter]
+  as <person> web attach <file> [<file>…]  files in the open chat's composer; then type --enter
   as <person> web wait "<text>" [--gone] [--timeout <s>]
   as <person> web screenshot <path> [--full]   (refuses paths under ~/.t3)
   as <person> rpc <method> ['<json>']     a client RPC as that person (orgId is filled in)
-  tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--reply "<text>"] [--hold <s>] [--raw]
+  tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--reply "<text>"] [--hold <s>] [--fail] [--raw]
                                           one real turn, no model: the agent calls the tool
   mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
   mail expire <address> [--back]          the account's sign-in stops working (or works again)
@@ -283,6 +284,12 @@ async function web(instance: Instance, person: string, args: Args) {
       console.log(`typed ${text.length} chars${args.flags.has("enter") ? " + Enter" : ""}`);
       return;
     }
+    case "attach": {
+      if (rest.length === 0) throw new VerifyError("attach needs one or more file paths");
+      await Web.attach(session, rest);
+      console.log(`attached ${rest.length} file(s)`);
+      return;
+    }
     case "wait": {
       const text = rest[0];
       if (text === undefined) throw new VerifyError('wait needs the text: wait "Sent"');
@@ -351,6 +358,7 @@ async function tool(instance: Instance, args: Args) {
     calls: [{ name, arguments: json === undefined ? {} : JSON.parse(json) }],
     ...(flag(args, "reply") === undefined ? {} : { reply: flag(args, "reply")! }),
     ...(flag(args, "hold") === undefined ? {} : { holdSeconds: Number(flag(args, "hold")) }),
+    ...(args.flags.has("fail") ? { fail: true } : {}),
   });
   for (const result of results)
     console.log(args.flags.has("raw") ? JSON.stringify(result) : describeResult(result));
@@ -367,8 +375,14 @@ async function clock(instance: Instance, args: Args) {
   const state = readState(instance);
   const wasRunning = state !== undefined && isAlive(state.pid);
   if (wasRunning) await stopTree(state.pid);
-  const { columns, rows } = shiftKinTimes(instance, ms);
-  if (wasRunning) await startServer(instance);
+  let shifted: ReturnType<typeof shiftKinTimes>;
+  try {
+    shifted = shiftKinTimes(instance, ms);
+  } finally {
+    // A refused shift rolls back; the server comes back either way.
+    if (wasRunning) await startServer(instance);
+  }
+  const { columns, rows } = shifted;
   console.log(
     `clock: Kin's stored times moved ${Math.round(ms / 3_600_000)}h into the past (${rows} values in ${columns} columns)${wasRunning ? "; server restarted" : ""}`,
   );
