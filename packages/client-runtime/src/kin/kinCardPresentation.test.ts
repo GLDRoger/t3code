@@ -483,6 +483,16 @@ describe("reminder and scheduled task cards", () => {
     expect(snoozed.actions).toHaveLength(5);
     expect(kinReminderCardView(reminder({ status: "done" }), zone)!.actions).toEqual([]);
     expect(kinReminderCardView(reminder({ status: "bogus" }), zone)).toBeNull();
+    // A teammate gets only the taps the host takes from them.
+    const teammate = (state: Record<string, unknown>) =>
+      kinReminderCardView(reminder({ status: "due", ...state }), zone, false)!.actions.map(
+        (action) => action.id,
+      );
+    expect(teammate({ theirs: true })).toHaveLength(5);
+    expect(teammate({ theirs: false })).not.toContain("change");
+    expect(teammate({ theirs: false })).toContain("done");
+    expect(teammate({})).toEqual([]);
+    expect(kinReminderCardView(reminder({ status: "due" }), zone, true)!.actions).toHaveLength(5);
   });
 
   it("shows when a scheduled task runs, how the last run went, and its controls", () => {

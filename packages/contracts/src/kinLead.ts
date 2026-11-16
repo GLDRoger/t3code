@@ -415,6 +415,8 @@ export const KinReminderCard = Schema.Struct({
   snoozedUntil: Schema.optional(Schema.toEncoded(CanonicalUtcTimestamp)),
   // Kin posted the reminder itself because the lead couldn't write it.
   fallback: Schema.optional(Schema.Boolean),
+  // Set only in someone's own chat with an agent: whether they set it, so may Change it there.
+  theirs: Schema.optional(Schema.Boolean),
 });
 export type KinReminderCard = typeof KinReminderCard.Type;
 export const KIN_REMINDER_CARD_ACTIONS = [

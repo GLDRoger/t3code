@@ -102,15 +102,19 @@ const whereOf = (record: KinRecord, names: KinWorkNames): Where => {
 const dayEndMs = (now: Date) =>
   new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() - 1;
 
-/** Why one of your tasks leads "On me": late, then due by the end of today, then stuck waiting. */
+/**
+ * Why one of your tasks leads "On me": late, then due by the end of today, then handed back to
+ * you or stuck waiting.
+ */
 function kinWorkMark(record: KinRecord, now: Date): KinWorkMark | null {
   if (kinWorkClosed(record.state)) return null;
   if (record.late) return "late";
   if (record.dueAt !== null && Date.parse(record.dueAt) <= dayEndMs(now)) return "today";
+  if (record.handedBack !== undefined) return "handed_back";
   return record.state === "waiting" ? "stuck" : null;
 }
 
-const MARK_ORDER: Record<KinWorkMark, number> = { late: 0, today: 1, stuck: 2 };
+const MARK_ORDER: Record<KinWorkMark, number> = { late: 0, today: 1, stuck: 2, handed_back: 2 };
 
 /**
  * Tasks as one reader reads them: On me, On others and On agents, each by whom it waits on, then

@@ -803,378 +803,545 @@ const peopleOf = (who: Viewing | Who) => [
   { _tag: "person" as const, orgId, personId: KinPersonId.make(who === "agent" ? "owner" : who) },
 ];
 
+/** A done task in a project its giver then joins (the stream property's seed `-2135024431745369`). */
+const PINNED_JOIN: readonly [World, ReadonlyArray<Step>] = [
+  {
+    clients: [
+      {
+        sensitive: true,
+        shared: false,
+      },
+      {
+        sensitive: false,
+        shared: false,
+      },
+    ],
+    projects: [
+      {
+        lead: "agent",
+        party: "c1",
+        members: [],
+        sensitive: false,
+        shared: false,
+      },
+      {
+        lead: "owner",
+        party: null,
+        members: [],
+        sensitive: false,
+        shared: false,
+      },
+    ],
+    places: [
+      {
+        clients: false,
+        docs: false,
+        money: false,
+      },
+      {
+        clients: false,
+        docs: false,
+        money: false,
+      },
+    ],
+    entries: [
+      {
+        list: "work",
+        owner: "ben",
+        createdBy: "ana",
+        assignedBy: "ana",
+        sensitive: false,
+        shared: false,
+        project: "p1",
+        party: null,
+        attendees: [],
+        company: false,
+        title: "Call vendor",
+      },
+    ],
+  },
+  [
+    {
+      op: {
+        _tag: "edit",
+        pick: 0,
+        by: "owner",
+        state: "done",
+        due: -1,
+      },
+      away: "cora",
+    },
+    {
+      op: {
+        _tag: "members",
+        project: "P-1",
+        ana: true,
+        ben: false,
+      },
+      away: null,
+    },
+    {
+      op: {
+        _tag: "edit",
+        pick: 0,
+        by: "ana",
+        state: "open",
+        due: -1,
+      },
+      away: null,
+    },
+    {
+      op: {
+        _tag: "private",
+        pick: 0,
+        on: false,
+      },
+      away: "ben",
+    },
+  ],
+];
+
+/** A task leaving a teammate takes the project off their other tasks there. */
+const PINNED_MOVE: readonly [World, ReadonlyArray<Step>] = [
+  {
+    clients: [
+      { sensitive: false, shared: false },
+      { sensitive: false, shared: false },
+    ],
+    projects: [
+      { lead: "owner", party: "c1", members: [], sensitive: false, shared: false },
+      { lead: "agent", party: null, members: [], sensitive: false, shared: false },
+    ],
+    places: [
+      { clients: false, docs: false, money: false },
+      { clients: false, docs: false, money: false },
+    ],
+    entries: [
+      {
+        list: "work",
+        owner: "owner",
+        createdBy: "ben",
+        assignedBy: "ana",
+        sensitive: false,
+        shared: false,
+        project: null,
+        party: null,
+        attendees: [],
+        company: false,
+        title: "Fix login",
+      },
+      {
+        list: "work",
+        owner: "ana",
+        createdBy: "agent",
+        assignedBy: null,
+        sensitive: false,
+        shared: false,
+        project: null,
+        party: null,
+        attendees: [],
+        company: false,
+        title: "Call vendor",
+      },
+      {
+        list: "work",
+        owner: "ana",
+        createdBy: "agent",
+        assignedBy: null,
+        sensitive: false,
+        shared: false,
+        project: "p1",
+        party: "c2",
+        attendees: [],
+        company: false,
+        title: "Call vendor",
+      },
+    ],
+  },
+  [
+    { op: { _tag: "move", pick: 0, to: "P-1" }, away: null },
+    { op: { _tag: "assign", pick: 20, by: "owner", to: "ben" }, away: "cora" },
+    { op: { _tag: "edit", pick: 0, by: "owner", state: "open", due: 2 }, away: "owner" },
+    { op: { _tag: "move", pick: 0, to: null }, away: "owner" },
+  ],
+];
+
+/** Folds each viewer's stream through `ops` on `w`, checking it against a fresh read at each step. */
+type Step = { readonly op: Op; readonly away: Viewing | null };
+const streamCase = ([w, ops]: readonly [World, ReadonlyArray<Step>]) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* TestClock.setTime(at + 3_600_000);
+      yield* install(w, [
+        {
+          ...rowsOf(emptyWorld)[0]!,
+          id: "s1",
+          list: "clients",
+          title: "Sentinel",
+          sensitive: false,
+          shared: false,
+        },
+      ]);
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      // Every entry carries an amount no other value has (`canary`).
+      for (const [index, row] of rowsOf(w).entries())
+        yield* sql`UPDATE kin_records SET amount_minor = ${canary(index)}, currency = 'INR'
+          WHERE org_id = ${orgId} AND record_id = ${row.id}`;
+      const pull = yield* Stream.toPull(records.changes(orgId));
+      const first = yield* pull;
+      const opening = first[0]!.seq;
+
+      const fresh = (who: Viewing, page: (typeof PAGES)[number], limit: number) =>
+        OwnerWork.list(peopleOf(who), {
+          orgId,
+          ...page.input(who),
+          limit,
+          acceptCompactRows: true,
+        }).pipe(Effect.map((result) => kinRestoreWorkList(result, orgId)));
+      const read = (who: Viewing, screen: Screen, page: (typeof PAGES)[number]) =>
+        Effect.gen(function* () {
+          const result = yield* Effect.result(fresh(who, page, page.limit));
+          const value =
+            result._tag === "Success"
+              ? result.success
+              : { records: [], total: 0, nextCursor: null, seq: 0, asOf: null };
+          screen.pages.set(
+            page.name,
+            kinWorkHeldPage(
+              {
+                records: value.records,
+                total: value.total,
+                more: value.nextCursor !== null,
+              },
+              { seq: value.seq, asOf: value.asOf, epoch: screen.rows.epoch },
+            ),
+          );
+        });
+
+      const screens = new Map<Viewing, Screen>();
+      const fold = (who: Viewing, screen: Screen, events: ReadonlyArray<KinWorkEvent>) =>
+        Effect.gen(function* () {
+          const teammate = (yield* OwnerWork.viewerOf(peopleOf(who), orgId)).teammate;
+          const sees = teammate ? yield* seenKeys(who) : null;
+          let reread = false;
+          for (const event of events) {
+            if (sees !== null && event._tag !== "snapshot-required") {
+              // Nothing hidden is named or carried, by key or by amount.
+              if (event._tag === "upsert")
+                assert.isTrue(sees.has(event.record.key), `${who} told of ${event.record.key}`);
+              if (event._tag === "removed")
+                assert.isTrue(screen.held.has(event.key), `${who} told ${event.key} went`);
+              for (const [index, row] of rowsOf(w).entries())
+                if (!sees.has(keyOf(row.id)))
+                  assert.isFalse(leaks(event, canary(index)), `${who} reads ${row.id}'s amount`);
+            }
+            switch (event._tag) {
+              case "upsert":
+                screen.held.add(event.record.key);
+                screen.rows = kinApplyWorkRow(screen.rows, event, orgId);
+                break;
+              case "removed":
+                screen.rows = kinApplyWorkRow(screen.rows, event, orgId);
+                break;
+              case "counts": {
+                const next = kinApplyWorkCounts(screen.counts, event);
+                assert.isNotNull(next, `${who} counts arrived without a base`);
+                screen.counts = next;
+                screen.cursor = event.seq;
+                screen.cursorTeam = event.team === true;
+                break;
+              }
+              case "synchronized":
+                screen.cursor = event.seq;
+                screen.cursorTeam = event.team === true;
+                break;
+              case "snapshot-required":
+                screen.rows = kinWorkRowsStart(event.seq, screen.rows.epoch + 1);
+                screen.counts = null;
+                screen.cursor = event.seq;
+                screen.cursorTeam = event.team === true;
+                screen.held = sees ?? new Set();
+                reread = true;
+                break;
+              case "changed":
+                assert.fail(`${who} got a legacy change on the row stream`);
+            }
+          }
+          for (const page of PAGES) {
+            const held = screen.pages.get(page.name);
+            // Before the first read there is nothing on screen to keep.
+            if (held === undefined) continue;
+            const patched = reread ? null : kinPatchWorkPage(held, page.input(who), screen.rows);
+            if (patched === null) yield* read(who, screen, page);
+            else screen.pages.set(page.name, patched.page);
+          }
+        });
+      const seenKeys = (who: Viewing) =>
+        Effect.gen(function* () {
+          const rows = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
+            WHERE r.org_id = ${orgId} AND ${personSees(sql, KinPersonId.make(who))}`;
+          return new Set(rows.map((row) => row.key));
+        });
+      const open = (who: Viewing, after?: { readonly seq: number; readonly team: boolean }) =>
+        Effect.gen(function* () {
+          const session = yield* WorkStream.makeWorkStream(peopleOf(who), {
+            orgId,
+            acceptRows: true,
+            ...(after === undefined ? {} : { afterSeq: after.seq, afterTeam: after.team }),
+          });
+          const events = yield* session.start(yield* records.seq(orgId));
+          return { session, events };
+        });
+      for (const who of VIEWERS) {
+        const { session, events } = yield* open(who);
+        const teammate = (yield* OwnerWork.viewerOf(peopleOf(who), orgId)).teammate;
+        const start = events.find((one) => one._tag === "counts")?.seq ?? opening;
+        const screen: Screen = {
+          teammate,
+          session,
+          rows: kinWorkRowsStart(start),
+          counts: null,
+          pages: new Map(),
+          cursor: start,
+          cursorTeam: teammate,
+          held: teammate ? yield* seenKeys(who) : new Set(),
+        };
+        yield* fold(who, screen, events);
+        for (const page of PAGES) yield* read(who, screen, page);
+        screens.set(who, screen);
+      }
+
+      const workKeys = Effect.gen(function* () {
+        const rows = yield* sql<{ key: string; rev: number }>`SELECT key, rev FROM kin_records
+          WHERE org_id = ${orgId} AND register_id = 'work' ORDER BY key`;
+        return rows;
+      });
+      const pick = (index: number) =>
+        Effect.map(workKeys, (rows) => (rows.length === 0 ? undefined : rows[index % rows.length]));
+      const person = (who: "owner" | Member) =>
+        ({ _tag: "person", personId: KinPersonId.make(who) }) as const;
+      const due = (days: number | null) =>
+        days === null
+          ? null
+          : DateTime.formatIso(DateTime.makeUnsafe(at + 3_600_000 + days * 86_400_000));
+      const moved = <E>(who: string, change: Effect.Effect<unknown, E>) =>
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* change;
+            yield* records.peopleMoved(orgId, [who]);
+          }),
+        );
+      let made = 0;
+      const apply = (op: Op) =>
+        Effect.gen(function* () {
+          switch (op._tag) {
+            case "create":
+              made += 1;
+              return yield* OwnerWork.create(peopleOf(op.by), {
+                orgId,
+                clientRequestId: `stream-${made}`,
+                title: `Made ${made}`,
+                owner: person(op.owner),
+                ...(op.project === null ? {} : { project: op.project }),
+                ...(op.due === null ? {} : { dueAt: due(op.due)! }),
+              });
+            case "edit": {
+              const one = yield* pick(op.pick);
+              if (one === undefined) return;
+              return yield* OwnerWork.update(peopleOf(op.by), {
+                orgId,
+                key: KinRecordKey.make(one.key),
+                rev: one.rev,
+                state: op.state,
+                ...(op.state === "waiting" ? { waitingOn: person("owner") } : {}),
+                dueAt: due(op.due),
+              });
+            }
+            case "assign": {
+              const one = yield* pick(op.pick);
+              if (one === undefined) return;
+              return yield* OwnerWork.assign(peopleOf(op.by), {
+                orgId,
+                key: KinRecordKey.make(one.key),
+                to: person(op.to),
+              });
+            }
+            case "handBack": {
+              const one = yield* pick(op.pick);
+              if (one === undefined) return;
+              return yield* OwnerWork.handBack(peopleOf(op.by), {
+                orgId,
+                key: KinRecordKey.make(one.key),
+              });
+            }
+            case "private": {
+              const one = yield* pick(op.pick);
+              if (one === undefined) return;
+              return yield* OwnerWork.update(peopleOf("owner"), {
+                orgId,
+                key: KinRecordKey.make(one.key),
+                rev: one.rev,
+                sensitive: op.on,
+              });
+            }
+            case "share": {
+              const one = yield* pick(op.pick);
+              if (one === undefined) return;
+              return yield* OwnerWork.share(peopleOf("owner"), {
+                orgId,
+                keys: [KinRecordKey.make(one.key)],
+                shared: op.on,
+              });
+            }
+            case "move": {
+              const one = yield* pick(op.pick);
+              if (one === undefined) return;
+              return yield* OwnerWork.update(peopleOf("owner"), {
+                orgId,
+                key: KinRecordKey.make(one.key),
+                rev: one.rev,
+                project: op.to === null ? null : KinRecordKey.make(op.to),
+              });
+            }
+            case "members": {
+              const [project] = yield* sql<{ rev: number }>`SELECT rev FROM kin_records
+                WHERE org_id = ${orgId} AND key = ${op.project}`;
+              if (project === undefined) return;
+              return yield* OwnerClients.updateProject(peopleOf("owner"), {
+                orgId,
+                key: KinRecordKey.make(op.project),
+                rev: project.rev,
+                members: MEMBERS.filter((m) => op[m]).map(person),
+              });
+            }
+            case "role":
+              return yield* moved(
+                op.who,
+                sql`UPDATE kin_people SET access = ${op.coOwner ? "co_owner" : "member"}
+                  WHERE person_id = ${op.who}`,
+              );
+            case "places":
+              return yield* moved(
+                op.who,
+                sql`UPDATE kin_people SET sees_clients = ${op.clients ? 1 : 0},
+                  sees_docs = ${op.docs ? 1 : 0}, sees_money = ${op.money ? 1 : 0}
+                  WHERE person_id = ${op.who}`,
+              );
+            case "remove":
+              // As `KinPeople.removeAccess` leaves them.
+              return yield* moved(
+                op.who,
+                sql`UPDATE kin_people SET access = 'member', sees_clients = 1, sees_docs = 1,
+                  sees_money = 0 WHERE person_id = ${op.who}`,
+              );
+            case "delete": {
+              const one = yield* pick(op.pick);
+              if (one === undefined) return;
+              // As an import's undo takes an entry away: its changes go with it.
+              yield* sql`DELETE FROM kin_record_changes WHERE org_id = ${orgId}
+                AND record_id IN (SELECT record_id FROM kin_records WHERE key = ${one.key})`;
+              yield* sql`DELETE FROM kin_records WHERE org_id = ${orgId} AND key = ${one.key}`;
+              return yield* records.announce(orgId);
+            }
+          }
+        });
+
+      for (const [step, { op, away }] of ops.entries()) {
+        yield* Effect.exit(apply(op));
+        // The owner's own edit marks the end of the step's ticks.
+        yield* records.update(
+          orgId,
+          { actor: { _tag: "person", personId: ownerId }, via: "owner" },
+          SENTINEL,
+          { title: `Sentinel ${step}` },
+        );
+        const mark = yield* records.seq(orgId);
+        const ticks: Array<KinRecords.Tick> = [];
+        while (!ticks.some((tick) => tick.key === SENTINEL && tick.seq >= mark))
+          ticks.push(...(yield* pull));
+        for (const who of VIEWERS) {
+          const screen = screens.get(who)!;
+          if (away === who) {
+            // Away for this step's ticks: a new socket resumes from the last number held, and
+            // the screen keeps its rows.
+            const { session, events } = yield* open(who, {
+              seq: screen.cursor,
+              team: screen.cursorTeam,
+            });
+            const now = (yield* OwnerWork.viewerOf(peopleOf(who), orgId)).teammate;
+            if (now !== screen.teammate) {
+              assert.strictEqual(events[0]?._tag, "snapshot-required", `${who} resumed rows`);
+              screen.teammate = now;
+            }
+            screen.session = session;
+            yield* fold(who, screen, events);
+            continue;
+          }
+          const now = (yield* OwnerWork.viewerOf(peopleOf(who), orgId)).teammate;
+          const items = ticks.flatMap((tick) => screen.session.pendingOf(tick));
+          // Who they are changed: the stream must hear of it.
+          if (now !== screen.teammate) assert.isNotEmpty(items, `${who} not told of their level`);
+          if (items.length === 0) continue;
+          // Even steps arrive as one burst with the latest per entry, as a slow client would;
+          // odd ones one at a time.
+          const bursts =
+            step % 2 === 0
+              ? [[...new Map(items.map((one) => [one.key, one])).values()]]
+              : items.map((one) => [one]);
+          for (const burst of bursts) {
+            const events = yield* screen.session.batch(burst);
+            if (now !== screen.teammate) {
+              // Before anything else, everything they held goes.
+              assert.strictEqual(events[0]?._tag, "snapshot-required", `${who} kept rows`);
+              screen.teammate = now;
+            }
+            yield* fold(who, screen, events);
+          }
+        }
+        for (const who of VIEWERS) {
+          const screen = screens.get(who)!;
+          const summary = yield* OwnerWork.summary(peopleOf(who), { orgId });
+          const { seq: _seq, asOf: _asOf, ...want } = summary;
+          const { seq: _held, asOf: _heldAt, ...got } = screen.counts!;
+          assert.deepStrictEqual(got, want, `${who}'s counts after ${op._tag}`);
+          for (const page of PAGES) {
+            const held = screen.pages.get(page.name)!;
+            const result = yield* Effect.result(fresh(who, page, Math.max(1, held.records.length)));
+            const now = result._tag === "Success" ? result.success : { records: [], total: 0 };
+            assert.deepStrictEqual(
+              held.records.map((record) => record.key),
+              now.records.slice(0, held.records.length).map((record) => record.key),
+              `${who}'s ${page.name} rows after ${op._tag} (step ${step})`,
+            );
+            assert.deepStrictEqual(held.records, now.records.slice(0, held.records.length));
+            assert.strictEqual(
+              held.total,
+              now.total,
+              `${who}'s ${page.name} total after ${op._tag}`,
+            );
+          }
+        }
+      }
+    }),
+  );
+
 layer(testLayer)("Work's live stream", (it) => {
   it.effect.prop(
     "folding each viewer's stream equals a fresh read, and names nothing they may not see",
     [world, history],
-    ([w, ops]) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          yield* TestClock.setTime(at + 3_600_000);
-          yield* install(w, [
-            {
-              ...rowsOf(emptyWorld)[0]!,
-              id: "s1",
-              list: "clients",
-              title: "Sentinel",
-              sensitive: false,
-              shared: false,
-            },
-          ]);
-          const sql = yield* SqlClient.SqlClient;
-          const records = yield* KinRecords.KinRecords;
-          // Every entry carries an amount no other value has (`canary`).
-          for (const [index, row] of rowsOf(w).entries())
-            yield* sql`UPDATE kin_records SET amount_minor = ${canary(index)}, currency = 'INR'
-              WHERE org_id = ${orgId} AND record_id = ${row.id}`;
-          const pull = yield* Stream.toPull(records.changes(orgId));
-          const first = yield* pull;
-          const opening = first[0]!.seq;
-
-          const fresh = (who: Viewing, page: (typeof PAGES)[number], limit: number) =>
-            OwnerWork.list(peopleOf(who), {
-              orgId,
-              ...page.input(who),
-              limit,
-              acceptCompactRows: true,
-            }).pipe(Effect.map((result) => kinRestoreWorkList(result, orgId)));
-          const read = (who: Viewing, screen: Screen, page: (typeof PAGES)[number]) =>
-            Effect.gen(function* () {
-              const result = yield* Effect.result(fresh(who, page, page.limit));
-              const value =
-                result._tag === "Success"
-                  ? result.success
-                  : { records: [], total: 0, nextCursor: null, seq: 0, asOf: null };
-              screen.pages.set(
-                page.name,
-                kinWorkHeldPage(
-                  {
-                    records: value.records,
-                    total: value.total,
-                    more: value.nextCursor !== null,
-                  },
-                  { seq: value.seq, asOf: value.asOf, epoch: screen.rows.epoch },
-                ),
-              );
-            });
-
-          const screens = new Map<Viewing, Screen>();
-          const fold = (who: Viewing, screen: Screen, events: ReadonlyArray<KinWorkEvent>) =>
-            Effect.gen(function* () {
-              const teammate = (yield* OwnerWork.viewerOf(peopleOf(who), orgId)).teammate;
-              const sees = teammate ? yield* seenKeys(who) : null;
-              let reread = false;
-              for (const event of events) {
-                if (sees !== null && event._tag !== "snapshot-required") {
-                  // Nothing hidden is named or carried, by key or by amount.
-                  if (event._tag === "upsert")
-                    assert.isTrue(sees.has(event.record.key), `${who} told of ${event.record.key}`);
-                  if (event._tag === "removed")
-                    assert.isTrue(screen.held.has(event.key), `${who} told ${event.key} went`);
-                  for (const [index, row] of rowsOf(w).entries())
-                    if (!sees.has(keyOf(row.id)))
-                      assert.isFalse(
-                        leaks(event, canary(index)),
-                        `${who} reads ${row.id}'s amount`,
-                      );
-                }
-                switch (event._tag) {
-                  case "upsert":
-                    screen.held.add(event.record.key);
-                    screen.rows = kinApplyWorkRow(screen.rows, event, orgId);
-                    break;
-                  case "removed":
-                    screen.rows = kinApplyWorkRow(screen.rows, event, orgId);
-                    break;
-                  case "counts": {
-                    const next = kinApplyWorkCounts(screen.counts, event);
-                    assert.isNotNull(next, `${who} counts arrived without a base`);
-                    screen.counts = next;
-                    screen.cursor = event.seq;
-                    screen.cursorTeam = event.team === true;
-                    break;
-                  }
-                  case "synchronized":
-                    screen.cursor = event.seq;
-                    screen.cursorTeam = event.team === true;
-                    break;
-                  case "snapshot-required":
-                    screen.rows = kinWorkRowsStart(event.seq, screen.rows.epoch + 1);
-                    screen.counts = null;
-                    screen.cursor = event.seq;
-                    screen.cursorTeam = event.team === true;
-                    screen.held = sees ?? new Set();
-                    reread = true;
-                    break;
-                  case "changed":
-                    assert.fail(`${who} got a legacy change on the row stream`);
-                }
-              }
-              for (const page of PAGES) {
-                const held = screen.pages.get(page.name);
-                // Before the first read there is nothing on screen to keep.
-                if (held === undefined) continue;
-                const patched = reread
-                  ? null
-                  : kinPatchWorkPage(held, page.input(who), screen.rows);
-                if (patched === null) yield* read(who, screen, page);
-                else screen.pages.set(page.name, patched.page);
-              }
-            });
-          const seenKeys = (who: Viewing) =>
-            Effect.gen(function* () {
-              const rows = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
-                WHERE r.org_id = ${orgId} AND ${personSees(sql, KinPersonId.make(who))}`;
-              return new Set(rows.map((row) => row.key));
-            });
-          const open = (who: Viewing, after?: { readonly seq: number; readonly team: boolean }) =>
-            Effect.gen(function* () {
-              const session = yield* WorkStream.makeWorkStream(peopleOf(who), {
-                orgId,
-                acceptRows: true,
-                ...(after === undefined ? {} : { afterSeq: after.seq, afterTeam: after.team }),
-              });
-              const events = yield* session.start(yield* records.seq(orgId));
-              return { session, events };
-            });
-          for (const who of VIEWERS) {
-            const { session, events } = yield* open(who);
-            const teammate = (yield* OwnerWork.viewerOf(peopleOf(who), orgId)).teammate;
-            const start = events.find((one) => one._tag === "counts")?.seq ?? opening;
-            const screen: Screen = {
-              teammate,
-              session,
-              rows: kinWorkRowsStart(start),
-              counts: null,
-              pages: new Map(),
-              cursor: start,
-              cursorTeam: teammate,
-              held: teammate ? yield* seenKeys(who) : new Set(),
-            };
-            yield* fold(who, screen, events);
-            for (const page of PAGES) yield* read(who, screen, page);
-            screens.set(who, screen);
-          }
-
-          const workKeys = Effect.gen(function* () {
-            const rows = yield* sql<{ key: string; rev: number }>`SELECT key, rev FROM kin_records
-              WHERE org_id = ${orgId} AND register_id = 'work' ORDER BY key`;
-            return rows;
-          });
-          const pick = (index: number) =>
-            Effect.map(workKeys, (rows) =>
-              rows.length === 0 ? undefined : rows[index % rows.length],
-            );
-          const person = (who: "owner" | Member) =>
-            ({ _tag: "person", personId: KinPersonId.make(who) }) as const;
-          const due = (days: number | null) =>
-            days === null
-              ? null
-              : DateTime.formatIso(DateTime.makeUnsafe(at + 3_600_000 + days * 86_400_000));
-          const moved = <E>(who: string, change: Effect.Effect<unknown, E>) =>
-            sql.withTransaction(
-              Effect.gen(function* () {
-                yield* change;
-                yield* records.peopleMoved(orgId, [who]);
-              }),
-            );
-          let made = 0;
-          const apply = (op: Op) =>
-            Effect.gen(function* () {
-              switch (op._tag) {
-                case "create":
-                  made += 1;
-                  return yield* OwnerWork.create(peopleOf(op.by), {
-                    orgId,
-                    clientRequestId: `stream-${made}`,
-                    title: `Made ${made}`,
-                    owner: person(op.owner),
-                    ...(op.project === null ? {} : { project: op.project }),
-                    ...(op.due === null ? {} : { dueAt: due(op.due)! }),
-                  });
-                case "edit": {
-                  const one = yield* pick(op.pick);
-                  if (one === undefined) return;
-                  return yield* OwnerWork.update(peopleOf(op.by), {
-                    orgId,
-                    key: KinRecordKey.make(one.key),
-                    rev: one.rev,
-                    state: op.state,
-                    ...(op.state === "waiting" ? { waitingOn: person("owner") } : {}),
-                    dueAt: due(op.due),
-                  });
-                }
-                case "assign": {
-                  const one = yield* pick(op.pick);
-                  if (one === undefined) return;
-                  return yield* OwnerWork.assign(peopleOf(op.by), {
-                    orgId,
-                    key: KinRecordKey.make(one.key),
-                    to: person(op.to),
-                  });
-                }
-                case "handBack": {
-                  const one = yield* pick(op.pick);
-                  if (one === undefined) return;
-                  return yield* OwnerWork.handBack(peopleOf(op.by), {
-                    orgId,
-                    key: KinRecordKey.make(one.key),
-                  });
-                }
-                case "private": {
-                  const one = yield* pick(op.pick);
-                  if (one === undefined) return;
-                  return yield* OwnerWork.update(peopleOf("owner"), {
-                    orgId,
-                    key: KinRecordKey.make(one.key),
-                    rev: one.rev,
-                    sensitive: op.on,
-                  });
-                }
-                case "share": {
-                  const one = yield* pick(op.pick);
-                  if (one === undefined) return;
-                  return yield* OwnerWork.share(peopleOf("owner"), {
-                    orgId,
-                    keys: [KinRecordKey.make(one.key)],
-                    shared: op.on,
-                  });
-                }
-                case "move": {
-                  const one = yield* pick(op.pick);
-                  if (one === undefined) return;
-                  return yield* OwnerWork.update(peopleOf("owner"), {
-                    orgId,
-                    key: KinRecordKey.make(one.key),
-                    rev: one.rev,
-                    project: op.to === null ? null : KinRecordKey.make(op.to),
-                  });
-                }
-                case "members": {
-                  const [project] = yield* sql<{ rev: number }>`SELECT rev FROM kin_records
-                    WHERE org_id = ${orgId} AND key = ${op.project}`;
-                  if (project === undefined) return;
-                  return yield* OwnerClients.updateProject(peopleOf("owner"), {
-                    orgId,
-                    key: KinRecordKey.make(op.project),
-                    rev: project.rev,
-                    members: MEMBERS.filter((m) => op[m]).map(person),
-                  });
-                }
-                case "role":
-                  return yield* moved(
-                    op.who,
-                    sql`UPDATE kin_people SET access = ${op.coOwner ? "co_owner" : "member"}
-                      WHERE person_id = ${op.who}`,
-                  );
-                case "places":
-                  return yield* moved(
-                    op.who,
-                    sql`UPDATE kin_people SET sees_clients = ${op.clients ? 1 : 0},
-                      sees_docs = ${op.docs ? 1 : 0}, sees_money = ${op.money ? 1 : 0}
-                      WHERE person_id = ${op.who}`,
-                  );
-                case "remove":
-                  // As `KinPeople.removeAccess` leaves them.
-                  return yield* moved(
-                    op.who,
-                    sql`UPDATE kin_people SET access = 'member', sees_clients = 1, sees_docs = 1,
-                      sees_money = 0 WHERE person_id = ${op.who}`,
-                  );
-                case "delete": {
-                  const one = yield* pick(op.pick);
-                  if (one === undefined) return;
-                  // As an import's undo takes an entry away: its changes go with it.
-                  yield* sql`DELETE FROM kin_record_changes WHERE org_id = ${orgId}
-                    AND record_id IN (SELECT record_id FROM kin_records WHERE key = ${one.key})`;
-                  yield* sql`DELETE FROM kin_records WHERE org_id = ${orgId} AND key = ${one.key}`;
-                  return yield* records.announce(orgId);
-                }
-              }
-            });
-
-          for (const [step, { op, away }] of ops.entries()) {
-            yield* Effect.exit(apply(op));
-            // The owner's own edit marks the end of the step's ticks.
-            yield* records.update(
-              orgId,
-              { actor: { _tag: "person", personId: ownerId }, via: "owner" },
-              SENTINEL,
-              { title: `Sentinel ${step}` },
-            );
-            const mark = yield* records.seq(orgId);
-            const ticks: Array<KinRecords.Tick> = [];
-            while (!ticks.some((tick) => tick.key === SENTINEL && tick.seq >= mark))
-              ticks.push(...(yield* pull));
-            for (const who of VIEWERS) {
-              const screen = screens.get(who)!;
-              if (away === who) {
-                // Away for this step's ticks: a new socket resumes from the last number held, and
-                // the screen keeps its rows.
-                const { session, events } = yield* open(who, {
-                  seq: screen.cursor,
-                  team: screen.cursorTeam,
-                });
-                const now = (yield* OwnerWork.viewerOf(peopleOf(who), orgId)).teammate;
-                if (now !== screen.teammate) {
-                  assert.strictEqual(events[0]?._tag, "snapshot-required", `${who} resumed rows`);
-                  screen.teammate = now;
-                }
-                screen.session = session;
-                yield* fold(who, screen, events);
-                continue;
-              }
-              const now = (yield* OwnerWork.viewerOf(peopleOf(who), orgId)).teammate;
-              const items = ticks.flatMap((tick) => screen.session.pendingOf(tick));
-              // Who they are changed: the stream must hear of it.
-              if (now !== screen.teammate)
-                assert.isNotEmpty(items, `${who} not told of their level`);
-              if (items.length === 0) continue;
-              // Even steps arrive as one burst with the latest per entry, as a slow client would;
-              // odd ones one at a time.
-              const bursts =
-                step % 2 === 0
-                  ? [[...new Map(items.map((one) => [one.key, one])).values()]]
-                  : items.map((one) => [one]);
-              for (const burst of bursts) {
-                const events = yield* screen.session.batch(burst);
-                if (now !== screen.teammate) {
-                  // Before anything else, everything they held goes.
-                  assert.strictEqual(events[0]?._tag, "snapshot-required", `${who} kept rows`);
-                  screen.teammate = now;
-                }
-                yield* fold(who, screen, events);
-              }
-            }
-            for (const who of VIEWERS) {
-              const screen = screens.get(who)!;
-              const summary = yield* OwnerWork.summary(peopleOf(who), { orgId });
-              const { seq: _seq, asOf: _asOf, ...want } = summary;
-              const { seq: _held, asOf: _heldAt, ...got } = screen.counts!;
-              assert.deepStrictEqual(got, want, `${who}'s counts after ${op._tag}`);
-              for (const page of PAGES) {
-                const held = screen.pages.get(page.name)!;
-                const result = yield* Effect.result(
-                  fresh(who, page, Math.max(1, held.records.length)),
-                );
-                const now = result._tag === "Success" ? result.success : { records: [], total: 0 };
-                assert.deepStrictEqual(
-                  held.records.map((record) => record.key),
-                  now.records.slice(0, held.records.length).map((record) => record.key),
-                  `${who}'s ${page.name} rows after ${op._tag} (step ${step})`,
-                );
-                assert.deepStrictEqual(held.records, now.records.slice(0, held.records.length));
-                assert.strictEqual(
-                  held.total,
-                  now.total,
-                  `${who}'s ${page.name} total after ${op._tag}`,
-                );
-              }
-            }
-          }
-        }),
-      ),
+    streamCase,
     { arbitrary: { runs: 60 } },
+  );
+
+  // Found by the property above: a closed task in a project, then its giver joins the project.
+  it.effect("a teammate added to a project reads its total as a fresh read does", () =>
+    streamCase(PINNED_JOIN),
+  );
+  // quarantine: #423 a task leaving a teammate doesn't re-send their other tasks in its project
+  it.effect.skip(
+    "a teammate whose task in a project leaves them reads its other tasks afresh",
+    () => streamCase(PINNED_MOVE),
   );
 
   it.effect("a late tick can't let a resume skip its change, or use up a removal", () =>

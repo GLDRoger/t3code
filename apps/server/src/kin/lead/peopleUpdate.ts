@@ -8,6 +8,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { profileSets } from "../people/profileFields.ts";
+import { reholdAfter } from "../triggers/quietHold.ts";
 import { turnAsker } from "./Audience.ts";
 import type { resolveLead } from "./LeadMemory.ts";
 
@@ -79,8 +80,12 @@ export const updatePeople = Effect.fn("KinPeopleUpdate.update")(function* (
   const now = (yield* DateTime.now).epochMilliseconds;
   const set = yield* profileSets(input, now);
   if (set.length === 1) return yield* refused("Say what to change: nothing was given to save.");
-  yield* sql`UPDATE kin_people SET ${sql.csv(set)}
-    WHERE org_id = ${lead.orgId} AND person_id = ${target.personId}`;
+  yield* reholdAfter(
+    lead.orgId,
+    target.personId,
+    sql`UPDATE kin_people SET ${sql.csv(set)}
+      WHERE org_id = ${lead.orgId} AND person_id = ${target.personId}`,
+  );
   yield* (yield* KinRefreshObserver).touch(lead.orgId, "people");
   const [saved] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
     WHERE org_id = ${lead.orgId} AND person_id = ${target.personId}`;

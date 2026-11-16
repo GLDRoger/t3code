@@ -275,6 +275,8 @@ const actions = KIN_DEFERRAL_ACTIONS;
 export function kinReminderCardView(
   widget: KinWidget,
   timeZone?: string,
+  /** False for a teammate: only taps the host takes from them are offered. Unknown offers all. */
+  ownerLevel?: boolean,
 ): KinDeferralCardView | null {
   const decoded = decodeReminder(widget.state);
   if (Option.isNone(decoded)) return null;
@@ -298,17 +300,19 @@ export function kinReminderCardView(
     title,
     lines,
     countdown: null,
-    actions: open
-      ? [
-          actions.done,
-          actions.snooze_10m,
-          actions.snooze_1h,
-          actions.snooze_tomorrow,
-          actions.change,
-        ]
-      : [],
+    actions: open ? reminderActions(card, ownerLevel) : [],
     accessibilityLabel: kinSentences([`Reminder: ${title}`, ...lines]),
   };
+}
+
+/**
+ * A teammate taps a reminder only in their own chat with an agent (`theirs` is set there), and
+ * moves it only when they set it themselves: their turn may replace nothing else.
+ */
+function reminderActions(card: KinReminderCard, ownerLevel: boolean | undefined) {
+  const finish = [actions.done, actions.snooze_10m, actions.snooze_1h, actions.snooze_tomorrow];
+  if (ownerLevel !== false || card.theirs === true) return [...finish, actions.change];
+  return card.theirs === false ? finish : [];
 }
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
@@ -479,8 +483,10 @@ export function kinCardView(
   isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
   /** The card's agent by name when it is retired: its reminders and schedules are on hold. */
   heldFor: string | null = null,
+  /** Whether the viewer is owner-level; unknown offers every tap. */
+  ownerLevel?: boolean,
 ): KinCardView {
-  const view = kinLiveCardView(widget, hostEnvironmentId, isKnownEnvironment);
+  const view = kinLiveCardView(widget, hostEnvironmentId, isKnownEnvironment, ownerLevel);
   if (heldFor === null || view.kind !== "deferral" || !HELD_TYPES.has(widget?.type ?? ""))
     return view;
   const { deferral } = view;
@@ -508,6 +514,7 @@ function kinLiveCardView(
   widget: KinWidget | undefined,
   hostEnvironmentId: EnvironmentId,
   isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
+  ownerLevel: boolean | undefined,
 ): KinCardView {
   if (widget === undefined) return { kind: "missing" };
   if (widget.widgetClass !== "native") return unknown(widget);
@@ -526,7 +533,7 @@ function kinLiveCardView(
       return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "reminder": {
-      const deferral = kinReminderCardView(widget);
+      const deferral = kinReminderCardView(widget, undefined, ownerLevel);
       return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "scheduled_task": {

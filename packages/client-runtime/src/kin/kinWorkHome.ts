@@ -25,8 +25,6 @@ import {
 export type KinWorkPlace = "tasks" | "money" | "clients" | "docs";
 
 export const KIN_WORK_HOME = {
-  needsYou: "Needs you",
-  nothingNeedsYou: "Nothing needs you right now.",
   seeAll: (count: number) => `See all ${count}`,
   seeFewer: "Show fewer",
   search: "Search Work",
@@ -52,7 +50,16 @@ export const KIN_WORK_HOME = {
   noClient: "No client",
 };
 
-/** Rows "Needs you" shows before "See all", so the first tasks stay on the first screen. */
+/**
+ * The pane with no chat open, in the words Tasks uses for this viewer: what needs attention for
+ * the owner and a co-owner, what is on them for anyone else.
+ */
+export const kinNeedsPane = (ownerLevel: boolean) =>
+  ownerLevel
+    ? { title: "Needs attention", empty: "Nothing needs attention right now." }
+    : { title: "On me", empty: "Nothing is on you right now." };
+
+/** Rows the pane shows before "See all", so the first tasks stay on the first screen. */
 export const KIN_NEEDS_YOU_SHOWN = 4;
 
 /** A `show` in a Work link: the place it opens, Tasks for a link from before places. */

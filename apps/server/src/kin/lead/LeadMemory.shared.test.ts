@@ -6,6 +6,7 @@ import {
   EnvironmentId,
   KinAgentId,
   KinChatId,
+  KinEventId,
   KinMemoryItemId,
   KinOrgId,
   KinPersonId,
@@ -546,7 +547,6 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
       { chatId: "group-chat", sourceEventId: `event-${leads.a}` },
       { chatId: "owner-chat" },
       { onDue: "start" },
-      { replaces: "invented-other" },
     ];
     for (const other of others) {
       const refused = yield* defer({ ...other, what: `Invented ${JSON.stringify(other)}` }).pipe(
@@ -555,5 +555,46 @@ it.effect("a teammate's turn sets their own reminder, in their own chat, and not
       assert.strictEqual(refused.message, SHARED_REFUSAL, JSON.stringify(other));
     }
     assert.lengthOf(staged, 1);
+
+    // Moving or cancelling: only a reminder of hers, set in this same chat with this agent.
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+      VALUES ('earlier', ${orgId}, ${leads.a}, 'chat.message', 'P0', '{}', 0, 0, 'done', NULL)`;
+    const reminder = (id: string, fields: Partial<MemoryItemHead> = {}): MemoryItem => ({
+      head: head(id, {
+        kind: "deferral",
+        due: "2026-11-19T10:00:00+00:00",
+        on_due: "remind",
+        chat: KinChatId.make("member-direct"),
+        source_event: KinEventId.make("earlier"),
+        said_by: "fixture-member",
+        trust: "member",
+        source: "kin:chat:member-direct:message:earlier-message",
+        path: `deferrals/${id}.md`,
+        ...fields,
+      }),
+      body,
+    });
+    state.items = [
+      reminder("def-hers"),
+      reminder("def-hers-too"),
+      reminder("def-owners", { said_by: "fixture-owner", trust: "owner" }),
+      reminder("def-someone-elses", { said_by: "fixture-other" }),
+      reminder("def-elsewhere", { chat: KinChatId.make("group-chat") }),
+      reminder("def-starts", { on_due: "start" }),
+    ];
+    const cancel = (itemId: string) =>
+      service.cancel(scopeOf(leads.a), {
+        itemId: KinMemoryItemId.make(itemId),
+        sourceEventId: "member-said",
+      });
+    assert.isString((yield* defer({ what: "Invented: moved", replaces: "def-hers" })).itemId);
+    assert.deepStrictEqual(yield* cancel("def-hers-too"), { itemId: "def-hers-too" });
+    for (const other of ["def-owners", "def-someone-elses", "def-elsewhere", "def-starts"]) {
+      const moved = yield* defer({ what: `Invented ${other}`, replaces: other }).pipe(Effect.flip);
+      assert.strictEqual(moved.message, SHARED_REFUSAL, other);
+      assert.strictEqual((yield* Effect.flip(cancel(other))).message, SHARED_REFUSAL, other);
+    }
+    // Her replacement and her cancel, nothing for anyone else.
+    assert.lengthOf(staged, 4);
   }).pipe(Effect.provide(layer)),
 );

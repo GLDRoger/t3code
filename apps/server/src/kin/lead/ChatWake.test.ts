@@ -630,6 +630,8 @@ describe("ChatWake", () => {
       "kin/lead/ChatWake.ts",
       "kin/lead/layer.ts",
       "kin/push/KinPushDispatch.ts",
+      // Its own week cards only, to render a preview or post what is due; nothing leaves it.
+      "kin/social/SocialService.ts",
     ]);
   });
   it.effect(

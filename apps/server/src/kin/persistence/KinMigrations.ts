@@ -85,6 +85,7 @@ import Social from "./migrations/K161_Social.ts";
 import PersonHours from "./migrations/K162_PersonHours.ts";
 import OneModel from "./migrations/K163_OneModel.ts";
 import WorkersRetired from "./migrations/K164_WorkersRetired.ts";
+import HandedBack from "./migrations/K165_HandedBack.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -250,6 +251,7 @@ const loader = Migrator.fromRecord({
   "162_PersonHours": PersonHours,
   "163_OneModel": OneModel,
   "164_WorkersRetired": WorkersRetired,
+  "165_HandedBack": HandedBack,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

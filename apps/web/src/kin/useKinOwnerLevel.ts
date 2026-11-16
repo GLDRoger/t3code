@@ -1,12 +1,16 @@
 import { useAtomValue } from "@effect/atom-react";
-import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import {
+  kinAccessAtom,
+  kinAccessMeAtom,
+  kinOwnerLevelAtom,
+} from "@t3tools/client-runtime/kin/kinAccess";
 import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
 import {
   KIN_SCOPE_ALL,
   kinViewerScope,
   type KinViewerScope,
 } from "@t3tools/client-runtime/kin/kinViewerScope";
-import type { EnvironmentId } from "@t3tools/contracts";
+import { kinOwnerLevel, type EnvironmentId } from "@t3tools/contracts";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { isChatOnlySession } from "../environments/primary";
@@ -18,6 +22,13 @@ import { isChatOnlySession } from "../environments/primary";
 export function useKinOwnerLevel(environmentId: EnvironmentId): boolean {
   const stored = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
   return !isChatOnlySession() || stored;
+}
+
+/** As `useKinOwnerLevel`, but undefined while a chat-only session waits for the host to say. */
+export function useKinOwnerLevelKnown(environmentId: EnvironmentId): boolean | undefined {
+  const access = useAtomValue(kinAccessAtom(connectionAtomRuntime, environmentId));
+  if (!isChatOnlySession()) return true;
+  return access === null ? undefined : kinOwnerLevel(access);
 }
 
 /** The places a member reaches here (switched on, or a project they lead); null until known. */

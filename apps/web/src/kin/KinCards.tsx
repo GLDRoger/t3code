@@ -58,6 +58,7 @@ import { Fragment, memo, useRef, useState, type ReactNode } from "react";
 import { useAssetUrls } from "../assets/assetUrls";
 import { AttachmentImage } from "../components/media/AttachmentImage";
 import { environmentCatalog } from "../connection/catalog";
+import { useKinOwnerLevelKnown } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
 import { cn, randomUUID } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -133,11 +134,13 @@ export const KinCard = memo(function KinCard(props: {
   readonly heldFor: string | null;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
+  const ownerLevel = useKinOwnerLevelKnown(props.environmentId);
   const view = kinCardView(
     props.widget,
     props.environmentId,
     (environmentId) => !catalog.isReady || catalog.entries.has(environmentId),
     props.heldFor,
+    ownerLevel,
   );
   switch (view.kind) {
     case "task":

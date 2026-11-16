@@ -173,7 +173,7 @@ const make = Effect.gen(function* () {
     readonly leadName: string | undefined;
     readonly fallbackChat: KinChatId | null;
     /** Set when someone set it in their own chat with the lead: Kin reminds them there. */
-    readonly askersChat: KinChatId | undefined;
+    readonly askersChat: { readonly chatId: KinChatId; readonly theirs: boolean } | undefined;
   }) {
     const { orgId, itemId, title, fire, fireAt, now } = input;
     const card = {
@@ -187,13 +187,14 @@ const make = Effect.gen(function* () {
     const fallbackBody = `${reminder} (${input.leadName ?? "Your agent"} couldn't write this one, so Kin sent it.)`;
     // The lead's wake-up answers in its owner's chat, so a teammate's own reminder is Kin's line.
     if (input.askersChat !== undefined) {
+      const theirs = input.askersChat.theirs;
       yield* deliveries.fallback({
         orgId,
         eventId: KinEventId.make(`reminder-own-${fire.fireId}`),
         kind: "reminder",
         agentId: KinAgentId.make("kin"),
-        chatId: input.askersChat,
-        widget: { widgetId, type: "reminder", state: card },
+        chatId: input.askersChat.chatId,
+        widget: { widgetId, type: "reminder", state: { ...card, theirs } },
         fallbackBody: reminder,
         deadlineAt: now,
         forChat: true,
@@ -344,7 +345,7 @@ const make = Effect.gen(function* () {
         gates.push("the stop switch is on");
     }
     // A reminder is the lead's to write when a wake-up can run; budget is read outside the writer.
-    const ownChat = onDue === "remind" ? yield* askersChat(sql, orgId, item?.chat) : undefined;
+    const ownChat = onDue === "remind" ? yield* askersChat(sql, orgId, item) : undefined;
     const reminderLead =
       onDue === "remind" && ownChat === undefined
         ? yield* deferralLead(sql, orgId, item)

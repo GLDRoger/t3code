@@ -42,6 +42,7 @@ import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
+  fieldList,
   checkFor,
   encodeFieldValues,
   type FieldValue,
@@ -247,6 +248,8 @@ export type Tick = {
 type TeamScope = {
   readonly scope: ReadonlyArray<string>;
   readonly before: ReadonlyArray<{ readonly personId: string; readonly recordId: string }>;
+  /** People joined to or taken off a project: their tasks there read differently, seen or not. */
+  readonly joined?: ReadonlyArray<string>;
 };
 export type GroupBy = "party" | "project" | "side" | "owner" | "state" | "category";
 export type TotalsBy = GroupBy | "month" | "financialYear";
@@ -567,12 +570,19 @@ const make = Effect.gen(function* () {
         .join(" ");
     // Its own number moves for anyone who saw it before or sees it after, and for anyone whose
     // view of the rest it moved, as a client's label or a project's lead does.
-    const moved = [...new Set([...before, ...after].map((pair) => pair.personId))].filter(
-      (personId) =>
-        [...before, ...after].some(
-          (pair) => pair.personId === personId && pair.recordId === row.recordId,
-        ) || seen(before, personId) !== seen(after, personId),
-    );
+    const moved = [
+      ...new Set([
+        ...[...before, ...after]
+          .map((pair) => pair.personId)
+          .filter(
+            (personId) =>
+              [...before, ...after].some(
+                (pair) => pair.personId === personId && pair.recordId === row.recordId,
+              ) || seen(before, personId) !== seen(after, personId),
+          ),
+        ...(team?.joined ?? []),
+      ]),
+    ];
     const numbers = yield* bumpTeamSeqs(orgId, moved).pipe(provideSql);
     yield* sql.afterCommit(
       PubSub.publish(ticks, {
@@ -1317,6 +1327,11 @@ const make = Effect.gen(function* () {
           set("state", state);
           if (isClosed(state) !== isClosed(row.state))
             set("closed_at", isClosed(state) ? now : null);
+          if (isClosed(state) && row.handedBackAt !== null) {
+            set("handed_back_kind", null);
+            set("handed_back_id", null);
+            set("handed_back_at", null);
+          }
         }
         const waitingOn =
           state !== "waiting"
@@ -1361,6 +1376,10 @@ const make = Effect.gen(function* () {
           set("owner_id", principalId(patch.owner));
           // Reassigning never launders authority: the assigner is whoever asked for this change.
           // Handed back, it keeps the authority it was given with; the holder's words go with it.
+          // Handed back, it says so on the giver's row until it is given again or closed.
+          set("handed_back_kind", patch.handedBack === undefined ? null : before.owner._tag);
+          set("handed_back_id", patch.handedBack === undefined ? null : principalId(before.owner));
+          set("handed_back_at", patch.handedBack === undefined ? null : now);
           if (patch.handedBack === undefined) {
             set("assigned_by_person_id", writer.askedBy ?? null);
             set(
@@ -1515,7 +1534,21 @@ const make = Effect.gen(function* () {
             ? yield* dependents(orgId, row.recordId).pipe(provideSql)
             : []),
         ];
-        const team: TeamScope = { scope, before: yield* teamPairs(orgId, scope).pipe(provideSql) };
+        const members = (fields: Record<string, FieldValue>) =>
+          fieldList(fields, "members").flatMap((text) =>
+            text.startsWith("person:") ? [text.slice("person:".length)] : [],
+          );
+        const joined =
+          list === "projects" && patch.fields?.["members"] !== undefined
+            ? [...new Set([...members(stored), ...members(merged)])].filter(
+                (person) => members(stored).includes(person) !== members(merged).includes(person),
+              )
+            : [];
+        const team: TeamScope = {
+          scope,
+          before: yield* teamPairs(orgId, scope).pipe(provideSql),
+          joined,
+        };
         // Each update rewrites only the fields it changed, so two changes to one entry both land.
         yield* sql`UPDATE kin_records SET ${sql.csv(sets)}
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;

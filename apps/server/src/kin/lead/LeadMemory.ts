@@ -462,13 +462,28 @@ const make = Effect.gen(function* () {
   ) {
     const { ctx, audience } = yield* turn(scope);
     if (audience === "owner_only") return ctx;
-    if (
-      input.onDue !== "remind" ||
-      input.replaces !== undefined ||
-      !(yield* askersDirectChat(ctx, input.chatId).pipe(provideSql))
-    )
+    // `replaces` is checked in `cancelOwn`: only the asker's own reminder in this same chat.
+    if (input.onDue !== "remind" || !(yield* askersDirectChat(ctx, input.chatId).pipe(provideSql)))
       return yield* invalid(SHARED_REFUSAL);
     return ctx;
+  });
+  /** On a turn someone else reads: the item is a reminder its asker set, in their chat with this lead. */
+  const askersOwnReminder = Effect.fn("LeadMemory.askersOwnReminder")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    head: MemoryItemHead,
+    sourceEventId: string,
+  ) {
+    if (head.on_due !== "remind" || head.chat === undefined) return false;
+    const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
+      sourceEventId,
+    );
+    return (
+      source !== undefined &&
+      (source.trust === "owner" || source.trust === "member") &&
+      source.saidBy === head.said_by &&
+      source.source.startsWith(`kin:chat:${head.chat}:`) &&
+      (yield* askersDirectChat(ctx, head.chat).pipe(provideSql))
+    );
   });
   /**
    * Who said the cited message and where, from stored rows: a person's own message in the chat
@@ -578,9 +593,15 @@ const make = Effect.gen(function* () {
     sourceEventId: string,
   ) {
     yield* checkSource(ctx, sourceEventId);
+    // A turn someone else reads learns nothing of an item that isn't its asker's own reminder.
+    const sharedTurn = (yield* effectiveAudience(ctx).pipe(provideSql)) !== "owner_only";
     // The view triggers arm from, so the lead cancels what would fire, whichever branch holds it.
-    const item = yield* memory.readItemQuietly(ctx.orgId, itemId, "triggers");
+    const read = yield* Effect.exit(memory.readItemQuietly(ctx.orgId, itemId, "triggers"));
+    if (Exit.isFailure(read) && sharedTurn) return yield* invalid(SHARED_REFUSAL);
+    const item = yield* read;
     const head = item.head;
+    const askers = head.kind === "deferral" && (yield* askersOwnReminder(ctx, head, sourceEventId));
+    if (sharedTurn && !askers) return yield* invalid(SHARED_REFUSAL);
     if (head.kind !== "deferral")
       return yield* invalid(`${itemId} is not a deferral or scheduled task.`);
     if (head.status !== "open" || head.invalid_at !== null || head.superseded_by !== null)
@@ -590,11 +611,11 @@ const make = Effect.gen(function* () {
     const allowed = yield* sql.withTransaction(
       Effect.gen(function* () {
         // Checked again where the run stops: a join may have aborted the turn since `notes`.
-        if (
+        if (yield* aborted(ctx).pipe(provideSql)) return "shared" as const;
+        const shared =
           (yield* effectiveAudience(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql))) !==
-          "owner_only"
-        )
-          return "shared" as const;
+          "owner_only";
+        if (shared && !askers) return "shared" as const;
         const [creator] =
           head.source_event === undefined
             ? []
@@ -1217,13 +1238,14 @@ const make = Effect.gen(function* () {
         }),
       );
     }, Effect.mapError(failure)),
+    // A turn someone else reads cancels only its asker's own reminder (`cancelOwn`).
     cancel: Effect.fn("LeadMemory.cancel")(function* (scope, input) {
-      const ctx = yield* notes(scope);
+      const { ctx } = yield* turn(scope);
       return yield* locked(
         ctx.orgId,
         ctx.agentId,
         Effect.gen(function* () {
-          const ctx = yield* notes(scope);
+          const { ctx } = yield* turn(scope);
           const schedule = yield* KinSchedules.readSchedule(sql, ctx.orgId, input.itemId);
           if (schedule === undefined) yield* cancelOwn(ctx, input.itemId, input.sourceEventId);
           else {

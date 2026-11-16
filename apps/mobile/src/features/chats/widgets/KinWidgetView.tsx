@@ -1,11 +1,18 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { KinChartView } from "@t3tools/client-runtime/kin/kinChart";
-import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import {
+  kinOwnerLevel,
+  type EnvironmentId,
+  type KinPersonId,
+  type KinWidget,
+} from "@t3tools/contracts";
 import { memo } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import { environmentCatalog } from "../../../connection/catalog";
+import { connectionAtomRuntime } from "../../../connection/runtime";
 import {
   KIN_MISSING_CARD_TEXT,
   kinCardView,
@@ -44,12 +51,14 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
   readonly agentNames?: ReadonlyMap<string, string>;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
+  const access = useAtomValue(kinAccessAtom(connectionAtomRuntime, props.environmentId));
   // Before the catalog loads, assume the environment is known; the thread screen handles the rest.
   const view = kinCardView(
     props.widget,
     props.environmentId,
     (environmentId) => !catalog.isReady || catalog.entries.has(environmentId),
     props.heldFor ?? null,
+    access === null ? undefined : kinOwnerLevel(access),
   );
   switch (view.kind) {
     case "task":

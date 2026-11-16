@@ -15,6 +15,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -83,6 +84,7 @@ const kinServices = Layer.unwrap(
       Layer.mock(LeadMemory)({
         defer: (_scope, input) =>
           Effect.succeed({ itemId: KinMemoryItemId.make(`def-${input.what}`) }),
+        cancel: (_scope, input) => Effect.succeed({ itemId: input.itemId }),
       }),
       repoReadsOff,
       pullRequestCareOff,
@@ -688,13 +690,83 @@ it.effect("a teammate sets a reminder for themselves, in their own chat, and not
         { onDue: "start" },
         { onDue: "chase" },
         { onDue: "ask" },
-        { replaces: "def-the-owners" },
       ]) {
         const refused = yield* defer({ ...other, what: `Other ${JSON.stringify(other)}` }).pipe(
           Effect.flip,
         );
         assert.strictEqual(refused.message, SHARED_REFUSAL, JSON.stringify(other));
       }
+      // Moving or cancelling one reaches LeadMemory, which lets through only her own.
+      assert.isTrue(listedOnSharedThread("kin_cancel"));
+      assert.isTrue((yield* defer({ replaces: "def-Send the Lumen mockups" })).ok);
+      assert.isTrue(
+        (yield* call("kin_cancel", { itemId: "def-Send the Lumen mockups", sourceEventId: asked }))
+          .ok,
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a held message follows its reader's changed clock", () =>
+  Effect.andThen(
+    // Monday 18:30 in India: Zoya, there, works 10:00 to 18:00, so a relay waits for Tuesday.
+    TestClock.setTime(Date.UTC(2026, 10, 16, 13)),
+    Effect.gen(function* () {
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      const identity = Context.get(services, KinIdentity);
+      const chats = Context.get(services, KinChatService);
+      const sql = yield* SqlClient.SqlClient;
+      yield* pairSession(AuthSessionId.make("owner"));
+      const [resolved] = yield* identity.resolve({
+        sessionId: AuthSessionId.make("owner"),
+        subject: "browser",
+        method: "browser-session-cookie",
+        scopes: AuthStandardClientScopes,
+      });
+      const owner = resolved!;
+      const { orgId } = owner;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access, time_zone, work_hours_json)
+        VALUES ('zoya', ${orgId}, 'zoya', 'Zoya Sheikh', ${at}, 'member', 'Asia/Kolkata',
+          '{"days":[1,2,3,4,5],"start":"10:00","end":"18:00"}')`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 'lead', ${owner.personId}, ${at})`;
+      yield* identity.registerAgentThread({ orgId, agentId: chief, threadId });
+      const ownerChat = (yield* chats.createDirect(owner, { orgId, agentId: chief })).chatId;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+          worker_projects_json, owner_chat_id, domain)
+        VALUES (${chief}, ${orgId}, 'Chief of staff', 0, ${threadId}, '{}', '[]', ${ownerChat},
+          'chief-of-staff')`;
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, ${chief}, ${owner.personId}, 0)`;
+      const zoya = { _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") };
+      yield* chats.createDirect(zoya, { orgId, agentId: chief });
+      const says = Effect.fn("test.says")(function* (body: string) {
+        const message = yield* chats.send(owner, {
+          chatId: ownerChat,
+          body,
+          clientMessageId: body,
+        });
+        return `event:${yield* startAgentWakeup({ orgId, agentId: chief, threadId, message })}`;
+      });
+      const deliverAt = sql<{ at: number }>`SELECT deliver_at AS at FROM kin_held_posts
+        WHERE org_id = ${orgId} AND person_id = 'zoya' AND delivered_at IS NULL`;
+      const ask = yield* says("Tell Zoya the review moved to Thursday.");
+      const sent = yield* call("kin_relay", {
+        to: "Zoya",
+        text: "The review moved to Thursday.",
+        sourceEventId: ask,
+      });
+      assert.isTrue(sent.ok, JSON.stringify(sent.value));
+      assert.deepStrictEqual(yield* deliverAt, [{ at: Date.UTC(2026, 10, 17, 4, 30) }]);
+      // She moves to London, where it is 13:00 on a working day: it goes now.
+      yield* says("Zoya is in London now.");
+      const moved = yield* call("people_update", {
+        person: "Zoya Sheikh",
+        timeZone: "Europe/London",
+      });
+      assert.isTrue(moved.ok, JSON.stringify(moved.value));
+      assert.deepStrictEqual(yield* deliverAt, [{ at: yield* Clock.currentTimeMillis }]);
     }).pipe(Effect.provide(layer)),
   ),
 );

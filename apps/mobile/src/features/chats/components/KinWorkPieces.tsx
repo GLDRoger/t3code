@@ -1,6 +1,5 @@
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
-  KIN_WORK_MARKS,
   KIN_WORK_PRIVATE,
   KIN_WORK_REFRESH_FAILED,
   KIN_WORK_STALE,
@@ -180,15 +179,19 @@ export function KinWorkTaskRow(props: {
               )}
             </View>
           </View>
-          {row.mark === null ? null : (
+          {row.markText === null ? null : (
             <Text
               textRole="footnote"
               className={cn(
                 "font-t3-medium",
-                row.mark === "late" ? "text-danger-foreground" : "text-warning-foreground",
+                row.mark === "late"
+                  ? "text-danger-foreground"
+                  : row.mark === "handed_back"
+                    ? "text-foreground-muted"
+                    : "text-warning-foreground",
               )}
             >
-              {KIN_WORK_MARKS[row.mark]}
+              {row.markText}
             </Text>
           )}
         </Pressable>

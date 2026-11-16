@@ -504,17 +504,20 @@ export interface KinWorkRowView {
   /** `holder` and `detail` on one line: "Priya · Due Fri 14 Nov · In progress · Acme". */
   readonly line: string;
   readonly accessibilityLabel: string;
-  /** The mark beside the row: "Late" anywhere, and on your own tasks "Due today" or "Stuck". */
+  /** The mark beside the row: "Late" or "Handed back" anywhere, and on your own tasks "Due today" or "Stuck". */
   readonly mark: KinWorkMark | null;
+  /** The mark's words: "Late", "Handed back by Zoya". */
+  readonly markText: string | null;
 }
 
 /** Why one of your own tasks leads "On me": shown on the task, not as a second list. */
-export type KinWorkMark = "late" | "today" | "stuck";
+export type KinWorkMark = "late" | "today" | "stuck" | "handed_back";
 
-export const KIN_WORK_MARKS: Record<KinWorkMark, string> = {
+const KIN_WORK_MARKS: Record<KinWorkMark, string> = {
   late: "Late",
   today: "Due today",
   stuck: "Stuck",
+  handed_back: "Handed back",
 };
 
 /** The row with its "On me" mark, which its label also says. */
@@ -523,6 +526,7 @@ export function kinWorkRowMarked(row: KinWorkRowView, mark: KinWorkMark | null):
   return {
     ...row,
     mark,
+    markText: KIN_WORK_MARKS[mark],
     accessibilityLabel: `${row.accessibilityLabel}. ${KIN_WORK_MARKS[mark]}`,
   };
 }
@@ -553,6 +557,18 @@ export function kinWorkRow(
   const due = day === null ? null : `Due ${day}`;
   const ownerRetired = kinWorkRetired(record.owner, names);
   const holder = ownerRetired ? `${owner} (retired)` : owner;
+  const handedBy =
+    record.handedBack === undefined || kinWorkClosed(record.state)
+      ? null
+      : { principal: record.handedBack.by, name: kinWorkName(record.handedBack.by, names, "you") };
+  const handedBack = handedBy === null ? null : `Handed back by ${handedBy.name}`;
+  // The row's mark keeps a person to their first name, so a phone-width title isn't squeezed.
+  const handedBackMark =
+    handedBy === null
+      ? null
+      : handedBy.principal._tag === "person"
+        ? `Handed back by ${handedBy.name.split(/\s+/)[0]}`
+        : handedBack;
   // What a narrow row keeps when it cuts the end off: who has it always (the row sets it apart),
   // then when it is due and where it stands, then its client or project. "Not started" is what
   // the empty circle already says.
@@ -594,10 +610,11 @@ export function kinWorkRow(
     holder,
     detail: detail.join(" · "),
     line: parts.join(" · "),
-    accessibilityLabel: [record.title, ...parts, record.late ? "Late" : null]
+    accessibilityLabel: [record.title, ...parts, record.late ? "Late" : handedBack]
       .filter((part) => part !== null)
       .join(". "),
-    mark: record.late ? "late" : null,
+    mark: record.late ? "late" : handedBack === null ? null : "handed_back",
+    markText: record.late ? KIN_WORK_MARKS.late : handedBackMark,
   };
 }
 
@@ -1195,22 +1212,24 @@ export function kinWorkItemView(
       ? `, via ${kinWorkActorName(lastMove.by, names)}`
       : "";
   const given =
-    lastMove !== undefined && handBack !== undefined
-      ? `${kinWorkActorName(lastMove.by, names)} handed this back · ${formatKinTime(new Date(lastMove.at), now)}`
-      : giver === null ||
-          kinWorkSamePrincipal(giver, item.owner) ||
-          // An agent that made the task for itself was given it by no one.
-          (item.assignedByAgent === undefined &&
-            lastMove?.kind === "created" &&
-            item.createdBy._tag !== "system" &&
-            kinWorkSamePrincipal(item.createdBy, item.owner))
-        ? null
-        : [
-            `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}${via}`,
-            item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
-          ]
-            .filter((part) => part !== null)
-            .join(" · ");
+    item.handedBack !== undefined && !kinWorkClosed(item.state)
+      ? `Handed back by ${kinWorkName(item.handedBack.by, names, "you")} · ${formatKinTime(new Date(item.handedBack.at), now)}`
+      : lastMove !== undefined && handBack !== undefined
+        ? `${kinWorkActorName(lastMove.by, names)} handed this back · ${formatKinTime(new Date(lastMove.at), now)}`
+        : giver === null ||
+            kinWorkSamePrincipal(giver, item.owner) ||
+            // An agent that made the task for itself was given it by no one.
+            (item.assignedByAgent === undefined &&
+              lastMove?.kind === "created" &&
+              item.createdBy._tag !== "system" &&
+              kinWorkSamePrincipal(item.createdBy, item.owner))
+          ? null
+          : [
+              `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}${via}`,
+              item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
+            ]
+              .filter((part) => part !== null)
+              .join(" · ");
   // The latest link to one target says the most: "PR #12 merged" over "PR #12".
   const links = new Map<string, KinWorkLinkView>();
   for (const link of item.links) {
