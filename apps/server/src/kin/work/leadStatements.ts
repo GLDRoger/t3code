@@ -44,6 +44,7 @@ import {
 } from "./statements/statementReview.ts";
 import { type Review, reviewHash } from "./statements/statementCard.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
+import { fileNamed as namedIn } from "../gendocs/brand.ts";
 
 /** The lead tools for statements. Kin reads and matches; the owner confirms on Kin's card. */
 
@@ -67,8 +68,7 @@ const Row = Schema.Struct({
 export const ReadInput = Schema.Struct({
   sourceEventId: TurnEvent,
   attachment: TrimmedNonEmptyString.check(Schema.isMaxLength(255)).annotate({
-    description:
-      "The statement file's id or name, as this turn's message or an earlier one in this chat shows it.",
+    description: "The file's name as its message shows it, with or without its extension.",
   }),
   account: Schema.optional(Schema.String.check(Schema.isPattern(/^\d{4}$/))).annotate({
     description:
@@ -179,21 +179,24 @@ const fileNamed = Effect.fn("KinStatements.fileNamed")(function* (
   chatId: string,
   named: string,
 ) {
-  const here = (yield* turnFiles(lead)).find((file) => file.id === named || file.name === named);
+  const here = namedIn(yield* turnFiles(lead), named);
   if (here !== undefined) return here;
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ id: string; name: string }>`SELECT json_extract(f.value, '$.id') AS id,
+  const earlier = yield* sql<{
+    id: string;
+    name: string;
+  }>`SELECT json_extract(f.value, '$.id') AS id,
       json_extract(f.value, '$.name') AS name
     FROM kin_messages m JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = ${lead.agentId},
       json_each(COALESCE(m.attachments_json, '[]')) f
     WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.status <> 'deleted'
       AND m.author_kind = 'human' AND m.author_person_id = a.owner_person_id
-      AND (json_extract(f.value, '$.id') = ${named} OR json_extract(f.value, '$.name') = ${named})
-    ORDER BY m.seq DESC LIMIT 1`;
+    ORDER BY m.seq DESC`;
+  const row = namedIn(earlier, named);
   if (row === undefined)
     return yield* new KinChatError({
       reason: "not_found",
-      message: `No file ${named.slice(0, 80)} from the owner in this chat. Use the file's id or name as its message shows it.`,
+      message: `No file ${named.slice(0, 80)} from the owner in this chat. Use the file's name as its message shows it.`,
     });
   return row;
 });

@@ -110,7 +110,7 @@ export const DocumentInput = Schema.Struct({
     ),
   ).annotate({
     description:
-      "With writeRecipe: attachment ids (each the file's name without its extension) of files the owner sent in this chat that show the look to copy, such as an invoice in the company's existing format (PDF, PNG, JPEG, WebP or SVG). The worker looks at them; their data never goes in the recipe.",
+      "With writeRecipe: files the owner sent in this chat that show the look to copy (each the file's name as its message shows it, with or without its extension), such as an invoice in the company's existing format (PDF, PNG, JPEG, WebP or SVG). The worker looks at them; their data never goes in the recipe.",
   }),
   sourceEventId: TurnEvent,
 });
