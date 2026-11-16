@@ -7,7 +7,10 @@ import {
   type KinListAttention,
 } from "@t3tools/client-runtime/kin/kinListSwitch";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
+import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { isMacPlatform } from "@t3tools/shared/keybindings";
 import type { AnyRouter } from "@tanstack/react-router";
 import { Atom, type AtomRegistry } from "effect/reactivity";
 
@@ -37,6 +40,32 @@ function readLastList(): KinList | null {
 let lastUsed: KinList | null = typeof window === "undefined" ? null : readLastList();
 let lastKinHref: string | null = null;
 let listBehindModal: KinList = "threads";
+let lastKinChatHref: string | null = null;
+
+// Pages under a company that aren't a chat; anything else there is a chat id.
+const KIN_NOT_CHAT = new Set([
+  "tasks",
+  "money",
+  "clients",
+  "docs",
+  "settings",
+  "team",
+  "memory",
+  "work",
+]);
+
+/** Which of the five destinations `pathname` is in: a chat, the list or Settings are Chats. */
+export function kinDestinationAt(pathname: string): KinDestination | null {
+  if (kinListAt(pathname) !== "kin") return null;
+  const page = pathname.split("/")[4];
+  if (page === "tasks" || page === "money" || page === "clients" || page === "docs") return page;
+  return "chats";
+}
+
+/** The chat last open, for Chats on a wide window; null before one has been. */
+export function kinLastChatHref(): string | null {
+  return lastKinChatHref;
+}
 
 /**
  * The list on screen at `pathname`. Settings and Usage open over the page they came from, so
@@ -90,6 +119,9 @@ export function startKinListTracking(
     listBehindModal = list;
     if (pathname === "/") return;
     if (list === "kin") lastKinHref = href;
+    const page = pathname.split("/")[4];
+    if (page !== undefined && !KIN_NOT_CHAT.has(page) && pathname.split("/").length === 5)
+      lastKinChatHref = href;
     recordList(list);
   };
   record();
@@ -139,7 +171,28 @@ export function registerKinListCommands(
   router: AnyRouter,
   registry: AtomRegistry.AtomRegistry,
 ): () => void {
-  return registerCommands({
+  const stopDestinations = registerCommands(
+    {},
+    {
+      // Over Kin, ⌘1 to ⌘5 (Ctrl elsewhere) open the destinations in the order the nav shows them.
+      // Over threads the digits stay T3's thread jumps; capture runs ahead of the hidden thread list's.
+      capture: true,
+      when: () => kinListShownAt(router.state.location.pathname) === "kin",
+      onKeyDown: (event) => {
+        const mod = isMacPlatform(navigator.platform) ? event.metaKey : event.ctrlKey;
+        if (!mod || event.altKey || event.shiftKey || !/^Digit[1-5]$/.test(event.code))
+          return false;
+        const shown = [...document.querySelectorAll<HTMLElement>("[data-kin-destination]")].filter(
+          (element) => element.offsetParent !== null,
+        );
+        const link = shown[Number(event.code.slice(5)) - 1];
+        if (link === undefined) return false;
+        event.preventDefault();
+        if (!event.repeat) link.click();
+      },
+    },
+  );
+  const stopSwitch = registerCommands({
     "kin.switchList": (event) => {
       if (registry.get(kinHostAtom)._tag !== "host") return false;
       event.preventDefault();
@@ -150,6 +203,10 @@ export function registerKinListCommands(
       });
     },
   });
+  return () => {
+    stopDestinations();
+    stopSwitch();
+  };
 }
 
 const KIN_LIST_ATTENTION = {
@@ -190,6 +247,14 @@ export const threadsAttentionAtom = Atom.make((get): KinListAttention => {
   );
   return waiting ? KIN_LIST_ATTENTION.waiting : KIN_LIST_ATTENTION.none;
 }).pipe(Atom.withLabel("kin:threads-attention"));
+
+/** How many unread messages the Kin inbox holds, for the badge on Chats. */
+export const kinInboxUnreadAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.make((get): number => {
+    const result = get(kinClient.inbox({ environmentId, input: {} }));
+    return result._tag === "Success" ? selectKinInboxView(result.value.value).unreadCount : 0;
+  }).pipe(Atom.withLabel(`kin:inbox-unread:${environmentId}`)),
+);
 
 export const noAttentionAtom = Atom.make(NO_KIN_LIST_ATTENTION).pipe(
   Atom.withLabel("kin:no-attention"),

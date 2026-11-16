@@ -12,7 +12,10 @@ import { KinNewLeadButton } from "./KinNewLeadButton";
 import { startKinOutbox } from "./kinOutbox";
 import { KinPicturesHost } from "./kinPictures";
 import { KinProfileSheetHost } from "./KinProfileSheet";
-import { KinOwnerSettingsNotice } from "./KinSettingsView";
+import { KinSettingsButton, KinSettingsFromApp } from "./KinSettingsView";
+import { KinDock } from "./KinNav";
+import { kinNewLeadTarget } from "./KinNewLeadButton";
+import { useKinHost } from "./useKinHost";
 
 /** Kin's page: the open chat. The chat list is the app sidebar (see `KinSidebar`). */
 export function KinPage() {
@@ -20,11 +23,20 @@ export function KinPage() {
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
       <Outlet />
+      <KinDockHost />
       <KinLeadDialogHost />
       <KinGroupDialogHost />
       <KinPicturesHost />
       <KinProfileSheetHost />
     </SidebarInset>
+  );
+}
+
+/** The phone's dock under the page on a narrow window. */
+function KinDockHost() {
+  const target = kinNewLeadTarget(useKinHost());
+  return target === null ? null : (
+    <KinDock environmentId={target.environmentId} orgId={target.orgId} />
   );
 }
 
@@ -34,10 +46,10 @@ export function KinPage() {
  */
 export function KinNoChat() {
   const { settings } = useSearch({ from: "/_chat/kin/" });
-  if (settings === "owner")
+  if (settings !== undefined)
     return (
       <div className="flex min-h-0 flex-1">
-        <KinOwnerSettingsNotice />
+        <KinSettingsFromApp slug={settings} />
       </div>
     );
   return (
@@ -48,7 +60,8 @@ export function KinNoChat() {
             <h1 className="truncate">Chats</h1>
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
-        <div className="ms-auto md:hidden">
+        <div className="ms-auto flex items-center gap-1 md:hidden">
+          <KinSettingsButton />
           <KinNewLeadButton />
         </div>
       </WorkspacePageHeader>

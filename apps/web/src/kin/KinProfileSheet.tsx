@@ -148,22 +148,7 @@ function KinProfileSheet(props: {
   readonly onClose: () => void;
 }) {
   const { environmentId, orgId, personId } = props.target;
-  const host = useKinHostAt(environmentId);
-  const viewer = kinFeedViewer(
-    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
-    orgId,
-  ).personId;
-  const result = useKinProfiles(environmentId, orgId);
-  const held = result === null ? null : Option.getOrNull(AsyncResult.value(result));
-  const profile = held?.profiles.find((entry) => entry.personId === personId) ?? null;
-  const mayEdit = kinMayEditProfile({
-    viewerPersonId: viewer,
-    ownerPersonId: held?.ownerPersonId ?? null,
-    personId,
-    canEdit: profile?.canEdit,
-  });
-  const [editing, setEditing] = useState(false);
-  const mine = viewer === personId;
+  const profile = useKinProfileOf(environmentId, orgId, personId);
   return (
     <Sheet
       open
@@ -174,34 +159,77 @@ function KinProfileSheet(props: {
       <SheetPopup side="right">
         <SheetHeader>
           <SheetTitle>
-            {mine ? KIN_PROFILE_COPY.mine : (profile?.displayName ?? KIN_PROFILE_COPY.title)}
+            {profile.mine
+              ? KIN_PROFILE_COPY.mine
+              : (profile.profile?.displayName ?? KIN_PROFILE_COPY.title)}
           </SheetTitle>
-          {held?.ownerPersonId === personId ? (
-            <SheetDescription>Runs this workspace</SheetDescription>
-          ) : null}
+          {profile.runsWorkspace ? <SheetDescription>Runs this workspace</SheetDescription> : null}
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
-          {profile === null ? (
-            <p className="text-sm text-muted-foreground">
-              {result !== null && AsyncResult.isFailure(result)
-                ? KIN_PROFILE_COPY.loadFailed
-                : "Loading…"}
-            </p>
-          ) : editing ? (
-            <KinProfileForm
-              environmentId={environmentId}
-              orgId={orgId}
-              profile={profile}
-              mine={mine}
-              onDone={() => setEditing(false)}
-            />
-          ) : (
-            <KinProfileRead profile={profile} mayEdit={mayEdit} onEdit={() => setEditing(true)} />
-          )}
+          <KinProfileBody {...props.target} />
         </div>
       </SheetPopup>
     </Sheet>
   );
+}
+
+function useKinProfileOf(environmentId: EnvironmentId, orgId: KinOrgId, personId: KinPersonId) {
+  const host = useKinHostAt(environmentId);
+  const viewer = kinFeedViewer(
+    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
+    orgId,
+  ).personId;
+  const result = useKinProfiles(environmentId, orgId);
+  const held = result === null ? null : Option.getOrNull(AsyncResult.value(result));
+  const profile = held?.profiles.find((entry) => entry.personId === personId) ?? null;
+  return {
+    result,
+    profile,
+    viewer,
+    mine: viewer === personId,
+    runsWorkspace: held?.ownerPersonId === personId,
+    mayEdit: kinMayEditProfile({
+      viewerPersonId: viewer,
+      ownerPersonId: held?.ownerPersonId ?? null,
+      personId,
+      canEdit: profile?.canEdit,
+    }),
+  };
+}
+
+/** Someone's profile, read or edited: in the sheet, and as Settings → Profile for your own. */
+export function KinProfileBody(props: KinProfileTarget) {
+  const { environmentId, orgId, personId } = props;
+  const { result, profile, mine, mayEdit } = useKinProfileOf(environmentId, orgId, personId);
+  const [editing, setEditing] = useState(false);
+  if (profile === null)
+    return (
+      <p className="text-sm text-muted-foreground">
+        {result !== null && AsyncResult.isFailure(result)
+          ? KIN_PROFILE_COPY.loadFailed
+          : "Loading…"}
+      </p>
+    );
+  return editing ? (
+    <KinProfileForm
+      environmentId={environmentId}
+      orgId={orgId}
+      profile={profile}
+      mine={mine}
+      onDone={() => setEditing(false)}
+    />
+  ) : (
+    <KinProfileRead profile={profile} mayEdit={mayEdit} onEdit={() => setEditing(true)} />
+  );
+}
+
+/** The viewer's own person here, once the host has said who they are. */
+export function useKinMe(environmentId: EnvironmentId, orgId: KinOrgId): KinPersonId | null {
+  const host = useKinHostAt(environmentId);
+  return kinFeedViewer(
+    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
+    orgId,
+  ).personId;
 }
 
 function Field(props: { readonly label: string; readonly children: React.ReactNode }) {
@@ -503,44 +531,5 @@ function KinProfileForm(props: {
         </Button>
       </div>
     </form>
-  );
-}
-
-/** The chat list's way to the viewer's own profile: their face, name and roles. */
-export function KinProfileEntry(props: {
-  readonly environmentId: EnvironmentId;
-  readonly orgId: KinOrgId;
-  readonly onOpen: () => void;
-}) {
-  const { environmentId, orgId } = props;
-  const host = useKinHostAt(environmentId);
-  const viewer = kinFeedViewer(
-    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
-    orgId,
-  ).personId;
-  const result = useKinProfiles(environmentId, orgId);
-  const held = result === null ? null : Option.getOrNull(AsyncResult.value(result));
-  const profile = held?.profiles.find((entry) => entry.personId === viewer) ?? null;
-  if (viewer === null || profile === null) return null;
-  const personId = viewer;
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        props.onOpen();
-        openKinProfile({ environmentId, orgId, personId });
-      }}
-      className="flex items-center gap-2.5 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset"
-    >
-      <KinAvatar avatar={{ kind: "person", seed: kinPersonSeed(personId) }} />
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate text-sm font-medium text-sidebar-foreground">
-          {profile.displayName}
-        </span>
-        <span className="truncate text-xs text-sidebar-muted-foreground">
-          {profile.roleTags.length === 0 ? KIN_PROFILE_COPY.mine : profile.roleTags.join(", ")}
-        </span>
-      </span>
-    </button>
   );
 }
