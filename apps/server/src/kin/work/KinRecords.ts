@@ -44,6 +44,7 @@ import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal, withdrawAttempts } from "./workerAttempts.ts";
 import {
+  fieldList,
   checkFor,
   encodeFieldValues,
   type FieldValue,
@@ -260,6 +261,8 @@ export type Tick = {
 type TeamScope = {
   readonly scope: ReadonlyArray<string>;
   readonly before: ReadonlyArray<{ readonly personId: string; readonly recordId: string }>;
+  /** People joined to or taken off a project: their tasks there read differently, seen or not. */
+  readonly joined?: ReadonlyArray<string>;
 };
 export type GroupBy = "party" | "project" | "side" | "owner" | "state" | "category";
 export type TotalsBy = GroupBy | "month" | "financialYear";
@@ -585,12 +588,19 @@ const make = Effect.gen(function* () {
         .join(" ");
     // Its own number moves for anyone who saw it before or sees it after, and for anyone whose
     // view of the rest it moved, as a client's label or a project's lead does.
-    const moved = [...new Set([...before, ...after].map((pair) => pair.personId))].filter(
-      (personId) =>
-        [...before, ...after].some(
-          (pair) => pair.personId === personId && pair.recordId === row.recordId,
-        ) || seen(before, personId) !== seen(after, personId),
-    );
+    const moved = [
+      ...new Set([
+        ...[...before, ...after]
+          .map((pair) => pair.personId)
+          .filter(
+            (personId) =>
+              [...before, ...after].some(
+                (pair) => pair.personId === personId && pair.recordId === row.recordId,
+              ) || seen(before, personId) !== seen(after, personId),
+          ),
+        ...(team?.joined ?? []),
+      ]),
+    ];
     const numbers = yield* bumpTeamSeqs(orgId, moved).pipe(provideSql);
     yield* sql.afterCommit(
       PubSub.publish(ticks, {
@@ -1542,7 +1552,21 @@ const make = Effect.gen(function* () {
             ? yield* dependents(orgId, row.recordId).pipe(provideSql)
             : []),
         ];
-        const team: TeamScope = { scope, before: yield* teamPairs(orgId, scope).pipe(provideSql) };
+        const members = (fields: Record<string, FieldValue>) =>
+          fieldList(fields, "members").flatMap((text) =>
+            text.startsWith("person:") ? [text.slice("person:".length)] : [],
+          );
+        const joined =
+          list === "projects" && patch.fields?.["members"] !== undefined
+            ? [...new Set([...members(stored), ...members(merged)])].filter(
+                (person) => members(stored).includes(person) !== members(merged).includes(person),
+              )
+            : [];
+        const team: TeamScope = {
+          scope,
+          before: yield* teamPairs(orgId, scope).pipe(provideSql),
+          joined,
+        };
         // Each update rewrites only the fields it changed, so two changes to one entry both land.
         yield* sql`UPDATE kin_records SET ${sql.csv(sets)}
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
