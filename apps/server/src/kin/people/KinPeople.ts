@@ -377,10 +377,15 @@ export const make = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("KinPeople.joined")),
     );
     const people = rows.map(decodePerson);
-    // A member reads who is on the team, as their profiles already say; access and places stay the owner's.
+    // A member reads who is on the team, as their profiles already say, and who the owner is;
+    // everyone else's access and places stay the owner's.
     if (!full)
       return {
-        people: people.map(({ access: _access, ...one }) => ({ ...one, githubLogin: null })),
+        people: people.map(({ access, ...one }) => ({
+          ...one,
+          ...(access === "owner" ? { access } : {}),
+          githubLogin: null,
+        })),
         joined: joined.map((row) => row.personId),
       };
     const places = yield* Effect.forEach(people, (one) => placesFor(orgId, one.personId));

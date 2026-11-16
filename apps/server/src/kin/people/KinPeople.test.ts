@@ -481,7 +481,11 @@ it.effect(
         ["Ravi", "Meera"],
       );
       assert.isUndefined(named.places);
-      assert.isTrue(named.people.every((one) => one.access === undefined));
+      // J14: only the owner's row says so, so a sheet can name the owner; the rest stay unsaid.
+      assert.deepEqual(
+        named.people.flatMap((one) => (one.access === undefined ? [] : [one.access])),
+        ["owner"],
+      );
       assert.deepInclude(
         (yield* service.list(ownerSession, orgId)).places?.find(
           (one) => one.personId === ravi.person.personId,
