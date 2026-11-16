@@ -74,7 +74,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_delegate", {
     ...workers,
     description:
-      "Start a worker for one build, review or research task in a project or repository on this host, named in plain words (t3code, or owner/name). Brief it with one goal, the facts it needs, and member text in quoted; model defaults to strong. Review of a worker's work: reviewOf is the author's workerId, on a different instance and model; the reviewer gets only your goal and the author's PR or commit. Any open PR in the project's repo: set pullRequest; review reports findings at its head, build pushes fixes to its branch; review with uiTest: true runs its screens in a headless browser and sends screenshots with the report. Where workers run on this server, build work starts only from your direct chat with the owner, PR reviews and fixes also from an owner-only check-in. Returns workerId and threadLink; the report arrives later, so don't wait. If refused, nothing started: don't retry, do what you can and say in one line what you couldn't.",
+      "Start a worker for one build, review or research task in a project or repository on this host, named in plain words in project (a name such as t3code, or owner/name). Brief it with one goal, the facts it needs, and member text in quoted. model defaults to strong. For review of a worker's work, set reviewOf to the author workerId and pick a model with a different instance and model; the reviewer gets only your goal and the author's reported PR or commit. For any open PR in the project's repo, anyone's, set pullRequest: review checks it out at its head with its diff and reports findings; build pushes fixes to the PR's own branch. To test a PR's screens, use review with pullRequest and uiTest: true; the worker runs the app in a headless browser, and its screenshots come to the chat with its report. Returns workerId and threadLink. Where workers run on this server itself, build work starts from your direct chat with the owner, and PR reviews and fixes also from an owner-only check-in. Don't wait: its report arrives as a later event. If it is refused, nothing started: don't retry, do what you still can yourself, and say in one line what you couldn't. Identical retries return the same worker.",
     parameters: Workers.DelegateInput,
     success: Workers.DelegateResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -172,7 +172,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_react", {
     ...chat,
     description:
-      "React to a message in the chat your reply goes to, with an emoji the schema lists; a new one replaces yours. A reaction can stand in for a reply when the owner's message needs no answer (\"thanks, that's all\"); if they asked something, reply in text. Never an approval.",
+      "React to a message in the chat your reply goes to, with any emoji the schema lists, as a person would; a new one replaces yours on that message. A reaction can stand in for a reply when the owner's message needs no answer, such as \"thanks, that's all\". If they asked something, still reply in text. Never an approval.",
     parameters: Schema.Struct({ messageId: KinMessageId, emoji: KinReactionEmoji }),
     success: KinReaction,
   }).annotate(McpSchema.EnabledWhen, enabled),

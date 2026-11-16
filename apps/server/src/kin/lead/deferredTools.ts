@@ -6,7 +6,6 @@
 export const KIN_DEFERRED_TOOLS: ReadonlySet<string> = new Set([
   "statement_read",
   "statement_rows",
-  "kin_document",
   "kin_recipes",
   "kin_issue",
   "kin_receipt",

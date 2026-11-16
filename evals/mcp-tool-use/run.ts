@@ -1044,7 +1044,14 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
   return {
     testCase,
     base,
-    tools: [...base.nativeTools],
+    // A Kin tool an earlier turn of the thread loaded through ToolSearch is still loaded.
+    tools: [
+      ...base.nativeTools,
+      ...base.deferred.filter((tool) => {
+        const bare = tool.name.replace(T3_PREFIX, "");
+        return KIN_DEFERRED_TOOLS.has(bare) && priorCalls.some((call) => call.tool === bare);
+      }),
+    ],
     repo: testCase.setup.world?.repo ?? "acme/app",
     shell,
     shellUsage: emptyUsage(),
