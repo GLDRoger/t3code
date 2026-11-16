@@ -102,7 +102,18 @@ function promptText(params: Record<string, unknown>): string {
   return blocks.map((block) => (block.type === "text" ? (block.text ?? "") : "")).join("\n");
 }
 
+/** kin-bench measures every prompt: with `<verify dir>/capture-prompts` present, each is kept with its tool list. */
+async function capture(server: McpServer | undefined, prompt: string) {
+  const dir = NodePath.join(verifyDir, "prompts");
+  if (!NodeFS.existsSync(NodePath.join(verifyDir, "capture-prompts"))) return;
+  NodeFS.mkdirSync(dir, { recursive: true });
+  const name = `${Date.now()}-${NodeCrypto.randomBytes(3).toString("hex")}`;
+  const tools = server === undefined ? undefined : await (await mcpClient(server)).list();
+  NodeFS.writeFileSync(NodePath.join(dir, `${name}.json`), JSON.stringify({ prompt, tools }));
+}
+
 async function runTurn(server: McpServer | undefined, prompt: string): Promise<string> {
+  await capture(server, prompt).catch(() => undefined);
   // The prompt may quote earlier messages; the newest marker is this turn's.
   const id = [...prompt.matchAll(MARKER)].at(-1)?.[1];
   if (id === undefined) return "Noted.";
