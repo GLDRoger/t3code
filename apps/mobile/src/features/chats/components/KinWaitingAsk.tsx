@@ -57,7 +57,7 @@ export function KinWaitingAsk(props: {
   };
   return (
     <View className="gap-2 px-4 pb-3">
-      <Text textRole="footnote" className="text-muted-foreground">
+      <Text textRole="footnote" className="text-foreground-muted">
         {ask.line}
       </Text>
       {canAct ? (
@@ -71,7 +71,7 @@ export function KinWaitingAsk(props: {
                   ? "The default; sends this as your answer"
                   : "Sends this as your answer"
               }
-              tone={option.isDefault ? "secondary" : "outline"}
+              tone="outline"
               size="compact"
               loading={pending === option.optionId}
               disabled={pending !== null}

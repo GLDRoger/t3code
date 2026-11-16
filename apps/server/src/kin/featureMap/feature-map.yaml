@@ -84,6 +84,24 @@ features:
     roles: { owner: both, co_owner: both, lead: both, member: both }
     proof: [packages/client-runtime/src/kin/kinInboxModel.test.ts]
 
+  - id: open-questions
+    name: An agent's question with its default and day, asked once
+    tab: chats
+    web: [home, section:Waiting on you, chat, card:Choice]
+    phone: [tab:chats, KinWaiting, card:Choice]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [kin_ask, kin_ask_close]
+    note: >-
+      Stored only for a direct chat with one person. A repeat (same intent about a shared record)
+      is refused; at its day Kin takes the default once, or raises a question with no safe default
+      once on the next working morning. Text questions close on the person's next message.
+    proof:
+      - apps/server/src/kin/questions/openQuestions.test.ts
+      - apps/server/src/kin/questions/rules.test.ts
+      - packages/client-runtime/src/kin/kinWaitingAsk.test.ts
+      - verification/kin/questions/Questions.tla
+      - .agents/skills/verify-kin/scripts/open-questions.sh
+
   - id: relay-and-hand-off
     name: An agent carries a message between people
     tab: chats

@@ -62,7 +62,7 @@ export function KinWaitingAsk(props: {
             <Button
               key={option.optionId}
               size="compact"
-              variant={option.isDefault ? "secondary" : "outline"}
+              variant="outline"
               disabled={pending !== null}
               aria-label={option.isDefault ? `${option.label}, the default` : option.label}
               onClick={() => void press(option.optionId)}
