@@ -16,6 +16,7 @@ import type { SupervisorConnectionState } from "../connection/model.ts";
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import type { KinSynced } from "./kinStreams.ts";
 import type { KinHost } from "./kinHost.ts";
+import { kinMessageGistMarkdown } from "./kinMessagePage.ts";
 import { kinTapText } from "./kinTap.ts";
 import type { KinInboxRow, KinInboxState } from "./kinInboxModel.ts";
 
@@ -252,7 +253,7 @@ function kinMessagePreview(last: KinChatSummary["lastMessage"]): string {
   // Hosts before the quiet-turn change posted their own bookkeeping as system rows.
   if (last.kind === "system" && last.widgetId?.startsWith("memory-changes:")) return "Saved a note";
   if (last.kind === "system" && last.widgetId?.startsWith("deferral:")) return "Set a reminder";
-  return kinPreviewText(last.body) || "Message";
+  return kinPreviewText(kinMessageGistMarkdown(last)) || "Message";
 }
 
 /** Whether the viewer's own membership mutes this chat's pushes right now. */

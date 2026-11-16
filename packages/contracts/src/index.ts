@@ -75,6 +75,7 @@ export * from "./settingsSecretValue.ts";
 export * from "./clientRpcPermissions.ts";
 export * from "./kinChat.ts";
 export * from "./kinChart.ts";
+export * from "./kinPage.ts";
 export * from "./kinVisual.ts";
 export * from "./kinRefresh.ts";
 export * from "./kinLead.ts";

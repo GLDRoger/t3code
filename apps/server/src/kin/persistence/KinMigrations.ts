@@ -71,6 +71,7 @@ import SendOwesCard from "./migrations/K147_SendOwesCard.ts";
 import EventReplied from "./migrations/K148_EventReplied.ts";
 import SendAccount from "./migrations/K149_SendAccount.ts";
 import PersonRemoved from "./migrations/K150_PersonRemoved.ts";
+import MessageForm from "./migrations/K151_MessageForm.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -222,6 +223,7 @@ const loader = Migrator.fromRecord({
   "148_EventReplied": EventReplied,
   "149_SendAccount": SendAccount,
   "150_PersonRemoved": PersonRemoved,
+  "151_MessageForm": MessageForm,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

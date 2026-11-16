@@ -13,7 +13,7 @@ import type {
   KinPushToken,
   KinWidgetId,
 } from "@t3tools/contracts";
-import { KinTriggerSettings } from "@t3tools/contracts";
+import { KinTriggerSettings, kinGreeting, kinPageGist, kinPageShape } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -30,6 +30,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { KinApnsTransport } from "./Apns.ts";
 import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
@@ -252,6 +253,17 @@ const make = Effect.gen(function* () {
     return isQuiet(yield* Clock.currentTimeMillis, yield* cache.ownerTimeZone(orgId), hours);
   });
 
+  /** The hour of the owner's day, for a brief's greeting: check-ins are his. */
+  const ownerHour = Effect.fn("KinPushSender.ownerHour")(function* (orgId: KinOrgId) {
+    const zone = yield* ownerZone(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    const hour = new Intl.DateTimeFormat("en-GB", {
+      hour: "numeric",
+      hourCycle: "h23",
+      timeZone: zone,
+    }).format(yield* Clock.currentTimeMillis);
+    return Number(hour);
+  });
+
   /** The Chats list's unread total, from the same read, so the icon and the list agree. */
   const badgeFor = (orgId: KinOrgId, personId: KinPersonId) =>
     chats.unreadTotal({ orgId, personId });
@@ -291,6 +303,7 @@ const make = Effect.gen(function* () {
       author_member_id: string | null;
       author_name: string | null;
       body: string;
+      form: string | null;
       mentions_json: string;
       reply_author: KinPersonId | null;
       asked_json: string;
@@ -300,7 +313,7 @@ const make = Effect.gen(function* () {
       seq: number;
     }>`
       SELECT m.chat_id, m.seq, m.author_kind, m.author_person_id, m.author_member_id, m.body,
-        m.mentions_json,
+        m.form, m.mentions_json,
         COALESCE(
           (SELECT display_name FROM kin_agents a
             WHERE a.org_id = m.org_id AND a.agent_id = m.author_agent_id),
@@ -339,7 +352,13 @@ const make = Effect.gen(function* () {
     // A card that waits on someone announces itself through its widget push; one with no words of
     // its own (a chart, a doc) is seen in the chat and rings nobody.
     if (row === undefined || row.awaits_card === 1) return undefined;
-    const body = kinPushBody(row.body);
+    const body = kinPushBody(
+      row.form === "brief"
+        ? `${kinGreeting(yield* ownerHour(orgId))}. ${kinPageGist(row.body)}`
+        : kinPageShape(row.body) === "page"
+          ? kinPageGist(row.body)
+          : row.body,
+    );
     if (row.is_card === 1 && body === "") return undefined;
     const chat = yield* chatName(orgId, row.chat_id);
     const mentions = new Set<string>(yield* decodeIds(row.mentions_json));
