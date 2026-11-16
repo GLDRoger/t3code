@@ -13,7 +13,9 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -29,6 +31,7 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinConnectionSecrets } from "../connections/ConnectionSecrets.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
 import { fixture, orgId, seed } from "../triggers/routines.testkit.ts";
 import { type FakeZernio, makeFakeZernio, memoryStore } from "./FakeZernio.ts";
 import { KinSocial, layer as socialLayer } from "./SocialService.ts";
@@ -59,7 +62,7 @@ const scope: McpInvocationScope = {
 };
 
 let clock = NOW;
-const harness = () => {
+const harness = (renderer: Layer.Layer<never> = Layer.empty) => {
   clock = NOW;
   const fake = makeFakeZernio(memoryStore(), () => clock);
   const keys = new Map<string, Redacted.Redacted<string>>();
@@ -90,7 +93,7 @@ const harness = () => {
     ),
   );
   const layer = socialLayer.pipe(
-    Layer.provideMerge(Layer.mergeAll(secrets, identity, http)),
+    Layer.provideMerge(Layer.mergeAll(secrets, identity, http, renderer)),
     Layer.provideMerge(fixture()),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-social-" })),
     Layer.provideMerge(NodeServices.layer),
@@ -602,3 +605,88 @@ it.effect("makes a ready-to-post pack with nothing connected", () => {
     }),
   );
 });
+
+// Best times on the coming week's offset, and a client preview rendered outside the
+// database's one transaction.
+const preview: {
+  transaction: Context.Service<
+    SqlClient.TransactionConnection,
+    SqlClient.TransactionConnection.Service
+  > | null;
+  rendered: Deferred.Deferred<boolean> | null;
+} = { transaction: null, rendered: null };
+const probeRenderer = Layer.mock(KinDocRenderer)({
+  sheet: () =>
+    Effect.gen(function* () {
+      const inside =
+        preview.transaction !== null &&
+        Option.isSome(yield* Effect.serviceOption(preview.transaction));
+      if (preview.rendered !== null) yield* Deferred.succeed(preview.rendered, inside);
+      return yield* new KinChatError({ reason: "unavailable", message: "Invented: no preview." });
+    }),
+});
+
+it.effect(
+  "shows best times on this summer's clock and renders a preview outside a transaction",
+  () => {
+    const { fake, run } = harness(probeRenderer);
+    return run(
+      Effect.gen(function* () {
+        yield* setUp;
+        const social = yield* KinSocial;
+        const sql = yield* SqlClient.SqlClient;
+        // Monday 6 July, in London: summer time, an hour ahead of UTC.
+        const summer = Date.parse("2026-07-06T09:00:00.000Z");
+        yield* at(summer);
+        yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+          evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+          quiet_hours_json)
+        VALUES (${orgId}, 'Europe/London', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')
+        ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Europe/London'`;
+        const own = yield* connectGroup(fake, { kind: "own" }, OWN);
+        const [ig] = fake.accountsOf(own.made.profileId);
+        fake.addPast([
+          {
+            accountId: ig!.accountId,
+            platform: "instagram",
+            content: "Friday drop",
+            publishedAt: iso(summer - 3 * DAY),
+            mediaType: "image",
+            likes: 50,
+            comments: 5,
+            saves: 5,
+            shares: 5,
+            reach: 900,
+          },
+        ]);
+        const read = (yield* social.read(scope, { group: "our own" })) as {
+          groups: ReadonlyArray<{ bestTimes?: ReadonlyArray<string> }>;
+        };
+        // Friday 09:00 UTC is 10 am in London this week, not the 9 am of a winter week.
+        const friday = new Intl.DateTimeFormat("en-GB", {
+          timeZone: "Europe/London",
+          weekday: "short",
+          hour: "numeric",
+          hour12: true,
+        }).format(Date.parse("2026-07-10T09:00:00.000Z"));
+        assert.match(read.groups[0]!.bestTimes?.[0] ?? "", new RegExp(`^${friday} `));
+
+        yield* at(NOW);
+        yield* connectGroup(fake, { kind: "client", clientId: "rec_lumen" }, LUMEN);
+        yield* social.draft(scope, {
+          group: "Lumen Studio",
+          account: "instagram",
+          caption: "New lamps ✨",
+          media: PICTURE,
+          at: iso(NOW + DAY),
+        });
+        yield* social.week(scope, { group: "Lumen Studio" });
+        preview.transaction = sql.transactionService;
+        preview.rendered = yield* Deferred.make<boolean>();
+        const [card] = yield* weekCard;
+        yield* tap(card!, "preview", null);
+        assert.isFalse(yield* Deferred.await(preview.rendered), "rendered inside a transaction");
+      }),
+    );
+  },
+);

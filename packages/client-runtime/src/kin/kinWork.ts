@@ -513,7 +513,7 @@ export interface KinWorkRowView {
 /** Why one of your own tasks leads "On me": shown on the task, not as a second list. */
 export type KinWorkMark = "late" | "today" | "stuck" | "handed_back";
 
-export const KIN_WORK_MARKS: Record<KinWorkMark, string> = {
+const KIN_WORK_MARKS: Record<KinWorkMark, string> = {
   late: "Late",
   today: "Due today",
   stuck: "Stuck",
@@ -1207,21 +1207,21 @@ export function kinWorkItemView(
     item.handedBack !== undefined && !kinWorkClosed(item.state)
       ? `Handed back by ${kinWorkName(item.handedBack.by, names, "you")} · ${formatKinTime(new Date(item.handedBack.at), now)}`
       : lastMove !== undefined && handBack !== undefined
-      ? `${kinWorkActorName(lastMove.by, names)} handed this back · ${formatKinTime(new Date(lastMove.at), now)}`
-      : giver === null ||
-          kinWorkSamePrincipal(giver, item.owner) ||
-          // An agent that made the task for itself was given it by no one.
-          (item.assignedByAgent === undefined &&
-            lastMove?.kind === "created" &&
-            item.createdBy._tag !== "system" &&
-            kinWorkSamePrincipal(item.createdBy, item.owner))
-        ? null
-        : [
-            `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}${via}`,
-            item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
-          ]
-            .filter((part) => part !== null)
-            .join(" · ");
+        ? `${kinWorkActorName(lastMove.by, names)} handed this back · ${formatKinTime(new Date(lastMove.at), now)}`
+        : giver === null ||
+            kinWorkSamePrincipal(giver, item.owner) ||
+            // An agent that made the task for itself was given it by no one.
+            (item.assignedByAgent === undefined &&
+              lastMove?.kind === "created" &&
+              item.createdBy._tag !== "system" &&
+              kinWorkSamePrincipal(item.createdBy, item.owner))
+          ? null
+          : [
+              `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}${via}`,
+              item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
+            ]
+              .filter((part) => part !== null)
+              .join(" · ");
   // The latest link to one target says the most: "PR #12 merged" over "PR #12".
   const links = new Map<string, KinWorkLinkView>();
   for (const link of item.links) {
