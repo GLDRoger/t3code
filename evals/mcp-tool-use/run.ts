@@ -155,7 +155,7 @@ import {
 const MODELS = {
   "claude-sonnet-5-5": "Sonnet 5.5",
   "claude-opus-5-5": "Opus 5.5",
-  // Kin's cheap model; leads run on Claude only, so its cases are the ones worth running here.
+  // Kin's cheap model.
   "claude-haiku-5-5": "Haiku 5.5",
   "gpt-6.1-sol": "GPT-6.1 Sol",
   "gpt-6-astra": "GPT-6 Astra",
@@ -172,6 +172,13 @@ const PRICES = {
   "claude-opus-5-5": { input: 4, output: 20, cacheWrite: 5, cacheRead: 0.2 },
 };
 type PricedModel = keyof typeof PRICES;
+// OpenAI's standard API prices (developers.openai.com/api/docs/pricing, November 2026); output
+// includes reasoning. GPT runs bill a ChatGPT sign-in instead: this is what the API would charge.
+const AGENT_PRICES = {
+  ...PRICES,
+  "gpt-6.1-sol": { input: 2, output: 10, cacheWrite: 0, cacheRead: 0.1 },
+  "gpt-6-astra": { input: 10, output: 50, cacheWrite: 0, cacheRead: 1 },
+};
 /** GPT models that can play the shell through CLIProxyAPI, when no Anthropic key is at hand. */
 const PROXY_SHELL_MODELS = ["gpt-6-luna", "gpt-6.1-terra"] as const;
 type ShellModel = PricedModel | (typeof PROXY_SHELL_MODELS)[number];
@@ -2807,10 +2814,11 @@ const groups = <A>(rows: ReadonlyArray<A>, key: (row: A) => string) =>
   [...Map.groupBy(rows, key)].toSorted(([left], [right]) => left.localeCompare(right));
 
 const USAGE_KEYS = ["input", "output", "cacheWrite", "cacheRead"] as const;
-/** Token totals and their cost in USD at one model's prices. Proxy runs have no price. */
-const spend = (usages: ReadonlyArray<Usage>, model: ShellModel | undefined) => {
+/** Token totals and their cost in USD at one model's prices. Proxy shell models have no price. */
+const spend = (usages: ReadonlyArray<Usage>, model: ShellModel | Model) => {
   const total = (key: keyof Usage) => usages.reduce((sum, usage) => sum + usage[key], 0);
-  const price = (key: keyof Usage) => (model && isPricedModel(model) ? PRICES[model][key] : 0);
+  const prices = model in AGENT_PRICES ? AGENT_PRICES[model as keyof typeof AGENT_PRICES] : null;
+  const price = (key: keyof Usage) => prices?.[key] ?? 0;
   const cost = USAGE_KEYS.reduce((sum, key) => sum + total(key) * price(key), 0) / 1e6;
   return { cost, tokens: USAGE_KEYS.map((key) => `${key} ${total(key)}`).join(", ") };
 };
@@ -2840,7 +2848,7 @@ export const summarize = (
   const codex = isCodex(options.model);
   const agent = spend(
     rows.map((row) => row.usage),
-    codex ? undefined : options.model,
+    options.model,
   );
   const shell = spend(
     rows.map((row) => row.shellUsage),
@@ -2888,10 +2896,8 @@ export const summarize = (
     `- Pass: ${percent(passRate(rows))} of ${finished} samples (${sampleCount("pass")} pass, ${sampleCount("margin")} within margin, ${sampleCount("fail")} fail).`,
     `- Cases: ${caseCount("pass")} pass, ${caseCount("margin")} pass within margin, ${caseCount("fail")} fail.`,
     ...(errors.length > 0 ? [errorNote] : []),
-    codex
-      ? "- Cost: the agent is not priced. GPT models run on a ChatGPT sign-in (`--harness app-server`) or the `vibeproxy` in `~/.codex/config.toml`; agent tokens are below."
-      : `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample.`,
-    `- Agent tokens: ${agent.tokens}${codex ? "." : ` ($${agent.cost.toFixed(2)}).`}`,
+    `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample${codex ? ", at OpenAI's API prices; the run itself bills the ChatGPT sign-in (`--harness app-server`) or the `vibeproxy` in `~/.codex/config.toml`" : ""}.`,
+    `- Agent tokens: ${agent.tokens} ($${agent.cost.toFixed(2)}).`,
     ...latencyLine(rows),
     `- Shell simulator (${options.shellModel}) tokens: ${shell.tokens} (API-price estimate $${shell.cost.toFixed(2)}).`,
     ...(codex
