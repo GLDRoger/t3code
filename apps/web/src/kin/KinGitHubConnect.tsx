@@ -85,7 +85,7 @@ function GitHubSection(props: { readonly environmentId: EnvironmentId; readonly 
           )
         ) : (
           <SettingsRow
-            title={COPY.title}
+            title={row.title}
             description={row.detail}
             status={<Badge variant={TONE_BADGE[row.tone]}>{row.label}</Badge>}
             control={

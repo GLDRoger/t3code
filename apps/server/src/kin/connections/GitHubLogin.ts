@@ -153,7 +153,6 @@ export const make = Effect.fn("KinGitHubLogin.make")(function* (
   const identity = yield* KinIdentity;
   const sql = yield* SqlClient.SqlClient;
   const refresh = yield* KinRefreshObserver;
-  const settings = yield* Effect.serviceOption(ServerSettingsService);
   const layerScope = yield* Effect.scope;
   const lock = yield* Semaphore.make(1);
   const pending = yield* Ref.make<Pending | null>(null);
@@ -280,7 +279,10 @@ export const make = Effect.fn("KinGitHubLogin.make")(function* (
     } satisfies KinGitHubStatus;
   });
 
+  // Kin's own layers don't carry the host's settings: the RPC handler provides them per call,
+  // and a sign-in still running inherits them from the call that started it.
   const savedTokens = Effect.fn("KinGitHubLogin.savedTokens")(function* () {
+    const settings = yield* Effect.serviceOption(ServerSettingsService);
     if (Option.isNone(settings)) return undefined;
     const current = yield* settings.value.getSettings;
     const github = readSourceControlHostSettings(

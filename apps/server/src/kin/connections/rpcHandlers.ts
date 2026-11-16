@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinConnections } from "./ConnectionsService.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
@@ -24,6 +25,8 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
   session: AuthenticatedSession,
 ) {
   const kin = yield* Effect.serviceOption(KinServer);
+  // GitHub's login is saved as T3's own GitHub token too; Kin's layers don't carry the settings.
+  const settings = yield* Effect.serviceOption(ServerSettingsService);
   const call = Effect.fn("KinConnections.rpc")(function* <A>(
     run: (
       connections: KinConnections["Service"],
@@ -49,7 +52,10 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
     if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
     const services = kin.value.services.value;
     const people = yield* Context.get(services, KinIdentity).resolve(session);
-    return yield* run(Context.get(services, KinGitHubLogin), people);
+    const call = run(Context.get(services, KinGitHubLogin), people);
+    return yield* Option.isSome(settings)
+      ? call.pipe(Effect.provideService(ServerSettingsService, settings.value))
+      : call;
   });
   return group.of({
     "kin.github.connect.status": (input) => github((g, people) => g.status(people, input)),

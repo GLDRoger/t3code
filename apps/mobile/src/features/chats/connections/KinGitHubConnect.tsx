@@ -103,7 +103,7 @@ export function KinGitHubSection(props: {
                 ? "checkmark.circle"
                 : "link"
           }
-          label={COPY.title}
+          label={row.title}
           description={row.detail}
           detail={row.label}
           onPress={() =>

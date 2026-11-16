@@ -54,6 +54,8 @@ export const KIN_GITHUB_COPY = {
 const makeKey = Schema.decodeSync(KinConnectionKey);
 
 export interface KinGitHubRow {
+  /** The connected login, or what the row is before there is one. */
+  readonly title: string;
   readonly tone: KinConnectionTone;
   readonly label: string;
   readonly detail: string;
@@ -70,6 +72,10 @@ const orgList = (orgs: ReadonlyArray<string>) => {
 
 /** The GitHub row on the Connections list. */
 export function kinGitHubRow(status: KinGitHubStatus): KinGitHubRow {
+  return { title: status.account?.login ?? "Your GitHub account", ...rowState(status) };
+}
+
+function rowState(status: KinGitHubStatus): Omit<KinGitHubRow, "title"> {
   const account = status.account;
   if (status.signIn !== null)
     return {
