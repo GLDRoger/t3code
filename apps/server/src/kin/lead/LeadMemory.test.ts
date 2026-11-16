@@ -372,6 +372,7 @@ it.live(
           "kin_follow_up",
           "kin_worker_stop",
           "kin_leads",
+          "agent_update",
           "people_read",
           "people_update",
           "kin_hand_off",

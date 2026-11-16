@@ -58,6 +58,8 @@ import {
   type KinPulseListInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
+  type KinAgentDefaultsInput,
+  type KinAgentPageInput,
   type KinLeadAccessInput,
   type KinLeadsListInput,
   type KinOrgsListInput,
@@ -130,6 +132,18 @@ const leadAccessRead = createKinRpcCommand(connectionAtomRuntime, {
   tag: "kin.lead.access.list",
 });
 const readLeadAccess = guardedRead(leadAccessRead);
+
+const agentPageRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:agent-page:read",
+  tag: "kin.lead.page",
+});
+const readAgentPage = guardedRead(agentPageRead);
+
+const agentDefaultsRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:agent-defaults:read",
+  tag: "kin.agents.defaults",
+});
+const readAgentDefaults = guardedRead(agentDefaultsRead);
 
 const visualHostsRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:visual-hosts:read",
@@ -465,6 +479,43 @@ export const kinClient = {
   leadRestore: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:lead:restore",
     tag: "kin.lead.restore",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
+  /** One agent's whole page, for owner-level people. */
+  agentPage: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:agent-page",
+    execute: Effect.fn("KinWebClient.agentPage")(function* (input: KinAgentPageInput) {
+      return yield* readAgentPage(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("leads"),
+  }),
+  agentDefaults: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:agent-defaults",
+    execute: Effect.fn("KinWebClient.agentDefaults")(function* (input: KinAgentDefaultsInput) {
+      return yield* readAgentDefaults(input);
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinRefreshOn("leads"),
+  }),
+  agentDefaultsSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:agent-defaults:set",
+    tag: "kin.agents.defaults.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+  }),
+  characterSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:character",
+    tag: "kin.lead.character.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
+  leadPause: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:pause",
+    tag: "kin.lead.pause",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
+  leadResume: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:resume",
+    tag: "kin.lead.resume",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
   }),
   /** Who besides the owner may message one of the owner's leads. */

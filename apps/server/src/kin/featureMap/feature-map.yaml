@@ -238,15 +238,25 @@ features:
     proof: [apps/server/src/kin/chat/KinGroups.test.ts]
 
   - id: agent-details
-    name: An agent's card, who may message it, retire and restore
+    name: An agent's page, who may message it, retire and restore
     tab: chats
     web: [chat, sheet:Agent]
-    phone: [tab:chats, KinChat, KinLead]
+    phone: [tab:chats, KinChat, KinLead, KinAgentCharacter]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    tools: [kin_leads]
+    note: >-
+      The owner and co-owners see and change everything on it: model and effort, character with its
+      history, check-ins, access, pause and resume, retire and restore. Leads and members get a short
+      read-only card. New agents start on the company default model (Settings, Agents); a
+      model this server no longer has falls back to it and the page says so. Also opens from an
+      agent's name in a message, Settings, Agents, and the command palette.
+    tools: [kin_leads, agent_update]
     proof:
       - packages/client-runtime/src/kin/kinAgentRetire.test.ts
+      - packages/client-runtime/src/kin/kinAgentPage.test.ts
       - apps/server/src/kin/lead/KinStop.test.ts
+      - apps/server/src/kin/lead/KinLeadProvision.test.ts
+      - apps/server/src/kin/lead/leadModels.test.ts
+      - .agents/skills/verify-kin/scripts/agent-page.sh
 
   - id: agent-create
     name: Create or edit an agent
