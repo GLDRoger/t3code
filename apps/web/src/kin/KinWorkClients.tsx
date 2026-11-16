@@ -1,5 +1,5 @@
 import { useKinViewerScope } from "./useKinOwnerLevel";
-import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_WORK_STALE,
@@ -12,6 +12,7 @@ import { kinWorkApplied, type KinWorkAction } from "@t3tools/client-runtime/kin/
 import {
   KIN_CLIENTS,
   KIN_CLIENT_FAILED,
+  KIN_CLIENT_REFUSED,
   KIN_CLIENT_GONE,
   KIN_PROJECTS,
   KIN_PROJECTS_DEFAULT_FILTER,
@@ -46,7 +47,6 @@ import { LegendList } from "@legendapp/list/react";
 import { EllipsisIcon, MailIcon, PencilIcon, PhoneIcon, PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
 
-import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -64,6 +64,7 @@ import {
   KinFilter,
   KinWorkHealthBadge,
   KinWorkNotice,
+  KinLoadFailed,
   KinWorkPrivateMark,
   KinWorkProblem,
   KinWorkRowSkeletons,
@@ -248,26 +249,15 @@ export function KinWorkClientsList(
               <KinWorkRowSkeletons />
             </div>
           ) : failed ? (
-            <div className="flex flex-col items-start gap-3 py-4">
-              <Alert variant="error">
-                <AlertDescription>
-                  {kinFailureText(
-                    state.failed ?? projects.state.failed,
-                    `${KIN_CLIENTS.loadFailed}.`,
-                  )}
-                </AlertDescription>
-              </Alert>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  list.refresh();
-                  projects.list.refresh();
-                }}
-              >
-                Retry
-              </Button>
-            </div>
+            <KinLoadFailed
+              what={KIN_CLIENTS.loadFailed}
+              cause={state.failed ?? projects.state.failed}
+              onRetry={() => {
+                list.refresh();
+                projects.list.refresh();
+              }}
+              className="py-4"
+            />
           ) : (
             <KinWorkNotice
               title={nothing.title}
@@ -437,15 +427,14 @@ export function KinWorkClientPage(
       </div>
     );
   if (state._tag === "gone") return <KinWorkNotice {...KIN_CLIENT_GONE} />;
-  if (state._tag === "refused" || state._tag === "failed")
+  if (state._tag === "refused") return <KinWorkNotice {...KIN_CLIENT_REFUSED} />;
+  if (state._tag === "failed")
     return (
-      <KinWorkNotice
-        {...KIN_CLIENT_FAILED}
-        action={
-          <Button size="sm" variant="outline" onClick={refresh}>
-            Retry
-          </Button>
-        }
+      <KinLoadFailed
+        what={KIN_CLIENT_FAILED.title}
+        cause={state.cause}
+        onRetry={refresh}
+        className="mx-auto w-full max-w-3xl p-4"
       />
     );
   return <ClientPage {...props} page={state.value} stale={state.stale} onRefresh={refresh} />;

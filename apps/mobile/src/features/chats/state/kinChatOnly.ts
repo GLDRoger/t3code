@@ -9,7 +9,12 @@ import {
   kinViewerOwnerLevel,
   type KinAppShell,
 } from "@t3tools/client-runtime/kin/kinJoin";
-import { EnvironmentId, type KinPersonAccess, type SessionGrantInput } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  kinOwnerLevel,
+  type KinPersonAccess,
+  type SessionGrantInput,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -195,4 +200,10 @@ export function useKinPlaceReach(environmentId: EnvironmentId): KinPlaceReach | 
 /** What part of the company the viewer sees, for words that must not overclaim. */
 export function useKinViewerScope(environmentId: EnvironmentId): KinViewerScope {
   return kinViewerScope(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)));
+}
+
+/** Whether a client's name opens its page for this viewer: owner level, Clients on, or a lead. */
+export function useKinOpensClients(environmentId: EnvironmentId): boolean {
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  return kinOwnerLevel(me?.access) || kinPlaceReach(me)?.clients === true;
 }

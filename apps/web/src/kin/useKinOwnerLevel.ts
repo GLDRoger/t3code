@@ -30,3 +30,9 @@ export function useKinViewerScope(environmentId: EnvironmentId): KinViewerScope 
   const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
   return isChatOnlySession() ? kinViewerScope(me) : KIN_SCOPE_ALL;
 }
+
+/** Whether a client's name opens its page for this viewer: owner level, Clients on, or a lead. */
+export function useKinOpensClients(environmentId: EnvironmentId): boolean {
+  const ownerLevel = useKinOwnerLevel(environmentId);
+  return useKinPlaceReach(environmentId)?.clients === true || ownerLevel;
+}

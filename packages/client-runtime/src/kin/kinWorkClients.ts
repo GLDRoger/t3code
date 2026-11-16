@@ -112,6 +112,12 @@ export const KIN_CLIENT_GONE = {
   title: "This client isn't here any more",
   detail: "Open Clients to see who there is now.",
 };
+/** The host keeps this client from the viewer: a refusal, never a connection problem. */
+export const KIN_CLIENT_REFUSED = {
+  title: "This client isn't yours to see",
+  detail: "The owner or a co-owner decides who sees Clients.",
+};
+
 export const KIN_CLIENT_FAILED = {
   title: "Couldn't load this client",
   detail: KIN_CHECK_CONNECTION,
@@ -158,6 +164,11 @@ export const KIN_PROJECT_GONE = {
   title: "This project isn't here any more",
   detail: "Open Projects to see what there is now.",
 };
+export const KIN_PROJECT_REFUSED = {
+  title: "This project isn't yours to see",
+  detail: "Projects show for the people on them, and for the owner and co-owners.",
+};
+
 export const KIN_PROJECT_FAILED = {
   title: "Couldn't load this project",
   detail: KIN_CHECK_CONNECTION,

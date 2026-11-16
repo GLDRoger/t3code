@@ -1,3 +1,4 @@
+import { useKinOpensClients } from "./useKinOwnerLevel";
 import { useAtomValue } from "@effect/atom-react";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import {
@@ -505,6 +506,7 @@ export function KinListEntry(
   },
 ) {
   const { item, view, environmentId } = props;
+  const opensClients = useKinOpensClients(environmentId);
   const lists = useKinLists(props, { enabled: true, archived: true });
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
@@ -552,7 +554,7 @@ export function KinListEntry(
       .map(([id, name]) => ({ value: `agent:${id}`, label: name })),
   ];
   const open = (fact: KinListEntryView["facts"][number]) =>
-    fact.opens === null
+    fact.opens === null || (fact.id !== "project" && !opensClients)
       ? null
       : fact.id === "project"
         ? () => props.onOpenProject(fact.opens!)
@@ -874,7 +876,8 @@ export function KinListEntry(
                       />
                     ) : field.files.length > 0 ? (
                       <EntryFiles {...props} files={field.files} previewKey={previewKey} />
-                    ) : field.opens !== null ? (
+                    ) : field.opens !== null &&
+                      (field.opens.list === "projects" || opensClients) ? (
                       <div>
                         <Button
                           size="xs"
