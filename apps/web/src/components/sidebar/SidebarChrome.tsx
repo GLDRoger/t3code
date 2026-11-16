@@ -1,7 +1,7 @@
 import { ArrowLeftIcon, ArrowRightIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo } from "react";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate, useRouter } from "@tanstack/react-router";
 
 import { useAtomValue } from "@effect/atom-react";
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
@@ -33,7 +33,8 @@ import {
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
-import { kinListAt } from "../../kin/kinListSwitch";
+import { kinListAt, kinListShownAt } from "../../kin/kinListSwitch";
+import { openKinSettings } from "../../kin/kinSettingsAddress";
 import { isChatOnlySession } from "../../environments/primary";
 import { useKinListSwitch } from "../../kin/useKinListSwitch";
 import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
@@ -248,12 +249,16 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const navigate = useNavigate();
   const navigateToMainApp = useNavigateToMainApp();
   const { isMobile, setOpenMobile } = useSidebar();
-  // Kin is a list of its own, left through the brand mark, so it keeps the everyday footer.
+  const router = useRouter();
+  // Kin is a list of its own, not a utility page, so it keeps the everyday footer.
   const isOnUtilityPage = useLocation({
     select: (location) =>
       isSidebarUtilityPage(location.pathname) && kinListAt(location.pathname) !== "kin",
   });
-  const overKin = useLocation({ select: (location) => kinListAt(location.pathname) === "kin" });
+  // Over Kin (and the app's settings opened from it) the corner holds only Kin's Settings.
+  const overKin = useLocation({
+    select: (location) => kinListShownAt(location.pathname) === "kin",
+  });
   const pullRequestsSupported = usePullRequestsSupported();
   const closeMobileSidebar = () => {
     if (isMobile) {
@@ -269,7 +274,8 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   };
   const handleSettingsClick = () => {
     closeMobileSidebar();
-    void navigate({ to: "/settings" });
+    if (overKin) openKinSettings(router.history);
+    else void navigate({ to: "/settings" });
   };
 
   const handleUsageClick = () => {
@@ -295,26 +301,26 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
         </SidebarMenuItem>
       ) : (
         <>
-          {/* Over Kin, Settings is the gear on Chats; the app's own sit under its This computer. */}
-          {overKin ? null : (
-            <SidebarUtilityItem
-              icon={<SettingsIcon />}
-              label="Settings"
-              onClick={handleSettingsClick}
-            />
-          )}
-          {pullRequestsSupported ? (
+          <SidebarUtilityItem
+            icon={<SettingsIcon />}
+            label="Settings"
+            onClick={handleSettingsClick}
+          />
+          {/* Pull requests and usage are about coding threads, which Kin doesn't offer. */}
+          {pullRequestsSupported && !overKin ? (
             <SidebarUtilityItem
               icon={<PullRequestGlyph.pullRequest />}
               label="Pull requests"
               onClick={handlePullRequestsClick}
             />
           ) : null}
-          <SidebarUtilityItem
-            icon={<ChartNoAxesColumnIcon />}
-            label="Usage"
-            onClick={handleUsageClick}
-          />
+          {overKin ? null : (
+            <SidebarUtilityItem
+              icon={<ChartNoAxesColumnIcon />}
+              label="Usage"
+              onClick={handleUsageClick}
+            />
+          )}
         </>
       )}
       <SidebarThreadUndoNotice />
@@ -324,10 +330,12 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
 });
 
 export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
+  // A teammate's session runs no providers and doesn't update the server.
+  const chatOnly = isChatOnlySession();
   return (
     <SidebarFooter>
-      <SidebarProviderUpdatePill />
-      <SidebarUpdateArchitectureWarning />
+      {chatOnly ? null : <SidebarProviderUpdatePill />}
+      {chatOnly ? null : <SidebarUpdateArchitectureWarning />}
       <SidebarUtilityMenu />
     </SidebarFooter>
   );

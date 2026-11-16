@@ -6,19 +6,17 @@ import {
   type KinDestination,
 } from "@t3tools/client-runtime/kin/kinNavigation";
 import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { useEffect } from "react";
 import {
   BanknoteIcon,
   BriefcaseBusinessIcon,
-  CodeXmlIcon,
   FileTextIcon,
   ListChecksIcon,
   type LucideIcon,
   MessagesSquareIcon,
 } from "lucide-react";
 
-import { mainAppReturnHref } from "../components/sidebar/mainAppLocation";
 import { Badge } from "../components/ui/badge";
 import {
   SidebarGroup,
@@ -27,7 +25,6 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "../components/ui/sidebar";
-import { isChatOnlySession } from "../environments/primary";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { cn } from "../lib/utils";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
@@ -37,8 +34,6 @@ import {
   kinInboxUnreadAtom,
   kinShownDestinationsAtom,
   kinListShownAt,
-  noAttentionAtom,
-  threadsAttentionAtom,
 } from "./kinListSwitch";
 import { useKinAttention } from "./useKinAttention";
 import { useKinDocsLive } from "./useKinDocs";
@@ -103,7 +98,7 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
 const badgeLabel = (destination: KinDestination, badge: string) =>
   destination === "chats" ? `${badge} unread` : `${badge} need you`;
 
-/** Kin's five destinations at the top of the sidebar, and Code for a session that has threads. */
+/** Kin's five destinations at the top of the sidebar. T3's coding threads are not offered in Kin. */
 export function KinNav() {
   const target = kinNewLeadTarget(useKinHost());
   if (target === null) return null;
@@ -115,7 +110,6 @@ function KinNavList(props: KinWorkTarget) {
   const pathname = useLocation({ select: (location) => location.pathname });
   const { isMobile, setOpenMobile } = useSidebar();
   const current = kinListShownAt(pathname) === "kin" ? kinDestinationAt(pathname) : null;
-  const coding = !isChatOnlySession();
   const close = () => {
     if (isMobile) setOpenMobile(false);
   };
@@ -153,43 +147,8 @@ function KinNavList(props: KinWorkTarget) {
             );
           })}
         </SidebarMenu>
-        {coding ? (
-          <>
-            <div role="separator" className="mx-2 border-t border-sidebar-border" />
-            <SidebarMenu>
-              <KinCodeEntry active={current === null} onOpen={close} />
-            </SidebarMenu>
-          </>
-        ) : null}
       </nav>
     </SidebarGroup>
-  );
-}
-
-/** T3's coding threads, for the owner's own session: kept apart from the five, as it always was. */
-function KinCodeEntry(props: { readonly active: boolean; readonly onOpen: () => void }) {
-  const navigate = useNavigate();
-  // Threads are read for the dot only while they are the list you are not in.
-  const waiting = useAtomValue(props.active ? noAttentionAtom : threadsAttentionAtom).waiting;
-  return (
-    <SidebarMenuItem>
-      <SidebarMenuButton
-        isActive={props.active}
-        aria-current={props.active ? "page" : undefined}
-        onClick={() => {
-          props.onOpen();
-          if (!props.active) void navigate({ href: mainAppReturnHref() });
-        }}
-      >
-        <CodeXmlIcon />
-        <span className="min-w-0 flex-1 truncate">Code</span>
-        {waiting ? (
-          <Badge size="sm" variant="warning" aria-label="Threads need you">
-            !
-          </Badge>
-        ) : null}
-      </SidebarMenuButton>
-    </SidebarMenuItem>
   );
 }
 
