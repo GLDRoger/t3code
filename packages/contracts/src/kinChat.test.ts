@@ -168,6 +168,11 @@ const samples = {
   KinChatId: ["chat-1"],
   KinMemberId: ["member-1"],
   KinMessageId: ["message-1"],
+  KinDiscussionId: ["TD-1"],
+  KinMessageRelay: [
+    { kind: "sent_by", agentId: "agent-1" },
+    { kind: "reply_from", agentId: "agent-1" },
+  ],
   KinWidgetId: ["widget-1"],
   KinWaitingId: ["waiting-1"],
   KinWakeupId: ["wakeup-1"],

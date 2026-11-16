@@ -1345,18 +1345,22 @@ function useMarkdownStyles(): MarkdownStyleSets {
 }
 
 /** Messages from other agents fold to one line so the user's own messages stay easy to find. */
-function AgentMessageFoldHeader(props: {
+export function AgentMessageFoldHeader(props: {
   readonly environmentId: EnvironmentId;
   readonly senderThreadId?: ThreadId;
+  /** Who sent it, when the caller knows: Kin names the agent, not a thread. */
+  readonly label?: string;
   readonly summary: string;
   readonly expanded: boolean;
   readonly onToggle: () => void;
   readonly iconSubtleColor: ColorValue;
 }) {
   const senderShell = useQuietThreadShell(
-    props.senderThreadId ? scopeThreadRef(props.environmentId, props.senderThreadId) : null,
+    props.label === undefined && props.senderThreadId
+      ? scopeThreadRef(props.environmentId, props.senderThreadId)
+      : null,
   );
-  const label = senderShell?.title.trim() || "Agent";
+  const label = props.label ?? (senderShell?.title.trim() || "Agent");
   return (
     <Pressable
       accessibilityRole="button"

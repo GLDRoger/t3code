@@ -66,6 +66,8 @@ import { RETIRED_WORKER_REASON, retiredWorkerKey } from "./Retirement.ts";
 import { WorkerTracker } from "./WorkerTracker.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
+import { KinTeam } from "../team/KinTeam.ts";
+import { KinHandoff } from "./Handoff.ts";
 
 /** How long one wake-up may run before it is interrupted. */
 const WAKEUP_DEADLINE_MS = 900_000;
@@ -152,6 +154,8 @@ const make = Effect.gen(function* () {
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const bridge = yield* Effect.serviceOption(KinReplyBridge);
   const tracker = yield* Effect.serviceOption(WorkerTracker);
+  const team = yield* Effect.serviceOption(KinTeam);
+  const handoff = yield* Effect.serviceOption(KinHandoff);
   const endReply = (row: {
     readonly orgId: KinOrgId;
     readonly agentId: KinAgentId;
@@ -168,6 +172,9 @@ const make = Effect.gen(function* () {
         ? Option.none()
         : yield* bridge.value.lane(row);
     const finished = yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
+    // A Team-room turn that said nothing passed; a hand-off's answer goes back to who asked.
+    if (Option.isSome(team)) yield* team.value.wakeupEnded(row);
+    if (Option.isSome(handoff)) yield* handoff.value.reportBack(row);
     if (Option.isNone(bridge) || Option.isNone(lane)) return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
     // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run

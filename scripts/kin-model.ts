@@ -89,6 +89,15 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/work/teamView.ts",
     "apps/server/src/kin/pulse/senses/work.ts",
   ],
+  discussion: [
+    "apps/server/src/kin/team/turns.ts",
+    "apps/server/src/kin/team/KinTeam.ts",
+    "apps/server/src/kin/team/stakes.ts",
+    "apps/server/src/kin/chat/KinChatService.ts",
+    "apps/server/src/kin/chat/KinGroups.ts",
+    "apps/server/src/kin/lead/Handoff.ts",
+    "apps/server/src/kin/lead/WakeupRunner.ts",
+  ],
 };
 /** The models a change touches: a covered file, the model's own folder, or this runner. */
 export const modelsFor = (files: ReadonlyArray<string>) =>

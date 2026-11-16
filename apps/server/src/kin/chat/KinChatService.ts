@@ -5,6 +5,7 @@ import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as TaskCard from "../widgets/taskCard.ts";
 import {
   KIN_CHOICE_CARD_ACTION,
+  KIN_TEAM_ROOM_TEAM_ID,
   KinChatError,
   KinChatId,
   KinMemberId,
@@ -42,7 +43,9 @@ import {
   type KinChatMember,
   type KinChatsCreateDirectInput,
   type KinAttachment,
+  type KinDiscussionId,
   type KinMessage,
+  type KinMessageRelay,
   type KinMessagesMarkReadInput,
   type KinChatsMuteInput,
   type KinChatsClearInput,
@@ -167,6 +170,11 @@ export class KinChatService extends Context.Service<
       readonly audience: WriteAudience;
       /** Posted as this lead while it is in the chat, such as a relay held through quiet hours. */
       readonly from?: KinAgentId;
+      /** A row one agent sent into another's chat, or the answer carried back (`KinMessageRelay`). */
+      readonly relay?: KinMessageRelay;
+      readonly discussionId?: KinDiscussionId;
+      /** Shown, but never pushed or counted as unread. */
+      readonly silent?: true;
     }) => Effect.Effect<
       { readonly message: KinMessage; readonly waiting: KinWaitingItem | null },
       ServiceError
@@ -517,6 +525,13 @@ const make = Effect.gen(function* () {
     const person = yield* identityFor(caller, target);
     return person._tag === "person" ? person : yield* notFound;
   });
+  /** The Team room's viewer rule: a membership row alone never lets a teammate read it. */
+  const roomReadable = (identity: PersonIdentity, chat: { readonly teamId: string | null }) =>
+    chat.teamId !== KIN_TEAM_ROOM_TEAM_ID
+      ? Effect.succeed(true)
+      : ownerLevel(identity.orgId, identity.personId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
   const memberFor = Effect.fn("KinChatService.memberFor")(function* (
     identity: Identity,
     chatId: KinChatId,
@@ -531,6 +546,8 @@ const make = Effect.gen(function* () {
           : row.principal._tag === "agent" && row.principal.agentId === identity.agentId),
     );
     if (member === undefined) return yield* notFound;
+    if (identity._tag === "person" && !(yield* roomReadable(identity, chat)))
+      return yield* notFound;
     if (identity._tag === "agent") {
       const agent = yield* requireRecord(repo.getAgent(identity));
       const thread = yield* requireRecord(repo.getAgentThread(identity));
@@ -1083,7 +1100,10 @@ const make = Effect.gen(function* () {
       members: group ? [member] : yield* repo.listMembers(chat),
       lastMessage: shown,
       ...(Option.isSome(author) ? { lastAuthorName: author.value.displayName } : {}),
-      unread: yield* repo.unreadCount(member),
+      // The Team room never counts toward a badge: a quiet "new" dot at most.
+      ...(chat.teamId === KIN_TEAM_ROOM_TEAM_ID
+        ? { unread: 0, fresh: (yield* repo.unreadCount(member)) > 0 }
+        : { unread: yield* repo.unreadCount(member) }),
       working:
         Option.isSome(presence) &&
         presence.value
@@ -1098,6 +1118,8 @@ const make = Effect.gen(function* () {
       for (const identity of identities) {
         for (const member of yield* repo.listMembersByPerson(identity)) {
           if (member.leftAt !== null) continue;
+          const chat = yield* requireRecord(repo.getChat(member));
+          if (!(yield* roomReadable(identity, chat))) continue;
           chats.push(yield* summary(identity, member.chatId));
         }
         for (const item of yield* repo.listOpenWaiting(identity)) {
@@ -1375,6 +1397,9 @@ const make = Effect.gen(function* () {
         ...(input.attachments === undefined || input.attachments.length === 0
           ? {}
           : { attachments: input.attachments }),
+        ...(input.relay === undefined ? {} : { relay: input.relay }),
+        ...(input.discussionId === undefined ? {} : { discussionId: input.discussionId }),
+        ...(input.silent === undefined ? {} : { silent: input.silent }),
         intent: null,
         mentions: [],
         replyTo: null,

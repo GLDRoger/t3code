@@ -13,6 +13,7 @@ import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
 import { laneFor } from "../../reply/KinReplyBridge.ts";
 import { KinHandoff } from "../Handoff.ts";
+import { KinTeam } from "../../team/KinTeam.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import { quote } from "../LeadPrompt.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
@@ -90,6 +91,16 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.relay")(function* (input) {
       const { postTo } = yield* KinLevelGate;
       return yield* (yield* KinHandoff).relay(yield* McpInvocationContext, input, postTo);
+    }),
+  ),
+  team_open: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.teamOpen")(function* (input) {
+      return yield* (yield* KinTeam).open(yield* McpInvocationContext, input);
+    }),
+  ),
+  team_say: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.teamSay")(function* (input) {
+      return yield* (yield* KinTeam).say(yield* McpInvocationContext, input);
     }),
   ),
   kin_ask: McpToolAccess.actsAsCaller(
