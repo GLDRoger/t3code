@@ -548,13 +548,17 @@ export const teamDetail = Effect.fn("KinTeamView.detail")(function* (
   return sheet;
 });
 
-const AMOUNT =
-  /[₹$€£]\s?\d|\b(?:rs\.?|inr|usd|eur|gbp)\s?\d|\d[\d,.]*\s?(?:k|lakhs?|lacs?|crores?|cr|rupees|dollars|euros|pounds|bucks|inr|usd|eur|gbp)\b/i;
+const CURRENCY_WORD = "(?:rupees?|dollars?|euros?|pounds?|bucks|rs\\.?|inr|usd|eur|gbp)";
+// A currency's symbol or word on either side of a figure, or "k", lakh and crore after one.
+const AMOUNT = new RegExp(
+  `[₹$€£]\\s?\\d|\\d\\s?[₹$€£]|\\b${CURRENCY_WORD}\\s?\\d|\\d[\\d,.]*\\s?(?:k|lakhs?|lacs?|crores?|cr|${CURRENCY_WORD})\\b`,
+  "i",
+);
 const NUMBER_WORD =
   "(?:a|half|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion)";
-// "forty thousand rupees", "five lakh": an amount in words is an amount.
+// "forty thousand rupees", "five lakh", "Rupees fifty thousand": an amount in words is an amount.
 const AMOUNT_WORDS = new RegExp(
-  `\\b${NUMBER_WORD}(?:[\\s-]+(?:and[\\s-]+)?${NUMBER_WORD})*[\\s-]+(?:lakhs?|lacs?|crores?|rupees|dollars|euros|pounds|bucks)\\b`,
+  `\\b${NUMBER_WORD}(?:[\\s-]+(?:and[\\s-]+)?${NUMBER_WORD})*[\\s-]+(?:lakhs?|lacs?|crores?|${CURRENCY_WORD})\\b|\\b${CURRENCY_WORD}[\\s-]+(?!a\\b)${NUMBER_WORD}\\b`,
   "i",
 );
 const MONEY_NUMBER = /\b[A-Z]{2,5}\/\d{2}-\d{2}\/\d+\b/;

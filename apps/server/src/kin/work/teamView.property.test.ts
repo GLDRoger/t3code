@@ -18,7 +18,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { search } from "./search.ts";
-import { personSees } from "./teamView.ts";
+import { personSees, unreadableBy } from "./teamView.ts";
 
 // Invented org, people and entries only.
 const orgId = KinOrgId.make("org");
@@ -216,7 +216,7 @@ const holdsOrAttends = (row: Row, viewer: Member) =>
   row.list === "work" &&
   (row.owner === viewer || (row.fields["attendees"] as Array<string>).includes(`person:${viewer}`));
 
-layer(testLayer)("personSees", (it) => {
+layer(testLayer)("what a teammate sees and is told", (it) => {
   it.effect.prop(
     "a member never sees an entry the owner labelled private unless they hold or attend it",
     [world],
@@ -354,4 +354,104 @@ layer(testLayer)("personSees", (it) => {
         }
       }),
   );
+
+  const int = (min: number, max: number) =>
+    Arbitrary.schema(Schema.Int.check(Schema.isBetween({ minimum: min, maximum: max })));
+  const number = Arbitrary.all([int(1, 999_999), pick(["", ",000", ".5", "00"])]).pipe(
+    Arbitrary.map(([n, tail]) => `${n}${tail}`),
+  );
+  const WORDS = ["five", "twenty", "forty", "two hundred", "fifty-five", "one", "half a"];
+  const said = Arbitrary.all([pick(WORDS), pick(["", " thousand", " and twenty"])]).pipe(
+    Arbitrary.map(([word, more]) => `${word}${more}`),
+  );
+  const around = Arbitrary.all([
+    pick(["", "Tell Ana ", "The client agreed to ", "FYI: "]),
+    pick(["", " for the launch.", " by Friday", "."]),
+  ]);
+  const tell = (text: string) => unreadableBy(orgId, KinPersonId.make("ana"), text);
+
+  it.effect.prop(
+    "a message naming an amount, in figures or words, never goes to a teammate",
+    [
+      around,
+      number,
+      said,
+      pick([
+        "₹{n}",
+        "$ {n}",
+        "€{n}",
+        "£{n}",
+        "Rs. {n}",
+        "rs{n}",
+        "INR {n}",
+        "USD{n}",
+        "{n}k",
+        "{n} K",
+        "{n} lakh",
+        "{n} lakhs",
+        "{n} lacs",
+        "{n} crore",
+        "{n} cr",
+        "{n} rupees",
+        "{n} dollars",
+        "{n} INR",
+        "{n} bucks",
+        "{w} rupees",
+        "{w} lakh",
+        "{w} crore",
+        "{w} dollars",
+        "Rupees {n}",
+        "Rupees {w}",
+        "{n}$",
+        "{n} €",
+      ]),
+    ],
+    ([[before, after], n, w, form]) =>
+      Effect.gen(function* () {
+        yield* install(emptyWorld);
+        const text = `${before}${form.replace("{n}", n).replace("{w}", w)}${after}`;
+        assert.isDefined(yield* tell(text), text);
+      }),
+  );
+
+  it.effect.prop(
+    "a plain count goes through",
+    [
+      around,
+      number,
+      said,
+      pick([
+        "{w} users",
+        "{n} users",
+        "{n} tasks",
+        "{w} people signed up",
+        "{n} days",
+        "version {n}",
+        "{n} of the {n} pages",
+        "at 5pm",
+      ]),
+    ],
+    ([[before, after], n, w, form]) =>
+      Effect.gen(function* () {
+        yield* install(emptyWorld);
+        const text = `${before}${form.replaceAll("{n}", n).replace("{w}", w)}${after}`;
+        assert.isUndefined(yield* tell(text), text);
+      }),
+  );
 });
+
+const emptyWorld: World = {
+  clients: [
+    { sensitive: false, shared: false },
+    { sensitive: false, shared: false },
+  ],
+  projects: [
+    { lead: "owner", party: null, members: [], sensitive: false, shared: false },
+    { lead: "owner", party: null, members: [], sensitive: false, shared: false },
+  ],
+  places: [
+    { clients: false, docs: false, money: false },
+    { clients: false, docs: false, money: false },
+  ],
+  entries: [],
+};
