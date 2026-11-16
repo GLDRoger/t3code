@@ -279,12 +279,12 @@ export const answerChange = Effect.fn("KinCompanyProfile.answerChange")(function
   yield* setProfile(input.orgId, { _tag: "person", personId: input.personId }, patch, row.baseRev);
   yield* sql`UPDATE kin_profile_changes SET applied_at = ${input.now}
     WHERE org_id = ${input.orgId} AND change_id = ${row.changeId}`;
-  const changed = changeLines(current, patch);
+  // The card above already lists each change, old beside new.
   return {
     title: "Company details changed",
     text:
-      changed.length === 0
+      changeLines(current, patch).length === 0
         ? "Saved; nothing in the details was different."
-        : `Changed: ${changed.join("; ")}.`.slice(0, 600),
+        : "Saved. Documents made from now on use these details.",
   };
 });

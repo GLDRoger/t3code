@@ -762,7 +762,7 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
       ? {}
       : {
           proposed: [...proposed],
-          next: "Nothing has changed yet. Kin showed the owner this change on a card; it applies when they tap Confirm. Say so in one line.",
+          next: "Nothing has changed yet. Kin showed this change on a card in this chat; it applies when they tap Confirm. Say so in one line.",
         }),
     sensitive: true as const,
   };

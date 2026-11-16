@@ -1940,7 +1940,7 @@ describe("the company profile", () => {
       assert.include(yield* Effect.flip(answer("mate", true)), { reason: "not_allowed" });
       const said = yield* answer(ownerId, true);
       assert.strictEqual(said?.title, "Company details changed");
-      assert.include(said?.text, "Bank account number: none → 1234567890");
+      assert.strictEqual(said?.text, "Saved. Documents made from now on use these details.");
       const after = yield* OwnerMoney.companyProfile(people, { orgId });
       assert.deepStrictEqual(
         [after.legalName, after.pan, after.bank.accountNumber, after.bank.ifsc, after.rev],
