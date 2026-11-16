@@ -25,6 +25,8 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer } from "../KinServer.ts";
 import { agentServices } from "../mcp/KinChatToolkit.ts";
+import { isHeld } from "../lead/LevelGate.ts";
+import { theirTime } from "../triggers/quietHold.ts";
 import { SHARED_REFUSAL, effectiveAudience, turnPeople } from "../lead/Audience.ts";
 import { type Lead, leadTool } from "../work/leadWork.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
@@ -168,18 +170,22 @@ const runNudge = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseNud
               }),
           ),
         ),
-    post: (chatId, clientMessageId, personId) =>
+    post: (chatId, clientMessageId, personId, notBefore) =>
       postTo(agent, personId, {
         chatId,
         body: input.text,
         intent: "question",
         clientMessageId,
-      }).pipe(Effect.asVoid, Effect.mapError(failure)),
+        notBefore,
+      }).pipe(
+        Effect.map((posted) => (isHeld(posted) ? posted : undefined)),
+        Effect.mapError(failure),
+      ),
   });
   return {
     person: sent.person,
     day: sent.day,
-    note: `Sent in ${sent.person}'s chat with you. Their answer arrives there; if none comes, replan or tell the owner rather than nudging again.`,
+    note: `${sent.held === undefined ? "Sent" : `Held until they start: Kin delivers it at ${theirTime(sent.held.at, sent.held.zone)},`} in ${sent.person}'s chat with you. Their answer arrives there; if none comes, replan or tell the owner rather than nudging again.`,
   };
 });
 
@@ -229,7 +235,7 @@ export const KinPulseToolkit = Toolkit.make(
   Tool.make("pulse_nudge", {
     ...shared,
     description:
-      "Nudge a teammate about one of their open Work facts: Kin posts your one line in their own chat with you. Only with a concrete consequence (a date missed, someone blocked, a client waiting). At most one a day per person, only in their working hours, and refused while your last nudge to them is unanswered: then replan, take it over or tell the owner. Owner-only turns.",
+      "Nudge a teammate about one of their open Work facts: Kin posts your one line in their own chat with you. Only with a concrete consequence (a date missed, someone blocked, a client waiting). At most one a day per person, and refused while your last nudge to them is unanswered: then replan, take it over or tell the owner. Owner-only turns.",
     parameters: PulseNudgeInput,
     success: PulseNudgeResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

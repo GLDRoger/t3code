@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # A fact is told once: the next check-in with nothing changed queues nothing; a change is told.
 # A check-in that comes in the owner's quiet hours waits for their end (07:00 unless he set
-# others), survives a restart, and runs once.
+# others), survives a restart, and runs once. So does a relay to Zoya in hers: held, not refused,
+# in her chat at 07:00 and not before, with one push.
 source "$(dirname "$0")/lib.sh"
 # The owner's zone, set so the wall clock reads `$1` o'clock now: Etc/GMT-N is UTC+N.
 zone_at() { node -e 'const h=new Date().getUTCHours();let n=((+process.argv[1]-h)%24+24)%24;if(n>14)n-=24;process.stdout.write(n===0?"Etc/GMT":`Etc/GMT${n>0?"-":"+"}${Math.abs(n)}`)' "$1"; }
@@ -76,6 +77,21 @@ sleep 5
 [[ "$(q "select count(*) from kin_wakeups where wakeup_id = (select wakeup_id from kin_events where event_id = '$night_event')")" == 0 ]] ||
   fail "the night check-in woke the agent in quiet hours"
 
+# 23:xx on Zoya's clock too: the owner's relay to her is taken and held, and the agent told 07:00.
+ZOYA="$(q "select person_id from kin_people where handle = 'zoya'")"
+kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"$NIGHT\"}" >/dev/null
+kv as zoya rpc kin.push.registerDevice "{\"token\":\"$(printf 'a%.0s' {1..64})\",\"platform\":\"ios\",\"apsEnvironment\":\"development\"}" >/dev/null
+RELAY="Proof $RUN: the clinic moved the Thursday review to 10:00."
+relayed="$(kv tool chief kin_relay "{\"to\":\"Zoya Sheikh\",\"text\":\"$RELAY\"}" --as-turn-of owner)"
+expect_in "$relayed" "kin_relay: ok" "the relay in Zoya's quiet hours was refused: $relayed"
+expect_in "$relayed" "07:00 their time" "the agent wasn't told when it reaches her"
+[[ "$(q "select count(*) from kin_messages where body = '$RELAY'")" == 0 ]] ||
+  fail "the relay reached Zoya inside her quiet hours"
+[[ "$(q "select count(*) from kin_held_posts where body = '$RELAY' and delivered_at is null")" == 1 ]] ||
+  fail "the relay wasn't held"
+relay_pushes() { kv push sent | rg -c "Proof $RUN: the clinic moved" || echo 0; }
+[[ "$(relay_pushes)" == 0 ]] || fail "the held relay pushed Zoya at night"
+
 # Quiet hours end (stored times move back; the server restarts): it runs, once.
 kv clock advance "$(((eight - $(date +%s) * 1000) / 60000 + 2))m" >/dev/null
 for _ in $(seq 1 120); do
@@ -86,5 +102,13 @@ done
   fail "the held check-in didn't run after 08:00"
 [[ "$(q "select count(*) from kin_wakeups w join kin_events e on e.wakeup_id = w.wakeup_id where e.event_id = '$night_event'")" == 1 ]] ||
   fail "the held check-in ran more than once"
+for _ in $(seq 1 60); do
+  [[ "$(q "select count(*) from kin_messages where body = '$RELAY'")" == 1 ]] && break
+  sleep 1
+done
+[[ "$(q "select count(*) from kin_messages m join kin_chats c on c.org_id = m.org_id and c.chat_id = m.chat_id where m.body = '$RELAY' and m.author_kind = 'agent' and c.direct_key = '$ZOYA:$CHIEF'")" == 1 ]] ||
+  fail "the held relay isn't in Zoya's chat once, from the agent, after 07:00"
+[[ "$(relay_pushes)" == 1 ]] || fail "the held relay pushed Zoya $(relay_pushes) times at delivery"
+kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"Asia/Kolkata\"}" >/dev/null
 kv as owner rpc kin.triggers.setTimeZone "{\"timeZone\":\"$DAY\"}" >/dev/null
-pass "$task late told once, silence while unchanged, told again alone when it changed; at 23:00 held to $ends, kept over a restart, run once"
+pass "$task late told once, silence while unchanged, told again alone when it changed; at 23:00 held to $ends, kept over a restart, run once; a relay to Zoya at 23:00 held and in her chat at $ends, pushed once"

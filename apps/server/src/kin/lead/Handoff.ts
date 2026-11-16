@@ -33,12 +33,12 @@ import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
 import { messageBodyLimit } from "./LeadPrompt.ts";
 import { outsideStamp, stampEvent } from "./OutsideContent.ts";
-import type { KinLevelGate } from "./LevelGate.ts";
+import { isHeld, type KinLevelGate } from "./LevelGate.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { relayPrefix } from "../reply/promises.ts";
-import { personQuietUntil } from "../triggers/quietHold.ts";
+import { holdFor, holdLine, theirTime, urgentNow } from "../triggers/quietHold.ts";
 import { unreadableBy } from "../work/teamView.ts";
 import { TurnEvent } from "./eventIds.ts";
 
@@ -117,8 +117,6 @@ export const RelayResult = Schema.Struct({
 type PostTo = KinLevelGate["Service"]["postTo"];
 
 const NOTHING = "Nothing was passed on.";
-/** A message they sent this recently is one a relay answers, whatever the hour. */
-const ASKED_WITHIN_MS = 10 * 60_000;
 const refuse = (message: string) =>
   new KinChatError({ reason: "not_allowed", message: `${message} ${NOTHING}` });
 const missing = () => new KinChatError({ reason: "not_found", message: "Kin record not found." });
@@ -470,41 +468,23 @@ const make = Effect.gen(function* () {
             refuse(`${to.name} can't message you; ask the team agent to tell them.`),
           ),
         );
-      // Their quiet hours hold anything they didn't just ask for: it goes when they start.
-      const now = yield* Clock.currentTimeMillis;
-      const quietUntil = yield* personQuietUntil(ctx.orgId, to.personId, now).pipe(access);
-      if (input.urgent !== undefined) {
-        // The agent's stated reason is the escape: logged, and it rings whatever rang before.
-        yield* Effect.logInfo("Kin urgent relay", {
-          orgId: ctx.orgId,
-          agentId: ctx.agentId,
-          to: to.personId,
-          reason: input.urgent,
-        });
-        yield* sql`DELETE FROM kin_push_rings WHERE org_id = ${ctx.orgId} AND person_id = ${to.personId}`;
-      } else if (quietUntil !== undefined) {
-        const [asked] = yield* sql`SELECT 1 FROM kin_messages
-          WHERE org_id = ${ctx.orgId} AND chat_id = ${direct.chatId}
-            AND author_person_id = ${to.personId}
-            AND created_at > ${DateTime.formatIso(DateTime.makeUnsafe(now - ASKED_WITHIN_MS))}
-          LIMIT 1`;
-        if (asked === undefined) {
-          const until = DateTime.formatIso(DateTime.makeUnsafe(quietUntil));
-          return yield* refuse(
-            `${to.name} is in quiet hours until ${until}. Set kin_defer (onDue "ask", due ${until}) in your chat with the owner and relay it when it wakes you; don't say it went.`,
-          );
-        }
-      }
-      yield* postTo({ ...ctx, wakeupId: KinWakeupId.make(ctx.wakeupId) }, to.personId, {
-        chatId: direct.chatId,
-        clientMessageId: messageId,
-        body: input.text,
-        intent: "answer",
-      });
+      const posted = yield* postTo(
+        { ...ctx, wakeupId: KinWakeupId.make(ctx.wakeupId) },
+        to.personId,
+        {
+          chatId: direct.chatId,
+          clientMessageId: messageId,
+          body: input.text,
+          intent: "answer",
+          urgent: input.urgent,
+        },
+      );
       return {
         to: to.name,
         sent: true as const,
-        note: `Sent in ${to.name}'s chat with you; their answer arrives there.`,
+        note: isHeld(posted)
+          ? `${to.name} is in quiet hours: Kin delivers it in their chat with you at ${theirTime(posted.at, posted.zone)}. Tell the asker they'll have it then; their answer arrives there.`
+          : `Sent in ${to.name}'s chat with you; their answer arrives there.`,
       };
     }
     // A teammate's turn: their request, to someone who decides for them.
@@ -533,13 +513,37 @@ const make = Effect.gen(function* () {
             { orgId: ctx.orgId, agentId: ctx.agentId },
           )).chatId;
     // Their words, quoted and named as theirs: a request to decide, never the owner's instruction.
+    const body = `${who?.name ?? "A teammate"} asked ${self.name}:\n"${input.text.replace(/\s+/g, " ").replace(/"/g, "'")}"`;
+    const where = { orgId: ctx.orgId, personId: to.personId, chatId };
+    const held =
+      input.urgent === undefined
+        ? yield* holdFor(where).pipe(access)
+        : yield* urgentNow({ ...where, agentId: ctx.agentId, reason: input.urgent }).pipe(
+            access,
+            Effect.as(undefined),
+          );
+    if (held !== undefined) {
+      const at = yield* holdLine({
+        ...where,
+        key: messageId,
+        body,
+        audience: "chat",
+        at: held.at,
+        waits: true,
+      }).pipe(access);
+      return {
+        to: to.name,
+        sent: true as const,
+        note: `${to.name} is in quiet hours: Kin delivers it at ${theirTime(at, held.zone)}, waiting on them in their chat with you. Tell ${who?.name ?? "the asker"} it reaches ${to.name} then; the answer comes back through you.`,
+      };
+    }
     yield* chat.notice({
       orgId: ctx.orgId,
       chatId,
       audience: "chat",
       messageId,
       waitingFor: to.personId,
-      body: `${who?.name ?? "A teammate"} asked ${self.name}:\n"${input.text.replace(/\s+/g, " ").replace(/"/g, "'")}"`,
+      body,
     });
     return {
       to: to.name,

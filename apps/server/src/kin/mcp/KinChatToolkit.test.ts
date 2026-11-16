@@ -360,8 +360,9 @@ it.effect("an owner-only turn posts nothing where a teammate reads, and the owne
   Effect.gen(function* () {
     const { chat: direct, person, sql } = yield* seed(true);
     const at = "1970-01-01T00:00:00.000Z";
-    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-      VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', ${at})`;
+    // 09:00 on her clock, outside her quiet hours: what is let through posts now.
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, time_zone)
+      VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', ${at}, 'Asia/Tokyo')`;
     yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
       VALUES ('room', ${person.orgId}, 'team_group', 'Launch', 0, ${at})`;
     for (const [member, kind, principal, role] of [

@@ -508,7 +508,7 @@ describe("pulse check-ins", () => {
   );
 
   it.effect(
-    "one nudge per person per working day, only in their hours, none while unanswered",
+    "one nudge per person per working day, held until their hours, none while unanswered",
     () =>
       Effect.gen(function* () {
         yield* seed;
@@ -521,7 +521,7 @@ describe("pulse check-ins", () => {
           ownerId: mate,
           dueAt: MONDAY - 2 * DAY,
         });
-        const posted: Array<string> = [];
+        const posted: Array<readonly [string, number | undefined]> = [];
         const send = (at: number, factKey: string, person = "Meera") =>
           nudge({
             orgId,
@@ -531,9 +531,10 @@ describe("pulse check-ins", () => {
             factKey,
             text: "W-8 was due Saturday; the launch waits on it. Still on for today?",
             chatFor: () => Effect.succeed(KinChatId.make("chat-mate")),
-            post: (_chatId, clientMessageId) =>
+            post: (_chatId, clientMessageId, _personId, notBefore) =>
               Effect.sync(() => {
-                posted.push(clientMessageId);
+                posted.push([clientMessageId, notBefore]);
+                return undefined;
               }),
           }).pipe(
             Effect.as("sent"),
@@ -545,10 +546,9 @@ describe("pulse check-ins", () => {
           viewer: { _tag: "people", people: [mate] },
         });
         const factKey = facts.find((fact) => fact.subject.key === "W-8")!.key;
-        // Before their hours: the refusal names when they start and how to ask them then (H16).
-        const early = yield* send(MONDAY + 7 * HOUR, factKey);
-        assert.match(early, /outside their working hours and starts at 2026-11-16T\d\d:\d\d/);
-        assert.include(early, "kin_defer");
+        // Before their hours it is taken and held until they start, as that day's nudge.
+        assert.strictEqual(yield* send(MONDAY + 7 * HOUR, factKey), "sent");
+        assert.isAbove(posted[0]![1]!, MONDAY + 7 * HOUR);
         assert.include(yield* send(MONDAY + 10 * HOUR, "task_late:nope"), "can't see that fact");
         // Found as clients are: any case, a start of the name, a close spelling, the handle.
         for (const typed of ["meera", "Mee", "Meeru", "@mate"])
@@ -557,8 +557,7 @@ describe("pulse check-ins", () => {
           yield* send(MONDAY + 10 * HOUR, factKey, "Meena Rao"),
           "No one called Meena Rao",
         );
-        assert.strictEqual(yield* send(MONDAY + 10 * HOUR, factKey), "sent");
-        assert.include(yield* send(MONDAY + 15 * HOUR, factKey), "already nudged today");
+        assert.include(yield* send(MONDAY + 10 * HOUR, factKey), "already nudged today");
         assert.include(yield* send(MONDAY + DAY + 10 * HOUR, factKey), "hasn't answered");
         yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
         VALUES ('chat-mate', ${orgId}, 'direct', ${`${mate}:${chief}`}, 0, ${stamp})`;
@@ -571,10 +570,8 @@ describe("pulse check-ins", () => {
         VALUES ('reply', ${orgId}, 'chat-mate', 1, 'human', ${mate}, 'm-mate', 'member', 'text',
           'On it', '[]', 'posted', '2026-11-16T12:00:00.000Z')`;
         assert.strictEqual(yield* send(MONDAY + DAY + 10 * HOUR, factKey), "sent");
-        assert.deepStrictEqual(posted, [
-          "pulse-nudge:mate:2026-11-16",
-          "pulse-nudge:mate:2026-11-17",
-        ]);
+        assert.deepStrictEqual(posted.slice(1), [["pulse-nudge:mate:2026-11-17", undefined]]);
+        assert.strictEqual(posted[0]![0], "pulse-nudge:mate:2026-11-16");
       }).pipe(Effect.provide(layer)),
   );
 
