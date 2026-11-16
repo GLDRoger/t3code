@@ -311,7 +311,7 @@ function ConnectSheet(props: {
               ) : (
                 <ListSection
                   title={COPY.found(checked.profileName ?? checked.label)}
-                  footer={`These become ${checked.label}'s accounts in Kin. Posts for ${checked.label} can only go to them.`}
+                  footer={`In Kin, these become the accounts for ${checked.label}, and its posts can only go to them.`}
                 >
                   {checked.accounts.length === 0 ? (
                     <View className="px-4 py-3">

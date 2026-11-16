@@ -378,8 +378,8 @@ function ConnectDialog(props: {
                   </ul>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  These become {checked.label}'s accounts in Kin. Posts for {checked.label} can only
-                  go to them.
+                  In Kin, these become the accounts for {checked.label}, and its posts can only go
+                  to them.
                 </p>
               </div>
             )}
