@@ -4,6 +4,7 @@ import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
+import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { aborted, askedIn, effectiveAudience, turnChat } from "./Audience.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 
@@ -115,6 +116,10 @@ const ownerDelegates: Condition = Effect.fnUntraced(function* (turn, args) {
   return yield* ownerAsked(turn);
 });
 
+const t3ToolsRefused = Object.fromEntries(
+  LEAD_T3_TOOLS.map((name) => [name, "refused" as const]),
+) as Record<(typeof LEAD_T3_TOOLS)[number], "refused">;
+
 export const SHARED_TOOLS = {
   kin_chat_post: inTurnChat,
   kin_widget_upsert: inTurnChat,
@@ -210,6 +215,8 @@ export const SHARED_TOOLS = {
   kin_connection_call: "refused",
   kin_connection_offer: "refused",
   kin_connection_note: "refused",
+  // A shell's worth of reach as the owner, on his GitHub login (`AgentSession`).
+  ...t3ToolsRefused,
 } satisfies Record<string, SharedToolPolicy>;
 
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */

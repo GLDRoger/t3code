@@ -58,6 +58,10 @@ export class KinGhTool extends Context.Service<
   {
     /** The `gh` Kin runs: the pinned one, fetched first if need be, or a new enough system one. */
     readonly ensure: () => Effect.Effect<string, KinChatError>;
+    /** Where the pinned `gh` lives: first on an agent session's PATH. */
+    readonly directory: string;
+    /** The `gh` already on this host, pinned or new enough, without fetching one. */
+    readonly find: () => Effect.Effect<string | undefined>;
   }
 >()("t3/kin/connections/ghTool/KinGhTool") {}
 
@@ -193,6 +197,10 @@ export const layer = Layer.effect(
         ),
       );
     }, lock.withPermits(1));
-    return KinGhTool.of({ ensure });
+    const find: KinGhTool["Service"]["find"] = Effect.fn("KinGhTool.find")(function* () {
+      if (yield* fs.exists(binary).pipe(Effect.orElseSucceed(() => false))) return binary;
+      return ghVersionUsable(yield* versionOf("gh")) ? "gh" : undefined;
+    });
+    return KinGhTool.of({ ensure, find, directory });
   }),
 );

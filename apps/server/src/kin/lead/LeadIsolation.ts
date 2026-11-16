@@ -1,18 +1,25 @@
 import type { HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import type { ThreadId } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import { ServerConfig } from "../../config.ts";
 import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import {
   type AuthSettings,
+  type FileScope,
   makeConfiner,
+  permits,
   sessionEnvironment,
   withConfinementHook,
 } from "../claudeConfinement.ts";
+import { KinServer } from "../KinServer.ts";
+import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../KinEnabled.ts";
 import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts";
 import { SHARED_THREAD_PREFIX } from "./Audience.ts";
@@ -114,6 +121,46 @@ const leadOptions = (
 };
 
 /**
+ * An owner-only turn with GitHub connected (repos-rethink slice 3): Claude Code's own tools, as any
+ * T3 thread has, with the pinned `gh` first on PATH. Its hook still asks per call: a turn others
+ * can read, one that read outside text, or a run Kin hasn't adopted gets only the confined tools.
+ */
+const fullOptions = (
+  options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
+  session: {
+    readonly hook: HookCallbackMatcher;
+    readonly auth: AuthSettings;
+    readonly environment: NodeJS.ProcessEnv;
+    readonly ghDirectory: string;
+  },
+) => {
+  const { settings, env } = options;
+  const environment = sessionEnvironment(env ?? session.environment);
+  return {
+    systemPrompt: leadSystemPrompt,
+    strictMcpConfig: true,
+    hooks: withConfinementHook(options.hooks, session.hook),
+    ...(typeof settings === "string"
+      ? {}
+      : {
+          settings: {
+            ...session.auth,
+            ...settings,
+            autoMemoryEnabled: false,
+            autoDreamEnabled: false,
+            env: { ...session.auth.env, ...settings?.env, ENABLE_TOOL_SEARCH: "false" },
+          },
+        }),
+    env: {
+      ...environment,
+      PATH: [session.ghDirectory, environment.PATH].filter(Boolean).join(":"),
+      ENABLE_TOOL_SEARCH: "false",
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    },
+  };
+};
+
+/**
  * A lead runs full-access with Kin's memory checkout as its cwd, so its Claude session loads no
  * settings file: not a project `CLAUDE.md`, `.claude/` or `.mcp.json` that memory might carry, nor
  * the user's hooks, plugins and env. It keeps the owner's model credentials. The cwd is the lead
@@ -138,6 +185,32 @@ export const claudeQueryRunner = <E, R>(
         const relative = path.relative(parent, child);
         return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
       };
+      const kin = yield* Effect.serviceOption(KinServer);
+      const policy = Option.flatMap(kin, (server) =>
+        Option.flatMap(server.services, (services) =>
+          Context.getOption(services, KinAgentSessionPolicy),
+        ),
+      );
+      const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
+      const run = Effect.runPromiseWith(context);
+      /** The full session's hook: built-ins while the turn admits them, else the confined set. */
+      const fullHook = (
+        threadId: ThreadId,
+        confined: FileScope,
+        sessions: KinAgentSessionPolicy["Service"],
+      ): HookCallbackMatcher => ({
+        onFailure: "block",
+        hooks: [
+          async (input) => {
+            if (input.hook_event_name !== "PreToolUse" || input.tool_name.startsWith("mcp__"))
+              return {};
+            return (await run(sessions.admitted(threadId))) ||
+              (await run(permits(confined, input.tool_name, input.tool_input)))
+              ? {}
+              : { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" } };
+          },
+        ],
+      });
       return ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
         ...runner,
         open: Effect.fn("KinLeadIsolation.open")(function* (input) {
@@ -156,6 +229,28 @@ export const claudeQueryRunner = <E, R>(
           const shared = input.threadId.startsWith(SHARED_THREAD_PREFIX);
           const root = shared ? undefined : yield* confiner.root(cwd);
           const attachments = yield* confiner.root(config.attachmentsDir);
+          if (!shared && Option.isSome(policy) && (yield* policy.value.connected()))
+            return yield* runner.open({
+              ...input,
+              options: {
+                ...input.options,
+                settingSources,
+                ...fullOptions(input.options, {
+                  hook: fullHook(
+                    input.threadId,
+                    {
+                      root,
+                      tools: leadTools,
+                      ...(attachments === undefined ? {} : { attachments }),
+                    },
+                    policy.value,
+                  ),
+                  auth: yield* confiner.ownerAuth(input.options.env),
+                  environment: yield* HostProcess.Environment,
+                  ghDirectory: policy.value.ghDirectory,
+                }),
+              },
+            });
           return yield* runner.open({
             ...input,
             options: {

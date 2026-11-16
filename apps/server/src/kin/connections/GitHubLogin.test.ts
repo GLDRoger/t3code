@@ -56,7 +56,11 @@ const harness = Effect.gen(function* () {
   const login = yield* make({ KIN_FAKE_GH: state, HOME: home, XDG_CONFIG_HOME: home }).pipe(
     Effect.provide(
       Layer.mergeAll(
-        Layer.succeed(KinGhTool, { ensure: () => Effect.succeed(`${root}/gh`) }),
+        Layer.succeed(KinGhTool, {
+          ensure: () => Effect.succeed(`${root}/gh`),
+          find: () => Effect.succeed(`${root}/gh`),
+          directory: root,
+        }),
         Layer.mock(KinIdentity)({
           owner: owner[0]!,
           isAgentThread: () => false,
@@ -107,6 +111,8 @@ describe("KinGitHubLogin", () => {
       const h = yield* harness;
       const empty = yield* h.login.status(owner, { orgId });
       assert.deepEqual(empty, { orgId, account: null, signIn: null, failed: null });
+      // The agent-session switch (`AgentSession.githubConnected`) follows the login.
+      assert.isFalse(yield* h.login.connected());
 
       const started = yield* h.login.start(owner, { orgId });
       assert.equal(started.signIn?.code, "WXYZ-2345");
@@ -130,6 +136,7 @@ describe("KinGitHubLogin", () => {
       });
       assert.isNull(done.signIn);
       assert.isNull(done.failed);
+      assert.isTrue(yield* h.login.connected());
       assert.match(yield* h.gitconfig, /helper = !.*\/gh auth git-credential/);
       assert.equal(yield* h.savedToken, DEVICE_TOKEN);
       assert.notInclude(JSON.stringify([started, again, done]), DEVICE_TOKEN);
@@ -150,6 +157,7 @@ describe("KinGitHubLogin", () => {
       assert.notMatch(yield* h.gitconfig, /git-credential|helper =/);
       assert.isUndefined(yield* h.savedToken);
       assert.include(yield* h.calls, "auth logout --hostname github.com");
+      assert.isFalse(yield* h.login.connected());
     }).pipe(Effect.provide(layer)),
   );
 
