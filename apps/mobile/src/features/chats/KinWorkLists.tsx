@@ -355,7 +355,7 @@ function ClientsView(props: ViewProps & { readonly closed: boolean }) {
   const { state, list } = useKinClientsList(props, seq, props.closed);
   const { filter } = state;
   // Open projects sit under their client, and those with no client after the clients.
-  const choices = useKinChoicesLive(props, !props.closed, seq);
+  const choices = useKinChoicesLive(props, !props.closed);
   const projects = choices?.projects ?? [];
   const noClient = filter.text.trim() === "" ? projects.filter((row) => row.party === null) : [];
   const openProject = (project: KinRecordKey) =>

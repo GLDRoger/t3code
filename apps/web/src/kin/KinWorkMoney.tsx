@@ -170,11 +170,10 @@ export function KinWorkMoney(
   const { names } = props.directory;
   const { state, refresh } = useKinMoneySummary(props, {
     enabled: true,
-    seq: props.stale ? null : props.live.seq,
   });
   const agent = useKinAskAgent(props);
   const rates = useKinRates(props);
-  const goals = useKinGoals(props, { enabled: true, seq: props.stale ? null : props.live.seq });
+  const goals = useKinGoals(props, { enabled: true });
   const canBudget = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(props.environmentId));
   const [adding, setAdding] = useState<"goal" | "budget" | "receipt" | null>(null);
@@ -366,13 +365,8 @@ export function KinWorkMoney(
               {null}
             </KinWorkSection>
           )}
-          <KinReceiptsSection
-            {...props}
-            seq={seq}
-            onOpenDoc={props.onOpenDoc}
-            onOpenKey={props.onOpenKey}
-          />
-          <KinGoals {...props} seq={seq} goals={goals} />
+          <KinReceiptsSection {...props} onOpenDoc={props.onOpenDoc} onOpenKey={props.onOpenKey} />
+          <KinGoals {...props} goals={goals} />
           <KinWorkSection title={view.yearLabel} fold={{ summary: null }}>
             <div className="grid grid-cols-2 gap-x-6 gap-y-2">
               <Figure figure={view.yearReceived} onOpen={props.onOpenList} estimates={estimates} />

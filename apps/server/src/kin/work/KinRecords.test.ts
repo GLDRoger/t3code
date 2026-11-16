@@ -1878,7 +1878,11 @@ it.effect("a teammate's live changes name only tasks they see, and one hidden fr
     yield* seed;
     const records = yield* KinRecords.KinRecords;
     const sql = yield* SqlClient.SqlClient;
-    const heard = yield* Queue.unbounded<{ readonly seq: number; readonly key?: string }>();
+    const heard = yield* Queue.unbounded<{
+      readonly seq: number;
+      readonly key?: string;
+      readonly list?: string;
+    }>();
     yield* OwnerWork.subscribe([mate], { orgId }).pipe(
       Stream.runForEach((event) => Queue.offer(heard, event)),
       Effect.forkChild,
@@ -1895,7 +1899,9 @@ it.effect("a teammate's live changes name only tasks they see, and one hidden fr
     yield* create("owner's");
     yield* create("for mate", mateId);
     // Their own numbers: one more for each change to what they could see, so nothing else shows.
-    assert.deepStrictEqual(yield* next, ["W-2", 1]);
+    // The list is named, so their screens read again only what Work's own list can change.
+    const theirs = yield* Queue.take(heard);
+    assert.deepStrictEqual([theirs.key, theirs.seq, theirs.list], ["W-2", 1, "work"]);
     yield* create("to share");
     yield* OwnerWork.share([owner], { orgId, keys: ["W-3"], shared: true });
     assert.deepStrictEqual(yield* next, ["W-3", 2]);

@@ -624,6 +624,9 @@ export const subscribe = (
         _tag: "changed" as const,
         seq: tick.seq,
         ...(tick.key === undefined ? {} : { key: tick.key }),
+        ...(tick.key === undefined || tick.registerId === undefined
+          ? {}
+          : { list: tick.registerId }),
       });
       if (!viewer.teammate) return changes.pipe(Stream.map(named));
       const { personId } = viewer.person;
@@ -639,6 +642,7 @@ export const subscribe = (
             }
             const seq = tick.team?.get(personId);
             if (seq === undefined) return [];
+            // The keys a client's or project's label moves are its tasks, not entries of its list.
             const told = (key: string) => named({ seq, key });
             if (tick.registerId === "clients" || tick.registerId === "projects") {
               // A client's or project's label shows or hides its tasks without a change to them.
@@ -651,11 +655,12 @@ export const subscribe = (
               return moved.map(told);
             }
             const { key } = tick;
+            const own = named({ ...tick, seq });
             if (yield* teamSeesKey(input.orgId, personId, key)) {
               seen.add(key);
-              return [told(key)];
+              return [own];
             }
-            return seen.delete(key) ? [told(key)] : [];
+            return seen.delete(key) ? [own] : [];
           }).pipe(workFailure),
         ),
         Stream.flattenIterable,

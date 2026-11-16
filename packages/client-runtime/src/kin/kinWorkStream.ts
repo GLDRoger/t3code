@@ -1,9 +1,18 @@
-import type { KinWorkEvent, KinWorkSubscribeInput, KinWorkSummary } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  KinOrgId,
+  KinWorkEvent,
+  KinWorkSubscribeInput,
+  KinWorkSummary,
+} from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import { AsyncResult, Atom } from "effect/reactivity";
 import * as Stream from "effect/Stream";
 
+import type * as EnvironmentRegistry from "../connection/registry.ts";
 import { subscribe } from "../rpc/index.ts";
+import { environmentSessionGenerationAtom } from "../state/runtime.ts";
 import { resubscribeWhenKinReturns, retryWhileKinUnavailable } from "./kinStreams.ts";
 import { kinWorkFailuresOf, kinWorkRefused } from "./kinWork.ts";
 
@@ -22,6 +31,10 @@ export interface KinWorkLive {
    * while this was away, or the host is an older one that names nothing. 0 with none.
    */
   readonly unnamed: number;
+  /** The latest change number the host named each list with, for changes since the first number. */
+  readonly lists: Readonly<Record<string, number>>;
+  /** The latest change number that named a task but not its list: an older host, or a label move. */
+  readonly unlisted: number;
 }
 
 export const KIN_WORK_LABEL = "kin:work";
@@ -37,14 +50,26 @@ export interface KinWorkNamed {
   readonly latest: number | null;
   readonly changed: KinWorkLive["changed"];
   readonly unnamed: number;
+  readonly lists: KinWorkLive["lists"];
+  readonly unlisted: number;
 }
 
-export const KIN_WORK_NOTHING_NAMED: KinWorkNamed = { latest: null, changed: {}, unnamed: 0 };
+export const KIN_WORK_NOTHING_NAMED: KinWorkNamed = {
+  latest: null,
+  changed: {},
+  unnamed: 0,
+  lists: {},
+  unlisted: 0,
+};
 
 /** Takes in one announcement. Returns `held` itself when it says nothing new about any task. */
 export function kinWorkNote(
   held: KinWorkNamed,
-  event: { readonly seq: number; readonly key?: string | undefined },
+  event: {
+    readonly seq: number;
+    readonly key?: string | undefined;
+    readonly list?: string | undefined;
+  },
 ): KinWorkNamed {
   const latest = Math.max(held.latest ?? 0, event.seq);
   if (event.key === undefined) {
@@ -58,11 +83,59 @@ export function kinWorkNote(
   const { key } = event;
   if ((held.changed[key] ?? 0) >= event.seq) return held;
   const others = Object.entries(held.changed).filter(([name]) => name !== key);
+  const { list } = event;
   return {
     ...held,
     latest,
     changed: Object.fromEntries([...others.slice(1 - KIN_WORK_NAMED_CAP), [key, event.seq]]),
+    ...(list === undefined
+      ? { unlisted: Math.max(held.unlisted, event.seq) }
+      : { lists: { ...held.lists, [list]: Math.max(held.lists[list] ?? 0, event.seq) } }),
   };
+}
+
+/**
+ * Moves only when a change since the first number could touch a read over `lists`: a change named
+ * with one of them, or one that said nothing of its list. `"any"` moves on every change.
+ */
+export function kinWorkListsMoved(
+  live: Pick<KinWorkLive, "lists" | "unlisted" | "unnamed">,
+  lists: ReadonlyArray<string> | "any",
+): number {
+  const named = lists === "any" ? Object.values(live.lists) : lists.map((l) => live.lists[l] ?? 0);
+  return Math.max(live.unnamed, live.unlisted, ...named);
+}
+
+type KinWorkTarget = {
+  readonly environmentId: EnvironmentId;
+  readonly input: { readonly orgId: KinOrgId };
+};
+
+/**
+ * Refresh signals for query atoms' `refreshTrigger` from Work's own announcements: a new session,
+ * or a change to one of the lists the read covers. A read over money or every list passes `"any"`;
+ * `also` adds a `kin.refreshes` topic. The query atom reads again only while it is shown, and
+ * once on its next showing for a move it missed, so a screen not open asks for nothing.
+ */
+export function createKinWorkRefreshTriggers<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  live: (target: KinWorkTarget) => Atom.Atom<AsyncResult.AsyncResult<KinWorkLive, unknown>>,
+) {
+  return (
+    lists: ReadonlyArray<string> | "any",
+    also?: (target: KinWorkTarget) => Atom.Atom<unknown>,
+  ) =>
+    (target: KinWorkTarget) =>
+      Atom.make((get) => {
+        const { environmentId } = target;
+        const held = AsyncResult.getOrElse(
+          get(live({ environmentId, input: { orgId: target.input.orgId } })),
+          () => null,
+        );
+        const moved = held === null ? 0 : kinWorkListsMoved(held, lists);
+        const topic = also === undefined ? "" : String(get(also(target)));
+        return `${get(environmentSessionGenerationAtom(runtime, environmentId))}:${moved}:${topic}`;
+      });
 }
 
 /** Asks the counts stream to read again now, inside the running stream. */
@@ -111,7 +184,13 @@ export function kinWorkLiveFold<E, R, EE, RR>(
           const emit = (
             live: Pick<KinWorkLive, "seq" | "summary" | "failed">,
           ): ReadonlyArray<KinWorkLive> => [
-            (last = { ...live, changed: named.changed, unnamed: named.unnamed }),
+            (last = {
+              ...live,
+              changed: named.changed,
+              unnamed: named.unnamed,
+              lists: named.lists,
+              unlisted: named.unlisted,
+            }),
           ];
           // The host's own events are tagged `changed`, so only this tag means a retry.
           const retry = event._tag === "retry";

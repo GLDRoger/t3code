@@ -56,7 +56,6 @@ const NO_CLIENT = "none";
 /** Money's receipts: what came in, from whom, and the advances still to set against an invoice. */
 export function KinReceiptsSection(
   props: KinWorkTarget & {
-    readonly seq: number | null;
     readonly onOpenDoc: (key: KinRecordKey) => void;
     readonly onOpenKey: (key: KinRecordKey) => void;
   },
@@ -64,7 +63,7 @@ export function KinReceiptsSection(
   const { environmentId } = props;
   const canRead = useAtomValue(kinClient.receiptsRead.permissionAtom(environmentId));
   const canMake = useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId));
-  const { state, refresh } = useKinReceipts(props, { enabled: canRead, seq: props.seq });
+  const { state, refresh } = useKinReceipts(props, { enabled: canRead });
   const actions = useKinMoneyActions(props);
   const now = new Date(useNowMinuteMs());
   const [all, setAll] = useState(false);

@@ -83,18 +83,15 @@ export function KinPlaceEntries(props: KinWorkTarget & { readonly onOpen: () => 
   // A teammate, or a host that couldn't be read: no ways in rather than dead ones.
   if (state._tag === "refused" || state._tag === "failed") return null;
   const summary = state._tag === "ready" ? state.live.summary : null;
-  const seq = state._tag === "ready" && !state.stale ? state.live.seq : null;
   const tasks = <TasksEntry {...props} line={summary === null ? null : kinTasksLine(summary)} />;
   // The owner and co-owners reach every place; a member those switched on or a project they lead.
   const reaches = (place: "money" | "clients" | "docs") => ownerLevel || reach?.[place] === true;
   return (
     <>
       {tasks}
-      {reaches("money") ? (
-        <MoneyEntry {...props} seq={seq} enabled={state._tag === "ready"} />
-      ) : null}
+      {reaches("money") ? <MoneyEntry {...props} enabled={state._tag === "ready"} /> : null}
       {!reaches("clients") || (summary !== null && !kinWorkHostClients(summary)) ? null : (
-        <ClientsEntry {...props} seq={seq} enabled={state._tag === "ready"} />
+        <ClientsEntry {...props} enabled={state._tag === "ready"} />
       )}
       {reaches("docs") ? <DocsEntry {...props} /> : null}
     </>
@@ -112,12 +109,11 @@ function TasksEntry(
 
 function MoneyEntry(
   props: KinWorkTarget & {
-    readonly seq: number | null;
     readonly enabled: boolean;
     readonly onOpen: () => void;
   },
 ) {
-  const { state } = useKinMoneySummary(props, { enabled: props.enabled, seq: props.seq });
+  const { state } = useKinMoneySummary(props, { enabled: props.enabled });
   // Whoever the host keeps money from doesn't get a way in to it.
   if (state._tag === "refused") return null;
   return (
@@ -131,12 +127,11 @@ function MoneyEntry(
 
 function ClientsEntry(
   props: KinWorkTarget & {
-    readonly seq: number | null;
     readonly enabled: boolean;
     readonly onOpen: () => void;
   },
 ) {
-  const counts = useKinClientCounts(props, props.enabled, props.seq);
+  const counts = useKinClientCounts(props, props.enabled);
   if (counts === "refused") return null;
   return (
     <PlaceEntry

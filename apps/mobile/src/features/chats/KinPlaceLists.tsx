@@ -40,7 +40,7 @@ type Shared = KinWorkTarget & {
  * whatever else points at it. A list with nothing for it isn't shown.
  */
 export function KinPlaceLists(props: Shared) {
-  const lists = useKinLists(props, { enabled: true, seq: props.seq });
+  const lists = useKinLists(props, { enabled: true });
   const defs = kinListsOf(lists).filter((def) => !def.builtIn);
   return (
     <>
@@ -54,8 +54,8 @@ export function KinPlaceLists(props: Shared) {
 
 /** What this client owes us and how late, from the same figures as Money; its invoices follow. */
 function PlaceOwed(props: Shared & { readonly party: KinWorkRef }) {
-  const lists = useKinLists(props, { enabled: true, seq: props.seq });
-  const { state } = useKinMoneySummary(props, { enabled: true, seq: props.seq });
+  const lists = useKinLists(props, { enabled: true });
+  const { state } = useKinMoneySummary(props, { enabled: true });
   if (state._tag !== "ready") return null;
   const client = kinMoneyView(state.value, kinListsOf(lists)).clients.find(
     (held) => held.key === props.party.key,

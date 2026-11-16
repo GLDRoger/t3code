@@ -125,16 +125,12 @@ export function useKinAskAbout({ environmentId, orgId }: KinWorkTarget) {
 }
 
 /** The company's goals, read again when Work changes or needs attention moves. */
-export function useKinGoals(
-  target: KinWorkTarget,
-  options: { readonly enabled: boolean; readonly seq: number | null },
-) {
+export function useKinGoals(target: KinWorkTarget, options: { readonly enabled: boolean }) {
   const atom = kinClient.goals({
     environmentId: target.environmentId,
     input: { orgId: target.orgId },
   });
   const state = kinWorkReadState(useAtomValue(options.enabled ? atom : noGoalsAtom));
-  useRereadOnChange(options.seq, () => appAtomRegistry.refresh(atom));
   const save = useAtomCommand(kinClient.goalSave, { reportFailure: false });
   const canSave = useAtomValue(kinClient.goalSave.permissionAtom(target.environmentId));
   return {

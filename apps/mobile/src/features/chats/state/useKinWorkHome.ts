@@ -7,7 +7,6 @@ import { useEffect, useState } from "react";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { kinClient } from "./kinClient";
 import { useKinDocsLive } from "./useKinDocs";
-import { useRereadOnChange } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./useKinWork";
 import { useLocalDayStartMs } from "./useLocalDayStartMs";
 
@@ -57,18 +56,20 @@ export function useKinMyDueTasks(
   return held?.records ?? null;
 }
 
-/** The active clients and open projects, read again whenever Work changes. */
-export function useKinChoicesLive(target: KinWorkTarget, enabled: boolean, seq: number | null) {
-  const atom = kinWorkChoicesAtom(target);
-  const result = useAtomValue(enabled ? atom : noChoicesAtom);
-  useRereadOnChange(enabled ? seq : null, () => appAtomRegistry.refresh(atom));
+/** The active clients and open projects, kept current by Work's changes. */
+export function useKinChoicesLive(target: KinWorkTarget, enabled: boolean) {
+  const result = useAtomValue(enabled ? kinWorkChoicesAtom(target) : noChoicesAtom);
   return Option.getOrNull(AsyncResult.value(result));
 }
 
-/** How many active clients and open projects there are, kept current. */
-export function useKinClientCounts(target: KinWorkTarget, enabled: boolean, seq: number | null) {
-  const held = useKinChoicesLive(target, enabled, seq);
-  return held === null ? null : { clients: held.clientsTotal, projects: held.projectsTotal };
+const noCountsAtom: ReturnType<typeof kinClient.workCounts> = Atom.make(AsyncResult.initial());
+
+/** How many clients and open projects there are: the host's own totals, kept current. */
+export function useKinClientCounts({ environmentId, orgId }: KinWorkTarget, enabled: boolean) {
+  const result = useAtomValue(
+    enabled ? kinClient.workCounts({ environmentId, input: { orgId } }) : noCountsAtom,
+  );
+  return Option.getOrNull(AsyncResult.value(result));
 }
 
 const noChoicesAtom: ReturnType<typeof kinWorkChoicesAtom> = Atom.make(AsyncResult.initial());

@@ -696,7 +696,7 @@ export function KinReceiptsSection(props: KinWorkTarget & { readonly seq: number
   const { environmentId, orgId } = props;
   const canRead = useAtomValue(kinClient.receiptsRead.permissionAtom(environmentId));
   const canMake = useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId));
-  const { state, refresh } = useKinReceipts(props, { enabled: canRead, seq: props.seq });
+  const { state, refresh } = useKinReceipts(props, { enabled: canRead });
   const now = new Date(useNowMinuteMs());
   const [all, setAll] = useState(false);
   if (!canRead || state._tag === "refused") return null;

@@ -42,8 +42,6 @@ const ICON: Record<KinNeedsYouRow["kind"], LucideIcon> = {
 export function KinNeedsYou(
   props: KinWorkTarget & {
     readonly directory: KinWorkDirectory;
-    /** The host's latest change number; null while what is held may be behind. */
-    readonly seq: number | null;
     /** Your open tasks due by the end of today; null until read. Tasks leaves them out below. */
     readonly mine: ReadonlyArray<KinRecord> | null;
     readonly onOpenTask: (key: KinRecordKey) => void;
@@ -51,12 +49,12 @@ export function KinNeedsYou(
     readonly onOpenMoney: () => void;
   },
 ) {
-  const { environmentId, orgId, seq, mine } = props;
+  const { environmentId, orgId, mine } = props;
   const { names } = props.directory;
   const navigate = useNavigate();
   const now = new Date(useNowMinuteMs());
-  const money = useKinMoneySummary(props, { enabled: true, seq });
-  const lists = useKinLists(props, { enabled: true, seq });
+  const money = useKinMoneySummary(props, { enabled: true });
+  const lists = useKinLists(props, { enabled: true });
   const inbox = useKinInbox();
   const attentionRead = useKinAttention(props);
   const handler = useKinAttentionHandle(props);

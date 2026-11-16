@@ -7,9 +7,12 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
+  KIN_WORK_NOTHING_NAMED,
   KIN_WORK_READ_TIMEOUT,
   KIN_WORK_RETRY,
+  kinWorkListsMoved,
   kinWorkLiveFold,
+  kinWorkNote,
   type KinWorkLive,
 } from "./kinWorkStream.ts";
 
@@ -125,4 +128,40 @@ describe("kinWorkLiveFold", () => {
       }),
     ),
   );
+});
+
+describe("kinWorkListsMoved", () => {
+  it("moves a read only for a change to a list it covers, or one that names no list", () => {
+    const heard = (events: ReadonlyArray<Parameters<typeof kinWorkNote>[1]>) =>
+      events.reduce(kinWorkNote, KIN_WORK_NOTHING_NAMED);
+    const moved = (named: ReturnType<typeof heard>) => ({
+      tasks: kinWorkListsMoved(named, ["work"]),
+      money: kinWorkListsMoved(named, ["invoices", "expenses"]),
+      clients: kinWorkListsMoved(named, ["clients", "projects"]),
+      any: kinWorkListsMoved(named, "any"),
+    });
+    // Where things stood when the stream began is not a change.
+    expect(moved(heard([{ seq: 4 }]))).toEqual({ tasks: 0, money: 0, clients: 0, any: 0 });
+    const task = heard([{ seq: 4 }, { seq: 5, key: "W-5", list: "work" }]);
+    expect(moved(task)).toEqual({ tasks: 5, money: 0, clients: 0, any: 5 });
+    const invoice = heard([
+      { seq: 4 },
+      { seq: 5, key: "W-5", list: "work" },
+      { seq: 6, key: "INV-1", list: "invoices" },
+    ]);
+    expect(moved(invoice)).toEqual({ tasks: 5, money: 6, clients: 0, any: 6 });
+    // An older host names no list, and a change while away names nothing: every read moves.
+    expect(moved(kinWorkNote(invoice, { seq: 7, key: "W-7" }))).toEqual({
+      tasks: 7,
+      money: 7,
+      clients: 7,
+      any: 7,
+    });
+    expect(moved(kinWorkNote(invoice, { seq: 8 }))).toEqual({
+      tasks: 8,
+      money: 8,
+      clients: 8,
+      any: 8,
+    });
+  });
 });

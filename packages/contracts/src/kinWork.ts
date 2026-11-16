@@ -454,6 +454,8 @@ export const KinWorkEvent = Schema.Union([
     seq: NonNegativeInt,
     /** The entry that changed; absent on the first event, which is only the latest number. */
     key: Schema.optional(KinRecordKey),
+    /** The entry's list, so a client reads again only what that list can change. */
+    list: Schema.optional(KinListId),
   }),
 ]);
 export type KinWorkEvent = typeof KinWorkEvent.Type;

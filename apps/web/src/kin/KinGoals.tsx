@@ -53,10 +53,8 @@ function GoalBar(props: {
 }
 
 /** The company's goals, one folded line in Money that opens to each against its line. */
-export function KinGoals(
-  props: KinWorkTarget & { readonly seq: number | null; readonly goals?: Goals },
-) {
-  const own = useKinGoals(props, { enabled: props.goals === undefined, seq: props.seq });
+export function KinGoals(props: KinWorkTarget & { readonly goals?: Goals }) {
+  const own = useKinGoals(props, { enabled: props.goals === undefined });
   const goals = props.goals ?? own;
   const now = new Date(useNowMinuteMs());
   const [editing, setEditing] = useState<KinGoal | "new" | null>(null);
