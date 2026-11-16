@@ -54,7 +54,7 @@ import {
   turnChat,
 } from "./Audience.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
-import { nonClaudeLeadModel } from "./leadModels.ts";
+import { isDevServer, nonClaudeLeadModel } from "./leadModels.ts";
 import { bootstrapLeadProject } from "./leadProject.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
@@ -780,7 +780,11 @@ const make = Effect.gen(function* () {
               return yield* retire(current);
             }
             // Provisioning refuses these too; a row written another way still never launches.
-            const notClaude = nonClaudeLeadModel(yield* settings.getSettings, current.models);
+            const notClaude = nonClaudeLeadModel(
+              yield* settings.getSettings,
+              current.models,
+              yield* isDevServer,
+            );
             if (notClaude !== undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: notClaude });
             const admitted = yield* admitEvents(orgId, agentId, events);
