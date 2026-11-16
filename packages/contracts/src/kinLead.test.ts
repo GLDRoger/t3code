@@ -12,7 +12,7 @@ const lead = {
   level: "L0",
   levelSince: at,
   threadId: null,
-  models: { strong: model, cheap: model },
+  model,
   workerProjects: ["project-1"],
   ownerChatId: "chat-1",
 };

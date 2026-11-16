@@ -23,7 +23,7 @@ import {
   kinLeadDraftCheck,
   kinLeadDraftOf,
   kinLeadSaveProblem,
-  kinLeadStartingModels,
+  kinLeadStartingModel,
   type KinLeadDraft,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -46,7 +46,13 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { setComposerDraftText } from "../../state/use-composer-drafts";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient, refreshKinAgents } from "./state/kinClient";
-import { KinAgentModelRow, useKinAgentModelOptions } from "./KinAgentModelRow";
+import {
+  KinAgentEffortAdvice,
+  KinAgentEffortRow,
+  KinAgentModelRow,
+  kinPickedModel,
+  useKinAgentModelOptions,
+} from "./KinAgentModelRow";
 import { kinDraftKey } from "./components/KinComposer";
 
 export type KinLeadFormParams = {
@@ -185,7 +191,7 @@ function LeadForm(props: {
   const allowed = useAtomValue(
     (creating ? kinClient.leadCreate : kinClient.leadUpdate).permissionAtom(environmentId),
   );
-  // The org's first agent picks the models; the host gives every later one the same.
+  // The org's first agent picks the model; the host gives every later one the same.
   const leads = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
   const [noModels, setNoModels] = useState(false);
   const firstAgent =
@@ -201,14 +207,12 @@ function LeadForm(props: {
       ),
     ),
   );
-  const [pickedModels, setPickedModels] = useState<{
-    readonly strong: ModelSelection;
-    readonly cheap: ModelSelection;
-  } | null>(null);
-  const models =
-    pickedModels ??
-    defaults?.models ??
-    kinLeadStartingModels(modelOptions.map((option) => option.selection));
+  const [pickedModel, setPickedModel] = useState<ModelSelection | null>(null);
+  const starting = kinLeadStartingModel(modelOptions.map((option) => option.selection));
+  const model =
+    pickedModel ??
+    defaults?.model ??
+    (starting === null ? null : kinPickedModel(modelOptions, starting));
   const [character, setCharacter] = useState("");
   const [writeForMe, setWriteForMe] = useState(false);
   const setCharacterBody = useAtomCommand(kinClient.characterSet, { reportFailure: false });
@@ -291,7 +295,7 @@ function LeadForm(props: {
         domain,
         charter,
         ...(intro === "" ? undefined : { intro }),
-        ...((firstAgent || pickedModels !== null) && models !== null ? { models } : undefined),
+        ...((firstAgent || pickedModel !== null) && model !== null ? { model } : undefined),
       },
     });
     // The host gives every new agent a starter character; the owner's own replaces it.
@@ -303,7 +307,7 @@ function LeadForm(props: {
     setSaving(false);
     if (!AsyncResult.isSuccess(result)) {
       const cause = AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null;
-      // Another device retired the last agent meanwhile: the models are this form's to choose.
+      // Another device retired the last agent meanwhile: the model is this form's to choose.
       if (typeof cause === "object" && cause !== null && "reason" in cause) {
         if (cause.reason === "no_models") setNoModels(true);
       }
@@ -336,7 +340,7 @@ function LeadForm(props: {
         label: creating ? "Create" : "Save",
         onPress: () => void save(),
         loading: saving,
-        disabled: !allowed || saving || (!creating && !dirty) || (firstAgent && models === null),
+        disabled: !allowed || saving || (!creating && !dirty) || (firstAgent && model === null),
       }}
     >
       {problem?.field === null ? <ErrorBanner message={problem.text} /> : null}
@@ -402,28 +406,28 @@ function LeadForm(props: {
       {creating ? (
         <View className="gap-2">
           <ListSection title={KIN_LEAD_MODELS.title}>
-            {models === null ? null : (
+            {model === null ? null : (
               <>
                 <KinAgentModelRow
-                  label={KIN_LEAD_MODELS.strong}
-                  value={models.strong}
+                  label={KIN_AGENT_PAGE.model}
+                  value={model}
                   options={modelOptions}
                   disabled={!allowed || saving}
-                  onPick={(strong) => setPickedModels({ ...models, strong })}
+                  onPick={(selection) => setPickedModel(kinPickedModel(modelOptions, selection))}
                 />
-                <KinAgentModelRow
-                  label={KIN_LEAD_MODELS.cheap}
-                  value={models.cheap}
+                <KinAgentEffortRow
+                  label={KIN_AGENT_PAGE.effort}
+                  value={model}
                   options={modelOptions}
                   disabled={!allowed || saving}
-                  borderTop
-                  onPick={(cheap) => setPickedModels({ ...models, cheap })}
+                  onPick={setPickedModel}
                 />
               </>
             )}
           </ListSection>
+          {model === null ? null : <KinAgentEffortAdvice value={model} options={modelOptions} />}
           <Note
-            problem={models === null ? KIN_LEAD_MODELS.none : null}
+            problem={model === null ? KIN_LEAD_MODELS.none : null}
             hint={firstAgent ? KIN_LEAD_MODELS.hint : KIN_AGENT_PAGE.modelDetail}
           />
         </View>

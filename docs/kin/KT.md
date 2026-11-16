@@ -53,7 +53,7 @@ Memory is plain Markdown files with front matter in a private git repo per organ
 
 ## Dreams
 
-Once a night per organization, `DreamRunner` collects the day's originals (journal, chat messages, worker reports, GitHub events) and runs an isolated lead session in dream mode on a scratch checkout. It merges duplicates, supersedes stale items and lists contradictions, which a stronger model turns into a resolution or a question for the owner. Code checks every change (schema, sources, no deletions, secret scan) before the result goes to a `dream/<date>` branch for the owner to approve. The morning routine uses it for the brief. See the [triggers spec, "Dreaming pipeline"](specs/triggers.md#dreaming-pipeline-one-per-org-per-night).
+Once a night per organization, `DreamRunner` collects the day's originals (journal, chat messages, worker reports, GitHub events) and runs an isolated lead session in dream mode on a scratch checkout. It merges duplicates, supersedes stale items and lists contradictions, which a second turn on the same model turns into a resolution or a question for the owner. Code checks every change (schema, sources, no deletions, secret scan) before the result goes to a `dream/<date>` branch for the owner to approve. The morning routine uses it for the brief. See the [triggers spec, "Dreaming pipeline"](specs/triggers.md#dreaming-pipeline-one-per-org-per-night).
 
 ## Triggers
 
@@ -84,7 +84,7 @@ Set up the repo as upstream's [development runbook](../operations/development.md
    ```sh
    KIN_ENABLED=true node apps/server/src/bin.ts kin lead create --base-dir .t3 \
      --person kin-default-owner --name "Tech lead" \
-     --strong claudeAgent:<model> --cheap claudeAgent:<model>
+     --model claudeAgent:<model>
    ```
 
    **A lead must run on Claude.** Only Claude sessions get the lead's no-shell tool set, so creation refuses any other provider. Workers can use any provider.

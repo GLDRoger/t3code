@@ -36,7 +36,13 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { setComposerDraftText } from "../../state/use-composer-drafts";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { kinDraftKey } from "./components/KinComposer";
-import { KinAgentModelRow, useKinAgentModelOptions } from "./KinAgentModelRow";
+import {
+  KinAgentEffortAdvice,
+  KinAgentEffortRow,
+  KinAgentModelRow,
+  kinPickedModel,
+  useKinAgentModelOptions,
+} from "./KinAgentModelRow";
 import { kinClient, refreshKinAgents } from "./state/kinClient";
 
 const row = (index: number) => (index === 0 ? undefined : "border-t border-border-subtle");
@@ -96,22 +102,11 @@ function Models(props: {
   const update = useAtomCommand(kinClient.leadUpdate, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const choose = async (role: "strong" | "cheap", selection: ModelSelection) => {
+  const choose = async (model: ModelSelection) => {
     setBusy(true);
     const outcome = await update({
       environmentId,
-      input: {
-        orgId,
-        agentId: page.profile.agentId,
-        // The phone picks the model; an effort chosen elsewhere stays when the model does.
-        models: {
-          ...page.models,
-          [role]:
-            selection.model === page.models[role].model
-              ? page.models[role]
-              : { instanceId: selection.instanceId, model: selection.model },
-        },
-      },
+      input: { orgId, agentId: page.profile.agentId, model },
     });
     setBusy(false);
     setProblem(
@@ -126,25 +121,39 @@ function Models(props: {
   return (
     <View className="gap-2">
       <ListSection title={KIN_AGENT_PAGE.model}>
-        {(["strong", "cheap"] as const).map((role, index) =>
-          canEdit ? (
+        {canEdit ? (
+          <>
             <KinAgentModelRow
-              key={role}
-              label={KIN_AGENT_PAGE[role]}
-              value={page.models[role]}
-              valueName={kinLeadModelName(page.models[role].model, providers)}
+              label={KIN_AGENT_PAGE.model}
+              value={page.model}
+              valueName={kinLeadModelName(page.model.model, providers)}
               options={options}
               disabled={busy}
-              borderTop={index > 0}
-              onPick={(selection) => void choose(role, selection)}
+              onPick={(selection) =>
+                void choose(
+                  // The same model keeps the effort it has; a new one starts at Medium.
+                  selection.model === page.model.model &&
+                    selection.instanceId === page.model.instanceId
+                    ? page.model
+                    : kinPickedModel(options, selection),
+                )
+              }
             />
-          ) : (
-            <View key={role} className={row(index)}>
-              <ListRowLayout label={KIN_AGENT_PAGE[role]} detail={name(page.models[role])} />
-            </View>
-          ),
+            <KinAgentEffortRow
+              label={KIN_AGENT_PAGE.effort}
+              value={page.model}
+              options={options}
+              disabled={busy}
+              onPick={(selection) => void choose(selection)}
+            />
+          </>
+        ) : (
+          <View className={row(0)}>
+            <ListRowLayout label={KIN_AGENT_PAGE.model} detail={name(page.model)} />
+          </View>
         )}
       </ListSection>
+      {canEdit ? <KinAgentEffortAdvice value={page.model} options={options} /> : null}
       <Text
         textRole="footnote"
         accessibilityLiveRegion={problem === null && page.modelNote === null ? "none" : "polite"}
@@ -157,7 +166,7 @@ function Models(props: {
         {problem ??
           (page.modelNote === null
             ? `${KIN_AGENT_PAGE.modelDetail} ${kinAgentUsageLine(page.usedThisMonth)}`
-            : `${page.modelNote} Now: ${name(page.runsOn.strong)}.`)}
+            : `${page.modelNote} Now: ${name(page.runsOn)}.`)}
       </Text>
     </View>
   );

@@ -54,10 +54,7 @@ const lead = (name: string, domain: string) => ({
   name,
   domain,
   charter: "",
-  models: {
-    strong: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" },
-    cheap: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-haiku-4-5" },
-  },
+  model: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" },
   workerProjects: [],
 });
 const watch = (orgId: KinOrgId) =>

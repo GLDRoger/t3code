@@ -174,44 +174,32 @@ export const KIN_CHIEF_OF_STAFF: KinLeadDraft = {
   intro: "",
 };
 
-/**
- * The providers an agent may run on: Claude, and Codex once the host turns on `kinNonClaudeAgents`
- * (the host refuses any other).
- */
-export function kinAgentDriverAllowed(driver: string, nonClaudeAgents: boolean): boolean {
-  return driver === "claudeAgent" || (nonClaudeAgents && driver === "codex");
-}
+/** The providers an agent may run on; the one rule lives in contracts, beside the host's. */
+export { kinAgentDriverAllowed } from "@t3tools/contracts";
 
-/** The host's switch for agents on Codex, shown beside the models new agents start on. */
+/** The host's switch for agents on Codex, shown beside the model new agents start on. */
 export const KIN_OPENAI_AGENTS = {
   title: "Agents on OpenAI models",
   detail:
     "An experiment: agents may also run on Codex's models. There they use only their Kin tools, with no shell, files or web, in every chat. Sign in to Codex under Settings, Providers first.",
 };
 
-/** An org's first agent is where the models come from: the host copies them to every later one. */
+/** An org's first agent is where the model comes from: the host copies it to every later one. */
 export const KIN_LEAD_MODELS = {
-  title: "Models",
-  strong: "For harder work",
-  cheap: "For quick replies",
-  hint: "Your agents think with these. Agents you add later use the same ones.",
+  title: "Model",
+  hint: "Your agents think with this. Agents you add later use the same one.",
   none: "Agents run on Claude, and this server has no Claude set up yet. Set it up under Settings, Providers, then come back.",
 };
 
-/**
- * The models a first agent starts on, from the Claude models offered: the strongest for harder
- * work and the quickest for small replies, both changeable. Null when none is offered.
- */
-export function kinLeadStartingModels(
-  models: ReadonlyArray<ModelSelection>,
-): { readonly strong: ModelSelection; readonly cheap: ModelSelection } | null {
+/** The model a first agent starts on: the strongest offered, changeable. Null when none is. */
+export function kinLeadStartingModel(models: ReadonlyArray<ModelSelection>): ModelSelection | null {
   const [first] = models;
   if (first === undefined) return null;
   const named = (...names: ReadonlyArray<string>) =>
     names
       .map((name) => models.find((model) => model.model.toLowerCase().includes(name)))
       .find((model) => model !== undefined);
-  return { strong: named("opus", "sonnet") ?? first, cheap: named("haiku", "sonnet") ?? first };
+  return named("opus", "sonnet") ?? first;
 }
 
 const INTRO_MAX = 320;
@@ -243,7 +231,7 @@ export function kinLeadSaveProblem(error: unknown, creating: boolean): string {
     case "not_found":
       return "This agent is no longer here.";
     case "no_models":
-      return "Choose the models your agents think with, then create it again.";
+      return "Choose the model your agents think with, then create it again.";
     default:
       return kinFailureText(
         error,

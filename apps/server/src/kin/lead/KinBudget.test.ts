@@ -82,7 +82,7 @@ describe("KinBudget", () => {
             [...allowed],
             `${remaining}%`,
           );
-          assert.isTrue(admissions.every((a) => a.cheapOnly === (remaining === 0)));
+          assert.isTrue(admissions.every((a) => a.atLimit === (remaining === 0)));
         }
         assert.isTrue(yield* budget.admitWorker(orgId));
         yield* sql`UPDATE kin_budget SET worker_units = 10 WHERE org_id = ${orgId}`;
@@ -359,7 +359,7 @@ describe("KinBudget", () => {
       for (const priority of ["P0", "P1", "P2", "P3"] as const)
         assert.include(yield* budget.admit(orgId, priority, "teammate"), {
           allowed: true,
-          cheapOnly: false,
+          atLimit: false,
         });
       assert.isTrue(yield* budget.admitWorker(orgId));
       assert.strictEqual(yield* budget.promptContext(orgId), "no daily limit");
@@ -487,7 +487,7 @@ describe("KinBudget", () => {
         yield* sql`SELECT body FROM kin_messages WHERE org_id = ${orgId} ORDER BY message_id`,
         [
           {
-            body: "Your agents have used 80% of today's limit. At the limit only your own messages run, on the cheaper model, until 12:00 am. You can raise or remove the limit in Settings.",
+            body: "Your agents have used 80% of today's limit. At the limit only your own messages run until 12:00 am. You can raise or remove the limit in Settings.",
           },
         ],
       );
@@ -526,7 +526,7 @@ describe("KinBudget", () => {
       for (const priority of ["P0", "P1", "P2", "P3"] as const)
         assert.include(yield* budget.admit(orgId, priority, "owner"), {
           allowed: true,
-          cheapOnly: false,
+          atLimit: false,
           remaining: 1,
         });
       assert.strictEqual(yield* budget.promptContext(orgId), "100% of today left");

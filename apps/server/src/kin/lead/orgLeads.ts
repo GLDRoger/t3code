@@ -18,7 +18,7 @@ export interface LiveLead {
   readonly level: string;
   readonly ownerPersonId: KinPersonId;
   readonly ownerChatId: KinChatId;
-  readonly models: string;
+  readonly model: string;
 }
 
 /**
@@ -38,9 +38,9 @@ export const liveLead = Effect.fn("KinOrgLeads.liveLead")(function* (
     level: string;
     ownerPersonId: string;
     ownerChatId: string;
-    models: string;
+    model: string;
   }>`SELECT l.agent_id AS "agentId", l.name, l.domain, l.level,
-      a.owner_person_id AS "ownerPersonId", l.owner_chat_id AS "ownerChatId", l.models_json AS models
+      a.owner_person_id AS "ownerPersonId", l.owner_chat_id AS "ownerChatId", l.models_json AS model
     FROM kin_leads l
     JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
       AND a.role = 'lead' AND a.retired_at IS NULL

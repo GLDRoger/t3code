@@ -52,12 +52,11 @@ import { KinStop } from "./KinStop.ts";
 import * as Retirement from "./Retirement.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import {
-  companyDefaultModels,
-  encodeLeadModels,
+  companyDefaultModel,
+  encodeLeadModel,
   isDevServer,
   leadModelProblem,
   nonClaudeLeadModel,
-  type LeadModels,
 } from "./leadModels.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
@@ -107,7 +106,7 @@ export const LeadSummary = Schema.Struct({
   ownerPersonId: KinPersonId,
   createdByPersonId: Schema.NullOr(KinPersonId),
   ownerChatId: KinChatId,
-  models: Schema.fromJsonString(KinLead.fields.models),
+  model: Schema.fromJsonString(KinLead.fields.model),
   workerProjects: Schema.fromJsonString(KinLead.fields.workerProjects),
   retiredAt: Schema.NullOr(Schema.String),
   retiredByPersonId: Schema.NullOr(KinPersonId),
@@ -115,7 +114,6 @@ export const LeadSummary = Schema.Struct({
 });
 export type LeadSummary = typeof LeadSummary.Type;
 const decodeLeads = Schema.decodeUnknownEffect(Schema.Array(LeadSummary));
-const encodeModels = Schema.encodeEffect(Schema.fromJsonString(KinLead.fields.models));
 const encodeProjects = Schema.encodeEffect(Schema.fromJsonString(KinLead.fields.workerProjects));
 const encodeRoleTags = Schema.encodeEffect(Schema.fromJsonString(KinRoleTags));
 
@@ -125,8 +123,8 @@ export interface CreateLeadInput {
   readonly domain: KinLeadDomain;
   readonly charter: KinLeadCharter;
   readonly intro?: KinLeadIntro | undefined;
-  /** Omitted: the models of the org's first live lead. */
-  readonly models?: { readonly strong: ModelSelection; readonly cheap: ModelSelection } | undefined;
+  /** Omitted: the company default, else the org's first live lead's. */
+  readonly model?: ModelSelection | undefined;
   readonly workerProjects: ReadonlyArray<ProjectId>;
 }
 
@@ -158,7 +156,7 @@ export const leadsIn = Effect.fn("KinLeadProvision.leadsIn")(function* (
   const rows = yield* sql`SELECT l.org_id AS "orgId", l.agent_id AS "agentId", l.name, l.domain,
       l.charter, l.public_intro AS intro, l.role_tags_json AS "roleTags", l.level, a.owner_person_id AS "ownerPersonId",
       l.created_by_person_id AS "createdByPersonId", l.owner_chat_id AS "ownerChatId",
-      l.models_json AS models, l.worker_projects_json AS "workerProjects", a.retired_at AS "retiredAt",
+      l.models_json AS model, l.worker_projects_json AS "workerProjects", a.retired_at AS "retiredAt",
       a.retired_by_person_id AS "retiredByPersonId", a.paused_at AS "pausedAt"
     FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
     WHERE l.org_id = ${orgId} AND a.role = 'lead'
@@ -230,19 +228,16 @@ export const coOwners = Effect.fn("KinLeadProvision.coOwners")(function* (orgId:
   return rows.map((row): PersonIdentity => ({ _tag: "person", orgId, personId: row.personId }));
 });
 
-/** The models a lead gets when none are named: the company default, else the first live lead's. */
-const defaultModels = Effect.fn("KinLeadProvision.defaultModels")(function* (orgId: KinOrgId) {
-  const chosen = yield* companyDefaultModels(orgId).pipe(
-    Effect.mapError(toPersistenceSqlError("KinLeadProvision.defaultModels")),
+/** The model a lead gets when none is named: the company default, else the first live lead's. */
+const defaultModel = Effect.fn("KinLeadProvision.defaultModel")(function* (orgId: KinOrgId) {
+  const chosen = yield* companyDefaultModel(orgId).pipe(
+    Effect.mapError(toPersistenceSqlError("KinLeadProvision.defaultModel")),
   );
   if (chosen !== null) return chosen;
   const [first] = yield* leadsIn(orgId, { liveOnly: true });
   if (first === undefined)
-    return yield* refuse(
-      "no_models",
-      "This org has no agent to copy models from. Pass --strong and --cheap.",
-    );
-  return first.models;
+    return yield* refuse("no_models", "This org has no agent to copy a model from. Pass --model.");
+  return first.model;
 });
 
 export const create = Effect.fn("KinLeadProvision.create")(function* (input: CreateLeadInput) {
@@ -253,10 +248,10 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
   yield* mayCreate(person);
   const { owner } = yield* KinIdentity;
   const { orgId } = person;
-  const models = input.models ?? (yield* defaultModels(orgId));
+  const model = input.model ?? (yield* defaultModel(orgId));
   const notClaude = nonClaudeLeadModel(
     yield* (yield* ServerSettingsService).getSettings,
-    models,
+    model,
     yield* isDevServer,
   );
   if (notClaude !== undefined) return yield* refuse("not_claude", notClaude);
@@ -289,7 +284,7 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
       for (const coOwner of yield* coOwners(orgId))
         yield* chats.createDirect(coOwner, { orgId, agentId });
       // Both were decoded by the caller, so re-encoding them can't fail.
-      const modelsJson = yield* encodeModels(models).pipe(Effect.orDie);
+      const modelsJson = encodeLeadModel(model);
       const workerProjects = yield* encodeProjects(projects).pipe(Effect.orDie);
       const inserted = yield* KinLevels.insertLeadAtL0({
         orgId,
@@ -360,7 +355,7 @@ interface LeadChange {
   readonly intro?: KinLeadIntro | undefined;
   readonly roleTags?: KinRoleTags | undefined;
   /** Checked by the caller: Claude, and offered on this host. */
-  readonly models?: LeadModels | undefined;
+  readonly model?: ModelSelection | undefined;
 }
 
 /**
@@ -407,9 +402,9 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
     WHERE org_id = ${orgId} AND agent_id = ${agentId} RETURNING agent_id`;
   if (changed.length === 0)
     return yield* refuse("conflict", `Agent ${agentId} changed while updating.`);
-  // The runner reads the row at each wake-up, so the next turn runs on these.
-  if (fields.models !== undefined)
-    yield* sql`UPDATE kin_leads SET models_json = ${encodeLeadModels(fields.models)}
+  // The runner reads the row at each wake-up, so the next turn runs on it.
+  if (fields.model !== undefined)
+    yield* sql`UPDATE kin_leads SET models_json = ${encodeLeadModel(fields.model)}
       WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
   // Chats show the agent's name, so both rows carry it.
   yield* sql`UPDATE kin_agents SET display_name = ${next.name}
@@ -418,19 +413,19 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
   return {
     ...lead,
     ...next,
-    ...(fields.models === undefined ? {} : { models: fields.models }),
+    ...(fields.model === undefined ? {} : { model: fields.model }),
   };
 });
 
-/** Refuses models a turn here couldn't run on: not Claude, switched off, or not offered. */
-export const checkModels = Effect.fn("KinLeadProvision.checkModels")(function* (
-  models: LeadModels,
+/** Refuses a model a turn here couldn't run on: not Claude, switched off, or not offered. */
+export const checkModel = Effect.fn("KinLeadProvision.checkModel")(function* (
+  model: ModelSelection,
 ) {
   const registry = yield* Effect.serviceOption(ProviderRegistry);
   const problem = leadModelProblem(
     yield* (yield* ServerSettingsService).getSettings,
     Option.isSome(registry) ? yield* registry.value.getProviders : null,
-    models,
+    model,
     yield* isDevServer,
   );
   if (problem !== undefined) return yield* refuse("not_claude", problem);
@@ -537,7 +532,7 @@ const profileOf = (
   charter: lead.charter,
   intro: lead.intro,
   roleTags: lead.roleTags,
-  model: lead.models.strong.model,
+  model: lead.model.model,
   ownerChatId: lead.ownerChatId,
   working: working.has(lead.agentId),
   tracking: items
@@ -634,7 +629,7 @@ export const update = Effect.fn("KinLeadProvision.update")(function* (input: {
   yield* mayCreate(person);
   if (person.orgId !== input.orgId)
     return yield* refuse("not_found", `Org ${input.orgId} has no agent ${input.agentId}.`);
-  if (input.fields.models !== undefined) yield* checkModels(input.fields.models);
+  if (input.fields.model !== undefined) yield* checkModel(input.fields.model);
   return yield* transaction(
     sql,
     "KinLeadProvision.update",
@@ -854,7 +849,7 @@ export const setPaused = Effect.fn("KinLeadProvision.setPaused")(function* (inpu
   );
 });
 
-/** The models new agents start on, for owner-level people; null until one is chosen. */
+/** The model new agents start on, for owner-level people; null until one is chosen. */
 export const agentDefaults = Effect.fn("KinLeadProvision.agentDefaults")(function* (
   editor: LeadCreator,
   orgId: KinOrgId,
@@ -862,31 +857,31 @@ export const agentDefaults = Effect.fn("KinLeadProvision.agentDefaults")(functio
   const person: PersonIdentity = yield* creatorFor(editor);
   yield* mayCreate(person);
   if (person.orgId !== orgId) return yield* refuse("not_found", `No org ${orgId}.`);
-  const models = yield* companyDefaultModels(orgId).pipe(
+  const model = yield* companyDefaultModel(orgId).pipe(
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.agentDefaults")),
   );
-  if (models !== null) return { orgId, models, chosen: true };
+  if (model !== null) return { orgId, model, chosen: true };
   const [first] = yield* leadsIn(orgId, { liveOnly: true });
-  return { orgId, models: first?.models ?? null, chosen: false };
+  return { orgId, model: first?.model ?? null, chosen: false };
 });
 
 export const setAgentDefaults = Effect.fn("KinLeadProvision.setAgentDefaults")(function* (
   editor: LeadCreator,
   orgId: KinOrgId,
-  models: LeadModels,
+  model: ModelSelection,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const person: PersonIdentity = yield* creatorFor(editor);
   yield* mayCreate(person);
   if (person.orgId !== orgId) return yield* refuse("not_found", `No org ${orgId}.`);
-  yield* checkModels(models);
-  const json = encodeLeadModels(models);
+  yield* checkModel(model);
+  const json = encodeLeadModel(model);
   yield* sql`INSERT INTO kin_agent_defaults (org_id, models_json) VALUES (${orgId}, ${json})
     ON CONFLICT (org_id) DO UPDATE SET models_json = excluded.models_json`.pipe(
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.setAgentDefaults")),
   );
   yield* leadsChanged(orgId);
-  return { orgId, models, chosen: true };
+  return { orgId, model, chosen: true };
 });
 
 /** The caller as the org's owner and the live lead of theirs being shared; anything else is refused. */

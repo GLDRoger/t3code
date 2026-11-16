@@ -614,75 +614,104 @@ describe("WakeupRunner", () => {
       }).pipe(Effect.provide(harness({ writer })));
     }).pipe(provideDeterministicTestRuntime),
   );
-  it.effect("uses the cheap model for exhausted P0 even when a routine is in the batch", () =>
+  it.effect("runs every kind of turn on the agent's one model, so its thread never switches", () =>
     Effect.gen(function* () {
       yield* seed;
-      const budget = yield* Budget.KinBudget;
       const queue = yield* KinEventQueue.KinEventQueue;
       const sql = yield* SqlClient.SqlClient;
-      yield* budget.set([{ _tag: "person", orgId, personId: KinPersonId.make("owner") }], {
-        orgId,
-        limits: { leadUnits: 0, workerUnits: 0 },
-      });
-      yield* queue.enqueue({
-        ...event("urgent"),
-        _tag: "resume",
-        pausedAt: DateTime.makeUnsafe(0),
-        expired: { count: 0, events: [] },
-      });
-      yield* queue.enqueue(event("routine"));
-      yield* Fiber.join(yield* run());
-      assert.deepStrictEqual(
-        yield* sql`SELECT model, status FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`,
-        [{ model: "claude-haiku-4-5", status: "completed" }],
-      );
-      assert.deepStrictEqual(
-        yield* sql`SELECT event_id, state, attempts FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
-        [
-          { event_id: "routine", state: "queued", attempts: 0 },
-          { event_id: "urgent", state: "done", attempts: 0 },
-        ],
-      );
-    }).pipe(
-      Effect.provide(
-        harness({
-          writer: Layer.effect(
-            Writer.MemoryWriter,
-            Effect.gen(function* () {
-              const sql = yield* SqlClient.SqlClient;
-              return Writer.MemoryWriter.of({
-                stage: () => Effect.die("unused"),
-                dreamBase: () => Effect.die("unused"),
-                commitDream: () => Effect.die("unused"),
-                deleteDreamBranch: () => Effect.die("unused"),
-                reconcileSharing: () => Effect.void,
-                stripQuotes: () => Effect.void,
-                undoChange: () => Effect.die("unused"),
-                relabel: () => Effect.die("unused"),
-                retire: () => Effect.die("unused"),
-                restore: () => Effect.die("unused"),
-                staged: () => Effect.succeed(false),
-                discard: () => Effect.void,
-                appendJournal: () => Effect.die("unused"),
-                commitWakeup: Effect.fn("test.commitWakeup")(function* (org, wakeupId, outcome) {
-                  assert.strictEqual(org, orgId);
-                  assert.strictEqual(outcome, "completed");
-                  const [row] = yield* sql<{
-                    status: string;
-                    runStatus: string;
-                  }>`SELECT w.status, r.status AS "runStatus" FROM kin_wakeups w JOIN orchestration_v2_projection_runs r ON r.run_id = w.run_id WHERE w.wakeup_id = ${wakeupId}`.pipe(
-                    Effect.orDie,
-                  );
-                  assert.deepStrictEqual(row, { status: "running", runStatus: "completed" });
-                  return { commit: "fixture-commit" };
-                }),
-              });
-            }),
-          ),
+      const at = { receivedAt: "1970-01-01T00:00:00.000Z" };
+      for (const next of [
+        event("check-in"),
+        decodeEvent({ ...event("quiet-check"), ...at, _tag: "pulse", factKeys: [] }),
+        yield* ownerSays("asked"),
+        decodeEvent({
+          ...event("finding"),
+          ...at,
+          _tag: "watchdog",
+          finding: "Check",
+          itemIds: [],
         }),
+      ]) {
+        yield* queue.enqueue(next);
+        yield* Fiber.join(yield* run());
+      }
+      assert.deepStrictEqual(
+        yield* sql`SELECT model, COUNT(*) AS turns FROM kin_wakeups WHERE org_id = ${orgId} GROUP BY model`,
+        [{ model: "claude-opus-4-6", turns: 4 }],
+      );
+    }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
+  it.effect(
+    "at the limit runs the owner's urgent turn on the agent's one model, and holds a routine",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const budget = yield* Budget.KinBudget;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        yield* budget.set([{ _tag: "person", orgId, personId: KinPersonId.make("owner") }], {
+          orgId,
+          limits: { leadUnits: 0, workerUnits: 0 },
+        });
+        yield* queue.enqueue({
+          ...event("urgent"),
+          _tag: "resume",
+          pausedAt: DateTime.makeUnsafe(0),
+          expired: { count: 0, events: [] },
+        });
+        yield* queue.enqueue(event("routine"));
+        yield* Fiber.join(yield* run());
+        assert.deepStrictEqual(
+          yield* sql`SELECT model, status FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`,
+          [{ model: "claude-opus-4-6", status: "completed" }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state, attempts FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
+          [
+            { event_id: "routine", state: "queued", attempts: 0 },
+            { event_id: "urgent", state: "done", attempts: 0 },
+          ],
+        );
+      }).pipe(
+        Effect.provide(
+          harness({
+            writer: Layer.effect(
+              Writer.MemoryWriter,
+              Effect.gen(function* () {
+                const sql = yield* SqlClient.SqlClient;
+                return Writer.MemoryWriter.of({
+                  stage: () => Effect.die("unused"),
+                  dreamBase: () => Effect.die("unused"),
+                  commitDream: () => Effect.die("unused"),
+                  deleteDreamBranch: () => Effect.die("unused"),
+                  reconcileSharing: () => Effect.void,
+                  stripQuotes: () => Effect.void,
+                  undoChange: () => Effect.die("unused"),
+                  relabel: () => Effect.die("unused"),
+                  retire: () => Effect.die("unused"),
+                  restore: () => Effect.die("unused"),
+                  staged: () => Effect.succeed(false),
+                  discard: () => Effect.void,
+                  appendJournal: () => Effect.die("unused"),
+                  commitWakeup: Effect.fn("test.commitWakeup")(function* (org, wakeupId, outcome) {
+                    assert.strictEqual(org, orgId);
+                    assert.strictEqual(outcome, "completed");
+                    const [row] = yield* sql<{
+                      status: string;
+                      runStatus: string;
+                    }>`SELECT w.status, r.status AS "runStatus" FROM kin_wakeups w JOIN orchestration_v2_projection_runs r ON r.run_id = w.run_id WHERE w.wakeup_id = ${wakeupId}`.pipe(
+                      Effect.orDie,
+                    );
+                    assert.deepStrictEqual(row, { status: "running", runStatus: "completed" });
+                    return { commit: "fixture-commit" };
+                  }),
+                });
+              }),
+            ),
+          }),
+        ),
+        provideDeterministicTestRuntime,
       ),
-      provideDeterministicTestRuntime,
-    ),
   );
   it.effect(
     "defers P3 until the owner-local reset without attempts and re-admits it after limits rise",
@@ -755,10 +784,7 @@ describe("WakeupRunner", () => {
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
-      const models = JSON.stringify({
-        strong: { instanceId: "claudeAgent", model: "claude-opus-4-6" },
-        cheap: { instanceId: "codex", model: "gpt-5.5" },
-      });
+      const models = JSON.stringify({ instanceId: "codex", model: "gpt-5.5" });
       yield* sql`UPDATE kin_leads SET models_json = ${models} WHERE agent_id = ${agentId}`;
       yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("codex-lead"));
       const exit = yield* Fiber.await(yield* run());

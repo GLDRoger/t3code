@@ -104,10 +104,7 @@ export const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('owner', 'org', 'owner', 'Owner', ${timestamp})`;
   yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at) VALUES ('lead', 'org', 'Lead', 'lead', 'owner', ${timestamp})`;
   yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('owner-chat', 'org', 'team_group', 0, ${timestamp})`;
-  const models = yield* encodeJson({
-    strong: selection,
-    cheap: { ...selection, model: "claude-haiku-4-5" },
-  });
+  const models = yield* encodeJson(selection);
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('lead', 'org', 'Lead', 0, ${models}, '[]', 'owner-chat')`;
 });
 export const event = (id: string) =>

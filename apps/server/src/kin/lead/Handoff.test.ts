@@ -41,8 +41,8 @@ const at = "1970-01-01T00:00:00.000Z";
 const chief = KinAgentId.make("chief");
 const tech = KinAgentId.make("tech");
 const models = JSON.stringify({
-  strong: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.1-codex" },
-  cheap: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.1-codex-mini" },
+  instanceId: ProviderInstanceId.make("codex"),
+  model: "gpt-5.1-codex",
 });
 const scopeFor = (agentId: string): McpInvocationScope => ({
   environmentId: EnvironmentId.make("environment"),
