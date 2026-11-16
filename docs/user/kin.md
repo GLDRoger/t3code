@@ -173,6 +173,11 @@ Tasks holds everything someone owes someone. **Needs you** at the top is what wa
 first: late or stuck work, quiet clients, projects with nothing moving. Choose **I've got it** when
 you're handling one.
 
+Below it, everyone's list reads the same way, so you can tell at a glance what waits on whom:
+**On me** is what you have to do; **On others** is what waits on a teammate, under each person;
+**On agents** is what an agent has; then everything else, by project. Each task says who has it
+first, agents by name, then when it's due and its project.
+
 - **New task** gives a task a title, a due day and someone to do it. Ask an agent instead and it
   writes the task for you.
 - **Give to someone else** moves a task to a teammate or an agent. They get it in their Tasks and a
@@ -181,7 +186,8 @@ you're handling one.
 - **Who can see this** says who can see a task. **People on it and the project** is the usual.
   **Only me** makes it private: it hides the task from other teammates, not from the owner and
   co-owners. Only they and whoever has it see it, and it stays out of every list, count and search
-  for anyone else. Members can't change it.
+  for anyone else. A project lead who marks one can undo it; others see whose it is, as
+  **Only Dev Malhotra**. Members can't change it.
 
 Keep amounts, rates and client terms out of task titles and notes. Project people read those; put
 the figures in the quote or the invoice.
@@ -195,6 +201,12 @@ while, the client shows up under Needs you.
 A project has a lead, a target day, milestones and its tasks. Its page says whether it's on track,
 what's late or stuck, and who's on it. The owner, co-owners and the project's lead add milestones;
 everyone on the project sees them. The owner or a co-owner sets the lead under **Project lead**.
+
+**People** on a project's page lists who's on it. The owner, co-owners and the project's lead choose
+**Add people** to put teammates and agents on it, and take someone off from the same list. The owner
+can also do this from a teammate's page under **Team**, and choose people when making a project.
+Whoever is added or made lead gets a message in their chat with a link to the project. Taken off,
+its tasks leave their list straight away. A member can't add themselves.
 
 A member sees client names and contacts only when the owner turns on **Can see Clients**, and never
 what a client is charged or owes. With it on, they also find the projects they're on, under their
@@ -236,9 +248,9 @@ Moving from another system? See [Moving your records into Kin](./kin-import.md).
 
 Docs holds what's written for someone to read: briefs, specs, plans, notes, and the PDFs Kin makes.
 Each doc is filed under a client, a project or the company; **Unfiled** shows what still needs a
-home. Ask an agent to write or change a doc and it edits only the sections that change. Every
-version is kept: open **History** to see what changed and, as owner or co-owner, restore an older
-one.
+home; a doc an agent writes for a project is filed under it. Ask an agent to write or change a doc
+and it edits only the sections that change. Every version is kept: open **History** to see what
+changed and, as owner or co-owner, restore an older one.
 
 A doc is private when it's marked private or it's a quote. Otherwise a project's people can read the
 project's docs.
@@ -325,6 +337,7 @@ on the projects they lead.
 | Record payments, make PDFs and receipts, set budgets | Yes                                 | No                                                                               |                                                      |
 | Clients                                              | All, with what they owe             | Names, contacts and their projects with **Can see Clients**; never what they owe | Their projects' clients, without **Can see Clients** |
 | Add a milestone                                      | Yes                                 | No; they see milestones                                                          | On their projects                                    |
+| Add or take people off a project                     | Yes                                 | No                                                                               | On their projects                                    |
 | Docs                                                 | All                                 | Company docs with **Can see Docs**, and their projects' docs                     |                                                      |
 | Restore an older version of a doc                    | Yes                                 | No                                                                               |                                                      |
 | Confirm an email, statement or receipt; approve      | Yes                                 | No                                                                               |                                                      |

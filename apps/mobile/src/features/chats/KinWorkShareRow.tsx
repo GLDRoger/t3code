@@ -77,7 +77,7 @@ export function KinWorkShareRow(
 export function KinWorkAudienceRow(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
-    readonly view: Pick<KinWorkItemView, "privacy" | "shared" | "project" | "can">;
+    readonly view: Pick<KinWorkItemView, "privacy" | "shared" | "project" | "can" | "markedBy">;
     readonly names: KinWorkNames;
     readonly disabled: boolean;
     /** Sets the private mark; null where this viewer can't. */

@@ -369,6 +369,8 @@ const KIN_RPC_ACCESS = {
   "kin.work.updateContact": "owner_level",
   "kin.work.createProject": "owner_level",
   "kin.work.updateProject": "owner_level",
+  // The project's lead too: the service checks who leads it (`teamGuard`).
+  "kin.work.projectPeople": "person",
   "kin.work.logTouch": "owner_level",
   "kin.work.removeTouch": "owner_level",
   "kin.docs.list": "person",
@@ -600,6 +602,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.updateContact": "kin-work",
   "kin.work.createProject": "kin-work",
   "kin.work.updateProject": "kin-work",
+  "kin.work.projectPeople": "kin-work",
   "kin.work.logTouch": "kin-work",
   "kin.work.removeTouch": "kin-work",
   "kin.work.lists": "kin-work",

@@ -48,6 +48,7 @@ import {
   type KinOwnerTimeZoneGetInput,
   type KinPushWatchInput,
   type KinOrgId,
+  type KinPersonId,
   type KinPartyPageInput,
   type KinProjectPageInput,
   type KinWorkGetInput,
@@ -1098,6 +1099,25 @@ export const kinClient = {
     // Clients shows each project's task counts from these rows, so any change can move them.
     refreshTrigger: kinWorkRefreshOn("any", kinRefreshOn("workChoices")),
   }),
+  /** One teammate's open projects, and the open projects they could be put on, by name. */
+  teammateProjects: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:work:teammate-projects",
+    execute: Effect.fn("KinClient.teammateProjects")(function* (input: {
+      readonly orgId: KinOrgId;
+      readonly person: KinPersonId;
+    }) {
+      const [theirs, open] = yield* Effect.all(
+        [
+          readWorkProjects({ orgId: input.orgId, person: input.person, limit: 100 }),
+          readWorkProjects({ orgId: input.orgId, limit: 100 }),
+        ],
+        { concurrency: 2 },
+      );
+      return { theirs: theirs.projects, open: open.projects };
+    }),
+    staleTimeMs: 30_000,
+    refreshTrigger: kinWorkRefreshOn(["projects"], kinRefreshOn("workChoices")),
+  }),
   workClientCreate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:client:create",
     tag: "kin.work.createParty",
@@ -1133,6 +1153,11 @@ export const kinClient = {
   workProjectUpdate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:project:update",
     tag: "kin.work.updateProject",
+  }),
+  /** Who is on a project; the owner, a co-owner or its lead (the page's `can.people`). */
+  workProjectPeople: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:project:people",
+    tag: "kin.work.projectPeople",
   }),
   workCreate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:create",

@@ -70,6 +70,8 @@ export type RecordRow = {
   readonly assignedBy: string | null;
   readonly assignedByAgent: string | null;
   readonly assignedAt: number | null;
+  /** The person who marked it private, while it is (`teamView.ts`). */
+  readonly markedBy: string | null;
   readonly originKey: string;
   readonly createdAt: number;
   readonly updatedAt: number;
@@ -269,7 +271,7 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.source_chat_id AS "sourceChatId", r.source_message_id AS "sourceMessageId",
     r.created_by_kind AS "createdByKind", r.created_by_id AS "createdById",
     r.assigned_by_person_id AS "assignedBy", r.assigned_by_agent_id AS "assignedByAgent",
-    r.assigned_at AS "assignedAt",
+    r.assigned_at AS "assignedAt", r.marked_by_person_id AS "markedBy",
     r.origin_key AS "originKey", r.created_at AS "createdAt", r.updated_at AS "updatedAt",
     r.closed_at AS "closedAt", r.party_id AS "partyId", r.project_id AS "projectId", r.repo,
     r.fields_json AS "fieldsJson",
@@ -360,8 +362,27 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
     ...(row.repo === null ? {} : { repo: row.repo }),
     ...(row.inheritedSensitive === 1 ? { sensitiveInherited: true as const } : {}),
     ...(row.teamShared === 1 ? { shared: true as const } : {}),
+    ...givenOf(row),
+    ...(row.sensitive === 1 && row.markedBy !== null
+      ? { markedBy: KinPersonId.make(row.markedBy) }
+      : {}),
     ...moneyOf(row),
   };
+};
+
+/** Who gave a task to whoever holds it now, when that is someone else. */
+const givenOf = (row: RecordRow): { readonly givenBy?: KinWorkPrincipal } => {
+  if (row.registerId !== "work") return {};
+  const by: KinWorkPrincipal | null =
+    row.assignedBy !== null
+      ? { _tag: "person", personId: KinPersonId.make(row.assignedBy) }
+      : row.assignedByAgent !== null
+        ? { _tag: "agent", agentId: KinAgentId.make(row.assignedByAgent) }
+        : null;
+  return by === null ||
+    (by._tag === row.ownerKind && (by._tag === "person" ? by.personId : by.agentId) === row.ownerId)
+    ? {}
+    : { givenBy: by };
 };
 
 /** Its amount, own date and repeat; in a defined list, the list, its category and a balance. */
