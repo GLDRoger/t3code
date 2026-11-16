@@ -10,7 +10,7 @@ import type {
 
 // `kin.work.subscribe` with `acceptRows`: what a client folds the stream into, and how a list page
 // it already read is kept equal to a fresh read of it. The server's property test folds with these
-// same functions (`apps/server/src/kin/work/workStream.property.test.ts`).
+// same functions (`apps/server/src/kin/work/teamView.property.test.ts`).
 
 type Counts = Extract<KinWorkEvent, { readonly _tag: "counts" }>;
 type CountsBody = Omit<Counts, "_tag" | "seq" | "asOf" | "team">;
