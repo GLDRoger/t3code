@@ -112,7 +112,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_hand_off", {
     ...handoff,
     description:
-      "Pass a request the owner made in your chat to the agent whose domain owns it, instead of telling the owner to ask them. Kin posts it in that agent's chat with the owner, saying you passed it on and quoting the owner's message, and that agent answers there. Then tell the owner in one line, such as \"I've passed this to Tech lead.\" Only for the owner's own message in your direct chat; a request passed on to you can't be passed on again. Passing the same message to the same agent twice does nothing, and it can't go to a second agent. Never an approval, and it gives the other agent no more than this chat allows.",
+      "Pass a request the owner made in your chat to the agent whose domain owns it, instead of telling the owner to ask them. Kin posts it in that agent's chat with the owner, saying you passed it on and quoting the owner's message, and that agent answers there. Then tell the owner in one line, such as \"I've passed this to Tech lead.\" Only for the owner's own message in your direct chat, or from a check-in a pulse fact another agent acts on (its key in fact, what to do in request; Kin quotes the fact in its own words); a request passed on to you can't be passed on again. Passing the same message to the same agent twice does nothing, and it can't go to a second agent. Never an approval, and it gives the other agent no more than this chat allows.",
     parameters: Handoff.HandOffInput,
     success: Handoff.HandOffResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

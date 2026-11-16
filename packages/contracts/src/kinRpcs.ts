@@ -343,7 +343,7 @@ const KIN_RPC_ACCESS = {
   "kin.docs.setDefaultRecipe": "owner_level",
   "kin.work.lists": "person",
   "kin.work.updateList": "owner_level",
-  "kin.work.dates": "owner_level",
+  "kin.work.dates": "person",
   "kin.work.money": "person",
   "kin.work.cash": "owner_level",
   "kin.work.outlook": "owner_level",

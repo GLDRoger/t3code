@@ -150,6 +150,16 @@ export class KinFloor extends Context.Service<
         readonly owed?: boolean;
       },
     ) => Effect.Effect<void, PersistenceSqlError | KinChatError>;
+    /**
+     * A message for one person in their own direct chat with the lead (`KinLevelGate.postTo`):
+     * a relay, a nudge, a notice. It is never the floor's, so it posts whether the chat is empty,
+     * the lead spoke last or a reply is owed there, and it leaves that reply's grant alone. Only
+     * the hourly notice limit applies.
+     */
+    readonly admitToPerson: (
+      identity: AgentIdentity,
+      chatId: KinChatId,
+    ) => Effect.Effect<void, PersistenceSqlError | KinChatError>;
     readonly recordNotice: (
       identity: AgentIdentity,
       message: KinMessage,
@@ -288,6 +298,19 @@ const make = Effect.gen(function* () {
     Effect.mapError(toPersistenceSqlError("KinFloor.noticeOnly")),
   );
 
+  const withinLimit = Effect.fnUntraced(function* (
+    identity: AgentIdentity,
+    chatId: KinChatId,
+    earlier: number,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const recent = yield* sql<{ message_id: string }>`SELECT message_id FROM kin_floor_notices
+      WHERE org_id = ${identity.orgId} AND chat_id = ${chatId} AND agent_id = ${identity.agentId}
+        AND posted_at > ${now - NOTICE_WINDOW_MS} ORDER BY posted_at, message_id LIMIT ${NOTICE_LIMIT}`;
+    if (recent.length + earlier >= NOTICE_LIMIT)
+      return yield* new KinChatError({ reason: "limit", message: "Agent notice limit reached." });
+  });
+
   const admitNotice = Effect.fn("KinFloor.admitNotice")(
     function* (
       identity: AgentIdentity,
@@ -309,15 +332,17 @@ const make = Effect.gen(function* () {
       )
         return yield* invalidIntent;
       if (input.owed === true) return;
-      const now = yield* Clock.currentTimeMillis;
-      const recent = yield* sql<{ message_id: string }>`SELECT message_id FROM kin_floor_notices
-        WHERE org_id = ${identity.orgId} AND chat_id = ${input.chatId} AND agent_id = ${identity.agentId}
-          AND posted_at > ${now - NOTICE_WINDOW_MS} ORDER BY posted_at, message_id LIMIT ${NOTICE_LIMIT}`;
-      if (recent.length + (input.earlier ?? 0) >= NOTICE_LIMIT)
-        return yield* new KinChatError({ reason: "limit", message: "Agent notice limit reached." });
+      yield* withinLimit(identity, input.chatId, input.earlier ?? 0);
     },
     Effect.mapError((error) =>
       isKinChatError(error) ? error : toPersistenceSqlError("KinFloor.admitNotice")(error),
+    ),
+  );
+
+  const admitToPerson = Effect.fn("KinFloor.admitToPerson")(
+    (identity: AgentIdentity, chatId: KinChatId) => withinLimit(identity, chatId, 0),
+    Effect.mapError((error) =>
+      isKinChatError(error) ? error : toPersistenceSqlError("KinFloor.admitToPerson")(error),
     ),
   );
 
@@ -409,6 +434,14 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(toPersistenceSqlError("KinFloor.recordNotice")),
   );
-  return KinFloor.of({ open, renew, authorize, noticeOnly, admitNotice, recordNotice });
+  return KinFloor.of({
+    open,
+    renew,
+    authorize,
+    noticeOnly,
+    admitNotice,
+    admitToPerson,
+    recordNotice,
+  });
 });
 export const layer = Layer.effect(KinFloor, make);

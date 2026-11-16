@@ -464,15 +464,19 @@ export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
     viewers,
   );
   const fields = parseFields(row.fieldsJson);
-  const billing = fieldText(fields, "billing");
-  const value = fields.value;
+  // Someone in it who doesn't lead it gets no price or terms, which the notes often carry.
+  const leads =
+    viewers === undefined ||
+    viewers.every((one) => row.ownerKind === "person" && row.ownerId === one);
+  const billing = leads ? fieldText(fields, "billing") : null;
+  const value = leads ? fields.value : undefined;
   const day = (key: string) => {
     const text = fieldText(fields, key);
     return text !== null && isCalendarDay(text) ? text : null;
   };
   return {
     ...counted!.row,
-    notes: row.notes,
+    notes: leads ? row.notes : "",
     repos: [...fieldList(fields, "repos")],
     billing: KIN_PROJECT_BILLING.find((kind) => kind === billing) ?? null,
     value: value !== undefined && isMoney(value) ? value : null,

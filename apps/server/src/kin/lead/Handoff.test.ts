@@ -33,6 +33,7 @@ import * as Kin from "../layer.ts";
 import { deferralOrigin } from "../triggers/deferralOrigin.ts";
 import { SHARED_REFUSAL, recordAudience, turnAudience, turnPeople } from "./Audience.ts";
 import { wakeEvent } from "./ChatWake.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
 import * as Handoff from "./Handoff.ts";
 import * as KinLevels from "./KinLevels.ts";
 
@@ -236,6 +237,79 @@ it.effect(
         assert.lengthOf(yield* systemRows(sql, orgId, ctx.chiefChat), 0);
       }),
     ),
+);
+
+// Run 4: the morning check-in told the owner "Finance will send the reminder once you confirm",
+// and could not hand the overdue fact to Finance. From a check-in, a fact goes to the agent who acts.
+it.effect("a check-in passes a fact to the agent who acts on it, once, in Kin's words", () =>
+  run(({ ctx, handoff }) =>
+    Effect.gen(function* () {
+      const { sql, orgId } = ctx;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'work', 'Work', 'W', 1, 0) ON CONFLICT DO NOTHING`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, due_at, fields_json, created_by_kind, created_by_id, origin_key,
+          created_at, updated_at)
+        VALUES (${orgId}, 'r-w1', 'work', 'W-1', 'Invented release notes', 'open', 'agent',
+          ${tech}, ${-3 * 86_400_000}, '{}', 'person', ${ctx.owner.personId}, 'origin-w1',
+          ${-30 * 86_400_000}, ${-30 * 86_400_000})`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id)
+        VALUES ('checkin-event', ${orgId}, ${chief}, 'pulse', 'P2', ${JSON.stringify({
+          _tag: "pulse",
+          orgId,
+          agentId: chief,
+          eventId: "checkin-event",
+          receivedAt: at,
+          dedupeKey: null,
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: "checkin-morning",
+            title: "Morning check-in",
+            what: "Morning check-in.",
+            slot: "1970-01-01",
+          },
+        })}, 0, 0, 'claimed', 'chief-wake')`;
+      const turn = { orgId, agentId: chief, wakeupId: "chief-wake" };
+      yield* recordAudience(turn, yield* turnAudience(turn));
+      const pass = (fact?: string) =>
+        handoff.handOff(scopeFor(chief), {
+          to: "Tech lead",
+          request: "Ship the notes today or move the date.",
+          sourceEventId: "checkin-event",
+          ...(fact === undefined ? {} : { fact }),
+        });
+      assert.include((yield* Effect.flip(pass())).message, "pass a fact");
+      assert.include((yield* Effect.flip(pass("task_late:W-9"))).message, "isn't open now");
+      const key = (yield* KinPulse.read({ orgId, at: 0, viewer: { _tag: "owner" } })).facts.find(
+        (fact) => fact.sense === "task_late" && fact.subject.key === "W-1",
+      )!.key;
+      assert.deepStrictEqual(yield* pass(key), { to: "Tech lead", passed: true });
+      assert.deepStrictEqual(yield* pass(key), { to: "Tech lead", passed: true });
+      const rows = yield* systemRows(sql, orgId, ctx.techChat);
+      assert.lengthOf(rows, 1);
+      assert.match(
+        rows[0]!.body,
+        new RegExp(
+          `^Passed on by Chief of staff from Morning check-in\\nW-1 Invented release notes: .+ \\(${key}\\)\\nChief of staff adds: Ship the notes today or move the date\\.$`,
+        ),
+      );
+      const [passed, ...more] = yield* passedOn(sql, orgId, tech);
+      assert.lengthOf(more, 0);
+      assert.deepInclude(passed!.event, {
+        _tag: "chat.message",
+        agentId: tech,
+        chatId: ctx.techChat,
+        origin: { agentId: chief, chatId: ctx.chiefChat },
+      });
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_handoffs WHERE org_id = ${orgId} AND from_agent_id = ${chief}
+          AND to_agent_id = ${tech}`,
+        1,
+      );
+    }),
+  ),
 );
 
 it.effect("a turn a teammate's join aborted passes nothing on", () =>
@@ -679,7 +753,7 @@ it.effect(
         assert.strictEqual(relayed.to, me!.name);
         assert.deepStrictEqual(yield* systemRows(sql, orgId, ctx.chiefChat), [
           {
-            body: 'Zoya Sheikh asked, in their chat with Chief of staff:\n"Can W-7 move to 1 Feb? I\'m on leave 20 to 29 January."',
+            body: 'Zoya Sheikh asked Chief of staff:\n"Can W-7 move to 1 Feb? I\'m on leave 20 to 29 January."',
           },
         ]);
         assert.lengthOf(

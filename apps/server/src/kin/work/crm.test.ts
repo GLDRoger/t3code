@@ -37,6 +37,8 @@ import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import * as Docs from "./docs.ts";
+import * as Search from "./search.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
 import { sectionsOf } from "./docBody.ts";
 import { milestoneRisk } from "./projectSpine.ts";
 import { effectivelySensitive } from "./recordRows.ts";
@@ -1354,6 +1356,72 @@ it.effect(
         (yield* Clients.projects([mate], { orgId })).projects.map((one) => one.open),
         ours.project.open,
       );
+      // Run 4: one the owner holds, marked private, in Mate's project and milestone. Only the
+      // owner side and its holder see it: not its title, count, search hit or pulse fact.
+      yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${ownerId}, sensitive = 1,
+          due_at = 1 WHERE key = 'W-1'`;
+      const late = DAY;
+      const sees = Effect.fn("test.sees")(function* (viewer: typeof owner) {
+        const view = viewer === owner ? ([owner] as const) : ([mate] as const);
+        const page = yield* Clients.project(view, { orgId, key: "P-1" });
+        const found = yield* Search.search(orgId, {
+          text: "Invented login form",
+          limit: 10,
+          ...(viewer === owner ? { viewer: "owner" } : { viewer: "team", view: [mateId] }),
+        });
+        const pulse = yield* KinPulse.read({
+          orgId,
+          at: late,
+          viewer: viewer === owner ? { _tag: "owner" } : { _tag: "people", people: [mateId] },
+        });
+        return {
+          tasks: (yield* OwnerWork.list(view, { orgId })).records.map((one) => one.key),
+          milestone: (yield* OwnerWork.get(view, { orgId, key: "M-1" })).tasks?.map(
+            (one) => one.key,
+          ),
+          counted: page.milestones?.[0]?.total,
+          open: page.counts.open + page.counts.waiting,
+          search: found.hits.map((hit) => hit.key),
+          pulse: pulse.facts.filter((fact) => fact.key.includes("W-1")).length,
+        };
+      });
+      const ownerSees = yield* sees(owner);
+      assert.include(ownerSees.tasks, "W-1");
+      assert.deepStrictEqual(
+        { milestone: ownerSees.milestone, search: ownerSees.search, counted: ownerSees.counted },
+        { milestone: ["W-1", "W-2"], search: ["W-1"], counted: 2 },
+      );
+      assert.isAbove(ownerSees.pulse, 0);
+      const mateSees = yield* sees(mate);
+      assert.notInclude(mateSees.tasks, "W-1");
+      assert.deepStrictEqual(
+        { ...mateSees, tasks: undefined },
+        {
+          tasks: undefined,
+          milestone: [],
+          counted: 0,
+          open: ownerSees.open - 2,
+          search: [],
+          pulse: 0,
+        },
+      );
+      // Run 4: someone who holds a task in a project they don't lead opens its page, with no
+      // Clients place: their task and what they see, never its price, billing or notes.
+      yield* sql`UPDATE kin_records SET owner_kind = 'agent', owner_id = ${lead}, notes = 'Invented 6 lakh fixed'
+        WHERE key = 'P-1'`;
+      yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${mateId}, sensitive = 0
+        WHERE key = 'W-2'`;
+      const inIt = yield* Clients.project([mate], { orgId, key: "P-1" });
+      assert.deepStrictEqual(
+        {
+          blocked: inIt.blocked.map((one) => one.record.key),
+          billing: inIt.project.billing,
+          value: inIt.project.value,
+          notes: inIt.project.notes,
+        },
+        { blocked: ["W-2"], billing: null, value: null, notes: "" },
+      );
+      assert.notMatch(JSON.stringify(inIt), /60000000|6 lakh/u);
 
       // The milestone rule: late once passed while open; at risk within the heads-up days (3 by
       // default) with late or later work.

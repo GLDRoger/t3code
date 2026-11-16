@@ -29,6 +29,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import { isClaudeThinkingItem } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import {
   KinChatService,
@@ -258,10 +259,11 @@ export class KinReplyBridge extends Context.Service<
   }
 >()("t3/kin/reply/KinReplyBridge") {}
 
-const textOf = (
-  item: Extract<OrchestrationV2TurnItem, { type: "assistant_message" }>,
-  projection?: OrchestrationV2ThreadProjection,
-) =>
+type AnswerItem = Extract<OrchestrationV2TurnItem, { type: "assistant_message" }>;
+/** The model's own words. Its reasoning never reaches a chat, even shown as an update. */
+const isAnswer = (item: OrchestrationV2TurnItem) =>
+  item.type === "assistant_message" && !isClaudeThinkingItem(item);
+const textOf = (item: AnswerItem, projection?: OrchestrationV2ThreadProjection) =>
   item.textOmitted === true
     ? (projection?.messages.find((message) => message.id === item.messageId)?.text ?? item.text)
     : item.text;
@@ -685,7 +687,7 @@ const make = Effect.gen(function* () {
     wake.lastOutputAt = now;
     wake.latest = Math.max(wake.latest, item.ordinal);
     reopen(wake, item);
-    if (item.type === "assistant_message") {
+    if (item.type === "assistant_message" && isAnswer(item)) {
       const segment = segmentFor(wake, item.id, item.ordinal, now);
       for (const earlier of pendingBefore(wake, item.ordinal)) yield* decide(wake, earlier, "text");
       if (segment.outcome !== null) return;
@@ -720,7 +722,8 @@ const make = Effect.gen(function* () {
       segment.complete = true;
       return yield* decide(wake, segment, nextAfter(wake, segment.ordinal));
     }
-    if (item.type === "reasoning") return yield* show(wake, "thinking", PHASE_LABELS.thinking);
+    if (item.type === "reasoning" || item.type === "assistant_message")
+      return yield* show(wake, "thinking", PHASE_LABELS.thinking);
     if (!isToolItem(item)) return;
     if (!wake.tools.includes(item.ordinal)) wake.tools.push(item.ordinal);
     if (isEndCall(item)) wake.endedAt = Math.min(wake.endedAt ?? item.ordinal, item.ordinal);
@@ -806,7 +809,7 @@ const make = Effect.gen(function* () {
     for (const [index, item] of items.entries()) {
       reopen(wake, item);
       if (isEndCall(item)) wake.endedAt = Math.min(wake.endedAt ?? item.ordinal, item.ordinal);
-      if (item.type !== "assistant_message" || item.streaming) continue;
+      if (item.type !== "assistant_message" || !isAnswer(item) || item.streaming) continue;
       const segment = segmentFor(wake, item.id, item.ordinal, now);
       if (segment.outcome !== null) continue;
       segment.text = textOf(item, projection);
@@ -817,9 +820,7 @@ const make = Effect.gen(function* () {
           yield* presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, null);
         continue;
       }
-      const following = items
-        .slice(index + 1)
-        .find((next) => next.type === "assistant_message" || isToolItem(next));
+      const following = items.slice(index + 1).find((next) => isAnswer(next) || isToolItem(next));
       yield* decide(
         wake,
         segment,

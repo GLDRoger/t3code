@@ -571,7 +571,62 @@ describe("KinPulse", () => {
       // The weekly brief leads with goals, then overdue money from the same rows.
       const week = yield* buildWeeklySection({ orgId, now: at });
       assert.match(week.goals[0]!, /^G-1 .*₹1,00,000 of ₹10,00,000.*behind$/);
-      assert.isTrue(week.money.unpaid.some((line) => /^INV-1:.*days past due$/.test(line)));
+      assert.isTrue(
+        week.money.unpaid.some((line) =>
+          /^INV-1:.*days past due; no mail with it on record$/.test(line),
+        ),
+      );
+      // Run 4: the brief called a reminder sent 45 s earlier a draft. Its lines read the record.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
+          reach, state, created_at, updated_at)
+        VALUES (${orgId}, 'mail', 'Outlook', 'remote', 'graph.example', 'none', 'open', 'active', 1, 1)`;
+      const ask = (id: string, state: string, doneAt: number | null, attachments: unknown[]) =>
+        sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name, pin_digest,
+            payload_json, agent_id, wakeup_id, chat_id, state, result_json, proposed_at, done_at)
+          VALUES (${orgId}, ${id}, 'mail', ${attachments.length > 0 ? "mail_send" : "mail_reply"},
+            'pin', ${JSON.stringify({
+              _tag: "email",
+              from: { address: "hello@studio.example", name: null },
+              to: ["accounts@client.example"],
+              cc: [],
+              subject: "Invoice INV-1",
+              body: "Attached.",
+              threadId: attachments.length > 0 ? null : "t-1",
+              inReplyTo: null,
+              references: null,
+              attachments,
+            })}, ${finance}, 'w', 'c', ${state},
+            ${state === "sent" ? JSON.stringify({ threadId: "t-1" }) : null}, 0, ${doneAt})`;
+      yield* ask("invoice", "sent", B, [
+        {
+          key: "D-1",
+          recordId: "r-D-1",
+          version: 1,
+          attachmentId: "a",
+          sha256: "s",
+          name: "INV-1.pdf",
+          mimeType: "application/pdf",
+          bytes: 1,
+          label: null,
+          entryRecordId: "r-INV-1",
+        },
+      ]);
+      const overdueLine = Effect.map(buildWeeklySection({ orgId, now: at }), (now) =>
+        now.money.unpaid.find((line) => line.startsWith("INV-1:")),
+      );
+      assert.match(
+        String(yield* overdueLine),
+        /past due; sent \S+ from hello@studio.example, no reminder since$/,
+      );
+      yield* ask("draft", "open", null, []);
+      assert.match(
+        String(yield* overdueLine),
+        /no reminder since, a reply waits on the owner's Confirm$/,
+      );
+      yield* sql`UPDATE kin_connection_asks SET state = 'sent', done_at = ${at - DAY},
+          result_json = '{"threadId":"t-1"}' WHERE ask_id = 'draft'`;
+      assert.match(String(yield* overdueLine), /, reminder sent \S+$/);
       // The weekly brief carries the renewal and the open quote it was missing.
       assert.include(week.money.renewalsThisMonth.join("\n"), "DT-1");
       assert.deepStrictEqual(week.money.openQuotes, ["QT-1: ₹6,00,000.00, sent, no answer yet"]);

@@ -198,6 +198,12 @@ describe("pulse check-ins", () => {
         ],
       );
       assert.isTrue(parsed.strong);
+      // Run 4: a brief with nothing matched or late still ran on the small model.
+      yield* checkIn(SLOT + DAY, {
+        lines: [mail("t3:a", "Shop <news@shop.example>", "Sale")],
+        seen: [],
+      });
+      assert.isTrue((yield* pulseEvents).every((one) => JSON.parse(one.json).strong === true));
     }).pipe(Effect.provide(layer)),
   );
 

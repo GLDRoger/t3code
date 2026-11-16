@@ -272,9 +272,13 @@ const make = Effect.gen(function* () {
                   reason: "not_allowed",
                   message: SHARED_ELSEWHERE,
                 });
+              // A message for a person goes only to their own direct chat: it skips the floor.
+              if (to !== undefined && !(yield* theirDirect(agent, to.personId, chatId)))
+                return where === "private"
+                  ? yield* new PrivateDestination(turn)
+                  : yield* notAllowed;
               if (where === "private") {
-                if (to === undefined || !(yield* theirDirect(agent, to.personId, chatId)))
-                  return yield* new PrivateDestination(turn);
+                if (to === undefined) return yield* new PrivateDestination(turn);
                 const why = yield* unreadableBy(agent.orgId, to.personId, to.text).pipe(
                   Effect.provideService(SqlClient.SqlClient, sql),
                 );

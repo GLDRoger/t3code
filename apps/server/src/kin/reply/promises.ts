@@ -9,12 +9,17 @@ export const relayPrefix = (wakeupId: string) => `kin-relay:${wakeupId}:`;
 const PROMISE =
   /\bI(?:'ll|’ll| will|'m going to|’m going to| am going to)\s+(?:now\s+|also\s+)?(?:put|pass|tell|ask|let|check with|flag|raise|forward|relay|mention|bring|nudge|ping|message|follow up with)\b[^.!?\n]{0,80}/gi;
 const PRONOUN = /\b(?:him|her|the owner)\b/i;
+/** "Finance will send the reminder": what another agent is said to do next. */
+const AGENT_ACTS =
+  "\\s+(?:will|'ll|’ll|is going to|can then)\\s+(?:now\\s+|then\\s+)?(?:send|draft|chase|remind|follow up|handle|take|reply|prepare|pick up|look into|check|do|sort|deal)\\b";
+const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 /**
  * Who a wake-up's reply said it would tell, ask or pass something to, when nothing in the turn
  * did: no relay, nudge, reminder, hand-off, assignment notice or post in another chat. Someone
- * in the chat itself is the reader, so a promise to them is no hand-over.
+ * in the chat itself is the reader, so a promise to them is no hand-over. Else another agent it
+ * said would act, with no hand-off to that agent this turn.
  */
 export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wake: {
   readonly orgId: KinOrgId;
@@ -32,7 +37,6 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
       AND created_at >= ${since}
     ORDER BY seq`;
   const spans = said.flatMap((row) => [...row.body.matchAll(PROMISE)].map((hit) => hit[0]));
-  if (spans.length === 0) return undefined;
   const people = yield* sql<{ name: string; here: number; owner: number }>`SELECT
       p.display_name AS name,
       EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = p.org_id
@@ -48,9 +52,7 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
       (one) =>
         one.here === 0 &&
         first(one.name).length > 1 &&
-        new RegExp(`\\b${first(one.name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(
-          span,
-        ),
+        new RegExp(`\\b${escaped(first(one.name))}\\b`, "i").test(span),
     );
     if (person !== undefined) {
       named = first(person.name);
@@ -61,7 +63,21 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
       break;
     }
   }
-  if (named === undefined) return undefined;
+  if (named === undefined) {
+    // A promise about another agent stands only when this turn handed it over.
+    const agents = yield* sql<{ agentId: string; name: string }>`SELECT a.agent_id AS "agentId",
+        a.display_name AS name FROM kin_agents a
+      WHERE a.org_id = ${wake.orgId} AND a.agent_id <> ${wake.agentId} AND a.role = 'lead'
+        AND a.retired_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = a.org_id
+          AND h.from_agent_id = ${wake.agentId} AND h.to_agent_id = a.agent_id
+          AND h.created_at >= ${wake.startedAt})
+      ORDER BY a.agent_id LIMIT 50`;
+    const text = said.map((row) => row.body).join("\n");
+    return agents.find((agent) =>
+      new RegExp(`\\b${escaped(agent.name)}${AGENT_ACTS}`, "i").test(text),
+    )?.name;
+  }
   const kept = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${wake.orgId}
       AND substr(message_id, 1, ${relayPrefix(wake.wakeupId).length}) = ${relayPrefix(wake.wakeupId)}
     UNION ALL SELECT 1 FROM kin_messages WHERE org_id = ${wake.orgId} AND created_at >= ${since}

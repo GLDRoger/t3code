@@ -86,7 +86,8 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
           slot: slot.slice(0, 200),
         },
         ...(lines.length === 0 ? {} : { outside: lines }),
-        ...(KinPulse.needsJudgement(facts.facts) || matched.length > 0 ? { strong: true } : {}),
+        // A check-in or brief is judgement whatever an earlier one already told: the main model.
+        strong: true,
       }),
       notBefore === undefined ? undefined : { notBefore },
     )
