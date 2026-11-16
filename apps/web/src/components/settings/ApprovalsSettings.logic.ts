@@ -8,9 +8,9 @@ export const PLATFORM: Record<KinApproverKeyPlatform, string> = {
 
 const isApprovalError = Schema.is(KinApprovalError);
 
-/** The host's own words for a refusal; they name the fix. Anything else is a plain retry. */
-export function approvalsProblem(cause: unknown): string {
+/** The host's own words for a refusal, which name the fix; anything else is a plain retry. */
+export function approvalsProblem(cause: unknown): { text: string; retry: boolean } {
   return isApprovalError(cause) && cause.reason !== "unavailable"
-    ? cause.message
-    : "Kin didn't answer. Try again.";
+    ? { text: cause.message, retry: false }
+    : { text: "Kin didn't answer. Try again.", retry: true };
 }

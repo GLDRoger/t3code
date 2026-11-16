@@ -104,11 +104,13 @@ function Phones(props: { readonly target: Target }) {
       <Loading />
     ) : (
       <Notice
-        text={approvalsProblem(keys.failure)}
+        text={approvalsProblem(keys.failure).text}
         action={
-          <Button size="sm" variant="outline" onClick={keys.refresh}>
-            Try again
-          </Button>
+          approvalsProblem(keys.failure).retry ? (
+            <Button size="sm" variant="outline" onClick={keys.refresh}>
+              Try again
+            </Button>
+          ) : undefined
         }
       />
     );
@@ -258,7 +260,7 @@ function useRemove(target: Target, refresh: () => void) {
     setBusy(null);
     refresh();
     if (AsyncResult.isFailure(result))
-      setProblem(approvalsProblem(squashAtomCommandFailure(result)));
+      setProblem(approvalsProblem(squashAtomCommandFailure(result)).text);
   };
   return { busy, problem, remove: (thumbprint: KinKeyThumbprint) => void remove(thumbprint) };
 }
