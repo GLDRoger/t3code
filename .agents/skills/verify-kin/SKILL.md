@@ -98,6 +98,8 @@ bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the 
 | `lead-adds-milestone`      | members see P-1's milestones and no Add; Dev, its lead, adds one and they see it                     |
 | `owner-money-forms`        | a goal, the coming-up dates, an advance set against INV-1 once; members are refused                  |
 
+`node scripts/kin-release-check.ts` runs all ten with the models, property tests and UI fuzz before a release ([Releasing Kin](../../../docs/operations/kin-release.md)).
+
 A script that sees a known product bug prints a `known` line on stderr instead of passing
 silently. Write a new script from `lib.sh`: `kv`, `fail`, `pass`, `expect_in`, `expect_not_in`,
 `sent_count`, `card_id`. Assert on what a person sees (snapshot text) or what left the building

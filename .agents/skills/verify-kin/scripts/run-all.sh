@@ -17,8 +17,11 @@ kv up --fresh || exit 1
 failed=0
 for name in "${SCRIPTS[@]}"; do
   at=$SECONDS
-  if KIN_VERIFY_INSTANCE="$INSTANCE" bash "$HERE/$name.sh"; then :; else failed=$((failed + 1)); fi
-  echo "     $name took $((SECONDS - at))s"
+  if KIN_VERIFY_INSTANCE="$INSTANCE" bash "$HERE/$name.sh"; then result=passed; else
+    result=failed
+    failed=$((failed + 1))
+  fi
+  echo "     $name $result in $((SECONDS - at))s"
 done
 echo "run-all: $(( ${#SCRIPTS[@]} - failed ))/${#SCRIPTS[@]} passed in $((SECONDS - started))s"
 [[ $failed -eq 0 ]]
