@@ -90,11 +90,12 @@ async function mcpClient(server: McpServer) {
       : text;
     return json === undefined ? undefined : (JSON.parse(json) as Record<string, unknown>);
   };
-  await post("initialize", {
+  const opened = await post("initialize", {
     protocolVersion: "2025-06-18",
     capabilities: {},
     clientInfo: { name: "kin-verify", version: "1" },
   });
+  if (sessionId === undefined) throw new Error(`initialize: ${JSON.stringify(opened)}`);
   await post("notifications/initialized", {}, true);
   return {
     list: () => post("tools/list", {}),
@@ -125,7 +126,8 @@ async function capture(server: McpServer | undefined, prompt: string) {
 }
 
 /** T3's notice that a delegated task finished, as T3 words it or as Kin's prompt names it. */
-const NOTICE = /Delegated tasks? ([^\s,]+)|task\.finished[\s\S]*?"taskIds"\s*:\s*\[\s*"([^"]+)"/;
+const NOTICE =
+  /Delegated tasks? ([^\s,]+)|task\.finished[\s\S]*?taskIds\\*"\s*:\s*\[\s*\\*"([^"\\]+)/;
 
 /** What a tool answered, as the agent reads it: the structured result, else its JSON text. */
 const answerOf = (response: unknown): unknown => {
@@ -207,21 +209,26 @@ async function runTurn(
                   )
                 : value;
   let mcp: Awaited<ReturnType<typeof mcpClient>> | undefined;
-  try {
-    const local = new Set(["shell", "sleep"]);
-    const needsMcp = (script.calls ?? []).some((call) => !local.has(call.name));
-    if (server === undefined && needsMcp) throw new Error("no MCP server in this session");
-    const client = server === undefined || !needsMcp ? undefined : await mcpClient(server);
-    mcp = client;
-    const listed = ((await client?.list()) ?? {}) as {
+  // Connected at the first tool call, as a model calls tools only after reading its prompt.
+  let takesEvent = new Set<string>();
+  let listed: unknown;
+  const connect = async () => {
+    if (mcp !== undefined) return mcp;
+    if (server === undefined) throw new Error("no MCP server in this session");
+    mcp = await mcpClient(server);
+    listed = await mcp.list();
+    const tools = (listed ?? {}) as {
       result?: { tools?: ReadonlyArray<{ name: string; inputSchema?: { properties?: object } }> };
     };
     // Most Kin tools take the event the turn answers, which a real agent copies from its prompt.
-    const takesEvent = new Set(
-      (listed.result?.tools ?? [])
+    takesEvent = new Set(
+      (tools.result?.tools ?? [])
         .filter((tool) => Object.hasOwn(tool.inputSchema?.properties ?? {}, "sourceEventId"))
         .map((tool) => tool.name),
     );
+    return mcp;
+  };
+  try {
     for (const call of script.calls ?? []) {
       const args = (call.arguments ?? {}) as Record<string, unknown>;
       if (call.name === "sleep") {
@@ -240,6 +247,7 @@ async function runTurn(
         });
         continue;
       }
+      const client = await connect();
       const withEvent =
         takesEvent.has(call.name) && args.sourceEventId === undefined
           ? { ...args, sourceEventId: "$event" }
@@ -247,7 +255,7 @@ async function runTurn(
       results.push({
         name: call.name,
         response:
-          call.name === "tools/list" ? listed : await client!.call(call.name, fill(withEvent)),
+          call.name === "tools/list" ? listed : await client.call(call.name, fill(withEvent)),
       });
     }
   } catch (error) {
