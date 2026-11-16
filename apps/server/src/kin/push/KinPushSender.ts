@@ -13,7 +13,7 @@ import type {
   KinPushToken,
   KinWidgetId,
 } from "@t3tools/contracts";
-import { KinTriggerSettings, kinGreeting, kinPageGist, kinPageShape } from "@t3tools/contracts";
+import { KinMessageRelay, kinGreeting, kinPageGist, kinPageShape } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -29,7 +29,7 @@ import { KinPendingActions } from "../approvals/PendingActions.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
-import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
+import { personHoldNow } from "../triggers/quietHold.ts";
 import { KinApnsTransport } from "./Apns.ts";
 import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
@@ -64,8 +64,15 @@ export type KinPushOutcome = {
   readonly failed: number;
 };
 
-/** Silent recipients get the badge only: no banner, no sound. */
-type Recipient = { readonly personId: KinPersonId; readonly silent: boolean };
+/**
+ * Silent recipients get the badge only: no banner, no sound. A `capped` one rings at most once per
+ * half hour, claimed only when the push reaches a phone of theirs (`deliver`).
+ */
+type Recipient = {
+  readonly personId: KinPersonId;
+  readonly silent: boolean;
+  readonly capped?: true;
+};
 
 type Push = {
   readonly category: KinPushCategory;
@@ -137,9 +144,7 @@ const kinPushCollapseId = (orgId: KinOrgId, chatId: KinChatId) =>
 const decodeIds = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 const decodeState = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const UNPROMPTED_RING_GAP_MS = 30 * 60_000;
-const decodeQuietHours = Schema.decodeUnknownOption(
-  Schema.fromJsonString(KinTriggerSettings.fields.quietHours),
-);
+const decodeRelay = Schema.decodeUnknownOption(Schema.fromJsonString(KinMessageRelay));
 
 /**
  * Whether a message concerns someone enough to ring their phone. A direct chat is theirs; in a
@@ -242,16 +247,12 @@ const make = Effect.gen(function* () {
     return { direct, name: row?.title ?? (direct ? (row?.agent ?? "Kin") : "Group") };
   });
 
-  /** Quiet hours as pings keep them: the org's hours on the owner's clock. */
-  const quietNow = Effect.fn("KinPushSender.quietNow")(function* (orgId: KinOrgId) {
-    const [row] = yield* sql<{ quiet_hours_json: string }>`
-      SELECT quiet_hours_json FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;
-    const hours = Option.getOrElse(
-      decodeQuietHours(row?.quiet_hours_json),
-      () => KIN_DEFAULT_QUIET_HOURS,
-    );
-    return isQuiet(yield* Clock.currentTimeMillis, yield* cache.ownerTimeZone(orgId), hours);
-  });
+  /**
+   * Whether `personId` is in their quiet hours, or outside the working hours they hold to, now:
+   * the rule that holds lines to them (`quietHold.ts`), on their own clock.
+   */
+  const holdNow = (orgId: KinOrgId, personId: KinPersonId) =>
+    personHoldNow(orgId, personId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
 
   /** The hour of the owner's day, for a brief's greeting: check-ins are his. */
   const ownerHour = Effect.fn("KinPushSender.ownerHour")(function* (orgId: KinOrgId) {
@@ -295,9 +296,12 @@ const make = Effect.gen(function* () {
       SELECT display_name FROM kin_agents
       WHERE org_id = ${orgId} AND agent_id = ${action.value.requestedBy.agentId}`;
     const deepLink = `/kin/${host}/${segment(orgId)}/actions/${segment(actionId)}`;
-    const quiet = yield* quietNow(orgId);
     // DESIGN 9.3: approvers only, read from their keys, never from the request.
     const approvers = yield* keys.activeApprovers(orgId);
+    const recipients: Array<Recipient> = [];
+    // An approval is asked for now: only an approver's quiet hours keep it silent.
+    for (const personId of approvers)
+      recipients.push({ personId, silent: (yield* holdNow(orgId, personId)) === "quiet" });
     return {
       category: "kin.approval",
       title: lead?.display_name ?? "Approval needed",
@@ -305,7 +309,7 @@ const make = Effect.gen(function* () {
       chatId: undefined,
       source: undefined,
       data: { kin: 1, orgId, pendingActionId: actionId, deepLink },
-      recipients: approvers.map((personId) => ({ personId, silent: quiet })),
+      recipients,
     } satisfies Push;
   });
 
@@ -328,9 +332,10 @@ const make = Effect.gen(function* () {
       is_card: number;
       owner_timed: number;
       seq: number;
+      relay_json: string | null;
     }>`
       SELECT m.chat_id, m.seq, m.author_kind, m.author_person_id, m.author_member_id, m.body,
-        m.form, m.mentions_json,
+        m.form, m.mentions_json, m.relay_json,
         COALESCE(
           (SELECT display_name FROM kin_agents a
             WHERE a.org_id = m.org_id AND a.agent_id = m.author_agent_id),
@@ -380,12 +385,22 @@ const make = Effect.gen(function* () {
     const chat = yield* chatName(orgId, row.chat_id);
     const mentions = new Set<string>(yield* decodeIds(row.mentions_json));
     const asked = new Set<string>(yield* decodeIds(row.asked_json));
-    // Reminders and scheduled runs come at the time the owner chose, so quiet hours let them ring.
-    const quiet = row.owner_timed === 1 ? false : yield* quietNow(orgId);
     const people = yield* chatPeople(orgId, row.chat_id);
+    // A person's words an agent passed on read as theirs: "Rhea, via Chief of staff".
+    const relay = Option.getOrUndefined(decodeRelay(row.relay_json ?? undefined));
+    const [sender] =
+      relay?.personId === undefined
+        ? []
+        : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+            WHERE org_id = ${orgId} AND person_id = ${relay.personId}`;
+    const author =
+      sender === undefined
+        ? row.author_name
+        : `${sender.name.split(" ")[0] ?? sender.name}, via ${row.author_name ?? "Kin"}`;
+    const fromPerson = row.author_kind === "human" || sender !== undefined;
     const push: Push = {
       category: "kin.message",
-      title: kinBannerTitle(chat, row.author_name),
+      title: kinBannerTitle(chat, author),
       body: body || "New message",
       chatId: row.chat_id,
       source: messageId,
@@ -408,22 +423,26 @@ const make = Effect.gen(function* () {
               repliesToThem: row.reply_author === person.personId || asked.has(person.personId),
             }),
         )
-        .map((person) => ({ personId: person.personId, silent: person.muted || quiet })),
+        .map((person) => ({ personId: person.personId, silent: person.muted })),
     };
-    // A reply to them, or a time they chose, always rings; anything else from Kin or an agent
-    // rings at most once per half hour.
+    // Each on their own clock. Reminders and scheduled runs come at the time the owner chose, so
+    // they ring whatever the hour. In quiet hours nothing else rings; outside the hours someone
+    // holds to, only a person's words or an answer to what they asked do. A reply to them, or a
+    // time they chose, always rings; anything else from Kin or an agent at most once per half hour.
     const recipients: Array<Recipient> = [];
-    for (const recipient of push.recipients)
+    for (const recipient of push.recipients) {
+      const answers = row.reply_author === recipient.personId || asked.has(recipient.personId);
+      const hold = row.owner_timed === 1 ? undefined : yield* holdNow(orgId, recipient.personId);
+      const silent =
+        recipient.silent || hold === "quiet" || (hold === "off" && !fromPerson && !answers);
       recipients.push(
-        recipient.silent ||
-          row.author_kind === "human" ||
-          row.owner_timed === 1 ||
-          row.reply_author === recipient.personId ||
-          asked.has(recipient.personId) ||
-          (yield* mayRing(orgId, recipient.personId))
-          ? recipient
-          : { ...recipient, silent: true },
+        silent
+          ? { ...recipient, silent: true }
+          : fromPerson || answers || row.owner_timed === 1
+            ? recipient
+            : { ...recipient, capped: true },
       );
+    }
     return { ...push, recipients } satisfies Push;
   });
 
@@ -479,9 +498,14 @@ const make = Effect.gen(function* () {
       for (const recipient of said?.recipients ?? []) awaiting.delete(recipient.personId);
     }
     const chat = yield* chatName(orgId, row.chat_id);
-    // A heads-up comes at the time the owner deferred the task to.
-    const quiet = row.phase === "heads_up" ? false : yield* quietNow(orgId);
     const people = yield* chatPeople(orgId, row.chat_id);
+    const recipients: Array<Recipient> = [];
+    for (const person of people) {
+      if (person.joinedSeq > row.seq || !awaiting.has(person.personId)) continue;
+      // A heads-up comes at the time the owner deferred the task to.
+      const held = row.phase === "heads_up" ? undefined : yield* holdNow(orgId, person.personId);
+      recipients.push({ personId: person.personId, silent: person.muted || held !== undefined });
+    }
     return {
       ...kind,
       title: kinBannerTitle(chat, row.author_name),
@@ -499,9 +523,7 @@ const make = Effect.gen(function* () {
         revision: row.revision,
         deepLink: chatLink(orgId, row.chat_id),
       },
-      recipients: people
-        .filter((person) => person.joinedSeq <= row.seq && awaiting.has(person.personId))
-        .map((person) => ({ personId: person.personId, silent: person.muted || quiet })),
+      recipients,
     } satisfies Push;
   });
 
@@ -605,13 +627,31 @@ const make = Effect.gen(function* () {
   });
 
   const deliver = Effect.fn("KinPushSender.deliver")(function* (orgId: KinOrgId, push: Push) {
+    const targets = yield* devices.forPeople(
+      orgId,
+      push.recipients.map((recipient) => recipient.personId),
+    );
     const recipients = new Map<KinPersonId, { silent: boolean; badge: number }>();
-    for (const recipient of push.recipients)
+    for (const recipient of push.recipients) {
+      let silent = recipient.silent;
+      // The half hour's one ring is spent only on a phone that will show it, so a push decided
+      // before they had one, or while they watch the chat, leaves it for the next.
+      if (recipient.capped === true) {
+        let shows = false;
+        for (const device of targets)
+          if (
+            device.personId === recipient.personId &&
+            (push.chatId === undefined ||
+              !(yield* presence.isWatching(device.sessionId, push.chatId)))
+          )
+            shows = true;
+        if (shows && !(yield* mayRing(orgId, recipient.personId))) silent = true;
+      }
       recipients.set(recipient.personId, {
-        silent: recipient.silent,
+        silent,
         badge: yield* badgeFor(orgId, recipient.personId),
       });
-    const targets = yield* devices.forPeople(orgId, [...recipients.keys()]);
+    }
     // Bounded, so one slow device doesn't hold up the rest and a big org doesn't flood APNs.
     const results = yield* Effect.forEach(
       targets,

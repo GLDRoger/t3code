@@ -28,7 +28,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { SHARED_REFUSAL, aborted, effectiveAudience, turnPeople } from "./Audience.ts";
+import { SHARED_REFUSAL, aborted, effectiveAudience, turnAsker, turnPeople } from "./Audience.ts";
 import { wakeEvent } from "./ChatWake.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
@@ -39,7 +39,7 @@ import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { relayPrefix } from "../reply/promises.ts";
-import { holdFor, holdLine, theirTime, urgentNow } from "../triggers/quietHold.ts";
+import { heldUntil, holdFor, holdLine, urgentNow } from "../triggers/quietHold.ts";
 import { unreadableBy } from "../work/teamView.ts";
 import { TurnEvent } from "./eventIds.ts";
 
@@ -478,6 +478,13 @@ const make = Effect.gen(function* () {
             refuse(`${to.name} can't message you; ask the team agent to tell them.`),
           ),
         );
+      // Whose words these are: the one person the turn acts for, drawn as sent by them.
+      const sender = yield* turnAsker(ctx).pipe(access);
+      const [senderRow] =
+        sender === null
+          ? []
+          : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+              WHERE org_id = ${ctx.orgId} AND person_id = ${sender} ORDER BY person_id`;
       const posted = yield* postTo(
         { ...ctx, wakeupId: KinWakeupId.make(ctx.wakeupId) },
         to.personId,
@@ -487,13 +494,23 @@ const make = Effect.gen(function* () {
           body: input.text,
           intent: "answer",
           urgent: input.urgent,
+          ...(sender === null
+            ? {}
+            : {
+                relay: {
+                  kind: "sent_by" as const,
+                  agentId: ctx.agentId,
+                  personId: KinPersonId.make(sender),
+                  ...(senderRow === undefined ? {} : { personName: senderRow.name }),
+                },
+              }),
         },
       );
       return {
         to: to.name,
         sent: true as const,
         note: isHeld(posted)
-          ? `${to.name} is in quiet hours: Kin delivers it in their chat with you at ${theirTime(posted.at, posted.zone)}. Tell the asker they'll have it then; their answer arrives there.`
+          ? `${heldUntil(to.name, posted)}; Kin delivers it in their chat with you then. Tell the asker they'll have it then; their answer arrives there.`
           : `Sent in ${to.name}'s chat with you; their answer arrives there.`,
       };
     }
@@ -511,7 +528,10 @@ const make = Effect.gen(function* () {
       );
     if (!toOwnerSide) {
       const why = yield* unreadableBy(ctx.orgId, to.personId, input.text, asker).pipe(access);
-      if (why !== undefined) return yield* refuse(`Not for ${to.name}: ${why}.`);
+      if (why !== undefined)
+        return yield* refuse(
+          `Not for ${to.name}: ${why}. Send it without that, or ask the owner to share it with ${to.name}.`,
+        );
     }
     const [who] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
       WHERE org_id = ${ctx.orgId} AND person_id = ${asker} ORDER BY person_id`;
@@ -525,6 +545,12 @@ const make = Effect.gen(function* () {
     // Their words, quoted and named as theirs: a request to decide, never the owner's instruction.
     const body = `${who?.name ?? "A teammate"} asked ${self.name}:\n"${input.text.replace(/\s+/g, " ").replace(/"/g, "'")}"`;
     const where = { orgId: ctx.orgId, personId: to.personId, chatId };
+    const relay = {
+      kind: "sent_by" as const,
+      agentId: ctx.agentId,
+      personId: asker,
+      ...(who === undefined ? {} : { personName: who.name }),
+    };
     const held =
       input.urgent === undefined
         ? yield* holdFor(where).pipe(access)
@@ -540,11 +566,13 @@ const make = Effect.gen(function* () {
         audience: "chat",
         at: held.at,
         waits: true,
+        agentId: ctx.agentId,
+        relay,
       }).pipe(access);
       return {
         to: to.name,
         sent: true as const,
-        note: `${to.name} is in quiet hours: Kin delivers it at ${theirTime(at, held.zone)}, waiting on them in their chat with you. Tell ${who?.name ?? "the asker"} it reaches ${to.name} then; the answer comes back through you.`,
+        note: `${heldUntil(to.name, { ...held, at })}; Kin delivers it then, waiting on them in their chat with you. Tell ${who?.name ?? "the asker"} it reaches ${to.name} then; the answer comes back through you.`,
       };
     }
     yield* chat.notice({
@@ -554,6 +582,8 @@ const make = Effect.gen(function* () {
       messageId,
       waitingFor: to.personId,
       body,
+      from: ctx.agentId,
+      relay,
     });
     return {
       to: to.name,

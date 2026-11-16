@@ -239,6 +239,13 @@ export type KinMessageStatus = typeof KinMessageStatus.Type;
 export const KinMessageRelay = Schema.Struct({
   kind: Schema.Literals(["sent_by", "reply_from"]),
   agentId: KinAgentId,
+  /**
+   * A person's words an agent passed on to another person (`kin_relay`): the agent's own message
+   * in the receiver's chat, drawn as "Sent by <person>, via <agent>". Absent on agent-to-agent rows.
+   */
+  personId: Schema.optional(KinPersonId),
+  /** Their name when it was passed on, so any reader can say whose words these are. */
+  personName: Schema.optional(Schema.String.check(Schema.isMaxLength(80))),
 });
 export type KinMessageRelay = typeof KinMessageRelay.Type;
 

@@ -13,12 +13,16 @@ export const rules: Record<string, string> = {
     "Made a co-owner, Ana gets a co-owner's view on her very next request, without joining again.",
   PlaceOffHides:
     "With her Money place off and no project she leads, Ana's next read, and her running turn, show her no money.",
-  TasksGoBack:
-    "When Ana is removed, a task she held goes back to whoever gave it, who is told; it never stays with her.",
+  TasksStay:
+    "Removing Ana changes her access only: a task she held stays in her name, for you to give to someone else, and no agent is woken or starts on it because she was removed.",
   CoOwnerChangesNoKind: "A co-owner never makes anyone a co-owner or a member.",
   OneOwner: "There is always exactly one owner: no one can remove or demote him.",
-  RejoinsAsMember:
-    "Removed and let back in, Ana comes back as a member with a new joiner's places, unless you made her a co-owner since: her old level never comes back by itself.",
+  ComesBackAsShe:
+    "Removed and let back in, Ana comes back with exactly the level and places she had, or what you changed them to while she was gone.",
+  RemovedHoldsNoLevel:
+    "While Ana is removed she holds no level anywhere: a removed co-owner is no approver and no one owner-level.",
+  OwnerBringsBackOwnerLevel:
+    "A co-owner's link never brings back a co-owner by itself: only your link does, or your making her a co-owner while she was gone.",
 };
 
 export const variants = [
@@ -43,14 +47,9 @@ export const variants = [
     what: "a running turn keeps the places it started with",
   },
   {
-    name: "removal-keeps-tasks",
-    breaks: "TasksGoBack",
-    what: "removing her leaves her tasks with her (the code before this change)",
-  },
-  {
-    name: "give-to-gone",
-    breaks: "TasksGoBack",
-    what: "an agent may give a task to someone removed (the code before this change)",
+    name: "removal-hands-back",
+    breaks: "TasksStay",
+    what: "removing her hands her tasks back to whoever gave them, waking the agent (the code before this change)",
   },
   {
     name: "coowner-sets-kind",
@@ -63,9 +62,19 @@ export const variants = [
     what: "a co-owner may remove the owner",
   },
   {
-    name: "rejoin-keeps-level",
-    breaks: "RejoinsAsMember",
-    what: "a removed co-owner's row keeps its level for the next invite (the code before this change)",
+    name: "rejoin-as-new",
+    breaks: "ComesBackAsShe",
+    what: "a new link brings her back as a new joiner (the code before this change)",
+  },
+  {
+    name: "removal-keeps-level",
+    breaks: "RemovedHoldsNoLevel",
+    what: "a removed co-owner's row keeps its level while she is gone",
+  },
+  {
+    name: "coowner-brings-back",
+    breaks: "OwnerBringsBackOwnerLevel",
+    what: "a co-owner's link judges a removed co-owner by her demoted row",
   },
 ];
 
@@ -141,7 +150,7 @@ export const charts = [
   {
     title: "Joining and leaving",
     guide:
-      "Each box is whether Ana is in the company. Removing her signs out every device, ends her chats and turns, and hands her open tasks back to whoever gave them; letting her back in starts her as a member with a new joiner's places, unless you made her a co-owner since.",
+      "Each box is whether Ana is in the company. Removing her signs out every device and ends her turns; her open tasks stay in her name. Letting her back in brings back her level, places, chats and tasks as they were.",
     state: inCompany,
     step: only(["Invite", "Join", "Remove", "RemoveOwner"]),
   },

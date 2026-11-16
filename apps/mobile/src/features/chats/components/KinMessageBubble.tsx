@@ -514,6 +514,37 @@ export function KinRelayBubble(props: {
     StyleSheet.flatten(useResolveClassNames("text-icon-subtle"))?.color ?? "gray";
   const time = formatTime(row.message.createdAt);
   const text = kinPlainText(row.message.body);
+  // A person's words an agent passed on: whose they are and who brought them, the words open.
+  if (row.personLabel !== undefined) {
+    const words = kinPlainText(row.text ?? row.message.body);
+    return (
+      <View className="items-start px-4 pt-3">
+        <View
+          accessible
+          accessibilityLabel={`Sent by ${row.personLabel}, via ${row.agentLabel}, ${time}: ${words}`}
+          className={cn(OTHER_WIDTH_CLASS_NAME, OTHER_BUBBLE_CLASS_NAME, "gap-1")}
+        >
+          <View className="flex-row flex-wrap items-center gap-1.5">
+            <SymbolView
+              name="bubble.left.and.bubble.right"
+              size={12}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
+            />
+            <Text textRole="caption" className="text-foreground">
+              Sent by {row.personLabel}
+            </Text>
+            <Text textRole="caption" className="text-foreground-muted">
+              via {row.agentLabel} · {time}
+            </Text>
+          </View>
+          <Text textRole="body" selectable className="text-foreground">
+            {words}
+          </Text>
+        </View>
+      </View>
+    );
+  }
   if (row.relay === "sent_by")
     return (
       <View className="items-end px-4 pt-3">

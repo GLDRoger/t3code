@@ -1,5 +1,11 @@
 // @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
-import type { EnvironmentId, KinMessage, KinPresence, KinWidget } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  KinMessage,
+  KinPersonId,
+  KinPresence,
+  KinWidget,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -379,6 +385,36 @@ describe("rows", () => {
     expect(rows).toMatchObject([
       { type: "relay", relay: "sent_by", agentLabel: "Tech lead", discussionId: null },
       { type: "relay", relay: "reply_from", agentLabel: "Tech lead", discussionId: "TD-1" },
+    ]);
+    // A person's words the agent passed on read as theirs, carried by the agent.
+    const passed = messageRows(
+      [
+        agentMessage(3, {
+          body: 'Zoya Sheikh asked Chief of staff:\n"Can the copy move a week?"',
+          relay: {
+            kind: "sent_by",
+            agentId: KIN_FIXTURE_AGENT,
+            personId: "zoya" as KinPersonId,
+            personName: "Zoya Sheikh",
+          },
+        }),
+        agentMessage(4, {
+          body: "Rhea says yes.",
+          relay: { kind: "sent_by", agentId: KIN_FIXTURE_AGENT, personId: "rhea" as KinPersonId },
+        }),
+      ],
+      viewer,
+      new Set(),
+    );
+    expect(passed).toMatchObject([
+      {
+        type: "relay",
+        relay: "sent_by",
+        agentLabel: "Tech lead",
+        personLabel: "Zoya Sheikh",
+        text: "Can the copy move a week?",
+      },
+      { type: "relay", personLabel: "A teammate", text: "Rhea says yes." },
     ]);
     // In the Team room a discussion is open under its line until the viewer closes it.
     const room = all.slice(19, 26);

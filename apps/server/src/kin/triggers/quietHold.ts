@@ -1,9 +1,11 @@
 import {
   type KinAgentId,
   type KinChatId,
+  KinMessageRelay,
   type KinOrgId,
   type KinPersonId,
-  KinTriggerSettings,
+  KinPersonQuietHours,
+  KinWorkHours,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -15,14 +17,14 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { WriteAudience } from "../chat/KinChatRepository.ts";
 import { ownerZone } from "../work/recordRows.ts";
-import { isQuiet, KIN_DEFAULT_QUIET_HOURS, type KinQuietHours } from "./quietHours.ts";
+import { freeAt, heldAt, KIN_DEFAULT_QUIET_HOURS, type KinHoldRule } from "./quietHours.ts";
 
 const MINUTE = 60_000;
 /** A message they sent this recently is one a line to them answers, whatever the hour. */
 const ANSWERS_WITHIN_MS = 10 * MINUTE;
-const decodeJsonQuiet = Schema.decodeUnknownOption(
-  Schema.fromJsonString(KinTriggerSettings.fields.quietHours),
-);
+const decodeJsonQuiet = Schema.decodeUnknownOption(Schema.fromJsonString(KinPersonQuietHours));
+const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
+const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
 
 const validZone = (zone: string | null | undefined) => {
   if (zone === null || zone === undefined) return undefined;
@@ -34,42 +36,69 @@ const validZone = (zone: string | null | undefined) => {
   }
 };
 
-/** The first whole minute at or after `now` outside `hours`; `now` itself when not quiet. */
-const quietEndsAt = (now: number, zone: string, hours: KinQuietHours) => {
-  if (!isQuiet(now, zone, hours)) return now;
-  let at = Math.ceil(now / MINUTE) * MINUTE;
-  for (let step = 0; step < 1440 && isQuiet(at, zone, hours); step++) at += MINUTE;
-  return at;
-};
-
 /**
- * A person's quiet hours at `now`, on their own clock: the company's setting, else 22:00 to
- * 07:00. Profile hours are left out: reading Memory here would run inside callers' transactions.
+ * When Kin holds unprompted lines to `personId`, on their own clock: their quiet hours (their
+ * own, else the company's, else 22:00 to 07:00), and, while their switch is on (by default for
+ * everyone but the owner), any time outside the working hours on their profile.
  */
+const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, personId: KinPersonId) {
+  const sql = yield* SqlClient.SqlClient;
+  const [person] = yield* sql<{
+    zone: string | null;
+    owner: number;
+    quiet: string | null;
+    hours: string | null;
+    hold: number | null;
+  }>`
+    SELECT time_zone AS zone, quiet_hours_json AS quiet, work_hours_json AS hours,
+      hold_outside_hours AS hold, EXISTS (SELECT 1 FROM kin_agents a
+        WHERE a.org_id = p.org_id AND a.owner_person_id = p.person_id) AS owner
+    FROM kin_people p WHERE org_id = ${orgId} AND person_id = ${personId} ORDER BY person_id`;
+  const [settings] = yield* sql<{ hours: string }>`SELECT quiet_hours_json AS hours
+    FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;
+  const owner = person?.owner === 1;
+  // The owner's clock is the company's (`ownerZone`); anyone else's is their own.
+  const zone = owner
+    ? yield* ownerZone(orgId)
+    : (validZone(person?.zone) ?? (yield* ownerZone(orgId)));
+  const quiet = Option.getOrElse(
+    Option.orElse(decodeJsonQuiet(person?.quiet ?? undefined), () =>
+      decodeJsonQuiet(settings?.hours),
+    ),
+    () => KIN_DEFAULT_QUIET_HOURS,
+  );
+  const holds = person?.hold === null || person?.hold === undefined ? !owner : person.hold === 1;
+  const hours = holds && person?.hours != null ? decodeHours(person.hours) : Option.none();
+  return {
+    zone,
+    quiet,
+    ...(Option.isSome(hours) ? { hours: hours.value } : {}),
+  } satisfies KinHoldRule;
+});
+
+/** Whether a line to `personId` waits at `now`, why, and the first minute it may go. */
 const personQuiet = Effect.fn("KinQuiet.person")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
   now: number,
 ) {
-  const sql = yield* SqlClient.SqlClient;
-  // The owner's clock is the company's (`ownerZone`); anyone else's is their own.
-  const [person] = yield* sql<{ zone: string | null; owner: number }>`
-    SELECT time_zone AS zone, EXISTS (SELECT 1 FROM kin_agents a
-        WHERE a.org_id = p.org_id AND a.owner_person_id = p.person_id) AS owner
-    FROM kin_people p WHERE org_id = ${orgId} AND person_id = ${personId} ORDER BY person_id`;
-  const [settings] = yield* sql<{ hours: string }>`SELECT quiet_hours_json AS hours
-    FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;
-  const hours = Option.getOrElse(decodeJsonQuiet(settings?.hours), () => KIN_DEFAULT_QUIET_HOURS);
-  const zone =
-    person?.owner === 1
-      ? yield* ownerZone(orgId)
-      : (validZone(person?.zone) ?? (yield* ownerZone(orgId)));
-  return { quiet: isQuiet(now, zone, hours), endsAt: quietEndsAt(now, zone, hours), zone };
+  const rule = yield* personRule(orgId, personId);
+  const why = heldAt(rule, now);
+  return { quiet: why !== undefined, why, endsAt: freeAt(rule, now), zone: rule.zone };
+});
+
+/** For a push: whether they are in their quiet hours, or outside the hours they hold to. */
+export const personHoldNow = Effect.fn("KinQuiet.holdNow")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  return heldAt(yield* personRule(orgId, personId), yield* Clock.currentTimeMillis);
 });
 
 /**
- * Stores a server line for `personId` when it lands in their quiet hours, to post when those
- * end; `false` when it should post now. Held lines survive a restart.
+ * Stores a server line for `personId` when it lands in their quiet hours or outside the hours
+ * they hold to, to post when those end; `false` when it should post now. Held lines survive a
+ * restart.
  */
 export const holdIfQuiet = Effect.fn("KinQuiet.hold")(function* (input: {
   readonly orgId: KinOrgId;
@@ -98,10 +127,18 @@ export const theirTime = (at: number, zone: string) => {
   return `${part({ hour: "2-digit", minute: "2-digit", hourCycle: "h23" })} their time (${part({ weekday: "short", day: "numeric", month: "short" })})`;
 };
 
+/** What the sender hears of a held line: "Zoya Sheikh is off until 10:00 their time (Tue 17 Nov)". */
+export const heldUntil = (
+  name: string,
+  held: { readonly at: number; readonly zone: string; readonly why: "quiet" | "off" },
+) =>
+  `${name} is ${held.why === "off" ? "off" : "in quiet hours"} until ${theirTime(held.at, held.zone)}`;
+
 /**
- * Until when a relay, nudge or notice for `personId` in `chatId` waits: the end of their quiet
- * hours, or `notBefore` when later. Undefined, it posts now, as it does when they wrote in that
- * chat in the last 10 minutes: then it answers them.
+ * Until when a relay, nudge, notice or hand-over line for `personId` in `chatId` waits: the end
+ * of their quiet hours or, while they hold to them, the start of their working hours; or
+ * `notBefore` when later. Undefined, it posts now, as it does when they wrote in that chat in the
+ * last 10 minutes: then it answers them.
  */
 export const holdFor = Effect.fn("KinQuiet.holdFor")(function* (input: {
   readonly orgId: KinOrgId;
@@ -119,7 +156,9 @@ export const holdFor = Effect.fn("KinQuiet.holdFor")(function* (input: {
       AND author_person_id = ${input.personId}
       AND created_at > ${DateTime.formatIso(DateTime.makeUnsafe(now - ANSWERS_WITHIN_MS))}
     LIMIT 1`;
-  return answers === undefined ? { at, zone: quiet.zone } : undefined;
+  return answers === undefined
+    ? { at, zone: quiet.zone, why: quiet.why ?? ("off" as const) }
+    : undefined;
 });
 
 /**
@@ -137,6 +176,8 @@ export const holdLine = Effect.fn("KinQuiet.holdLine")(function* (input: {
   readonly at: number;
   readonly agentId?: KinAgentId | undefined;
   readonly waits?: boolean;
+  /** Another person's words the agent passes on, drawn as sent by them when it posts. */
+  readonly relay?: KinMessageRelay | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const [held] = yield* sql<{ at: number }>`SELECT deliver_at AS at FROM kin_held_posts
@@ -144,10 +185,11 @@ export const holdLine = Effect.fn("KinQuiet.holdLine")(function* (input: {
     ORDER BY rowid LIMIT 1`;
   if (held !== undefined) return held.at;
   yield* sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind, body,
-      audience, held_at, deliver_at, agent_id, waits)
+      audience, held_at, deliver_at, agent_id, waits, relay_json)
     VALUES (${SecureRandom.uuidV4Unsafe()}, ${input.orgId}, ${input.chatId}, ${input.personId},
       ${input.key}, ${input.body}, ${input.audience}, ${yield* Clock.currentTimeMillis},
-      ${input.at}, ${input.agentId ?? null}, ${input.waits === true ? 1 : 0})`;
+      ${input.at}, ${input.agentId ?? null}, ${input.waits === true ? 1 : 0},
+      ${input.relay === undefined ? null : yield* encodeRelay(input.relay).pipe(Effect.orDie)})`;
   return input.at;
 });
 

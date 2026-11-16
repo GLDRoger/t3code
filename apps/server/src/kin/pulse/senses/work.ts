@@ -89,6 +89,27 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
     );
   }
 
+  // holder_removed: an open task held by someone whose access was removed. It stays in their
+  // name (`KinPeople.removeAccess`); the owner gives it to someone else or lets them back in.
+  const orphaned = yield* sql<EntryRow & { holder: string; removedAt: number }>`
+    SELECT ${entryColumns(sql)}, h.display_name AS holder, h.removed_at AS "removedAt"
+    FROM ${entryJoins(sql)}
+    JOIN kin_people h ON h.org_id = r.org_id AND r.owner_kind = 'person'
+      AND h.person_id = r.owner_id AND h.removed_at IS NOT NULL
+    WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state IN ${sql.in(OPEN)}
+    ORDER BY h.removed_at, r.key LIMIT ${SENSE_CAP}`;
+  for (const row of orphaned)
+    facts.push(
+      workFact(ctx, row, {
+        sense: "holder_removed",
+        key: `holder_removed:${row.key}:${row.ownerId}:${row.removedAt}`,
+        since: iso(row.removedAt),
+        consequence: `Held by ${row.holder}, whose access was removed. Give it to someone else, or bring them back.`,
+        wake: "sweep",
+        actor: { _tag: "owner" },
+      }),
+    );
+
   // task_stalled: in progress with no change logged for the threshold.
   const doing = yield* sql<
     EntryRow & { lastAt: number }

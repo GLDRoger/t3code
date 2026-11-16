@@ -11,7 +11,9 @@ import {
   kinPersonSeed,
   kinProfileChanges,
   kinProfileDraft,
+  kinQuietLine,
   type KinProfileDraft,
+  type KinProfileHolding,
 } from "@t3tools/client-runtime/kin/kinProfiles";
 import {
   EnvironmentId,
@@ -36,6 +38,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -84,6 +87,10 @@ function useTarget(params: KinProfileParams) {
         canEdit: profile?.canEdit,
       }),
     runsWorkspace: held !== null && held.ownerPersonId === personId,
+    holding: {
+      companyQuiet: held?.quietHours,
+      isOwner: held !== null && held.ownerPersonId === personId,
+    } satisfies KinProfileHolding,
   };
 }
 
@@ -201,6 +208,13 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
           )}
         </View>
       </ListSection>
+      <ListSection title={KIN_PROFILE_COPY.quietLabel}>
+        <View className="px-4 py-3">
+          <Text textRole="body" className="text-foreground">
+            {kinQuietLine(profile, target.holding)}
+          </Text>
+        </View>
+      </ListSection>
       {target.mayEdit ? (
         <Button
           tone="secondary"
@@ -225,7 +239,13 @@ export function KinProfileEditScreen({ route }: StaticScreenProps<KinProfilePara
       </Frame>
     );
   return (
-    <ProfileForm environmentId={environmentId} orgId={orgId} profile={profile} mine={target.mine} />
+    <ProfileForm
+      environmentId={environmentId}
+      orgId={orgId}
+      profile={profile}
+      mine={target.mine}
+      holding={target.holding}
+    />
   );
 }
 
@@ -233,13 +253,14 @@ function ProfileForm(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly profile: KinPersonProfile;
-  /** Only the person says how they like to be spoken to. */
+  /** Only the person says how they like to be spoken to, and when Kin holds messages for them. */
   readonly mine: boolean;
+  readonly holding: KinProfileHolding;
 }) {
   const navigation = useNavigation();
   const { environmentId, orgId, profile } = props;
   const update = useAtomCommand(kinClient.profileUpdate, { reportFailure: false });
-  const [initial] = useState(() => kinProfileDraft(profile));
+  const [initial] = useState(() => kinProfileDraft(profile, props.holding));
   const [draft, setDraft] = useState<KinProfileDraft>(initial);
   const [busy, setBusy] = useState<"saving" | "picture" | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -262,7 +283,7 @@ function ProfileForm(props: {
     update({ environmentId, input: { orgId, personId: profile.personId, ...changes } });
 
   const save = async () => {
-    const checked = kinProfileChanges(profile, draft);
+    const checked = kinProfileChanges(profile, draft, { ...props.holding, mine: props.mine });
     if (!checked.ok) return setProblem(checked.problem);
     if (Object.keys(checked.changes).length === 0) {
       saved.current = true;
@@ -427,6 +448,36 @@ function ProfileForm(props: {
           onChange={(timeZone) => set({ timeZone })}
         />
       </ListSection>
+      {props.mine ? (
+        <ListSection title={KIN_PROFILE_COPY.quietLabel} footer={KIN_PROFILE_COPY.quietHint}>
+          <Field
+            label="From"
+            value={draft.quietFrom}
+            placeholder="22:00"
+            maxLength={5}
+            autoCapitalize="none"
+            onChange={(quietFrom) => set({ quietFrom })}
+          />
+          <Field
+            label="Until"
+            value={draft.quietTo}
+            placeholder="07:00"
+            maxLength={5}
+            autoCapitalize="none"
+            borderTop
+            onChange={(quietTo) => set({ quietTo })}
+          />
+        </ListSection>
+      ) : null}
+      {props.mine ? (
+        <ListSection footer={KIN_PROFILE_COPY.holdHint}>
+          <ListToggleRow
+            label={KIN_PROFILE_COPY.holdLabel}
+            value={draft.holdOutside}
+            onValueChange={(holdOutside) => set({ holdOutside })}
+          />
+        </ListSection>
+      ) : null}
     </Frame>
   );
 }

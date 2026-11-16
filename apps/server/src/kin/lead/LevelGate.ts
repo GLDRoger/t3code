@@ -3,6 +3,7 @@ import {
   type KinAgentIntent,
   KinChatId,
   type KinMessage,
+  type KinMessageRelay,
   KinMessageId,
   type KinMessagesSendInput,
   type KinReaction,
@@ -49,9 +50,19 @@ type PostToInput = PostInput & {
   readonly urgent?: string | undefined;
   /** It waits at least until then, as a nudge does for their working hours. */
   readonly notBefore?: number | undefined;
+  /** Another person's words the agent passes on (`kin_relay`), drawn as sent by them. */
+  readonly relay?: KinMessageRelay | undefined;
 };
-/** A message for a person that waits, stored, for their quiet hours to end (`deliverHeld`). */
-export type HeldPost = { readonly _tag: "held"; readonly at: number; readonly zone: string };
+/**
+ * A message for a person that waits, stored, for their quiet hours to end or their working
+ * hours to start (`why`), and is delivered by `deliverHeld`.
+ */
+export type HeldPost = {
+  readonly _tag: "held";
+  readonly at: number;
+  readonly zone: string;
+  readonly why: "quiet" | "off";
+};
 export const isHeld = (posted: KinMessage | HeldPost): posted is HeldPost =>
   "_tag" in posted && posted._tag === "held";
 type WidgetInput = Parameters<KinChatService["Service"]["upsertWidget"]>[1];
@@ -325,7 +336,7 @@ const make = Effect.gen(function* () {
                 if (why !== undefined)
                   return yield* new KinChatError({
                     reason: "not_allowed",
-                    message: `Nothing was sent: ${why}. Say it without that, or tell the owner.`,
+                    message: `Nothing was sent: ${why}. Send it again without that, or ask the owner to share it with them.`,
                   });
               }
               return yield* allowed;
@@ -431,6 +442,7 @@ const make = Effect.gen(function* () {
             return {
               _tag: "held" as const,
               zone: held.zone,
+              why: held.why,
               at: yield* holdLine({
                 ...where,
                 key: input.clientMessageId,
@@ -438,6 +450,7 @@ const make = Effect.gen(function* () {
                 audience: "chat",
                 at: held.at,
                 agentId: agent.agentId,
+                relay: input.relay,
               }),
             };
           return yield* chat.send(agent, {
@@ -446,6 +459,7 @@ const make = Effect.gen(function* () {
             body: input.body,
             intent: input.intent,
             forChat: true,
+            ...(input.relay === undefined ? {} : { relay: input.relay }),
           });
         }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         { personId, text: input.body },

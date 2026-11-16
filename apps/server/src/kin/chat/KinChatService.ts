@@ -121,6 +121,8 @@ type SendInput = KinMessagesSendInput & {
    * them, not the owner's, and admitted outside the chat's floor (`KinFloor.admitToPerson`).
    */
   readonly forChat?: true;
+  /** With `forChat`: another person's words the agent passes on (`kin_relay`). */
+  readonly relay?: KinMessageRelay;
 };
 type WidgetUpsertInput = {
   readonly chatId: KinChatId;
@@ -752,6 +754,7 @@ const make = Effect.gen(function* () {
       readonly floorRunId?: string | null;
       readonly clientId: { readonly kind: "send" | "act"; readonly id: string } | null;
       readonly forChat?: boolean;
+      readonly relay?: KinMessageRelay | undefined;
     },
   ) {
     // A reply the caller names must be one it may read; a hidden one reads as missing.
@@ -784,6 +787,7 @@ const make = Effect.gen(function* () {
       replyTo: input.replyTo,
       widgetId: input.widgetId,
       floorRunId: input.floorRunId ?? null,
+      ...(input.forChat === true && input.relay !== undefined ? { relay: input.relay } : {}),
       status: "posted",
       sentBy: null,
       clientMessageId: input.clientId,
@@ -1201,6 +1205,7 @@ const make = Effect.gen(function* () {
       widgetId: null,
       clientId: { kind: "send", id: request.clientMessageId },
       forChat: toPerson,
+      relay: toPerson ? input.relay : undefined,
     });
     // A reply someone waits on doesn't use up the hourly room for unprompted notices.
     if (

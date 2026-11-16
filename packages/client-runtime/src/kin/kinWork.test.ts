@@ -301,6 +301,53 @@ describe("kinWorkItemView", () => {
     ]);
   });
 
+  it("names who asked as the giver, via the agent, and says whose access moved", () => {
+    const at = "2026-11-10T09:00:00.000Z";
+    const view = kinWorkItemView(
+      detail({
+        owner: me,
+        createdBy: lead,
+        assignedBy: priya,
+        assignedAt: at,
+        changes: [
+          {
+            seq: 3,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [{ field: "accessBack", from: `person:${me.personId}`, to: null }],
+          },
+          {
+            seq: 2,
+            at,
+            by: me,
+            via: "owner",
+            kind: "updated",
+            fields: [{ field: "accessRemoved", from: `person:${priya.personId}`, to: null }],
+          },
+          {
+            seq: 1,
+            at,
+            by: lead,
+            via: "lead",
+            kind: "updated",
+            fields: [{ field: "owner", from: null, to: `person:${me.personId}` }],
+          },
+        ],
+      }),
+      names,
+      now,
+      50,
+      place,
+    );
+    expect(view.given).toMatch(/^Priya gave this to you, via Tech lead · /);
+    expect(view.history.map((line) => line.text).slice(0, 2)).toEqual([
+      "Priya came back; it's theirs again",
+      "You removed Priya's access; it stays with them",
+    ]);
+  });
+
   it("says an invoice was issued, paid or voided, not marked waiting, finished or dropped", () => {
     const at = "2026-11-10T09:00:00.000Z";
     const closed = (seq: number, to: string) =>

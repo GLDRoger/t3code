@@ -570,6 +570,15 @@ describe("KinPulse", () => {
       });
       assert.isNotNull(yield* handledFor({ _tag: "people", people: [mate] }));
       assert.isNull(yield* handledFor({ _tag: "owner" }));
+      // Her access removed, her open tasks stay hers and are the owner's to settle; no agent's.
+      yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE person_id = ${mate}`;
+      const removed = keyed((yield* read(at)).facts, "holder_removed", "W-8")[0];
+      assert.deepStrictEqual(removed?.actor, { _tag: "owner" });
+      assert.match(removed?.consequence ?? "", /^Held by .+, whose access was removed\./);
+      assert.notInclude(
+        (yield* read(at, { _tag: "people", people: [mate] })).facts.map((fact) => fact.sense),
+        "holder_removed",
+      );
     }).pipe(Effect.provide(layer)),
   );
 

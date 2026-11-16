@@ -12,7 +12,6 @@ import {
   KinChatId,
   KinEvent,
   KinFinanceRpcs,
-  KinMemberId,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -411,6 +410,23 @@ it.effect("work given away with no stored owner assigner is recorded and wakes n
     assert.include(system, { assignedBy: null, ownerId: other });
     assert.include(teammate, { assignedBy: mateId, ownerId: other });
     assert.lengthOf(yield* assignedEvents, 0);
+    // The teammate asked, so she gave it; a lead on its own initiative is the giver itself.
+    yield* records.create(
+      orgId,
+      { actor: { _tag: "agent", agentId: lead }, via: "lead" },
+      {
+        originKey: "invented:3",
+        title: "Invented: chase the printer",
+        owner: { _tag: "person", personId: mateId },
+      },
+    );
+    const sql = yield* SqlClient.SqlClient;
+    const givers = yield* sql<{ key: string; agent: string | null }>`SELECT key,
+        assigned_by_agent_id AS agent FROM kin_records WHERE org_id = ${orgId} ORDER BY key`;
+    assert.deepStrictEqual(
+      givers.map((row) => row.agent),
+      [null, null, lead],
+    );
   }).pipe(Effect.provide(layer)),
 );
 
@@ -2357,7 +2373,7 @@ it.effect(
 );
 
 it.effect(
-  "an agent gives out a plan from a turn shown money: assigning shares it, one message each, and a hand back wakes it",
+  "an agent gives out a plan from a turn shown money: assigning shares it, one message each, and a hand back goes to who asked",
   () =>
     Effect.gen(function* () {
       yield* seed;
@@ -2399,13 +2415,13 @@ it.effect(
       assert.lengthOf(told, 1);
       assert.include(told[0]!.body, "gave you 3 tasks");
       assert.include(told[0]!.body, "W-2 Invented: fix the login screen, due Fri 20 Nov. Why: iOS");
-      // The authority is the owner who asked; the agent that gave it is kept beside it.
+      // The owner asked, so the owner gave it; the agent only carried it.
       const given = yield* OwnerWork.get([mate], { orgId, key: "W-2" });
       assert.deepInclude(given, {
         assignedBy: { _tag: "person", personId: ownerId },
-        assignedByAgent: lead,
         reason: "iOS, 0 open",
       });
+      assert.notProperty(given, "assignedByAgent");
       // The owner's own turn reads what each holds; a turn others read doesn't.
       const turnOf = { orgId, agentId: lead, wakeupId: "wake" };
       yield* TestClock.setTime(Date.parse("2026-11-16T00:00:00.000Z"));
@@ -2415,27 +2431,14 @@ it.effect(
       );
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
       assert.notInclude((yield* readPeople(turnOf)).quoted, '"load"');
-      // Handed back from the app, it goes to the agent that gave it, woken where the owner reads.
+      // Handed back from the app, it goes to the owner who asked for it.
       assert.deepStrictEqual(
         yield* OwnerWork.handBack([mate], { orgId, key: "W-2", note: "I'm on the release" }),
-        { key: "W-2", to: { _tag: "agent", agentId: lead } },
+        { key: "W-2", to: { _tag: "person", personId: ownerId } },
       );
-      const back = (yield* assignedEvents)
-        .map((row) => decodeEvent(JSON.parse(row.json)))
-        .find((event) => event._tag === "record.changed" && event.reason === "handed_back");
-      assert.deepInclude(back, {
-        agentId: lead,
-        key: "W-2",
-        note: "I'm on the release",
-        provenance: {
-          _tag: "human",
-          personId: ownerId,
-          memberId: KinMemberId.make("lead-chat-owner"),
-        },
-      });
       const returned = yield* OwnerWork.get([owner], { orgId, key: "W-2" });
       assert.deepInclude(returned, {
-        owner: { _tag: "agent", agentId: lead },
+        owner: { _tag: "person", personId: ownerId },
         assignedBy: { _tag: "person", personId: ownerId },
         state: "open",
       });

@@ -130,14 +130,22 @@ const rowsIn = (sql: SqlClient.SqlClient, orgId: KinOrgId, chatId: KinChatId) =>
   sql<{ author: string; body: string }>`SELECT author_kind AS author, body FROM kin_messages
     WHERE org_id = ${orgId} AND chat_id = ${chatId} ORDER BY seq`;
 
-type Phase = "day" | "night" | "urgent";
-// Everyone here is on UTC, and quiet hours are 22:00 to 07:00.
+type Phase = "day" | "night" | "urgent" | "off";
+// Everyone here is on UTC, and quiet hours are 22:00 to 07:00. In "off" the teammates are in
+// India and work Monday to Friday, 10:00 to 18:00 their time; it is Monday 18:30 there.
 const START: Record<Phase, number> = {
   day: Date.UTC(2026, 10, 16, 12),
   night: Date.UTC(2026, 10, 15, 23, 30),
   urgent: Date.UTC(2026, 10, 15, 23, 30),
+  off: Date.UTC(2026, 10, 16, 13),
 };
-const MORNING = Date.UTC(2026, 10, 16, 7);
+/** When what was held is free to go: 07:00 UTC, or Tuesday 10:00 in India. */
+const WAKE: Record<Phase, { at: number; clock: string }> = {
+  day: { at: Date.UTC(2026, 10, 16, 7), clock: "07:00" },
+  night: { at: Date.UTC(2026, 10, 16, 7), clock: "07:00" },
+  urgent: { at: Date.UTC(2026, 10, 16, 7), clock: "07:00" },
+  off: { at: Date.UTC(2026, 10, 17, 4, 30), clock: "10:00" },
+};
 
 // Ambermill, run 4 (16 Nov 2026): kin_relay to a teammate was refused by the floor, and later in
 // their quiet hours. Each route a message to a person takes, by the agent's tool call, through
@@ -170,7 +178,11 @@ const routes = (phase: Phase) =>
       const relay = (args: Record<string, unknown>) =>
         Effect.andThen(later, call("kin_relay", { ...args, ...urgent }));
       yield* sql`UPDATE kin_people SET display_name = 'Rhea Kapoor' WHERE person_id = ${owner.personId}`;
-      const allDay = '{"days":[0,1,2,3,4,5,6],"start":"00:00","end":"23:59"}';
+      const hours =
+        phase === "off"
+          ? '{"days":[1,2,3,4,5],"start":"10:00","end":"18:00"}'
+          : '{"days":[0,1,2,3,4,5,6],"start":"00:00","end":"23:59"}';
+      const zone = phase === "off" ? "Asia/Kolkata" : "UTC";
       for (const [id, name, access] of [
         ["zoya", "Zoya Sheikh", "member"],
         ["dev", "Dev Kulkarni", "member"],
@@ -178,7 +190,7 @@ const routes = (phase: Phase) =>
       ] as const) {
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
           access, time_zone, work_hours_json)
-        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'UTC', ${allDay})`;
+        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, ${zone}, ${hours})`;
         yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
           VALUES (${`${id}-session`}, ${orgId}, ${id}, 0)`;
       }
@@ -271,7 +283,7 @@ const routes = (phase: Phase) =>
         const note = result.value.note;
         if (waiting === undefined || (yield* copies(chatId, expected)) > 0)
           return outcomes.push([route, `missing: ${JSON.stringify(last)}`]);
-        if (typeof note === "string" && !note.includes("07:00 their time"))
+        if (typeof note === "string" && !note.includes(`${WAKE[phase].clock} their time`))
           return outcomes.push([route, `held, but the agent was told: ${note}`]);
         held.push({ route, chatId, ...expected });
         return outcomes.push([route, "held"]);
@@ -303,7 +315,7 @@ const routes = (phase: Phase) =>
           sourceEventId: zoyaAsks,
         }),
         ownerChat,
-        { author: "system", body: '"Can the booking flow copy move a week?"' },
+        { author: "agent", body: '"Can the booking flow copy move a week?"' },
       );
       const answer = yield* says(owner, ownerChat, "Yes, move it to 18 December.");
       yield* call("record_update", { key: task, sourceEventId: answer, due: "2026-12-18" });
@@ -328,7 +340,7 @@ const routes = (phase: Phase) =>
           sourceEventId: toLead,
         }),
         devsChat,
-        { author: "system", body: "review the booking flow copy" },
+        { author: "agent", body: "review the booking flow copy" },
       );
 
       // Owner's chat → a teammate whose own message waits on the agent's reply: the relay posts,
@@ -471,14 +483,16 @@ const routes = (phase: Phase) =>
         { author: "agent", body: "still on" },
       );
 
-      // 07:00: each held message is in its chat once, Dev's in the order they were sent.
-      yield* TestClock.setTime(MORNING + 60_000);
+      // When they are free: each held message is in its chat once, Dev's in the order sent.
+      yield* TestClock.setTime(WAKE[phase].at - 60_000);
+      assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
+      yield* TestClock.setTime(WAKE[phase].at);
       yield* deliverHeld(orgId, chats);
       assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
       for (const one of held)
         outcomes.push([
           one.route,
-          (yield* copies(one.chatId, one)) === 1 ? "arrived at 07:00, once" : "not delivered once",
+          (yield* copies(one.chatId, one)) === 1 ? "arrived when free, once" : "not delivered once",
         ]);
       const devs = yield* rowsIn(sql, orgId, devsChat);
       const order = held
@@ -507,11 +521,11 @@ const ROUTES = [
   "hand-back notice → who gave it",
   "a relay answering her message from 5 minutes ago",
 ];
-/** Every route, `now` arriving at once and the rest held, then each of those delivered at 07:00. */
+/** Every route, `now` arriving at once and the rest held, then each of those delivered once. */
 const expected = (now: ReadonlyArray<string>): Array<readonly [string, string]> => [
   ...ROUTES.map((route) => [route, now.includes(route) ? "arrived" : "held"] as const),
   ...ROUTES.filter((route) => !now.includes(route)).map(
-    (route) => [route, "arrived at 07:00, once"] as const,
+    (route) => [route, "arrived when free, once"] as const,
   ),
 ];
 const ANSWERS = ["the teammate's own reply after a relay", ROUTES[11]!];
@@ -536,6 +550,15 @@ it.effect("an urgent relay arrives in their quiet hours; nudges and notices wait
             ),
         ),
       ),
+    ),
+  ),
+);
+
+it.effect("outside their working hours, on their own clock, it waits until they start", () =>
+  Effect.map(routes("off"), (outcomes) =>
+    assert.deepStrictEqual(
+      outcomes,
+      expected([...ANSWERS, "teammate → owner", "hand-back notice → who gave it"]),
     ),
   ),
 );

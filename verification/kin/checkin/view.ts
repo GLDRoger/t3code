@@ -7,10 +7,10 @@ const ofDay = (value: Value | undefined, day: number): Value | undefined =>
 const DAY = 12;
 
 export const title =
-  "Your loose morning check-in, a fact it tells once, and a post your quiet hours hold";
+  "Your loose morning check-in, a fact it tells once, and a post that waits until its reader is free";
 
 export const guide =
-  "Your check-in is set “around 9:00”: it may come any time from 8:55 to 9:20, the same minute however often Kin works it out. Each box is where today's check-in stands; each arrow is something that happens: time passes, Kin's host sleeps or wakes, its clock is set forward or back, you move the check-in to 9:10, and a fact about a member's overdue task is held (“I've got it”) or clears. A fact is told once, and again only when it changed. Something nobody asked for that comes in your quiet hours, a message passed on to you included, waits for them to end. The model covers two days, one outage, one clock change and one move. Red boxes are where a rule below breaks.";
+  "Your check-in is set “around 9:00”: it may come any time from 8:55 to 9:20, the same minute however often Kin works it out. Each box is where today's check-in stands; each arrow is something that happens: time passes, Kin's host sleeps or wakes, its clock is set forward or back, you move the check-in to 9:10, and a fact about a member's overdue task is held (“I've got it”) or clears. A fact is told once, and again only when it changed. Something nobody asked for that comes in your quiet hours, a message passed on to you included, waits for them to end; one for a member waits, on her own clock, through her quiet hours and outside her working hours. The model covers two days, one outage, one clock change and one move. Red boxes are where a rule below breaks.";
 
 /** The chart is drawn on one day without clock changes; the rules are checked on the full bound. */
 export const chartConstants = { Days: "1", MaxJumps: "0" };
@@ -29,7 +29,10 @@ export const rules: Record<string, string> = {
   ToldOnce: "A fact that hasn't changed is told at most once.",
   HeldDeliveredOnce: "A post held through your quiet hours reaches you exactly once.",
   HeldNeverLost: "A held post is never lost, even when Kin restarts before your quiet hours end.",
-  QuietIsQuiet: "Nothing you didn't ask for lands in your quiet hours.",
+  QuietIsQuiet:
+    "Nothing anyone didn't ask for lands in their quiet hours, on their own clock: yours, or a member's half a day ahead.",
+  OffHoursWait:
+    "Nothing a member didn't ask for lands outside her working hours while she holds messages then.",
 };
 
 export const variants = [
@@ -73,6 +76,16 @@ export const variants = [
     what: "a host that slept all day posts the held line in the next night",
   },
   {
+    name: "company-clock",
+    breaks: "QuietIsQuiet",
+    what: "a member's hours are read on the company's clock, not hers",
+  },
+  {
+    name: "quiet-only",
+    breaks: "OffHoursWait",
+    what: "only quiet hours hold a line; working hours don't (the code before this change)",
+  },
+  {
     name: "held-left-out",
     breaks: "FactNeverAbsent",
     what: "a fact someone holds doesn't count, so the check-in says “nothing new” (the code before this change)",
@@ -81,7 +94,10 @@ export const variants = [
 
 export const state = (vars: Vars) => {
   const base = checkInState(vars);
-  return vars["held"] === true ? `${base}; a post waits for morning` : base;
+  if (vars["held"] !== true) return base;
+  return vars["to"] === "member"
+    ? `${base}; a post waits for the member to start`
+    : `${base}; a post waits for morning`;
 };
 
 const checkInState = (vars: Vars) => {
@@ -137,9 +153,13 @@ export const step = (action: string, from: Vars, to: Vars) => {
     case "FactClears":
       return "The fact clears";
     case "QuietPost":
-      return "Something nobody asked for comes in your quiet hours";
+      return to["to"] === "member"
+        ? "Something nobody asked for comes for a member outside her hours"
+        : "Something nobody asked for comes in your quiet hours";
     case "Deliver":
-      return "Your quiet hours end and the held post lands";
+      return from["to"] === "member"
+        ? "Her working hours start and the held post lands"
+        : "Your quiet hours end and the held post lands";
     default:
       return action;
   }

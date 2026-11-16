@@ -193,6 +193,9 @@ export const KinWorkHours = Schema.Struct({
   end: TimeOfDay,
 });
 export type KinWorkHours = typeof KinWorkHours.Type;
+/** Local times in the person's zone with nothing unprompted; `from` after `to` spans midnight. */
+export const KinPersonQuietHours = Schema.Struct({ from: TimeOfDay, to: TimeOfDay });
+export type KinPersonQuietHours = typeof KinPersonQuietHours.Type;
 
 /** Who someone is, in their own words. Everyone in the org reads it. */
 export const KinPersonProfile = Schema.Struct({
@@ -207,6 +210,13 @@ export const KinPersonProfile = Schema.Struct({
   workHours: Schema.NullOr(KinWorkHours),
   /** How they like to be spoken to, in their own words; absent from older hosts. */
   talkStyle: Schema.optional(Schema.String),
+  /** Their own quiet hours; absent, the company's (`KinPeopleProfilesResult.quietHours`). */
+  quietHours: Schema.optional(KinPersonQuietHours),
+  /**
+   * Kin holds non-urgent lines outside their working hours until those start. Absent, the
+   * default: on for everyone but the owner.
+   */
+  holdOutsideHours: Schema.optional(Schema.Boolean),
   /** The tasks they hold now; only the owner reads it. */
   load: Schema.optional(Schema.Struct({ open: NonNegativeInt, late: NonNegativeInt })),
   /** The reader may change this profile (the check `kin.people.updateProfile` runs); absent from older hosts. */
@@ -216,6 +226,8 @@ export type KinPersonProfile = typeof KinPersonProfile.Type;
 export const KinPeopleProfilesResult = Schema.Struct({
   profiles: Schema.Array(KinPersonProfile),
   ownerPersonId: KinPersonId,
+  /** The company's quiet hours, which anyone without their own keeps; absent from older hosts. */
+  quietHours: Schema.optional(KinPersonQuietHours),
 });
 export type KinPeopleProfilesResult = typeof KinPeopleProfilesResult.Type;
 
@@ -232,6 +244,9 @@ export const KinPeopleUpdateProfileInput = Schema.Struct({
   timeZone: Schema.optional(Schema.NullOr(TimeZone)),
   workHours: Schema.optional(Schema.NullOr(KinWorkHours)),
   talkStyle: Schema.optional(Schema.String.check(Schema.isMaxLength(KIN_PROFILE_TALK_MAX))),
+  /** Null goes back to the company's. */
+  quietHours: Schema.optional(Schema.NullOr(KinPersonQuietHours)),
+  holdOutsideHours: Schema.optional(Schema.Boolean),
   picture: Schema.optional(Schema.NullOr(KinAttachment)),
 });
 export type KinPeopleUpdateProfileInput = typeof KinPeopleUpdateProfileInput.Type;

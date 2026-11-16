@@ -11,7 +11,9 @@ import {
   kinPersonSeed,
   kinProfileChanges,
   kinProfileDraft,
+  kinQuietLine,
   type KinProfileDraft,
+  type KinProfileHolding,
 } from "@t3tools/client-runtime/kin/kinProfiles";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import type {
@@ -36,6 +38,7 @@ import {
   SheetPopup,
   SheetTitle,
 } from "../components/ui/sheet";
+import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { Toggle } from "../components/ui/toggle";
 import { type ComposerImageAttachment } from "../composerDraftStore";
@@ -164,6 +167,10 @@ function KinProfileSheet(props: {
   });
   const [editing, setEditing] = useState(false);
   const mine = viewer === personId;
+  const holding: KinProfileHolding = {
+    companyQuiet: held?.quietHours,
+    isOwner: held?.ownerPersonId === personId,
+  };
   return (
     <Sheet
       open
@@ -193,10 +200,16 @@ function KinProfileSheet(props: {
               orgId={orgId}
               profile={profile}
               mine={mine}
+              holding={holding}
               onDone={() => setEditing(false)}
             />
           ) : (
-            <KinProfileRead profile={profile} mayEdit={mayEdit} onEdit={() => setEditing(true)} />
+            <KinProfileRead
+              profile={profile}
+              holding={holding}
+              mayEdit={mayEdit}
+              onEdit={() => setEditing(true)}
+            />
           )}
         </div>
       </SheetPopup>
@@ -215,6 +228,7 @@ function Field(props: { readonly label: string; readonly children: React.ReactNo
 
 function KinProfileRead(props: {
   readonly profile: KinPersonProfile;
+  readonly holding: KinProfileHolding;
   readonly mayEdit: boolean;
   readonly onEdit: () => void;
 }) {
@@ -266,6 +280,9 @@ function KinProfileRead(props: {
           )}
         </p>
       </Field>
+      <Field label={KIN_PROFILE_COPY.quietLabel}>
+        <p className="text-sm text-foreground">{kinQuietLine(profile, props.holding)}</p>
+      </Field>
       {props.mayEdit ? (
         <Button variant="outline" className="self-start" onClick={props.onEdit}>
           {KIN_PROFILE_COPY.edit}
@@ -287,13 +304,16 @@ function KinProfileForm(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly profile: KinPersonProfile;
-  /** Only the person says how they like to be spoken to. */
+  /** Only the person says how they like to be spoken to, and when Kin holds messages for them. */
   readonly mine: boolean;
+  readonly holding: KinProfileHolding;
   readonly onDone: () => void;
 }) {
   const { environmentId, orgId, profile } = props;
   const update = useAtomCommand(kinClient.profileUpdate, { reportFailure: false });
-  const [draft, setDraft] = useState<KinProfileDraft>(() => kinProfileDraft(profile));
+  const [draft, setDraft] = useState<KinProfileDraft>(() =>
+    kinProfileDraft(profile, props.holding),
+  );
   const [busy, setBusy] = useState<"saving" | "picture" | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const picker = useRef<HTMLInputElement>(null);
@@ -301,7 +321,7 @@ function KinProfileForm(props: {
     setDraft((current) => ({ ...current, ...change }));
 
   const save = async (picture?: KinAttachment | null) => {
-    const changes = kinProfileChanges(profile, draft);
+    const changes = kinProfileChanges(profile, draft, { ...props.holding, mine: props.mine });
     if (!changes.ok) return setProblem(changes.problem);
     const input = {
       orgId,
@@ -489,6 +509,40 @@ function KinProfileForm(props: {
           ))}
         </datalist>
       </div>
+      {props.mine ? (
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-1.5 text-sm font-medium text-foreground">
+            {KIN_PROFILE_COPY.quietLabel}
+          </legend>
+          <div className="flex items-center gap-2">
+            <Input
+              type="time"
+              aria-label="Quiet from"
+              value={draft.quietFrom}
+              onChange={(event) => set({ quietFrom: event.target.value })}
+            />
+            <span className="text-sm text-muted-foreground">to</span>
+            <Input
+              type="time"
+              aria-label="Quiet until"
+              value={draft.quietTo}
+              onChange={(event) => set({ quietTo: event.target.value })}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">{KIN_PROFILE_COPY.quietHint}</p>
+          <div className="mt-2 flex items-start gap-3">
+            <Switch
+              id="kin-profile-hold"
+              checked={draft.holdOutside}
+              onCheckedChange={(checked) => set({ holdOutside: checked })}
+            />
+            <div className="flex flex-col gap-0.5">
+              <Label htmlFor="kin-profile-hold">{KIN_PROFILE_COPY.holdLabel}</Label>
+              <p className="text-xs text-muted-foreground">{KIN_PROFILE_COPY.holdHint}</p>
+            </div>
+          </div>
+        </fieldset>
+      ) : null}
       {problem === null ? null : (
         <p role="alert" className="text-sm text-destructive-foreground">
           {problem}

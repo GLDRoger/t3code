@@ -1,4 +1,5 @@
 import {
+  KIN_PULSE_LATER_SENSES,
   KinChatError,
   type KinOrgId,
   type KinPulseHandleInput,
@@ -59,8 +60,14 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
     scope: input.scope,
     limit: SCREEN_CAP,
   }).pipe(Effect.catchTags({ SqlError: unavailableOn }));
-  // Screens show the consequence, which already says the measure; agents' reads keep it.
-  const facts = read.facts.map(({ measure: _measure, ...fact }) => fact);
+  // Screens show the consequence, which already says the measure; agents' reads keep it. A
+  // sense newer than the client goes only to one that says it reads it.
+  const unread = new Set<string>(
+    KIN_PULSE_LATER_SENSES.filter((sense) => !(input.acceptSenses ?? []).includes(sense)),
+  );
+  const facts = read.facts
+    .filter((fact) => !unread.has(fact.sense))
+    .map(({ measure: _measure, ...fact }) => fact);
   return input.limit === undefined
     ? { ...read, facts }
     : { ...read, ...kinPulsePage(facts, input.limit) };
