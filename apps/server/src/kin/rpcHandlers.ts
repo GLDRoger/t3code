@@ -17,6 +17,7 @@ import { makeKinApprovalHandlers } from "./approvals/rpcHandlers.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import { makeKinChatHandlers } from "./chat/rpcHandlers.ts";
 import { makeKinConnectionHandlers } from "./connections/rpcHandlers.ts";
+import { makeKinSocialHandlers } from "./social/rpcHandlers.ts";
 import { makeKinWorkerNetworkHandlers } from "./lead/workerNetworkRpcHandlers.ts";
 import { makeKinLevelHandlers } from "./levels/rpcHandlers.ts";
 import { makeKinMemoryHandlers } from "./memory/rpcHandlers.ts";
@@ -73,6 +74,7 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     ...(yield* makeKinWebhookHandlers(session)),
     ...(yield* makeKinWorkerNetworkHandlers(session)),
     ...(yield* makeKinConnectionHandlers(session)),
+    ...(yield* makeKinSocialHandlers(session)),
   });
   const guarded: Record<string, unknown> = {};
   for (const [tag, handler] of Object.entries(handlers)) {

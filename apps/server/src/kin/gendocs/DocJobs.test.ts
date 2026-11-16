@@ -188,6 +188,7 @@ const renderer = Layer.effect(
     return Render.KinDocRenderer.of({
       store: real.store,
       drawable: real.drawable,
+      sheet: real.sheet,
       render: (request) => {
         if (failing.reason !== undefined)
           return Effect.succeed({ _tag: "failed", reason: failing.reason });

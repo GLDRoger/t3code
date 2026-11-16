@@ -1,3 +1,5 @@
+import { isSocialTool } from "../social/mcp.ts";
+import { socialSeatThread } from "../social/seat.ts";
 import type { KinAgentId, KinOrgId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -81,6 +83,16 @@ export const fullSessionAdmitted = Effect.fn("KinAgentSession.fullSessionAdmitte
  */
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(
   function* (name: string, threadId: ThreadId) {
+    if (isSocialTool(name)) {
+      const kin = yield* KinServer;
+      if (Option.isNone(kin.services)) return false;
+      return yield* socialSeatThread(threadId).pipe(
+        Effect.provideService(
+          SqlClient.SqlClient,
+          Context.get(kin.services.value, SqlClient.SqlClient),
+        ),
+      );
+    }
     const t3 = isT3Tool(name);
     if (!t3 && name !== "kin_delegate") return true;
     if (t3 && (!leadT3Tools.has(name) || threadId.startsWith(SHARED_THREAD_PREFIX))) return false;

@@ -217,6 +217,12 @@ export const SHARED_TOOLS = {
   kin_connection_call: "refused",
   kin_connection_offer: "refused",
   kin_connection_note: "refused",
+  // The company's and clients' social accounts are the owner's.
+  social_read: "refused",
+  social_lookup: "refused",
+  social_draft: "refused",
+  social_week: "refused",
+  social_pack: "refused",
   // A shell's worth of reach as the owner, on his GitHub login (`AgentSession`).
   ...t3ToolsRefused,
 } satisfies Record<string, SharedToolPolicy>;

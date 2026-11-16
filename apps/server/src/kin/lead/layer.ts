@@ -1,3 +1,4 @@
+import * as SocialMcp from "../social/mcp.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as DeferralFlow from "../triggers/deferralFlow.ts";
@@ -326,6 +327,7 @@ const memoryPullRequests = Layer.unwrap(
 );
 
 const registration = Layer.mergeAll(
+  SocialMcp.registration,
   McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers),
   McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
   McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
