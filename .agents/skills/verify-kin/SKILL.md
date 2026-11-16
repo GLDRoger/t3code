@@ -55,6 +55,7 @@ kv as zoya web wait "Check the logo files" # or --gone; 20 s by default
 kv as owner web screenshot /tmp/proof/new-task.png   # refuses any path under ~/.t3
 kv as owner web view --width 390 --dark       # phone width or wide, light or dark, for captures
 kv as dev rpc kin.work.list '{"project":"P-1"}'      # orgId is filled in
+kv as meera wire kin.work.create '{"clientRequestId":"x","title":"Plan"}' --watch owner,zoya --find Plan  # what each open page got
 kv tool finance money_summary '{}'                   # one real agent turn, no model
 kv tool chief kin_relay '{"to":"Zoya Sheikh","text":"…"}' --as-turn-of zoya
 kv tool chief people_read '{}' --reply "Checked." --hold 12   # stays working 12 s, to watch the status line
@@ -111,6 +112,7 @@ bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the 
 | `team-room-discussion`     | the brochure discussion: Growth pitches in, Finance widens once and decides, Social objects once; one "Finance replied" line with a link in Social's chat, "Sent by Social" in Finance's; Meera has the room with no count, Dev can't read it; "undo it" drops the task; a disagreement comes as one card |
 | `character-and-undo`       | Finance's character changes by chat, carries into the next turn and restores from history; Zoya can't read it; "undo it" puts back a linked move                                                                                                                                                          |
 | `github-delegated-task`    | GitHub connected: the owner's turn clones a repo and a delegated task opens a PR in its own worktree; one reply; Zoya's turn is refused and offered to the owner                                                                                                                                          |
+| `work-change-five-people`  | five people with Tasks open: a new task, its assignment and its return reach each page as the task itself or nothing, with no Work read                                                                                                                                                                   |
 
 `node scripts/kin-release-check.ts` runs all ten with the models, property tests and UI fuzz before a release ([Releasing Kin](../../../docs/operations/kin-release.md)).
 

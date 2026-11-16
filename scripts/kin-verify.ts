@@ -48,6 +48,7 @@ import {
 import { RpcFailure, VerifyError } from "./kin-verify/rpc.ts";
 import { SEEDS, type SeedName, seed, seedTurns } from "./kin-verify/seed.ts";
 import * as Web from "./kin-verify/web.ts";
+import { Probe } from "./kin-bench/web.ts";
 
 const HELP = `kin-verify [--instance <name>] <command>
   up [--seed lifecycle|empty|bench] [--fresh] start (or reuse) an isolated Kin, seeded; prints when ready
@@ -62,6 +63,10 @@ const HELP = `kin-verify [--instance <name>] <command>
   as <person> web wait "<text>" [--gone] [--timeout <s>]
   as <person> web screenshot <path> [--full]   (refuses paths under ~/.t3)
   as <person> rpc <method> ['<json>']     a client RPC as that person (orgId is filled in)
+  as <person> wire <method> ['<json>'] --watch a,b,c [--settle <s>] [--find "<text>"]
+                                          the RPC as that person; prints what each watcher's open
+                                          page received over its socket meanwhile, one JSON line each
+                                          (found: frames in that carried the text)
   tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--say "<text>"] [--reply "<text>"] [--hold <s>] [--fail] [--raw]
                                           one real turn, no model: the agent calls the tool
   tool <agent> --script <file.json>       the same with several calls (and "shell"/"sleep" steps)
@@ -366,6 +371,62 @@ async function rpc(instance: Instance, person: string, args: Args) {
   }
 }
 
+/**
+ * One change as `person`, and what reached each watcher's open page while it settled: frames,
+ * bytes (as sent, and about what deflate made of them), and every request their page sent.
+ */
+async function wire(instance: Instance, person: string, args: Args) {
+  const [method, json] = args.positional;
+  const watch = flag(args, "watch")
+    ?.split(",")
+    .filter((one) => one !== "");
+  if (method === undefined || watch === undefined || watch.length === 0)
+    throw new VerifyError("wire needs <method> ['<json>'] --watch <person>,<person>");
+  const settle = Number(flag(args, "settle") ?? "5") * 1000;
+  const find = flag(args, "find");
+  const probes = [];
+  for (const one of watch) {
+    if (one !== "owner") personIdOf(instance, one);
+    const session = await Web.openWeb(instance, one, {
+      pairingUrl: () => pairingUrlFor(instance, readState(instance)!.web!),
+      inviteSecret: () => deviceInvite(instance, one),
+    });
+    const probe = await Probe.attach(session.page);
+    const watched = { person: one, probe, from: probe.mark(), found: 0 };
+    if (find !== undefined)
+      probe.cdp.on("Network.webSocketFrameReceived", (event) => {
+        if (event.response.payloadData.includes(find)) watched.found += 1;
+      });
+    probes.push(watched);
+  }
+  const payload = { orgId: ORG, ...(json === undefined ? {} : (JSON.parse(json) as object)) };
+  const connection = await rpcAs(instance, person);
+  try {
+    const result = await connection.call(method, payload);
+    console.log(
+      JSON.stringify({ result: Array.isArray(result) && result.length === 1 ? result[0] : result }),
+    );
+  } finally {
+    connection.close();
+  }
+  await sleep(settle);
+  for (const { person: one, probe, from, found } of probes) {
+    const row = probe.wire(method, from);
+    const frames = probe.frames.slice(from);
+    console.log(
+      JSON.stringify({
+        person: one,
+        framesIn: row.framesIn,
+        bytesIn: row.bytesIn,
+        deflatedIn: row.deflatedIn,
+        requests: frames.filter((frame) => frame.request).length,
+        methods: row.methods,
+        ...(find === undefined ? {} : { found }),
+      }),
+    );
+  }
+}
+
 async function tool(instance: Instance, args: Args) {
   const [agent, name, json] = args.positional;
   const script = flag(args, "script");
@@ -542,6 +603,8 @@ async function main() {
       return web(instance, person, args);
     case "rpc":
       return rpc(instance, person, args);
+    case "wire":
+      return wire(instance, person, args);
     case "tool":
       return tool(instance, args);
     case "mail": {

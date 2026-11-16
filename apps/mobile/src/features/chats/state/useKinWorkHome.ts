@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinDocsWeekStart } from "@t3tools/client-runtime/kin/kinWorkHome";
+import { createKinWorkFollowedRead } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinPersonId, KinRecord } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -9,14 +10,14 @@ import { useNowMinuteMs } from "../../../lib/clock";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { kinClient } from "./kinClient";
 import { useKinDocsLive } from "./useKinDocs";
-import { kinWorkChoicesAtom, type KinWorkTarget } from "./useKinWork";
+import { kinWorkChoicesAtom, kinWorkLiveAtom, type KinWorkTarget } from "./useKinWork";
 import { useLocalDayStartMs } from "./useLocalDayStartMs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Your own open tasks due by the end of today, late ones included, read again whenever Work
- * changes. Null until the first answer; an empty list when it can't be read.
+ * Your own open tasks due by the end of today, late ones included, kept current by Work's stream
+ * and read again when it can't say. Null until the first answer; an empty list when it can't be read.
  */
 export function useKinMyDueTasks(
   { environmentId, orgId }: KinWorkTarget,
@@ -25,37 +26,40 @@ export function useKinMyDueTasks(
 ): ReadonlyArray<KinRecord> | null {
   const dayEnd = useLocalDayStartMs() + DAY_MS - 1;
   const [held, setHeld] = useState<{
-    readonly request: string;
+    readonly me: string | undefined;
     readonly records: ReadonlyArray<KinRecord>;
   } | null>(null);
-  const request = `${environmentId}:${orgId}:${me}:${dayEnd}:${seq}`;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads your due tasks from the host, again when the host announces a change to Work or the day turns
+  // Like the task list, it lives as long as the screen, which a new company or host remounts.
+  const [follower] = useState(() =>
+    createKinWorkFollowedRead({
+      read: (input) => kinClient.workList.run(appAtomRegistry, { environmentId, input }),
+      rows: () =>
+        appAtomRegistry
+          .get(kinWorkLiveAtom({ environmentId, orgId }))
+          .pipe(AsyncResult.value, Option.getOrNull)?.rows ?? null,
+      onChange: (records, input) =>
+        setHeld({
+          me: input.owner?._tag === "person" ? input.owner.personId : undefined,
+          records,
+        }),
+    }),
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- follows your due tasks on the host: applies what Work's stream sent, reads when it can't, and again when the day turns
   useEffect(() => {
     if (me === null || seq === null) return;
-    let current = true;
-    void kinClient.workList
-      .run(appAtomRegistry, {
-        environmentId,
-        input: {
-          orgId,
-          owner: { _tag: "person", personId: me },
-          open: true,
-          dueBy: new Date(dayEnd).toISOString(),
-          limit: 20,
-        },
-      })
-      .then((result) => {
-        if (!current) return;
-        // A failed reread keeps what was shown; the stale notice says the page is behind.
-        if (AsyncResult.isSuccess(result)) setHeld({ request, records: result.value.records });
-        else setHeld((before) => before ?? { request, records: [] });
-      });
-    return () => {
-      current = false;
-    };
-  }, [environmentId, orgId, me, dayEnd, seq, request]);
+    follower.update({
+      orgId,
+      owner: { _tag: "person", personId: me },
+      open: true,
+      dueBy: new Date(dayEnd).toISOString(),
+      limit: 20,
+    });
+  }, [follower, orgId, me, dayEnd, seq]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- abandons a read in flight when the screen leaves
+  useEffect(() => follower.dispose, [follower]);
   if (me === null) return [];
-  return held?.records ?? null;
+  // Rows read for someone else, or another company, are not yours.
+  return held !== null && held.me === me ? held.records : null;
 }
 
 /** The active clients and open projects, kept current by Work's changes. */
