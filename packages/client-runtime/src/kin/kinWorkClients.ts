@@ -136,7 +136,9 @@ export const KIN_PROJECTS = {
   privateOff: "Your team will be able to see this project.",
   milestones: "Milestones",
   addMilestone: "Add milestone",
-  noMilestones: "No milestones yet. Ask an agent to plan it from the PRD, or add one.",
+  /** Only to someone who can add one: the owner, a co-owner, the project's lead. */
+  noMilestonesAdd: "No milestones yet. Ask an agent to plan it from the PRD, or add one.",
+  noMilestones: "No milestones yet.",
   people: "People",
   meetings: "Meetings",
   specChanged: "Spec changed",

@@ -57,6 +57,7 @@ import {
   KIN_OWNER_LEVEL,
   TEAM_REFUSED,
   viewerOfPeople,
+  inProject,
   ledProjects,
   teamDetail,
   teamKeys,
@@ -162,23 +163,27 @@ export const inList = Effect.fn("KinWork.inList")(function* (
   return row;
 });
 /**
- * A client or project named in Work. To a teammate there is none: any key is answered as one
- * never there, without reading it, so a key that exists tells them nothing.
+ * A client or project named in Work. To a teammate there is none, save a project they lead (to
+ * file under) or, to `read`, one they are on: any other key is answered as one never there.
  */
 const refId = Effect.fn("KinWork.refId")(function* (
   viewer: Viewer,
   orgId: KinOrgId,
   key: string | null | undefined,
   list: "clients" | "projects",
+  read = false,
 ) {
   if (key === undefined) return undefined;
   if (viewer.teammate) {
-    if (key === null) return yield* ownerOnly;
-    // A project's lead files its work under it.
-    const led = list === "projects" ? yield* ledIds(viewer) : new Set<string>();
-    const row = led.size === 0 ? undefined : yield* (yield* KinRecords).get(orgId, key);
-    if (row === undefined || row.registerId !== "projects" || !led.has(row.recordId))
-      return yield* missing(key, list);
+    if (key === null || list === "clients")
+      return yield* key === null ? ownerOnly : missing(key, list);
+    const row = yield* (yield* KinRecords).get(orgId, key);
+    if (row === undefined || row.registerId !== "projects") return yield* missing(key, list);
+    const { orgId: personOrg, personId } = viewer.person;
+    const on =
+      (yield* ledIds(viewer)).has(row.recordId) ||
+      (read && (yield* inProject(personOrg, personId, row.recordId).pipe(workFailure)));
+    if (!on) return yield* missing(key, list);
     return row.recordId;
   }
   if (key === null) return null;
@@ -246,7 +251,7 @@ export const list = Effect.fn("KinWork.list")(function* (
   const records = yield* KinRecords;
   const cursor = yield* parseCursor(input.cursor);
   const partyId = yield* refId(viewer, input.orgId, input.party, "clients");
-  const projectId = yield* refId(viewer, input.orgId, input.project, "projects");
+  const projectId = yield* refId(viewer, input.orgId, input.project, "projects", true);
   const at = cursor.at ?? (yield* Clock.currentTimeMillis);
   const limit = input.limit ?? 50;
   if (

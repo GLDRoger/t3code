@@ -1341,7 +1341,7 @@ const make = Effect.gen(function* () {
       activeByOrg.set(orgId, created);
       return created;
     };
-    yield* Effect.gen(function* () {
+    const discover = Effect.gen(function* () {
       for (const orgId of yield* orgIds()) {
         if (organizations.has(orgId)) continue;
         organizations.add(orgId);
@@ -1405,9 +1405,15 @@ const make = Effect.gen(function* () {
       }
     }).pipe(
       Effect.catchCause((cause) => Effect.logError("Kin runner discovery failed", { cause })),
-      Effect.repeat(Schedule.spaced("60 seconds")),
-      Effect.forkScoped,
     );
+    // A new company's first work wakes discovery at once; the minute is the backstop.
+    yield* Effect.gen(function* () {
+      const newWork = yield* queue.unwatched;
+      yield* discover;
+      yield* newWork.pipe(
+        Effect.timeoutOrElse({ duration: "60 seconds", orElse: () => Effect.void }),
+      );
+    }).pipe(Effect.forever, Effect.forkScoped);
   }).pipe(Effect.catchCause((cause) => Effect.logError("Kin runner unavailable", { cause })));
   return WakeupRunner.of({ runOnce, abort, recover, start });
 });

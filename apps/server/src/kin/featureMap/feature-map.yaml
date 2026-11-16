@@ -10,6 +10,8 @@
 #   `?history` open as sheets), `sheet:` or `dialog:` <title>, or inline `menu:`, `card:`,
 #   `section:`, `button:` <label>, which add no depth.
 # phone steps: `tab:<dock tab>` or a first screen, then KIN_SCREENS names, plus the same inline steps.
+#   Settings paths start at `SettingsKin`: the owner's dock is five tabs, and Settings is the gear
+#   on Chats, so it starts its own paths as a tab does (dock tab → list → record → sheet).
 # roles: owner, co_owner, lead (a member who leads a project), member; each `both`, `web`,
 #   `phone` or `none`. A role's reach follows what the host allows, not only what the client shows.
 
@@ -114,9 +116,12 @@ features:
   - id: approvals
     name: Approve what an agent wants to do
     tab: chats
-    web: [chat, card:Approval]
-    phone: [tab:chats, SettingsKin, KinApprovals]
+    web: [home, section:Waiting on you, chat, card:Approval]
+    phone: [tab:chats, KinWaiting, card:Approval]
     roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      Waiting on you lists each approval on both; the phone shows the card right there, the web
+      opens the chat it is in.
     tools: [request_action]
     proof:
       - apps/server/src/kin/approvals/PendingActions.test.ts
@@ -183,7 +188,7 @@ features:
     name: Create or edit an agent
     tab: chats
     web: [home, menu:New, dialog:New agent]
-    phone: [tab:chats, SettingsKin, KinAgents, KinLeadForm]
+    phone: [SettingsKin, KinAgents, KinLeadForm]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof:
@@ -194,7 +199,7 @@ features:
     name: What Kin remembers
     tab: chats
     web: [memory]
-    phone: [tab:chats, SettingsKin, KinMemory]
+    phone: [SettingsKin, KinMemory]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [memory_search, memory_read, memory_write, kin_journal, memory_label]
     proof:
@@ -569,7 +574,7 @@ features:
     name: Kin settings
     tab: settings
     web: [settings]
-    phone: [tab:chats, SettingsKin]
+    phone: [SettingsKin]
     roles: { owner: both, co_owner: both, lead: phone, member: phone }
     note: On web the gear shows only in a chat-only session; the owner's app has Settings pages instead.
     proof: none
@@ -578,7 +583,7 @@ features:
     name: Company details, brand and templates
     tab: settings
     web: [settings/company]
-    phone: [tab:chats, SettingsKin, KinCompany]
+    phone: [SettingsKin, KinCompany]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [company_profile]
@@ -593,7 +598,7 @@ features:
     name: Time zone and the daily spending limit
     tab: settings
     web: [settings/company, section:Daily limit]
-    phone: [tab:chats, SettingsKin, section:Daily limit]
+    phone: [SettingsKin, section:Daily limit]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof: [apps/server/src/kin/lead/KinBudget.test.ts]
 
@@ -601,7 +606,7 @@ features:
     name: Check-ins, an agent's regular round
     tab: settings
     web: [settings/check-ins, sheet:Add check-in]
-    phone: [tab:chats, SettingsKin, KinCheckInForm]
+    phone: [SettingsKin, KinCheckInForm]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     note: In the app's Settings › Check-ins the sheet opens behind the Settings dialog; Kin's own settings works.
@@ -614,7 +619,7 @@ features:
     name: Mail and tool connections
     tab: settings
     web: [settings/kin-connections]
-    phone: [tab:chats, SettingsKin, KinConnections, KinConnection]
+    phone: [SettingsKin, KinConnections, KinConnection]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof:
       - apps/server/src/kin/connections/ConnectionsService.test.ts
@@ -624,7 +629,7 @@ features:
     name: Add a connection
     tab: settings
     web: [settings/kin-connections, dialog:Add connection]
-    phone: [tab:chats, SettingsKin, KinConnections, KinConnectionAdd]
+    phone: [SettingsKin, KinConnections, KinConnectionAdd]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof: [packages/client-runtime/src/kin/kinConnections.test.ts]
@@ -633,7 +638,7 @@ features:
     name: Rename a connection, change its key or note
     tab: settings
     web: [settings/kin-connections, section:Connection, dialog:Rename]
-    phone: [tab:chats, SettingsKin, KinConnections, KinConnection, KinConnectionEdit]
+    phone: [SettingsKin, KinConnections, KinConnection, KinConnectionEdit]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     depth_reason: >-
@@ -645,7 +650,7 @@ features:
     name: The team
     tab: settings
     web: [team]
-    phone: [tab:chats, SettingsKin, KinTeam]
+    phone: [SettingsKin, KinTeam]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [people_read]
     proof:
@@ -656,7 +661,7 @@ features:
     name: Add a teammate
     tab: settings
     web: [team, dialog:Add teammate]
-    phone: [tab:chats, SettingsKin, KinTeam, KinInvite]
+    phone: [SettingsKin, KinTeam, KinInvite]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof: [apps/server/src/kin/people/http.test.ts]
@@ -665,7 +670,7 @@ features:
     name: A teammate's access, places and devices
     tab: settings
     web: [team, sheet:Teammate]
-    phone: [tab:chats, SettingsKin, KinTeam, KinTeammate]
+    phone: [SettingsKin, KinTeam, KinTeammate]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [people_update]
     proof:
@@ -676,7 +681,7 @@ features:
     name: Change a teammate's profile
     tab: settings
     web: [team, sheet:Teammate]
-    phone: [tab:chats, SettingsKin, KinTeam, KinTeammate, KinProfile, KinProfileEdit]
+    phone: [SettingsKin, KinTeam, KinTeammate, KinProfile, KinProfileEdit]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     depth_reason: >-
@@ -688,7 +693,7 @@ features:
     name: Your profile, name, time zone and hours
     tab: settings
     web: [home, sheet:Profile]
-    phone: [tab:chats, SettingsKin, KinProfile, KinProfileEdit]
+    phone: [SettingsKin, KinProfile, KinProfileEdit]
     form: true
     roles: { owner: both, co_owner: both, lead: both, member: both }
     proof: [packages/client-runtime/src/kin/kinProfiles.test.ts]

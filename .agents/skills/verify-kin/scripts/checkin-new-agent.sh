@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# A brand-new agent gets a check-in from Settings › Check-ins, and Run now wakes it once.
+# A brand-new agent gets a check-in from T3's Settings dialog › Check-ins (its form must be clickable
+# over the dialog), Kin's own settings list it for the owner level only, and Run now wakes it once.
 source "$(dirname "$0")/lib.sh"
 AGENT="Ops $RUN"
 MODEL='{"instanceId":"kinVerifyScript","model":"script"}'
 created="$(kv as owner rpc kin.lead.create "{\"name\":\"$AGENT\",\"domain\":\"ops-$RUN\",\"charter\":\"Keeps vendors and the office running.\",\"models\":{\"strong\":$MODEL,\"cheap\":$MODEL}}")"
 agent_id="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).agentId)' "$created")"
-kv as owner web open settings >/dev/null
+kv as owner web open /settings/check-ins >/dev/null
 kv as owner web click --name "Add check-in" >/dev/null
 kv as owner web type --name Name "Round $RUN" >/dev/null
 kv as owner web click --name Agent >/dev/null
@@ -13,6 +14,14 @@ kv as owner web click --name "$AGENT" --role option >/dev/null
 kv as owner web click --name "Save check-in" >/dev/null
 kv as owner web wait "Round $RUN" >/dev/null || fail "the new check-in isn't listed"
 expect_in "$(kv as owner web snapshot)" "· $AGENT" "the check-in doesn't name the new agent"
+for person in owner meera; do
+  kv as "$person" web open settings >/dev/null
+  kv as "$person" web wait "Round $RUN" >/dev/null || fail "$person's Kin settings don't list the check-in"
+done
+kv as zoya web open settings >/dev/null
+member="$(kv as zoya web snapshot)"
+expect_in "$member" "These settings are the owner's" "Zoya's Kin settings don't say they are the owner's"
+expect_not_in "$member" "Round $RUN" "Zoya's Kin settings list the owner's check-ins"
 schedule="$(kv as owner rpc kin.checkIns.list | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);process.stdout.write(r.checkIns.find(c=>c.title===process.argv[1])?.scheduleId??"")})' "Round $RUN")"
 [[ -n "$schedule" ]] || fail "kin.checkIns.list doesn't have the new check-in"
 kv as owner rpc kin.checkIns.act "{\"scheduleId\":\"$schedule\",\"action\":\"run_now\"}" >/dev/null
@@ -22,4 +31,4 @@ for _ in $(seq 1 120); do
   sleep 0.5
 done
 [[ "$status" == "completed" ]] || fail "Run now didn't complete a wake-up for $AGENT (last: ${status:-none})"
-pass "$AGENT got a check-in from Settings and Run now woke it once"
+pass "$AGENT got a check-in from the Settings dialog, Kin settings list it for Rhea and Meera only, and Run now woke it once"

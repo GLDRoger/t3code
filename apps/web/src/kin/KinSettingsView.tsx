@@ -14,6 +14,7 @@ import { KinCompanyProfileSettings } from "./KinCompanyProfile";
 import { KinCheckInsSetting } from "./KinCheckIns";
 import { KinCompanyTimeZoneSetting } from "./KinCompanyTimeZone";
 import { KinDailyLimitSetting } from "./KinDailyLimit";
+import { KinWorkNotice } from "./KinWorkParts";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useKinHost } from "./useKinHost";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
@@ -50,6 +51,20 @@ function OwnerLevelSettingsButton(props: {
 
 /** The company's settings: its details, the daily limit, check-ins, and approvals on this phone. */
 export function KinSettingsView() {
+  const target = kinNewLeadTarget(useKinHost());
+  const body = (
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <SettingsPageContainer>
+        <SettingsSection {...searchableSetting("company-details")} variant="plain">
+          <KinCompanyProfileSettings />
+        </SettingsSection>
+        <KinCompanyTimeZoneSetting />
+        <KinDailyLimitSetting />
+        <KinCheckInsSetting />
+      </SettingsPageContainer>
+      <ApprovalsSettings />
+    </div>
+  );
   return (
     <>
       <WorkspacePageHeader electron={isElectron}>
@@ -68,17 +83,25 @@ export function KinSettingsView() {
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
       </WorkspacePageHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <SettingsPageContainer>
-          <SettingsSection {...searchableSetting("company-details")} variant="plain">
-            <KinCompanyProfileSettings />
-          </SettingsSection>
-          <KinCompanyTimeZoneSetting />
-          <KinDailyLimitSetting />
-          <KinCheckInsSetting />
-        </SettingsPageContainer>
-        <ApprovalsSettings />
-      </div>
+      {target === null ? (
+        body
+      ) : (
+        <OwnerLevelOnly environmentId={target.environmentId}>{body}</OwnerLevelOnly>
+      )}
     </>
+  );
+}
+
+/** A teammate who follows a link here: these are the owner's; theirs is their profile. */
+function OwnerLevelOnly(props: {
+  readonly environmentId: EnvironmentId;
+  readonly children: React.ReactNode;
+}) {
+  if (useKinOwnerLevel(props.environmentId)) return props.children;
+  return (
+    <KinWorkNotice
+      title="These settings are the owner's"
+      detail="The owner and co-owners keep the company's settings. Yours are under your name in the sidebar."
+    />
   );
 }

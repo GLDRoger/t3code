@@ -2468,10 +2468,15 @@ it.effect(
         projectId: project.recordId,
       })).row;
       assert.notInclude(keysOf(yield* OwnerWork.list([mate], { orgId })), plan.key);
+      const byProject = OwnerWork.list([mate], { orgId, project: project.key });
       yield* records.update(orgId, ownerWrites, project.key, {
         fields: { members: [`person:${mateId}`] },
       });
       assert.include(keysOf(yield* OwnerWork.list([mate], { orgId })), plan.key);
+      // Its page lists them too, as the member sees them: the private one stays out.
+      const onPage = keysOf(yield* byProject);
+      assert.include(onPage, plan.key);
+      assert.notInclude(onPage, ownersOwn.key);
       assert.isTrue(
         (yield* teamVisible(orgId, mateId, [milestone.recordId])).has(milestone.recordId),
       );

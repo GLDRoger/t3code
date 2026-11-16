@@ -158,6 +158,7 @@ function ProjectPage(
   const leads =
     view.lead.personId !== null &&
     view.lead.personId === kinFeedViewer(props.directory.orgs, orgId).personId;
+  const addsMilestone = (canChange || leads) && view.closed === null;
   const addTask =
     props.onAddTask === null || view.closed !== null
       ? null
@@ -286,7 +287,7 @@ function ProjectPage(
       <KinWorkSection
         title={KIN_PROJECTS.milestones}
         action={
-          (canChange || leads) && view.closed === null ? (
+          addsMilestone ? (
             <Button size="xs" variant="ghost" onClick={() => setAddingMilestone(true)}>
               <PlusIcon />
               {KIN_PROJECTS.addMilestone}
@@ -295,7 +296,9 @@ function ProjectPage(
         }
       >
         {view.milestones.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{KIN_PROJECTS.noMilestones}</p>
+          <p className="text-sm text-muted-foreground">
+            {addsMilestone ? KIN_PROJECTS.noMilestonesAdd : KIN_PROJECTS.noMilestones}
+          </p>
         ) : (
           <ul className="-mx-2 flex flex-col">
             {view.milestones.map((row) => (

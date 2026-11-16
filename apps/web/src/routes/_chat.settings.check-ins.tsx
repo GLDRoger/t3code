@@ -6,7 +6,7 @@ import { KinCheckInsSetting } from "../kin/KinCheckIns";
 function SettingsCheckInsRoute() {
   return (
     <SettingsPageContainer>
-      <KinCheckInsSetting />
+      <KinCheckInsSetting inDialog />
     </SettingsPageContainer>
   );
 }
