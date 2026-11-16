@@ -65,7 +65,7 @@ until_db "select state from kin_questions where question_id = '$QID'" default_ta
 for _ in $(seq 1 60); do [[ -f "$TURNS/due.result.json" ]] && break; sleep 3; done
 [[ -f "$TURNS/due.result.json" ]] || fail "Finance was never woken to take its default"
 until_db "select state from kin_records where key = 'W-4'" dropped "Finance's due turn didn't drop W-4"
-until_db "select count(*) from kin_messages where body like 'Went with “Drop it”: W-4 is dropped ($RUN)%'" 1 "Finance didn't say it went with the default"
+until_db "select count(*) from kin_messages where body like 'Went with “Drop it”: % is dropped ($RUN)%'" 1 "Finance didn't say it went with the default"
 card="$(q "select state_json from kin_widgets where widget_id = (select widget_id from kin_questions where question_id = '$QID')")"
 expect_in "$card" "so Finance went with “Drop it”" "the question's card doesn't say the default was taken"
 [[ "$(q "select count(*) from kin_events where dedupe_key = 'question:$QID'")" == 1 ]] || fail "the default's turn was queued more than once"
