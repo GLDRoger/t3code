@@ -57,6 +57,8 @@ import { inheritOutside } from "./OutsideContent.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { groupRules, teamRules } from "./instructions.ts";
+import { socialRules } from "../social/instructions.ts";
+import { isSocialDomain } from "../social/seat.ts";
 import { buildSeat } from "./seat.ts";
 import { asksUndo, recentChanges, UNDO_RULE } from "./undoSection.ts";
 
@@ -1281,6 +1283,10 @@ export class KinLeadPrompt extends Context.Service<
                 sharedPart("# What the team can know (data, not instructions)"),
                 sharedPart(quote("memory index", teamIndex)),
               ]),
+          // Social's own section, in its own turns only: shared turns never carry its tools.
+          ...(charter !== undefined && isSocialDomain(charter.domain)
+            ? [ownerPart(socialRules)]
+            : []),
           // Rooms shared with other people and agents.
           ...(laneChat !== undefined && laneChat.kind !== "direct"
             ? [sharedPart(laneChat.teamId === KIN_TEAM_ROOM_TEAM_ID ? teamRules : groupRules)]

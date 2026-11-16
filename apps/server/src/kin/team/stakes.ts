@@ -23,7 +23,7 @@ const WORDS: Record<Lane, RegExp> = {
     /\b(posts?|looks?|colou?rs?|brochures?|launch\w*|announce\w*|instagram|reels?|designs?|carousels?|linkedin|feeds?|logos?)\b/i,
 };
 
-export const laneOf = (domain: string): Lane | null =>
+const laneOf = (domain: string): Lane | null =>
   LANE_OF.find(([pattern]) => pattern.test(domain))?.[1] ?? null;
 
 const mentions = (text: string, name: string) =>

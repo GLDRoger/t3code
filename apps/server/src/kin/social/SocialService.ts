@@ -42,10 +42,10 @@ import { KinDocRenderer } from "../gendocs/render.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { markOutside } from "../lead/OutsideContent.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
-import { laneOf } from "../team/stakes.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import * as Cards from "./cards.ts";
 import { previewSheet } from "./preview.ts";
+import { isSocialDomain } from "./seat.ts";
 import {
   accountsOf,
   calendarPosts,
@@ -500,7 +500,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     function* (orgId: KinOrgId, agentId: KinAgentId) {
       const [row] = yield* sql<{ domain: string }>`SELECT domain FROM kin_leads
           WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`;
-      return row !== undefined && laneOf(row.domain) === "social";
+      return row !== undefined && isSocialDomain(row.domain);
     },
     Effect.orElseSucceed(() => false),
   );

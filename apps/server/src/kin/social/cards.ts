@@ -120,7 +120,7 @@ const weekState = Effect.fn("KinSocialCards.weekState")(function* (
   cardId: string,
   previous: Pick<
     KinSocialWeekCard,
-    "groupId" | "group" | "title" | "confirmedAt" | "client" | "replaced"
+    "groupId" | "group" | "title" | "confirmedAt" | "clientReview" | "replaced"
   >,
 ) {
   const now = yield* Clock.currentTimeMillis;
