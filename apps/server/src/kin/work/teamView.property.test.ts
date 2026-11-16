@@ -1170,4 +1170,83 @@ layer(testLayer)("Work's live stream", (it) => {
       ),
     { arbitrary: { runs: 60 } },
   );
+
+  it.effect("a late tick can't let a resume skip its change, or use up a removal", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(at + 3_600_000);
+        yield* install(emptyWorld);
+        const records = yield* KinRecords.KinRecords;
+        const pull = yield* Stream.toPull(records.changes(orgId));
+        const opening = (yield* pull)[0]!.seq;
+        const sessions = yield* Effect.forEach(["owner", "ana"] as const, (who) =>
+          Effect.gen(function* () {
+            const session = yield* WorkStream.makeWorkStream(peopleOf(who), {
+              orgId,
+              acceptRows: true,
+            });
+            yield* session.start(opening);
+            return { who, session };
+          }),
+        );
+        const made = (n: number) =>
+          OwnerWork.create(peopleOf("owner"), {
+            orgId,
+            clientRequestId: `overtaken-${n}`,
+            title: `Overtaken ${n}`,
+            owner: { _tag: "person", personId: KinPersonId.make("ana") },
+          });
+        const first = yield* made(1);
+        const second = yield* made(2);
+        const ticks: Array<KinRecords.Tick> = [];
+        while (!ticks.some((tick) => tick.key === second.key)) ticks.push(...(yield* pull));
+        for (const { who, session } of sessions) {
+          // The second commit's tick arrives; the first's is still on its way when the socket drops.
+          const items = ticks
+            .filter((tick) => tick.key === second.key)
+            .flatMap((tick) => session.pendingOf(tick));
+          const sent = yield* session.batch(items);
+          const close = sent.at(-1);
+          assert.isTrue(close?._tag === "counts" || close?._tag === "synchronized");
+          if (close?._tag !== "counts" && close?._tag !== "synchronized") return;
+          const resumed = yield* WorkStream.makeWorkStream(peopleOf(who), {
+            orgId,
+            acceptRows: true,
+            afterSeq: close.seq,
+            ...(close.team === true ? { afterTeam: true } : {}),
+          });
+          const events = yield* resumed.start(yield* records.seq(orgId));
+          // The first task comes back on the resume, or the client reads everything again.
+          assert.isTrue(
+            events[0]?._tag === "snapshot-required" ||
+              events.some((event) => event._tag === "upsert" && event.record.key === first.key),
+            `${who} resumed past ${first.key}: ${JSON.stringify(events.map((one) => one._tag))}`,
+          );
+        }
+
+        // Her screen starts over, then the task leaves her view while its earlier tick is late: the
+        // late tick must still bring the removal at a number her screen applies.
+        const late = yield* made(3);
+        const ana = yield* WorkStream.makeWorkStream(peopleOf("ana"), { orgId, acceptRows: true });
+        const opened = yield* ana.start(yield* records.seq(orgId));
+        const readAt = opened.find((event) => event._tag === "counts")?.seq ?? 0;
+        yield* OwnerWork.assign(peopleOf("owner"), {
+          orgId,
+          key: late.key,
+          to: { _tag: "person", personId: KinPersonId.make("owner") },
+        });
+        const more: Array<KinRecords.Tick> = [...ticks];
+        while (more.filter((tick) => tick.key === late.key).length < 2) more.push(...(yield* pull));
+        const sent = [];
+        for (const tick of more.filter((one) => one.key === late.key))
+          sent.push(...(yield* ana.batch(ana.pendingOf(tick))));
+        assert.isTrue(
+          sent.some(
+            (event) => event._tag === "removed" && event.key === late.key && event.seq > readAt,
+          ),
+          `ana kept ${late.key}: ${JSON.stringify(sent)}`,
+        );
+      }),
+    ),
+  );
 });

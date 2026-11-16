@@ -80,6 +80,13 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/lead/Audience.ts",
     "apps/server/src/kin/lead/ChatSharing.ts",
   ],
+  stream: [
+    "apps/server/src/kin/work/workStream.ts",
+    "apps/server/src/kin/work/KinRecords.ts",
+    "apps/server/src/kin/work/teamView.ts",
+    "packages/contracts/src/kinWorkRows.ts",
+    "packages/client-runtime/src/kin/kinWorkStream.ts",
+  ],
   tasks: [
     "apps/server/src/kin/work/KinRecords.ts",
     "apps/server/src/kin/work/leadWork.ts",

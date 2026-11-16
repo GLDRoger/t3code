@@ -63,12 +63,46 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
 ) {
   const { orgId } = input;
   const records = yield* KinRecords;
+  const sql = yield* SqlClient.SqlClient;
   let viewer = yield* viewerOf(people, orgId);
   let level = 0;
   /** A teammate's entries they were told of, and their lists: only these are ever removed. */
   let seen = new Map<string, string>();
   /** The counts the client holds; null when it holds none we know of. */
   let held: KinWorkSummary | null = null;
+  /**
+   * Every change numbered up to here has reached this session, so a client may resume from it.
+   * Ticks publish after their commits release the lock, so one can overtake another: a client told
+   * the later number, then cut off, would resume past the earlier change and never hear it.
+   */
+  let heard = 0;
+  /** Numbers heard past `heard`, waiting on one before them. */
+  const early = new Set<number>();
+  const hear = (n: number) => {
+    if (n <= heard) return;
+    early.add(n);
+    while (early.delete(heard + 1)) heard += 1;
+  };
+  const heardFrom = (n: number) => {
+    heard = n;
+    early.clear();
+  };
+  /**
+   * Where a burst may close. A teammate's own numbers run one by one, so a gap is a tick still on
+   * its way. The org's numbers are shared with every org: a gap is late only if this org's log has
+   * a change there that hasn't arrived.
+   */
+  const resumable = Effect.fn("KinWorkStream.resumable")(function* (top: number) {
+    if (!viewer.teammate && early.size > 0) {
+      const last = Math.max(...early);
+      const logged = yield* sql<{ seq: number }>`SELECT seq FROM kin_record_changes
+        WHERE org_id = ${orgId} AND seq > ${heard} AND seq <= ${last} ORDER BY seq`;
+      const late = logged.find((one) => !early.has(one.seq));
+      heard = late === undefined ? last : late.seq - 1;
+      for (const n of early) if (n <= heard) early.delete(n);
+    }
+    return Math.min(top, heard);
+  });
 
   const own = (v: Viewer) => v.person.personId as KinPersonId;
   /** Which numbering a cursor is in, so one never resumes in the other. */
@@ -88,6 +122,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     seen = viewer.teammate ? yield* teamKeyLists(orgId, own(viewer)).pipe(workFailure) : new Map();
     held = null;
     const seq = yield* numberNow(viewer);
+    heardFrom(seq);
     const whole = yield* counts(seq);
     return [
       { _tag: "snapshot-required", seq, ...team() } satisfies Out,
@@ -98,6 +133,9 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
   /** The entries as this viewer's list read shows them now, or their removal. */
   const rowsNow = Effect.fn("KinWorkStream.rows")(function* (pending: ReadonlyArray<Pending>) {
     const at = yield* Clock.currentTimeMillis;
+    // Rows are read as they are now, so they carry at least this number, not their tick's: a tick
+    // that arrives late would otherwise send news the client drops as older than what it holds.
+    const readAt = yield* numberNow(viewer);
     const lists = new Map<string, Array<string>>();
     for (const one of pending) {
       const list = one.list ?? "work";
@@ -127,7 +165,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
           return [
             {
               _tag: "upsert",
-              seq: one.sequence,
+              seq: Math.max(one.sequence, readAt),
               list,
               record: kinCompactRecord(record),
               ...(fresh ? { fresh: true as const } : {}),
@@ -136,7 +174,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
         }
         // Never named to someone who wasn't told of it: they'd learn it exists.
         if (viewer.teammate && !seen.delete(one.key)) return [];
-        return [{ _tag: "removed", seq: one.sequence, key: one.key, list }];
+        return [{ _tag: "removed", seq: Math.max(one.sequence, readAt), key: one.key, list }];
       });
   });
 
@@ -144,6 +182,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
   const start = Effect.fn("KinWorkStream.start")(function* (now: number) {
     if (viewer.teammate) seen = yield* teamKeyLists(orgId, own(viewer)).pipe(workFailure);
     const seq = viewer.teammate ? yield* numberNow(viewer) : now;
+    heardFrom(seq);
     const after = input.afterSeq;
     if (after === undefined) {
       const whole = yield* counts(seq);
@@ -167,6 +206,8 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     const base = { list: tick.registerId ?? null, created: tick.created === true, level };
     const mine = tick.people?.includes(viewer.person.personId) === true;
     if (!viewer.teammate) {
+      // A people tick reuses the latest change's number; it isn't that change arriving.
+      if (tick.people === undefined) hear(tick.seq);
       // Someone else's places don't move what an owner-level viewer sees; their own level may.
       if (tick.people !== undefined)
         return mine ? [{ ...base, sequence: tick.seq, key: RESCAN }] : [];
@@ -176,6 +217,7 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
       return [{ ...base, sequence: tick.seq, key: GAP }];
     const sequence = tick.team?.get(viewer.person.personId);
     if (sequence === undefined) return [];
+    hear(sequence);
     const rescan =
       mine || tick.registerId === "clients" || tick.registerId === "projects"
         ? [{ ...base, sequence, key: RESCAN }]
@@ -219,9 +261,10 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
         }
     }
     const rows = yield* rowsNow(keyed);
-    const moved = yield* counts(top);
+    const close = yield* resumable(top).pipe(workFailure);
+    const moved = yield* counts(close);
     if (rows.length === 0) return moved === null ? [] : [moved];
-    return [...rows, moved ?? ({ _tag: "synchronized", seq: top, ...team() } satisfies Out)];
+    return [...rows, moved ?? ({ _tag: "synchronized", seq: close, ...team() } satisfies Out)];
   });
 
   return { start, pendingOf, batch };
