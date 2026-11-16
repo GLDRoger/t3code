@@ -86,8 +86,6 @@ export const state = (vars: Vars) => {
   return vars["money"] === true ? "Member who sees Money" : "Member";
 };
 
-const by = (who: string) => (who === "owner" ? "You" : "A co-owner");
-
 export const step = (action: string, from: Vars, to: Vars) => {
   switch (action) {
     case "Invite":
@@ -110,8 +108,48 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return to["leads"] === true ? "She is made a project's lead" : "She is taken off leading it";
     case "RemoveOwner":
       return "A co-owner removes the owner";
+    case "CardUp":
+      return "A card waiting for an owner-level Confirm comes up in her chat";
+    case "TapCard":
+      return "She taps Confirm on it";
+    case "Read":
+      return "She opens a screen";
+    case "TurnStarts":
+      return "She writes to an agent";
+    case "TurnAnswers":
+      return "The agent answers her";
+    case "AgentGives":
+      return "An agent gives her a task";
+    case "HandsBack":
+      return "She hands the task back";
     default:
       return null;
   }
 };
-void by;
+
+const inCompany = (vars: Vars) => {
+  if (vars["bound"] === true) return "In the company";
+  if (vars["gone"] === true) return vars["invite"] === "none" ? "Removed" : "Removed, invited back";
+  return vars["invite"] === "none" ? "Not in the company" : "Invited";
+};
+const only =
+  (keep: ReadonlyArray<string>) =>
+  (action: string, from: Vars, to: Vars): string | null =>
+    keep.includes(action) ? step(action, from, to) : null;
+
+export const charts = [
+  {
+    title: "Joining and leaving",
+    guide:
+      "Each box is whether Ana is in the company. Removing her signs out every device, ends her chats and turns, and hands her open tasks back to whoever gave them; letting her back in starts her as a member with a new joiner's places, unless you made her a co-owner since.",
+    state: inCompany,
+    step: only(["Invite", "Join", "Remove", "RemoveOwner"]),
+  },
+  {
+    title: "Who she is while she is in",
+    guide:
+      "Each box is who Ana is while she is in the company. Every change shows on her very next screen or tap, with no need to join again: made a member again, a card she could confirm a minute ago refuses her, and an agent's turn she started as a co-owner is stopped.",
+    state: (vars: Vars) => (vars["bound"] === true ? state(vars) : "Not in the company"),
+    step: only(["SetAccess", "SetMoney", "SetLead"]),
+  },
+];

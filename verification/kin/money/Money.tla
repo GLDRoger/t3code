@@ -7,7 +7,7 @@
    transaction: a tap's answer runs in the tap's own (work/cardAnswers.ts answerChoice). *)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS Broken
+CONSTANTS Broken, Reads, Troubles
 
 People == {"owner", "coowner", "member"}
 OwnerLevel == {"owner", "coowner"}
@@ -38,9 +38,9 @@ vars == <<amt, rev, pays, rc, rsnap, pending, st, cur, srev, seenAt, match, held
 Live == {x \in pays : x.live}
 Paid == Cardinality({x \in Live : x.minor = 1}) + 2 * Cardinality({x \in Live : x.minor = 2})
 Owed == amt - Paid
-\* The bound: at most two of these, once each.
+\* The bound: at most Troubles of these, once each.
 Trouble == edits + voids + undos + restarts
-Calm == Trouble < 2
+Calm == Trouble < Troubles
 
 Pay(src, card, minor, shown, by, stale) ==
   pays' = pays \cup {[n |-> Cardinality(pays) + 1, src |-> src, card |-> card, minor |-> minor,
@@ -103,7 +103,7 @@ RecordLater(c) ==
    again is statement 2, its rows the same bank rows, statementApply.ts twinRows). The file names
    no currency, so the currency card goes up; applied_at goes back to NULL and the revision up. *)
 Read(s) ==
-  /\ reads < 3 /\ (s = 1 \/ st[1] # "none")
+  /\ reads < Reads /\ (s = 1 \/ st[1] # "none")
   /\ st' = [st EXCEPT ![s] = "choose"]
   /\ cur' = [cur EXCEPT ![s] = "?"]
   /\ srev' = [srev EXCEPT ![s] = IF st[s] = "none" THEN 0 ELSE srev[s] + 1]

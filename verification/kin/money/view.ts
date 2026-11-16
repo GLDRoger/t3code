@@ -81,7 +81,10 @@ export const variants = [
 
 const receiptCard = (vars: Vars) => {
   const cards = list(vars["rc"]).map(String);
-  if (cards.includes("made")) return "receipt recorded";
+  if (cards.includes("made"))
+    return live(vars).some((x) => field(x, "src") === "r")
+      ? "receipt recorded, ₹1 lakh received"
+      : "receipt recorded, then its payment taken back";
   if (cards.includes("open")) return "a receipt card waits";
   if (cards.includes("declined")) return "receipt cancelled";
   return "no receipt card";
@@ -100,13 +103,13 @@ const received = (vars: Vars) => {
   return total === 0 ? "nothing received" : `₹${total} lakh received`;
 };
 
-/** Chart 1: the receipt card and what the invoice received. */
-const receiptState = (vars: Vars) => `${receiptCard(vars)} · ${received(vars)}`;
+/** Chart 1: the receipt card alone. */
+const receiptState = (vars: Vars) => receiptCard(vars);
 /** Chart 2: the statement card and what the invoice received. */
 const statementState = (vars: Vars) => `${statement(vars)} · ${received(vars)}`;
 
 export const state = (vars: Vars) =>
-  `${receiptCard(vars)} · ${statement(vars)} · ${received(vars)}`;
+  `${receiptCard(vars)} · ${statement(vars)} · ${received(vars)} in all`;
 
 const who: Record<string, string> = { owner: "You", coowner: "A co-owner", member: "A member" };
 
@@ -138,7 +141,9 @@ export const step = (action: string, from: Vars, to: Vars) => {
     case "Pick":
       return "You or a co-owner pick its currency";
     case "ConfirmStatement":
-      return "You confirm the statement";
+      return paid(to) > paid(from)
+        ? "You confirm the statement: the row is recorded"
+        : "You confirm it: nothing new to record (already recorded, or another currency)";
     case "Undo":
       return "You undo the statement";
     case "IssueReceipt":
@@ -159,12 +164,14 @@ const stepOf =
   (action: string, from: Vars, to: Vars): string | null =>
     keep.includes(action) ? step(action, from, to) : null;
 
+export const chartConstants = { Reads: "2", Troubles: "1" };
+
 export const charts = [
   {
     name: "receipt",
     title: "A receipt card: money an agent says came in",
     guide:
-      "Each box is what the receipt card says and what the invoice has received. Steps of the bank statement are not drawn here; they show in the second chart. A tap that changes nothing draws no arrow: a member's tap, a second tap from another phone, or a tap on a card whose invoice changed since (Kin refuses it, and the agent puts up a fresh card).",
+      "Each box is what the receipt card says. The bank statement's steps are in the second chart. A tap that changes nothing draws no arrow: a member's tap, a second tap from another phone, or a tap on a card whose invoice changed since (Kin refuses it, and the agent puts up a fresh card).",
     state: receiptState,
     step: stepOf([
       "AgentAsks",
@@ -180,7 +187,7 @@ export const charts = [
     name: "statement",
     title: "A bank statement: rows recorded on your Confirm",
     guide:
-      "Each box is where the statement's card stands and what the invoice has received. The statement names no currency, so a currency card comes first. Kin may read it again, or you may send the same file again: a row already recorded is never recorded twice. A tap that changes nothing draws no arrow: a co-owner's or a member's Confirm, a Confirm from a phone still showing an earlier card, or a Confirm after the invoice changed since the read (Kin asks to read it again).",
+      "Each box is where the statement's card stands and what the invoice has received in all, the receipt's money included. The statement names no currency, so a currency card comes first. Kin may read it again, or you may send the same file again: a row already recorded is never recorded twice. A tap that changes nothing draws no arrow: a co-owner's or a member's Confirm, a Confirm from a phone still showing an earlier card, or a Confirm after the invoice changed since the read (Kin asks to read it again).",
     state: statementState,
     step: stepOf(["Read", "Pick", "ConfirmStatement", "Undo", "IssueReceipt", "Void"]),
   },
