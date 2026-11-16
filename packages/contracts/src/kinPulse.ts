@@ -173,6 +173,8 @@ export const KinPulseListInput = Schema.Struct({
    * then every handled one, with `outline` counting the rest. Absent: every fact, up to 200.
    */
   limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+  /** Only facts about this project, client (by key) or family, as a screen about it shows them. */
+  scope: Schema.optional(KinPulseScope),
 });
 export type KinPulseListInput = typeof KinPulseListInput.Type;
 

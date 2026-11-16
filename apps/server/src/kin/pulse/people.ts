@@ -56,6 +56,7 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
     at: yield* Clock.currentTimeMillis,
     viewer,
     includeHandled: input.includeHandled,
+    scope: input.scope,
     limit: SCREEN_CAP,
   }).pipe(Effect.catchTags({ SqlError: unavailableOn }));
   // Screens show the consequence, which already says the measure; agents' reads keep it.

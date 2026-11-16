@@ -4,6 +4,7 @@ import {
   kinPulseFactRecord,
   type KinGoal,
   type KinPulseFact,
+  type KinPulseScope,
   type KinPulseScreenRead,
   type KinRecordKey,
 } from "@t3tools/contracts";
@@ -80,6 +81,16 @@ const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
   "retainer_due",
   "renewal_due",
 ]);
+
+/** The host's filter for a scope: what it sends covers what `inScope` keeps. */
+export const kinPulseScopeOf = (scope: KinAttentionScope): KinPulseScope =>
+  scope.type === "project"
+    ? { project: scope.key }
+    : scope.type === "client"
+      ? { client: scope.key }
+      : scope.type === "money"
+        ? { family: "money" }
+        : {};
 
 const inScope = (fact: KinPulseFact, scope: KinAttentionScope) => {
   switch (scope.type) {

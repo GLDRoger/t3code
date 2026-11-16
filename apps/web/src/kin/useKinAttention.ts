@@ -4,6 +4,8 @@ import {
   KIN_NEEDS_YOU_PAGE,
   kinAttentionProblem,
   kinAttentionShown,
+  kinPulseScopeOf,
+  type KinAttentionScope,
 } from "@t3tools/client-runtime/kin/kinAttention";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinWorkAgent } from "@t3tools/client-runtime/kin/kinWorkHome";
@@ -39,13 +41,23 @@ const noGoalsAtom: Atom.Atom<AsyncResult.AsyncResult<KinGoalsResult, unknown>> =
   AsyncResult.initial(),
 );
 
-/** `paged`: the first open facts Needs you shows, and counts of the rest (`outline`). */
-const attentionAtom = ({ environmentId, orgId }: KinWorkTarget, paged = false) =>
+/**
+ * `paged`: the first open facts Needs you shows, and counts of the rest (`outline`). `scope`: only
+ * what a client's, project's or Money's own section is about; the section still filters exactly.
+ */
+const attentionAtom = (
+  { environmentId, orgId }: KinWorkTarget,
+  paged = false,
+  scope?: KinAttentionScope,
+) =>
   kinClient.attention({
     environmentId,
-    input: paged
-      ? { orgId, includeHandled: true, limit: KIN_NEEDS_YOU_PAGE }
-      : { orgId, includeHandled: true },
+    input: {
+      orgId,
+      includeHandled: true,
+      ...(paged ? { limit: KIN_NEEDS_YOU_PAGE } : {}),
+      ...(scope === undefined ? {} : { scope: kinPulseScopeOf(scope) }),
+    },
   });
 /** Facts answered on this device, hidden until the live read says where they stand now. */
 const answeredAtom = Atom.family((_target: string) =>
@@ -59,8 +71,13 @@ const answeredOf = ({ environmentId, orgId }: KinWorkTarget) =>
  * that topic for any change to what it senses, which is all an owner-level viewer is shown. A
  * member's view also turns on what is shared with them, so theirs is read again on Work's changes.
  */
-export function useKinAttention(target: KinWorkTarget, enabled = true, paged = false) {
-  const atom = enabled ? attentionAtom(target, paged) : noAttentionAtom;
+export function useKinAttention(
+  target: KinWorkTarget,
+  enabled = true,
+  paged = false,
+  scope?: KinAttentionScope,
+) {
+  const atom = enabled ? attentionAtom(target, paged, scope) : noAttentionAtom;
   const state = kinWorkReadState(useAtomValue(atom));
   const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, target.environmentId));
   const reads =
@@ -73,7 +90,7 @@ export function useKinAttention(target: KinWorkTarget, enabled = true, paged = f
 }
 
 /** "I've got it", Snooze and "Not a problem", and Undo, with one line when a tap didn't save. */
-export function useKinAttentionHandle(target: KinWorkTarget) {
+export function useKinAttentionHandle(target: KinWorkTarget, scope?: KinAttentionScope) {
   const handle = useAtomCommand(kinClient.attentionHandle, { reportFailure: false });
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -102,6 +119,7 @@ export function useKinAttentionHandle(target: KinWorkTarget) {
       setBusy(null);
       appAtomRegistry.refresh(attentionAtom(target));
       appAtomRegistry.refresh(attentionAtom(target, true));
+      if (scope !== undefined) appAtomRegistry.refresh(attentionAtom(target, false, scope));
       const problem = kinAttentionProblem(
         AsyncResult.isSuccess(outcome) ? null : squashAtomCommandFailure(outcome),
       );

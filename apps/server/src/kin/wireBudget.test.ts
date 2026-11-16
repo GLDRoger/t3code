@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off anyUnknownInErrorContext:off -- fixed invented dates; each read fails in its own way and a failure is recorded as a refusal.
 // Loaded first: the chat and trigger modules import each other.
 import "./chat/KinChatService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -209,181 +210,151 @@ const SCHEMAS = {
   pulse: successOf(KinPulseRpcs, "kin.pulse.read"),
 };
 
+type Services = Layer.Success<typeof layer>;
+type Run = (
+  people: ReadonlyArray<PersonIdentity>,
+  me: KinPersonId,
+) => Effect.Effect<object, unknown, Services>;
+
 interface Read {
   readonly name: string;
   /** A client can pass a `limit`; unpaged answers are held under `UNPAGED_CEILING`. */
   readonly paged: boolean;
-  readonly read: (
-    people: ReadonlyArray<PersonIdentity>,
-    me: KinPersonId,
-  ) => Effect.Effect<{ readonly bytes: number; readonly rows: number }, unknown, never>;
+  readonly schema: Schema.Top;
+  /** The answer's field that holds its rows; none for a summary. */
+  readonly rows?: string;
+  readonly run: Run;
 }
 
-/** Each hot read as today's web and phone ask it; `legacy` ones as an older phone app still does. */
-const reads = (provide: <A, E>(effect: Effect.Effect<A, E, any>) => Effect.Effect<A, E, never>) => {
-  const measure =
-    <A>(
-      schema: Schema.Top,
-      rows: (value: A) => number,
-      run: (
-        people: ReadonlyArray<PersonIdentity>,
-        me: KinPersonId,
-      ) => Effect.Effect<A, unknown, any>,
-    ) =>
-    (people: ReadonlyArray<PersonIdentity>, me: KinPersonId) =>
-      provide(run(people, me)).pipe(
-        Effect.map((value) => ({ bytes: wireBytes(schema, value), rows: rows(value) })),
-      );
-  const endOfToday = new Date(NOW + 86_400_000).toISOString();
-  return [
-    {
-      name: "taskPage",
-      paged: true,
-      read: measure(
-        SCHEMAS.list,
-        (v: { rows?: ReadonlyArray<unknown> }) => v.rows?.length ?? 0,
-        (people) => Work.list(people, { orgId, open: true, acceptCompactRows: true }),
-      ),
-    },
-    {
-      name: "taskPageLegacy",
-      paged: true,
-      read: measure(
-        SCHEMAS.list,
-        (v: { records: ReadonlyArray<unknown> }) => v.records.length,
-        (people) => Work.list(people, { orgId, open: true }),
-      ),
-    },
-    {
-      name: "dueToday",
-      paged: true,
-      read: measure(
-        SCHEMAS.list,
-        (v: { rows?: ReadonlyArray<unknown> }) => v.rows?.length ?? 0,
-        (people, me) =>
-          Work.list(people, {
-            orgId,
-            owner: { _tag: "person", personId: me },
-            open: true,
-            dueBy: endOfToday,
-            limit: 20,
-            acceptCompactRows: true,
-          }),
-      ),
-    },
-    {
-      name: "summary",
-      paged: false,
-      read: measure(
-        SCHEMAS.summary,
-        () => 1,
-        (people) => Work.summary(people, { orgId }),
-      ),
-    },
-    {
-      name: "money",
-      paged: false,
-      read: measure(
-        SCHEMAS.money,
-        () => 1,
-        (people) => Money.money(people, { orgId, upcomingRows: false }),
-      ),
-    },
-    {
-      name: "moneyLegacy",
-      paged: true,
-      read: measure(
-        SCHEMAS.money,
-        (v: { upcoming: ReadonlyArray<unknown> }) => v.upcoming.length,
-        (people) => Money.money(people, { orgId }),
-      ),
-    },
-    {
-      name: "lists",
-      paged: false,
-      read: measure(
-        SCHEMAS.lists,
-        (v: { lists: ReadonlyArray<unknown> }) => v.lists.length,
-        (people) => Money.lists(people, { orgId }),
-      ),
-    },
-    {
-      name: "docsPage",
-      paged: true,
-      read: measure(
-        SCHEMAS.docs,
-        (v: { docs: ReadonlyArray<unknown> }) => v.docs.length,
-        (people) => OwnerDocs.list(people, { orgId, acceptSlimLatest: true }),
-      ),
-    },
-    {
-      name: "docsPageLegacy",
-      paged: true,
-      read: measure(
-        SCHEMAS.docs,
-        (v: { docs: ReadonlyArray<unknown> }) => v.docs.length,
-        (people) => OwnerDocs.list(people, { orgId }),
-      ),
-    },
-    {
-      name: "docsCounts",
-      paged: false,
-      read: (people: ReadonlyArray<PersonIdentity>, me: KinPersonId) =>
-        Effect.all([
-          measure(
-            SCHEMAS.docs,
-            () => 0,
-            (p) => OwnerDocs.list(p, { orgId, limit: 1 }),
-          )(people, me),
-          measure(
-            SCHEMAS.docs,
-            () => 0,
-            (p) =>
-              OwnerDocs.list(p, {
-                orgId,
-                limit: 1,
-                changedSince: new Date(NOW - 7 * 86_400_000).toISOString(),
-              }),
-          )(people, me),
-        ]).pipe(Effect.map(([a, b]) => ({ bytes: a.bytes + b.bytes, rows: 0 }))),
-    },
-    {
-      name: "needsYou",
-      paged: true,
-      read: measure(
-        SCHEMAS.pulse,
-        (v: { facts: ReadonlyArray<unknown> }) => v.facts.length,
-        (people) => Pulse.read(people, { orgId, includeHandled: true, limit: 8 }),
-      ),
-    },
-    {
-      name: "attentionAll",
-      paged: true,
-      read: measure(
-        SCHEMAS.pulse,
-        (v: { facts: ReadonlyArray<unknown> }) => v.facts.length,
-        (people) => Pulse.read(people, { orgId, includeHandled: true }),
-      ),
-    },
-    {
-      name: "clients",
-      paged: true,
-      read: measure(
-        SCHEMAS.parties,
-        (v: { parties: ReadonlyArray<unknown> }) => v.parties.length,
-        (people) => Clients.parties(people, { orgId }),
-      ),
-    },
-    {
-      name: "projects",
-      paged: true,
-      read: measure(
-        SCHEMAS.projects,
-        (v: { projects: ReadonlyArray<unknown> }) => v.projects.length,
-        (people) => Clients.projects(people, { orgId }),
-      ),
-    },
-  ] satisfies ReadonlyArray<Read>;
+const endOfToday = new Date(NOW + 86_400_000).toISOString();
+const weekAgo = new Date(NOW - 7 * 86_400_000).toISOString();
+
+/** Each hot read as today's web and phone ask it; `Legacy` ones as an older phone app still does. */
+const READS: ReadonlyArray<Read> = [
+  {
+    name: "taskPage",
+    paged: true,
+    schema: SCHEMAS.list,
+    rows: "rows",
+    run: (people) => Work.list(people, { orgId, open: true, acceptCompactRows: true }),
+  },
+  {
+    name: "taskPageLegacy",
+    paged: true,
+    schema: SCHEMAS.list,
+    rows: "records",
+    run: (people) => Work.list(people, { orgId, open: true }),
+  },
+  {
+    name: "dueToday",
+    paged: true,
+    schema: SCHEMAS.list,
+    rows: "rows",
+    run: (people, me) =>
+      Work.list(people, {
+        orgId,
+        owner: { _tag: "person", personId: me },
+        open: true,
+        dueBy: endOfToday,
+        limit: 20,
+        acceptCompactRows: true,
+      }),
+  },
+  {
+    name: "summary",
+    paged: false,
+    schema: SCHEMAS.summary,
+    run: (people) => Work.summary(people, { orgId }),
+  },
+  {
+    name: "money",
+    paged: false,
+    schema: SCHEMAS.money,
+    run: (people) => Money.money(people, { orgId, upcomingRows: false }),
+  },
+  {
+    name: "moneyLegacy",
+    paged: true,
+    schema: SCHEMAS.money,
+    rows: "upcoming",
+    run: (people) => Money.money(people, { orgId }),
+  },
+  {
+    name: "lists",
+    paged: false,
+    schema: SCHEMAS.lists,
+    rows: "lists",
+    run: (people) => Money.lists(people, { orgId }),
+  },
+  {
+    name: "docsPage",
+    paged: true,
+    schema: SCHEMAS.docs,
+    rows: "docs",
+    run: (people) => OwnerDocs.list(people, { orgId, acceptSlimLatest: true }),
+  },
+  {
+    name: "docsPageLegacy",
+    paged: true,
+    schema: SCHEMAS.docs,
+    rows: "docs",
+    run: (people) => OwnerDocs.list(people, { orgId }),
+  },
+  {
+    name: "docsTotal",
+    paged: false,
+    schema: SCHEMAS.docs,
+    run: (people) => OwnerDocs.list(people, { orgId, limit: 1, acceptSlimLatest: true }),
+  },
+  {
+    name: "docsChangedThisWeek",
+    paged: false,
+    schema: SCHEMAS.docs,
+    run: (people) =>
+      OwnerDocs.list(people, { orgId, limit: 1, changedSince: weekAgo, acceptSlimLatest: true }),
+  },
+  {
+    name: "needsYou",
+    paged: true,
+    schema: SCHEMAS.pulse,
+    rows: "facts",
+    run: (people) => Pulse.read(people, { orgId, includeHandled: true, limit: 8 }),
+  },
+  {
+    name: "attentionAll",
+    paged: true,
+    schema: SCHEMAS.pulse,
+    rows: "facts",
+    run: (people) => Pulse.read(people, { orgId, includeHandled: true }),
+  },
+  {
+    name: "attentionMoney",
+    paged: true,
+    schema: SCHEMAS.pulse,
+    rows: "facts",
+    run: (people) =>
+      Pulse.read(people, { orgId, includeHandled: true, scope: { family: "money" } }),
+  },
+  {
+    name: "clients",
+    paged: true,
+    schema: SCHEMAS.parties,
+    rows: "parties",
+    run: (people) => Clients.parties(people, { orgId }),
+  },
+  {
+    name: "projects",
+    paged: true,
+    schema: SCHEMAS.projects,
+    rows: "projects",
+    run: (people) => Clients.projects(people, { orgId }),
+  },
+];
+
+const rowsOf = (value: object, field: string | undefined) => {
+  if (field === undefined) return 1;
+  const held: unknown = (value as Record<string, unknown>)[field];
+  return Array.isArray(held) ? held.length : 0;
 };
 
 const VIEWERS = [
@@ -464,24 +435,21 @@ withLayer(layer)("Kin wire budget", (it) => {
   it.effect("hot reads and one change's stream match kinWireBudget.json", () =>
     Effect.gen(function* () {
       yield* seed;
-      const context = yield* Effect.context<never>();
-      const provide = <A, E>(effect: Effect.Effect<A, E, any>) =>
-        Effect.provide(effect, context) as Effect.Effect<A, E, never>;
       const measured: Record<string, number> = {};
       const over: Array<string> = [];
       const rereadBytes = new Map<string, number>();
       for (const [name, personId] of VIEWERS) {
         let reread = 0;
-        for (const one of reads(provide)) {
-          const result = yield* Effect.result(one.read(as(personId), personId));
+        for (const one of READS) {
+          const result = yield* Effect.result(one.run(as(personId), personId));
           if (result._tag === "Failure") {
             // A read the host refuses this viewer costs nothing to send but the refusal.
             measured[`${name}.${one.name}.refused`] = 1;
             continue;
           }
-          const { bytes, rows } = result.success;
+          const bytes = wireBytes(one.schema, result.success);
           measured[`${name}.${one.name}.bytes`] = bytes;
-          measured[`${name}.${one.name}.rows`] = rows;
+          measured[`${name}.${one.name}.rows`] = rowsOf(result.success, one.rows);
           if (!one.paged && bytes > UNPAGED_CEILING) over.push(`${name}.${one.name}: ${bytes}`);
           if (one.name === "taskPage" || one.name === "dueToday" || one.name === "summary")
             reread += bytes;

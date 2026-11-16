@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { KinOrgId } from "./kinChat.ts";
+import { KinOrgId, KinPersonId } from "./kinChat.ts";
 import type { KinPulseFact } from "./kinPulse.ts";
 import type { KinRecord, KinRecordCan, KinWorkListResult } from "./kinWork.ts";
 import { kinCompactWorkList, kinPulsePage, kinRestoreWorkList } from "./kinWire.ts";
@@ -52,7 +52,7 @@ describe("acceptCompactRows", () => {
         record("W-1", { can: can(true) }),
         record("W-2", {
           can: can(true),
-          waitingOn: { _tag: "person", personId: "ana" },
+          waitingOn: { _tag: "person", personId: KinPersonId.make("ana") },
           category: "issue",
           dueAt: "2026-11-02T18:29:59.999Z",
           dueAllDay: true,
