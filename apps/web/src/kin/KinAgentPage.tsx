@@ -20,15 +20,16 @@ import {
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type {
-  EnvironmentId,
-  KinAgentId,
-  KinAgentPage,
-  KinLeadProfile,
+import {
   KinOrgId,
-  ModelSelection,
+  type EnvironmentId,
+  type KinAgentId,
+  type KinAgentPage,
+  type KinChatId,
+  type KinLeadProfile,
+  type ModelSelection,
 } from "@t3tools/contracts";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
@@ -66,13 +67,26 @@ export interface KinAgentPageTarget {
   readonly agentId: KinAgentId;
 }
 
-/** The agent page open over Kin, from Settings, the command palette or a link in a message. */
-const kinAgentPageAtom = Atom.make<KinAgentPageTarget | null>(null).pipe(
-  Atom.keepAlive,
-  Atom.withLabel("kin:agent-page"),
-);
-export const openKinAgentPage = (target: KinAgentPageTarget) =>
-  appAtomRegistry.set(kinAgentPageAtom, target);
+/**
+ * Opens an agent's page at its own address: over the Kin page the person is on, or from outside
+ * Kin (Settings, the command palette) over the agent's own chat.
+ */
+export function useOpenKinAgentPage() {
+  const navigate = useNavigate();
+  const params = useParams({ strict: false });
+  return (target: KinAgentPageTarget & { readonly chatId: KinChatId }) =>
+    params.environmentId === target.environmentId && params.orgId === target.orgId
+      ? navigate({ to: ".", search: (prev) => ({ ...prev, agent: target.agentId }) })
+      : navigate({
+          to: "/kin/$environmentId/$orgId/$chatId",
+          params: {
+            environmentId: target.environmentId,
+            orgId: target.orgId,
+            chatId: target.chatId,
+          },
+          search: { agent: target.agentId },
+        });
+}
 
 /** Who the viewer is to an agent's page; the host decides again on every read and write. */
 function useKinAgentPageCan(environmentId: EnvironmentId) {
@@ -86,15 +100,23 @@ function useKinAgentPageCan(environmentId: EnvironmentId) {
 
 /** Mounted once on Kin's page, like the lead form. */
 export function KinAgentPageHost() {
-  const target = useAtomValue(kinAgentPageAtom);
-  if (target === null) return null;
-  return <KinAgentSheet key={target.agentId} target={target} />;
+  const { agent } = useSearch({ from: "/_chat/kin" });
+  const params = useParams({ strict: false });
+  if (agent === undefined || params.environmentId === undefined || params.orgId === undefined)
+    return null;
+  const target = {
+    environmentId: params.environmentId as EnvironmentId,
+    orgId: KinOrgId.make(params.orgId),
+    agentId: agent,
+  };
+  return <KinAgentSheet key={agent} target={target} />;
 }
-
-const closePage = () => appAtomRegistry.set(kinAgentPageAtom, null);
 
 function KinAgentSheet(props: { readonly target: KinAgentPageTarget }) {
   const { environmentId, orgId, agentId } = props.target;
+  const navigate = useNavigate();
+  const closePage = () =>
+    void navigate({ to: ".", search: ({ agent: _closed, ...rest }) => rest, replace: true });
   const can = useKinAgentPageCan(environmentId);
   const leads = Option.getOrNull(
     AsyncResult.value(useAtomValue(kinClient.leads({ environmentId, input: { orgId } }))),

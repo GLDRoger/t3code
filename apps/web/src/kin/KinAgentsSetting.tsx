@@ -5,7 +5,6 @@ import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation"
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { KinAgentModels, KinLeadProfile } from "@t3tools/contracts";
-import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { ChevronRightIcon } from "lucide-react";
@@ -15,7 +14,7 @@ import { SettingsRow, SettingsSection } from "../components/settings/settingsLay
 import { searchableSetting } from "../components/settings/settingsSearch";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
-import { openKinAgentPage } from "./KinAgentPage";
+import { useOpenKinAgentPage } from "./KinAgentPage";
 import { KinAgentModelPicker } from "./KinAgentModelPicker";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
@@ -93,17 +92,11 @@ function CompanyDefault(props: KinWorkTarget) {
 
 function AgentRows(props: KinWorkTarget) {
   const { environmentId, orgId } = props;
-  const navigate = useNavigate();
+  const openPage = useOpenKinAgentPage();
   const leads = Option.getOrNull(AsyncResult.value(useAtomValue(kinClient.agents(props))));
   if (leads === null) return null;
-  const open = async (lead: KinLeadProfile) => {
-    // The page opens over Kin, beside the agent's own chat.
-    await navigate({
-      to: "/kin/$environmentId/$orgId/$chatId",
-      params: { environmentId, orgId, chatId: lead.ownerChatId },
-    });
-    openKinAgentPage({ environmentId, orgId, agentId: lead.agentId });
-  };
+  const open = (lead: KinLeadProfile) =>
+    openPage({ environmentId, orgId, agentId: lead.agentId, chatId: lead.ownerChatId });
   return leads.leads.map((lead) => (
     <SettingsRow
       key={lead.agentId}

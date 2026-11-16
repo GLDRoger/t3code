@@ -116,7 +116,7 @@ import {
   openKinLeadForm,
 } from "../kin/KinNewLeadButton";
 import { useKinPaletteHits } from "../kin/useKinDocs";
-import { openKinAgentPage, useKinPaletteAgents } from "../kin/KinAgentPage";
+import { useKinPaletteAgents, useOpenKinAgentPage } from "../kin/KinAgentPage";
 import { useKinHost } from "../kin/useKinHost";
 import { useKinListSwitch } from "../kin/useKinListSwitch";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
@@ -484,6 +484,7 @@ function OpenCommandPaletteDialog(props: {
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
   const kinAgents = useKinPaletteAgents(kinNewLead, canCreateKinLead);
+  const openKinAgentPage = useOpenKinAgentPage();
   const kinHits = useKinPaletteHits(
     canOpenKinWork ? kinNewLead : null,
     kinPaletteQuery(deferredQuery),
@@ -1743,12 +1744,11 @@ function OpenCommandPaletteDialog(props: {
         title: `${agent.name}: model, character and settings`,
         icon: <SparklesIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
-          // The page opens over Kin, beside the agent's own chat.
-          await navigate({
-            to: "/kin/$environmentId/$orgId/$chatId",
-            params: { ...kinNewLead, chatId: agent.ownerChatId },
+          await openKinAgentPage({
+            ...kinNewLead,
+            agentId: agent.agentId,
+            chatId: agent.ownerChatId,
           });
-          openKinAgentPage({ ...kinNewLead, agentId: agent.agentId });
         },
       });
     }
