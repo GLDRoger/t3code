@@ -508,6 +508,7 @@ features:
       - apps/server/src/kin/work/KinRecords.test.ts
       - .agents/skills/verify-kin/scripts/private-task-hidden.sh
       - .agents/skills/verify-kin/scripts/lead-adds-milestone.sh
+      - packages/client-runtime/src/kin/kinWorkForms.test.ts
 
   - id: project-form
     name: Add or change a project

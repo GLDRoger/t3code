@@ -694,7 +694,7 @@ function kinWorkPageAffected(
 export function createKinWorkPageWatch(options: {
   readonly own: KinRecordKey;
   readonly reread: () => void;
-  /** The latest change number in this client's or project's history; null if it couldn't be read. */
+  /** The latest change number in this client's or project's history; null if it couldn't be read, which reads the page. */
   readonly newest: () => Promise<number | null>;
 }) {
   /** The highest change number already acted on, so one change never reads twice. */
@@ -728,7 +728,8 @@ export function createKinWorkPageWatch(options: {
       handled = top;
       void options.newest().then((newest) => {
         asking = false;
-        if (newest !== null && newest > page.seq) options.reread();
+        // A teammate can't read the history (it is the owner's), so the page itself is read again.
+        if (newest === null || newest > page.seq) options.reread();
       });
     },
   };
