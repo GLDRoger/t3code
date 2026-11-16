@@ -319,7 +319,11 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       return yield* invalid("Those social accounts aren't connected any more.");
     let partyId: string | null = null;
     let label = OWN_LABEL;
-    if (input.kind === "client") {
+    // A new key for a connected group keeps that group's own or client.
+    if (existing !== undefined) {
+      partyId = existing.partyId;
+      label = existing.label;
+    } else if (input.kind === "client") {
       const client = (yield* ownerLevelClients(input.orgId)).find(
         (one) => one.clientId === input.clientId,
       );
@@ -374,6 +378,16 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     if (one === undefined || one.orgId !== input.orgId || one.expiresAt <= now)
       return yield* invalid("That check ran out. Paste the key again.");
     held.delete(input.checkId);
+    // Two checks may have passed before either was saved.
+    const taken = (yield* ownerLevelGroups(one.orgId)).find(
+      (group) =>
+        group.groupId !== one.groupId &&
+        (group.profileId === one.profileId || group.partyId === one.partyId),
+    );
+    if (taken !== undefined)
+      return yield* invalid(
+        `${taken.profileId === one.profileId ? "That profile" : one.label} is already connected as ${taken.label}. One profile is one group.`,
+      );
     const groupId = one.groupId ?? newId("sg_");
     yield* secrets.setSocialKey(groupId, one.key);
     yield* Effect.gen(function* () {
@@ -553,9 +567,13 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     reach: post.reach,
     url: post.url,
   });
-  const bestLine = (slot: BestTime, zone: string) => {
-    // The service's slots are UTC day and hour; shown on a week in his zone.
-    const base = Date.UTC(2024, 0, 1 + slot.dayOfWeek, slot.hourUtc);
+  const bestLine = (slot: BestTime, zone: string, now: number) => {
+    // The service's slots are UTC day (0 is Monday) and hour; shown on the coming week in his zone,
+    // so its offset is the one in force then.
+    const day = Math.floor(now / DAY_MS);
+    // 1 January 1970 was a Thursday, day 3 counting from Monday.
+    const ahead = (slot.dayOfWeek - ((day + 3) % 7) + 7) % 7;
+    const base = (day + ahead) * DAY_MS + slot.hourUtc * 3_600_000;
     const parts = new Intl.DateTimeFormat("en-GB", {
       timeZone: zone,
       weekday: "short",
@@ -621,7 +639,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
           .sort((a, b) => engagement(b) - engagement(a))
           .slice(0, 30)
           .map((post) => statsLine(post, accounts)),
-        bestTimes: got.value.best.slice(0, 5).map((slot) => bestLine(slot, zone)),
+        bestTimes: got.value.best.slice(0, 5).map((slot) => bestLine(slot, zone, now)),
         readAt: whenLabel(got.readAt, zone),
         ...(costs.length === 0
           ? {}
@@ -810,28 +828,37 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     if (problem !== undefined) return yield* invalid(problem);
     const postId = existing?.postId ?? newId("sp_");
     const mediaJson = encodeMedia(media);
-    yield* Effect.gen(function* () {
+    const saved = yield* Effect.gen(function* () {
       if (existing === undefined)
         yield* sql`INSERT INTO kin_social_posts (org_id, post_id, kind, group_id, account_id, caption,
               media_json, at_ms, state, agent_id, created_at, updated_at)
             VALUES (${lead.orgId}, ${postId}, 'post', ${group.groupId}, ${account.accountId}, ${caption},
               ${mediaJson}, ${atMs}, 'draft', ${lead.agentId}, ${now}, ${now})`;
-      else
-        yield* sql`UPDATE kin_social_posts SET group_id = ${group.groupId}, account_id = ${account.accountId},
+      // Only while it is still a draft or proposed: a Confirm may have landed since it was read.
+      else if (
+        (yield* sql`UPDATE kin_social_posts SET group_id = ${group.groupId}, account_id = ${account.accountId},
               caption = ${caption}, media_json = ${mediaJson}, at_ms = ${atMs}, state = 'draft',
               card_id = NULL, updated_at = ${now}
-            WHERE org_id = ${lead.orgId} AND post_id = ${postId}`;
+            WHERE org_id = ${lead.orgId} AND post_id = ${postId} AND state = ${existing.state}
+            RETURNING post_id`).length === 0
+      )
+        return false;
       // A changed post leaves the card it was on: that card no longer shows what would go.
       if (existing?.cardId != null && existing.state === "proposed")
         yield* Cards.refreshWeekCard(lead.orgId, existing.cardId, (card) => ({
           ...card,
           replaced: true,
         }));
+      return true;
     }).pipe(
       sql.withTransaction,
       Effect.provide(context),
       Effect.mapError(() => unavailable("Kin couldn't save the draft.")),
     );
+    if (!saved)
+      return yield* invalid(
+        "That post changed on its card meanwhile, so it can't change now. Read the card again.",
+      );
     return {
       postId,
       group: group.label,
@@ -961,8 +988,11 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     live: ReadonlySet<string>,
   ) {
     const now = yield* Clock.currentTimeMillis;
+    // A saved id is at the service already: read it, and retry only one that failed.
     if (post.servicePostId !== null) {
-      const after = yield* run(provider.retry(key, post.servicePostId));
+      const seen = yield* run(provider.status(key, post.servicePostId));
+      const after =
+        seen.state === "failed" ? yield* run(provider.retry(key, post.servicePostId)) : seen;
       return yield* settle(post, after.state, after.url, after.reason, now);
     }
     // Confirmed for a time that passed while Kin was off: never sent late on its own.
@@ -1062,18 +1092,26 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
         group === undefined
           ? undefined
           : accountsOf(group).find((one) => one.accountId === post.accountId);
+      // A future time, so a first attempt that made nothing can't publish now: Kin cancels it next.
+      // A refusal means the key found no earlier post, so there is nothing to cancel.
       if (group !== undefined && account !== undefined)
-        id = (yield* run(
+        id = yield* run(
           provider.schedule(key, {
             profileId: group.profileId,
             accountId: account.accountId,
             platform: account.platform,
             caption: post.caption,
             media: null,
-            at: iso(post.atMs),
+            at: iso(Math.max(post.atMs, now + DAY_MS)),
             idempotencyKey: idempotencyKey(post),
           }),
-        )).id;
+        ).pipe(
+          Effect.map((made): string | null => made.id),
+          Effect.catchIf(
+            (error) => error.kind === "invalid" || error.kind === "platform",
+            () => Effect.succeed(null),
+          ),
+        );
       // Kept first, so an Undo that can't go through still leaves a post Kin reads.
       if (id !== null)
         yield* sql`UPDATE kin_social_posts SET service_post_id = ${id}
@@ -1244,11 +1282,12 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       yield* Effect.logWarning("Kin couldn't make a social preview", {
         reason: result._tag === "failed" ? result.reason : "unknown",
       });
+    // Rendering ran outside a transaction, so it never held the database's one writer.
     yield* Cards.refreshWeekCard(orgId, cardId, (state) =>
       state.clientReview === null
         ? state
         : { ...state, clientReview: { ...state.clientReview, making: false, preview } },
-    );
+    ).pipe(sql.withTransaction);
   });
 
   // One pass now, one after every change to a card, and one every few minutes.
@@ -1261,7 +1300,6 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     const making = Option.isSome(card) && card.value.clientReview?.making === true;
     return making
       ? makePreview(event.orgId, event.widget.widgetId).pipe(
-          sql.withTransaction,
           Effect.provide(context),
           Effect.catchCause((cause) => Effect.logWarning("Kin social preview failed", { cause })),
         )
