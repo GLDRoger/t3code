@@ -78,7 +78,9 @@ export const KinDocsToolkit = Toolkit.make(
     description: `File a doc under another client or project (null clears) or as the company's own (company true), change its kind, give it to another owner, mark it sensitive, or archive it (archived false brings it back). Rename with doc_edit retitle. ${writes}`,
     parameters: Docs.MoveInput,
     success: Docs.MoveResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
   Tool.make("doc_link", {
     ...shared,
     description: `Link a doc to entries (W-12) or other docs (D-3), both ways, so each shows the other: a plan to the entries it became, notes to the client's work. ${writes}`,
