@@ -8,6 +8,8 @@ import {
   type KinPersonId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevel } from "../people/KinAccess.ts";
@@ -225,6 +227,77 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   };
 });
 
+/** A name written in place of an entry's key, kept so the name still links to it. */
+const NamedKeys = Schema.Array(Schema.Struct({ text: Schema.String, key: Schema.String }));
+export type NamedKey = (typeof NamedKeys.Type)[number];
+const decodeNames = Schema.decodeUnknownOption(Schema.fromJsonString(NamedKeys));
+export const encodeNames = Schema.encodeSync(Schema.fromJsonString(NamedKeys));
+
+/**
+ * An agent's message for people with each bare entry key (W-3, EXP-12) written as people name
+ * it: the entry's printed number, else its title. Only keys every person in the chat may see
+ * change; code, links and printed numbers (INV/26-27/004, a number that looks like a key) don't.
+ */
+export const nameKeys = Effect.fn("KinMessageLinks.nameKeys")(function* (
+  orgId: KinOrgId,
+  chatId: string,
+  body: string,
+) {
+  const keys = keysIn(body);
+  if (keys.length === 0) return { body, names: [] as ReadonlyArray<NamedKey> };
+  const sql = yield* SqlClient.SqlClient;
+  const members = yield* sql<{ personId: KinPersonId }>`SELECT person_id AS "personId"
+    FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chatId}
+      AND principal_kind = 'person' AND left_at IS NULL ORDER BY person_id`;
+  const restricted: Array<KinPersonId> = [];
+  for (const { personId } of members)
+    if (!(yield* ownerLevel(orgId, personId))) restricted.push(personId);
+  const viewer = restricted.length === 0 ? KIN_OWNER_LEVEL : viewerOfPeople(restricted);
+  const rows = yield* sql<{ key: string; title: string; number: string | null }>`SELECT r.key,
+      r.title, json_extract(r.fields_json, '$.number') AS number FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(keys)} AND ${seenBy(sql, viewer)}`;
+  const printed = new Set(
+    (yield* sql<{ number: string }>`SELECT json_extract(fields_json, '$.number') AS number
+      FROM kin_records WHERE org_id = ${orgId}
+        AND json_extract(fields_json, '$.number') IN ${sql.in(keys)}`).map((row) => row.number),
+  );
+  const byKey = new Map(
+    rows
+      .filter((row) => !printed.has(row.key) && row.title.trim() !== "")
+      .map((row) => [row.key, row]),
+  );
+  if (byKey.size === 0) return { body, names: [] as ReadonlyArray<NamedKey> };
+  const names: Array<NamedKey> = [];
+  const matches = [...linkableText(body).matchAll(KEY)].filter((m) => byKey.has(m[1]!));
+  let out = body;
+  // From the end, so earlier indexes stay put.
+  for (const match of matches.toReversed()) {
+    const row = byKey.get(match[1]!)!;
+    const name = row.number ?? row.title.replace(/\s+/g, " ").trim();
+    const from = match.index;
+    const to = from + match[1]!.length;
+    const before = out.slice(0, from);
+    const after = out.slice(to);
+    const lower = name.toLowerCase();
+    if (row.number === null) names.push({ text: name, key: row.key });
+    // "Logo files (W-3)", "W-3 (Logo files)" or "W-3: Logo files" already names it: the key goes.
+    if (before.toLowerCase().endsWith(`${lower} (`) && after.startsWith(")")) {
+      out = `${before.slice(0, -2)}${after.slice(1)}`;
+      continue;
+    }
+    const lead = /^(?: \(|:? | [–-] )/.exec(after)?.[0];
+    if (lead !== undefined && after.slice(lead.length).toLowerCase().startsWith(lower)) {
+      const rest = after.slice(lead.length + name.length);
+      out = `${before}${after.slice(lead.length, lead.length + name.length)}${
+        lead === " (" && rest.startsWith(")") ? rest.slice(1) : rest
+      }`;
+      continue;
+    }
+    out = `${before}${name}${after}`;
+  }
+  return { body: out, names: names.reverse() };
+});
+
 /**
  * Each message with the names in it this reader may open (`links`), worked out for this reader:
  * an entry they can't see, by name or number, yields nothing, the same as one that doesn't
@@ -242,10 +315,33 @@ export const withLinks = Effect.fn("KinMessageLinks.withLinks")(function* (
   if (texts.length === 0) return messages;
   const owner = yield* ownerLevel(orgId, reader.personId);
   const viewer = owner ? KIN_OWNER_LEVEL : viewerOfPeople([reader.personId]);
-  const keys = [...new Set(texts.flatMap((message) => keysIn(message.body)))];
+  const sql = yield* SqlClient.SqlClient;
+  const agentTexts = texts.filter((message) => message.author._tag === "agent");
+  const named =
+    agentTexts.length === 0
+      ? []
+      : (yield* sql<{ names: string }>`SELECT names_json AS names FROM kin_message_names
+          WHERE org_id = ${orgId}
+            AND message_id IN ${sql.in(agentTexts.map((message) => message.messageId))}`).flatMap(
+          (row) => Option.getOrElse(decodeNames(row.names), (): ReadonlyArray<NamedKey> => []),
+        );
+  const keys = [
+    ...new Set([
+      ...texts.flatMap((message) => keysIn(message.body)),
+      ...named.map((one) => one.key),
+    ]),
+  ];
   const numbers = [...new Set(texts.flatMap((message) => numbersIn(message.body)))].slice(0, 500);
   const sources = yield* linkSources(orgId, reader.personId, viewer, keys, numbers);
-  const match = linkMatcher(sources.names, sources.keys, owner);
+  // A name Kin wrote for a key links where the key did, for a reader who may open it.
+  const taken = new Set(sources.names.map((one) => one.name));
+  const written = new Map<string, LinkName>();
+  for (const one of named) {
+    const link = sources.keys.get(one.key);
+    if (link !== undefined && !taken.has(one.text) && !written.has(one.text))
+      written.set(one.text, { name: one.text, ...link });
+  }
+  const match = linkMatcher([...sources.names, ...written.values()], sources.keys, owner);
   return messages.map((message) => {
     if (message.kind !== "text" || message.status === "deleted") return message;
     const links = match(message.body);
