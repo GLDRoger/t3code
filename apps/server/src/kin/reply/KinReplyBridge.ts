@@ -959,25 +959,34 @@ const make = Effect.gen(function* () {
     yield* Deferred.succeed(seen, undefined);
   });
 
-  // The call arrives over MCP while its item arrives through the thread's stream, so it waits
-  // for its item: by then the text before it is posted or dropped. Unsure means it may end; the
-  // rescue at the turn's end still answers.
+  const owesWords = (wake: Wake, refuse: boolean) =>
+    wake.lock.withPermits(1)(
+      Effect.gen(function* () {
+        if (wake.done || wake.endRefused || wake.replied || wake.withheld !== null) return false;
+        // Undecided text before this call posts once kin_end decides it: words are on the way.
+        const writing = [...wake.segments.values()].some(
+          (segment) => segment.outcome === null && classifySegment(segment.text, "end") === "post",
+        );
+        if (writing || (yield* answered(wake))) return false;
+        if (refuse) wake.endRefused = true;
+        return true;
+      }),
+    );
+
+  // The call arrives over MCP while its item arrives through the thread's stream, so a turn
+  // with no words yet waits for its item: by then the text before it is posted or dropped.
+  // Unsure means it may end; the rescue at the turn's end still answers.
   const silentEnd = Effect.fn("KinReplyBridge.silentEnd")(
     function* (orgId: KinOrgId, wakeupId: KinWakeupId) {
       const wake = byWakeup.get(wakeupId);
       if (wake === undefined || wake.orgId !== orgId) return false;
       const call = ++wake.endChecks;
+      if (!(yield* owesWords(wake, false))) return false;
       while (wake.ends.length < call) {
         const seen = yield* Deferred.await(wake.endSeen).pipe(Effect.timeoutOption(END_SEEN_MS));
         if (Option.isNone(seen)) return false;
       }
-      return yield* wake.lock.withPermits(1)(
-        Effect.gen(function* () {
-          if (wake.done || wake.endRefused || wake.replied || wake.withheld !== null) return false;
-          wake.endRefused = !(yield* answered(wake));
-          return wake.endRefused;
-        }),
-      );
+      return yield* owesWords(wake, true);
     },
     Effect.catchCause((cause) =>
       Effect.logWarning("Kin silent-end check failed", { cause }).pipe(Effect.as(false)),
