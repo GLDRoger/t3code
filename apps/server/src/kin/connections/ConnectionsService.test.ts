@@ -1871,6 +1871,7 @@ describe("KinConnections sending", () => {
           if (stale?._tag !== "stale" || stale.fresh === undefined) return assert.fail("not stale");
           assert.include(stale.reason, "changed since this card was made");
           const fresh = yield* connections.freshAsk(orgId, stale.fresh, 2);
+          if (fresh === undefined) return assert.fail("no fresh card");
           assert.strictEqual(fresh.card.send.attachments[0]!.bytes, PDF(2).length);
           yield* fresh.bind("w-fresh");
           const again = yield* answer("w-fresh", ownerId, true);

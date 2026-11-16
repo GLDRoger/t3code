@@ -251,7 +251,7 @@ export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (i
 
 /** Payment days written in a client's terms, such as "Net 30" or "15 days"; undefined if none. */
 export const termsDays = (terms: string | null | undefined) => {
-  const found = /(?:net\s*(\d{1,3}))|(?:(\d{1,3})\s*(?:days?|d)\b)/i.exec(terms ?? "");
+  const found = /(?:net\s*(\d{1,3}))|(?:(\d{1,3})[\s-]*(?:days?|d)\b)/i.exec(terms ?? "");
   const days = Number(found?.[1] ?? found?.[2]);
   return Number.isSafeInteger(days) && days >= 0 && days <= 365 ? days : undefined;
 };

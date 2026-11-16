@@ -383,9 +383,14 @@ export class KinConnections extends Context.Service<
       orgId: KinOrgId,
       stale: StaleAsk,
       now: number,
-    ) => Effect.Effect<FreshAsk, KinChatError>;
+    ) => Effect.Effect<FreshAsk | undefined, KinChatError>;
     /** After the tap commits: sends a confirmed ask, once. */
     readonly sendAsk: (orgId: KinOrgId, askId: string) => Effect.Effect<AskOutcome, KinChatError>;
+    /** At start: asks a restart caught sending, failed, each with its card and its mail again. */
+    readonly interruptedSends: (
+      orgId: KinOrgId,
+      before: number,
+    ) => Effect.Effect<ReadonlyArray<AskOutcome & { readonly widgetId: string }>, KinChatError>;
   }
 >()("t3/kin/connections/ConnectionsService/KinConnections") {}
 
@@ -1926,6 +1931,36 @@ const make = Effect.gen(function* () {
     }),
   );
 
+  /** Two asks carry one mail: the same document, or a reply in the same thread to the same people. */
+  const sameMail = (
+    a: { readonly payload: string; readonly entry: string | null },
+    b: { readonly payload: string; readonly entry: string | null },
+  ) => {
+    if (a.entry !== null && a.entry === b.entry) return true;
+    const one = Option.getOrUndefined(decodePrepared(a.payload));
+    const other = Option.getOrUndefined(decodePrepared(b.payload));
+    return (
+      one?._tag === "email" &&
+      other?._tag === "email" &&
+      one.threadId !== null &&
+      one.threadId === other.threadId &&
+      one.to.length === other.to.length &&
+      one.to.every((address) => other.to.includes(address))
+    );
+  };
+  /** Whether the agent asked for the same mail again after this ask: then that card stands. */
+  const superseded = Effect.fnUntraced(function* (orgId: KinOrgId, askId: string) {
+    const [ask] = yield* sql<{ payload: string; entry: string | null; at: number }>`SELECT
+        payload_json AS payload, entry_record_id AS entry, rowid AS at
+      FROM kin_connection_asks WHERE org_id = ${orgId} AND ask_id = ${askId}`;
+    if (ask === undefined) return false;
+    const later = yield* sql<{ payload: string; entry: string | null }>`SELECT
+        payload_json AS payload, entry_record_id AS entry FROM kin_connection_asks
+      WHERE org_id = ${orgId} AND rowid > ${ask.at} ORDER BY rowid LIMIT 50`;
+    return later.some((one) => sameMail(ask, one));
+  });
+  const REPLACED_SINCE = "The agent has put up a newer card for this mail since.";
+
   /**
    * An "Ask me" call runs nothing: what it would send is fixed, stored and shown whole on a card
    * in the owner's chat. Only the owner's tap on that card sends it (`answerAsk`, `sendAsk`).
@@ -2007,6 +2042,30 @@ const make = Effect.gen(function* () {
       VALUES (${turn.orgId}, ${askId}, ${row.connectionId}, ${tool.name}, ${tool.pinDigest},
         ${payload}, ${turn.agentId}, ${turn.wakeupId}, ${chat.chatId}, ${entryRecordId}, ${now})
       ON CONFLICT (org_id, ask_id) DO NOTHING`;
+    // A newer card for the same document, or the same thread and people, replaces the older,
+    // in the card's own transaction: no Confirm lands on the older once the newer shows.
+    const replaced: Array<string> = [];
+    const replaceOlder = Effect.fnUntraced(function* () {
+      const older = (yield* sql<{
+        askId: string;
+        widgetId: string;
+        payload: string;
+        entry: string | null;
+      }>`
+        SELECT ask_id AS "askId", widget_id AS "widgetId", payload_json AS payload,
+          entry_record_id AS entry FROM kin_connection_asks
+        WHERE org_id = ${turn.orgId} AND ask_id <> ${askId} AND state = 'open'
+          AND widget_id IS NOT NULL
+        ORDER BY proposed_at LIMIT 50`).filter((row) =>
+        sameMail({ payload, entry: entryRecordId }, row),
+      );
+      if (older.length === 0) return;
+      yield* sql`UPDATE kin_connection_asks SET state = 'stale',
+          reason = 'Replaced by a newer card.', decided_at = ${now}
+        WHERE org_id = ${turn.orgId} AND state = 'open'
+          AND ask_id IN ${sql.in(older.map((row) => row.askId))}`;
+      replaced.push(...older.map((row) => row.widgetId));
+    });
     yield* levelGate.ask(
       { ...turn, wakeupId: KinWakeupId.make(turn.wakeupId) },
       {
@@ -2023,43 +2082,10 @@ const make = Effect.gen(function* () {
       (widget) =>
         sql`UPDATE kin_connection_asks SET widget_id = ${widget.widgetId}
           WHERE org_id = ${turn.orgId} AND ask_id = ${askId} AND widget_id IS NULL`.pipe(
-          Effect.asVoid,
+          Effect.andThen(replaceOlder()),
         ),
     );
-    // A newer card for the same document, or the same thread and people, replaces the older.
-    const sameTo = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) =>
-      a.length === b.length && a.every((one) => b.includes(one));
-    const older = (yield* sql<{
-      askId: string;
-      widgetId: string;
-      payload: string;
-      entry: string | null;
-    }>`
-      SELECT ask_id AS "askId", widget_id AS "widgetId", payload_json AS payload,
-        entry_record_id AS entry FROM kin_connection_asks
-      WHERE org_id = ${turn.orgId} AND ask_id <> ${askId} AND state = 'open'
-        AND widget_id IS NOT NULL
-      ORDER BY proposed_at LIMIT 50`).filter((row) => {
-      if (entryRecordId !== null && row.entry === entryRecordId) return true;
-      const before = Option.getOrUndefined(decodePrepared(row.payload));
-      return (
-        prepared._tag === "email" &&
-        before?._tag === "email" &&
-        prepared.threadId !== null &&
-        before.threadId === prepared.threadId &&
-        sameTo(before.to, prepared.to)
-      );
-    });
-    if (older.length > 0) {
-      yield* sql`UPDATE kin_connection_asks SET state = 'stale',
-          reason = 'Replaced by a newer card.', decided_at = ${now}
-        WHERE org_id = ${turn.orgId} AND state = 'open'
-          AND ask_id IN ${sql.in(older.map((row) => row.askId))}`;
-      yield* levelGate.closeReplaced(
-        turn,
-        older.map((row) => row.widgetId),
-      );
-    }
+    if (replaced.length > 0) yield* levelGate.closeReplaced(turn, replaced);
     yield* record(turn, { ...entry, status: "awaiting_approval" });
     return { note: ASKED };
   });
@@ -2165,7 +2191,8 @@ const make = Effect.gen(function* () {
   const askRow = (sql: SqlClient.SqlClient, orgId: KinOrgId) => sql`SELECT k.ask_id AS "askId",
       k.connection_id AS "connectionId", k.tool_name AS "toolName", k.pin_digest AS "pinDigest",
       k.payload_json AS payload, k.agent_id AS "agentId", k.chat_id AS "chatId", k.state,
-      k.entry_record_id AS "entryRecordId", a.owner_person_id AS owner, l.thread_id AS "threadId"
+      k.entry_record_id AS "entryRecordId", a.owner_person_id AS owner, l.thread_id AS "threadId",
+      k.widget_id AS "widgetId"
     FROM kin_connection_asks k
     JOIN kin_agents a ON a.org_id = k.org_id AND a.agent_id = k.agent_id
     JOIN kin_leads l ON l.org_id = k.org_id AND l.agent_id = k.agent_id
@@ -2231,13 +2258,16 @@ const make = Effect.gen(function* () {
                 ? null
                 : "The attached document changed since this card was made, so nothing was sent. A fresh card is below.";
       if (reason !== null) {
-        yield* decide("stale", reason);
+        const again = reason.endsWith("A fresh card is below.");
+        const newer = again && (yield* superseded(input.orgId, row.askId));
+        const told = newer ? reason.replace("A fresh card is below.", REPLACED_SINCE) : reason;
+        yield* decide("stale", told);
         return {
           _tag: "stale" as const,
           askId: row.askId,
-          reason,
+          reason: told,
           fresh:
-            prepared?._tag === "email" && reason.endsWith("A fresh card is below.")
+            prepared?._tag === "email" && again && !newer
               ? {
                   prepared,
                   row,
@@ -2259,6 +2289,8 @@ const make = Effect.gen(function* () {
     stale: StaleAsk,
     now: number,
   ) {
+    // A correction the agent made meanwhile stands; the older mail does not come back beside it.
+    if (yield* superseded(orgId, stale.row.askId)) return undefined;
     const attachments = yield* Effect.forEach(stale.prepared.attachments, (one) =>
       attachmentOf(orgId, one.key).pipe(provideSql),
     );
@@ -2361,6 +2393,8 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.result);
     if (sent._tag === "Failure") {
       const after = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
+      if (prepared._tag === "email" && (yield* superseded(orgId, askId)))
+        return yield* finish("failed", `Kin couldn't send it. ${REPLACED_SINCE}`, null);
       if (after?.state === "needs_sign_in" && prepared._tag === "email") {
         const failed = yield* finish(
           "failed",
@@ -2372,13 +2406,22 @@ const make = Effect.gen(function* () {
           fresh: { prepared, row, label: after.label, account: after.accountLabel },
         };
       }
-      return yield* finish(
-        "failed",
+      const why =
         isChatError(sent.failure) || isGatewayError(sent.failure)
           ? sent.failure.message
-          : "Kin couldn't send it.",
-        null,
-      );
+          : "Kin couldn't send it.";
+      if (prepared._tag !== "email") return yield* finish("failed", why, null);
+      // A failed send never loses the mail: it comes back on a card for another Confirm.
+      const failed = yield* finish("failed", `${why} The same mail is below to try again.`, null);
+      return {
+        ...failed,
+        fresh: {
+          prepared,
+          row,
+          label: after?.label ?? connection.label,
+          account: after?.accountLabel ?? connection.accountLabel,
+        },
+      };
     }
     const done = yield* finish("sent", null, sent.success);
     if (prepared._tag === "email" && Option.isSome(records))
@@ -2410,6 +2453,54 @@ const make = Effect.gen(function* () {
         ),
       );
     return done;
+  }, settle);
+
+  /**
+   * A restart drops the send that a Confirm started, and nothing would finish it. Whether the
+   * provider took it is unknown, so it fails and the same mail comes back for another Confirm.
+   */
+  const interruptedSends = Effect.fn("KinConnections.interruptedSends")(function* (
+    orgId: KinOrgId,
+    before: number,
+  ) {
+    const rows = yield* sql<AskRow & { readonly widgetId: string | null }>`${askRow(sql, orgId)}
+      AND k.state = 'sending' AND k.decided_at < ${before}
+      ORDER BY k.decided_at, k.ask_id`;
+    const now = yield* Clock.currentTimeMillis;
+    const outcomes: Array<AskOutcome & { readonly widgetId: string }> = [];
+    for (const row of rows) {
+      const prepared = Option.getOrUndefined(decodePrepared(row.payload));
+      const connection = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
+      const email =
+        prepared?._tag === "email" &&
+        connection !== undefined &&
+        !(yield* superseded(orgId, row.askId));
+      const reason = email
+        ? "Kin restarted while sending this, so it may or may not have gone. Check the account's sent mail before you confirm the same mail below."
+        : "Kin restarted while sending this, so it may or may not have gone.";
+      const [moved] = yield* sql<{ askId: string }>`UPDATE kin_connection_asks
+          SET state = 'failed', reason = ${reason}, done_at = ${now}
+        WHERE org_id = ${orgId} AND ask_id = ${row.askId} AND state = 'sending'
+        RETURNING ask_id AS "askId"`;
+      if (moved === undefined || row.widgetId === null) continue;
+      outcomes.push({
+        widgetId: row.widgetId,
+        state: "failed",
+        reason,
+        ...(email
+          ? {
+              fresh: {
+                prepared,
+                row,
+                label: connection.label,
+                account: connection.accountLabel,
+              },
+            }
+          : {}),
+      });
+    }
+    if (outcomes.length > 0) yield* touched(orgId);
+    return outcomes;
   }, settle);
 
   const offer = leadOp("offer", (scope, input: typeof KinConnectionOfferInput.Type) =>
@@ -2572,6 +2663,7 @@ const make = Effect.gen(function* () {
     answerAsk,
     freshAsk,
     sendAsk,
+    interruptedSends,
   });
 });
 
