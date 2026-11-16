@@ -1,6 +1,5 @@
 import type { KinAgentId, KinOrgId, ThreadId } from "@t3tools/contracts";
 import * as Config from "effect/Config";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -19,7 +18,8 @@ import { HtmlToolkit } from "../../mcp/toolkits/html/tools.ts";
 import { AttachmentToolkit } from "../../mcp/toolkits/attachment/tools.ts";
 import { EnvironmentToolkit } from "../../mcp/toolkits/environment/tools.ts";
 import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
-import { KinServer } from "../KinServer.ts";
+import { ServerConfig } from "../../config.ts";
+import { toolDirectories } from "../gendocs/toolchain.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { aborted, effectiveAudience, SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { outsideRead } from "./OutsideContent.ts";
@@ -47,13 +47,6 @@ const t3Tools: ReadonlySet<string> = new Set(
 );
 /** Every tool T3's own endpoint serves; the Kin endpoint serves them too, mostly hidden. */
 const isT3Tool = (name: string) => t3Tools.has(name);
-
-/**
- * The one switch between Kin's worker path and the T3 path (repos-rethink design, slice 3): the
- * owner's GitHub is connected on this host. Then an agent's owner-only turns get a full session
- * and T3's tools, and `kin_delegate` is no longer offered; otherwise everything is as before.
- */
-const githubConnected = KinGitHubLogin.use((login) => login.connected());
 
 type Turn = { orgId: KinOrgId; agentId: KinAgentId; wakeupId: string };
 
@@ -137,28 +130,20 @@ const kinAppConfigured = Config.option(Config.String("KIN_GITHUB_APP_ID")).pipe(
 
 /**
  * What the Kin endpoint lists, per thread so every turn of it sends the same list (prompt cache).
- * Shared threads list only what shared turns may run; T3 tools need GitHub connected on an
- * owner-only thread, `kin_delegate` needs it not connected. `KinToolGate` still checks each call.
+ * Shared threads list only what shared turns may run; T3 tools show only on an owner-only thread;
+ * `kin_delegate` never shows, as longer work is a T3 delegated task. `KinToolGate` checks each call.
  */
-export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(
-  function* (name: string, threadId: ThreadId) {
-    const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
-    if (shared && !listedOnSharedThread(name)) return false;
-    if (isKinGitHubTool(name)) return yield* kinAppConfigured;
-    const t3 = isT3Tool(name);
-    if (!t3 && name !== "kin_delegate") return true;
-    if (t3 && !leadT3Tools.has(name)) return false;
-    const kin = yield* KinServer;
-    if (Option.isNone(kin.services)) return false;
-    const connected = yield* githubConnected.pipe(
-      Effect.provideService(KinGitHubLogin, Context.get(kin.services.value, KinGitHubLogin)),
-    );
-    return t3 ? connected : !connected;
-  },
-  Effect.catchCause((cause) =>
-    Effect.logWarning("Kin tool visibility failed; hiding", { cause }).pipe(Effect.as(false)),
-  ),
-);
+export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(function* (
+  name: string,
+  threadId: ThreadId,
+) {
+  const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
+  if (shared && !listedOnSharedThread(name)) return false;
+  if (isKinGitHubTool(name)) return yield* kinAppConfigured;
+  if (name === "kin_delegate") return false;
+  if (!isT3Tool(name)) return true;
+  return leadT3Tools.has(name) && !shared;
+});
 
 export const endpointVisibility = McpHttpServer.toolVisibility((name) =>
   Effect.gen(function* () {
@@ -173,15 +158,15 @@ export const sessionPolicyLayer = Layer.effect(
   Effect.gen(function* () {
     const login = yield* KinGitHubLogin;
     const sql = yield* SqlClient.SqlClient;
+    const config = yield* ServerConfig;
     return KinAgentSessionPolicy.of({
-      connected: login.connected,
       refusal: Effect.fn("KinAgentSessionPolicy.refusal")((threadId: ThreadId) =>
         fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ),
       delegated: Effect.fn("KinAgentSessionPolicy.delegated")((threadId: ThreadId) =>
         delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ),
-      ghDirectory: login.ghDirectory,
+      toolDirectories: [login.ghDirectory, ...toolDirectories(config.baseDir)],
     });
   }),
 );

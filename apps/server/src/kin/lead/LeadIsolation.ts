@@ -146,8 +146,8 @@ const leadOptions = (
 };
 
 /**
- * An owner-only turn with GitHub connected (repos-rethink slice 3): Claude Code's own tools, as any
- * T3 thread has, with the pinned `gh` first on PATH. Its hook still asks per call: a turn others
+ * An owner-only turn: Claude Code's own tools, as any T3 thread has, with Kin's pinned `gh` and
+ * Typst first on PATH. Its hook still asks per call: a turn others
  * can read, one that read outside text, or a run Kin hasn't adopted gets only the confined tools.
  * A task the lead delegated (`lead: false`) gets the same, under T3's own system prompt.
  */
@@ -157,7 +157,7 @@ const fullOptions = (
     readonly hook: HookCallbackMatcher;
     readonly auth: AuthSettings;
     readonly environment: NodeJS.ProcessEnv;
-    readonly ghDirectory: string;
+    readonly toolDirectories: ReadonlyArray<string>;
     readonly lead: boolean;
   },
 ) => {
@@ -182,7 +182,7 @@ const fullOptions = (
         }),
     env: {
       ...environment,
-      PATH: [session.ghDirectory, environment.PATH].filter(Boolean).join(":"),
+      PATH: [...session.toolDirectories, environment.PATH].filter(Boolean).join(":"),
       ENABLE_TOOL_SEARCH: loading.search,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     },
@@ -282,7 +282,7 @@ export const claudeQueryRunner = <E, R>(
                   ),
                   auth: yield* confiner.ownerAuth(input.options.env),
                   environment: yield* HostProcess.Environment,
-                  ghDirectory: policy.value.ghDirectory,
+                  toolDirectories: policy.value.toolDirectories,
                   lead: false,
                 }),
               },
@@ -294,7 +294,7 @@ export const claudeQueryRunner = <E, R>(
           const shared = input.threadId.startsWith(SHARED_THREAD_PREFIX);
           const root = shared ? undefined : yield* confiner.root(cwd);
           const attachments = yield* confiner.root(config.attachmentsDir);
-          if (!shared && Option.isSome(policy) && (yield* policy.value.connected()))
+          if (!shared && Option.isSome(policy))
             return yield* runner.open({
               ...input,
               options: {
@@ -312,7 +312,7 @@ export const claudeQueryRunner = <E, R>(
                   ),
                   auth: yield* confiner.ownerAuth(input.options.env),
                   environment: yield* HostProcess.Environment,
-                  ghDirectory: policy.value.ghDirectory,
+                  toolDirectories: policy.value.toolDirectories,
                   lead: true,
                 }),
               },

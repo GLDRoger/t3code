@@ -9,13 +9,11 @@ import type * as Effect from "effect/Effect";
 export class KinAgentSessionPolicy extends Context.Service<
   KinAgentSessionPolicy,
   {
-    /** The switch: the owner's GitHub is connected, so owner-only turns get the full session. */
-    readonly connected: () => Effect.Effect<boolean>;
     /** Why the thread's turn refuses built-in tools now (the model reads it); none admits them. */
     readonly refusal: (threadId: ThreadId) => Effect.Effect<string | undefined>;
     /** Whether the thread is a task delegated, at any depth, from a lead's thread. */
     readonly delegated: (threadId: ThreadId) => Effect.Effect<boolean>;
-    /** First on the session's PATH: the pinned `gh`. */
-    readonly ghDirectory: string;
+    /** First on the session's PATH: the pinned `gh` and Typst. */
+    readonly toolDirectories: ReadonlyArray<string>;
   }
 >()("t3/kin/lead/sessionPolicy/KinAgentSessionPolicy") {}
