@@ -20,6 +20,7 @@
 // run's summary.
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -218,6 +219,35 @@ export const docReaderTests = (files: ReadonlyArray<string>) =>
     ? ["apps/server/src/cloud/ConnectReachability.test.ts"]
     : [];
 
+const KIN_SERVER = "apps/server/src/kin/";
+// Reads every Kin server source, so no file beside a change selects it.
+const KIN_SCANNERS = ["apps/server/src/kin/work/counted.test.ts"];
+
+/**
+ * Kin server tests that import a changed Kin server source directly, plus the source scanners.
+ * Kin's behaviour is mostly tested away from the file that owns it (a provision change shows in
+ * the refresh hub's test), and one import level stays a few dozen files at most.
+ */
+export const kinImporterTests = (
+  files: ReadonlyArray<string>,
+  kinTests: ReadonlyArray<{ readonly path: string; readonly text: string }>,
+) => {
+  const changed = files.filter(
+    (file) => file.startsWith(KIN_SERVER) && CODE.test(file) && !TEST.test(file),
+  );
+  if (changed.length === 0) return [];
+  const imports = (test: { path: string; text: string }) =>
+    [...test.text.matchAll(/\bfrom\s+"(\.{1,2}\/[^"]+)"/g)].map((match) =>
+      NodePath.posix.join(NodePath.posix.dirname(test.path), match[1]!),
+    );
+  return [
+    ...KIN_SCANNERS,
+    ...kinTests
+      .filter((test) => imports(test).some((target) => changed.includes(target)))
+      .map((test) => test.path),
+  ];
+};
+
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
   readonly concurrency: Option.Option<number>;
@@ -345,6 +375,15 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   // Kin's wire budget reads the whole read path, so any Kin server, contract or client file moves it.
   if (files.some((file) => KIN_WIRE.test(file)))
     tests.add("apps/server/src/kin/wireBudget.test.ts");
+  if (files.some((file) => file.startsWith(KIN_SERVER))) {
+    const kinTests = yield* Effect.forEach(
+      (yield* fs.readDirectory(inRoot(KIN_SERVER), { recursive: true }))
+        .filter((entry) => TEST.test(entry))
+        .map((entry) => path.join(KIN_SERVER, entry)),
+      (file) => fs.readFileString(inRoot(file)).pipe(Effect.map((text) => ({ path: file, text }))),
+    );
+    for (const test of kinImporterTests(files, kinTests)) tests.add(test);
+  }
   const { vitestTests, nodeTests } = splitTests(tests);
 
   // React Compiler coverage compiles every client source file, so run only the
