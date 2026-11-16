@@ -94,3 +94,28 @@ export const unkeptPromise = Effect.fn("KinReplyPromises.unkept")(function* (wak
     LIMIT 1`;
   return kept.length > 0 ? undefined : named;
 });
+
+const CARD = /\b(?:card|tap confirm)\b/i;
+
+/**
+ * A wake-up's reply pointed at a card ("the card below", "tap Confirm") and the wake-up posted
+ * none, as when its turn failed after replying and before the card.
+ */
+export const missingCard = Effect.fn("KinReplyPromises.missingCard")(function* (wake: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ agentId: string; threadId: string | null; startedAt: number }>`
+    SELECT agent_id AS "agentId", thread_id AS "threadId", started_at AS "startedAt"
+    FROM kin_wakeups WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}`;
+  if (row === undefined || row.threadId === null) return false;
+  const said = yield* sql<{ body: string; card: number }>`SELECT body,
+      widget_id IS NOT NULL AS card FROM kin_messages
+    WHERE org_id = ${wake.orgId} AND author_kind = 'agent' AND author_agent_id = ${row.agentId}
+      AND author_thread_id = ${row.threadId} AND created_at >= ${iso(row.startedAt)}
+    ORDER BY seq`;
+  return (
+    said.some((one) => one.card === 0 && CARD.test(one.body)) && !said.some((one) => one.card === 1)
+  );
+});

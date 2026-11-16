@@ -201,15 +201,15 @@ export class KinEventQueue extends Context.Service<
       PersistenceSqlError | PersistenceDecodeError
     >;
     /**
-     * A failed wake-up's events are retried only when it did nothing anyone could see: no
-     * message, staged memory, worker or action request. `stranded` counts the
-     * events that were not, so the runner owes the chat an honest notice; `retried` counts the
-     * events requeued for another try, and `failedEventIds` those that used their last.
+     * A failed wake-up's events retry only when it showed nothing. Of the rest, `stranded`
+     * had no reply (the chat is owed a notice) and `replied` were already answered; `retried`
+     * counts requeued events and `failedEventIds` those that used their last try.
      */
     readonly finish: (input: typeof FinishInput.Type) => Effect.Effect<
       {
         readonly failedEventIds: ReadonlyArray<KinEventId>;
         readonly stranded: number;
+        readonly replied: number;
         readonly retried: number;
       },
       PersistenceSqlError | PersistenceDecodeError
@@ -623,8 +623,10 @@ const make = Effect.gen(function* () {
             input.eventIds === undefined ? undefined : yield* encodeEventIds(input.eventIds);
           const rows = yield* sql<{ event_id: string; state: string }>`
           UPDATE kin_events SET attempts = attempts + ${input.countAttempt ? 1 : 0},
-            state = CASE WHEN attempts + ${input.countAttempt ? 1 : 0} >= 3 THEN 'failed' ELSE 'queued' END,
-            wakeup_id = NULL, not_before = ${notBefore}, budget_deferred = ${input.budgetDeferred === true ? 1 : 0}
+            state = CASE WHEN replied_at IS NOT NULL THEN 'done'
+              WHEN attempts + ${input.countAttempt ? 1 : 0} >= 3 THEN 'failed' ELSE 'queued' END,
+            wakeup_id = CASE WHEN replied_at IS NULL THEN NULL ELSE wakeup_id END,
+            not_before = ${notBefore}, budget_deferred = ${input.budgetDeferred === true ? 1 : 0}
           WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
             AND (${ids ?? null} IS NULL OR event_id IN (SELECT value FROM json_each(${ids ?? null})))
             AND EXISTS (SELECT 1 FROM kin_wakeups WHERE org_id = ${input.orgId}
@@ -635,7 +637,7 @@ const make = Effect.gen(function* () {
             AND NOT EXISTS (SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
               AND wakeup_id = ${input.wakeupId} AND state = 'claimed')`;
           return {
-            released: rows.length,
+            released: rows.filter((row) => row.state !== "done").length,
             failedEventIds: rows
               .filter((row) => row.state === "failed")
               .map((row) => KinEventId.make(row.event_id))
@@ -656,7 +658,7 @@ const make = Effect.gen(function* () {
       const result = yield* sql.withTransaction(
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
-          const none = { failedEventIds: [], stranded: 0, retried: 0 };
+          const none = { failedEventIds: [], stranded: 0, replied: 0, retried: 0 };
           // Aborted for its audience (`abortChatTurns`): whatever it ran to, a fresh
           // wake-up answers its events, without spending an attempt or telling anyone.
           const requeued = yield* sql`UPDATE kin_wakeups SET status = 'released', ended_at = ${now}
@@ -695,10 +697,15 @@ const make = Effect.gen(function* () {
             return none;
           }
           if (visible !== undefined) {
-            const rows = yield* sql`UPDATE kin_events SET attempts = attempts + 1, state = 'failed'
+            // A message whose reply posted is answered, whatever failed after.
+            const rows = yield* sql<{
+              replied: number;
+            }>`UPDATE kin_events SET attempts = attempts + 1,
+              state = CASE WHEN replied_at IS NULL THEN 'failed' ELSE 'done' END
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'
-            RETURNING event_id`;
-            return { failedEventIds: [], stranded: rows.length, retried: 0 };
+            RETURNING replied_at IS NOT NULL AS replied`;
+            const replied = rows.filter((row) => row.replied === 1).length;
+            return { failedEventIds: [], stranded: rows.length - replied, replied, retried: 0 };
           }
           const rows = yield* sql<{
             event_id: string;
@@ -714,6 +721,7 @@ const make = Effect.gen(function* () {
               .map((row) => KinEventId.make(row.event_id))
               .sort(),
             stranded: 0,
+            replied: 0,
             retried: rows.filter((row) => row.state === "queued").length,
           };
         }),
@@ -738,6 +746,10 @@ const make = Effect.gen(function* () {
         RETURNING wakeup_id
       `;
           if (unfinished.length === 0) return 0;
+          // A message whose reply already posted is done: it is never answered twice.
+          yield* sql`UPDATE kin_events SET state = 'done'
+        WHERE wakeup_id = ${wakeupId} AND org_id = ${orgId} AND state = 'claimed'
+          AND replied_at IS NOT NULL`;
           const rows = yield* sql`
         UPDATE kin_events SET state = 'queued', wakeup_id = NULL
         WHERE wakeup_id = ${wakeupId} AND org_id = ${orgId} AND state = 'claimed'
