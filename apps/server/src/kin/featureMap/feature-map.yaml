@@ -47,6 +47,7 @@ features:
       - apps/server/src/kin/widgets/registry.test.ts
       - apps/server/src/kin/visualSeal.test.ts
       - packages/client-runtime/src/kin/kinCardPresentation.test.ts
+      - .agents/skills/verify-kin/scripts/card-gallery.sh
 
   - id: waiting-on-you
     name: Waiting on you
@@ -151,6 +152,7 @@ features:
       - .agents/skills/verify-kin/scripts/send-card-once.sh
       - .agents/skills/verify-kin/scripts/overdue-invoice-reminder.sh
       - packages/client-runtime/src/kin/kinCardPresentation.test.ts
+      - .agents/skills/verify-kin/scripts/card-gallery.sh
 
   - id: statements
     name: Read a bank statement and match its rows
@@ -245,7 +247,7 @@ features:
   - id: task-new
     name: New task
     tab: tasks
-    web: [tasks, dialog:New task]
+    web: [tasks, "?open", dialog:New task]
     phone: [tab:tasks, KinWorkNew]
     form: true
     roles: { owner: both, co_owner: both, lead: both, member: both }
@@ -315,8 +317,11 @@ features:
     tab: money
     web: [money]
     phone: [tab:money]
-    roles: { owner: both, co_owner: both, lead: both, member: none }
-    note: A lead reaches Money for the projects they lead; members never see an amount.
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A lead reaches Money for the projects they lead. A member reaches it read-only once the owner
+      turns on Can see Money on their teammate sheet, and then sees only what is shared with the
+      team; without it, no amount.
     tools: [money_summary, money_query]
     proof:
       - apps/server/src/kin/work/money.test.ts
@@ -436,7 +441,7 @@ features:
   - id: search
     name: Search everything
     tab: money
-    web: [money, dialog:Search Work]
+    web: [money, "?open"]
     phone: [tab:money, KinSearch]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-

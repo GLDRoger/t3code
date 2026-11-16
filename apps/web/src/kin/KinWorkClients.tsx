@@ -665,7 +665,9 @@ function ClientPage(
           }
         >
           {view.contacts.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{KIN_CLIENTS.noContacts}</p>
+            <p className="text-sm text-muted-foreground">
+              {canChange ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+            </p>
           ) : (
             <>
               <ul className="flex flex-col gap-3">

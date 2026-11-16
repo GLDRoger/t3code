@@ -69,6 +69,8 @@ export type AgentIdentity = {
   // Absent on the reply bridge's identity, whose authority is `wakeupId`'s running row instead.
   readonly caller?: McpThreadCaller;
   readonly wakeupId?: KinWakeupId;
+  /** Kin itself posts for the agent outside a turn, as when a failed send's mail comes back. */
+  readonly hostPosted?: true;
   readonly _tag: "agent";
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;

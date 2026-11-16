@@ -33,7 +33,7 @@ import {
   kinPendingRefKey,
   type KinDocAsk,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import { KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import {
   EnvironmentId,
@@ -561,7 +561,17 @@ function KinDocBody(
                 )}
               </View>
             }
-            {doc.archived || doc.sensitive || doc.sensitiveInherited === true ? null : (
+            {doc.archived ||
+            doc.sensitive ||
+            doc.sensitiveInherited === true ? null : doc.company === true ? (
+              <ListSection title={KIN_DOC_COMPANY.label}>
+                <View className="px-4 py-3">
+                  <Text textRole="body" className="text-foreground-muted">
+                    {KIN_DOC_COMPANY.note}
+                  </Text>
+                </View>
+              </ListSection>
+            ) : (
               <ListSection>
                 <KinWorkShareRow
                   environmentId={environmentId}

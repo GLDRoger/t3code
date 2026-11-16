@@ -1,4 +1,4 @@
-import { Outlet } from "@tanstack/react-router";
+import { Outlet, useSearch } from "@tanstack/react-router";
 
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset } from "../components/ui/sidebar";
@@ -12,6 +12,7 @@ import { KinNewLeadButton } from "./KinNewLeadButton";
 import { startKinOutbox } from "./kinOutbox";
 import { KinPicturesHost } from "./kinPictures";
 import { KinProfileSheetHost } from "./KinProfileSheet";
+import { KinOwnerSettingsNotice } from "./KinSettingsView";
 
 /** Kin's page: the open chat. The chat list is the app sidebar (see `KinSidebar`). */
 export function KinPage() {
@@ -32,6 +33,13 @@ export function KinPage() {
  * a wide one already shows it in the sidebar.
  */
 export function KinNoChat() {
+  const { settings } = useSearch({ from: "/_chat/kin/" });
+  if (settings === "owner")
+    return (
+      <div className="flex min-h-0 flex-1">
+        <KinOwnerSettingsNotice />
+      </div>
+    );
   return (
     <>
       <WorkspacePageHeader electron={isElectron}>

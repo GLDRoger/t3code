@@ -1616,7 +1616,7 @@ describe("receipts", () => {
         for (const line of [
           "Client: Invented Acme",
           "Amount: ₹500.00",
-          "Received on: 2026-11-05",
+          "Received on: Thu, 5 Nov 2026",
           "Set against: no invoice",
           "Agent's note: towards Website redesign, by upi",
         ])

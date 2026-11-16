@@ -10,7 +10,7 @@ import {
 import {
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
-  kinChoiceAnswerText,
+  kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
   type KinChoiceCardView,
@@ -404,21 +404,16 @@ function KinChoiceCard(props: {
     setSwitchProblem(failed);
   };
 
-  const answerText =
-    choice.answer !== null
-      ? kinChoiceAnswerText(choice.answer, props.viewerPersonId)
-      : sentOption !== undefined
-        ? `You chose “${sentOption.label}”`
-        : null;
+  const answered = kinChoiceAnswered(choice, props.viewerPersonId, sentOption?.label ?? null);
 
   return (
-    <CardFrame label={kinChoiceAccessibilityLabel(choice, answerText)}>
+    <CardFrame label={kinChoiceAccessibilityLabel(choice, answered?.text ?? null)}>
       <p className="font-medium text-foreground">{choice.question}</p>
       {choice.send !== null ? (
         <KinSendDetail
           send={choice.send}
           pickFrom={
-            phase === "open" && canAct && answerText === null && choice.send.fromChoices.length > 1
+            phase === "open" && canAct && answered === null && choice.send.fromChoices.length > 1
               ? { busy: switching, problem: switchProblem, pick: (id) => void pickFrom(id) }
               : null
           }
@@ -429,8 +424,10 @@ function KinChoiceCard(props: {
       {choice.image === null ? null : (
         <KinChoiceImage environmentId={environmentId} image={choice.image} />
       )}
-      {answerText !== null ? (
-        <p className="text-xs font-medium text-muted-foreground">{answerText}</p>
+      {answered !== null ? (
+        answered.text === null ? null : (
+          <p className="text-xs font-medium text-muted-foreground">{answered.text}</p>
+        )
       ) : phase === "expired" ? (
         <p className="text-xs text-muted-foreground">{choice.closedText}</p>
       ) : !canAct ? (

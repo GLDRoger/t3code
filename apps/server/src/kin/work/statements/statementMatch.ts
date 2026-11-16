@@ -13,6 +13,8 @@ export type InvoiceCandidate = {
   readonly currency: string;
   readonly amountMinor: number;
   readonly paidMinor: number;
+  /** Its amount and the payments it has from outside this statement (`seenOf`). */
+  readonly seen: string;
   /** GST on it, when the invoice says: TDS is deducted on the amount before tax. */
   readonly taxMinor: number | null;
   readonly issued: string | null;
@@ -47,6 +49,10 @@ export type PaymentCandidate = {
 /** A past expense, to name a new one the way the owner named the last. */
 export type KnownVendor = { readonly vendor: string; readonly category: string | null };
 
+/** An invoice's amount and its live payments by id, outside one statement: what a match stood on. */
+export const seenOf = (amountMinor: number, paymentIds: ReadonlyArray<string>) =>
+  `${amountMinor}:${paymentIds.toSorted().join(",")}`;
+
 export type Candidate = {
   readonly kind: "invoice" | "expense";
   readonly recordId: string;
@@ -58,6 +64,8 @@ export type Candidate = {
   /** The TDS a client deducted, when `fit` is tds. */
   readonly tdsMinor?: number;
   readonly paymentId?: string;
+  /** An invoice's `seen` when matched: a confirm once it moved records nothing. Older reviews lack it. */
+  readonly seen?: string;
   readonly score: number;
   readonly why: ReadonlyArray<string>;
 };
@@ -200,6 +208,7 @@ const invoiceCandidate = (
     key: invoice.key,
     title: invoice.title,
     fit,
+    seen: invoice.seen,
     ...(tdsMinor === undefined ? {} : { tdsMinor }),
     score,
     why,
@@ -450,6 +459,7 @@ const openInvoices = (
         key: invoice.key,
         title: invoice.title,
         fit: "open",
+        seen: invoice.seen,
         score: Math.round(20 * named),
         why: ["an open invoice"],
       };

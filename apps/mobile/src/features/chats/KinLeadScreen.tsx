@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import {
   kinDomainLabel,
+  KIN_LEAD_EVERYONE,
   kinLeadAccessCandidates,
   kinLeadAccessChanged,
   kinLeadOwnerSeesLine,
@@ -390,9 +391,12 @@ function KinLeadAccess(props: {
     lead.orgId,
   );
   // What was last read stays up while a change is read again.
-  const allowed = Option.getOrNull(AsyncResult.value(access))?.people ?? null;
+  const read = Option.getOrNull(AsyncResult.value(access));
+  const allowed = read?.people ?? null;
+  // The team agent is everyone's: no one is added or removed there.
+  const everyone = read?.everyone === true;
   const candidates = kinLeadAccessCandidates(
-    Option.getOrNull(AsyncResult.value(people))?.people ?? [],
+    everyone ? [] : (Option.getOrNull(AsyncResult.value(people))?.people ?? []),
     allowed ?? [],
     personId,
   );
@@ -442,7 +446,7 @@ function KinLeadAccess(props: {
   const footer =
     note !== null
       ? note.text
-      : allowed === null || allowed.length === 0
+      : allowed === null || everyone || allowed.length === 0
         ? undefined
         : intro === ""
           ? "They see its name only. Add what teammates see when you edit this agent."
@@ -455,10 +459,10 @@ function KinLeadAccess(props: {
             {AsyncResult.isFailure(access) ? "Couldn't load who can message it." : "Loading…"}
           </Text>
         </View>
-      ) : allowed.length === 0 ? (
+      ) : everyone || allowed.length === 0 ? (
         <View className="px-4 py-3">
           <Text textRole="body" className="text-foreground-muted">
-            Only you.
+            {everyone ? KIN_LEAD_EVERYONE : "Only you."}
           </Text>
         </View>
       ) : (

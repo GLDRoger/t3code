@@ -440,33 +440,37 @@ export function KinWorkMoney(
           </KinWorkSection>
         </div>
         <div className="flex flex-wrap gap-2 px-2">
-          <Menu>
-            <MenuTrigger render={<Button size="sm" variant="ghost" />}>
-              <PlusIcon />
-              {KIN_MONEY.add}
-            </MenuTrigger>
-            <MenuPopup align="start" side="top">
-              {goals.canSave ? (
-                <MenuItem onClick={() => setAdding("goal")}>{KIN_GOALS.add}</MenuItem>
-              ) : null}
-              {canBudget ? (
-                <MenuItem onClick={() => setAdding("budget")}>{KIN_BUDGETS.add}</MenuItem>
-              ) : null}
-              {canReceipt ? (
-                <MenuItem onClick={() => setAdding("receipt")}>{KIN_RECEIPTS.newReceipt}</MenuItem>
-              ) : null}
-              {agent === null ? null : (
-                <MenuItem onClick={() => agent.ask(KIN_SUBSCRIPTIONS.addMessage)}>
-                  {KIN_SUBSCRIPTIONS.add}
-                </MenuItem>
-              )}
-              {agent === null ? null : (
-                <MenuItem onClick={() => agent.ask(KIN_QUOTES.askMessage)}>
-                  {KIN_MONEY.newQuote}
-                </MenuItem>
-              )}
-            </MenuPopup>
-          </Menu>
+          {!goals.canSave && !canBudget && !canReceipt && agent === null ? null : (
+            <Menu>
+              <MenuTrigger render={<Button size="sm" variant="ghost" />}>
+                <PlusIcon />
+                {KIN_MONEY.add}
+              </MenuTrigger>
+              <MenuPopup align="start" side="top">
+                {goals.canSave ? (
+                  <MenuItem onClick={() => setAdding("goal")}>{KIN_GOALS.add}</MenuItem>
+                ) : null}
+                {canBudget ? (
+                  <MenuItem onClick={() => setAdding("budget")}>{KIN_BUDGETS.add}</MenuItem>
+                ) : null}
+                {canReceipt ? (
+                  <MenuItem onClick={() => setAdding("receipt")}>
+                    {KIN_RECEIPTS.newReceipt}
+                  </MenuItem>
+                ) : null}
+                {agent === null ? null : (
+                  <MenuItem onClick={() => agent.ask(KIN_SUBSCRIPTIONS.addMessage)}>
+                    {KIN_SUBSCRIPTIONS.add}
+                  </MenuItem>
+                )}
+                {agent === null ? null : (
+                  <MenuItem onClick={() => agent.ask(KIN_QUOTES.askMessage)}>
+                    {KIN_MONEY.newQuote}
+                  </MenuItem>
+                )}
+              </MenuPopup>
+            </Menu>
+          )}
           {rates === null ? null : (
             <Button size="sm" variant="ghost" onClick={() => setRatesOpen(true)}>
               <ArrowLeftRightIcon />
