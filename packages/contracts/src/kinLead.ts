@@ -231,8 +231,15 @@ export const KinAgentCharacterSetInput = Schema.Struct({
 export type KinAgentCharacterSetInput = typeof KinAgentCharacterSetInput.Type;
 export const KinAgentDefaultsInput = Schema.Struct({ orgId: KinOrgId });
 export type KinAgentDefaultsInput = typeof KinAgentDefaultsInput.Type;
-/** The models new agents start on; null until the owner chooses (then the first agent's). */
-export const KinAgentDefaults = Schema.Struct({ orgId: KinOrgId, models: Schema.NullOr(KinAgentModels) });
+/**
+ * The models new agents start on: the owner's choice, else the first live agent's (`chosen` false);
+ * null when there is neither.
+ */
+export const KinAgentDefaults = Schema.Struct({
+  orgId: KinOrgId,
+  models: Schema.NullOr(KinAgentModels),
+  chosen: Schema.Boolean,
+});
 export type KinAgentDefaults = typeof KinAgentDefaults.Type;
 export const KinAgentDefaultsSetInput = Schema.Struct({ orgId: KinOrgId, models: KinAgentModels });
 export type KinAgentDefaultsSetInput = typeof KinAgentDefaultsSetInput.Type;

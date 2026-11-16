@@ -6,28 +6,14 @@ import {
   KIN_CLEAR_CHAT_TITLE,
   kinClearChatBody,
 } from "@t3tools/client-runtime/kin/kinClearChat";
-import { kinRestoreCopy, kinRetiredWhen } from "@t3tools/client-runtime/kin/kinAgentRetire";
+import { kinRetiredWhen } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import {
   kinDomainLabel,
-  KIN_LEAD_EVERYONE,
-  kinLeadAccessCandidates,
-  kinLeadAccessChanged,
   kinLeadOwnerSeesLine,
-  kinLeadAccessProblem,
-  kinLeadModelName,
-  kinLeadTrackingDetail,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import type { KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type {
-  EnvironmentId,
-  KinChatId,
-  KinLeadAccessResult,
-  KinLeadContact,
-  KinLeadProfile,
-  KinPersonId,
-} from "@t3tools/contracts";
-import * as Option from "effect/Option";
+import type { EnvironmentId, KinChatId, KinLeadContact, KinLeadProfile } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
 
@@ -41,7 +27,6 @@ import {
   AlertDialogTitle,
 } from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Label } from "../components/ui/label";
 import {
   Sheet,
@@ -51,14 +36,11 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { Switch } from "../components/ui/switch";
-import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
-import { KinRestoreAgent, KinRetireAgent } from "./KinAgentRetire";
+import { KinAgentDetails } from "./KinAgentPage";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { announceKinClearKept, useKinClearPreview } from "./useKinClearPreview";
-import { serverEnvironment } from "../state/server";
-import { kinLeadFormAtom } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";
 
 function Section(props: { readonly title: string; readonly children: React.ReactNode }) {
@@ -146,9 +128,11 @@ export function KinLeadSheet(props: {
                   {kinDomainLabel(about.lead.domain)}
                   {retired !== undefined
                     ? ` · ${kinRetiredWhen(retired.at, nowMs)}`
-                    : about.lead.working
-                      ? " · Working now"
-                      : ""}
+                    : about.lead.paused !== undefined
+                      ? " · Paused"
+                      : about.lead.working
+                        ? " · Working now"
+                        : ""}
                 </SheetDescription>
               ) : null}
             </div>
@@ -156,9 +140,10 @@ export function KinLeadSheet(props: {
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
           {about.kind === "own" ? (
-            <KinOwnLead
-              lead={about.lead}
+            <KinAgentDetails
               environmentId={environmentId}
+              orgId={about.lead.orgId}
+              agentId={about.lead.agentId}
               personId={props.personId}
               activeAgents={props.activeAgents}
               onClose={() => props.onOpenChange(false)}
@@ -238,239 +223,5 @@ export function KinLeadSheet(props: {
         </AlertDialogPopup>
       </AlertDialog>
     </Sheet>
-  );
-}
-
-function KinOwnLead(props: {
-  readonly lead: KinLeadProfile;
-  readonly environmentId: EnvironmentId;
-  readonly personId: string | null;
-  readonly activeAgents: number;
-  readonly onClose: () => void;
-}) {
-  const { lead, environmentId } = props;
-  const isRetired = lead.retired !== undefined;
-  // A retired agent takes no changes; it is restored first.
-  const canEdit = useAtomValue(kinClient.leadUpdate.permissionAtom(environmentId)) && !isRetired;
-  const canShare = useAtomValue(kinClient.leadAllow.permissionAtom(environmentId)) && !isRetired;
-  const canRetire = useAtomValue(kinClient.leadRetire.permissionAtom(environmentId));
-  const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
-  const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
-  const target = { environmentId, orgId: lead.orgId, agentId: lead.agentId, name: lead.name };
-  return (
-    <>
-      {isRetired ? (
-        <Section title="Retired">
-          <p className="text-sm text-foreground">
-            {canRestore
-              ? kinRestoreCopy(lead.name).detail
-              : `${lead.name} is retired, so it won't see new messages.`}
-          </p>
-          {canRestore ? (
-            <div className="flex flex-col items-start gap-2">
-              <KinRestoreAgent agent={target} />
-            </div>
-          ) : null}
-        </Section>
-      ) : null}
-      <Section title="Responsible for">
-        <p className="whitespace-pre-line text-sm text-foreground">
-          {lead.charter.trim() === "" ? "Nothing written yet." : lead.charter}
-        </p>
-        {canEdit ? (
-          <Button
-            size="sm"
-            variant="outline"
-            className="self-start"
-            onClick={() => {
-              props.onClose();
-              appAtomRegistry.set(kinLeadFormAtom, { environmentId, orgId: lead.orgId, lead });
-            }}
-          >
-            Edit agent
-          </Button>
-        ) : null}
-      </Section>
-      {canShare ? (
-        <KinLeadAccess lead={lead} environmentId={environmentId} personId={props.personId} />
-      ) : null}
-      <Section title={isRetired ? "On hold" : "In hand"}>
-        {lead.tracking.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            {isRetired ? "Nothing is waiting on it." : "Nothing in hand right now."}
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {lead.tracking.map((item, index) => (
-              // Titles can repeat and items carry no id; the host's order is stable.
-              // oxlint-disable-next-line react/no-array-index-key
-              <li key={index} className="flex flex-col gap-0.5">
-                <span className="text-xs text-muted-foreground">{kinLeadTrackingDetail(item)}</span>
-                <span className="text-sm text-foreground">{item.title}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-      <Section title="Model">
-        <p className="text-sm text-foreground">{kinLeadModelName(lead.model, providers)}</p>
-      </Section>
-      {canRetire && !isRetired ? (
-        <Section title="Retire">
-          <KinRetireAgent agent={target} activeAgents={props.activeAgents} />
-        </Section>
-      ) : null}
-    </>
-  );
-}
-
-type AccessPerson = KinLeadAccessResult["people"][number];
-
-/** Who besides the owner can message this lead, and the way to add or remove a person. */
-function KinLeadAccess(props: {
-  readonly lead: KinLeadProfile;
-  readonly environmentId: EnvironmentId;
-  readonly personId: string | null;
-}) {
-  const { lead, environmentId } = props;
-  const target = { orgId: lead.orgId, agentId: lead.agentId };
-  const accessAtom = kinClient.leadAccess({ environmentId, input: target });
-  const access = useAtomValue(accessAtom);
-  const people = useAtomValue(kinClient.people({ environmentId, input: { orgId: lead.orgId } }));
-  const allow = useAtomCommand(kinClient.leadAllow, { reportFailure: false });
-  const disallow = useAtomCommand(kinClient.leadDisallow, { reportFailure: false });
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<{ readonly text: string; readonly failed: boolean } | null>(
-    null,
-  );
-  const [removing, setRemoving] = useState<AccessPerson | null>(null);
-  // What was last read stays up while a change is read again.
-  const read = Option.getOrNull(AsyncResult.value(access));
-  const allowed = read?.people ?? null;
-  // The team agent is everyone's: no one is added or removed there.
-  const everyone = read?.everyone === true;
-  const candidates = kinLeadAccessCandidates(
-    everyone ? [] : (Option.getOrNull(AsyncResult.value(people))?.people ?? []),
-    allowed ?? [],
-    props.personId,
-  );
-
-  const change = async (
-    person: { readonly personId: KinPersonId; readonly displayName: string },
-    on: boolean,
-  ) => {
-    if (busy) return;
-    setBusy(true);
-    setNote(null);
-    const input = { ...target, personId: person.personId };
-    const result = await (on ? allow : disallow)({ environmentId, input });
-    setBusy(false);
-    if (AsyncResult.isSuccess(result)) {
-      appAtomRegistry.refresh(accessAtom);
-      setNote({ text: kinLeadAccessChanged(person.displayName, lead.name, on), failed: false });
-      return;
-    }
-    setNote({
-      text: kinLeadAccessProblem(
-        AsyncResult.isFailure(result) ? squashAtomCommandFailure(result) : null,
-      ),
-      failed: true,
-    });
-  };
-
-  return (
-    <Section title="Who can message">
-      {allowed === null ? (
-        <p className="text-sm text-muted-foreground">
-          {AsyncResult.isFailure(access) ? "Couldn't load who can message it." : "Loading…"}
-        </p>
-      ) : everyone || allowed.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          {everyone ? KIN_LEAD_EVERYONE : "Only you."}
-        </p>
-      ) : (
-        <ul className="flex flex-col gap-1">
-          {allowed.map((person) => (
-            <li key={person.personId} className="flex min-h-9 items-center gap-3">
-              <KinAvatar avatar={{ kind: "person", seed: `person:${person.personId}` }} size="sm" />
-              <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                {person.displayName}
-              </span>
-              <Button
-                size="xs"
-                variant="ghost"
-                disabled={busy}
-                aria-label={`Remove ${person.displayName}`}
-                onClick={() => setRemoving(person)}
-              >
-                Remove
-              </Button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {allowed === null || everyone || allowed.length === 0 ? null : (
-        <p className="text-xs text-muted-foreground">
-          {(lead.intro ?? "").trim() === ""
-            ? "They see its name only. Add what teammates see in Edit agent."
-            : `They see its name and this: ${(lead.intro ?? "").trim()}`}
-        </p>
-      )}
-      {note === null ? null : (
-        <p
-          role={note.failed ? "alert" : "status"}
-          className={
-            note.failed ? "text-xs text-destructive-foreground" : "text-xs text-muted-foreground"
-          }
-        >
-          {note.text}
-        </p>
-      )}
-      {candidates.length === 0 ? null : (
-        <Menu>
-          <MenuTrigger
-            render={<Button size="sm" variant="outline" className="self-start" disabled={busy} />}
-          >
-            Add a person
-          </MenuTrigger>
-          <MenuPopup align="start">
-            {candidates.map((person) => (
-              <MenuItem key={person.personId} onClick={() => void change(person, true)}>
-                {person.displayName}
-              </MenuItem>
-            ))}
-          </MenuPopup>
-        </Menu>
-      )}
-      <AlertDialog
-        open={removing !== null}
-        onOpenChange={(open) => {
-          if (!open) setRemoving(null);
-        }}
-      >
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove {removing?.displayName}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {removing?.displayName} keeps their chat with {lead.name} to read, but can't send it
-              anything more. You can add them back any time.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                const person = removing;
-                setRemoving(null);
-                if (person !== null) void change(person, false);
-              }}
-            >
-              Remove
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
-    </Section>
   );
 }

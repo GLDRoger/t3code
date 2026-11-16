@@ -62,6 +62,7 @@ import {
   MessagesSquareIcon,
   BrainIcon,
   UsersIcon,
+  SparklesIcon,
   UserRoundPlusIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -115,6 +116,7 @@ import {
   openKinLeadForm,
 } from "../kin/KinNewLeadButton";
 import { useKinPaletteHits } from "../kin/useKinDocs";
+import { openKinAgentPage, useKinPaletteAgents } from "../kin/KinAgentPage";
 import { useKinHost } from "../kin/useKinHost";
 import { useKinListSwitch } from "../kin/useKinListSwitch";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
@@ -481,6 +483,7 @@ function OpenCommandPaletteDialog(props: {
   const setQuery = (query: string) => dispatchSearch({ type: "query", query });
   const deferredQuery = useDeferredValue(query);
   const isActionsOnly = deferredQuery.startsWith(">");
+  const kinAgents = useKinPaletteAgents(kinNewLead, canCreateKinLead);
   const kinHits = useKinPaletteHits(
     canOpenKinWork ? kinNewLead : null,
     kinPaletteQuery(deferredQuery),
@@ -1729,6 +1732,26 @@ function OpenCommandPaletteDialog(props: {
         openKinLeadForm(kinNewLead);
       },
     });
+  }
+
+  if (kinNewLead !== null) {
+    for (const agent of kinAgents) {
+      actionItems.push({
+        kind: "action",
+        value: `action:kin-agent:${agent.agentId}`,
+        searchTerms: ["kin", "agent", "model", "character", "pause", agent.name, agent.domain],
+        title: `${agent.name}: model, character and settings`,
+        icon: <SparklesIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          // The page opens over Kin, beside the agent's own chat.
+          await navigate({
+            to: "/kin/$environmentId/$orgId/$chatId",
+            params: { ...kinNewLead, chatId: agent.ownerChatId },
+          });
+          openKinAgentPage({ ...kinNewLead, agentId: agent.agentId });
+        },
+      });
+    }
   }
 
   if (kinNewLead !== null && canOpenKinWork) {

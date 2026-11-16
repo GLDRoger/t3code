@@ -500,6 +500,11 @@ export const kinClient = {
     tag: "kin.agents.defaults.set",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
   }),
+  characterSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:lead:character",
+    tag: "kin.lead.character.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
+  }),
   leadPause: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:lead:pause",
     tag: "kin.lead.pause",

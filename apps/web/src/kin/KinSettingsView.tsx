@@ -12,6 +12,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/
 import { isElectron } from "../env";
 import { isChatOnlySession } from "../environments/primary";
 import { KinCompanyProfileSettings } from "./KinCompanyProfile";
+import { KinAgentsSetting } from "./KinAgentsSetting";
 import { KinCheckInsSetting } from "./KinCheckIns";
 import { KinGitHubConnect } from "./KinGitHubConnect";
 import { KinCompanyTimeZoneSetting } from "./KinCompanyTimeZone";
@@ -111,6 +112,7 @@ export function KinSettingsView() {
         </SettingsSection>
         <KinCompanyTimeZoneSetting />
         <KinDailyLimitSetting />
+        <KinAgentsSetting />
         <KinCheckInsSetting />
         {target === null ? null : (
           <KinGitHubConnect environmentId={target.environmentId} orgId={target.orgId} />

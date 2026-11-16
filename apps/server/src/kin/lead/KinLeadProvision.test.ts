@@ -938,10 +938,12 @@ describe("KinLeadProvision", () => {
         );
 
         // New agents start on the company default once it is chosen.
-        assert.deepStrictEqual(yield* Provision.agentDefaults(owner, tech.orgId), {
-          orgId: tech.orgId,
-          models: null,
-        });
+        // Until one is chosen, new agents start on the first agent's.
+        assert.deepInclude(yield* Provision.agentDefaults(owner, tech.orgId), { chosen: false });
+        assert.strictEqual(
+          (yield* Provision.agentDefaults(owner, tech.orgId)).models?.strong.model,
+          "claude-sonnet-4-6",
+        );
         yield* Provision.setAgentDefaults(owner, tech.orgId, sonnet);
         const { models: _given, ...unnamed } = input(owner, []);
         const growth = (yield* Provision.create({ ...unnamed, name: "Growth", domain: "growth" }))

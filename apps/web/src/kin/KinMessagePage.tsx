@@ -5,7 +5,13 @@ import {
   kinLinkOf,
   kinPageView,
 } from "@t3tools/client-runtime/kin/kinMessagePage";
-import { KinOrgId, KinPersonId, type EnvironmentId, type KinMessageLink } from "@t3tools/contracts";
+import {
+  KinChatId,
+  KinOrgId,
+  KinPersonId,
+  type EnvironmentId,
+  type KinMessageLink,
+} from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
@@ -14,6 +20,8 @@ import ChatMarkdown, { type ChatMarkdownContextReference } from "../components/C
 import { cn } from "../lib/utils";
 import { openKinProfile } from "./KinProfileSheet";
 import { KIN_PLACE_PATH } from "./kinPlaces";
+import { kinProfileRequestAtom } from "./kinTeamForm";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 
 interface Where {
   readonly environmentId: EnvironmentId;
@@ -33,6 +41,11 @@ function KinInAppLink(props: Where & { readonly link: KinMessageLink; readonly l
           to="/kin/$environmentId/$orgId/$chatId"
           params={{ ...params, chatId: to.chatId }}
           title={title}
+          onClick={() => {
+            // An agent's bare name opens its page beside its chat; "finance chat" just the chat.
+            if (!/\bchat$/i.test(label.trim()))
+              appAtomRegistry.set(kinProfileRequestAtom, KinChatId.make(to.chatId));
+          }}
         >
           {label}
         </Link>

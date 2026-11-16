@@ -1,6 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
-  KIN_AGENT_DRIVER,
+  KIN_AGENT_PAGE,
+  kinAgentWriteCharacterStarter,
+} from "@t3tools/client-runtime/kin/kinAgentPage";
+import {
+  kinDomainLabel,
   KIN_LEAD_CHARTER_MAX,
   KIN_LEAD_MODELS,
   KIN_LEAD_INTRO_MAX,
@@ -15,11 +19,10 @@ import {
 import type { ModelSelection } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
+import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
 
-import { ProviderModelPicker } from "../components/chat/ProviderModelPicker";
-import { SETTINGS_PICKER_TRIGGER_CLASSNAME } from "../components/settings/settingsLayout";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import {
@@ -31,16 +34,15 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../components/ui/dialog";
+import { Checkbox } from "../components/ui/checkbox";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
-import { useEnvironmentSettings } from "../hooks/useSettings";
-import { getCustomModelOptionsByInstance } from "../modelSelection";
-import { providerInstanceEntriesFor } from "../providerInstances";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../state/server";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient, refreshKinAgents } from "./kinClient";
+import { KinAgentModelPicker, useKinAgentModels } from "./KinAgentModelPicker";
+import { prefillKinDraft } from "./KinChatView";
 import { kinLeadFormAtom, type KinLeadFormTarget } from "./kinLeadForm";
 
 const closeLeadForm = () => appAtomRegistry.set(kinLeadFormAtom, null);
@@ -70,24 +72,18 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
     (noModels ||
       (AsyncResult.isSuccess(leads) &&
         leads.value.leads.every((held) => held.retired !== undefined)));
-  const settings = useEnvironmentSettings(environmentId);
-  const providers =
-    useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
-  const instanceEntries = providerInstanceEntriesFor(providers, settings, null).filter(
-    (entry) => entry.driverKind === KIN_AGENT_DRIVER && entry.enabled && entry.isAvailable,
-  );
-  const modelOptionsByInstance = getCustomModelOptionsByInstance(settings, providers);
-  const offered = instanceEntries.flatMap((entry) =>
-    (modelOptionsByInstance.get(entry.instanceId) ?? []).map((model): ModelSelection => ({
-      instanceId: entry.instanceId,
-      model: model.slug,
-    })),
-  );
+  const { offered } = useKinAgentModels(environmentId);
+  const companyDefault = Option.getOrNull(
+    AsyncResult.value(useAtomValue(kinClient.agentDefaults({ environmentId, input: { orgId } }))),
+  )?.models;
   const [pickedModels, setPickedModels] = useState<{
     readonly strong: ModelSelection;
     readonly cheap: ModelSelection;
   } | null>(null);
-  const models = pickedModels ?? kinLeadStartingModels(offered);
+  const models = pickedModels ?? companyDefault ?? kinLeadStartingModels(offered);
+  const [character, setCharacter] = useState("");
+  const [writeForMe, setWriteForMe] = useState(false);
+  const setCharacterBody = useAtomCommand(kinClient.characterSet, { reportFailure: false });
   const [name, setName] = useState(initial.name);
   const [area, setArea] = useState(initial.area);
   const [charter, setCharter] = useState(initial.charter);
@@ -98,6 +94,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
   const areaId = useId();
   const charterId = useId();
   const introId = useId();
+  const characterId = useId();
 
   const checked = kinLeadDraftCheck({ name, area, charter, intro });
   const areaInvalid = area.trim() !== "" && kinDomainSlug(area) === null;
@@ -121,13 +118,32 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
               domain,
               charter: leadCharter,
               ...(leadIntro === "" ? undefined : { intro: leadIntro }),
-              ...(firstAgent && models !== null ? { models } : undefined),
+              ...((firstAgent || pickedModels !== null) && models !== null
+                ? { models }
+                : undefined),
             },
-          }).then((result) =>
-            result._tag === "Success"
-              ? { chatId: result.value.ownerChatId }
-              : { cause: squashAtomCommandFailure(result) },
-          )
+          }).then(async (result) => {
+            if (result._tag !== "Success") return { cause: squashAtomCommandFailure(result) };
+            // The host gives every new agent a starter character; the owner's own replaces it.
+            if (character.trim() !== "")
+              await setCharacterBody({
+                environmentId,
+                input: { orgId, agentId: result.value.agentId, body: character.trim() },
+              });
+            const chief = Option.getOrNull(AsyncResult.value(leads))?.leads.find(
+              (held) => held.domain === "chief-of-staff" && held.retired === undefined,
+            );
+            if (writeForMe && chief !== undefined) {
+              prefillKinDraft(
+                environmentId,
+                orgId,
+                chief.ownerChatId,
+                kinAgentWriteCharacterStarter(leadName, kinDomainLabel(domain)),
+              );
+              return { chatId: chief.ownerChatId };
+            }
+            return { chatId: result.value.ownerChatId };
+          })
         : await update({
             environmentId,
             input: { orgId, agentId: lead.agentId, ...changes },
@@ -234,7 +250,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                     : "The agent reads this before every reply. You can change it later."}
                 </p>
               </div>
-              {firstAgent ? (
+              {lead === null ? (
                 <fieldset className="flex flex-col gap-2">
                   <legend className="mb-1.5 text-sm font-medium">{KIN_LEAD_MODELS.title}</legend>
                   {models === null ? (
@@ -247,24 +263,20 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                           className="flex flex-wrap items-center justify-between gap-2"
                         >
                           <Label>{KIN_LEAD_MODELS[role]}</Label>
-                          <ProviderModelPicker
+                          <KinAgentModelPicker
                             environmentId={environmentId}
                             disabled={busy}
-                            activeInstanceId={models[role].instanceId}
-                            model={models[role].model}
-                            lockedProvider={null}
-                            instanceEntries={instanceEntries}
-                            modelOptionsByInstance={modelOptionsByInstance}
-                            isComposerOwned={false}
-                            triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                            triggerAriaLabel={KIN_LEAD_MODELS[role]}
-                            onInstanceModelChange={(instanceId, model) =>
-                              setPickedModels({ ...models, [role]: { instanceId, model } })
+                            label={KIN_LEAD_MODELS[role]}
+                            selection={models[role]}
+                            onChange={(selection) =>
+                              setPickedModels({ ...models, [role]: selection })
                             }
                           />
                         </div>
                       ))}
-                      <p className="text-xs text-muted-foreground">{KIN_LEAD_MODELS.hint}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {firstAgent ? KIN_LEAD_MODELS.hint : KIN_AGENT_PAGE.modelDetail}
+                      </p>
                     </>
                   )}
                 </fieldset>
@@ -291,6 +303,32 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                     : "Optional. People you let message this agent see this and nothing above."}
                 </p>
               </div>
+              {lead === null ? (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label htmlFor={characterId}>{KIN_AGENT_PAGE.characterField}</Label>
+                    <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Checkbox
+                        checked={writeForMe}
+                        disabled={character.trim() !== ""}
+                        onCheckedChange={(checked) => setWriteForMe(checked === true)}
+                      />
+                      {KIN_AGENT_PAGE.writeForMe}
+                    </label>
+                  </div>
+                  <Textarea
+                    id={characterId}
+                    rows={4}
+                    value={character}
+                    disabled={writeForMe}
+                    placeholder={KIN_AGENT_PAGE.characterPlaceholder}
+                    onChange={(event) => setCharacter(event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {writeForMe ? KIN_AGENT_PAGE.writeForMeDetail : KIN_AGENT_PAGE.characterRule}
+                  </p>
+                </div>
+              ) : null}
               {error === null ? null : (
                 <Alert variant="error">
                   <AlertDescription>{error}</AlertDescription>

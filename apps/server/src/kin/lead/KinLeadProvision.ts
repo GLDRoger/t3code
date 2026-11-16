@@ -865,7 +865,9 @@ export const agentDefaults = Effect.fn("KinLeadProvision.agentDefaults")(functio
   const models = yield* companyDefaultModels(orgId).pipe(
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.agentDefaults")),
   );
-  return { orgId, models };
+  if (models !== null) return { orgId, models, chosen: true };
+  const [first] = yield* leadsIn(orgId, { liveOnly: true });
+  return { orgId, models: first?.models ?? null, chosen: false };
 });
 
 export const setAgentDefaults = Effect.fn("KinLeadProvision.setAgentDefaults")(function* (
@@ -884,7 +886,7 @@ export const setAgentDefaults = Effect.fn("KinLeadProvision.setAgentDefaults")(f
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.setAgentDefaults")),
   );
   yield* leadsChanged(orgId);
-  return { orgId, models };
+  return { orgId, models, chosen: true };
 });
 
 /** The caller as the org's owner and the live lead of theirs being shared; anything else is refused. */
