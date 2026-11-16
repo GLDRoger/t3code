@@ -2715,10 +2715,12 @@ const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSample")(fu
       server.runTurn({
         model: config.model,
         effort: config.effort,
-        // An owner-only turn's note says it has a shell, as Kin's does; the eval still runs none.
-        baseInstructions: testCase.prompt.includes("{{SHARED_TURN}}")
-          ? codexInstructions
-          : codexFullSessionInstructions,
+        // An owner-only session's note says it has a shell, as Kin's does; the eval runs none.
+        baseInstructions:
+          testCase.setup.world?.kinSession === true &&
+          !/\{\{(SHARED_TURN|GROUP_RULES)\}\}/.test(testCase.prompt)
+            ? codexFullSessionInstructions
+            : codexInstructions,
         config: CONFINED_CONFIG,
         namespace: APP_SERVER_NAMESPACE,
         tools: t3.map((tool) => ({

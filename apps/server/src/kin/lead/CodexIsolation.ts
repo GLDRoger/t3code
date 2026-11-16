@@ -73,7 +73,7 @@ export const FULL_SESSION_CONFIG: Readonly<Record<string, Json>> = {
 
 /** GPT agents rarely ask with a card or make the Confirm card (evals, Nov 2026). */
 const CODEX_NOTE =
-  "When a decision is the owner's, ask with kin_ask and the default you'll take, not in prose. Anything leaving the company (mail, a payment, a post) goes only through the tool that makes its Confirm card: call it, never just draft it in the chat.";
+  "When a decision is the owner's, ask with kin_ask and the default you'll take, not in prose. Mail, invoices, quotes, payments and social posts go out only by calling the tool that makes their Confirm card, never as a draft in the chat. Work on his own and his orgs' GitHub repos needs no card: do it.";
 const CONFINED_NOTE =
   "This session has no shell, files or web: act only through your tools, and don't try those.";
 const FULL_SESSION_NOTE =
