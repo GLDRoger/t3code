@@ -402,6 +402,9 @@ describe("reminder and scheduled task cards", () => {
     expect(kinScheduledTaskCardView(scheduled({}), "UTC")!.lines[0]).toBe(
       "Weekdays at 8:00 (Asia/Kolkata).",
     );
+    expect(kinScheduledTaskCardView(scheduled({}), "Asia/Calcutta")!.lines[0]).toBe(
+      "Weekdays at 8:00.",
+    );
     // A loose one's stored next run is its window's start (7:55): never shown as a minute.
     const around = kinScheduledTaskCardView(
       scheduled({ around: true, nextRunAt: "2026-11-10T02:25:00.000Z" }),
