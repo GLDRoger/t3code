@@ -55,7 +55,7 @@ export function KinClientContact(
     <KinWorkSection
       title={KIN_CLIENTS.recentContact}
       fold={{
-        summary: props.lastContact ?? (props.touches.length === 0 ? "None logged" : null),
+        summary: props.lastContact,
       }}
       action={
         props.canChange ? (
