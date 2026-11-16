@@ -1808,6 +1808,53 @@ describe("another org", () => {
 });
 
 describe("the company profile", () => {
+  it.effect("asks in the chat the turn came from, so a co-owner's change reaches her", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      // A co-owner's own chat with the lead, and a turn her message woke there.
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('co-chat', ${orgId}, 'direct', 'co:lead', 1, ${at})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('co-owner', ${orgId}, 'co', 'Co', ${at}, 'co_owner')`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('co-chat-co', ${orgId}, 'co-chat', 'person', 'co-owner', 'owner', ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('co-chat-lead', ${orgId}, 'co-chat', 'agent', ${lead}, 'member', ${at})`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+          created_at)
+        VALUES ('msg-co', ${orgId}, 'co-chat', 1, 'human', 'co-owner', 'co-chat-co', 'owner',
+          'text', 'Our trade name is Invented', '[]', 'posted', ${at})`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+          status, event_ids, audience)
+        VALUES ('wake-co', ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
+          '["event-co"]', 'owner_only')`;
+      const event = {
+        _tag: "chat.message",
+        orgId,
+        agentId: lead,
+        eventId: "event-co",
+        receivedAt: at,
+        dedupeKey: null,
+        provenance: { _tag: "human", personId: "co-owner", memberId: "co-chat-co" },
+        chatId: "co-chat",
+        messageId: "msg-co",
+      };
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id)
+        VALUES ('event-co', ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)},
+          0, 0, 'claimed', 'wake-co')`;
+      yield* LeadMoney.profile(scope, {
+        sourceEventId: "event-co",
+        set: { tradeName: "Invented" },
+      });
+      const cards = yield* sql<{ chatId: string }>`SELECT w.chat_id AS "chatId"
+        FROM kin_profile_changes c JOIN kin_widgets w ON w.widget_id = c.widget_id`;
+      assert.deepStrictEqual(cards, [{ chatId: "co-chat" }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("keeps the owner's home currency and rates, which no agent card proposes", () =>
     Effect.gen(function* () {
       yield* seed;
