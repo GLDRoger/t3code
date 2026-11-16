@@ -522,6 +522,11 @@ export class KinLeadPrompt extends Context.Service<
           orgId,
           wakeupId: input.wakeupId,
           eventIds: [...input.events.map((event) => event.eventId), ...askedIn],
+          shows: input.events.some(
+            (event) => event._tag === "pulse" && (event.outside?.length ?? 0) > 0,
+          )
+            ? "check-in"
+            : undefined,
         }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(
