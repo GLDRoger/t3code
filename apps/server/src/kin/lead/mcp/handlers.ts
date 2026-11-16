@@ -12,6 +12,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { KinRepoReads } from "../../github/KinRepoReads.ts";
+import { ghApiLayer, ownerGitHubReview } from "../../github/GitHubWatch.ts";
+import { repoList, setRepo } from "../../github/githubWatchStore.ts";
 import { KinPullRequestCare } from "../../github/PullRequestCare.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
@@ -328,8 +330,42 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.githubReview")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       yield* admitted(lead, "kin_github_review", input);
+      const asOwner = yield* ownerGitHubReview(lead, input).pipe(Effect.provide(ghApiLayer));
+      if (asOwner !== undefined) return asOwner;
       return yield* (yield* KinPullRequestCare).review(lead, input);
     }, Effect.mapError(failure)),
+  ),
+  kin_github_watch: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.githubWatch")(
+      function* (input) {
+        const lead = yield* resolveLead(yield* McpInvocationContext);
+        yield* admitted(lead, "kin_github_watch", input);
+        const repos = yield* repoList(lead.orgId);
+        if (input.repo === undefined) return { repos: repos.slice(0, 100) };
+        const named = input.repo.toLowerCase();
+        if (!repos.some((repo) => repo.repo.toLowerCase() === named))
+          return yield* new KinChatError({
+            reason: "not_found",
+            message:
+              "Kin doesn't watch that repo: it isn't the owner's or his organisations', or GitHub isn't connected.",
+          });
+        const changed =
+          input.watch === undefined && input.mentions === undefined
+            ? repos
+            : yield* setRepo(
+                {
+                  orgId: lead.orgId,
+                  repo: named,
+                  ...(input.watch === undefined ? {} : { watched: input.watch }),
+                  ...(input.mentions === undefined ? {} : { mentions: input.mentions }),
+                },
+                yield* Clock.currentTimeMillis,
+              );
+        return { repos: changed.filter((repo) => repo.repo.toLowerCase() === named) };
+      },
+      Effect.catchTags({ SqlError: () => Effect.fail(failure(undefined)) }),
+      Effect.mapError(failure),
+    ),
   ),
   kin_github_link: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.githubLink")(function* (input) {

@@ -1,3 +1,4 @@
+import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { FetchHttpClient } from "effect/http";
 import { ProcessRunner } from "../../processRunner.ts";
@@ -342,6 +343,27 @@ it.effect.each([true, false])(
           name.startsWith("kin_github_"),
         );
         for (const name of kinGitHub) assert.notInclude(toolNames, name);
+        // With the owner's own login connected, the tools that work through it show; the rest don't.
+        if (Option.isSome(kin.services)) {
+          const login = Context.get(kin.services.value, KinGitHubLogin);
+          const signedIn = {
+            ...kin,
+            services: Option.some(
+              Context.add(kin.services.value, KinGitHubLogin, {
+                ...login,
+                connected: () => Effect.succeed(true),
+              }),
+            ),
+          };
+          for (const name of kinGitHub)
+            assert.strictEqual(
+              yield* visibleOnKinEndpoint(name, threadId).pipe(
+                Effect.provideService(Kin.KinServer, signedIn),
+              ),
+              name === "kin_github_watch" || name === "kin_github_review",
+              name,
+            );
+        }
         // Every tool a lead can call says what it may do where others read; a tool added later
         // without a line is refused there, and the table names no tool that isn't served.
         const served = [...new Set([...toolNames, ...kinGitHub, ...LEAD_T3_TOOLS, "kin_delegate"])];

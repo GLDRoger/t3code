@@ -1,3 +1,4 @@
+import { signed } from "./agentMark.ts";
 import {
   KinChatError,
   KinOrgId,
@@ -138,13 +139,13 @@ const decodeRepoAnswer = Schema.decodeUnknownOption(RepoAnswer);
 const isRepoSlug = Schema.is(RepoSlug);
 
 /**
- * "Private and ours": GitHub says the repo is private and its owner is the account that owns
- * the Kin GitHub App. Anything else, a client's or a public repo, posts only on the owner's Confirm.
+ * "Ours": the repo's owner is the account that owns the Kin GitHub App, public or private. Anyone
+ * else's repo, a client's included, posts only on the owner's Confirm.
  */
-const privateAndOurs = (
-  repo: { readonly private: boolean; readonly owner: { readonly login: string } },
+const companyOwned = (
+  repo: { readonly owner: { readonly login: string } },
   appOwner: string | null,
-) => repo.private && appOwner !== null && repo.owner.login.toLowerCase() === appOwner.toLowerCase();
+) => appOwner !== null && repo.owner.login.toLowerCase() === appOwner.toLowerCase();
 
 const unavailable = (message: string) => new KinChatError({ reason: "unavailable", message });
 const notFound = () =>
@@ -237,7 +238,7 @@ const make = Effect.gen(function* () {
     const token = yield* tokenFor(repo, { metadata: "read" });
     const answer = yield* call(token, "repos.get", "GET", repoPath(repo));
     const about = answer.status === 200 ? decodeRepoAnswer(answer.body) : Option.none();
-    return Option.isSome(about) && privateAndOurs(about.value, appOwner ?? null);
+    return Option.isSome(about) && companyOwned(about.value, appOwner ?? null);
   });
 
   const pull = Effect.fn("KinPullRequestCare.pull")(function* (named: string, number: number) {
@@ -418,8 +419,10 @@ const make = Effect.gen(function* () {
           message: "A review needs a body, or a proposal to post.",
         });
       const target = yield* pull(repo, input.number);
+      const [named] = yield* sql<{ name: string }>`SELECT name FROM kin_leads
+        WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`.pipe(Effect.orDie);
       const stored = {
-        body: input.body,
+        body: signed(input.body, named?.name ?? "Agent"),
         event: input.event ?? "COMMENT",
         comments: input.comments ?? [],
         commitId: target.headSha,
@@ -429,7 +432,7 @@ const make = Effect.gen(function* () {
         return {
           status: "posted",
           url,
-          next: "Posted on the PR: the repo is private and the company's. Say so in one line.",
+          next: "Posted on the PR: the repo is the company's. Say so in one line.",
         } as const;
       }
       const json = encodeStored(stored);
@@ -471,7 +474,7 @@ const make = Effect.gen(function* () {
       return {
         status: "proposed",
         proposal: postId,
-        next: "Nothing is posted yet: this repo is public or not the company's. The owner sees it on a card; ask in one line to check it and tap Post it. Their tap posts exactly this review; you need not call again.",
+        next: "Nothing is posted yet: this repo is not the company's. The owner sees it on a card; ask in one line to check it and tap Post it. Their tap posts exactly this review; you need not call again.",
       } as const;
     },
     Effect.provideService(SqlClient.SqlClient, sql),

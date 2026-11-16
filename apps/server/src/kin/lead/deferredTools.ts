@@ -13,6 +13,7 @@ export const KIN_DEFERRED_TOOLS: ReadonlySet<string> = new Set([
   "doc_restore",
   "kin_connection_note",
   "kin_github_review",
+  "kin_github_watch",
   "kin_github_link",
   "kin_chart",
   "kin_visual",
@@ -23,6 +24,7 @@ export const KIN_DEFERRED_TOOLS: ReadonlySet<string> = new Set([
   "doc_move",
   "team_open",
   "people_update",
+  "agent_update",
   "record_hand_back",
 ]);
 

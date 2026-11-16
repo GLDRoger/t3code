@@ -184,6 +184,11 @@ const githubRead = createKinRpcCommand(connectionAtomRuntime, {
   tag: "kin.github.connect.status",
 });
 const readGitHub = guardedRead(githubRead);
+const githubReposRead = createKinRpcCommand(connectionAtomRuntime, {
+  label: "kin:github-repos:read",
+  tag: "kin.github.repos",
+});
+const readGitHubRepos = guardedRead(githubReposRead);
 const leadAccessRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:lead-access:read",
   tag: "kin.lead.access.list",
@@ -785,6 +790,18 @@ export const kinClient = {
     }),
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("connections"),
+  }),
+  /** The repos Kin watches with that login, each with the owner's switch. */
+  githubRepos: createEnvironmentQueryAtomFamily(connectionAtomRuntime, {
+    label: "kin:github-repos",
+    execute: Effect.fn("KinClient.githubRepos")(function* (input: KinGitHubInput) {
+      return yield* readGitHubRepos(input);
+    }),
+    staleTimeMs: 30_000,
+  }),
+  githubReposSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:github-repos:set",
+    tag: "kin.github.repos.set",
   }),
   /** Starts the code sign-in, or connects with a pasted token, which travels once, redacted. */
   githubStart: createKinRpcCommand(connectionAtomRuntime, {

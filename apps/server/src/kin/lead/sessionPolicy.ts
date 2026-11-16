@@ -15,5 +15,10 @@ export class KinAgentSessionPolicy extends Context.Service<
     readonly delegated: (threadId: ThreadId) => Effect.Effect<boolean>;
     /** First on the session's PATH: the pinned `gh` and Typst. */
     readonly toolDirectories: ReadonlyArray<string>;
+    /**
+     * The Kin agent a thread works for: a lead's own thread, or a task it delegated. What it posts
+     * on GitHub is signed with this name; undefined for any other thread.
+     */
+    readonly agentName: (threadId: ThreadId) => Effect.Effect<string | undefined>;
   }
 >()("t3/kin/lead/sessionPolicy/KinAgentSessionPolicy") {}
