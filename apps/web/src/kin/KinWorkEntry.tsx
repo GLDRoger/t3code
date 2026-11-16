@@ -74,6 +74,7 @@ import { SheetDescription, SheetHeader, SheetTitle } from "../components/ui/shee
 import { cn, randomUUID } from "../lib/utils";
 import {
   KinInvoiceActions,
+  KinMakeDocumentStep,
   KinQuoteActions,
   KinInvoiceDocuments,
   KinInvoiceFigures,
@@ -523,6 +524,8 @@ export function KinListEntry(
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const [paying, setPaying] = useState(false);
   const [takingBack, setTakingBack] = useState<string | null>(null);
+  // Make invoice and Make its PDF are a step of this sheet, never a dialog over it.
+  const [making, setMaking] = useState<"invoice" | "pdf" | null>(null);
   const today = kinWorkDayOf(props.now);
   const previewKey = `kin-entry:${environmentId}:${item.key}`;
   const { busy } = changes;
@@ -554,6 +557,20 @@ export function KinListEntry(
       : fact.id === "project"
         ? () => props.onOpenProject(fact.opens!)
         : () => props.onOpenClient(fact.opens!);
+  if (making !== null)
+    return (
+      <KinMakeDocumentStep
+        {...props}
+        itemKey={item.key}
+        list={def?.list ?? (making === "pdf" ? "quotes" : "invoices")}
+        {...(making === "pdf" ? { title: KIN_INVOICES.makePdf } : {})}
+        currency={item.amount?.currency ?? def?.currency ?? "INR"}
+        actions={money}
+        party={item.party ?? null}
+        backLabel={invoice?.heading ?? item.title}
+        onClose={() => setMaking(null)}
+      />
+    );
   return (
     <>
       <SheetHeader>
@@ -640,6 +657,7 @@ export function KinListEntry(
               busy={busy}
               canChange={canChange}
               onState={(state) => void changes.update(item.rev, { state })}
+              onMakePdf={() => setMaking("pdf")}
             />
           ) : !canChange ? null : (
             <div className="flex flex-wrap items-center gap-2">
@@ -695,7 +713,7 @@ export function KinListEntry(
               actions={money}
               busy={busy}
               party={item.party ?? null}
-              currency={item.amount?.currency ?? def?.currency ?? "INR"}
+              onMake={() => setMaking("invoice")}
             />
           )}
           <KinMoneyActionNotice actions={money} />

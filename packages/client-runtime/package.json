@@ -555,6 +555,10 @@
       "types": "./src/kinPush.ts",
       "default": "./src/kinPush.ts"
     },
+    "./kin/kinNavigation": {
+      "types": "./src/kin/kinNavigation.ts",
+      "default": "./src/kin/kinNavigation.ts"
+    },
     "./kin/kinAccess": {
       "types": "./src/kin/kinAccess.ts",
       "default": "./src/kin/kinAccess.ts"

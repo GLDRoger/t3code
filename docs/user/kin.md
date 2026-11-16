@@ -4,9 +4,16 @@ Kin is where your company works together: the owner, co-owners, teammates and AI
 chat list. Agents are contacts like anyone else. You ask them for things in plain words, and they
 keep Tasks, Money, Clients and Docs current for you.
 
-The dock has **Chats**, **Tasks**, **Money**, **Clients** and **Docs**. **Settings** is the gear on
-Chats. What you see in each depends on your place in the team; see
-[Who sees and does what](#who-sees-and-does-what).
+Kin has five places: **Chats**, **Tasks**, **Money**, **Clients** and **Docs**. On the phone they
+are the dock; on the web and the desktop app they sit at the top of the sidebar, and become the same
+dock at the bottom of a narrow window. `⌘1` to `⌘5` (`Ctrl` on Windows and Linux) open them.
+**Settings** is the gear on Chats. What you see in each depends on your place in the team; see
+[Who sees and does what](#who-sees-and-does-what). If you run Kin's computer, **Code** under the
+five opens T3 Code's coding threads.
+
+Settings has **You** (your profile and appearance) for everyone, and for the owner and co-owners
+**Company** (Team, Agents, Check-ins, Connections, Memory, Company details, Approvals). On the
+computer Kin runs on, **This computer** holds the app's own settings, such as providers and models.
 
 ## Getting started
 
@@ -22,7 +29,7 @@ use stay signed in.
 
 ### Your profile
 
-Open your profile (your name in the Chats list on the web, **Settings** on the phone) to set your
+Open **Settings → Profile** to set your
 name, skills, time zone and working hours, and in **How to talk to me** how you like agents to
 write to you ("short, numbers first, nothing after 8 pm"). Only you can set that line. Agents read
 your profile when they decide who should do something, when to message you and how. An agent nudges you about the same thing at most once a day,
@@ -34,7 +41,7 @@ Choose **New**, then **Add teammate**, and give their name. Kin makes a link for
 doesn't send it for you and won't show it again. Make the link from the address your team uses to
 reach Kin, not from `localhost`, or it won't open on anyone else's device.
 
-Each teammate starts as a **Member**. Open them on the **Team** page to make them a **Co-owner**, to
+Each teammate starts as a **Member**. Open them under **Settings → Team** to make them a **Co-owner**, to
 turn on what they can see (Money, Clients, Docs), to choose which agents they can message, or to
 **Remove access**.
 
@@ -63,6 +70,9 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
 - **Names open what they name.** An agent, a teammate, a client, a project, a task or a document
   number such as INV-1 in a message is a link to it, when you may open it. Touch and hold one on
   the phone, or hover on the web, to see its state first.
+- **Attach files.** Anyone in the company can attach pictures, PDFs and documents in a chat they
+  can write in: their chat with an agent, a chat with a teammate, or a group they are in. Only
+  people in that chat can open them, and an agent reads them with the access of whoever sent them.
 - **It asks with cards.** A question with choices, a chart, or something to confirm comes as a card
   in the chat. Tapping an answer answers the agent; it is never an approval.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
@@ -108,10 +118,10 @@ access, never more.
 In a group, an agent won't show something to people who can't see it. Ask about an invoice there
 and it answers you privately instead.
 
-The **company chat** is one group with the whole team and your agents. Turn it on from the **Team**
-page and pick which agent answers when nobody is named.
+The **company chat** is one group with the whole team and your agents. Turn it on under **Settings →
+Team** and pick which agent answers when nobody is named.
 
-The **team agent**, set on the Team page, is the one every teammate can chat with. It sees only
+The **team agent**, set under **Settings → Team**, is the one every teammate can chat with. It sees only
 what each person may see.
 
 ### The Team room
@@ -270,7 +280,7 @@ they reach it, only your urgent messages run until midnight.
 
 ## Memory
 
-**Memory** (owner and co-owners) shows what your agents have learned working with you: preferences,
+**Settings → Memory** (owner and co-owners) shows what your agents have learned working with you: preferences,
 decisions and lasting facts. Each item is **Only you**, **The team can know**, or **Waiting for your
 yes** when an agent thinks the team could know it. Anything about access, money or client terms
 stays with the owner. **Forget** an item and agents stop using it; bring it back from **Forgotten**.
