@@ -319,10 +319,7 @@ const memoryPullRequests = Layer.unwrap(
 );
 
 const registration = Layer.mergeAll(
-  // The same bridge the runner mirrors turns into (layers are shared by reference): kin_end asks it.
-  McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers).pipe(
-    Layer.provide(ReplyBridge.layer),
-  ),
+  McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers),
   McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
   McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
   McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),

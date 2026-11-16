@@ -595,12 +595,6 @@ const make = Effect.gen(function* () {
         if (Option.isSome(writer) && (abandoned || (shared && !keeps)))
           yield* writer.value.discard(row.orgId, row.wakeupId);
         else if (Option.isSome(writer)) {
-          const ended =
-            yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
-          if (ended.length === 0 && !shared)
-            yield* writer.value.appendJournal(row.orgId, row.wakeupId, [
-              Writer.LEAD_ENDED_WITHOUT_KIN_END,
-            ]);
           const { commit } = yield* writer.value.commitWakeup(
             row.orgId,
             row.wakeupId,

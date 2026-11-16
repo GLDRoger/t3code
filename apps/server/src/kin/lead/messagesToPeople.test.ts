@@ -1,5 +1,4 @@
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
-import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { kinSecretsTest } from "./layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
@@ -79,7 +78,6 @@ const kinServices = Layer.unwrap(
       Handoff.layer,
       Layer.mock(KinWorkers)({}),
       Layer.mock(LeadMemory)({}),
-      Layer.mock(KinReplyBridge)({ silentEnd: () => Effect.succeed(false) }),
       repoReadsOff,
       pullRequestCareOff,
     ).pipe(Layer.provideMerge(Layer.succeedContext(services)));
@@ -161,7 +159,7 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       ] as const) {
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
           access, time_zone, work_hours_json)
-        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'UTC', ${allDay})`;
+        VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access}, 'Asia/Kolkata', ${allDay})`;
         yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
           VALUES (${`${id}-session`}, ${orgId}, ${id}, 0)`;
       }

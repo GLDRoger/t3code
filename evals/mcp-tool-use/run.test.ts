@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import { FetchHttpClient } from "effect/http";
 import { assert, expect, it } from "@effect/vitest";
 import { ComposerContextId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 
 import {
@@ -27,8 +28,8 @@ import {
   pastedText,
   type SampleRun,
   shellOutput,
+  rescuePrompt,
   shownText,
-  silentEnd,
   filledEvent,
   namedPathsLine,
   shellRequest,
@@ -282,30 +283,7 @@ it("grades Kin calls as the agent made them and a card as its message", () => {
   assert.lengthOf(failed({ textMustNot: ["Wednesday"] }, run([ask])), 0);
 });
 
-it("reads a Kin turn's text as the chat shows it, without a repeat after kin_end", () => {
-  const text = (value: string) => ({ type: "text", text: value });
-  const use = (name: string) => ({
-    type: "tool_use",
-    id: name,
-    name: `mcp__t3-code__${name}`,
-    input: {},
-  });
-  assert.equal(
-    shownText([
-      [text("Checking"), use("record_get")],
-      [text("Logged it."), use("kin_end")],
-      [text("Logged it.")],
-    ]),
-    "Checking\n\nLogged it.",
-  );
-  // Silence is no reply, so what follows kin_end still reaches the chat.
-  assert.equal(
-    shownText([[text("NO_REPLY"), use("kin_end")], [text("Done.")]]),
-    "NO_REPLY\n\nDone.",
-  );
-});
-
-it("refuses a Kin kin_end that leaves a person's message unanswered, as Kin does", () => {
+it("asks a Kin turn that owed words and said none once, as Kin's rescue does", () => {
   const text = (value: string) => ({ type: "text", text: value });
   const use = (name: string) => ({
     type: "tool_use",
@@ -314,20 +292,32 @@ it("refuses a Kin kin_end that leaves a person's message unanswered, as Kin does
     input: {},
   });
   const turn = (prompt: string, responses: Array<ReadonlyArray<unknown>>) =>
-    silentEnd({
+    rescuePrompt({
       testCase: { prompt, setup: { world: { kinLead: true } } } as never,
       responses,
     });
   const asked = '> BEGIN QUOTE: owner message\n> {"body": "Did Orbit pay?"}';
-  // Sonnet 5.5: the reply only in thinking, then kin_end.
-  assert.isTrue(turn(asked, [[use("records_query")], [use("kin_end")]]));
-  assert.isTrue(turn(asked, [[text("NO_REPLY"), use("kin_end")]]));
-  // Once: the second silent kin_end ends the turn.
-  assert.isFalse(turn(asked, [[use("kin_end")], [use("kin_end")]]));
-  assert.isFalse(turn(asked, [[text("Yes, on 4 Nov."), use("kin_end")]]));
-  assert.isFalse(turn(asked, [[use("kin_ask")], [use("kin_end")]]));
+  // Sonnet 5.5: the reply only in thinking, then the turn ended.
+  assert.equal(turn(asked, [[use("records_query")], []]), RESCUE_PROMPT);
+  assert.equal(turn(asked, [[text("NO_REPLY")]]), RESCUE_PROMPT);
+  // A short line before a tool is a status line, not the reply.
+  assert.equal(turn(asked, [[text("Checking"), use("records_query")], []]), RESCUE_PROMPT);
+  assert.isUndefined(turn(asked, [[use("records_query")], [text("Yes, on 4 Nov.")]]));
+  // A question card answers; a chart alone gets asked for its line.
+  assert.isUndefined(turn(asked, [[use("kin_ask")], []]));
+  assert.equal(turn(asked, [[use("kin_chart")], []]), CAPTION_PROMPT);
   // A check-in owes no reply.
-  assert.isFalse(turn("> BEGIN QUOTE: pulse\n> {}", [[use("kin_end")]]));
+  assert.isUndefined(turn("> BEGIN QUOTE: pulse\n> {}", [[use("records_query")], []]));
+});
+
+it("reads a Kin turn's text as Kin's bridge posts it: a word-for-word repeat once", () => {
+  const text = (value: string) => ({ type: "text", text: value });
+  const use = { type: "tool_use", id: "j", name: "mcp__t3-code__kin_journal", input: {} };
+  const reply = `Logged it. ${"The review covered the booking flow and its two open bugs. ".repeat(3)}`;
+  assert.equal(
+    shownText([[text("Checking"), use], [text(reply), use], [text(reply)]]),
+    `Checking\n\n${reply}`,
+  );
 });
 
 it("fills a Kin tool's left-out or message-id event as Kin's tool gate does", () => {

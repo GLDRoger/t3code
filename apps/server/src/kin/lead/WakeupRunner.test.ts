@@ -345,20 +345,17 @@ describe("WakeupRunner", () => {
             { thread_id: alone.threadId, chat_id: null },
           ],
         );
-        // The shared turn left no journal entry, not even the line for a turn without kin_end.
+        // The shared turn left no journal entry.
         const kept = (wakeupId: string | undefined) =>
           memory.filter(
             (write) => write === `journal:${wakeupId}` || write === `commit:${wakeupId}`,
           );
-        assert.deepStrictEqual(kept(alone.wakeupId), [
-          `journal:${alone.wakeupId}`,
-          `commit:${alone.wakeupId}`,
-        ]);
+        assert.deepStrictEqual(kept(alone.wakeupId), [`commit:${alone.wakeupId}`]);
         assert.deepStrictEqual(kept(shared.wakeupId), []);
         assert.include(memory, `discard:${shared.wakeupId}`);
         // One that saved something for the team commits exactly that.
         assert.deepStrictEqual(kept(saving.wakeupId), [`commit:${saving.wakeupId}`]);
-        assert.lengthOf(kept(again.wakeupId), 2);
+        assert.deepStrictEqual(kept(again.wakeupId), [`commit:${again.wakeupId}`]);
       }).pipe(Effect.provide(harness({ writer })), provideDeterministicTestRuntime);
     },
   );
@@ -666,10 +663,7 @@ describe("WakeupRunner", () => {
                 restore: () => Effect.die("unused"),
                 staged: () => Effect.succeed(false),
                 discard: () => Effect.void,
-                appendJournal: (_org, _wakeup, lines) =>
-                  Effect.sync(() =>
-                    assert.deepStrictEqual(lines, ["Agent ended without calling kin_end."]),
-                  ),
+                appendJournal: () => Effect.die("unused"),
                 commitWakeup: Effect.fn("test.commitWakeup")(function* (org, wakeupId, outcome) {
                   assert.strictEqual(org, orgId);
                   assert.strictEqual(outcome, "completed");

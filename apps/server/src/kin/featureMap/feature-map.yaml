@@ -31,7 +31,7 @@ features:
     web: [home, chat]
     phone: [tab:chats, KinChat]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    tools: [kin_chat_post, kin_chat_read, kin_react, kin_end]
+    tools: [kin_chat_post, kin_chat_read, kin_react]
     proof:
       - apps/server/src/kin/chat/KinChatService.test.ts
       - apps/server/src/kin/lead/ChatWake.test.ts

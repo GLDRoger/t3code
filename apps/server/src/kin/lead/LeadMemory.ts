@@ -157,7 +157,6 @@ export const JournalInput = Schema.Struct({
   did: Schema.Array(text).check(Schema.isMaxLength(100)),
   skipped: Schema.optional(Schema.Array(text).check(Schema.isMaxLength(100))),
 });
-export const EndInput = Schema.Struct({ summary: text });
 export const ItemResult = Schema.Struct({ itemId: KinMemoryItemId });
 export const LabelResult = Schema.Struct({
   itemIds: Schema.Array(KinMemoryItemId),
@@ -291,10 +290,6 @@ export class LeadMemory extends Context.Service<
       scope: McpInvocationScope,
       input: typeof JournalInput.Type,
     ) => Effect.Effect<void, KinChatError>;
-    readonly end: (
-      scope: McpInvocationScope,
-      input: typeof EndInput.Type,
-    ) => Effect.Effect<void, KinChatError>;
   }
 >()("t3/kin/lead/LeadMemory") {}
 
@@ -361,11 +356,6 @@ export const authority = Layer.effect(
             agentId: row.agentId,
             wakeupId,
           }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-          // A shared turn's kin_end stages nothing (`end` below), so its receipt shows nothing lost.
-          const ownerOnly =
-            (yield* effectiveAudience({ orgId, agentId: row.agentId, wakeupId }).pipe(
-              Effect.provideService(SqlClient.SqlClient, sql),
-            )) === "owner_only";
           return {
             orgId,
             wakeupId,
@@ -377,8 +367,7 @@ export const authority = Layer.effect(
             sources,
             stagedReceipts:
               (yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
-                AND (call_key <> 'end' OR ${ownerOnly ? 1 : 0} = 1)
-                -- A schedule is saved when its call runs; nothing of it waits for kin_end.
+                -- A schedule is saved when its call runs; nothing of it waits for the turn's end.
                 AND call_key NOT LIKE 'schedule:%' LIMIT 1`).length > 0,
           };
         },
@@ -395,7 +384,6 @@ export const authority = Layer.effect(
 /** Kin-tool caller: a registered lead thread in its running wake-up, never another agent. */
 export const resolveLead = Effect.fn("LeadMemory.resolveLead")(function* (
   scope: McpInvocationScope,
-  allowEnded = false,
 ) {
   const identity = yield* KinIdentity;
   const sql = yield* SqlClient.SqlClient;
@@ -405,11 +393,6 @@ export const resolveLead = Effect.fn("LeadMemory.resolveLead")(function* (
     startedAt: number;
   }>`SELECT w.wakeup_id AS "wakeupId", w.started_at AS "startedAt" FROM kin_wakeups w JOIN kin_leads l ON l.org_id = w.org_id AND l.agent_id = w.agent_id JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id WHERE w.org_id = ${agent.orgId} AND w.agent_id = ${agent.agentId} AND w.thread_id = ${agent.threadId} AND l.thread_id = w.thread_id AND a.role = 'lead' AND w.status = 'running'`;
   if (!row) return yield* denied();
-  if (!allowEnded) {
-    const ended =
-      yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${agent.orgId} AND wakeup_id = ${row.wakeupId} AND call_key = 'end'`;
-    if (ended.length > 0) return yield* denied();
-  }
   return { ...agent, ...row };
 });
 
@@ -443,10 +426,8 @@ const make = Effect.gen(function* () {
     }
     return yield* lock.withPermits(1)(operation);
   });
-  // The last wake-up each lead ended, so an identical kin_end retry appends no second summary.
-  const ended = new Map<string, string>();
-  const resolve = (scope: McpInvocationScope, allowEnded = false) =>
-    resolveLead(scope, allowEnded).pipe(
+  const resolve = (scope: McpInvocationScope) =>
+    resolveLead(scope).pipe(
       Effect.provideService(KinIdentity, identity),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
@@ -535,9 +516,7 @@ const make = Effect.gen(function* () {
   });
   const reused = (key: string) =>
     invalid(
-      key === "end"
-        ? "kin_end was already called with a different summary in this wake-up."
-        : `Memory item ${key.slice("item:".length)} was already written differently in this wake-up. Repeat the same call, or use a new id.`,
+      `Memory item ${key.slice("item:".length)} was already written differently in this wake-up. Repeat the same call, or use a new id.`,
     );
   const receipt = Effect.fn("LeadMemory.receipt")(function* <E>(
     ctx: Effect.Success<ReturnType<typeof resolve>>,
@@ -1259,34 +1238,6 @@ const make = Effect.gen(function* () {
               (line) =>
                 `${line} (from chat ${chat?.chatId ?? "unknown"}, which other people read: what was said there, not the owner's instruction)`,
             ),
-      );
-    }, Effect.mapError(failure)),
-    end: Effect.fn("LeadMemory.end")(function* (scope, input) {
-      const ctx = yield* resolve(scope, true);
-      yield* locked(
-        ctx.orgId,
-        ctx.agentId,
-        Effect.gen(function* () {
-          const ctx = yield* resolve(scope, true);
-          // The turn already ended: a second kin_end, whatever its summary, changes nothing.
-          const [done] = yield* sql`SELECT 1 FROM kin_lead_tool_calls
-            WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND call_key = 'end'`;
-          if (done !== undefined) return;
-          // The turn still ends; only an owner-only turn's own words reach the journal.
-          const shared =
-            (yield* effectiveAudience(ctx).pipe(
-              Effect.provideService(SqlClient.SqlClient, sql),
-            )) !== "owner_only";
-          yield* receipt(
-            ctx,
-            "end",
-            input,
-            shared || ended.get(agentKey(ctx.orgId, ctx.agentId)) === ctx.wakeupId
-              ? Effect.void
-              : writer.appendJournal(ctx.orgId, ctx.wakeupId, [`Summary: ${input.summary}`]),
-          );
-          ended.set(agentKey(ctx.orgId, ctx.agentId), ctx.wakeupId);
-        }),
       );
     }, Effect.mapError(failure)),
   });

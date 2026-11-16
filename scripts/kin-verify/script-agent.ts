@@ -110,10 +110,7 @@ function promptText(params: Record<string, unknown>): string {
 
 interface Turn {
   readonly reply: string;
-  /** Ends the turn the way a real agent does, after its reply: kin_end saves what it staged. */
-  readonly end: () => Promise<void>;
 }
-const noEnd = async () => {};
 
 /** kin-bench measures every prompt: with `<verify dir>/capture-prompts` present, each is kept with its tool list. */
 async function capture(server: McpServer | undefined, prompt: string) {
@@ -160,19 +157,19 @@ async function runTurn(
   if (prompt.includes("This is a check-in") && NodeFS.existsSync(brief)) {
     const reply = NodeFS.readFileSync(brief, "utf8");
     NodeFS.rmSync(brief);
-    return { reply, end: noEnd };
+    return { reply };
   }
-  if (id === undefined) return { reply: "Noted.", end: noEnd };
+  if (id === undefined) return { reply: "Noted." };
   const task = notice?.[1] ?? notice?.[2];
   const scriptPath = NodePath.join(verifyDir, "turns", `${id}.json`);
   const resultPath = NodePath.join(verifyDir, "turns", `${id}.result.json`);
   // A turn re-run after a restart must not repeat its tool calls; every notice is its own turn.
-  if (notice === null && NodeFS.existsSync(resultPath)) return { reply: "Done.", end: noEnd };
+  if (notice === null && NodeFS.existsSync(resultPath)) return { reply: "Done." };
   let script: TurnScript;
   try {
     script = JSON.parse(NodeFS.readFileSync(scriptPath, "utf8")) as TurnScript;
   } catch {
-    return { reply: `No script for ${id}.`, end: noEnd };
+    return { reply: `No script for ${id}.` };
   }
   NodeFS.writeFileSync(NodePath.join(verifyDir, "turns", `${id}.prompt.txt`), prompt);
   // A real agent copies the event it answers and the chat it replies to from its prompt;
@@ -263,14 +260,8 @@ async function runTurn(
   }
   if (script.holdMs !== undefined) await new Promise((done) => setTimeout(done, script.holdMs));
   NodeFS.writeFileSync(resultPath, JSON.stringify({ results }, null, 2));
-  const ends = (script.calls ?? []).some((call) => call.name === "kin_end");
   if (script.fail === true) throw new Error("kin-verify: this turn fails on purpose");
-  return {
-    reply: script.reply ?? "Done.",
-    end: async () => {
-      if (mcp !== undefined && !ends) await mcp.call("kin_end", { summary: `kin-verify ${id}` });
-    },
-  };
+  return { reply: script.reply ?? "Done." };
 }
 
 function main(): void {
@@ -320,7 +311,6 @@ function main(): void {
             },
           },
         });
-        await turn.end().catch(() => undefined);
         return { stopReason: "end_turn" };
       }
       case "session/close":

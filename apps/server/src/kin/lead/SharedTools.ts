@@ -138,8 +138,6 @@ export const SHARED_TOOLS = {
   people_read: "allowed",
   // Saved only for the one person who asked, with their own rights.
   people_update: "allowed",
-  // Ends the turn; a shared turn's summary reaches no journal (`LeadMemory.end`).
-  kin_end: "allowed",
   kin_delegate: ownerDelegates,
   kin_follow_up: ownerAskedAboutWorkerHere,
   kin_worker_stop: ownerAskedAboutWorkerHere,

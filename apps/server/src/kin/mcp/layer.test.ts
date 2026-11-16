@@ -333,12 +333,7 @@ it.effect.each([true, false])(
         const toolNames = decodeToolList(
           yield* Effect.promise(() => HttpServerResponse.toWeb(toolList).text()),
         ).result.tools.map((tool) => tool.name);
-        assert.includeMembers(toolNames, [
-          "kin_chat_read",
-          "request_action",
-          "kin_delegate",
-          "kin_end",
-        ]);
+        assert.includeMembers(toolNames, ["kin_chat_read", "request_action", "kin_delegate"]);
         for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(toolNames, name);
         // GitHub isn't connected: the worker path, and none of T3's own tools.
