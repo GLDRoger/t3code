@@ -482,6 +482,12 @@ export default defineConfig({
         rules: { "t3code/kin-messages-to-people": "off" },
       },
       {
+        // The server's own zone is no person's; a client's device zone is its viewer's.
+        files: ["apps/server/src/kin/**"],
+        excludeFiles: ["**/*.{test,testkit}.ts"],
+        rules: { "t3code/kin-zoned-time": "error" },
+      },
+      {
         // The one place that answers "may act as owner" and "is the owner himself".
         files: ["apps/server/src/kin/people/KinAccess.ts"],
         rules: { "t3code/kin-owner-level": "off" },
