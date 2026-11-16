@@ -335,9 +335,9 @@ it.effect.each([true, false])(
         const toolNames = decodeToolList(
           yield* Effect.promise(() => HttpServerResponse.toWeb(toolList).text()),
         ).result.tools.map((tool) => tool.name);
-        // The owner's own thread: Kin's tools and T3's, GitHub connected or not; no kin_delegate.
+        // The owner's own thread: Kin's tools and T3's, GitHub connected or not.
         assert.includeMembers(toolNames, ["kin_chat_read", "request_action", "delegate_task"]);
-        for (const name of ["kin_delegate", "schedule_task", "t3_thread_launch", "create_threads"])
+        for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(toolNames, name);
         // Without the Kin App, its GitHub tools could only say GitHub isn't connected.
         const kinGitHub = Object.keys(KinLeadToolkit.tools).filter((name) =>
@@ -382,9 +382,7 @@ it.effect.each([true, false])(
         ).result.tools.map((tool) => tool.name);
         assert.includeMembers(servedNames, ["social_read", "social_draft", "social_week"]);
         yield* sql`UPDATE kin_leads SET domain = 'engineering' WHERE agent_id = ${agentId}`;
-        const served = [
-          ...new Set([...servedNames, ...kinGitHub, ...LEAD_T3_TOOLS, "kin_delegate"]),
-        ];
+        const served = [...new Set([...servedNames, ...kinGitHub, ...LEAD_T3_TOOLS])];
         assert.sameMembers(served, Object.keys(SHARED_TOOLS));
         // And once the turn read a connected service's text; connections stay out of shared turns.
         assert.sameMembers(served, Object.keys(OUTSIDE_TOOLS));
@@ -438,23 +436,16 @@ it.effect.each([true, false])(
           threadId: ThreadId.make("kin-dream:dream_20260101_abc:extract"),
           providerInstanceId: ProviderInstanceId.make("codex"),
         });
-        // A worker on this server reads untrusted repository text: no T3 or Kin tools either.
-        const work = yield* registry.issue({
-          threadId: ThreadId.make("kin-work:wk-fixture"),
-          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
-        });
-        for (const untrusted of [dream, work])
-          for (const path of ["/mcp", "/kin/mcp"])
-            assert.strictEqual(
-              (yield* request(path, untrusted.config.authorizationHeader, "initialize", initialize))
-                .status,
-              401,
-            );
+        for (const path of ["/mcp", "/kin/mcp"])
+          assert.strictEqual(
+            (yield* request(path, dream.config.authorizationHeader, "initialize", initialize))
+              .status,
+            401,
+          );
         const tokens = Context.get(services, KinIssuedTokens.KinIssuedTokens);
         const leak = (header: string) => tokens.containsIssuedToken(`argv: "${header}"`);
         assert.isTrue(yield* leak(ordinary.config.authorizationHeader));
         assert.isFalse(yield* leak(dream.config.authorizationHeader));
-        assert.isFalse(yield* leak(work.config.authorizationHeader));
         yield* registry.revokeThread(ThreadId.make("ordinary-thread"));
         assert.isFalse(yield* leak(ordinary.config.authorizationHeader));
         const result = yield* request(
@@ -515,10 +506,10 @@ it.effect.each([true, false])(
           "t3_worktree_status",
           "watch_pull_request",
         ]);
-        for (const name of ["kin_delegate", "schedule_task", "t3_thread_launch", "create_threads"])
+        for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(connected.names, name);
         assert.sameMembers(
-          [...new Set([...connected.names, ...kinGitHub, ...LEAD_T3_TOOLS, "kin_delegate"])],
+          [...new Set([...connected.names, ...kinGitHub, ...LEAD_T3_TOOLS])],
           Object.keys(SHARED_TOOLS).filter((name) => !isSocialTool(name)),
         );
         // This turn read outside text: a delegated task is work that text could steer.
@@ -534,7 +525,7 @@ it.effect.each([true, false])(
           OUTSIDE_REFUSAL,
         );
         // A turn others read runs on a shared thread, which never lists them.
-        for (const name of [...LEAD_T3_TOOLS, "kin_delegate"])
+        for (const name of LEAD_T3_TOOLS)
           assert.isFalse(yield* visibleOnKinEndpoint(name, ThreadId.make("kin-shared:lead-group")));
         const agentSessions = Context.get(services, KinAgentSessions);
         assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));

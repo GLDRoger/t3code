@@ -1,6 +1,5 @@
 import { assert, it } from "@effect/vitest";
 import {
-  EnvironmentId,
   KinAgentId,
   KinChatId,
   KinEventId,
@@ -32,6 +31,7 @@ import * as Service from "./KinChatService.ts";
 import * as Groups from "./KinGroups.ts";
 import * as Identity from "./KinIdentity.ts";
 import { environment } from "./TaskCard.testkit.ts";
+import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 // After the chat service: the two import each other, and this order is the one that loads.
 import { deferralOrigin } from "../triggers/deferralOrigin.ts";
 
@@ -852,12 +852,17 @@ it.effect(
           orgId,
           chatId,
           authorAgentId: tech,
-          threadId: ThreadId.make("worker-before-sam"),
+          threadId: ThreadId.make("task-before-sam"),
           title: "Invented work",
           model: "invented-model",
-          remote: { environmentId: EnvironmentId.make("worker-env"), status: "working" },
         })
-        .pipe(Effect.provide(Layer.mock(OrchestratorV2)({})));
+        .pipe(
+          Effect.provide(
+            Layer.mock(OrchestratorV2)({
+              getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+            }),
+          ),
+        );
       // Server-held fields the card picked up before Sam joined, and a reply the lead posted then.
       yield* sql`UPDATE kin_widgets SET state_json = json_set(state_json,
           '$.lastError', 'Invented-pre-join-error',
@@ -938,12 +943,17 @@ it.effect(
           orgId,
           chatId,
           authorAgentId: tech,
-          threadId: ThreadId.make("worker-after-sam"),
+          threadId: ThreadId.make("task-after-sam"),
           title: "Invented later work",
           model: "invented-model",
-          remote: { environmentId: EnvironmentId.make("worker-env"), status: "working" },
         })
-        .pipe(Effect.provide(Layer.mock(OrchestratorV2)({})));
+        .pipe(
+          Effect.provide(
+            Layer.mock(OrchestratorV2)({
+              getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+            }),
+          ),
+        );
       const updated = yield* chats.upsertWidget(turn, {
         chatId,
         widgetId: fresh.widgetId,

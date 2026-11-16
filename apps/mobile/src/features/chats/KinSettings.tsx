@@ -4,6 +4,7 @@ import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   KIN_DAILY_LIMIT,
   kinDailyLimitChoices,
+  kinDailyLimitUsed,
   kinDailyLimitWaiting,
 } from "@t3tools/client-runtime/kin/kinBudget";
 import {
@@ -370,9 +371,16 @@ function KinDailyLimitSection(props: {
   const { choices, current } = kinDailyLimitChoices(budget);
   const label = choices.find((choice) => choice.value === current)?.label ?? "…";
   const waiting = kinDailyLimitWaiting(budget);
+  const used = kinDailyLimitUsed(budget);
   return (
     <>
-      <SettingsSection footer={KIN_DAILY_LIMIT.detail}>
+      <SettingsSection
+        footer={
+          used === null
+            ? KIN_DAILY_LIMIT.detail
+            : `${KIN_DAILY_LIMIT.used}: ${used}. ${KIN_DAILY_LIMIT.detail}`
+        }
+      >
         <Menu
           actions={choices.map((choice) => ({
             id: choice.value,

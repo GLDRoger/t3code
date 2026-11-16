@@ -83,20 +83,10 @@ const event = Effect.fn("test.event")(function* (
     expired: { count: 0, events: [] },
     subject: { type: "reminder", itemId: "reminder" },
     lateByMs: 0,
-    workerId: id,
     recordId: id,
     key: "W-1",
     seq: 1,
     reason: "assigned",
-    report: {
-      result: "done",
-      summary: "Done",
-      evidence: [],
-      openQuestions: [],
-      memorySuggestions: [],
-      misleadingMemory: [],
-      parsed: true,
-    },
   });
 });
 
@@ -207,7 +197,6 @@ describe("KinEventQueue", () => {
           ["github", "github"],
           ["routine", "routine"],
           ["due", "deferral.due"],
-          ["report", "worker.report"],
           ["resolved", "action.resolved"],
         ])
           yield* queue.enqueue(yield* event(id!, tag!));
@@ -235,7 +224,6 @@ describe("KinEventQueue", () => {
             "resume",
             "widget.action",
             "due",
-            "report",
             "resolved",
             "github",
             "noisy",

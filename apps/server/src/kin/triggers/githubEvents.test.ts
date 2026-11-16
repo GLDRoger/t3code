@@ -272,52 +272,46 @@ describe("KinGithubEvents", () => {
     ),
   );
 
-  it.effect(
-    "a merged PR closes the Work entries of the worker that opened it; an unmerged one doesn't",
-    () =>
-      run(({ deliver, drain }) =>
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient;
-          const records = yield* KinRecords.KinRecords;
-          yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
-          VALUES (${orgId}, 'worker-wake', 'lead', 'test', 0, 'completed', '[]')`;
-          for (const [worker, number] of [
-            ["merged-worker", 212],
-            ["closed-worker", 213],
-          ] as const)
-            yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, repository_key, pull_request_number, pull_request_url)
-            VALUES (${worker}, ${orgId}, 'lead', 'worker-wake', 'build', ${`${worker}-thread`}, '{}', '{}', 'completed', 0, 'github.com/owner/repo', ${number}, ${`https://github.com/owner/repo/pull/${number}`})`;
-          const entry = (worker: string) =>
-            records.create(
-              orgId,
-              { actor: { _tag: "agent", agentId: KinAgentId.make("lead") }, via: "worker" },
-              {
-                originKey: `worker:${worker}`,
-                title: `Invented change by ${worker}`,
-                state: "doing",
-                owner: { _tag: "agent", agentId: KinAgentId.make("lead") },
-                links: [{ kind: "worker", target: worker, relation: "attempt" }],
-              },
-            );
-          const merged = (yield* entry("merged-worker")).row;
-          const closed = (yield* entry("closed-worker")).row;
-          yield* deliver("gh-merged", pullRequest());
-          yield* deliver("gh-closed", {
-            ...pullRequest({ merged: false }),
-            pull_request: { number: 213, merged: false, head: { sha: "def456" } },
-          });
-          yield* drain;
-          assert.include(yield* records.get(orgId, merged.key), { state: "done" });
-          assert.include(yield* records.get(orgId, closed.key), { state: "doing" });
-          const [change] = (yield* records.detail((yield* records.get(orgId, merged.key))!))
-            .changes;
-          assert.deepInclude(change, {
-            by: { _tag: "system" },
-            via: "github",
-            fields: [{ field: "state", from: "doing", to: "done" }],
-          });
-        }),
-      ),
+  it.effect("a merged PR closes the Work entries linked to it; an unmerged one doesn't", () =>
+    run(({ deliver, drain }) =>
+      Effect.gen(function* () {
+        const records = yield* KinRecords.KinRecords;
+        const entry = (number: number) =>
+          records.create(
+            orgId,
+            { actor: { _tag: "system" }, via: "import" },
+            {
+              originKey: `import:pr-${number}`,
+              title: `Invented change in PR ${number}`,
+              state: "doing",
+              owner: { _tag: "agent", agentId: KinAgentId.make("lead") },
+              links: [
+                {
+                  kind: "pull_request",
+                  target: `https://github.com/owner/repo/pull/${number}`,
+                  relation: "attempt",
+                },
+              ],
+            },
+          );
+        const merged = (yield* entry(212)).row;
+        const closed = (yield* entry(213)).row;
+        yield* deliver("gh-merged", pullRequest());
+        yield* deliver("gh-closed", {
+          ...pullRequest({ merged: false }),
+          pull_request: { number: 213, merged: false, head: { sha: "def456" } },
+        });
+        yield* drain;
+        assert.include(yield* records.get(orgId, merged.key), { state: "done" });
+        assert.include(yield* records.get(orgId, closed.key), { state: "doing" });
+        const [change] = (yield* records.detail((yield* records.get(orgId, merged.key))!)).changes;
+        assert.deepInclude(change, {
+          by: { _tag: "system" },
+          via: "github",
+          fields: [{ field: "state", from: "doing", to: "done" }],
+        });
+      }),
+    ),
   );
 
   it.effect("drops untracked traffic, keeps tracked items and mentions, and batches notices", () =>
@@ -396,22 +390,9 @@ describe("KinGithubEvents", () => {
     ),
   );
 
-  it.effect("keeps memory-linked issues and worker PR CI, scoped to the repository", () =>
+  it.effect("keeps memory-linked issues, scoped to the repository", () =>
     run(({ deliver, drain }) =>
       Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
-        VALUES (${orgId}, 'worker-wake', 'lead', 'test', 0, 'completed', '[]')`;
-        yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, repository_key, pull_request_number, pull_request_url)
-        VALUES ('worker', ${orgId}, 'lead', 'worker-wake', 'build', 'worker-thread', '{}', '{}', 'done', 0, 'github.com/owner/repo', 888, 'https://github.com/OWNER/REPO/pull/888')`;
-        yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at) VALUES ('other-lead', ${orgId}, 'Other', 'lead', 'owner', ${timestamp}, NULL)`;
-        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
-          VALUES ('other-lead', ${orgId}, 'Other', 0, '{}', '[]', 'chat')`;
-        yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
-          VALUES (${orgId}, 'other-wake', 'other-lead', 'test', 0, 'completed', '[]')`;
-        yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, repository_key, pull_request_number, pull_request_url)
-          VALUES ('other-worker', ${orgId}, 'other-lead', 'other-wake', 'build', 'other-thread', '{}', '{}', 'done', 0, 'github.com/owner/repo', 889, 'https://github.com/owner/repo/pull/889')`;
-        yield* deliver("other-lead", { ...pullRequest(), pull_request: { number: 889 } });
         yield* deliver(
           "linked-issue",
           {
@@ -422,40 +403,19 @@ describe("KinGithubEvents", () => {
           "issue_comment",
         );
         yield* deliver(
-          "worker-ci",
+          "foreign",
           {
-            repository: { full_name: "owner/repo" },
-            check_suite: { head_sha: "abc", pull_requests: [{ number: 888 }] },
+            repository: { full_name: "owner/elsewhere" },
+            issue: { number: 777 },
             sender: { login: "human" },
           },
-          "check_suite",
+          "issue_comment",
         );
-        yield* deliver("foreign", {
-          ...pullRequest(),
-          repository: { full_name: "owner/elsewhere" },
-          pull_request: { number: 888 },
-        });
         yield* drain;
-        assert.deepStrictEqual((yield* events).map((event) => event.dedupeKey).sort(), [
-          "linked-issue",
-          "worker-ci",
-        ]);
-        yield* sql`UPDATE kin_workers SET repository_key = 'github.com/owner/elsewhere'
-          WHERE org_id = ${orgId} AND worker_id = 'worker'`;
-        yield* deliver("wrong-worker-repo", { ...pullRequest(), pull_request: { number: 888 } });
-        yield* drain;
-        assert.lengthOf(yield* events, 2);
-        yield* sql`UPDATE kin_workers SET pull_request_url = NULL, pull_request_number = NULL, repository_key = 'github.com/owner/repo'
-          WHERE org_id = ${orgId} AND worker_id = 'worker'`;
-        yield* deliver("worker-opened", {
-          ...pullRequest(),
-          pull_request: {
-            number: 890,
-            head: { sha: "abc", ref: "kin/worker/worker", repo: { full_name: "owner/repo" } },
-          },
-        });
-        yield* drain;
-        assert.lengthOf(yield* events, 3);
+        assert.deepStrictEqual(
+          (yield* events).map((event) => event.dedupeKey),
+          ["linked-issue"],
+        );
       }),
     ),
   );
@@ -734,9 +694,6 @@ describe("GitHub mention interest", () => {
       body: JSON.stringify({ ...pullRequest(), action, pull_request: { number: 999, body: text } }),
       bodyTruncated: false,
     });
-    assert.strictEqual(
-      built._tag === "event" && relevant(built.event, "kin[bot]", [], []),
-      matches,
-    );
+    assert.strictEqual(built._tag === "event" && relevant(built.event, "kin[bot]", []), matches);
   });
 });

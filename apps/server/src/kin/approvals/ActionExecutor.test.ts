@@ -1779,12 +1779,6 @@ describe("KinActionExecutor", () => {
           "const run = new Function(",
         ],
       ],
-      // A worker's browser resolves Playwright from Kin's install; its brief only quotes the line.
-      [
-        "kin/lead/workerBrowser.ts",
-        ["const requireHere = NodeModule.createRequire(import.meta.url);"],
-      ],
-      ["kin/lead/workerBrief.ts", ["*- Playwright (playwright-core, no test runner):"]],
       // Scripts run with `node -e` on a device host.
       ...[
         "device/sshDeviceScript.ts",

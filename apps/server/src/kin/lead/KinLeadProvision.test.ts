@@ -31,7 +31,7 @@ import { seedCharacters } from "./characters.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import { KinLevelGate } from "./LevelGate.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
-import { RETIRED_ACTION_REASON, RETIRED_WORKER_REASON } from "./Retirement.ts";
+import { RETIRED_ACTION_REASON } from "./Retirement.ts";
 
 const layer = Layer.merge(Provision.layer, RetiredActions.hostLayer).pipe(
   Layer.provideMerge(Sqlite.layerMemory),
@@ -462,13 +462,6 @@ describe("KinLeadProvision", () => {
         yield* event("e-claimed", "claimed", "w-run");
         yield* event("e-queued", "queued", null);
         yield* event("e-done", "done", "w-run");
-        const worker = (id: string, endedAt: number | null) =>
-          sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id,
-              model_json, provenance_json, status, started_at, ended_at)
-            VALUES (${id}, ${orgId}, ${growth.agentId}, 'w-run', 'build', ${id}, '{}', '{}', 'running',
-              5, ${endedAt})`;
-        yield* worker("wk-open", null);
-        yield* worker("wk-ended", 9);
         // Timers: a reminder in its own chat waits; one in Ada's chat is Ada's and runs on.
         yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role, kind, body, mentions_json, status, created_at)
           VALUES ('card-g', ${orgId}, ${growth.ownerChatId}, 1, 'system', 'owner', 'system', '', '[]', 'posted', '2026-11-09T00:00:00.000Z'),
@@ -527,8 +520,6 @@ describe("KinLeadProvision", () => {
             wakeups: yield* sql`SELECT wakeup_id, status, aborted_at IS NOT NULL AS aborted
               FROM kin_wakeups ORDER BY wakeup_id`,
             events: yield* sql`SELECT event_id, state FROM kin_events ORDER BY event_id`,
-            attempts: yield* sql`SELECT worker_id, stopped_at IS NOT NULL AS stopped, stop_reason,
-                stop_key FROM kin_worker_attempts ORDER BY worker_id`,
             triggers: yield* sql`SELECT trigger_id, enabled, next_run_at FROM kin_triggers
               ORDER BY trigger_id`,
             schedules:
@@ -539,15 +530,6 @@ describe("KinLeadProvision", () => {
         });
         yield* TestClock.adjust("1 minute");
         yield* Provision.retireOnHost(growth.agentId);
-        const retiredKey = "kin-retired:wk-open:1970-01-01T00:01:00.000Z";
-        const stoppedAttempts = [
-          {
-            worker_id: "wk-open",
-            stopped: 1,
-            stop_reason: RETIRED_WORKER_REASON,
-            stop_key: retiredKey,
-          },
-        ];
         const expiredEvents = [
           { event_id: "e-claimed", state: "expired" },
           { event_id: "e-done", state: "done" },
@@ -561,7 +543,6 @@ describe("KinLeadProvision", () => {
         assert.deepStrictEqual(yield* state, {
           wakeups: [{ wakeup_id: "w-run", status: "running", aborted: 1 }],
           events: expiredEvents,
-          attempts: stoppedAttempts,
           triggers: [
             { trigger_id: "deferral:ada-call:due", enabled: 1, next_run_at: due },
             { trigger_id: "deferral:growth-call:due", enabled: 0, next_run_at: due },
@@ -582,9 +563,8 @@ describe("KinLeadProvision", () => {
         yield* Provision.restoreOnHost(growth.agentId);
         assert.deepStrictEqual(yield* state, {
           wakeups: [{ wakeup_id: "w-run", status: "running", aborted: 1 }],
-          // Expired events, stopped workers and closed requests stay so.
+          // Expired events and closed requests stay so.
           events: expiredEvents,
-          attempts: stoppedAttempts,
           triggers: [
             { trigger_id: "deferral:ada-call:due", enabled: 1, next_run_at: due },
             { trigger_id: "deferral:growth-call:due", enabled: 1, next_run_at: due },
@@ -615,7 +595,6 @@ describe("KinLeadProvision", () => {
           { task_id: "sch-off", pending_enabled: null },
           { task_id: "sch-on", pending_enabled: 0 },
         ]);
-        assert.deepStrictEqual(held.attempts, stoppedAttempts);
         assert.deepStrictEqual(held.actions, closedActions);
         assert.deepStrictEqual(
           yield* sql`SELECT kind, target_id FROM kin_retirement_holds ORDER BY kind, target_id`,
@@ -730,20 +709,15 @@ describe("KinLeadProvision", () => {
           },
         ]);
 
-        // Ada is on a turn, has a worker running, a reminder waiting and a task scheduled. A
-        // reminder already given, a paused task and a finished worker are not in hand; nor is
-        // one whose fire already went out, or a task she cancelled, which stops its trigger at once.
+        // Ada is on a turn, has a reminder waiting and a task scheduled. A reminder already given
+        // and a paused task are not in hand; nor is one whose fire already went out, or a task
+        // she cancelled, which stops its trigger at once.
         const trigger = (triggerId: string, nextRunAt: number | null) =>
           sql`INSERT INTO kin_triggers (trigger_id, org_id, subject_json, schedule_json, time_zone, enabled, next_run_at, created_at, updated_at)
             VALUES (${triggerId}, ${orgId}, '{}', '{}', 'UTC', ${nextRunAt === null ? 0 : 1}, ${nextRunAt}, 0, 0)`;
         const { orgId } = tech;
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
           VALUES ('wake', ${orgId}, ${tech.agentId}, 'test', 0, 'running', '[]')`;
-        const worker = (id: string, title: string, endedAt: number | null) =>
-          sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id, model_json, provenance_json, status, started_at, ended_at, title, chat_id)
-            VALUES (${id}, ${orgId}, ${tech.agentId}, 'wake', 'build', ${id}, '{}', '{}', 'queued', 5, ${endedAt}, ${title}, ${tech.ownerChatId})`;
-        yield* worker("wk-open", "Add a README section", null);
-        yield* worker("wk-done", "Old task", 9);
         yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role, kind, body, mentions_json, status, created_at)
           VALUES ('card', ${orgId}, ${tech.ownerChatId}, 1, 'system', 'owner', 'system', '', '[]', 'posted', '2026-11-09T00:00:00.000Z')`;
         const card = (widgetId: string, title: string) =>
@@ -801,7 +775,6 @@ describe("KinLeadProvision", () => {
         assert.deepInclude(ada, {
           working: true,
           tracking: [
-            { kind: "work", title: "Add a README section", chatId },
             { kind: "reminder", title: "Title of soon", dueAt: "2026-11-12T09:00:00.000Z", chatId },
             {
               kind: "follow_up",

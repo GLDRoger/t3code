@@ -17,6 +17,7 @@ import { forkParked } from "../../serverActivation.ts";
 import { SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { hashedEventId } from "./eventIds.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 
 /**
  * The run T3 started for a finished-task notice, or its restart or usage-limit continuation,
@@ -69,6 +70,25 @@ export const noticeState = (
 };
 
 /**
+ * The agent and chat a task delegated from `threadId` answers in: the chat it was asked from
+ * while only owner-level people ever were in it, else the agent's direct chat with its owner.
+ */
+export const taskChat = Effect.fn("KinTaskWake.taskChat")(function* (threadId: ThreadId) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ orgId: KinOrgId; agentId: KinAgentId; chatId: string }>`
+    SELECT t.org_id AS "orgId", t.agent_id AS "agentId",
+      CASE WHEN t.chat_id IS NULL OR EXISTS (SELECT 1 FROM kin_chat_members m
+          WHERE m.org_id = t.org_id AND m.chat_id = t.chat_id AND m.principal_kind = 'person'
+            AND NOT ${sql.literal(ownerLevelSql("m.org_id", "m.person_id"))})
+        THEN l.owner_chat_id ELSE t.chat_id END AS "chatId"
+    FROM kin_agent_threads t
+    JOIN kin_leads l ON l.org_id = t.org_id AND l.agent_id = t.agent_id
+    WHERE t.thread_id = ${threadId}
+    ORDER BY t.org_id, t.agent_id LIMIT 1`;
+  return row === undefined ? undefined : { ...row, chatId: KinChatId.make(row.chatId) };
+});
+
+/**
  * T3 tells a thread when tasks it delegated end (`ProviderContinuationService`). On a lead's own
  * thread that notice becomes a `task.finished` event, so a Kin wake-up owns the run that answers
  * it and its one reply lands in the chat the work was asked from. Keyed on T3's message, so a
@@ -84,13 +104,7 @@ export const make = Effect.gen(function* () {
   ) {
     const completion = message.delegatedCompletion;
     if (completion === undefined || message.threadId.startsWith(SHARED_THREAD_PREFIX)) return;
-    const [lead] = yield* sql<{ orgId: KinOrgId; agentId: KinAgentId; chatId: string }>`
-      SELECT t.org_id AS "orgId", t.agent_id AS "agentId",
-        COALESCE(t.chat_id, l.owner_chat_id) AS "chatId"
-      FROM kin_agent_threads t
-      JOIN kin_leads l ON l.org_id = t.org_id AND l.agent_id = t.agent_id
-      WHERE t.thread_id = ${message.threadId}
-      ORDER BY t.org_id, t.agent_id LIMIT 1`;
+    const lead = yield* taskChat(message.threadId);
     if (lead === undefined) return;
     const eventId = hashedEventId("task", message.id);
     yield* queue
@@ -105,7 +119,7 @@ export const make = Effect.gen(function* () {
         threadId: message.threadId,
         messageId: message.id,
         taskIds: completion.taskIds,
-        chatId: KinChatId.make(lead.chatId),
+        chatId: lead.chatId,
       })
       .pipe(
         Effect.catchTags({

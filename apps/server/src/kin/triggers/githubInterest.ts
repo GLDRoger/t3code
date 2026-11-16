@@ -46,11 +46,6 @@ export const relevant = (
   event: KinGithubEvent,
   botLogin: string,
   items: ReadonlyArray<MemoryItemHead>,
-  workers: ReadonlyArray<{
-    readonly pullRequestNumber: number | null;
-    readonly branch: string;
-    readonly repositoryKey: string | null;
-  }>,
 ) => {
   const fields = Option.getOrUndefined(interestFields(event.payload));
   const numbers = [
@@ -59,21 +54,6 @@ export const relevant = (
       (pr) => pr.number,
     ),
   ];
-  if (
-    workers.some((worker) => {
-      const sameRepo =
-        worker.repositoryKey?.toLowerCase() === `github.com/${event.repo.toLowerCase()}`;
-      return (
-        (sameRepo &&
-          worker.pullRequestNumber !== null &&
-          numbers.includes(worker.pullRequestNumber)) ||
-        (sameRepo &&
-          fields?.pull_request?.head?.ref === worker.branch &&
-          fields.pull_request.head.repo?.full_name.toLowerCase() === event.repo.toLowerCase())
-      );
-    })
-  )
-    return true;
   if (
     items.some(
       (item) =>

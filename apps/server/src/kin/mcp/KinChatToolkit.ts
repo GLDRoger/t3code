@@ -95,7 +95,7 @@ const read = Tool.make("kin_chat_read", {
 const widget = Tool.make("kin_widget_upsert", {
   ...shared,
   description:
-    "Update your existing Kin task card by widgetId and expected revision. Task cards are created only by Kin's worker launcher, never by agents or clients. Server-owned fields are preserved. Approval widgets are refused; use signed approvals.",
+    "Update your existing Kin task card by widgetId and expected revision. Kin makes a task card itself for each task you delegate; agents and clients can't create one. Server-owned fields are preserved. Approval widgets are refused; use signed approvals.",
   parameters: Schema.Struct({
     chatId: KinChatId,
     widgetId: KinWidgetId,

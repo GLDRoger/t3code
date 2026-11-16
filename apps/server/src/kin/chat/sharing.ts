@@ -70,27 +70,6 @@ export const historyFloor = (sql: SqlClient.SqlClient, orgId: string, chatId: st
         AND m.left_at IS NULL AND ${sql.literal(notOwnerSql("m.org_id", "m.chat_id", "m.person_id"))}), 0))
     FROM kin_chats c WHERE c.org_id = ${orgId} AND c.chat_id = ${chatId})`;
 
-/**
- * In the join's transaction, after `recordJoin`: whether `personId`'s join raised the chat's
- * history floor, as a first join, a later one or a re-join does, unless no one wrote since the
- * last. The owner's never does.
- */
-export const joinRaisedFloor = Effect.fn("KinChatSharing.joinRaisedFloor")(function* (
-  sql: SqlClient.SqlClient,
-  input: { readonly orgId: string; readonly chatId: string; readonly personId: string },
-) {
-  const rows = yield* sql`SELECT 1 FROM kin_chat_members j
-    WHERE j.org_id = ${input.orgId} AND j.chat_id = ${input.chatId}
-      AND j.principal_kind = 'person' AND j.person_id = ${input.personId} AND j.left_at IS NULL
-      AND ${sql.literal(notOwnerSql("j.org_id", "j.chat_id", "j.person_id"))}
-      AND NOT EXISTS (SELECT 1 FROM kin_chat_members o WHERE o.org_id = j.org_id
-        AND o.chat_id = j.chat_id AND o.member_id <> j.member_id AND o.principal_kind = 'person'
-        AND o.left_at IS NULL AND o.joined_seq >= j.joined_seq
-        AND ${sql.literal(notOwnerSql("o.org_id", "o.chat_id", "o.person_id"))})
-    LIMIT 1`;
-  return rows.length > 0;
-});
-
 /** The first seq `memberId` may read: their join's, 0 for the owner; no member reads from 0. */
 const joinedFrom = (sql: SqlClient.SqlClient, orgId: string, memberId: string) =>
   sql`COALESCE((SELECT joined.joined_seq FROM kin_chat_members joined

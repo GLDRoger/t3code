@@ -8,8 +8,7 @@ import {
   KinMessageId,
   type KinOrgId,
   type KinWakeupId,
-  type KinWorkerId,
-  type RunId,
+  type ThreadId,
   type TurnTokenUsage,
   type OrchestrationV2ProviderTurnTokenUsage,
 } from "@t3tools/contracts";
@@ -153,18 +152,18 @@ export class KinBudget extends Context.Service<
     }) => Effect.Effect<void, BudgetError>;
     /** Today's notice to the owner for a limit that was reached, once a day. */
     readonly notifyOwner: (orgId: KinOrgId, heldBy: HeldBy) => Effect.Effect<void, BudgetError>;
-    readonly admitWorker: (orgId: KinOrgId) => Effect.Effect<boolean, BudgetError>;
+    /** Whether today's limit for delegated tasks leaves room for another. */
+    readonly admitTask: (orgId: KinOrgId) => Effect.Effect<boolean, BudgetError>;
     readonly promptContext: (orgId: KinOrgId) => Effect.Effect<string, BudgetError>;
     readonly charge: (input: {
       readonly orgId: KinOrgId;
       readonly wakeupId: KinWakeupId;
       readonly usage: ReadonlyArray<Usage>;
     }) => Effect.Effect<Charge, BudgetError>;
-    /** Worker runs bill worker units only; lead turns, including Claude's otherUsage, stay lead units. */
-    readonly chargeWorker: (input: {
+    /** A delegated task's thread bills `workerUnits` only, on the day it was first charged. */
+    readonly chargeTask: (input: {
       readonly orgId: KinOrgId;
-      readonly workerId: KinWorkerId;
-      readonly runId: RunId;
+      readonly threadId: ThreadId;
       readonly usage: ReadonlyArray<Usage>;
     }) => Effect.Effect<{ readonly day: string; readonly units: number }, BudgetError>;
   }
@@ -571,7 +570,7 @@ const make = Effect.gen(function* () {
       (orgId, heldBy) => ownerNotice(orgId, heldBy),
       (effect) => sql.withTransaction(effect).pipe(Effect.mapError(mapError)),
     ),
-    admitWorker: Effect.fn("KinBudget.admitWorker")(function* (orgId) {
+    admitTask: Effect.fn("KinBudget.admitTask")(function* (orgId) {
       const budget = yield* read(orgId, false);
       return budget.limits.workerUnits === null || budget.workerUnits < budget.limits.workerUnits;
     }),
@@ -624,39 +623,30 @@ const make = Effect.gen(function* () {
         }),
       );
     }, Effect.mapError(mapError)),
-    chargeWorker: Effect.fn("KinBudget.chargeWorker")(function* (input) {
-      const units = yield* measure(input.usage, {
-        orgId: input.orgId,
-        workerId: input.workerId,
-        runId: input.runId,
-      });
+    chargeTask: Effect.fn("KinBudget.chargeTask")(function* (input) {
+      const units = yield* measure(input.usage, { orgId: input.orgId, threadId: input.threadId });
       const tokensJson = yield* encodeJson(usageJsonValue(input.usage));
       const { day } = yield* period(input.orgId);
       return yield* sql.withTransaction(
         Effect.gen(function* () {
-          const worker =
-            yield* sql`SELECT 1 FROM kin_workers WHERE org_id = ${input.orgId} AND worker_id = ${input.workerId} ORDER BY worker_id`;
-          if (worker.length === 0) return yield* notFound;
           const [stored] = yield* sql<{
             day: string;
             units: number;
             tokensJson: string;
-          }>`SELECT day, units, tokens_json AS "tokensJson" FROM kin_worker_charges WHERE org_id = ${input.orgId} AND run_id = ${input.runId} ORDER BY run_id`;
+          }>`SELECT day, units, tokens_json AS "tokensJson" FROM kin_task_charges WHERE org_id = ${input.orgId} AND thread_id = ${input.threadId} ORDER BY thread_id`;
           if (stored !== undefined && (stored.tokensJson === tokensJson || units <= stored.units))
             return { day: stored.day, units: stored.units };
           const delta = Math.max(0, units - (stored?.units ?? 0));
-          yield* ensure(input.orgId, day);
-          const before = yield* snapshot(input.orgId, day);
+          const charged = stored?.day ?? day;
+          yield* ensure(input.orgId, charged);
+          const before = yield* snapshot(input.orgId, charged);
           if (!Number.isFinite(before.workerUnits + delta)) return yield* invalid;
-          const inserted =
-            yield* sql`INSERT INTO kin_worker_charges (org_id, worker_id, run_id, day, units, tokens_json)
-            VALUES (${input.orgId}, ${input.workerId}, ${input.runId}, ${day}, ${units}, ${tokensJson})
-            ON CONFLICT DO NOTHING RETURNING run_id`;
-          if (inserted.length === 0)
-            yield* sql`UPDATE kin_worker_charges SET units = ${units}, tokens_json = ${tokensJson}
-              WHERE org_id = ${input.orgId} AND run_id = ${input.runId}`;
-          yield* sql`UPDATE kin_budget SET worker_units = worker_units + ${delta} WHERE org_id = ${input.orgId} AND day = ${day}`;
-          return { day: stored?.day ?? day, units };
+          yield* sql`INSERT INTO kin_task_charges (org_id, thread_id, day, units, tokens_json)
+            VALUES (${input.orgId}, ${input.threadId}, ${charged}, ${units}, ${tokensJson})
+            ON CONFLICT (org_id, thread_id) DO UPDATE SET units = excluded.units,
+              tokens_json = excluded.tokens_json`;
+          yield* sql`UPDATE kin_budget SET worker_units = worker_units + ${delta} WHERE org_id = ${input.orgId} AND day = ${charged}`;
+          return { day: charged, units };
         }),
       );
     }, Effect.mapError(mapError)),

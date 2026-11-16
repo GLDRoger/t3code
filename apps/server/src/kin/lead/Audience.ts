@@ -13,14 +13,13 @@ import { ownerLevelPeople, ownerLevelSql } from "../people/KinAccess.ts";
 export type TurnAudience = "owner_only" | "shared";
 
 /**
- * Events that answer in the chat they name: a worker report or finished task names the chat its
- * work was asked in, and a teammate's task their direct chat with the lead.
+ * Events that answer in the chat they name: a finished task names the chat its work was asked in,
+ * and a teammate's task their direct chat with the lead.
  */
 export const CHAT_ANSWER_TAGS = [
   "chat.message",
   "widget.action",
   "chat.reaction",
-  "worker.report",
   "record.changed",
   "task.finished",
 ];
@@ -46,8 +45,8 @@ const othersIn = (sql: SqlClient.SqlClient, current: boolean, agentId: string) =
 
 /**
  * `owner_only` when only owner-level people can read the reply: no one else is or ever was in a
- * chat it answers or was asked from, every stored author, reactor and asker is owner-level, and
- * every reported worker is private. From stored rows only, never model text.
+ * chat it answers or was asked from, and every stored author, reactor and asker is owner-level.
+ * From stored rows only, never model text.
  */
 export const turnAudience = Effect.fn("KinAudience.turnAudience")(
   function* (input: {
@@ -74,11 +73,8 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
       messageChatId: string | null;
       authorKind: string | null;
       authorPersonId: string | null;
-      workerContext: string | null;
     }>`
       SELECT e.tag, json_extract(e.json, '$.chatId') AS "chatId",
-        (SELECT k.context FROM kin_workers k WHERE k.org_id = e.org_id AND e.tag = 'worker.report'
-          AND k.worker_id = json_extract(e.json, '$.workerId')) AS "workerContext",
         json_extract(e.json, '$.origin.chatId') AS "originChatId",
         json_extract(e.json, '$.origin.personId') AS "originPersonId",
         json_extract(e.json, '$.provenance._tag') AS provenance,
@@ -109,18 +105,13 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
           return "shared" as const;
         chats.add(event.chatId);
       } else if (
-        (event.tag === "worker.report" ||
-          event.tag === "record.changed" ||
-          event.tag === "task.finished") &&
+        (event.tag === "record.changed" || event.tag === "task.finished") &&
         event.chatId !== null
       ) {
-        // A report answers in the chat its worker was asked for in, read by everyone there.
+        // A finished task answers in the chat it was asked for in, read by everyone there.
         answersChat = true;
         chats.add(event.chatId);
       }
-      // Shared work never reports into a private turn, whichever chat it now answers in.
-      if (event.tag === "worker.report" && event.workerContext !== "private")
-        return "shared" as const;
       if (event.originPersonId !== null && !level.has(event.originPersonId))
         return "shared" as const;
       if (event.originChatId !== null) chats.add(event.originChatId);

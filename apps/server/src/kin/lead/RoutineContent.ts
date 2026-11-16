@@ -5,7 +5,6 @@ import {
   KinOrgId,
   KinRoutineCard,
   KinWidgetId,
-  WorkerReport,
   type KinAgentId,
   type KinLeadRoutine,
   type KinWidget,
@@ -108,7 +107,17 @@ export class KinRoutineContent extends Context.Service<
 
 const DAY_MS = 86_400_000;
 const GITHUB_BUDGET = "10 seconds";
-const decodeReport = Schema.decodeUnknownOption(Schema.fromJsonString(WorkerReport));
+const STUCK: ReadonlySet<string> = new Set(["needs_decision", "blocked", "failed"]);
+/** Tasks agents delegated, by their cards updated since `since`: Kin's own copy of T3's state. */
+const taskCards = (sql: SqlClient.SqlClient, orgId: KinOrgId, since: number) =>
+  sql<{ title: string; status: string; link: string | null }>`
+    SELECT json_extract(w.state_json, '$.title') AS title,
+      json_extract(w.state_json, '$.status') AS status,
+      json_extract(w.state_json, '$.pullRequests[0].url') AS link
+    FROM kin_widgets w
+    WHERE w.org_id = ${orgId} AND w.type = 'task' AND w.closed_at IS NULL
+      AND w.updated_at >= ${DateTime.formatIso(DateTime.makeUnsafe(since))}
+    ORDER BY w.updated_at, w.widget_id`;
 const decodeTokens = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Array(
@@ -265,17 +274,10 @@ const make = Effect.gen(function* () {
             due(item) < now ? `overdue since ${dayLabel(due(item))}` : `due ${dayLabel(due(item))}`,
           ),
         );
-      const workers = yield* sql<{ status: string; report: string | null }>`
-        SELECT status, report_json AS report FROM kin_workers
-        WHERE org_id = ${orgId} AND (status = 'queued' OR (report_json IS NOT NULL AND ended_at >= ${now - DAY_MS}))
-        ORDER BY started_at, worker_id`;
-      const workersBlocked = workers.flatMap((worker): ReadonlyArray<RoutineRow> => {
-        if (worker.status === "queued" || worker.report === null) return [];
-        const report = decodeReport(worker.report);
-        return Option.isSome(report) && report.value.result !== "done"
-          ? [{ title: report.value.summary, note: report.value.result.replace("_", " ") }]
-          : [];
-      });
+      const tasks = yield* taskCards(sql, orgId, now - DAY_MS);
+      const tasksBlocked = tasks.flatMap((task): ReadonlyArray<RoutineRow> =>
+        STUCK.has(task.status) ? [{ title: task.title, note: task.status.replace("_", " ") }] : [],
+      );
       const [postponed] = yield* sql<{ n: number }>`
         SELECT COUNT(*) AS n FROM kin_events
         WHERE org_id = ${orgId} AND state = 'queued' AND budget_deferred = 1 ORDER BY n`;
@@ -334,8 +336,8 @@ const make = Effect.gen(function* () {
             ? "off"
             : [...githubGaps, ...(owner.login === null ? (["no_login"] as const) : [])],
         objectives,
-        workersRunning: workers.filter((worker) => worker.status === "queued").length,
-        workersBlocked,
+        tasksRunning: tasks.filter((task) => task.status === "working").length,
+        tasksBlocked,
         postponed: postponed?.n ?? 0,
         yesterdayUnits: yield* budgetUnits(dayOf(dayStart - 1)),
         pastReview,
@@ -343,20 +345,12 @@ const make = Effect.gen(function* () {
       return { day, dayLabel, timeLabel, facts };
     }
 
-    const reports = yield* sql<{ report: string }>`
-      SELECT report_json AS report FROM kin_workers
-      WHERE org_id = ${orgId} AND report_json IS NOT NULL AND ended_at >= ${dayStart}
-      ORDER BY ended_at, worker_id`;
-    const done = reports.flatMap((report): ReadonlyArray<RoutineRow> => {
-      const decoded = decodeReport(report.report);
-      if (Option.isNone(decoded) || decoded.value.result !== "done") return [];
-      const evidence = decoded.value.evidence.find(
-        (item) => item.kind === "pr" || item.kind === "commit" || item.kind === "ci_run",
-      );
-      return [
-        { title: decoded.value.summary, ...(evidence === undefined ? {} : { link: evidence.ref }) },
-      ];
-    });
+    const done = (yield* taskCards(sql, orgId, dayStart)).flatMap(
+      (task): ReadonlyArray<RoutineRow> =>
+        task.status === "done"
+          ? [{ title: task.title, ...(task.link === null ? {} : { link: task.link }) }]
+          : [],
+    );
     const recordedToday = (item: MemoryItemHead) => {
       const recorded = memoryDateMillis(item.recorded_at);
       return recorded >= dayStart && recorded < dayEnd;

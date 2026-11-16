@@ -26,7 +26,9 @@ const KIN_PULSE_SENSES = [
   "renewal_due",
   "budget_over",
   "budget_near",
+  // Workers are gone; facts already stored still decode.
   "worker_failed",
+  "task_stuck",
   "work_held",
   "client_quiet",
   "client_cold",
@@ -96,8 +98,8 @@ export const KinPulseFact = Schema.Struct({
   /** Sense, subject and episode: a moved due date is a new key, so a new fact. */
   key: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
   subject: Schema.Struct({
-    kind: Schema.Literals(["record", "worker", "budget", "agent", "pull_request"]),
-    /** A record's key (INV-4), a worker or agent id, a budget's id, or owner/name#12 for a PR. */
+    kind: Schema.Literals(["record", "worker", "task", "budget", "agent", "pull_request"]),
+    /** A record's key (INV-4), a task's thread, an agent id, a budget id, or owner/name#12 (PR). */
     key: TrimmedNonEmptyString,
     title: Schema.String.check(Schema.isMaxLength(280)),
     recordId: Schema.optional(KinRecordId),

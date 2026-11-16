@@ -72,19 +72,18 @@ const SteerInput = Schema.Struct({
 });
 
 /**
- * An event's lane, the chat a wake-up answers: a message's or tap's chat, a worker's, teammate
- * task's or finished delegated task's asking chat, else the lead's direct chat with its owner. A due deferral from another chat
- * gets its own lane so its level never mixes with owner-chat events, and so does each GitHub trigger, so a
- * stranger's text never shares a turn with a teammate's request. From stored rows, never model text.
+ * An event's lane, the chat a wake-up answers: a message's, tap's or task's asking chat, else the
+ * lead's owner chat. A due deferral from another chat, and each GitHub trigger, get their own lane,
+ * so a level or a stranger's text never mixes with another chat's. From stored rows, not model text.
  */
 const LANE_OF = `CASE WHEN e.tag = 'github' AND json_extract(e.json, '$.trigger.key') IS NOT NULL
   THEN 'github:' || json_extract(e.json, '$.trigger.key')
   WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
   THEN json_extract(e.json, '$.chatId')
-  WHEN e.tag IN ('worker.report', 'record.changed', 'task.finished')
+  WHEN e.tag IN ('record.changed', 'task.finished')
     AND json_extract(e.json, '$.chatId') IS NOT NULL
   THEN json_extract(e.json, '$.chatId')
-  WHEN e.tag IN ('deferral.due', 'worker.report') AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
+  WHEN e.tag = 'deferral.due' AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
   THEN 'origin:' || json_extract(e.json, '$.origin.agentId') || ':' || json_extract(e.json, '$.origin.chatId')
     || ':' || COALESCE(json_extract(e.json, '$.origin.personId'), '')
   ELSE l.owner_chat_id END`;
@@ -307,7 +306,6 @@ const make = Effect.gen(function* () {
               break;
             case "deferral.due":
             case "action.resolved":
-            case "worker.report":
             case "task.finished":
               priority = "P1";
               break;
@@ -700,7 +698,6 @@ const make = Effect.gen(function* () {
                 AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch'))
               OR EXISTS (SELECT 1 FROM kin_lead_tool_calls c WHERE c.org_id = w.org_id
                 AND c.wakeup_id = w.wakeup_id AND c.call_key != 'end')
-              OR EXISTS (SELECT 1 FROM kin_workers k WHERE k.org_id = w.org_id AND k.wakeup_id = w.wakeup_id)
               OR EXISTS (SELECT 1 FROM kin_pending_actions p WHERE p.org_id = w.org_id
                 AND p.requested_by_agent_id = w.agent_id AND p.requested_by_thread_id = w.thread_id
                 AND p.created_at >= w.started_at))

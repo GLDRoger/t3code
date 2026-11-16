@@ -6,7 +6,6 @@ import type { SqlError } from "effect/sql/SqlError";
 
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
-import { ownerLevelSql } from "../people/KinAccess.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -57,72 +56,6 @@ export const inCompanyChat = Effect.fn("KinSharedTools.inCompanyChat")(function*
   return rows.length > 0;
 });
 
-/** Every message, tap and reaction the turn answers is the owner's or a co-owner's, by stored author. */
-const ownerAsked = Effect.fnUntraced(function* (turn: Turn) {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ fromOwner: number }>`
-    SELECT CASE
-        WHEN json_extract(e.json, '$.origin.personId') IS NOT NULL THEN 0
-        WHEN e.tag IN ('chat.message', 'widget.action') THEN
-          m.author_kind = 'human' AND (m.author_person_id = a.owner_person_id
-            OR ${sql.literal(ownerLevelSql("e.org_id", "m.author_person_id"))})
-            AND m.chat_id = json_extract(e.json, '$.chatId')
-        WHEN e.tag = 'chat.reaction' THEN
-          json_extract(e.json, '$.provenance._tag') = 'human'
-            AND (json_extract(e.json, '$.provenance.personId') = a.owner_person_id
-              OR ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance.personId')"))})
-        ELSE 0 END AS "fromOwner"
-    FROM kin_events e
-    JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
-    LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
-      AND m.message_id = json_extract(e.json, '$.messageId')
-      AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
-    WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId}
-      AND e.wakeup_id = ${turn.wakeupId}
-    ORDER BY e.event_id`;
-  return rows.length > 0 && rows.every((row) => row.fromOwner === 1);
-});
-
-/**
- * Whether a turn others read may touch this worker: this lead's shared work, asked for in the
- * chat the turn answers, and not moved out of it by a join (`onPersonJoined`).
- */
-export const sharedTurnMayTouch = Effect.fn("KinSharedTools.mayTouchWorker")(function* (
-  turn: Turn,
-  workerId: unknown,
-) {
-  if (typeof workerId !== "string") return false;
-  const chat = yield* turnChat(turn);
-  if (chat === undefined) return false;
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql`SELECT 1 FROM kin_workers
-    WHERE org_id = ${turn.orgId} AND worker_id = ${workerId} AND agent_id = ${turn.agentId}
-      AND chat_id = ${chat.chatId} AND moved_at IS NULL AND context = 'shared'
-    LIMIT 1`;
-  return rows.length > 0;
-});
-
-const ownerAskedAboutWorkerHere: Condition = Effect.fnUntraced(function* (turn, args) {
-  return (yield* ownerAsked(turn)) && (yield* sharedTurnMayTouch(turn, field(args, "workerId")));
-});
-
-/**
- * The owner may start work from a team chat, but no note of theirs goes with it, and it builds on
- * or reviews only work the turn may touch.
- */
-const ownerDelegates: Condition = Effect.fnUntraced(function* (turn, args) {
-  const memory = field(args, "memoryItemIds");
-  if (memory !== undefined && !(Array.isArray(memory) && memory.length === 0)) return false;
-  const reviewOf = field(args, "reviewOf");
-  if (reviewOf !== undefined && !(yield* sharedTurnMayTouch(turn, reviewOf))) return false;
-  const baseRef = field(args, "baseRef");
-  // A worker's branch (`publishBranch`) carries its work as a review's refs do.
-  const branchOf =
-    typeof baseRef === "string" ? /kin\/worker\/([^/\s~^:]+)/i.exec(baseRef)?.[1] : undefined;
-  if (branchOf !== undefined && !(yield* sharedTurnMayTouch(turn, branchOf))) return false;
-  return yield* ownerAsked(turn);
-});
-
 const t3ToolsRefused = Object.fromEntries(
   LEAD_T3_TOOLS.map((name) => [name, "refused" as const]),
 ) as Record<(typeof LEAD_T3_TOOLS)[number], "refused">;
@@ -149,9 +82,6 @@ export const SHARED_TOOLS = {
   people_read: "allowed",
   // Saved only for the one person who asked, with their own rights.
   people_update: "allowed",
-  kin_delegate: ownerDelegates,
-  kin_follow_up: ownerAskedAboutWorkerHere,
-  kin_worker_stop: ownerAskedAboutWorkerHere,
   // Only to an agent in the group asked in (`KinHandoff.passInRoom`).
   kin_hand_off: "allowed",
   // Posts only the person's own stored words in their own direct chat; nothing of this turn.
