@@ -12,6 +12,7 @@ import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import { accessOf } from "../people/KinAccess.ts";
 import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import * as Money from "../work/ownerMoney.ts";
 import { theOwner } from "../work/ownerWork.ts";
 import { KinRefreshHub, KinRefreshObserver, type KinRevisions } from "./KinRefreshHub.ts";
 
@@ -30,13 +31,14 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.moneyStatements === b.moneyStatements &&
   a.pulse === b.pulse &&
   a.budget === b.budget &&
-  a.connections === b.connections;
+  a.connections === b.connections &&
+  a.workLists === b.workLists;
 
 /**
- * The revisions this viewer may see, by their kind at each change, so making someone a co-owner
- * or a member again moves what they hear at once. Owner-level people read every topic. A member
- * reads only the time zone, people's profiles, Needs attention and their own lead list, which moves only when what
- * it shows them (or their own kind) changed, so a change they can't read never reaches them.
+ * The revisions this viewer may see, by their kind at each change. Owner-level people read every
+ * topic. A member reads the time zone, profiles and Needs attention, and their own lead list and
+ * work lists, which move only when what those show them (or their kind) changed, so a change they
+ * can't read never reaches them.
  */
 export const subscribeRefreshes = (
   people: ReadonlyArray<PersonIdentity>,
@@ -61,9 +63,16 @@ export const subscribeRefreshes = (
         // An unreadable list counts as changed; the client's own read then reports the failure.
         Effect.orElseSucceed(() => null),
       );
+      // Without the Money place the read is refused: null, and it stays null until that changes.
+      const listsView = Money.lists([person], { orgId: input.orgId, archived: true }).pipe(
+        Effect.map((shown) => JSON.stringify(shown)),
+        Effect.orElseSucceed(() => null),
+      );
       let heard: KinRevisions | undefined;
       let shown: string | null | undefined;
+      let shownLists: string | null | undefined;
       let leads = 0;
+      let lists = 0;
       return changes.pipe(
         Stream.mapEffect((now) =>
           Effect.gen(function* () {
@@ -76,6 +85,11 @@ export const subscribeRefreshes = (
               if (shown !== undefined && (next === null || next !== shown)) leads += 1;
               shown = next;
             }
+            if (heard === undefined || heard.workLists !== now.workLists) {
+              const next = yield* listsView;
+              if (shownLists !== undefined && next !== shownLists) lists += 1;
+              shownLists = next;
+            }
             heard = now;
             // Everyone's profile is readable by the whole org. Pulse moves only say "read your
             // Needs attention again"; the read shows them only what they may see.
@@ -84,8 +98,7 @@ export const subscribeRefreshes = (
               people: now.people,
               leads,
               pulse: now.pulse,
-              // Says only that a definition moved; their own read of lists is filtered.
-              workLists: now.workLists,
+              workLists: lists,
             } satisfies KinRefreshes;
           }),
         ),

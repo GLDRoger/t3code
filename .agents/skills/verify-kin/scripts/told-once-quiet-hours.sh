@@ -26,8 +26,19 @@ event_of() { q "select event_id from kin_events where dedupe_key like 'checkin:$
 told_by() { kv db "select fact_key from kin_pulse_told where event_id = '$1' order by fact_key" | tail -n +2; }
 
 CHIEF="$(q "select agent_id from kin_leads where domain = 'chief' limit 1")"
+ZOYA="$(q "select person_id from kin_people where display_name = 'Zoya Sheikh'")"
+ZOYA_ZONE="$(q "select time_zone from kin_people where person_id = '$ZOYA'")"
+# A line to someone who wrote in that chat in the last ten minutes answers them at any hour, so an
+# earlier script's turn as Zoya would let the relay through: put everything said before this out of reach.
+kv clock advance 11m >/dev/null
 DAY="$(zone_at 14)"
 kv as owner rpc kin.triggers.setTimeZone "{\"timeZone\":\"$DAY\"}" >/dev/null
+# Pass or fail, the next script finds the owner in his day and Zoya back on her own clock.
+restore() {
+  kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"$ZOYA_ZONE\"}" >/dev/null
+  kv as owner rpc kin.triggers.setTimeZone "{\"timeZone\":\"$DAY\"}" >/dev/null
+}
+trap restore EXIT
 
 # A task of Zoya's that went late yesterday: a fact nobody has told the owner yet.
 yesterday="$(node -e 'process.stdout.write(new Date(Date.now()-86400000).toISOString().slice(0,10))')"
@@ -78,9 +89,10 @@ sleep 5
   fail "the night check-in woke the agent in quiet hours"
 
 # 23:xx on Zoya's clock too: the owner's relay to her is taken and held, and the agent told 07:00.
-ZOYA="$(q "select person_id from kin_people where display_name = 'Zoya Sheikh'")"
 kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"$NIGHT\"}" >/dev/null
-kv as zoya rpc kin.push.registerDevice "{\"token\":\"$(printf 'a%.0s' {1..64})\",\"platform\":\"ios\",\"apsEnvironment\":\"development\"}" >/dev/null
+# A device of this run's own, so pushes from an earlier run on this instance aren't counted.
+TOKEN="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$RUN")"
+kv as zoya rpc kin.push.registerDevice "{\"token\":\"$TOKEN\",\"platform\":\"ios\",\"apsEnvironment\":\"development\"}" >/dev/null
 RELAY="Proof $RUN: the clinic moved the Thursday review to 10:00."
 relayed="$(kv tool chief kin_relay "{\"to\":\"Zoya Sheikh\",\"text\":\"$RELAY\"}" --as-turn-of owner)"
 expect_in "$relayed" "kin_relay: ok" "the relay in Zoya's quiet hours was refused: $relayed"
@@ -90,7 +102,8 @@ expect_in "$relayed" "07:00 their time" "the agent wasn't told when it reaches h
 [[ "$(q "select count(*) from kin_held_posts where body = '$RELAY' and delivered_at is null")" == 1 ]] ||
   fail "the relay wasn't held"
 # Zoya's phone: a push that rings shows the text, a silent one only the device.
-relay_pushes() { kv push sent | rg -c "/aaaaaa" || echo 0; }
+# Her open browser reads the relay at once, which resets the badge with a "chat cleared" push of its own.
+relay_pushes() { kv push sent | awk -v t="/${TOKEN:0:6}" 'index($0, t) && !/chat cleared/ { n++ } END { print n + 0 }'; }
 [[ "$(relay_pushes)" == 0 ]] || fail "the held relay pushed Zoya at night"
 
 # Quiet hours end (stored times move back; the server restarts): it runs, once. The server's own
@@ -112,6 +125,4 @@ done
 [[ "$(q "select count(*) from kin_messages m join kin_chats c on c.org_id = m.org_id and c.chat_id = m.chat_id where m.body = '$RELAY' and m.author_kind = 'agent' and c.direct_key = '$ZOYA:$CHIEF'")" == 1 ]] ||
   fail "the held relay isn't in Zoya's chat once, from the agent, after 07:00"
 [[ "$(relay_pushes)" == 1 ]] || fail "the held relay pushed Zoya $(relay_pushes) times at delivery"
-kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"Asia/Kolkata\"}" >/dev/null
-kv as owner rpc kin.triggers.setTimeZone "{\"timeZone\":\"$DAY\"}" >/dev/null
 pass "$task late told once, silence while unchanged, told again alone when it changed; at 23:00 held to $ends, kept over a restart, run once; a relay to Zoya at 23:00 held and in her chat at $ends, pushed once"

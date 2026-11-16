@@ -19,6 +19,8 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "gendocs/facts.ts": 2,
   // A receipt's payment; the receipts list a screen shows, void ones marked.
   "gendocs/receipts.ts": 2,
+  // A receipt already made for this advance: one entry's own amount matched, nothing summed.
+  "gendocs/receiptProposals.ts": 1,
   // The columns every read selects, with an entry's own paid and withheld; one entry's payments.
   "work/recordRows.ts": 2,
   // One entry's payments, read to check a retry and to void one; a totals query's has-amount filter.
