@@ -23,6 +23,8 @@ import {
   KIN_INVOICES,
   kinInvoiceView,
   kinIsInvoice,
+  kinInvoiceFileDoc,
+  kinInvoiceDraftNote,
 } from "@t3tools/client-runtime/kin/kinInvoices";
 import {
   KIN_ENTRY_SHARE,
@@ -270,7 +272,10 @@ export function KinListEntryBody(
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const [preview, setPreview] = useState<FilePreviewSource | null>(null);
   const { busy } = changes;
-  const { finish } = entry;
+  const draftNote = kinInvoiceDraftNote(item, invoice, def);
+  // A draft takes no payment: its Mark paid and Record payment wait for Issue, and say so.
+  const payLater = draftNote !== null && entry.finish?.pays != null ? draftNote : null;
+  const finish = payLater === null ? entry.finish : null;
   const held = Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))));
   const clients = held?.clients ?? [];
   const projects = held?.projects ?? [];
@@ -403,6 +408,11 @@ export function KinListEntryBody(
         />
       ) : !canChange ? null : (
         <View className="gap-2">
+          {payLater === null ? null : (
+            <Text textRole="footnote" className="px-1 text-foreground-muted">
+              {payLater}
+            </Text>
+          )}
           {finish === null ? null : (
             <Button
               tone="primary"
@@ -444,7 +454,11 @@ export function KinListEntryBody(
           onMake={props.onMake}
         />
       )}
-      <KinMoneyActionNotice actions={money} />
+      <KinMoneyActionNotice
+        actions={money}
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+      />
       {changes.problem === null ? null : (
         <Notice message={changes.problem} tone="danger" onDismiss={changes.dismiss} />
       )}
@@ -620,7 +634,12 @@ export function KinListEntryBody(
                             orgId,
                             party: opens.key,
                           });
-              if (field.files.length > 0 || (editable && field.type === "file")) {
+              const fileDoc = kinInvoiceFileDoc(field, invoice);
+              if (
+                field.files.length > 0 ||
+                fileDoc !== null ||
+                (editable && field.type === "file")
+              ) {
                 const ids = field.files.map((file) => file.attachmentId);
                 return (
                   <View key={field.key}>
@@ -634,6 +653,16 @@ export function KinListEntryBody(
                         />
                       )}
                     </View>
+                    {fileDoc === null ? null : (
+                      <ListRow
+                        icon="doc.text"
+                        label={fileDoc.title}
+                        detail={fileDoc.key}
+                        onPress={() =>
+                          openRecord("KinDoc", { environmentId, orgId, doc: fileDoc.key })
+                        }
+                      />
+                    )}
                     {!editable
                       ? null
                       : field.files.map((file) => (

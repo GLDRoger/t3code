@@ -682,6 +682,9 @@ export const KinChatsSubscribeInput = Schema.Struct({ orgId: Schema.optional(Kin
 export type KinChatsSubscribeInput = typeof KinChatsSubscribeInput.Type;
 export const KinChatsCreateDirectInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
 export type KinChatsCreateDirectInput = typeof KinChatsCreateDirectInput.Type;
+/** Anyone opens their chat with a teammate: the same one every time, made the first time. */
+export const KinChatsWithPersonInput = Schema.Struct({ orgId: KinOrgId, personId: KinPersonId });
+export type KinChatsWithPersonInput = typeof KinChatsWithPersonInput.Type;
 export const KIN_GROUP_TITLE_MAX_LENGTH = 60;
 export const KIN_GROUP_MAX_MEMBERS = 50;
 export const KinGroupTitle = KinTrimmedText.check(Schema.isMaxLength(KIN_GROUP_TITLE_MAX_LENGTH));
@@ -717,6 +720,18 @@ export type KinGroupDeleteInput = typeof KinGroupDeleteInput.Type;
 export const KinGroupDone = Schema.Struct({});
 /** `KinChat.teamId` of the company chat while it is on: the one group everyone on the team is in. */
 export const KIN_COMPANY_CHAT_TEAM_ID = "company";
+/**
+ * `KinChat.teamId` of a chat between two people starts with this, then their two person ids in
+ * order: one chat per pair. Only the two of them are in it; nobody else reads it.
+ */
+export const KIN_PEOPLE_CHAT_TEAM_PREFIX = "people:";
+export const kinPeopleChatTeamId = (one: string, other: string) =>
+  `${KIN_PEOPLE_CHAT_TEAM_PREFIX}${[one, other].sort().join(":")}`;
+export const kinIsPeopleChat = (chat: {
+  readonly kind: string;
+  readonly teamId: string | null;
+}): boolean =>
+  chat.kind === "team_group" && (chat.teamId?.startsWith(KIN_PEOPLE_CHAT_TEAM_PREFIX) ?? false);
 /**
  * `KinChat.teamId` of the Team room: the agents and the owner-level people, where agents hold
  * discussions with each other. It never notifies or counts as unread, and teammates are never in it.
@@ -765,7 +780,10 @@ export const KinMessagesSendInput = Schema.Struct({
   ),
   mentions: Schema.optional(Schema.Array(KinMemberId)),
   replyTo: Schema.optional(KinMessageId),
-  /** Doc sections the message is about; the host quotes their text to the agent. Owner only. */
+  /**
+   * Doc sections the message is about; the host quotes their text to the agent. A teammate points
+   * only at docs everyone in the chat reads.
+   */
   refs: Schema.optional(
     Schema.Array(KinMessageRefInput).check(Schema.isMaxLength(KIN_MESSAGE_REFS_CAP)),
   ),
@@ -848,6 +866,7 @@ export const KIN_CHAT_WS_METHODS = {
   orgsList: "kin.orgs.list",
   chatsSubscribe: "kin.chats.subscribe",
   chatsCreateDirect: "kin.chats.createDirect",
+  chatsWithPerson: "kin.chats.withPerson",
   chatsMute: "kin.chats.mute",
   chatsClear: "kin.chats.clear",
   chatMembers: "kin.chat.members",
@@ -873,6 +892,11 @@ export const KinChatRpcs = [
   }),
   Rpc.make(KIN_CHAT_WS_METHODS.chatsCreateDirect, {
     payload: KinChatsCreateDirectInput,
+    success: KinChat,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatsWithPerson, {
+    payload: KinChatsWithPersonInput,
     success: KinChat,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
@@ -929,6 +953,7 @@ export const KIN_CHAT_RPC_SCOPES = {
   [KIN_CHAT_WS_METHODS.orgsList]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatsSubscribe]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatsCreateDirect]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatsWithPerson]: AuthKinChatScope,
   // Only quiets the caller's own pushes, like marking a chat read.
   [KIN_CHAT_WS_METHODS.chatsMute]: AuthKinChatScope,
   // A teammate clears their own direct chat with a lead, so chat access reaches the method; the

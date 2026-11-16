@@ -6,6 +6,7 @@ import {
   kinParseRoleTags,
   kinProfileChanges,
   kinProfileDraft,
+  kinTimeZoneChoices,
 } from "./kinProfiles.ts";
 
 const profile = {
@@ -69,5 +70,13 @@ describe("kinProfiles", () => {
     expect(kinProfileChanges(profile, { ...own, quietFrom: "10pm" }, mine).ok).toBe(false);
     // The owner's switch starts off.
     expect(kinProfileDraft(profile, { isOwner: true }).holdOutside).toBe(false);
+  });
+});
+
+describe("kinTimeZoneChoices", () => {
+  it("finds a zone by the words people type, and keeps the one held", () => {
+    expect(kinTimeZoneChoices("Asia/Kolkata", "new york")).toContain("America/New_York");
+    expect(kinTimeZoneChoices("Invented/Zone", "invented")).toEqual(["Invented/Zone"]);
+    expect(kinTimeZoneChoices("Asia/Kolkata", "").length).toBeLessThanOrEqual(40);
   });
 });

@@ -11,6 +11,7 @@ import {
   KinWidgetId,
   type KinPushError,
   type KinPushToken,
+  kinPeopleChatTeamId,
 } from "@t3tools/contracts";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Deferred from "effect/Deferred";
@@ -913,6 +914,30 @@ describe("KinPushSender", () => {
           deepLink: "/kin/env_kin/org_01/chats/chat_dm",
         },
       });
+
+      // A teammate writing in their chat with you is a person, not Kin: it rings, mention or not.
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, team_id, last_seq, created_at)
+        VALUES ('chat_pair', 'org_01', 'team_group', NULL, ${kinPeopleChatTeamId(owner, member)},
+          0, ${T})`;
+      for (const [memberId, person] of [
+        ["m_owner_pair", owner],
+        ["m_priya_pair", member],
+      ] as const)
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at)
+          VALUES (${memberId}, 'org_01', 'chat_pair', 'person', ${person}, 'member', ${T})`;
+      apns.sent.length = 0;
+      yield* notify({
+        _tag: "message",
+        orgId,
+        messageId: yield* postMessage(
+          sql,
+          { personId: member, memberId: "m_priya_pair" },
+          "posted",
+          { chatId: "chat_pair", body: "Are you free tomorrow?" },
+        ),
+      });
+      assert.deepStrictEqual(sound(), ["default", "default"]);
 
       // Kin's own fallback for a reminder carries the reminder card.
       const fallback = yield* postMessage(sql, "system", "posted", { chatId: "chat_dm" });

@@ -152,6 +152,88 @@ export function kinQuietLine(profile: KinPersonProfile, holding: KinProfileHoldi
     .join(" · ");
 }
 
+/** Where the platform can't list its zones (Hermes), the ones most teams are in. */
+const COMMON_TIME_ZONES = [
+  "Asia/Kolkata",
+  "Asia/Dubai",
+  "Asia/Karachi",
+  "Asia/Dhaka",
+  "Asia/Kathmandu",
+  "Asia/Colombo",
+  "Asia/Singapore",
+  "Asia/Jakarta",
+  "Asia/Manila",
+  "Asia/Hong_Kong",
+  "Asia/Shanghai",
+  "Asia/Seoul",
+  "Asia/Tokyo",
+  "Australia/Perth",
+  "Australia/Sydney",
+  "Australia/Melbourne",
+  "Pacific/Auckland",
+  "Europe/London",
+  "Europe/Dublin",
+  "Europe/Lisbon",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Amsterdam",
+  "Europe/Madrid",
+  "Europe/Rome",
+  "Europe/Stockholm",
+  "Europe/Warsaw",
+  "Europe/Athens",
+  "Europe/Istanbul",
+  "Europe/Moscow",
+  "Africa/Cairo",
+  "Africa/Lagos",
+  "Africa/Nairobi",
+  "Africa/Johannesburg",
+  "America/Sao_Paulo",
+  "America/Buenos_Aires",
+  "America/Santiago",
+  "America/Bogota",
+  "America/Lima",
+  "America/Mexico_City",
+  "America/New_York",
+  "America/Toronto",
+  "America/Chicago",
+  "America/Denver",
+  "America/Phoenix",
+  "America/Los_Angeles",
+  "America/Vancouver",
+  "America/Anchorage",
+  "Pacific/Honolulu",
+  "UTC",
+];
+
+const platformTimeZones = (): ReadonlyArray<string> => {
+  try {
+    const listed = Intl.supportedValuesOf("timeZone");
+    return listed.length > 0 ? listed : COMMON_TIME_ZONES;
+  } catch {
+    return COMMON_TIME_ZONES;
+  }
+};
+
+const KIN_TIME_ZONES_SHOWN = 40;
+
+/**
+ * Time zones to pick from, matching `query` ("new york" finds America/New_York): this device's
+ * first, then the one held, then the rest. The held one is kept even if the list lacks it.
+ */
+export function kinTimeZoneChoices(held: string, query: string): ReadonlyArray<string> {
+  const words = query
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_/]+/g, " ");
+  const all = [...new Set([deviceTimeZone(), held, ...platformTimeZones()])].filter(
+    (zone) => zone.trim() !== "",
+  );
+  return all
+    .filter((zone) => words === "" || zone.toLowerCase().replace(/[_/]+/g, " ").includes(words))
+    .slice(0, KIN_TIME_ZONES_SHOWN);
+}
+
 const deviceTimeZone = () => {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone;

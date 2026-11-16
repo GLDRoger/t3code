@@ -17,6 +17,7 @@ import {
   KinMessageRelay,
   kinGreeting,
   kinIsBrief,
+  kinIsPeopleChat,
   kinPageGist,
   kinPageShape,
 } from "@t3tools/contracts";
@@ -240,8 +241,13 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     chatId: KinChatId,
   ) {
-    const [row] = yield* sql<{ kind: string; title: string | null; agent: string | null }>`
-      SELECT c.kind, c.title, (
+    const [row] = yield* sql<{
+      kind: string;
+      team_id: string | null;
+      title: string | null;
+      agent: string | null;
+    }>`
+      SELECT c.kind, c.team_id, c.title, (
           SELECT a.display_name FROM kin_chat_members m
           JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
           WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id AND m.principal_kind = 'agent'
@@ -249,8 +255,9 @@ const make = Effect.gen(function* () {
           ORDER BY m.joined_at, m.member_id LIMIT 1
         ) AS agent
       FROM kin_chats c WHERE c.org_id = ${orgId} AND c.chat_id = ${chatId}`;
-    const direct = row?.kind === "direct";
-    return { direct, name: row?.title ?? (direct ? (row?.agent ?? "Kin") : "Group") };
+    const people = row !== undefined && kinIsPeopleChat({ kind: row.kind, teamId: row.team_id });
+    const direct = row?.kind === "direct" || people;
+    return { direct, people, name: row?.title ?? (direct ? (row?.agent ?? "Kin") : "Group") };
   });
 
   /**
@@ -431,14 +438,17 @@ const make = Effect.gen(function* () {
         )
         .map((person) => ({ personId: person.personId, silent: person.muted })),
     };
-    // Each on their own clock. Reminders and scheduled runs come at the time someone chose, so
-    // they ring whatever the hour. In quiet hours nothing else rings; outside the hours someone
-    // holds to, only a person's words or an answer to what they asked do. A reply to them, or a
-    // time they chose, always rings; anything else from Kin or an agent at most once per half hour.
+    // Each on their own clock. Reminders and scheduled runs come at the time someone chose, and a
+    // teammate writing to them directly is a person, not Kin: those ring whatever the hour. In
+    // quiet hours nothing else rings; outside the hours someone holds to, only a person's words or
+    // an answer to what they asked do. Anything else from Kin or an agent rings once per half hour.
     const recipients: Array<Recipient> = [];
     for (const recipient of push.recipients) {
       const answers = row.reply_author === recipient.personId || asked.has(recipient.personId);
-      const hold = row.owner_timed === 1 ? undefined : yield* holdNow(orgId, recipient.personId);
+      const hold =
+        row.owner_timed === 1 || (chat.people && row.author_kind === "human")
+          ? undefined
+          : yield* holdNow(orgId, recipient.personId);
       const silent =
         recipient.silent || hold === "quiet" || (hold === "off" && !fromPerson && !answers);
       recipients.push(

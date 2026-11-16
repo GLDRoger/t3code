@@ -14,7 +14,9 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   kinAdvanceDraft,
   kinAdvanceInput,
+  KIN_INVOICES,
   kinInvoiceActions,
+  kinInvoiceDraftNote,
   kinInvoiceTitle,
   kinInvoiceMissingClient,
   kinInvoiceView,
@@ -216,6 +218,17 @@ describe("kinInvoiceActions", () => {
       issue: false,
       void: false,
     });
+  });
+
+  it("takes payments only once a draft of a numbered list is issued", () => {
+    const draft = { void: false, number: null };
+    expect(kinInvoiceDraftNote({ state: "open" }, draft, invoices)).toBe(
+      KIN_INVOICES.payAfterIssue,
+    );
+    expect(kinInvoiceDraftNote({ state: "waiting" }, { ...draft, number: "Q/1" }, invoices)).toBe(
+      null,
+    );
+    expect(kinInvoiceDraftNote({ state: "open" }, draft, { numbering: undefined })).toBe(null);
   });
 });
 

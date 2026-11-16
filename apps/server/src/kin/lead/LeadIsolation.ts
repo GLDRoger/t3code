@@ -26,6 +26,9 @@ import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts
 import { SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { instructions } from "./instructions.ts";
 
+/** Where the signing `gh` (`ghSign.ts`) lives under Kin's state folder. */
+export const GH_SIGN_FOLDER = "gh-sign";
+
 /** A lead's only built-in tools. Kin's MCP tools arrive separately, through `mcpServers`. */
 export const leadTools = ["Read", "Grep", "Glob"];
 
@@ -252,7 +255,7 @@ export const claudeQueryRunner = <E, R>(
         ),
       );
       // The signing gh, in front of the pinned one; a failed write leaves agents with the plain gh.
-      const signDirectory = path.join(kinDirectory, "gh-sign");
+      const signDirectory = path.join(kinDirectory, GH_SIGN_FOLDER);
       if (Option.isSome(policy))
         yield* Effect.gen(function* () {
           yield* fs.makeDirectory(signDirectory, { recursive: true });

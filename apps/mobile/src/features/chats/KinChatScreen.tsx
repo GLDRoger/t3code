@@ -1,3 +1,4 @@
+import { KIN_PEOPLE_CHAT, kinPeopleChatWith } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { KIN_ONLY } from "../../lib/kinOnly";
 import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED, KIN_ONLY_UNPAIRED } from "./kinOnlyCopy";
 import { kinListRoute } from "./state/kinHome";
@@ -301,6 +302,10 @@ function KinLiveChat(props: {
   );
   // A group's row carries only the viewer's own member; who else is in it is read by name.
   const group = summary !== undefined && summary.kind !== "direct";
+  const pairWith =
+    summary === undefined || viewer.personId === null
+      ? null
+      : kinPeopleChatWith(summary, new Set([viewer.personId]));
   const groupResult = useAtomValue(
     environmentId === null || chatId === null || !group
       ? noMembersAtom
@@ -364,9 +369,26 @@ function KinLiveChat(props: {
             : kinAvatarView(
                 summary,
                 summary.members.find(
-                  (member) => member.leftAt === null && member.principal._tag === "agent",
+                  (member) =>
+                    member.leftAt === null &&
+                    (member.principal._tag === "agent" ||
+                      (member.principal._tag === "person" &&
+                        member.principal.personId === pairWith)),
                 ) ?? null,
               )
+        }
+        pair={
+          environmentId === null || summary === undefined || pairWith === null
+            ? null
+            : {
+                privacy: KIN_PEOPLE_CHAT.privacy,
+                open: () =>
+                  navigation.navigate("KinProfile", {
+                    environmentId,
+                    orgId: summary.orgId,
+                    personId: pairWith,
+                  }),
+              }
         }
         agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
         unread={kinUnreadToMark(summary)}
@@ -420,7 +442,7 @@ function KinLiveChat(props: {
           silentAnswerer === null ? null : kinRetiredGroupLine(silentAnswerer, canRestore)
         }
         group={
-          environmentId === null || summary === undefined || !group
+          environmentId === null || summary === undefined || !group || pairWith !== null
             ? null
             : () =>
                 navigation.navigate("KinGroup", {
@@ -666,6 +688,8 @@ function KinChatPage(props: {
   readonly groupNotice?: string | null;
   /** Opens a group's details; null for any other chat. */
   readonly group?: (() => void) | null;
+  /** A chat between two people: who may read it, and the other one's profile. */
+  readonly pair?: { readonly privacy: string; readonly open: () => void } | null;
   /** A group's leads, which the composer offers on `@`. */
   readonly mentionable?: ReadonlyArray<KinMentionCandidate>;
 }) {
@@ -674,24 +698,26 @@ function KinChatPage(props: {
   const { mute } = props;
   // A lead's details hold its mute; a chat without them asks about the mute directly.
   const details: KinChatDetails | null =
-    lead !== null
-      ? { open: lead.open, hint: "Opens this agent's details" }
-      : props.group != null
-        ? { open: props.group, hint: "Opens this group's details" }
-        : mute == null
-          ? null
-          : {
-              hint: mute.muted ? "Offers to unmute this chat" : "Offers to mute this chat",
-              open: () =>
-                Dialog.confirm({
-                  title: props.title,
-                  message: mute.muted
-                    ? "Notifications from this chat are muted."
-                    : "You get a notification for each new message in this chat.",
-                  confirmText: mute.muted ? "Unmute notifications" : "Mute notifications",
-                  onConfirm: mute.toggle,
-                }),
-            };
+    props.pair != null
+      ? { open: props.pair.open, hint: "Opens their profile" }
+      : lead !== null
+        ? { open: lead.open, hint: "Opens this agent's details" }
+        : props.group != null
+          ? { open: props.group, hint: "Opens this group's details" }
+          : mute == null
+            ? null
+            : {
+                hint: mute.muted ? "Offers to unmute this chat" : "Offers to mute this chat",
+                open: () =>
+                  Dialog.confirm({
+                    title: props.title,
+                    message: mute.muted
+                      ? "Notifications from this chat are muted."
+                      : "You get a notification for each new message in this chat.",
+                    confirmText: mute.muted ? "Unmute notifications" : "Mute notifications",
+                    onConfirm: mute.toggle,
+                  }),
+              };
   const topInset = useContentTopInset();
   const { state } = props;
   const tasks = state._tag === "ready" ? kinChatStatusLine(state.chat.value.widgets) : null;
@@ -701,7 +727,7 @@ function KinChatPage(props: {
         title={props.title}
         avatar={props.avatar ?? { kind: "agent", seed: `chat:${props.chatId}` }}
         presence={livePresence(state)}
-        tasks={tasks}
+        tasks={tasks ?? props.pair?.privacy ?? null}
         onBack={() => navigation.goBack()}
         details={details}
       />

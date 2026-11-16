@@ -307,6 +307,7 @@ const samples = {
   ],
   KinChatsSubscribeInput: [{}, { orgId: "org-1" }],
   KinChatsCreateDirectInput: [{ orgId: "org-1", agentId: "agent-1" }],
+  KinChatsWithPersonInput: [{ orgId: "org-1", personId: "person-1" }],
   KinGroupTitle: ["Launch"],
   KinChatsCreateGroupInput: [
     { orgId: "org-1", title: "Launch", agentIds: ["agent-1"], personIds: ["person-2"] },

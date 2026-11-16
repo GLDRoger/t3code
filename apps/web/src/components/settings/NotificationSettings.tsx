@@ -12,7 +12,12 @@ import { SettingsRow } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 
-export function NotificationSettings() {
+/** This device's system alerts and sound; Kin shows the same choice in its own words. */
+export function NotificationSettings(props: {
+  readonly title?: string;
+  readonly description?: string;
+  readonly label?: string;
+}) {
   const mode = useScopedSettings((settings) => settings.notificationMode);
   const updateSettings = useUpdateScopedSettings();
   const [permissionMessage, setPermissionMessage] = useState<string | null>(null);
@@ -21,8 +26,10 @@ export function NotificationSettings() {
   return (
     <SettingsRow
       {...searchableSetting("thread-notifications")}
+      {...(props.title === undefined ? {} : { title: props.title })}
       description={
         permissionMessage ??
+        props.description ??
         "System alerts when a thread finishes, fails, or needs input or approval. Applies to this device while T3 Code is open."
       }
       control={
@@ -65,7 +72,11 @@ export function NotificationSettings() {
             updateSettings({ notificationMode: value });
           }}
         >
-          <SelectTrigger size="sm" className="w-full sm:w-56" aria-label="Thread notifications">
+          <SelectTrigger
+            size="sm"
+            className="w-full sm:w-56"
+            aria-label={props.label ?? "Thread notifications"}
+          >
             <SelectValue>{NOTIFICATION_MODE_LABELS[mode]}</SelectValue>
           </SelectTrigger>
           <SelectPopup align="end" alignItemWithTrigger={false}>

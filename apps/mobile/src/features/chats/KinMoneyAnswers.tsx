@@ -18,6 +18,7 @@ import {
   kinCashView,
   kinOutlookView,
   kinQuoteActions,
+  kinQuoteInvoice,
   kinQuoteRow,
   kinQuotesSummary,
   kinBudgetsSummary,
@@ -706,7 +707,8 @@ export function KinQuoteActions(
     issue: useAtomValue(kinClient.workIssue.permissionAtom(environmentId)),
     invoice: useAtomValue(kinClient.workInvoiceFromQuote.permissionAtom(environmentId)),
   };
-  const can = kinQuoteActions(quote.state, props.def?.numbering !== undefined);
+  const invoiced = invoicing.invoice ?? kinQuoteInvoice(item.links);
+  const can = kinQuoteActions(quote.state, props.def?.numbering !== undefined, invoiced !== null);
   const [requestId] = useState(uuidv4);
   const busy = props.busy || actions.busy || invoicing.busy;
   const numbered = quote.number !== item.key;
@@ -724,13 +726,18 @@ export function KinQuoteActions(
           onPress={() => void invoicing.make(item.key, requestId)}
         />
       ) : null}
-      {invoicing.invoice === null ? null : (
-        <Button
-          tone="secondary"
-          fullWidth
-          label={KIN_QUOTES.openInvoice}
-          onPress={() => open(invoicing.invoice!)}
-        />
+      {invoiced === null ? null : (
+        <>
+          <Text textRole="footnote" className="px-1 text-foreground-muted">
+            {KIN_QUOTES.invoicedAs(invoiced)}
+          </Text>
+          <Button
+            tone="secondary"
+            fullWidth
+            label={KIN_QUOTES.openInvoice}
+            onPress={() => open(invoiced)}
+          />
+        </>
       )}
       {can.send && allowed.issue ? (
         <Button

@@ -1,3 +1,4 @@
+import { useKinOpensClients } from "./useKinOwnerLevel";
 import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -375,6 +376,7 @@ function KinWorkItem(
 ) {
   const { view, environmentId, orgId, saving, edit } = props;
   const { orgs, people, joined, invited, names } = props.directory;
+  const opensClients = useKinOpensClients(environmentId);
   // Each control shows only where the host said it takes it (`view.can`).
   const change = props.canChange ? props.onAct : null;
   const give = props.canGive ? props.onAct : null;
@@ -539,9 +541,13 @@ function KinWorkItem(
                         ? null
                         : (party) => change({ type: "place", party })
                     }
-                    onOpen={() => {
-                      if (view.party !== null) props.onOpenClient(view.party.key);
-                    }}
+                    onOpen={
+                      opensClients
+                        ? () => {
+                            if (view.party !== null) props.onOpenClient(view.party.key);
+                          }
+                        : null
+                    }
                     {...(reword === null || view.closed
                       ? {}
                       : {
@@ -811,7 +817,8 @@ function PlaceMenu(props: {
   readonly onPick: ((value: KinWorkRef | null) => void) | null;
   /** Whether "None" is offered: the host may let a value change but not be cleared. */
   readonly clearable?: boolean;
-  readonly onOpen: () => void;
+  /** Null where the viewer can't open it: the name is plain text, never a link that refuses. */
+  readonly onOpen: (() => void) | null;
   /** A client's: who owes the task, us or them. */
   readonly side?: {
     readonly value: "ours" | "theirs";
@@ -820,8 +827,12 @@ function PlaceMenu(props: {
 }) {
   const { value, onPick, side } = props;
   if (onPick === null) {
-    return value === null ? null : (
-      <Button size="xs" variant="ghost" onClick={props.onOpen}>
+    if (value === null) return null;
+    const { onOpen } = props;
+    return onOpen === null ? (
+      <span className="max-w-60 truncate">{value.title}</span>
+    ) : (
+      <Button size="xs" variant="ghost" onClick={onOpen}>
         {value.title}
       </Button>
     );
@@ -842,7 +853,7 @@ function PlaceMenu(props: {
         <ChevronDownIcon />
       </MenuTrigger>
       <MenuPopup align="start">
-        {value === null ? null : (
+        {value === null || props.onOpen === null ? null : (
           <>
             <MenuItem onClick={props.onOpen}>Open {value.title}</MenuItem>
             <MenuSeparator />

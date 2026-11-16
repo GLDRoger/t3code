@@ -1,3 +1,6 @@
+import { getComposerDraftSnapshot, setComposerDraftText } from "../../state/use-composer-drafts";
+import { kinDraftKey } from "./components/KinComposer";
+import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
@@ -18,6 +21,7 @@ import {
   kinDocUnfiled,
   kinDocChangeLine,
   kinDocChat,
+  kinDocSuggestStarter,
   kinDocExport,
   kinDocHasContents,
   kinDocOutline,
@@ -162,12 +166,13 @@ function KinDocEmbedView(props: KinWorkTarget & { readonly embed: KinDocEmbed })
   }
 }
 
-const SECTION_ACTIONS = [
+/** A teammate's Change is a suggestion the owner decides on. */
+const sectionActions = (ownerLevel: boolean) => [
   { id: "ask", title: KIN_DOCS.ask, image: "questionmark.bubble" },
-  { id: "change", title: KIN_DOCS.change, image: "pencil" },
+  { id: "change", title: ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest, image: "pencil" },
   { id: "link", title: KIN_DOCS.copyLink, image: "link" },
   { id: "copy", title: "Copy text", image: "doc.on.doc" },
-] as const;
+];
 
 /** A doc as a document: who last changed it and how, then everything the agent wrote. */
 export function KinDocScreen({ route }: StaticScreenProps<KinDocParams>) {
@@ -329,23 +334,37 @@ function KinDocBody(
   const fileIt = () => navigation.navigate("KinDocFile", { environmentId, orgId, doc: doc.key });
   const kind = kinDocKindOf(doc);
   const chats = inbox.state._tag === "ready" ? inbox.state.inbox.value.chats : [];
-  const chat = kinDocChat(chats, doc, names.me);
+  const ownerLevel = useKinIsOwnerLevel(environmentId);
+  const leads = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
+  const held = Option.getOrNull(AsyncResult.value(leads));
+  // A teammate who doesn't chat with the doc's agent suggests through the team agent.
+  const teamChat = ownerLevel
+    ? null
+    : (held?.contacts?.find((contact) => contact.agentId === held.teamAgentId)?.chatId ?? null);
+  const chatId = kinDocChat(chats, doc, names.me)?.chatId ?? teamChat;
   const first = doc.outline.find((section) => section.id !== "top");
   const titled =
     doc.outline[0]?.id !== "top" &&
     first?.level === 1 &&
     first.title.trim().toLowerCase() === doc.title.toLowerCase();
 
-  const point = (section: string | null, intent: KinDocAsk) => {
-    if (chat === null) {
+  const point = (section: string | null, asked: KinDocAsk) => {
+    if (chatId === null) {
       Alert.alert("Nobody to ask yet", KIN_DOCS.noAgent);
       return;
     }
-    appAtomRegistry.set(kinPendingRefAtom(kinPendingRefKey(environmentId, chat.chatId)), {
-      ref: kinDocRef(doc, section),
+    const ref = kinDocRef(doc, section);
+    const intent = ownerLevel || asked === "ask" ? asked : "suggest";
+    appAtomRegistry.set(kinPendingRefAtom(kinPendingRefKey(environmentId, chatId)), {
+      ref,
       intent,
     });
-    navigation.navigate("KinChat", { environmentId, orgId, chatId: chat.chatId });
+    if (intent === "suggest") {
+      const key = kinDraftKey(environmentId, orgId, chatId);
+      if (getComposerDraftSnapshot(key).text.trim() === "")
+        setComposerDraftText(key, kinDocSuggestStarter(ref));
+    }
+    navigation.navigate("KinChat", { environmentId, orgId, chatId });
   };
   const copyLink = async (section: string | null) => {
     const url = Linking.createURL(`kin/${environmentId}/${orgId}/docs/${doc.key}`, {
@@ -414,7 +433,11 @@ function KinDocBody(
       icon: "ellipsis" as const,
       items: [
         { id: "ask", title: KIN_DOCS.ask, onPress: () => point(null, "ask") },
-        { id: "change", title: KIN_DOCS.change, onPress: () => point(null, "change") },
+        {
+          id: "change",
+          title: ownerLevel ? KIN_DOCS.change : KIN_DOCS.suggest,
+          onPress: () => point(null, "change"),
+        },
         { id: "link", title: KIN_DOCS.copyLink, onPress: () => void copyLink(null) },
         {
           id: "history",
@@ -681,7 +704,7 @@ function KinDocBody(
             content(doc.body, (children) => (
               <Menu
                 shouldOpenOnLongPress
-                actions={SECTION_ACTIONS.map((action) => ({ ...action }))}
+                actions={sectionActions(ownerLevel)}
                 onPressAction={({ nativeEvent }) => act(null, doc.body, nativeEvent.event)}
               >
                 {children}
@@ -708,7 +731,7 @@ function KinDocBody(
                     title={section.title}
                     shouldOpenOnLongPress
                     accessibilityLabel={`${section.title}. Hold for actions`}
-                    actions={SECTION_ACTIONS.map((action) => ({ ...action }))}
+                    actions={sectionActions(ownerLevel)}
                     onPressAction={({ nativeEvent }) =>
                       act(section.id, section.text, nativeEvent.event)
                     }

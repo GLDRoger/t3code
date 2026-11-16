@@ -1,3 +1,4 @@
+import { useKinViewerScope } from "./state/kinChatOnly";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
@@ -350,6 +351,7 @@ function ClientsView(props: ViewProps & { readonly closed: boolean }) {
   const navigation = useNavigation();
   const { environmentId, orgId } = props;
   const canAdd = useAtomValue(kinClient.workClientCreate.permissionAtom(environmentId));
+  const scope = useKinViewerScope(environmentId);
   const now = new Date(useNowMinuteMs());
   const seq = props.stale ? null : props.live.seq;
   const { state, list } = useKinClientsList(props, seq, props.closed);
@@ -410,7 +412,7 @@ function ClientsView(props: ViewProps & { readonly closed: boolean }) {
           </View>
         )
       }
-      nothing={kinClientsNothing(filter)}
+      nothing={kinClientsNothing(filter, scope)}
       add={
         canAdd
           ? {
@@ -430,6 +432,7 @@ function ProjectsView(props: ViewProps & { readonly view: KinProjectsFilter["vie
   const navigation = useNavigation();
   const { environmentId, orgId } = props;
   const canAdd = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
+  const scope = useKinViewerScope(environmentId);
   const now = new Date(useNowMinuteMs());
   const { state, list } = useKinProjectsList(
     props,
@@ -457,7 +460,7 @@ function ProjectsView(props: ViewProps & { readonly view: KinProjectsFilter["vie
       extra={state}
       search={{ text: filter.text, placeholder: KIN_PROJECTS.search }}
       onSearch={(text) => list.setFilter({ ...filter, text })}
-      nothing={kinProjectsNothing(filter)}
+      nothing={kinProjectsNothing(filter, scope)}
       add={
         canAdd
           ? {

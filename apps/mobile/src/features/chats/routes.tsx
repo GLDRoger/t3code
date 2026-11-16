@@ -18,6 +18,7 @@ import { KinDocFileScreen } from "./KinDocFileScreen";
 import { KinDocScreen } from "./KinDocScreen";
 import { KinDocChangesScreen, KinDocHistoryScreen, KinSearchScreen } from "./KinDocVersionScreens";
 import { KinGroupFormScreen } from "./KinGroupFormScreen";
+import { KinPeoplePickScreen } from "./KinPeoplePickScreen";
 import { KinGroupScreen } from "./KinGroupScreen";
 import { KinLeadFormScreen } from "./KinLeadFormScreen";
 import { KinAgentCharacterScreen } from "./KinAgentCharacterScreen";
@@ -303,6 +304,10 @@ export const KIN_SCREENS = {
   KinGroup: createNativeStackScreen({
     screen: KinGroupScreen,
     linking: "kin/:environmentId/:orgId/groups/:chatId",
+    options: sheetRoute({ detent: 0.75 }),
+  }),
+  KinPeoplePick: createNativeStackScreen({
+    screen: KinPeoplePickScreen,
     options: sheetRoute({ detent: 0.75 }),
   }),
   KinGroupForm: createNativeStackScreen({
