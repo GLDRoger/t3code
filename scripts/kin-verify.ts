@@ -81,7 +81,18 @@ interface Args {
 function parse(argv: ReadonlyArray<string>): Args {
   const positional: Array<string> = [];
   const flags = new Map<string, string | true>();
-  const booleans = new Set(["fresh", "wipe", "full", "enter", "gone", "raw", "android", "json"]);
+  const booleans = new Set([
+    "fresh",
+    "wipe",
+    "full",
+    "enter",
+    "gone",
+    "raw",
+    "android",
+    "json",
+    "dark",
+    "light",
+  ]);
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!;
     if (!arg.startsWith("--")) {
@@ -307,9 +318,17 @@ async function web(instance: Instance, person: string, args: Args) {
       console.log(`saved ${await Web.screenshot(session, path, args.flags.has("full"))}`);
       return;
     }
+    case "view": {
+      const width = Number(flag(args, "width") ?? "1280");
+      const height = Number(flag(args, "height") ?? "900");
+      const scheme = args.flags.has("dark") ? "dark" : args.flags.has("light") ? "light" : null;
+      await Web.view(session, { width, height, colorScheme: scheme });
+      console.log(`view ${width}×${height}${scheme === null ? "" : ` ${scheme}`}`);
+      return;
+    }
     default:
       throw new VerifyError(
-        `web ${action ?? ""}: one of open, snapshot, click, type, wait, screenshot`,
+        `web ${action ?? ""}: one of open, snapshot, click, type, wait, screenshot, view`,
       );
   }
 }

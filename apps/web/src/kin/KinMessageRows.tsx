@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { kinMessageLayout } from "@t3tools/client-runtime/kin/kinMessagePage";
 import { kinDocRefLabel } from "@t3tools/client-runtime/kin/kinDocs";
 import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import { KIN_REACTION_NAMES, type KinReactionChip } from "@t3tools/client-runtime/kin/kinReactions";
@@ -18,6 +19,7 @@ import {
 import { KinAvatar } from "./KinAvatar";
 import { openKinProfile } from "./KinProfileSheet";
 import {
+  kinPageShape,
   KIN_REACTION_EMOJI,
   KinOrgId,
   type EnvironmentId,
@@ -36,6 +38,7 @@ import { Menu, MenuCheckboxItem, MenuPopup, MenuTrigger } from "../components/ui
 import { cn } from "../lib/utils";
 import { KinCard } from "./KinCards";
 import { KinMessageAttachments } from "./KinMessageAttachments";
+import { KinLinkedMarkdown, KinMessagePage } from "./KinMessagePage";
 
 type MessageRow = Extract<KinFeedRow, { readonly type: "message" }>;
 type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
@@ -154,6 +157,8 @@ export function KinMessageRow(props: {
   /** Toggles the viewer's reaction; null where they can't react, such as a privileged card. */
   readonly onReact: ((emoji: KinReactionEmoji) => void) | null;
   readonly previewKey: string;
+  /** The reader's first name, for a brief's greeting. */
+  readonly firstName?: string | null;
 }) {
   const { row, onReact } = props;
   const { message } = row;
@@ -175,12 +180,15 @@ export function KinMessageRow(props: {
     (!hasCard && (deleted || attachments.length === 0));
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
   const canReact = onReact !== null && !deleted;
+  const layout = row.own || !hasBody ? "bubble" : kinMessageLayout(message);
+  const label = kinMessageLabel(row, formatTime(message.createdAt));
 
   return (
     <div
       className={cn(
         ROW,
-        rowSpacing(row.continues),
+        // A page starts a new block even inside one author's run.
+        layout === "bubble" ? rowSpacing(row.continues) : "pt-5",
         "group/kin-message",
         row.own ? "items-end" : "items-start",
       )}
@@ -222,14 +230,33 @@ export function KinMessageRow(props: {
         <KinDocRefs refs={refs} environmentId={props.environmentId} orgId={props.orgId} />
       )}
       <div className={cn("flex w-full items-center gap-1", row.own && "flex-row-reverse")}>
-        {hasBubble ? (
-          <div
-            role="article"
-            aria-label={kinMessageLabel(row, formatTime(message.createdAt))}
-            className={row.own ? BUBBLE : OTHER_BUBBLE}
-          >
+        {hasBubble && layout !== "bubble" ? (
+          <div className="min-w-0 flex-1">
+            <KinMessagePage
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+              body={message.body}
+              links={message.links}
+              label={label}
+              brief={
+                layout === "brief"
+                  ? { createdAt: message.createdAt, firstName: props.firstName ?? null }
+                  : null
+              }
+            />
+            {message.editedAt !== null ? (
+              <p className="pt-0.5 text-xs text-muted-foreground">Edited</p>
+            ) : null}
+          </div>
+        ) : hasBubble ? (
+          <div role="article" aria-label={label} className={row.own ? BUBBLE : OTHER_BUBBLE}>
             {hasBody ? (
-              <KinBody markdown={message.body} environmentId={props.environmentId} />
+              <KinLinkedMarkdown
+                markdown={message.body}
+                links={message.links}
+                environmentId={props.environmentId}
+                orgId={props.orgId}
+              />
             ) : deleted ? (
               <p className="italic text-muted-foreground">Message deleted</p>
             ) : null}
@@ -313,26 +340,35 @@ function KinReactMenu(props: {
 export function KinDraftRow(props: {
   readonly row: DraftRow;
   readonly environmentId: EnvironmentId;
+  readonly orgId: string;
   /** A direct chat has one lead, so its reply needs no name. */
   readonly direct: boolean;
 }) {
   const { row } = props;
+  const label = kinSentences([
+    `${row.authorLabel}, agent`,
+    kinPlainText(row.draft.text),
+    "Still writing",
+  ]);
   return (
     <div className={cn(ROW, rowSpacing(row.continues), "items-start")}>
       {row.showAuthor && !props.direct ? (
         <HeadLine label={row.authorLabel} avatar={kinAgentAvatar(row.draft.agentId)} />
       ) : null}
-      <div
-        role="article"
-        aria-label={kinSentences([
-          `${row.authorLabel}, agent`,
-          kinPlainText(row.draft.text),
-          "Still writing",
-        ])}
-        className={OTHER_BUBBLE}
-      >
-        <KinBody markdown={row.draft.text} environmentId={props.environmentId} />
-      </div>
+      {kinPageShape(row.draft.text) === "page" ? (
+        <KinMessagePage
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          body={row.draft.text}
+          links={undefined}
+          label={label}
+          brief={null}
+        />
+      ) : (
+        <div role="article" aria-label={label} className={OTHER_BUBBLE}>
+          <KinBody markdown={row.draft.text} environmentId={props.environmentId} />
+        </div>
+      )}
     </div>
   );
 }

@@ -1252,6 +1252,7 @@ function KinChatFeed(props: {
             widget={widget}
             environmentId={props.environmentId}
             viewerPersonId={props.viewer.personId}
+            firstName={props.viewer.firstName ?? null}
             heldFor={kinHeldCardAgent(message.author, props.viewer, props.retired?.name ?? null)}
             agentNames={props.viewer.agentNames}
             reactions={chips}

@@ -153,6 +153,13 @@ async function runTurn(
   const marked = [...prompt.matchAll(MARKER)].at(-1)?.[1];
   const notice = marked === undefined ? NOTICE.exec(prompt) : null;
   const id = marked ?? (notice === null ? undefined : "notice");
+  // A check-in (Run now) answers with `<verify dir>/checkin-reply.md` once, to show a brief.
+  const brief = NodePath.join(verifyDir, "checkin-reply.md");
+  if (prompt.includes("This is a check-in") && NodeFS.existsSync(brief)) {
+    const reply = NodeFS.readFileSync(brief, "utf8");
+    NodeFS.rmSync(brief);
+    return { reply, end: noEnd };
+  }
   if (id === undefined) return { reply: "Noted.", end: noEnd };
   const task = notice?.[1] ?? notice?.[2];
   const scriptPath = NodePath.join(verifyDir, "turns", `${id}.json`);
