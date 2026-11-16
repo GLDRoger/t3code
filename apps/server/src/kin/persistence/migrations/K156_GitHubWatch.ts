@@ -9,7 +9,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE IF NOT EXISTS kin_github_watch (
-    org_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL PRIMARY KEY,
     login TEXT,
     started_at INTEGER NOT NULL,
     notifications_modified TEXT,
