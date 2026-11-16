@@ -9,6 +9,7 @@ import {
   KIN_PROJECTS,
   KIN_PROJECT_FAILED,
   KIN_PROJECT_GONE,
+  KIN_PROJECT_PEOPLE,
   kinProjectPageView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
@@ -44,10 +45,11 @@ import {
   type KinContact,
   type KinPartyDetail,
   type KinProjectDetail,
+  type KinWorkPrincipal,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -72,6 +74,7 @@ import {
   KinWorkTextField,
 } from "./components/KinWorkPieces";
 import { KinWorkPlaceRow } from "./components/KinWorkTaskMenus";
+import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
@@ -739,6 +742,10 @@ function ProjectForm(
   const navigation = useNavigation();
   const { environmentId, orgId, editing } = props;
   const choices = useKinWorkChoices(props, true);
+  const directory = useKinWorkDirectory(props, editing === null);
+  const [members, setMembers] = useState<ReadonlyArray<KinWorkPrincipal>>([]);
+  // The form keeps its first `send`, so it reads who was picked from here at save time.
+  const picked = useRef(members);
   const create = useAtomCommand(kinClient.workProjectCreate, { reportFailure: false });
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const [requestId] = useState(uuidv4);
@@ -754,7 +761,12 @@ function ProjectForm(
       change.type === "create"
         ? create({
             environmentId,
-            input: { orgId, ...kinProjectCreateInput(change.draft), clientRequestId: requestId },
+            input: {
+              orgId,
+              ...kinProjectCreateInput(change.draft),
+              ...(picked.current.length === 0 ? {} : { members: picked.current }),
+              clientRequestId: requestId,
+            },
           })
         : update({
             environmentId,
@@ -837,6 +849,20 @@ function ProjectForm(
           onChangeText={(text) => form.edit({ target: text.trim() === "" ? null : text.trim() })}
         />
       </ListSection>
+      {editing === null ? (
+        <KinProjectPeoplePicker
+          people={directory.people}
+          names={directory.names}
+          on={[]}
+          picked={members}
+          disabled={state.saving}
+          onChange={(next) => {
+            picked.current = next;
+            setMembers(next);
+          }}
+          footer={KIN_PROJECT_PEOPLE.detail}
+        />
+      ) : null}
       <ListSection title={COPY.project.billing}>
         {([null, "fixed", "hourly", "retainer"] as const).map((kind) => (
           <ListChoiceRow

@@ -1,0 +1,12 @@
+# Kin watching GitHub with the owner's login (`node scripts/kin-model.ts github-events`)
+
+**Rules.** Each thing on GitHub wakes an agent at most once, whether Kin read it on several looks, stopped halfway through one, or the App's webhook delivered it too. Once Kin has caught up, every teammate's PR and `/kin` either woke an agent or was stopped for the hour with a note. Only a teammate's PR or `/kin` wakes an agent: a stranger's `/kin` and the agent's own signed replies never do. At most one 👀 per thing. One "stopped for the hour" note per thread per hour.
+**Harm guarded.** An agent answering itself in a loop; a stranger starting work with the owner's login; a PR reviewed twice after a restart; a teammate's `/kin` lost because the server stopped mid-look or a busy look hit its cap; a thread spammed with notes.
+**Bound.** One thread of up to four things (the agent's replies included), one wake-up per look, two per thread in the hour, one stop anywhere, the App's webhook for each thing. About 770,000 states, 8 s. `--variants`: 7/7 caught.
+**Fixed.**
+
+1. `NoneLost`: (1) Two teammates write `/kin` on a thread. (2) Kin's look wakes an agent for the first and is at its cap. (3) The second was stored as handled and never woke anyone. Over the cap a trigger is now left for the next look, with the cursor held. Variant `skip-over-cap`.
+
+**Model choices.** The cursor is an index into one thread; the code's is a time (`since_at`) read back five minutes, with the stored keys deciding. A look reads the thread as it is when it starts. The hour's end is left out: it only resets the counts the rules bound.
+**Left out.** Several threads and repos, the 6-hourly repo list, a review requested of the owner, failing checks, the label (each is one more trigger kind through the same `handle`), the reply the owner is told (the reply model), what the agent's turn may do (the session rule's tests).
+**Covers** (confirmed at kin `7481001002` plus this change): `apps/server/src/kin/github/GitHubWatch.ts` (`poll`, `handle`, `react`, `capComment`), `apps/server/src/kin/github/githubTriggers.ts` (`decideTriggers`, `isInside`), `apps/server/src/kin/github/agentMark.ts` (`isAgentText`, `signed`), `apps/server/src/kin/github/ghSign.ts`, `apps/server/src/kin/triggers/githubEvents.ts` (the webhook consumed while the watch is on).

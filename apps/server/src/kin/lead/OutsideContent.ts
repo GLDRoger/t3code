@@ -57,11 +57,14 @@ export const OUTSIDE_TOOLS = {
   kin_chat_post: "allowed",
   kin_widget_upsert: "allowed",
   kin_ask: "allowed",
+  kin_ask_close: "allowed",
   kin_react: "allowed",
   kin_chart: "allowed",
   kin_visual: "allowed",
   kin_chat_read: "allowed",
   kin_leads: "allowed",
+  // Outside text could move an agent onto a costlier model.
+  agent_update: "refused",
   people_read: "allowed",
   // Outside text could rename someone or move their hours.
   people_update: "refused",
@@ -92,9 +95,11 @@ export const OUTSIDE_TOOLS = {
   kin_github_prs: "allowed",
   kin_github_pr: "allowed",
   kin_github_runs: "allowed",
-  // Posts on its own only to the company's private repos; anywhere else on the owner's Confirm.
+  // Posts on its own only to the company's repos; anywhere else on the owner's Confirm.
   kin_github_review: "allowed",
   kin_github_link: "allowed",
+  // Outside text could tell Kin to stop watching a repo.
+  kin_github_watch: "refused",
   // The owner reads and signs the exact payload.
   request_action: "allowed",
   records_query: "allowed",

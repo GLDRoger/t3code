@@ -87,8 +87,17 @@ export function kinWorkNames(input: {
   const org = input.orgs?.orgs.find((held) => held.orgId === input.orgId);
   return {
     people: new Map((input.people ?? []).map((person) => [person.personId, person.displayName])),
-    agents: new Map((org?.agents ?? []).map((agent) => [agent.agentId, agent.displayName])),
-    retired: kinRetiredAgentIds(input.orgs, input.orgId),
+    // Every agent by name, the ones this person may not message too: who holds a task is no secret.
+    agents: new Map(
+      [...(org?.agents ?? []), ...(org?.otherAgents ?? [])].map((agent) => [
+        agent.agentId,
+        agent.displayName,
+      ]),
+    ),
+    retired: new Set([
+      ...kinRetiredAgentIds(input.orgs, input.orgId),
+      ...(org?.otherAgents ?? []).flatMap((agent) => (agent.retired ? [agent.agentId] : [])),
+    ]),
     me: input.orgs?.me.find((me) => me.orgId === input.orgId)?.personId ?? null,
     owner: input.people?.find((person) => person.access === "owner")?.personId ?? null,
     zone: input.zone,
@@ -124,7 +133,7 @@ export const kinMidSentence = (name: string) =>
 const kinWorkRetired = (who: KinWorkPrincipal, names: KinWorkNames): boolean =>
   who._tag === "agent" && names.retired?.has(who.agentId) === true;
 
-const kinWorkAvatar = (who: KinWorkPrincipal): KinAvatarView =>
+export const kinWorkAvatar = (who: KinWorkPrincipal): KinAvatarView =>
   who._tag === "agent"
     ? kinAgentAvatar(who.agentId)
     : { kind: "person", seed: `person:${who.personId}` };
@@ -487,7 +496,11 @@ export interface KinWorkRowView {
   readonly ownerRetired: boolean;
   /** The client it is for, or its project with no client; null in a list of only theirs. */
   readonly about: string | null;
-  /** "W-12 · Acme · Tech lead · In progress · Due Fri 14 Nov". */
+  /** Who has it, as the row always shows it: "Priya", "You", "Tech lead (retired)". */
+  readonly holder: string;
+  /** The rest after who has it: "Due Fri 14 Nov · In progress · Acme". */
+  readonly detail: string;
+  /** `holder` and `detail` on one line: "Priya · Due Fri 14 Nov · In progress · Acme". */
   readonly line: string;
   readonly accessibilityLabel: string;
 }
@@ -517,20 +530,21 @@ export function kinWorkRow(
   const day = kinWorkClosed(record.state) ? null : kinWorkDueText(record, names, now);
   const due = day === null ? null : `Due ${day}`;
   const ownerRetired = kinWorkRetired(record.owner, names);
-  // What a narrow row keeps when it cuts the end off: when it is due and where it stands first,
-  // its key last. "Not started" is what the empty circle already says.
-  const parts = [
+  const holder = ownerRetired ? `${owner} (retired)` : owner;
+  // What a narrow row keeps when it cuts the end off: who has it always (the row sets it apart),
+  // then when it is due and where it stands, then its client or project. "Not started" is what
+  // the empty circle already says.
+  const detail = [
     due,
     record.state === "open" && !record.working ? null : status,
+    about,
     record.side === "theirs" && !kinWorkClosed(record.state) && within?.sided !== true
       ? "They owe this"
       : null,
-    about,
-    ownerRetired ? `${owner} (retired)` : owner,
     record.pullRequest === null ? null : `PR #${record.pullRequest.number}`,
     record.confirmed || kinWorkClosed(record.state) ? null : "Suggested",
-    record.key,
   ].filter((part) => part !== null);
+  const parts = [holder, ...detail];
   return {
     key: record.key,
     title: record.title,
@@ -555,8 +569,10 @@ export function kinWorkRow(
     working: record.working,
     ownerRetired,
     about,
+    holder,
+    detail: detail.join(" · "),
     line: parts.join(" · "),
-    accessibilityLabel: [record.title, ...parts.slice(0, -1), record.late ? "Late" : null]
+    accessibilityLabel: [record.title, ...parts, record.late ? "Late" : null]
       .filter((part) => part !== null)
       .join(". "),
   };
@@ -732,6 +748,8 @@ export interface KinWorkItemView {
   readonly privacy: KinWorkPrivacy;
   /** The owner shared it with the team. */
   readonly shared: boolean;
+  /** Who marked it private, while it is; null when unknown. */
+  readonly markedBy: KinPersonId | null;
   /** What the host lets this reader do to it: a control shows only when it is here. */
   readonly can: KinRecordCan;
 }
@@ -803,7 +821,8 @@ export const KIN_WORK_AUDIENCE = {
  * Each answer says the server's `personSees` rule in words: change the two together.
  */
 export function kinWorkAudience(
-  view: Pick<KinWorkItemView, "privacy" | "shared" | "project">,
+  view: Pick<KinWorkItemView, "privacy" | "shared" | "project"> &
+    Partial<Pick<KinWorkItemView, "markedBy">>,
   /** What the host lets this reader change (`KinRecordDetail.can`). */
   can: Pick<KinRecordCan, "mark" | "unmark" | "share">,
   names?: Pick<KinWorkNames, "me" | "owner" | "people">,
@@ -811,9 +830,12 @@ export function kinWorkAudience(
   const people = view.project === null ? "People on it" : "People on it and the project";
   const current: KinWorkAudience = view.privacy.private ? "me" : view.shared ? "team" : "people";
   const owner = names === undefined ? null : ownerWord(names);
+  // Kept to whoever marked it: "Only me" to them, their name to anyone else who sees it.
+  const marker =
+    names === undefined || current !== "me" ? null : markerWord(view.markedBy ?? null, names);
   const answer =
     current === "me"
-      ? `Only ${owner ?? "you"}, co-owners and whoever has it`
+      ? `Only ${marker ?? "you"}, co-owners and whoever has it`
       : current === "team"
         ? "Everyone on the team"
         : view.project === null
@@ -822,7 +844,7 @@ export function kinWorkAudience(
   const label = {
     people,
     team: "The whole team",
-    me: owner === null ? "Only me" : `Only ${owner} and co-owners`,
+    me: marker === null ? "Only me" : `Only ${marker}`,
   };
   const now = { private: view.privacy.private && !view.privacy.inherited, shared: view.shared };
   // A choice is offered only when the host takes every change it makes.
@@ -1240,12 +1262,27 @@ export function kinWorkItemView(
       sensitive: item.sensitive,
       inherited: false,
       because: "its client or project",
-      privateNote: `Only ${ownerWord(names) ?? "you"}, co-owners and whoever holds it see this.`,
+      privateNote: `Only ${markerWord(item.markedBy ?? null, names) ?? "you"}, co-owners and whoever holds it see this.`,
     }),
     shared: item.shared === true,
+    markedBy: item.markedBy ?? null,
     can,
   };
 }
+
+/**
+ * Who a private mark keeps a task to, in this reader's words: null for "you". An older host, or a
+ * mark from before it was recorded, reads as the owner's.
+ */
+const markerWord = (
+  markedBy: KinPersonId | null,
+  names: Pick<KinWorkNames, "me" | "owner" | "people">,
+): string | null =>
+  markedBy === null
+    ? ownerWord(names)
+    : markedBy === names.me
+      ? null
+      : (names.people.get(markedBy) ?? "a teammate");
 
 /** A host from before `can`: it took what its sheet offered then, and checked on the write. */
 const olderHostCan = (

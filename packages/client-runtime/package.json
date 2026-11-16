@@ -571,6 +571,10 @@
       "types": "./src/kin/kinMessagePage.ts",
       "default": "./src/kin/kinMessagePage.ts"
     },
+    "./kin/kinAgentPage": {
+      "types": "./src/kin/kinAgentPage.ts",
+      "default": "./src/kin/kinAgentPage.ts"
+    },
     "./kin/kinAgentRetire": {
       "types": "./src/kin/kinAgentRetire.ts",
       "default": "./src/kin/kinAgentRetire.ts"
@@ -715,6 +719,10 @@
       "types": "./src/kin/kinChartLayout.ts",
       "default": "./src/kin/kinChartLayout.ts"
     },
+    "./kin/kinWaitingAsk": {
+      "types": "./src/kin/kinWaitingAsk.ts",
+      "default": "./src/kin/kinWaitingAsk.ts"
+    },
     "./kin/kinChoicePresentation": {
       "types": "./src/kin/kinChoicePresentation.ts",
       "default": "./src/kin/kinChoicePresentation.ts"
@@ -758,6 +766,10 @@
     "./kin/kinWorkList": {
       "types": "./src/kin/kinWorkList.ts",
       "default": "./src/kin/kinWorkList.ts"
+    },
+    "./kin/kinWorkGroups": {
+      "types": "./src/kin/kinWorkGroups.ts",
+      "default": "./src/kin/kinWorkGroups.ts"
     },
     "./kin/kinWorkClients": {
       "types": "./src/kin/kinWorkClients.ts",

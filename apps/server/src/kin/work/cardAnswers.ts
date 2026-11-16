@@ -7,6 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { type ChoiceAnswerHandler, KinChatService } from "../chat/KinChatService.ts";
 import { KinConnections, type StaleAsk } from "../connections/ConnectionsService.ts";
+import { answerCard } from "../questions/openQuestions.ts";
 import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
 import { answerReviewCard } from "../github/PullRequestCare.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
@@ -21,6 +22,14 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   scope: Scope.Scope,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  // An agent's open question on this card is answered: its default is never taken.
+  yield* answerCard({
+    orgId: input.orgId,
+    widgetId: input.widget.widgetId,
+    personId: input.personId,
+    label: input.option.label,
+    now: input.now,
+  });
   yield* answerReviewCard({
     orgId: input.orgId,
     widgetId: input.widget.widgetId,

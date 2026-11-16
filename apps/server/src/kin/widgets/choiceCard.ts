@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 /** What `kin_ask` takes: the server assigns option ids, so a lead can't collide them. */
@@ -26,6 +27,16 @@ export const AskInput = Schema.Struct({
   ).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
   detail: Schema.optional(KinText.check(Schema.isMaxLength(2000))),
 });
+/** What an agent's `kin_ask` takes: the card, the default it takes and when, and what it is about. */
+export const LeadAskInput = Schema.Struct({
+  ...AskInput.fields,
+  default: KinTrimmedText.check(Schema.isMaxLength(80)),
+  by: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(10))),
+  about: Schema.optional(
+    Schema.Array(KinTrimmedText.check(Schema.isMaxLength(20))).check(Schema.isMaxLength(8)),
+  ),
+  intent: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
+});
 /**
  * A card Kin itself asks may also show a picture of what it asks about, or exactly what a
  * connection would send; `kin_ask` can't.
@@ -33,11 +44,23 @@ export const AskInput = Schema.Struct({
 export type AskInput = typeof AskInput.Type & {
   readonly image?: { readonly attachmentId: string; readonly mimeType: string };
   readonly send?: KinSendCard;
+  /** An agent's open question: it takes taps until the question closes. */
+  readonly untilAnswered?: true;
 };
 export const AskResult = Schema.Struct({
   widgetId: KinTrimmedText,
   messageId: KinTrimmedText,
+  /** The open question it stored, when one person was asked. */
+  question: Schema.optional(KinTrimmedText),
+  /** The day Kin takes the default, or raises it again when there is none. */
+  by: Schema.optional(KinTrimmedText),
 });
+export const CloseInput = Schema.Struct({
+  question: KinTrimmedText.check(Schema.isMaxLength(40)),
+  outcome: Schema.Literals(["answered", "withdrawn"]),
+  answer: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(200))),
+});
+export const CloseResult = Schema.Struct({ question: KinTrimmedText, state: KinTrimmedText });
 
 const decode = Schema.decodeUnknownEffect(KinChoiceCardState);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
@@ -52,11 +75,16 @@ export const choiceCardState = (input: AskInput): KinChoiceCardState => ({
   })),
   ...(input.image === undefined ? {} : { image: input.image }),
   ...(input.send === undefined ? {} : { send: input.send }),
+  ...(input.untilAnswered === true ? { untilAnswered: true as const } : {}),
   answer: null,
 });
 
-/** Unanswered cards take taps for a day after they were posted; see `KIN_CHOICE_CARD_TTL_MS`. */
-export const choiceExpired = (widget: Pick<KinWidget, "updatedAt">, now: number) =>
+/**
+ * Unanswered cards take taps for a day after they were posted (`KIN_CHOICE_CARD_TTL_MS`); an
+ * open question's card takes them until the question closes it.
+ */
+export const choiceExpired = (widget: Pick<KinWidget, "updatedAt" | "state">, now: number) =>
+  !(Predicate.hasProperty(widget.state, "untilAnswered") && widget.state.untilAnswered === true) &&
   now - Date.parse(widget.updatedAt) >= KIN_CHOICE_CARD_TTL_MS;
 
 /** The owner's tap as the lead reads it: their reply, in words. */

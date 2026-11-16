@@ -132,6 +132,8 @@ export const SHARED_TOOLS = {
   kin_widget_upsert: inTurnChat,
   // These three take no chat: they go to the turn's own chat, and `destination` checks it.
   kin_ask: "allowed",
+  // Closes a question to the person in the turn's chat; only its asker withdraws one.
+  kin_ask_close: "allowed",
   kin_react: "allowed",
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",
@@ -141,6 +143,8 @@ export const SHARED_TOOLS = {
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",
+  // An agent's model is the owner's call, made in the owner's own chat.
+  agent_update: "refused",
   // What everyone in the org sees on profiles; workload only in the owner's own turns.
   people_read: "allowed",
   // Saved only for the one person who asked, with their own rights.
@@ -172,6 +176,7 @@ export const SHARED_TOOLS = {
   kin_github_runs: "refused",
   kin_github_review: "refused",
   kin_github_link: "refused",
+  kin_github_watch: "refused",
   request_action: "refused",
   // Work tasks every person behind the turn may see, shaped as their own screens show them.
   records_query: "view",

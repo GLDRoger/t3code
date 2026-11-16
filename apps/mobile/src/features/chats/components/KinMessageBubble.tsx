@@ -31,6 +31,7 @@ import {
   kinMessageLinks,
   kinPlainText,
   type KinFeedRow,
+  type KinNoticeOpen,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinOutboxRetractable, type KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import {
@@ -478,12 +479,23 @@ export function KinSystemLine(props: {
   readonly row: SystemRow;
   /** Sends the owner's unanswered message again; null shows the line alone. */
   readonly onRetry: (() => void) | null;
+  /** Opens the task or project the line names, when it names one. */
+  readonly onOpen: (open: KinNoticeOpen) => void;
 }) {
+  const { open } = props.row;
   return (
     <View className="items-center gap-2 px-8 py-2">
       <Text textRole="caption" className="text-center text-foreground-muted">
         {props.row.text}
       </Text>
+      {open === null ? null : (
+        <Chip
+          label={open.label}
+          size="small"
+          icon={open.kind === "project" ? "folder.fill" : "checkmark.circle"}
+          onPress={() => props.onOpen(open)}
+        />
+      )}
       {props.onRetry === null ? null : (
         <Chip
           label="Retry"

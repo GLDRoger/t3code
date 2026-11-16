@@ -3,7 +3,8 @@
 /**
  * A Kin lead with no model: `[kv:<id>]` runs the calls in `<verify dir>/turns/<id>.json` (plus
  * local `shell` and `sleep`) on the session's Kin MCP endpoint and replies with its `reply`.
- * T3's finished-task notice runs `turns/notice.json`, with "$task" for the task it names.
+ * T3's finished-task notice runs `turns/notice.json`, with "$task" for the task it names. A
+ * question whose day came unanswered runs `turns/due.json`.
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
@@ -125,6 +126,9 @@ async function capture(server: McpServer | undefined, prompt: string) {
 /** T3's notice that a delegated task finished, as T3 words it or as Kin's prompt names it. */
 const NOTICE =
   /Delegated tasks? ([^\s,]+)|task\.finished[\s\S]*?taskIds\\*"\s*:\s*\[\s*\\*"([^"\\]+)/;
+
+/** Kin waking the asker because its question's day came (questions/openQuestions.ts dueTurnText). */
+const DUE = /Your question to .+?, asked .+?, got no answer by its day/;
 
 /** What a tool answered, as the agent reads it: the structured result, else its JSON text. */
 const answerOf = (response: unknown): unknown => {
@@ -283,10 +287,12 @@ async function runTurn(
   await capture(server, prompt).catch(() => undefined);
   const team = await teamTurn(server, prompt);
   if (team !== undefined) return team;
+  // A due turn's chat history quotes the ask's marker, so it is checked first.
+  const due = DUE.test(prompt);
   // The prompt may quote earlier messages; the newest marker is this turn's.
-  const marked = [...prompt.matchAll(MARKER)].at(-1)?.[1];
-  const notice = marked === undefined ? NOTICE.exec(prompt) : null;
-  const id = marked ?? (notice === null ? undefined : "notice");
+  const marked = due ? undefined : [...prompt.matchAll(MARKER)].at(-1)?.[1];
+  const notice = marked === undefined && !due ? NOTICE.exec(prompt) : null;
+  const id = due ? "due" : (marked ?? (notice === null ? undefined : "notice"));
   // A check-in (Run now) answers with `<verify dir>/checkin-reply.md` once, to show a brief.
   const brief = NodePath.join(verifyDir, "checkin-reply.md");
   if (prompt.includes("This is a check-in") && NodeFS.existsSync(brief)) {
@@ -298,8 +304,8 @@ async function runTurn(
   const task = notice?.[1] ?? notice?.[2];
   const scriptPath = NodePath.join(verifyDir, "turns", `${id}.json`);
   const resultPath = NodePath.join(verifyDir, "turns", `${id}.result.json`);
-  // A turn re-run after a restart must not repeat its tool calls; every notice is its own turn.
-  if (notice === null && NodeFS.existsSync(resultPath)) return { reply: "Done." };
+  // A turn re-run after a restart must not repeat its tool calls; every notice and due turn is its own.
+  if (notice === null && !due && NodeFS.existsSync(resultPath)) return { reply: "Done." };
   let script: TurnScript;
   try {
     script = JSON.parse(NodeFS.readFileSync(scriptPath, "utf8")) as TurnScript;
@@ -353,7 +359,11 @@ function main(): void {
     process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
   const models = {
     currentModelId: "script",
-    availableModels: [{ modelId: "script", name: "Script (kin-verify)" }],
+    availableModels: [
+      { modelId: "script", name: "Script (kin-verify)" },
+      // A second model, so a check can switch an agent's model and see the next turn use it.
+      { modelId: "script-b", name: "Script B (kin-verify)" },
+    ],
   };
   const handle = async (message: JsonRpcMessage): Promise<unknown> => {
     const params = message.params ?? {};

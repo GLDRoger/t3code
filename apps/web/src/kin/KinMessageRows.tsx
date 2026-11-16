@@ -3,6 +3,7 @@ import {
   kinMessageLabel,
   kinPlainText,
   type KinFeedRow,
+  type KinNoticeOpen,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
@@ -381,10 +382,36 @@ export function KinSystemRow(props: {
   readonly body: string;
   /** Sends the owner's unanswered message again; null shows the line alone. */
   readonly onRetry: (() => void) | null;
+  /** The task or project the notice names, opened in Tasks; null for none. */
+  readonly open?: {
+    readonly target: KinNoticeOpen;
+    readonly environmentId: EnvironmentId;
+    readonly orgId: string;
+  } | null;
 }) {
+  const open = props.open ?? null;
   return (
-    <div className="mx-auto flex max-w-3xl items-center justify-center gap-2 px-8 py-1">
+    <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-center gap-2 px-8 py-1">
       <p className="text-center text-xs text-muted-foreground">{props.body}</p>
+      {open === null ? null : (
+        <Button
+          size="xs"
+          variant="outline"
+          render={
+            <Link
+              to="/kin/$environmentId/$orgId/tasks"
+              params={{ environmentId: open.environmentId, orgId: open.orgId }}
+              search={
+                open.target.kind === "project"
+                  ? { project: open.target.key }
+                  : { task: open.target.key }
+              }
+            />
+          }
+        >
+          {open.target.label}
+        </Button>
+      )}
       {props.onRetry === null ? null : (
         <Button size="xs" variant="outline" onClick={props.onRetry}>
           Retry

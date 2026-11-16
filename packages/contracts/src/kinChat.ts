@@ -420,6 +420,8 @@ export const KinChoiceCardState = Schema.Struct({
   send: Schema.optionalKey(KinSendCard),
   /** Set when a newer card for the same thing closed this one. */
   replaced: Schema.optionalKey(Schema.Literal(true)),
+  /** An agent's open question: it takes taps until the question closes, not for a day. */
+  untilAnswered: Schema.optionalKey(Schema.Literal(true)),
   /**
    * What the answer did, in the owner's words, set by the server on a card Kin asked itself: a
    * past-tense title ("Money recorded") and what happened ("Receipt RCT/26-27/001 for ₹25,000…").
@@ -538,6 +540,21 @@ export const KinWaitingReason = Schema.Literals([
   "mention",
 ]);
 export type KinWaitingReason = typeof KinWaitingReason.Type;
+/** An agent's open question waiting on a card: what it does, and on which day, unless answered. */
+export const KinWaitingAsk = Schema.Struct({
+  agent: KinTrimmedText.check(Schema.isMaxLength(80)),
+  /** The option it takes on `by`; null when nothing is safe to do without the person. */
+  default: Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(80))),
+  by: IsoDateTime,
+  revision: Schema.Int,
+  options: Schema.Array(
+    Schema.Struct({
+      optionId: KinTrimmedText.check(Schema.isMaxLength(40)),
+      label: KinTrimmedText.check(Schema.isMaxLength(80)),
+    }),
+  ).check(Schema.isMaxLength(8)),
+});
+export type KinWaitingAsk = typeof KinWaitingAsk.Type;
 export const KinWaitingItem = Schema.Struct({
   waitingId: KinWaitingId,
   orgId: KinOrgId,
@@ -551,6 +568,8 @@ export const KinWaitingItem = Schema.Struct({
   resolution: Schema.NullOr(KinTrimmedText),
   /** The card's question, when a card waits; absent from servers without it. */
   question: Schema.optional(Schema.NullOr(KinTrimmedText)),
+  /** Set while an agent's question on that card is open; absent from servers without it. */
+  ask: Schema.optional(KinWaitingAsk),
 });
 export type KinWaitingItem = typeof KinWaitingItem.Type;
 export const KinChatSummary = Schema.Struct({
@@ -633,6 +652,19 @@ export const KinOrgsListResult = Schema.Struct({
           displayName: Schema.String,
           retired: Schema.Boolean,
         }),
+      ),
+      /**
+       * The company's other agents, by name only: everyone on the team may know who holds a task,
+       * not message them. Absent from older hosts.
+       */
+      otherAgents: Schema.optional(
+        Schema.Array(
+          Schema.Struct({
+            agentId: KinAgentId,
+            displayName: Schema.String,
+            retired: Schema.Boolean,
+          }),
+        ),
       ),
     }),
   ),

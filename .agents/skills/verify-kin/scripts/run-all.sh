@@ -11,9 +11,10 @@ SCRIPTS=("$@")
 # told-once-quiet-hours goes first: a relay to someone who just wrote answers them and never waits.
 [[ ${#SCRIPTS[@]} -eq 0 ]] && SCRIPTS=(told-once-quiet-hours assign-member-sees relay-owner-to-member
   member-request-to-owner private-task-hidden member-no-money send-card-once overdue-invoice-reminder
-  checkin-new-agent lead-adds-milestone owner-money-forms private-client-unnamed team-room-discussion character-and-undo github-delegated-task work-change-five-people
-  member-attaches-file hours-two-zones relay-marked asker-is-giver remove-and-bring-back
-  teammate-reminder)
+  checkin-new-agent lead-adds-milestone owner-money-forms private-client-unnamed team-room-discussion
+  character-and-undo github-delegated-task work-change-five-people member-attaches-file agent-page
+  project-people-loop member-sees-agent-name lead-undoes-only-me open-questions github-events
+  hours-two-zones relay-marked asker-is-giver remove-and-bring-back teammate-reminder)
 # Midday on everyone's clock before each script, so the hour it runs at holds nothing back;
 # scripts about hours set their own zones. Etc/GMT-N is UTC+N.
 midday() {

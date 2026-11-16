@@ -82,6 +82,7 @@ import { deferralCardActions, deferralCardActionsReady } from "../widgets/deferr
 import * as ChartCard from "../widgets/chartCard.ts";
 import * as VisualCard from "../widgets/visualCard.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
+import { answerByReply } from "../questions/openQuestions.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
@@ -275,10 +276,14 @@ export class KinChatService extends Context.Service<
       readonly threadId: ThreadId;
       readonly closed: boolean;
     }) => Effect.Effect<KinWidget, ServiceError>;
-    /** Server-only: closes an unanswered choice card a newer one for the same thing replaced. */
+    /**
+     * Server-only: closes an unanswered choice card, as replaced by a newer one for the same
+     * thing, or with `outcome` saying what became of it (an open question's default taken).
+     */
     readonly closeReplaced: (input: {
       readonly orgId: KinOrgId;
       readonly widgetId: KinWidgetId;
+      readonly outcome?: { readonly title: string; readonly text: string };
     }) => Effect.Effect<void, ServiceError>;
     /** Server-only: what became of a send card's Confirm: sending, then sent or failed. */
     readonly setSendOutcome: (input: {
@@ -826,6 +831,16 @@ const make = Effect.gen(function* () {
       }
     }
     if (identity._tag === "person") {
+      // Their words answer an agent's question asked in text here before them.
+      yield* answerByReply({
+        orgId: identity.orgId,
+        chatId: message.chatId,
+        personId: identity.personId,
+        now: Date.parse(message.createdAt),
+      }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(toPersistenceSqlError("KinChatService.answerByReply")),
+      );
       for (const item of yield* repo.listOpenWaiting(identity)) {
         if (item.chatId !== message.chatId || item.reason !== "question" || item.messageId === null)
           continue;
@@ -1474,8 +1489,8 @@ const make = Effect.gen(function* () {
         Effect.fn("KinChatService.org")(function* (identity) {
           const org = yield* requireRecord(repo.getOrg(identity));
           const agents = yield* repo.listAgents(identity);
-          // Only the agents this person owns (the owner owns every one), may message, or shares
-          // a chat with: a teammate does not learn the rest exist.
+          // The agents this person owns (the owner owns every one), may message, or shares a chat
+          // with; the rest only by name, so a task's holder is never "an agent".
           const visible = yield* sql<{ agentId: string }>`SELECT a.agent_id AS "agentId"
             FROM kin_agents a WHERE a.org_id = ${identity.orgId} AND (
               a.owner_person_id = ${identity.personId}
@@ -1490,15 +1505,15 @@ const make = Effect.gen(function* () {
             Effect.map((rows) => new Set(rows.map((row) => row.agentId))),
             Effect.mapError(toPersistenceSqlError("KinChatService.org")),
           );
+          const named = ({ agentId, displayName, retiredAt }: (typeof agents)[number]) => ({
+            agentId,
+            displayName,
+            retired: retiredAt !== null,
+          });
           return {
             ...org,
-            agents: agents
-              .filter(({ agentId }) => visible.has(agentId))
-              .map(({ agentId, displayName, retiredAt }) => ({
-                agentId,
-                displayName,
-                retired: retiredAt !== null,
-              })),
+            agents: agents.filter(({ agentId }) => visible.has(agentId)).map(named),
+            otherAgents: agents.filter(({ agentId }) => !visible.has(agentId)).map(named),
           };
         }),
       );
@@ -2287,7 +2302,10 @@ const make = Effect.gen(function* () {
         ...existing.value,
         // Closing writes no words.
         audience: "chat",
-        state: { ...card, replaced: true },
+        state:
+          input.outcome === undefined
+            ? { ...card, replaced: true }
+            : { ...card, outcome: input.outcome },
         awaiting: [],
         expectedRevision: existing.value.revision,
         closedAt: at,

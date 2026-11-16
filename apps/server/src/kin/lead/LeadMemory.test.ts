@@ -372,6 +372,7 @@ it.live(
           "kin_follow_up",
           "kin_worker_stop",
           "kin_leads",
+          "agent_update",
           "people_read",
           "people_update",
           "kin_hand_off",
@@ -380,6 +381,7 @@ it.live(
           "team_open",
           "team_say",
           "kin_ask",
+          "kin_ask_close",
           "kin_chart",
           "kin_visual",
           "kin_react",
@@ -396,6 +398,7 @@ it.live(
           "kin_github_pr",
           "kin_github_runs",
           "kin_github_review",
+          "kin_github_watch",
           "kin_github_link",
         ]);
         for (const thread of [

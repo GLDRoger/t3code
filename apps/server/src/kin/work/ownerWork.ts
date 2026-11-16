@@ -110,10 +110,10 @@ export const viewerOf = Effect.fn("KinWork.viewer")(function* (
   };
 });
 export type Viewer = Effect.Success<ReturnType<typeof viewerOf>>;
-const writerOf = (viewer: Viewer): Writer =>
+export const writerOf = (viewer: Viewer): Writer =>
   viewer.teammate ? { ...ownerWriter(viewer.person), teammate: true } : ownerWriter(viewer.person);
 /** A teammate's write and its answer run in one transaction: what it checks holds as it commits. */
-const asViewer = Effect.fn("KinWork.asViewer")(function* <A, R>(
+export const asViewer = Effect.fn("KinWork.asViewer")(function* <A, R>(
   viewer: Viewer,
   write: Effect.Effect<A, KinChatError, R>,
 ) {
@@ -764,7 +764,7 @@ export const assign = Effect.fn("KinWork.assign")(function* (
  * Someone gives or takes a task on their own screen: its holders hear it as they would from an
  * agent, from the team agent's chat. The write already committed, so a failed message fails nothing.
  */
-const tellMoved = (
+export const tellMoved = (
   person: PersonIdentity,
   before: RecordRow | undefined,
   after: RecordRow | undefined,

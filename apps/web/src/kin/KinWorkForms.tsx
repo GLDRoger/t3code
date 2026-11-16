@@ -1,5 +1,9 @@
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
-import { KIN_CLIENTS, KIN_PROJECTS } from "@t3tools/client-runtime/kin/kinWorkClients";
+import {
+  KIN_CLIENTS,
+  KIN_PROJECT_PEOPLE,
+  KIN_PROJECTS,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_FORM_COPY,
   KIN_WORK_FORM_LIMITS,
@@ -28,8 +32,9 @@ import type {
   KinPartyDetail,
   KinProjectDetail,
   KinRecordKey,
+  KinWorkPrincipal,
 } from "@t3tools/contracts";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -56,6 +61,7 @@ import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinProjectPeoplePicker } from "./KinProjectPeople";
 import { KinWorkPrivateMark, KinWorkProblem } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { kinHostConnected } from "./useKinHost";
@@ -63,6 +69,7 @@ import {
   kinWorkChoicesAtom,
   useKinWorkForm,
   type KinWorkChoices,
+  type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
 
@@ -581,12 +588,21 @@ export function KinProjectDialog(
     /** The client a new project is opened from. */
     readonly party: KinWorkRef | null;
     readonly choices: KinWorkChoices;
+    /** Who a new project can have on it; its page changes them after. */
+    readonly directory?: KinWorkDirectory;
     readonly onSaved: (key: KinRecordKey) => void;
     readonly onOpenExisting: (key: KinRecordKey) => void;
     readonly onClose: () => void;
   },
 ) {
   const { environmentId, orgId, editing } = props;
+  const [members, setMembers] = useState<ReadonlyArray<KinWorkPrincipal>>([]);
+  // The form keeps the `send` it was made with, so it reads who is picked at save time.
+  const picked = useRef<ReadonlyArray<KinWorkPrincipal>>([]);
+  const pick = (next: ReadonlyArray<KinWorkPrincipal>) => {
+    picked.current = next;
+    setMembers(next);
+  };
   const create = useAtomCommand(kinClient.workProjectCreate, { reportFailure: false });
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const [requestId] = useState(randomUUID);
@@ -601,7 +617,12 @@ export function KinProjectDialog(
       change.type === "create"
         ? create({
             environmentId,
-            input: { orgId, ...kinProjectCreateInput(change.draft), clientRequestId: requestId },
+            input: {
+              orgId,
+              ...kinProjectCreateInput(change.draft),
+              ...(picked.current.length === 0 ? {} : { members: picked.current }),
+              clientRequestId: requestId,
+            },
           })
         : update({
             environmentId,
@@ -771,6 +792,22 @@ export function KinProjectDialog(
           </Field>
         ) : null}
       </div>
+      {editing === null && props.directory !== undefined ? (
+        <div className="flex flex-col gap-1.5">
+          <Label>{KIN_PROJECT_PEOPLE.choose}</Label>
+          <p className="text-xs text-muted-foreground">{KIN_PROJECT_PEOPLE.detail}</p>
+          <div className="max-h-64 overflow-y-auto rounded-md border border-border p-1">
+            <KinProjectPeoplePicker
+              people={props.directory.people}
+              names={props.directory.names}
+              on={[]}
+              picked={members}
+              disabled={state.saving}
+              onChange={pick}
+            />
+          </div>
+        </div>
+      ) : null}
       <Field id={ids.repos} label={COPY.project.repos} moved={moved.repos}>
         <Textarea
           id={ids.repos}

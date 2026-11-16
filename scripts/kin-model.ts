@@ -96,6 +96,14 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/work/teamView.ts",
     "apps/server/src/kin/pulse/senses/work.ts",
   ],
+  questions: [
+    "apps/server/src/kin/questions/openQuestions.ts",
+    "apps/server/src/kin/questions/rules.ts",
+    "apps/server/src/kin/widgets/choiceCard.ts",
+    "apps/server/src/kin/work/cardAnswers.ts",
+    "apps/server/src/kin/lead/mcp/handlers.ts",
+    "apps/server/src/kin/triggers/deferralFlow.ts",
+  ],
   discussion: [
     "apps/server/src/kin/team/turns.ts",
     "apps/server/src/kin/team/KinTeam.ts",
@@ -104,6 +112,13 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/chat/KinGroups.ts",
     "apps/server/src/kin/lead/Handoff.ts",
     "apps/server/src/kin/lead/WakeupRunner.ts",
+  ],
+  "github-events": [
+    "apps/server/src/kin/github/GitHubWatch.ts",
+    "apps/server/src/kin/github/githubTriggers.ts",
+    "apps/server/src/kin/github/agentMark.ts",
+    "apps/server/src/kin/github/ghSign.ts",
+    "apps/server/src/kin/triggers/githubEvents.ts",
   ],
 };
 /** The models a change touches: a covered file, the model's own folder, or this runner. */

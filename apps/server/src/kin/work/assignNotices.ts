@@ -23,10 +23,13 @@ import { parseFields } from "./lists.ts";
 import { ownerZone, type RecordRow } from "./recordRows.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 
-/** What a turn did to one person's task: gave it to them, took it from them, or gave it back. */
+/**
+ * What a turn did to one person's task: gave it to them, took it from them, or gave it back; or
+ * to a project: put them on it, or made them its lead.
+ */
 export type AssignNotice = {
   readonly personId: KinPersonId;
-  readonly kind: "given" | "taken" | "returned";
+  readonly kind: "given" | "taken" | "returned" | "added" | "lead";
   readonly row: RecordRow;
   /** The agent's one line on why, or the holder's words on a hand back. */
   readonly why: string | null;
@@ -46,11 +49,43 @@ const reasonOf = (row: RecordRow) => {
   const reason = parseFields(row.fieldsJson).reason;
   return typeof reason === "string" ? reason : null;
 };
-/** Who to tell that a task came to them or left them, and why. */
+const peopleOn = (row: RecordRow | undefined) => {
+  const members = row === undefined ? undefined : parseFields(row.fieldsJson).members;
+  return new Set(
+    (Array.isArray(members) ? members : []).flatMap((one) =>
+      typeof one === "string" && one.startsWith("person:") ? [one.slice("person:".length)] : [],
+    ),
+  );
+};
+
+/** Who to tell that a project now has them on it, or as its lead: each person once. */
+const projectNotices = (before: RecordRow | undefined, after: RecordRow): Array<AssignNotice> => {
+  const lead =
+    after.ownerKind === "person" &&
+    !(before?.ownerKind === "person" && before.ownerId === after.ownerId)
+      ? after.ownerId
+      : null;
+  const had = peopleOn(before);
+  const added = [...peopleOn(after)].filter((person) => !had.has(person) && person !== lead);
+  return [
+    ...(lead === null
+      ? []
+      : [{ personId: KinPersonId.make(lead), kind: "lead" as const, row: after, why: null }]),
+    ...added.map((person) => ({
+      personId: KinPersonId.make(person),
+      kind: "added" as const,
+      row: after,
+      why: null,
+    })),
+  ];
+};
+
+/** Who to tell that a task came to them or left them, and why; or that a project took them on. */
 export const movedNotices = (
   before: RecordRow | undefined,
   after: RecordRow,
 ): Array<AssignNotice> => {
+  if (after.registerId === "projects") return projectNotices(before, after);
   if (after.registerId !== "work") return [];
   if (
     before !== undefined &&
@@ -108,12 +143,15 @@ const meetingLine = (agent: string, notice: AssignNotice, zone: string, now: num
 const line = (notice: AssignNotice, zone: string) => {
   const task = `${notice.row.key} ${notice.row.title}`;
   const why = notice.why === null ? "" : `: ${notice.why}`;
+  if (notice.kind === "added") return `added you to ${task}`;
+  if (notice.kind === "lead") return `made you the lead of ${task}`;
   return notice.kind === "given"
     ? `${task}${dueText(notice.row, zone)}${notice.why === null ? "" : `. Why: ${notice.why}`}`
     : notice.kind === "taken"
       ? `took over ${task}${why}`
       : `${notice.by === undefined ? "" : `${notice.by} `}handed ${task} back${why}`;
 };
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 /** A sentence ends once: a note that ends in its own stop gets no second one. */
 const ended = (text: string) => (/[.!?…]["”’)]?$/.test(text) ? text : `${text}.`);
 
@@ -125,20 +163,26 @@ const bodyFor = (
   now: number,
 ) => {
   const given = notices.filter((notice) => notice.kind === "given");
-  const other = notices.filter((notice) => notice.kind !== "given");
+  const projects = notices.filter((notice) => notice.kind === "added" || notice.kind === "lead");
+  const other = notices.filter((notice) => notice.kind === "taken" || notice.kind === "returned");
   if (notices.length === 1)
     return given.length === 1
       ? given[0]!.row.category === "meeting"
         ? meetingLine(agent, given[0]!, zone, now)
         : ended(`${agent} gave you ${line(given[0]!, zone)}`)
-      : ended(
-          other[0]!.by === undefined ? `${agent} ${line(other[0]!, zone)}` : line(other[0]!, zone),
-        );
+      : projects.length === 1
+        ? ended(`${agent} ${line(projects[0]!, zone)}`)
+        : ended(
+            other[0]!.by === undefined
+              ? `${agent} ${line(other[0]!, zone)}`
+              : line(other[0]!, zone),
+          );
   return [
     given.length === 0
       ? `${agent}:`
       : `${agent} gave you ${given.length === 1 ? "a task" : `${given.length} tasks`}:`,
     ...given.map((notice) => `• ${line(notice, zone)}`),
+    ...projects.map((notice) => `• ${capital(line(notice, zone))}`),
     ...other.map((notice) => `• ${notice.by === undefined ? "It " : ""}${line(notice, zone)}`),
   ].join("\n");
 };

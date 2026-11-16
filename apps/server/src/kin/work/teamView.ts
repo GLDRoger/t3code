@@ -85,14 +85,14 @@ const attends = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fra
     WHERE a.value = 'person:' || ${personId})`;
 
 /**
- * What a non-owner-level person sees, on every screen, count, search and turn: a task they hold or
- * attend, private or not. Unlabelled: what they made, gave or share, the projects they are on,
+ * What a non-owner-level person sees, on every screen, count, search and turn: a task they hold,
+ * attend or marked private themselves, private or not. Unlabelled: what they made, gave or share, the projects they are on,
  * their projects' entries and docs (a private task is never its project lead's), and company docs
  * with the Docs place on.
  */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`((r.register_id = 'work' AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
-      OR ${attends(sql, personId)}
+      OR ${attends(sql, personId)} OR r.marked_by_person_id = ${personId}
       OR (r.sensitive = 0 AND ((r.created_by_kind = 'person' AND r.created_by_id = ${personId})
         OR r.assigned_by_person_id = ${personId}))))
   OR (r.register_id IN ('work', 'milestones') AND r.sensitive = 0
@@ -260,12 +260,14 @@ const roomWork = Effect.fn("KinTeamView.roomWork")(function* (
 });
 
 /**
- * A teammate changes only a task they hold or gave to whoever holds it, never one they only see;
- * a project's lead also anything of the project in `LEAD_LISTS`, quotes and invoices as drafts.
+ * A teammate changes only a task they hold, gave to whoever holds it or marked private, never one
+ * they only see; a project's lead also anything of the project in `LEAD_LISTS`, quotes and
+ * invoices as drafts.
  */
 const teamWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
   sql`(${personSees(sql, personId)} AND ((r.owner_kind = 'person' AND r.owner_id = ${personId})
-    OR r.assigned_by_person_id = ${personId} OR ${leadWrites(sql, personId)}))`;
+    OR r.assigned_by_person_id = ${personId} OR r.marked_by_person_id = ${personId}
+    OR ${leadWrites(sql, personId)}))`;
 
 const leadWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
   sql`(${ownLabelOff(sql)} AND r.register_id IN ${sql.in(LEAD_LISTS)}
@@ -326,6 +328,18 @@ const OWNERS_FIELDS = [
   "links",
 ] as const;
 
+/** A write that changes only who is on a project (`fields.members`): its lead may make it. */
+const peopleOnly = (input: TeamWrite["input"]) => {
+  const { fields, ...rest } = input;
+  return (
+    typeof fields === "object" &&
+    fields !== null &&
+    Object.keys(fields).length > 0 &&
+    Object.keys(fields).every((key) => key === "members") &&
+    Object.values(rest).every((value) => value === undefined)
+  );
+};
+
 /** What a lead's write in their project still leaves to the owner: links, sources and clients. */
 const LEADS_REFUSED = ["confirmed", "repeat", "partyId", "source", "links"] as const;
 const DRAFTS_ONLY = new KinChatError({
@@ -355,9 +369,16 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
   const seen =
     recordIds.length === 0
       ? []
-      : yield* sql<{ recordId: string; writes: number; leads: number; registerId: string }>`SELECT
+      : yield* sql<{
+          recordId: string;
+          writes: number;
+          leads: number;
+          marked: number;
+          registerId: string;
+        }>`SELECT
           r.record_id AS "recordId", ${teamWrites(sql, personId)} AS writes,
-          ${leadWrites(sql, personId)} AS leads, r.register_id AS "registerId"
+          ${leadWrites(sql, personId)} AS leads,
+          COALESCE(r.marked_by_person_id = ${personId}, 0) AS marked, r.register_id AS "registerId"
         FROM kin_records r WHERE r.org_id = ${orgId}
           AND r.record_id IN ${sql.in([...new Set(recordIds)])} AND ${personSees(sql, personId)}
         ORDER BY r.record_id`;
@@ -379,7 +400,14 @@ type TeamFacts = ReturnType<Effect.Success<ReturnType<typeof teamFactsOf>>>;
  */
 const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined => {
   if (!facts.member) return noLongerTeam;
-  const { row, input } = write;
+  const { row } = write;
+  // Whoever marked it "Only me" may take their own mark off again.
+  const input =
+    write.input.sensitive === false && facts.seen?.marked === 1
+      ? { ...write.input, sensitive: undefined }
+      : write.input;
+  if (row !== undefined && facts.led.has(row.recordId as KinRecordId) && peopleOnly(input))
+    return facts.seen === null || facts.seen === undefined ? notFound(row.key) : undefined;
   const intoLed = input.projectId === undefined || facts.led.has(input.projectId as KinRecordId);
   let lead: { readonly draft: boolean } | undefined;
   if (row !== undefined) {

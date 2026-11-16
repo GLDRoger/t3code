@@ -49,6 +49,8 @@ import { ApproveOnPhone } from "./KinCards";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import type { KinLeadFormTarget } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";
+import { KinWaitingAsk } from "./KinWaitingAsk";
+import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { KinStandInLine } from "./KinStandInLine";
 import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinInbox } from "./useKinHost";
@@ -439,6 +441,7 @@ function KinWaiting(props: {
   readonly environmentId: EnvironmentId;
 }) {
   const [open, setOpen] = useState(false);
+  const nowMs = useNowMinuteMs();
   const banner = kinWaitingBannerView(props.waiting);
   if (banner === null) return null;
   return (
@@ -464,6 +467,7 @@ function KinWaiting(props: {
         <ul className="flex flex-col p-1">
           {props.waiting.map((item) => {
             const row = kinWaitingRowView(item, props.chats, props.directory.agentNames);
+            const ask = kinWaitingAskView(item, nowMs);
             return (
               <li key={item.waitingId}>
                 <Link
@@ -483,6 +487,9 @@ function KinWaiting(props: {
                   </span>
                   {item.reason === "approval" ? <ApproveOnPhone /> : null}
                 </Link>
+                {ask === null ? null : (
+                  <KinWaitingAsk ask={ask} environmentId={props.environmentId} />
+                )}
               </li>
             );
           })}

@@ -845,6 +845,7 @@ function ClientPage(
           editing={null}
           party={view.ref}
           choices={props.choices}
+          directory={props.directory}
           onSaved={(key) => {
             setDialog(null);
             props.onOpenProject(key);

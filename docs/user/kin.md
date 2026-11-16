@@ -92,6 +92,12 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   people in that chat can open them, and an agent reads them with the access of whoever sent them.
 - **It asks with cards.** A question with choices, a chart, or something to confirm comes as a card
   in the chat. Tapping an answer answers the agent; it is never an approval.
+- **It asks once, and says what it will do.** An agent's question comes with the answer it will go
+  with and the day, by default the end of your next working day (until 19:30). If you don't answer
+  by then, it goes with that answer and tells you in one line; say "undo it" to reverse. Something
+  that would send, post or move money has no such default: it is raised once more the next working
+  morning and then waits for you. Another agent won't ask you the same thing while it is open.
+  To change the answer before the day, tap another one.
 - **It remembers.** Ask it to remember something and it keeps it. "Keep this between us" keeps it
   for the owner alone.
 - **It comes back later.** "Remind me Friday at 10" or "check on this in two hours" sets a reminder.
@@ -106,7 +112,30 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   requests and checks, reviews pull requests, and starts coding work in T3 Code. It never merges
   without the owner's approval.
 
-**Waiting on you** in Chats collects what needs your answer.
+**Waiting on you** in Chats collects what needs your answer. An agent's open question shows there with
+its default and day, and you can answer it right there.
+
+### An agent's page
+
+Tap an agent's name at the top of its chat, or in any message, to open its page. It's also under
+**Settings → Agents** and in the command palette. The owner and co-owners can change
+everything there; anyone else sees a short card with what the agent looks after and a way to
+message it.
+
+- **Model.** Each agent runs on a Claude model: a stronger one for your messages and urgent work,
+  a cheaper one for the rest. A change applies from its next reply. You can also say it in a
+  chat: "run Finance on Sonnet". New agents start on the company default, set under
+  **Settings → Agents**. If a model goes away from your server, the agent runs on the
+  default and its page says so. The page also shows what the agent has spent this month.
+- **Character.** Read it, **Edit** it, open its **History** to bring an older one back, or **Ask it
+  to rewrite itself**, which starts a message in its chat for you to finish.
+- **Pause** stops an agent taking turns until you **Resume** it; messages and check-ins wait.
+  **Retire agent** removes it from Chats, and **Restore** brings it back with its history.
+- The page also shows its check-ins and quiet hours, who may message it, what it can reach, its
+  playbooks in **Docs**, and the tasks it has open.
+
+When you create an agent, choose its model and write its character there, or tick **Write one for
+me** and the Chief of staff drafts one with you.
 
 ### What an agent never does without you
 
@@ -167,6 +196,11 @@ Tasks holds everything someone owes someone. **Needs you** at the top is what wa
 first: late or stuck work, quiet clients, projects with nothing moving. Choose **I've got it** when
 you're handling one.
 
+Below it, everyone's list reads the same way, so you can tell at a glance what waits on whom:
+**On me** is what you have to do; **On others** is what waits on a teammate, under each person;
+**On agents** is what an agent has; then everything else, by project. Each task says who has it
+first, agents by name, then when it's due and its project.
+
 - **New task** gives a task a title, a due day and someone to do it. Ask an agent instead and it
   writes the task for you.
 - **Give to someone else** moves a task to a teammate or an agent. They get it in their Tasks and a
@@ -177,7 +211,8 @@ you're handling one.
 - **Who can see this** says who can see a task. **People on it and the project** is the usual.
   **Only me** makes it private: it hides the task from other teammates, not from the owner and
   co-owners. Only they and whoever has it see it, and it stays out of every list, count and search
-  for anyone else. Members can't change it.
+  for anyone else. A project lead who marks one can undo it; others see whose it is, as
+  **Only Dev Malhotra**. Members can't change it.
 
 Keep amounts, rates and client terms out of task titles and notes. Project people read those; put
 the figures in the quote or the invoice.
@@ -191,6 +226,12 @@ while, the client shows up under Needs you.
 A project has a lead, a target day, milestones and its tasks. Its page says whether it's on track,
 what's late or stuck, and who's on it. The owner, co-owners and the project's lead add milestones;
 everyone on the project sees them. The owner or a co-owner sets the lead under **Project lead**.
+
+**People** on a project's page lists who's on it. The owner, co-owners and the project's lead choose
+**Add people** to put teammates and agents on it, and take someone off from the same list. The owner
+can also do this from a teammate's page under **Team**, and choose people when making a project.
+Whoever is added or made lead gets a message in their chat with a link to the project. Taken off,
+its tasks leave their list straight away. A member can't add themselves.
 
 A member sees client names and contacts only when the owner turns on **Can see Clients**, and never
 what a client is charged or owes. With it on, they also find the projects they're on, under their
@@ -232,9 +273,9 @@ Moving from another system? See [Moving your records into Kin](./kin-import.md).
 
 Docs holds what's written for someone to read: briefs, specs, plans, notes, and the PDFs Kin makes.
 Each doc is filed under a client, a project or the company; **Unfiled** shows what still needs a
-home. Ask an agent to write or change a doc and it edits only the sections that change. Every
-version is kept: open **History** to see what changed and, as owner or co-owner, restore an older
-one.
+home; a doc an agent writes for a project is filed under it. Ask an agent to write or change a doc
+and it edits only the sections that change. Every version is kept: open **History** to see what
+changed and, as owner or co-owner, restore an older one.
 
 A doc is private when it's marked private or it's a quote. Otherwise a project's people can read the
 project's docs.
@@ -279,6 +320,37 @@ once with what changed and the pull request. Commits name you as the author and 
 on a `Co-authored-by` line. Say "commit as yourself" (pull requests and comments still show as you) or "don't credit yourself" and it remembers.
 Teammates' chats and shared rooms still get no shell: what they ask for comes to you.
 
+#### When things happen on GitHub
+
+With GitHub connected, Kin checks it about once a minute with your login, so there is no app or
+webhook to install. On your repos and your organizations' repos, these start an agent on their own:
+
+- **A teammate opens a pull request**, or marks a draft ready: it is reviewed and the review posted.
+  On your own pull requests the review is a comment, since GitHub doesn't let you approve your own.
+- **A call in a comment, an issue or a line comment**: a line that starts with `/kin`, or with an
+  agent's name and a comma ("Tech lead, rename this"), which goes to that agent. On an issue the
+  agent says what it will do, works on a branch and opens a pull request that closes the issue. On a
+  pull request it pushes a commit to that pull request's branch and replies in the thread, or says it
+  can't push there and offers a pull request instead.
+- **The `kin` label** on an issue, which works the issue the same way.
+- **A review requested from you**, and **failing checks on an agent's own pull request**, which it
+  fixes or explains.
+
+Only people who can write to the repo can call an agent. Anyone else's `/kin` starts nothing, and
+their pull request gets a comment review from its diff: their code never runs. An agent never reacts
+to its own posts, and a mention of you doesn't call it unless you tell it in chat to let mentions
+of you call it in a repo. Everything an agent posts on GitHub ends with its name ("_Tech lead, via
+Kin_"). It tells you once, in one line with the link; quiet hours hold that line, not the work. A
+thread that keeps calling an agent gets five turns an hour, then one comment saying it has stopped
+until the hour is up.
+
+Kin watches every repo yours or your organizations' unless you say "leave acme/site alone" in chat.
+**Settings → Connections → GitHub** shows how many repos it watches, when it last checked and how
+much it handled today; **Show repos** lists them with a switch each, and **Watch every repo** undoes
+the switches. Forks of other people's repos start off. If a check fails, the row says why and how to
+fix it. While the login is connected, the GitHub App's webhook, if you set one up, no longer starts
+agents.
+
 To try pull requests in a browser on Ubuntu 23.10 or later, run `t3 browser setup` once as root.
 
 ## Check-ins and the weekly brief
@@ -321,6 +393,7 @@ on the projects they lead.
 | Record payments, make PDFs and receipts, set budgets | Yes                                 | No                                                                               |                                                      |
 | Clients                                              | All, with what they owe             | Names, contacts and their projects with **Can see Clients**; never what they owe | Their projects' clients, without **Can see Clients** |
 | Add a milestone                                      | Yes                                 | No; they see milestones                                                          | On their projects                                    |
+| Add or take people off a project                     | Yes                                 | No                                                                               | On their projects                                    |
 | Docs                                                 | All                                 | Company docs with **Can see Docs**, and their projects' docs                     |                                                      |
 | Restore an older version of a doc                    | Yes                                 | No                                                                               |                                                      |
 | Confirm an email, statement or receipt; approve      | Yes                                 | No                                                                               |                                                      |

@@ -57,6 +57,8 @@ import {
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as Pings from "./pings.ts";
 import { deliverHeld } from "./heldDelivery.ts";
+import { settleDue } from "../questions/openQuestions.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
 
 export class KinDeferralFlowError extends Schema.TaggedError<KinDeferralFlowError>()(
   "KinDeferralFlowError",
@@ -147,6 +149,7 @@ const make = Effect.gen(function* () {
   const start = yield* makeDeferralStarter;
   const budget = yield* KinBudget.KinBudget;
   const deliveries = yield* LeadDelivery.KinLeadDelivery;
+  const queue = yield* KinEventQueue.KinEventQueue;
 
   /**
    * Hands a due reminder to its lead, who writes it in its own voice; the server attaches the
@@ -528,6 +531,15 @@ const make = Effect.gen(function* () {
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.catch((cause) =>
                 Effect.logWarning("Kin held lines not delivered", { orgId, cause }),
+              ),
+            ),
+          ),
+          // Open questions whose day came: a default taken, or raised once more, once each.
+          Effect.andThen(
+            settleDue(orgId, now, { chat, queue }).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.catch((cause) =>
+                Effect.logWarning("Kin open questions not settled", { orgId, cause }),
               ),
             ),
           ),
