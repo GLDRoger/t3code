@@ -235,6 +235,9 @@ export interface KinWorkResume {
   at: { readonly seq: number; readonly team: boolean } | null;
 }
 
+let kinWorkFolds = 0;
+const KIN_WORK_FOLD_EPOCHS = 1_000_000;
+
 /** `kinWorkLiveStream` over any source of changes and retries. */
 export function kinWorkLiveFold<E, R, EE, RR>(
   events: Stream.Stream<KinWorkEvent | typeof KIN_WORK_RETRY, EE, RR>,
@@ -247,7 +250,8 @@ export function kinWorkLiveFold<E, R, EE, RR>(
     let named = KIN_WORK_NOTHING_NAMED;
     let last: KinWorkLive | null = null;
     let rows: KinWorkRows | null = null;
-    let epoch = 0;
+    // Each fold numbers its own epochs, so a page held from an earlier one never patches from this.
+    let epoch = (kinWorkFolds += KIN_WORK_FOLD_EPOCHS);
     return events.pipe(
       Stream.mapEffect((event) =>
         Effect.gen(function* () {

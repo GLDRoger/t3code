@@ -213,13 +213,13 @@ describe("kinWorkLiveFold, from a host that sends rows", () => {
         const resume: KinWorkResume = { at: null };
         const h = yield* harness([], { orgId, resume });
         yield* h.send(whole(7, 12));
-        yield* h.next;
+        const before = (yield* h.next).rows!.epoch;
         yield* h.send({ _tag: "snapshot-required", seq: 3, team: true });
         yield* h.send(whole(3, 2, true));
         const live = yield* h.next;
         // Every read covering any list moves, so each screen reads its own view again.
         expect(live).toMatchObject({ seq: 3, unnamed: 3, summary: { open: 2 } });
-        expect(live.rows).toMatchObject({ epoch: 1, floor: 3 });
+        expect(live.rows).toMatchObject({ epoch: before + 1, floor: 3 });
         expect(resume.at).toEqual({ seq: 3, team: true });
       }),
     ),

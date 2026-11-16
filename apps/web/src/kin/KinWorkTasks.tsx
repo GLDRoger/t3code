@@ -28,7 +28,9 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   KIN_WORK_LIST_INITIAL,
+  createKinListKeeper,
   createKinWorkList,
+  type KinWorkList,
   type KinWorkListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
 import {
@@ -77,6 +79,9 @@ import {
   type KinWorkTarget,
 } from "./useKinWork";
 
+/** Task lists kept while their screen is away, so coming back reads nothing the stream brought. */
+const kinTaskLists = createKinListKeeper<KinWorkList, KinWorkListState>(Date.now);
+
 /**
  * Tasks as a list: all of Work, or one project's under that project's own summary. Hundreds stay
  * cheap, because only the rows in view mount.
@@ -111,39 +116,46 @@ export function KinWorkTaskList(
   const hostEdits = kinWorkHostEdits(live.summary);
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) && hostEdits;
   const now = new Date(useNowMinuteMs());
-  const [listState, setListState] = useState<KinWorkListState>(() => ({
-    ...KIN_WORK_LIST_INITIAL,
-    filter: props.initial,
-  }));
-  const [list] = useState(() =>
-    createKinWorkList({
-      orgId,
-      initial: props.initial,
-      read: (input) => kinClient.workList.run(appAtomRegistry, { environmentId, input }),
-      onChange: setListState,
-      now: Date.now,
-      // The first counts are in before the list exists, and say which filters the host has.
-      hostFilters: () =>
-        kinWorkHostEdits(
-          appAtomRegistry
-            .get(kinWorkLiveAtom({ environmentId, orgId }))
-            .pipe(AsyncResult.value, Option.getOrNull)?.summary ?? null,
-        ),
-      schedule: (run, ms) => {
-        const timer = setTimeout(run, ms);
-        return () => clearTimeout(timer);
-      },
-      rows: () =>
-        appAtomRegistry
-          .get(kinWorkLiveAtom({ environmentId, orgId }))
-          .pipe(AsyncResult.value, Option.getOrNull)?.rows ?? null,
-    }),
+  const [kept] = useState(() =>
+    kinTaskLists.take(
+      `${environmentId}\u0000${orgId}\u0000${JSON.stringify(props.initial)}`,
+      (onChange) =>
+        createKinWorkList({
+          orgId,
+          initial: props.initial,
+          read: (input) => kinClient.workList.run(appAtomRegistry, { environmentId, input }),
+          onChange,
+          now: Date.now,
+          // The first counts are in before the list exists, and say which filters the host has.
+          hostFilters: () =>
+            kinWorkHostEdits(
+              appAtomRegistry
+                .get(kinWorkLiveAtom({ environmentId, orgId }))
+                .pipe(AsyncResult.value, Option.getOrNull)?.summary ?? null,
+            ),
+          schedule: (run, ms) => {
+            const timer = setTimeout(run, ms);
+            return () => clearTimeout(timer);
+          },
+          rows: () =>
+            appAtomRegistry
+              .get(kinWorkLiveAtom({ environmentId, orgId }))
+              .pipe(AsyncResult.value, Option.getOrNull)?.rows ?? null,
+        }),
+    ),
   );
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when the page shows, and abandons what is in flight when it leaves
+  const list = kept.list;
+  const [resumed] = useState(() => kinTaskLists.wasKept(kept));
+  const [listState, setListState] = useState<KinWorkListState>(() =>
+    resumed ? list.getState() : { ...KIN_WORK_LIST_INITIAL, filter: props.initial },
+  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when the page shows (or catches a kept one up), and stops what is in flight when it leaves
   useEffect(() => {
-    list.start();
-    return list.dispose;
-  }, [list]);
+    kinTaskLists.show(kept, setListState);
+    if (resumed) list.resume();
+    else list.start();
+    return () => kinTaskLists.hide(kept);
+  }, [kept, list, resumed]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the list's reader the host's latest change number, and that the host is back, so it reads again only when the rows are behind
   useEffect(() => {
     if (!props.stale) list.changed(live.seq);
