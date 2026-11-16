@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - A rate's day is formatted as the view helper formats it.
 import { assert, it } from "@effect/vitest";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Schema from "effect/Schema";

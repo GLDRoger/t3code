@@ -111,7 +111,9 @@ it.prop(
   [plans],
   ([given]) => {
     const view = viewOf(given.map((one, index) => recordOf(one, index)));
-    const active = new Set(given.filter((one) => !one.cancelled).map((one) => one.currency));
+    const active = new Set<string>(
+      given.filter((one) => !one.cancelled).map((one) => one.currency),
+    );
     for (const lines of [view.monthly, view.runRate]) {
       const currencies = lines.map((line) => line.currency);
       assert.strictEqual(new Set(currencies).size, currencies.length);
