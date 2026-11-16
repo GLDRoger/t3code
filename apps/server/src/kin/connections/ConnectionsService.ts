@@ -125,6 +125,7 @@ import {
   sentToClient,
 } from "./Sending.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import { KinGitHubLogin } from "./GitHubLogin.ts";
 import { ownerZone } from "../work/recordRows.ts";
 
 export const SHARED_CONNECTIONS =
@@ -477,6 +478,11 @@ const make = Effect.gen(function* () {
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
   // Absent in tests that build connections alone; a sent quote then stays as it was.
   const records = yield* Effect.serviceOption(KinRecords);
+  // GitHub is the owner's own host login (GitHubLogin.ts), not a gateway connection.
+  const githubLogin = yield* Effect.serviceOption(KinGitHubLogin);
+  const githubAccount = Option.isSome(githubLogin)
+    ? githubLogin.value.account()
+    : Effect.succeed(null);
 
   const owner = Effect.fn("KinConnections.owner")(function* (people: People, orgId: KinOrgId) {
     if (!people.some((person) => person.orgId === orgId)) return yield* notFound;
@@ -1620,9 +1626,12 @@ const make = Effect.gen(function* () {
         return {
           connections,
           ...(recentlySent.length === 0 ? {} : { recentlySent }),
-          canConnect: SERVICES.filter(
-            (service) => service.service !== "custom" && !connected.has(service.service),
-          ).map((service) => service.service),
+          canConnect: [
+            ...((yield* githubAccount)?.problem === null ? [] : ["github"]),
+            ...SERVICES.filter(
+              (service) => service.service !== "custom" && !connected.has(service.service),
+            ).map((service) => service.service),
+          ],
           note: [
             "Call with connection to see its tools; kin_connection_offer asks the owner to connect a service.",
             ...several,
@@ -2609,6 +2618,21 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const { turn, ownerOnly } = yield* ownerTurn(scope);
       const wanted = input.service.trim().toLowerCase();
+      if (wanted === "github") {
+        const entry = {
+          connectionId: null,
+          toolName: "github",
+          mode: null,
+          args: input,
+          reason: undefined,
+        };
+        if (!ownerOnly) return yield* refuse(turn, entry, fail("not_allowed", SHARED_CONNECTIONS));
+        const account = yield* githubAccount;
+        if (account !== null && account.problem === null)
+          return { note: `GitHub is already connected as ${account.login}.` };
+        yield* record(turn, { ...entry, status: "offered" });
+        return { note: OFFERED };
+      }
       const service = SERVICES.find(
         (entry) => entry.service === wanted || entry.label.toLowerCase() === wanted,
       );

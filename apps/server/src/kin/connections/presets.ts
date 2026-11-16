@@ -15,13 +15,6 @@ type KeyPreset = {
 
 // Presets reach only the vendor that already holds the owner's data, so they are `closed`.
 export const KEY_PRESETS: Partial<Record<KinConnectionPreset, KeyPreset>> = {
-  github: {
-    label: "GitHub",
-    url: "https://api.githubcopilot.com/mcp/",
-    reach: "closed",
-    setup:
-      "In GitHub: Settings → Developer settings → Fine-grained tokens → Generate, read-only, for the repositories agents may read.",
-  },
   posthog: {
     label: "PostHog",
     url: "https://mcp.posthog.com/mcp",

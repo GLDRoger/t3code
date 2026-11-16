@@ -350,6 +350,47 @@ export type KinConnectionSetSendFromInput = typeof KinConnectionSetSendFromInput
 export const KinConnectionSetSendFrom = Schema.Struct({ revision: NonNegativeInt });
 export type KinConnectionSetSendFrom = typeof KinConnectionSetSendFrom.Type;
 
+/**
+ * GitHub as the owner's own login on the host: `gh` and git act as him, and T3 uses the same
+ * token. One account at a time; another account means Disconnect, then Connect.
+ */
+export const KinGitHubAccount = Schema.Struct({
+  login: Schema.String,
+  /** Organizations this login can reach, as GitHub lists them to the GitHub CLI. */
+  orgs: Schema.Array(Schema.String),
+  scopes: Schema.Array(Schema.String),
+  /** Why this login doesn't work now, in plain words; null when it does. */
+  problem: Schema.NullOr(Schema.String),
+});
+export type KinGitHubAccount = typeof KinGitHubAccount.Type;
+
+/** A sign-in waiting for the owner: the code to enter at `url`, until `expiresAt`. */
+export const KinGitHubSignIn = Schema.Struct({
+  code: Schema.String,
+  url: Schema.String,
+  expiresAt: NonNegativeInt,
+});
+export type KinGitHubSignIn = typeof KinGitHubSignIn.Type;
+
+export const KinGitHubStatus = Schema.Struct({
+  orgId: KinOrgId,
+  account: Schema.NullOr(KinGitHubAccount),
+  signIn: Schema.NullOr(KinGitHubSignIn),
+  /** Why the last sign-in didn't finish, until the next one starts. */
+  failed: Schema.NullOr(Schema.String),
+});
+export type KinGitHubStatus = typeof KinGitHubStatus.Type;
+
+export const KinGitHubInput = Schema.Struct({ orgId: KinOrgId });
+export type KinGitHubInput = typeof KinGitHubInput.Type;
+
+/** Starts a sign-in with a code, or, given `token`, signs in with a token the owner made. */
+export const KinGitHubConnectInput = Schema.Struct({
+  orgId: KinOrgId,
+  token: Schema.optional(KinConnectionKey),
+});
+export type KinGitHubConnectInput = typeof KinGitHubConnectInput.Type;
+
 const KinError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 export const KinConnectionRpcs = [
   Rpc.make("kin.connections.list", {
@@ -427,6 +468,26 @@ export const KinConnectionRpcs = [
     success: KinConnectionSetSendFrom,
     error: KinError,
   }),
+  Rpc.make("kin.github.connect.status", {
+    payload: KinGitHubInput,
+    success: KinGitHubStatus,
+    error: KinError,
+  }),
+  Rpc.make("kin.github.connect.start", {
+    payload: KinGitHubConnectInput,
+    success: KinGitHubStatus,
+    error: KinError,
+  }),
+  Rpc.make("kin.github.connect.cancel", {
+    payload: KinGitHubInput,
+    success: KinGitHubStatus,
+    error: KinError,
+  }),
+  Rpc.make("kin.github.disconnect", {
+    payload: KinGitHubInput,
+    success: KinGitHubStatus,
+    error: KinError,
+  }),
 ] as const;
 
 // Owner-level settings (`KIN_RPC_ACCESS`): what outside services agents reach, and with what key.
@@ -446,4 +507,8 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.signInFinish": AuthKinChatScope,
   "kin.connections.setSignInClient": AuthKinChatScope,
   "kin.connections.setSendFrom": AuthKinChatScope,
+  "kin.github.connect.status": AuthKinChatScope,
+  "kin.github.connect.start": AuthKinChatScope,
+  "kin.github.connect.cancel": AuthKinChatScope,
+  "kin.github.disconnect": AuthKinChatScope,
 } as const;

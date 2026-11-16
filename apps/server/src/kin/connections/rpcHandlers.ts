@@ -10,6 +10,7 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinConnections } from "./ConnectionsService.ts";
+import { KinGitHubLogin } from "./GitHubLogin.ts";
 
 const group = RpcGroup.make(...KinConnectionRpcs);
 const isChatError = Schema.is(KinChatError);
@@ -39,7 +40,22 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       Context.get(services, KinChatService),
     );
   });
+  const github = Effect.fn("KinGitHubLogin.rpc")(function* <A>(
+    run: (
+      login: KinGitHubLogin["Service"],
+      people: ReadonlyArray<PersonIdentity>,
+    ) => Effect.Effect<A, KinChatError>,
+  ) {
+    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
+    const services = kin.value.services.value;
+    const people = yield* Context.get(services, KinIdentity).resolve(session);
+    return yield* run(Context.get(services, KinGitHubLogin), people);
+  });
   return group.of({
+    "kin.github.connect.status": (input) => github((g, people) => g.status(people, input)),
+    "kin.github.connect.start": (input) => github((g, people) => g.start(people, input)),
+    "kin.github.connect.cancel": (input) => github((g, people) => g.cancel(people, input)),
+    "kin.github.disconnect": (input) => github((g, people) => g.disconnect(people, input)),
     "kin.connections.list": (input) => call((c, people) => c.list(people, input)),
     "kin.connections.get": (input) => call((c, people) => c.get(people, input)),
     "kin.connections.add": (input) => call((c, people) => c.add(people, input)),
