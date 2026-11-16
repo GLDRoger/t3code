@@ -307,7 +307,12 @@ export function kinReminderCardView(
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
 /** "Weekdays at 8:00", read in the owner's zone, which is named when this device is elsewhere. */
-function scheduleLine(every: KinScheduledTaskCard["every"], ownerZone: string, timeZone?: string) {
+function scheduleLine(
+  every: KinScheduledTaskCard["every"],
+  ownerZone: string,
+  timeZone?: string,
+  around = false,
+) {
   const days = [...new Set(every.days)].sort((a, b) => a - b);
   const key = days.join("");
   const when =
@@ -321,7 +326,7 @@ function scheduleLine(every: KinScheduledTaskCard["every"], ownerZone: string, t
   const [hour, minute] = every.at.split(":");
   const deviceZone = timeZone ?? new Intl.DateTimeFormat().resolvedOptions().timeZone;
   const zone = deviceZone === ownerZone ? "" : ` (${ownerZone})`;
-  return `${when} at ${Number(hour)}:${minute}${zone}.`;
+  return `${when} ${around ? "around" : "at"} ${Number(hour)}:${minute}${zone}.`;
 }
 
 function lastRunLine(run: NonNullable<KinScheduledTaskCard["lastRun"]>, timeZone?: string) {
@@ -349,11 +354,13 @@ export function kinScheduledTaskCardView(
   const card = decoded.value;
   const title = clamp(card.title, 200) || "This scheduled task";
   const open = widget.closedAt === null && card.status !== "deleted";
-  const nextMs = card.nextRunAt === null ? null : Date.parse(card.nextRunAt);
+  // A loose one fires somewhere in a window: its stored next run is only the window's start.
+  const nextMs =
+    card.nextRunAt === null || card.around === true ? null : Date.parse(card.nextRunAt);
   const lines = !open
     ? ["Deleted."]
     : [
-        scheduleLine(card.every, card.timeZone, timeZone),
+        scheduleLine(card.every, card.timeZone, timeZone, card.around),
         ...(card.status === "paused" ? ["Paused."] : []),
         ...(card.status === "active" && nextMs !== null
           ? [`Next run ${formatKinDeferralTime(nextMs, timeZone)}.`]

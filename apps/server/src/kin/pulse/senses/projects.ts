@@ -37,7 +37,7 @@ const projectFact = (
   ctx: SenseContext,
   row: EntryRow,
   fact: Pick<SensedFact, "sense" | "key" | "since" | "consequence" | "wake"> &
-    Partial<Pick<SensedFact, "measure" | "actor">>,
+    Partial<Pick<SensedFact, "measure" | "actor" | "yours">>,
 ): SensedFact => ({
   family: "work",
   subject: entrySubject(row),
@@ -52,13 +52,27 @@ const projectFact = (
 const attendeeNames = (
   fieldsJson: string,
   names: ReadonlyMap<string, string>,
-): ReadonlyArray<string> =>
+): ReadonlyArray<{ readonly id: string; readonly name: string }> =>
   fieldList(parseFields(fieldsJson), "attendees").flatMap((text) => {
     const who = principalOfText(text);
     if (who === null) return [];
-    const name = names.get(who._tag === "person" ? who.personId : who.agentId);
-    return name === undefined ? [] : [name];
+    const id = who._tag === "person" ? who.personId : who.agentId;
+    const name = names.get(id);
+    return name === undefined ? [] : [{ id, name }];
   });
+
+/** "Meeting with Zoya Sheikh", or to Zoya "Your meeting with Lumen Grove". */
+const meetingWho = (
+  who: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+  client: string | null,
+  reader?: string,
+) => {
+  const others = who.filter((one) => one.id !== reader).map((one) => one.name);
+  if (reader === undefined)
+    return `Meeting${others.length === 0 ? "" : ` with ${others.join(", ")}`}`;
+  const party = others.length > 0 ? others.join(", ") : client;
+  return `Your meeting${party === null ? "" : ` with ${party}`}`;
+};
 
 /** Milestones, plans, quiet projects, changed specs and meetings: the project spine's facts. */
 export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx: SenseContext) {
@@ -232,28 +246,34 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
     for (const row of meetings) {
       const time = row.dateAt!;
       const who = attendeeNames(row.fieldsJson, names);
-      const withWho = who.length === 0 ? "" : ` with ${who.join(", ")}`;
+      const attended = (reader: string) => who.some((one) => one.id === reader);
       if (time <= at - toMs(followUp)) {
         const hours = elapsed(time, at, "hours");
+        const rest = ` was ${hours < 48 ? `${hoursText(hours)} ago` : `on ${whenOf(ctx, time)}`}, and no outcome is noted. How did it go? Add the outcome and any action items to it.`;
         facts.push(
           projectFact(ctx, row, {
             sense: "meeting_passed",
             key: `meeting_passed:${row.key}:at=${time}`,
             since: iso(time + toMs(followUp)),
             measure: measure(hours, followUp),
-            consequence: `Meeting${withWho} was ${hours < 48 ? `${hoursText(hours)} ago` : `on ${whenOf(ctx, time)}`}, and no outcome is noted. How did it go? Add the outcome and any action items to it.`,
+            consequence: `${meetingWho(who, null)}${rest}`,
+            yours: (reader) =>
+              attended(reader) ? `${meetingWho(who, row.clientTitle, reader)}${rest}` : undefined,
             wake: "sweep",
           }),
         );
       } else if (time > at) {
         const hours = Math.max(0, Math.floor((time - at) / HOUR_MS));
+        const rest = ` ${whenOf(ctx, time)}, in ${hours < 1 ? "under an hour" : hoursText(hours)}.`;
         facts.push(
           projectFact(ctx, row, {
             sense: "meeting_soon",
             key: `meeting_soon:${row.key}:at=${time}`,
             since: iso(time - toMs(soon)),
             measure: measure(hours, soon),
-            consequence: `Meeting${withWho} ${whenOf(ctx, time)}, in ${hours < 1 ? "under an hour" : hoursText(hours)}.`,
+            consequence: `${meetingWho(who, null)}${rest}`,
+            yours: (reader) =>
+              attended(reader) ? `${meetingWho(who, row.clientTitle, reader)}${rest}` : undefined,
             wake: "brief",
           }),
         );

@@ -50,9 +50,9 @@ export function kinCheckInDays(days: ReadonlyArray<number>): string {
   return named.length === 1 ? `${named[0]!.short}s` : named.map(({ short }) => short).join(", ");
 }
 
-/** "09:30 · Weekdays · Chief of staff": the row's one line. */
+/** "Around 09:30 · Weekdays · Chief of staff": the row's one line. */
 export function kinCheckInLine(checkIn: KinCheckIn): string {
-  return `${checkIn.at} · ${kinCheckInDays(checkIn.days)} · ${checkIn.agentName}`;
+  return `${checkIn.around === true ? "Around " : ""}${checkIn.at} · ${kinCheckInDays(checkIn.days)} · ${checkIn.agentName}`;
 }
 
 export interface KinCheckInDraft {

@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import {
   KIN_WORK_AUDIENCE,
   KIN_WORK_SHARE,
@@ -6,6 +7,7 @@ import {
   kinWorkAudienceMove,
   type KinWorkAudience,
   type KinWorkItemView,
+  type KinWorkNames,
 } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -16,9 +18,11 @@ import { Button } from "../components/ui/button";
 import { Label } from "../components/ui/label";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../components/ui/menu";
 import { Switch } from "../components/ui/switch";
+import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
+import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import type { KinWorkTarget } from "./useKinWork";
 
 /** The owner's switch for whether teammates see a task or doc; a teammate never gets it. */
@@ -88,6 +92,7 @@ export function KinWorkAudienceRow(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
     readonly view: Pick<KinWorkItemView, "privacy" | "shared" | "project">;
+    readonly names: KinWorkNames;
     readonly disabled: boolean;
     /** Sets the private mark; null where this viewer can't. */
     readonly onMark: ((on: boolean) => void) | null;
@@ -95,13 +100,17 @@ export function KinWorkAudienceRow(
 ) {
   const { environmentId, orgId, itemKey, view } = props;
   const canShare = useAtomValue(kinClient.workShare.permissionAtom(environmentId));
+  const ownerLevel = useKinOwnerLevel(environmentId);
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  // The host lets the owner, co-owners and the project's lead mark it; a holder alone can't.
+  const mark = ownerLevel || (me?.leads ?? []).some((project) => project.key === view.project?.key);
   const share = useAtomCommand(kinClient.workShare, { reportFailure: false });
   const [asked, setAsked] = useState<{ readonly to: boolean; readonly from: boolean } | null>(null);
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
   if (props.onMark === null) return null;
   const shared = asked !== null && asked.from === view.shared ? asked.to : view.shared;
-  const audience = kinWorkAudience({ ...view, shared }, { mark: true, share: canShare });
+  const audience = kinWorkAudience({ ...view, shared }, { mark, share: canShare }, props.names);
   const pick = (to: KinWorkAudience) => {
     const move = kinWorkAudienceMove({ private: view.privacy.private, shared }, to);
     if (move.private !== null) props.onMark?.(move.private);

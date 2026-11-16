@@ -1405,6 +1405,16 @@ it.effect(
           pulse: 0,
         },
       );
+      // J14: the project's lead takes its milestone back and may make it private; only the owner
+      // un-marks it.
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      const taken = yield* OwnerWork.assign([mate], { orgId, key: "M-1", to: null });
+      assert.deepStrictEqual(taken.owner, { _tag: "person", personId: mateId });
+      yield* OwnerWork.update([mate], { orgId, key: "M-1", rev: taken.rev, sensitive: true });
+      const marked = yield* OwnerWork.get([owner], { orgId, key: "M-1" });
+      assert.isTrue(marked.sensitive);
+      yield* OwnerWork.update([owner], { orgId, key: "M-1", rev: marked.rev, sensitive: false });
       // Run 4: someone who holds a task in a project they don't lead opens its page, with no
       // Clients place: their task and what they see, never its price, billing or notes.
       yield* sql`UPDATE kin_records SET owner_kind = 'agent', owner_id = ${lead}, notes = 'Invented 6 lakh fixed'

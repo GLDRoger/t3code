@@ -583,6 +583,7 @@ function KinWorkItem(
             orgId={orgId}
             itemKey={props.item.key}
             view={view}
+            names={names}
             disabled={saving}
             onMark={change === null ? null : (on) => change({ type: "private", private: on })}
           />

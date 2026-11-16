@@ -30,7 +30,7 @@ const workFact = (
   ctx: SenseContext,
   row: EntryRow,
   fact: Pick<SensedFact, "sense" | "key" | "since" | "consequence" | "wake"> &
-    Partial<Pick<SensedFact, "measure" | "actor">>,
+    Partial<Pick<SensedFact, "measure" | "actor" | "yours">>,
 ): SensedFact => ({
   family: "work",
   subject: entrySubject(row),
@@ -142,6 +142,10 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
         since: iso(row.since + toMs(waiting)),
         measure: measure(days, waiting),
         consequence: `Waiting${row.onName === null ? "" : ` on ${row.onName}`} for ${daysText(days)}.`,
+        yours: (reader) =>
+          row.onKind === "person" && row.onId === reader
+            ? `Waiting on you for ${daysText(days)}.`
+            : undefined,
         wake: "sweep",
         ...(on === undefined ? {} : { actor: on }),
       }),

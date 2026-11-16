@@ -2097,10 +2097,15 @@ function textFromClaudeContent(content: SDKAssistantMessage["message"]["content"
   return content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 }
 
-/** A turn item made from a thinking block (`<message>:thinking:<n>`), even one shown as an update. */
+/** The native id of a message's `index`th thinking block; `isClaudeThinkingItem` reads it back. */
+export const claudeThinkingItemId = (messageId: string, index: number) =>
+  `${messageId}:thinking:${index}`;
+const THINKING_ITEM_ID = /:thinking:\d+$/u;
+
+/** A turn item made from a thinking block (`claudeThinkingItemId`), even one shown as an update. */
 export const isClaudeThinkingItem = (item: Pick<OrchestrationV2TurnItem, "nativeItemRef">) =>
   item.nativeItemRef?.driver === CLAUDE_PROVIDER &&
-  /:thinking:\d+$/u.test(item.nativeItemRef.nativeId ?? "");
+  THINKING_ITEM_ID.test(item.nativeItemRef.nativeId ?? "");
 
 // Claude 5.1+ emits at most one pre-tool text block as thinking; treat only a second consecutive thinking block as text.
 function claudeWritesUpdatesAsThinking(model: string): boolean {
@@ -7658,7 +7663,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             block.type === "thinking" && block.thinking.trim().length > 0 ? [block.thinking] : [],
           );
           for (const [index, text] of thinking.entries()) {
-            const nativeItemId = `${message.uuid}:thinking:${index}`;
+            const nativeItemId = claudeThinkingItemId(message.uuid, index);
             yield* emitProviderEvent({
               type: "turn_item.updated",
               driver: CLAUDE_PROVIDER,
@@ -9196,7 +9201,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ) {
               const index = reasoning.nextBlockIndex.get(reasoning.messageId) ?? 0;
               reasoning.nextBlockIndex.set(reasoning.messageId, index + 1);
-              const itemId = `${reasoning.messageId}:thinking:${index}`;
+              const itemId = claudeThinkingItemId(reasoning.messageId, index);
               reasoning.streamBlocks.set(event.index, itemId);
               yield* ensureReasoningBlock(context, itemId);
               yield* reasoningDeltas.append({
@@ -9284,7 +9289,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
               const index = context.reasoning.snapshotBlockIndex.get(message.message.id) ?? 0;
               context.reasoning.snapshotBlockIndex.set(message.message.id, index + 1);
-              const itemId = `${message.message.id}:thinking:${index}`;
+              const itemId = claudeThinkingItemId(message.message.id, index);
               yield* ensureReasoningBlock(context, itemId);
               const finalText = block.thinking || context.reasoning.blocks.get(itemId)?.text;
               const completedText = yield* reasoningDeltas.complete({

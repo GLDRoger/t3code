@@ -401,6 +401,8 @@ export const KinScheduledTaskCard = Schema.Struct({
   timeZone: TimeZone,
   status: Schema.Literals(["active", "paused", "deleted"]),
   nextRunAt: Schema.NullOr(Schema.toEncoded(CanonicalUtcTimestamp)),
+  /** Fires somewhere around `every.at`: clients say "around" and never show an exact next run. */
+  around: Schema.optional(Schema.Boolean),
   lastRun: Schema.NullOr(
     Schema.Struct({
       at: Schema.toEncoded(CanonicalUtcTimestamp),

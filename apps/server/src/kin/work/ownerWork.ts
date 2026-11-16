@@ -392,11 +392,14 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   row: Pick<RecordRow, "registerId" | "projectId">,
   ref: { readonly key: string } | { readonly recordId: string },
   seq?: number,
+  /** Their own write just made it private: they saw it until then, so the answer still reads. */
+  justHidden = false,
 ) {
   if (!viewer.teammate) return detail;
   const { personId } = viewer.person;
   const seen = yield* teamVisible(detail.orgId, personId, [detail.recordId]).pipe(workFailure);
-  if (!seen.has(detail.recordId)) return yield* notFound("key" in ref ? ref.key : "with that id");
+  if (!seen.has(detail.recordId) && !justHidden)
+    return yield* notFound("key" in ref ? ref.key : "with that id");
   const number = seq ?? (yield* teamSeq(detail.orgId, personId).pipe(workFailure));
   const whole = !plainTask(row, yield* ledIds(viewer));
   // A client's terms and tax details are the owner's, whoever else sees its name; a contact's email
@@ -816,7 +819,9 @@ const change = Effect.fn("KinWork.change")(function* (
     viewer,
     Effect.gen(function* () {
       const row = yield* records.update(orgId, writerOf(viewer), key, patch, rev);
-      return yield* shownTo(viewer, yield* records.detail(row, KIN_RECORD_CHANGES_CAP), row, row);
+      const detail = yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
+      // A lead may make something of their project private (`teamGuard`), even out of their view.
+      return yield* shownTo(viewer, detail, row, row, undefined, patch.sensitive === true);
     }),
   );
 });

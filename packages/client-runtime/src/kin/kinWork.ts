@@ -70,6 +70,8 @@ export interface KinWorkNames {
   /** Agents the host marks retired: named as before, with nothing running. Absent reads as none. */
   readonly retired?: ReadonlySet<string>;
   readonly me: KinPersonId | null;
+  /** The company's owner; absent from a host older than kinds, where the reader reads as owner. */
+  readonly owner?: KinPersonId | null;
   /** The owner's time zone, where an all-day due date is a calendar day. Null until read. */
   readonly zone: string | null;
 }
@@ -86,6 +88,7 @@ export function kinWorkNames(input: {
     agents: new Map((org?.agents ?? []).map((agent) => [agent.agentId, agent.displayName])),
     retired: kinRetiredAgentIds(input.orgs, input.orgId),
     me: input.orgs?.me.find((me) => me.orgId === input.orgId)?.personId ?? null,
+    owner: input.people?.find((person) => person.access === "owner")?.personId ?? null,
     zone: input.zone,
   };
 }
@@ -98,6 +101,12 @@ export const kinWorkSamePrincipal = (a: KinWorkPrincipal | null, b: KinWorkPrinc
 
 const isMe = (who: KinWorkPrincipal, names: KinWorkNames) =>
   who._tag === "person" && who.personId === names.me;
+
+/** "you" to the owner; to anyone else the owner by name, so "you" never means someone else. */
+const ownerWord = (names: Pick<KinWorkNames, "me" | "owner" | "people">) =>
+  names.owner == null || names.owner === names.me
+    ? null
+    : (names.people.get(names.owner) ?? "the owner");
 
 /** "You", a name, or a plain stand-in for someone the directory no longer lists. */
 export function kinWorkName(who: KinWorkPrincipal, names: KinWorkNames, you = "You"): string {
@@ -786,25 +795,37 @@ export const KIN_WORK_AUDIENCE = {
  */
 export function kinWorkAudience(
   view: Pick<KinWorkItemView, "privacy" | "shared" | "project">,
+  /** `share` is owner-level: without it only marking private is the reader's (a project lead). */
   can: { readonly mark: boolean; readonly share: boolean },
+  names?: Pick<KinWorkNames, "me" | "owner" | "people">,
 ) {
   const people = view.project === null ? "People on it" : "People on it and the project";
   const current: KinWorkAudience = view.privacy.private ? "me" : view.shared ? "team" : "people";
+  const owner = names === undefined ? null : ownerWord(names);
   const answer =
     current === "me"
-      ? "Only you, co-owners and whoever has it"
+      ? `Only ${owner ?? "you"}, co-owners and whoever has it`
       : current === "team"
         ? "Everyone on the team"
         : view.project === null
-          ? "You and whoever has it"
-          : `You, whoever has it and the people on ${view.project.title}`;
-  const choices: ReadonlyArray<{ readonly id: KinWorkAudience; readonly label: string }> = [
-    ...(can.mark || current === "people" ? [{ id: "people" as const, label: people }] : []),
-    ...(can.share && (can.mark || current !== "me")
-      ? [{ id: "team" as const, label: "The whole team" }]
-      : []),
-    ...(can.mark ? [{ id: "me" as const, label: "Only me" }] : []),
-  ];
+          ? `${owner ?? "You"} and whoever has it`
+          : `${owner ?? "You"}, whoever has it and the people on ${view.project.title}`;
+  const label = {
+    people,
+    team: "The whole team",
+    me: owner === null ? "Only me" : `Only ${owner} and co-owners`,
+  };
+  const ids: ReadonlyArray<KinWorkAudience> = can.share
+    ? [
+        ...(can.mark || current === "people" ? ["people" as const] : []),
+        ...(can.mark || current !== "me" ? ["team" as const] : []),
+        ...(can.mark ? ["me" as const] : []),
+      ]
+    : // Un-marking and sharing are the owner's: a lead may only make it more private.
+      can.mark && current !== "me"
+      ? [current, "me"]
+      : [];
+  const choices = ids.map((id) => ({ id, label: label[id] }));
   return { current, answer, choices: choices.length > 1 ? choices : [] };
 }
 
@@ -1187,7 +1208,7 @@ export function kinWorkItemView(
       sensitive: item.sensitive,
       inherited: false,
       because: "its client or project",
-      privateNote: "Only you, co-owners and whoever holds it see this.",
+      privateNote: `Only ${ownerWord(names) ?? "you"}, co-owners and whoever holds it see this.`,
     }),
     shared: item.shared === true,
   };
