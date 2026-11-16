@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import {
   ArrowLeftIcon,
+  BellIcon,
   Building2Icon,
   CalendarCheckIcon,
   ChevronDownIcon,
@@ -61,6 +62,7 @@ import { KinCompanyTimeZoneSetting } from "./KinCompanyTimeZone";
 import { KinConnectionsSettings } from "./KinConnections";
 import { KinDailyLimitSetting } from "./KinDailyLimit";
 import { KinMemoryView } from "./KinMemoryView";
+import { KinSettingsNotifications } from "./KinNotifications";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import { KinProfileBody, useKinMe } from "./KinProfileSheet";
 import { KinTeamView } from "./KinTeamView";
@@ -71,7 +73,7 @@ const KIN_SETTINGS_TITLE = "Settings";
 
 const PAGE_ICON: Record<KinSettingsPage, LucideIcon> = {
   profile: CircleUserIcon,
-  notifications: SettingsIcon,
+  notifications: BellIcon,
   appearance: PaletteIcon,
   team: UsersIcon,
   agents: SparklesIcon,
@@ -112,8 +114,7 @@ function useKinSettingsTarget(): KinSettingsTarget {
 
 function useKinSettingsGroups(environmentId: EnvironmentId): ReadonlyArray<KinSettingsGroup> {
   const ownerLevel = useKinOwnerLevel(environmentId);
-  // Web has no Kin notifications of its own yet: the phone's are push.
-  return kinSettingsGroups({ ownerLevel, computer: !isChatOnlySession(), notifications: false });
+  return kinSettingsGroups({ ownerLevel, computer: !isChatOnlySession(), notifications: true });
 }
 
 /** The gear on Chats: everyone's way into Settings. */
@@ -335,8 +336,7 @@ function KinSettingsPageBody(props: { readonly page: KinSettingsPage }) {
     case "profile":
       return <KinSettingsProfile {...target} />;
     case "notifications":
-      // The phone's push notifications; web has none of Kin's own to set.
-      return null;
+      return <KinSettingsNotifications />;
     case "appearance":
       return <KinSettingsAppearance />;
     case "team":

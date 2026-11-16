@@ -563,6 +563,10 @@
       "types": "./src/kin/kinPeopleChat.ts",
       "default": "./src/kin/kinPeopleChat.ts"
     },
+    "./kin/kinMessageAlerts": {
+      "types": "./src/kin/kinMessageAlerts.ts",
+      "default": "./src/kin/kinMessageAlerts.ts"
+    },
     "./kin/kinViewerScope": {
       "types": "./src/kin/kinViewerScope.ts",
       "default": "./src/kin/kinViewerScope.ts"
