@@ -22,6 +22,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -2751,7 +2752,6 @@ const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSample")(fu
     linked: [...sample.linked],
     usage: spent.usage,
     shellUsage: sample.shellUsage,
-    latencyMs: result.ms,
     reasoningTokens: result.usage.reasoning,
     transcript: result.items,
   };
@@ -2806,7 +2806,7 @@ const spend = (usages: ReadonlyArray<Usage>, model: ShellModel | undefined) => {
 };
 
 const caseKey = (row: ResultRow) => row.id;
-/** The app-server harness times each turn; the others make one request per step and don't. */
+/** Each sample's wall time: the model's calls and the runner's tool answers, as one turn. */
 const latencyLine = (rows: ReadonlyArray<ResultRow>) => {
   const times = rows.flatMap((row) => (row.latencyMs === undefined ? [] : [row.latencyMs]));
   if (times.length === 0) return [];
@@ -3238,6 +3238,12 @@ const main = Effect.gen(function* () {
       .flatMap((value) => [value, value.replace(/^Bearer /i, "")])
       .filter(Boolean);
     return runSample(testCase, config, baseFor(testCase), usage).pipe(
+      Effect.timed,
+      // Every harness times its turn, model and tool answers together, for latency side by side.
+      Effect.map(([elapsed, sample]) => ({
+        latencyMs: Duration.toMillis(elapsed),
+        ...sample,
+      })),
       inFlight.withPermits(1),
       Effect.flatMap((sample) =>
         judged(testCase, sample, config, usage.shellUsage).pipe(
