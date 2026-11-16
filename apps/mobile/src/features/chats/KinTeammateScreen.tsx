@@ -557,7 +557,7 @@ function KinTeammateProjects(props: {
               <View className="pr-2">
                 <IconButton
                   icon="xmark"
-                  accessibilityLabel={KIN_PROJECT_PEOPLE.remove(row.title)}
+                  accessibilityLabel={KIN_TEAMMATE_PROJECTS.remove(row.title)}
                   disabled={busy}
                   onPress={() => void change(row.key, false)}
                 />

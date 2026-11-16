@@ -659,8 +659,8 @@ function KinTeammateProjects(props: {
                   size="icon-xs"
                   variant="ghost"
                   disabled={busy}
-                  aria-label={KIN_PROJECT_PEOPLE.remove(row.title)}
-                  title={`Take them off ${row.title}`}
+                  aria-label={KIN_TEAMMATE_PROJECTS.remove(row.title)}
+                  title={KIN_TEAMMATE_PROJECTS.remove(row.title)}
                   onClick={() => void change(row.key, false)}
                 >
                   <XIcon />

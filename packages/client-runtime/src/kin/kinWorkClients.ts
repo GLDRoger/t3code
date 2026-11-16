@@ -102,6 +102,7 @@ export const KIN_TEAMMATE_PROJECTS = {
   on: "On it",
   add: "Add to a project",
   leadHint: "A project's lead is set on its page.",
+  remove: (project: string) => `Take them off ${project}`,
 } as const;
 
 export function kinTeammateProjects(
