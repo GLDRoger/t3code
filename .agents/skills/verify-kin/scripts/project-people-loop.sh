@@ -3,6 +3,10 @@
 source "$(dirname "$0")/lib.sh"
 TITLE="Visit plan $RUN"
 ZOYA="$(kv people | awk -F'\t' '$1=="zoya"{print $3}')"
+# Noon on Zoya's clock, so her notice isn't held for quiet hours whenever the run starts.
+NOON="$(node -e 'const h=new Date().getUTCHours();let n=((12-h)%24+24)%24;if(n>14)n-=24;process.stdout.write(n===0?"Etc/GMT":`Etc/GMT${n>0?"-":"+"}${Math.abs(n)}`)')"
+kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"$NOON\"}" >/dev/null
+trap 'kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"Asia/Kolkata\"}" >/dev/null' EXIT
 kv as owner rpc kin.work.create "{\"clientRequestId\":\"$SCRIPT-$RUN\",\"title\":\"$TITLE\",\"project\":\"P-2\"}" >/dev/null
 # She is refused putting herself on it, and doesn't see it before.
 refused="$(kv as zoya rpc kin.work.projectPeople "{\"key\":\"P-2\",\"add\":[{\"_tag\":\"person\",\"personId\":\"$ZOYA\"}]}" 2>&1 || true)"
