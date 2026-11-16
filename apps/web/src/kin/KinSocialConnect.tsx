@@ -26,6 +26,15 @@ import { SettingsRow, SettingsSection } from "../components/settings/settingsLay
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import {
@@ -35,13 +44,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
-import {
-  Sheet,
-  SheetDescription,
-  SheetHeader,
-  SheetPopup,
-  SheetTitle,
-} from "../components/ui/sheet";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { kinClient } from "./kinClient";
@@ -172,7 +174,7 @@ function SocialSection(props: { readonly environmentId: EnvironmentId; readonly 
         )}
       </SettingsSection>
       {view !== null && open !== null && open.kind !== "link" ? (
-        <ConnectSheet
+        <ConnectDialog
           view={view}
           rekey={open.kind === "rekey" ? open.row : null}
           actions={actions}
@@ -180,7 +182,7 @@ function SocialSection(props: { readonly environmentId: EnvironmentId; readonly 
         />
       ) : null}
       {open?.kind === "link" ? (
-        <LinkSheet row={open.row} actions={actions} onClose={() => setOpen(null)} />
+        <LinkDialog row={open.row} actions={actions} onClose={() => setOpen(null)} />
       ) : null}
       <KinConfirm
         ask={
@@ -230,7 +232,7 @@ function GroupDetail(props: { readonly row: KinSocialRow }) {
 }
 
 /** Pick whose accounts, paste that profile's key, see what it reaches, then connect. */
-function ConnectSheet(props: {
+function ConnectDialog(props: {
   readonly view: KinSocialView;
   readonly rekey: KinSocialRow | null;
   readonly actions: Actions;
@@ -273,115 +275,121 @@ function ConnectSheet(props: {
   };
 
   return (
-    <Sheet
+    <Dialog
       open
       onOpenChange={(open) => {
         if (!open && !busy) props.onClose();
       }}
     >
-      <SheetPopup side="right">
-        <SheetHeader>
-          <SheetTitle>
-            {rekey === null ? COPY.sheetTitle : `${COPY.reconnect}: ${rekey.title}`}
-          </SheetTitle>
-          <SheetDescription>{COPY.intro}</SheetDescription>
-        </SheetHeader>
+      <DialogPopup className="max-w-lg">
         <form
-          className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 pb-6"
+          className="contents"
           onSubmit={(event) => {
             event.preventDefault();
             if (done) props.onClose();
             else void submit();
           }}
         >
-          {done ? (
-            <p className="text-sm text-foreground" aria-live="polite">
-              {label} is connected. Social can read these accounts and draft for them; nothing posts
-              until you confirm a week.
-            </p>
-          ) : checked === null ? (
-            <>
-              {rekey === null ? (
-                <fieldset className="flex flex-col gap-2">
-                  <legend className="mb-1 text-sm font-medium text-foreground">{COPY.whose}</legend>
-                  {choices.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">{COPY.noClients}</p>
-                  ) : (
-                    choices.map((choice, index) => (
-                      <label
-                        key={choice.clientId ?? "own"}
-                        className="flex min-h-10 cursor-pointer items-center gap-3 rounded-md border border-border px-3 text-sm has-checked:border-primary"
-                      >
-                        <input
-                          type="radio"
-                          name="social-whose"
-                          className="size-4 accent-primary"
-                          checked={pick === index}
-                          onChange={() => setPick(index)}
-                        />
-                        <span className="text-foreground">{choice.label}</span>
-                        {choice.kind === "client" ? (
-                          <span className="text-xs text-muted-foreground">client</span>
-                        ) : null}
-                      </label>
-                    ))
-                  )}
-                </fieldset>
-              ) : null}
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={keyId}>{COPY.keyLabel}</Label>
-                <Input
-                  id={keyId}
-                  type="password"
-                  value={key}
-                  placeholder={COPY.keyPlaceholder}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(event) => setKey(event.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">{COPY.keyHint(view.service.label)}</p>
-                <p className="text-xs text-muted-foreground">{view.service.setup}</p>
-                <a
-                  className="self-start text-xs font-medium text-primary underline-offset-2 hover:underline"
-                  href={view.service.keyUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {COPY.openService(view.service.label)}
-                </a>
+          <DialogHeader>
+            <DialogTitle>
+              {rekey === null ? COPY.sheetTitle : `${COPY.reconnect}: ${rekey.title}`}
+            </DialogTitle>
+            <DialogDescription>{COPY.intro}</DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            {done ? (
+              <p className="text-sm text-foreground" aria-live="polite">
+                {label} is connected. Social can read these accounts and draft for them; nothing
+                posts until you confirm a week.
+              </p>
+            ) : checked === null ? (
+              <>
+                {rekey === null ? (
+                  <fieldset className="flex flex-col gap-2">
+                    <legend className="mb-1 text-sm font-medium text-foreground">
+                      {COPY.whose}
+                    </legend>
+                    {choices.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">{COPY.noClients}</p>
+                    ) : (
+                      choices.map((choice, index) => (
+                        <label
+                          key={choice.clientId ?? "own"}
+                          className="flex min-h-10 cursor-pointer items-center gap-3 rounded-md border border-border px-3 text-sm has-checked:border-primary"
+                        >
+                          <input
+                            type="radio"
+                            name="social-whose"
+                            className="size-4 accent-primary"
+                            checked={pick === index}
+                            onChange={() => setPick(index)}
+                          />
+                          <span className="text-foreground">{choice.label}</span>
+                          {choice.kind === "client" ? (
+                            <span className="text-xs text-muted-foreground">client</span>
+                          ) : null}
+                        </label>
+                      ))
+                    )}
+                  </fieldset>
+                ) : null}
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={keyId}>{COPY.keyLabel}</Label>
+                  <Input
+                    id={keyId}
+                    type="password"
+                    value={key}
+                    placeholder={COPY.keyPlaceholder}
+                    autoComplete="off"
+                    spellCheck={false}
+                    onChange={(event) => setKey(event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {COPY.keyHint(view.service.label)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">{view.service.setup}</p>
+                  <a
+                    className="self-start text-xs font-medium text-primary underline-offset-2 hover:underline"
+                    href={view.service.keyUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {COPY.openService(view.service.label)}
+                  </a>
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col gap-2" aria-live="polite">
+                <p className="text-sm text-foreground">
+                  {COPY.found(checked.profileName ?? checked.label)}
+                </p>
+                {checked.accounts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">{COPY.noAccounts}</p>
+                ) : (
+                  <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
+                    {checked.accounts.map((account) => (
+                      <li key={account.accountId} className="flex flex-col px-3 py-2 text-sm">
+                        <span className="text-foreground">{kinSocialAccountLine(account)}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {account.problem ?? account.name}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  These become {checked.label}'s accounts in Kin. Posts for {checked.label} can only
+                  go to them.
+                </p>
               </div>
-            </>
-          ) : (
-            <div className="flex flex-col gap-2" aria-live="polite">
-              <p className="text-sm text-foreground">
-                {COPY.found(checked.profileName ?? checked.label)}
-              </p>
-              {checked.accounts.length === 0 ? (
-                <p className="text-sm text-muted-foreground">{COPY.noAccounts}</p>
-              ) : (
-                <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
-                  {checked.accounts.map((account) => (
-                    <li key={account.accountId} className="flex flex-col px-3 py-2 text-sm">
-                      <span className="text-foreground">{kinSocialAccountLine(account)}</span>
-                      <span className="text-xs text-muted-foreground">
-                        {account.problem ?? account.name}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <p className="text-xs text-muted-foreground">
-                These become {checked.label}'s accounts in Kin. Posts for {checked.label} can only
-                go to them.
-              </p>
-            </div>
-          )}
-          {problem === null ? null : (
-            <Alert variant="error">
-              <AlertDescription>{problem}</AlertDescription>
-            </Alert>
-          )}
-          <div className="mt-auto flex justify-end gap-2 pt-2">
+            )}
+            {problem === null ? null : (
+              <Alert variant="error">
+                <AlertDescription>{problem}</AlertDescription>
+              </Alert>
+            )}
+          </DialogPanel>
+          <DialogFooter>
             {done ? (
               <Button type="submit">{COPY.done}</Button>
             ) : (
@@ -404,15 +412,15 @@ function ConnectSheet(props: {
                 </Button>
               </>
             )}
-          </div>
+          </DialogFooter>
         </form>
-      </SheetPopup>
-    </Sheet>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
 /** A one-time link the owner forwards; whoever opens it signs in to the platform themselves. */
-function LinkSheet(props: {
+function LinkDialog(props: {
   readonly row: KinSocialRow;
   readonly actions: Actions;
   readonly onClose: () => void;
@@ -441,85 +449,87 @@ function LinkSheet(props: {
   };
 
   return (
-    <Sheet
+    <Dialog
       open
       onOpenChange={(open) => {
         if (!open && !busy) props.onClose();
       }}
     >
-      <SheetPopup side="right">
-        <SheetHeader>
-          <SheetTitle>{COPY.linkTitle(row.title)}</SheetTitle>
-          <SheetDescription>
-            {row.kind === "client"
-              ? "Kin doesn't message your client. Forward the link yourself."
-              : "Open it on the phone or computer signed in to the account."}
-          </SheetDescription>
-        </SheetHeader>
+      <DialogPopup className="max-w-lg">
         <form
-          className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 pb-6"
+          className="contents"
           onSubmit={(event) => {
             event.preventDefault();
             void make();
           }}
         >
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor={platformId}>{COPY.linkPlatform}</Label>
-            <Select
-              value={platform}
-              onValueChange={(value) => {
-                setPlatform(value as KinSocialPlatform);
-                setMade(null);
-              }}
-            >
-              <SelectTrigger id={platformId} className="w-full min-w-0">
-                <SelectValue>{kinSocialPlatformLabel(platform)}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup alignItemWithTrigger={false}>
-                {KIN_SOCIAL_LINK_PLATFORMS.map((one) => (
-                  <SelectItem key={one.platform} value={one.platform}>
-                    {one.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          </div>
-          {made === null ? null : (
-            <div className="flex flex-col gap-2" aria-live="polite">
-              <p className="break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
-                {made.url}
-              </p>
-              <p className="text-xs text-muted-foreground">{made.note}</p>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    void navigator.clipboard.writeText(made.url).then(() => setCopied(true))
-                  }
-                >
-                  {copied ? COPY.copied : COPY.copy}
-                </Button>
-                {typeof navigator.share === "function" ? (
+          <DialogHeader>
+            <DialogTitle>{COPY.linkTitle(row.title)}</DialogTitle>
+            <DialogDescription>
+              {row.kind === "client"
+                ? "Kin doesn't message your client. Forward the link yourself."
+                : "Open it on the phone or computer signed in to the account."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={platformId}>{COPY.linkPlatform}</Label>
+              <Select
+                value={platform}
+                onValueChange={(value) => {
+                  setPlatform(value as KinSocialPlatform);
+                  setMade(null);
+                }}
+              >
+                <SelectTrigger id={platformId} className="w-full min-w-0">
+                  <SelectValue>{kinSocialPlatformLabel(platform)}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup alignItemWithTrigger={false}>
+                  {KIN_SOCIAL_LINK_PLATFORMS.map((one) => (
+                    <SelectItem key={one.platform} value={one.platform}>
+                      {one.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            </div>
+            {made === null ? null : (
+              <div className="flex flex-col gap-2" aria-live="polite">
+                <p className="break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+                  {made.url}
+                </p>
+                <p className="text-xs text-muted-foreground">{made.note}</p>
+                <div className="flex gap-2">
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => void navigator.share({ url: made.url }).catch(() => undefined)}
+                    onClick={() =>
+                      void navigator.clipboard.writeText(made.url).then(() => setCopied(true))
+                    }
                   >
-                    {COPY.share}
+                    {copied ? COPY.copied : COPY.copy}
                   </Button>
-                ) : null}
+                  {typeof navigator.share === "function" ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void navigator.share({ url: made.url }).catch(() => undefined)}
+                    >
+                      {COPY.share}
+                    </Button>
+                  ) : null}
+                </div>
               </div>
-            </div>
-          )}
-          {problem === null ? null : (
-            <Alert variant="error">
-              <AlertDescription>{problem}</AlertDescription>
-            </Alert>
-          )}
-          <div className="mt-auto flex justify-end gap-2 pt-2">
+            )}
+            {problem === null ? null : (
+              <Alert variant="error">
+                <AlertDescription>{problem}</AlertDescription>
+              </Alert>
+            )}
+          </DialogPanel>
+          <DialogFooter>
             <Button type="button" variant="outline" disabled={busy} onClick={props.onClose}>
               {made === null ? COPY.cancel : COPY.done}
             </Button>
@@ -528,9 +538,9 @@ function LinkSheet(props: {
                 {busy ? COPY.linkMaking : COPY.linkMake}
               </Button>
             ) : null}
-          </div>
+          </DialogFooter>
         </form>
-      </SheetPopup>
-    </Sheet>
+      </DialogPopup>
+    </Dialog>
   );
 }
