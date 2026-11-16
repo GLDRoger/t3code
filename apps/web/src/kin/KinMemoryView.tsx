@@ -8,9 +8,7 @@ import {
   KIN_MEMORY_LOAD_FAILED,
   KIN_MEMORY_NO_EDITS,
   KIN_MEMORY_SEARCH_PLACEHOLDER,
-  KIN_MEMORY_TITLE,
   createKinMemoryActions,
-  kinMemoryEntrySummary,
   kinMemoryView,
   type KinMemoryActions,
   type KinMemoryConfirmAll,
@@ -25,14 +23,11 @@ import type {
   KinOrgId,
 } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
-import { Link } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { ArrowLeftIcon, BrainIcon, GlobeIcon, MessageSquareIcon, SparklesIcon } from "lucide-react";
+import { GlobeIcon, MessageSquareIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 
-import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
-import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import {
   AlertDialog,
@@ -47,7 +42,6 @@ import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { Input } from "../components/ui/input";
 import { Skeleton } from "../components/ui/skeleton";
-import { isElectron } from "../env";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
@@ -58,67 +52,11 @@ interface KinMemoryTarget {
   readonly orgId: KinOrgId;
 }
 
-/** The way in from the chat list, for the owner only. Its second line says how much waits. */
-export function KinMemoryEntry(
-  props: KinMemoryTarget & { readonly active: boolean; readonly onOpen: () => void },
-) {
-  const allowed = useAtomValue(kinClient.memorySetVisibility.permissionAtom(props.environmentId));
-  return allowed ? <PermittedMemoryEntry {...props} /> : null;
-}
-
-function PermittedMemoryEntry(
-  props: KinMemoryTarget & { readonly active: boolean; readonly onOpen: () => void },
-) {
-  const { environmentId, orgId } = props;
-  const result = useAtomValue(kinClient.memory({ environmentId, input: { orgId } }));
-  const list = Option.getOrNull(AsyncResult.value(result));
-  // The host refused: this browser may change settings but isn't the owner's.
-  if (list === null && AsyncResult.isFailure(result)) return null;
-  return (
-    <Link
-      to="/kin/$environmentId/$orgId/memory"
-      params={{ environmentId, orgId }}
-      aria-current={props.active ? "page" : undefined}
-      data-active={props.active}
-      onClick={props.onOpen}
-      className="flex items-center gap-2.5 rounded-md px-2 py-2 outline-none ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset data-[active=true]:bg-sidebar-row-selected"
-    >
-      <span className="flex size-10 shrink-0 items-center justify-center text-sidebar-muted-foreground">
-        <BrainIcon aria-hidden className="size-4.5" />
-      </span>
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="truncate text-sm font-medium text-sidebar-foreground">
-          {KIN_MEMORY_TITLE}
-        </span>
-        <span className="truncate text-xs text-sidebar-muted-foreground">
-          {kinMemoryEntrySummary(list)}
-        </span>
-      </span>
-    </Link>
-  );
-}
-
 /** What the owner's leads remember, and who may know each thing. */
 export function KinMemoryView(props: KinMemoryTarget) {
   const allowed = useAtomValue(kinClient.memorySetVisibility.permissionAtom(props.environmentId));
   return (
     <>
-      <WorkspacePageHeader electron={isElectron}>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          aria-label="Back to chats"
-          className="md:hidden"
-          render={<Link to="/kin" />}
-        >
-          <ArrowLeftIcon />
-        </Button>
-        <WorkspaceBreadcrumb ariaLabel={KIN_MEMORY_TITLE}>
-          <WorkspaceBreadcrumbItem current>
-            <h1 className="truncate">{KIN_MEMORY_TITLE}</h1>
-          </WorkspaceBreadcrumbItem>
-        </WorkspaceBreadcrumb>
-      </WorkspacePageHeader>
       {allowed ? (
         <KinMemoryBody {...props} />
       ) : (

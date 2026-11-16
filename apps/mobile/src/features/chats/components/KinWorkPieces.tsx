@@ -35,7 +35,10 @@ type Bar = React.ComponentProps<typeof AppBar>;
 
 /** A Work screen that isn't a list: everything sits in the scroll view that clears the bar. */
 export function KinWorkFrame(
-  props: Pick<Bar, "title" | "onBack" | "onClose" | "confirm" | "actions" | "menus" | "refresh"> & {
+  props: Pick<
+    Bar,
+    "title" | "onBack" | "guardBack" | "onClose" | "confirm" | "actions" | "menus" | "refresh"
+  > & {
     /** A form: taps reach its buttons while the keyboard is up. */
     readonly form?: boolean;
     /** A problem drawn at the top: the form scrolls up to it whenever it changes. */

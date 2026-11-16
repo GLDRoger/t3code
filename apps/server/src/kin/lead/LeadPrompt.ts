@@ -1359,7 +1359,7 @@ export class KinLeadPrompt extends Context.Service<
                   changedLately
                     .map(
                       (change) =>
-                        `- turn ${change.turn}, ${chatClock(change.at, now, timeZone)}: ${change.line}`,
+                        `- ${change.from}, ${chatClock(change.at, now, timeZone)}: ${change.line}`,
                     )
                     .join("\n"),
                 ),
@@ -1448,6 +1448,12 @@ export class KinLeadPrompt extends Context.Service<
           // What woke this turn: its own messages, taps and due items.
           sharedPart("# Events"),
           sharedPart(boundedEvents(events)),
+          // Last, where it is read last: replies drifted into memos past the character's length.
+          ...(seat?.character !== undefined &&
+          !inTeamRoom &&
+          (input.lane?.mode === "reply" || replyDue)
+            ? [sharedPart(REPLY_SHAPE)]
+            : []),
         ];
         return visible(parts, ownerOnly).join("\n\n");
       });
@@ -1456,6 +1462,9 @@ export class KinLeadPrompt extends Context.Service<
   ).pipe(Layer.provide(MemoryCache.layer));
 }
 
+/** The last line of a turn someone waits on an answer from, for an agent with a character. */
+export const REPLY_SHAPE =
+  "Your reply: one short paragraph in your character's voice and within its length; no bullets, bold or blank lines unless asked.";
 /** The morning check-in, which took over the morning brief's sections. */
 const MORNING_RULE =
   "This is the morning check-in. Besides the pulse: what is due today, overdue promises, what waits on the owner, reviews and red checks, objectives this week and stuck workers. Lead with what needs the owner today, in a few short lines, then every pulse fact as the pulse rule says. Stay silent only when there is no pulse fact and nothing here needs them.";

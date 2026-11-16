@@ -36,6 +36,16 @@ features:
       - apps/server/src/kin/chat/KinChatService.test.ts
       - apps/server/src/kin/lead/ChatWake.test.ts
 
+  - id: chat-attachments
+    name: Attach pictures, PDFs and documents in a chat
+    tab: chats
+    web: [home, chat, button:Attach files]
+    phone: [tab:chats, KinChat, button:Attach]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    proof:
+      - apps/server/src/kin/chat/KinChatService.test.ts
+      - .agents/skills/verify-kin/scripts/member-attaches-file.sh
+
   - id: chat-character
     name: Each agent's own voice, and "undo it"
     tab: chats
@@ -271,7 +281,7 @@ features:
   - id: memory
     name: What Kin remembers
     tab: chats
-    web: [memory]
+    web: [settings, section:Memory]
     phone: [SettingsKin, KinMemory]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [memory_search, memory_read, memory_write, kin_journal, memory_label]
@@ -420,8 +430,9 @@ features:
   - id: make-document
     name: Make an invoice, quote or receipt PDF
     tab: money
-    web: [money, "?list", "?task", dialog:Make its PDF]
-    phone: [tab:money, KinList, KinWorkItem, KinMakeDocument]
+    # A step of the entry's sheet: the sheet turns into the form, with Back to the entry.
+    web: [money, "?list", "?task", button:Make its PDF]
+    phone: [tab:money, KinList, KinWorkItem, button:Make invoice]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [kin_document, kin_recipes, kin_issue, kin_recipe_undo]
@@ -686,7 +697,7 @@ features:
   - id: company
     name: Company details, brand and templates
     tab: settings
-    web: [settings/company]
+    web: [settings, section:Company details]
     phone: [SettingsKin, KinCompany]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
@@ -701,7 +712,7 @@ features:
   - id: daily-limit
     name: Time zone and the daily spending limit
     tab: settings
-    web: [settings/company, section:Daily limit]
+    web: [settings, section:Company details, section:Daily limit]
     phone: [SettingsKin, section:Daily limit]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof: [apps/server/src/kin/lead/KinBudget.test.ts]
@@ -709,7 +720,7 @@ features:
   - id: check-ins
     name: Check-ins, an agent's regular round
     tab: settings
-    web: [settings/check-ins, sheet:Add check-in]
+    web: [settings, section:Check-ins, sheet:Add check-in]
     phone: [SettingsKin, KinCheckInForm]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
@@ -727,7 +738,7 @@ features:
   - id: connections
     name: Mail and tool connections
     tab: settings
-    web: [settings/kin-connections]
+    web: [settings, section:Connections]
     phone: [SettingsKin, KinConnections, KinConnection]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof:
@@ -737,7 +748,7 @@ features:
   - id: connection-add
     name: Add a connection
     tab: settings
-    web: [settings/kin-connections, dialog:Add connection]
+    web: [settings, section:Connections, dialog:Add connection]
     phone: [SettingsKin, KinConnections, KinConnectionAdd]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
@@ -746,7 +757,7 @@ features:
   - id: connection-edit
     name: Rename a connection, change its key or note
     tab: settings
-    web: [settings/kin-connections, section:Connection, dialog:Rename]
+    web: [settings, section:Connections, section:Connection, dialog:Rename]
     phone: [SettingsKin, KinConnections, KinConnection, KinConnectionEdit]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
@@ -755,7 +766,7 @@ features:
   - id: github-login
     name: Connect GitHub as the owner
     tab: settings
-    web: [settings/kin-connections, dialog:Connect GitHub]
+    web: [settings, section:Connections, dialog:Connect GitHub]
     phone: [SettingsKin, KinConnections, KinGitHubConnect]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
@@ -839,7 +850,7 @@ features:
   - id: team
     name: The team
     tab: settings
-    web: [team]
+    web: [settings, section:Team]
     phone: [SettingsKin, KinTeam]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [people_read]
@@ -850,7 +861,7 @@ features:
   - id: invite
     name: Add a teammate
     tab: settings
-    web: [team, dialog:Add teammate]
+    web: [settings, section:Team, dialog:Add teammate]
     phone: [SettingsKin, KinTeam, KinInvite]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
@@ -859,7 +870,7 @@ features:
   - id: teammate
     name: A teammate's access, places and devices
     tab: settings
-    web: [team, sheet:Teammate]
+    web: [settings, section:Team, sheet:Teammate]
     phone: [SettingsKin, KinTeam, KinTeammate]
     roles: { owner: both, co_owner: both, lead: none, member: none }
     tools: [people_update]
@@ -870,7 +881,7 @@ features:
   - id: teammate-profile
     name: Change a teammate's profile
     tab: settings
-    web: [team, sheet:Teammate]
+    web: [settings, section:Team, sheet:Teammate]
     phone: [SettingsKin, KinTeam, KinTeammate, KinProfileEdit]
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
@@ -903,6 +914,12 @@ features:
       - packages/client-runtime/src/kin/kinJoin.test.ts
 
 unlisted:
+  "web:team": Old address; opens Settings → Team.
+  "web:memory": Old address; opens Settings → Memory.
+  "web:settings/approvals": The app's old address; opens Kin's Settings → Approvals.
+  "web:settings/company": The app's old address; opens Kin's Settings → Company details.
+  "web:settings/check-ins": The app's old address; opens Kin's Settings → Check-ins.
+  "web:settings/kin-connections": The app's old address; opens Kin's Settings → Connections.
   "web:?v": Picks the version of the open doc; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.

@@ -40,6 +40,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
+import type { KinMakeStep } from "./KinInvoice";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -692,10 +693,11 @@ export function KinQuoteActions(
     readonly busy: boolean;
     readonly canChange: boolean;
     readonly onState: (state: KinRecordState) => void;
+    /** Opens Make its PDF as the entry sheet's next step. */
+    readonly onMakePdf: (step: KinMakeStep) => void;
   },
 ) {
-  const navigation = useNavigation();
-  const { environmentId, orgId, item, quote } = props;
+  const { environmentId, item, quote } = props;
   const actions = useKinMoneyActions(props);
   const invoicing = useKinInvoiceFromQuote(props);
   const open = useOpenEntry(props);
@@ -784,15 +786,10 @@ export function KinQuoteActions(
           label={KIN_INVOICES.makePdf}
           disabled={busy}
           onPress={() =>
-            navigation.navigate("KinMakeDocument", {
-              environmentId: String(environmentId),
-              orgId: String(orgId),
-              task: item.key,
+            props.onMakePdf({
               list: KIN_QUOTES_LIST,
               currency: item.amount?.currency ?? props.def?.currency ?? "INR",
-              ...(item.party === undefined
-                ? {}
-                : { party: item.party.key, partyName: item.party.title }),
+              party: item.party ?? null,
             })
           }
         />

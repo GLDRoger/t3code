@@ -4,7 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { createPendingAttachmentId } from "../../attachmentStore.ts";
-import { deletePendingAttachment } from "../../assets/AttachmentUpload.ts";
+import { deletePendingAttachment, sessionUploadOwner } from "../../assets/AttachmentUpload.ts";
 import {
   recordTestUploadOwner,
   TEST_UPLOAD_OWNER,
@@ -447,6 +447,30 @@ describe("KinChatService", () => {
       const membersFile = membersMessage.attachments![0]!.id;
       const pending = (yield* uploadPhoto("pending.png")).id;
 
+      // Her upload goes only into a chat she may post in, and only her own upload goes at all.
+      const hers = sessionUploadOwner(memberSession);
+      const stray = yield* uploadPhoto("stray.png", hers);
+      const refusedSend = (chatId: KinChatId, attachment: typeof stray) =>
+        service
+          .send(members, {
+            ...send,
+            clientMessageId: `refused-${attachment.name}`,
+            chatId,
+            attachments: [attachment],
+            uploader: hers,
+          })
+          .pipe(Effect.flip);
+      yield* refusedSend(chat.chatId, stray);
+      yield* refusedSend(own.chatId, yield* uploadPhoto("owners-pending.png"));
+      const kept = yield* service.send(members, {
+        ...send,
+        clientMessageId: "stray-home",
+        chatId: own.chatId,
+        attachments: [stray],
+        uploader: hers,
+      });
+      const strayFile = kept.attachments![0]!.id;
+
       const kin = Option.some(
         Context.make(Identity.KinIdentity, identity).pipe(
           Context.add(Service.KinChatService, service),
@@ -471,6 +495,7 @@ describe("KinChatService", () => {
         [memberSession, [membersFile], "served"],
         // The teammate reaches nothing of the owner's chat, by any name for it.
         [memberSession, aliases(ownersFile), "refused"],
+        [session, aliases(strayFile), "refused"],
         // Holding every other scope does not put the owner in the teammate's chat.
         [session, aliases(membersFile), "refused"],
         // A Kin id no message holds, and an upload no message has claimed.

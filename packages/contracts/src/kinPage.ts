@@ -83,6 +83,10 @@ export function kinPageShape(body: string): KinPageShape {
   return body.length > 600 && paragraphs >= 3 ? "page" : "bubble";
 }
 
+/** A brief reads under a greeting only with sections; a check-in that came back as one line doesn't. */
+export const kinIsBrief = (body: string, form: string | null | undefined) =>
+  form === "brief" && kinPageSections(body).some(({ title }) => title !== null);
+
 /** "Good morning", "Good afternoon" or "Good evening" for an hour of the reader's day. */
 export const kinGreeting = (hour: number) =>
   hour < 5

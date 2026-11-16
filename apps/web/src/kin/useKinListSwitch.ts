@@ -24,7 +24,7 @@ export interface KinListSwitch {
   readonly switchList: () => void;
 }
 
-/** The brand mark's switch between coding threads and Kin; null while no host runs Kin. */
+/** The switch between coding threads and Kin (palette and shortcut); null while no host runs Kin. */
 export function useKinListSwitch(): KinListSwitch | null {
   const host = useKinHost();
   const navigate = useNavigate();

@@ -43,7 +43,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import { isOrgOwner } from "../lead/orgState.ts";
 import { sectionsOf } from "../work/docBody.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
-import { withLinks } from "./messageLinks.ts";
+import { encodeNames, nameKeys, withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
 import { chatShared, readableBy, recordJoin } from "./sharing.ts";
 import { accessSql } from "../people/KinAccess.ts";
@@ -573,6 +573,20 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const linked = (...args: Parameters<typeof withLinks>) =>
     withLinks(...args).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+  const named_ = (orgId: KinOrgId, chatId: KinChatId, body: string) =>
+    nameKeys(orgId, chatId, body).pipe(
+      Effect.map((named) => ({
+        body: named.body,
+        json: named.names.length === 0 ? null : encodeNames(named.names),
+      })),
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+  const keepNames = (orgId: KinOrgId, messageId: string, json: string | null) =>
+    json === null
+      ? sql`DELETE FROM kin_message_names WHERE org_id = ${orgId} AND message_id = ${messageId}`
+      : sql`INSERT INTO kin_message_names (org_id, message_id, names_json)
+          VALUES (${orgId}, ${messageId}, ${json})
+          ON CONFLICT (org_id, message_id) DO UPDATE SET names_json = excluded.names_json`;
   // A doc of the org shows the file, by `kin-file:` or as a generated version; docs are archived,
   // never deleted, so any doc row keeps it.
   const docUses = (orgId: KinOrgId) =>
@@ -1553,7 +1567,7 @@ const make = Effect.gen(function* () {
               message.status !== "posted" ||
               message.kind !== "text" ||
               message.widgetId !== null ||
-              !input.body.startsWith(message.body)
+              !(yield* named_(input.orgId, input.chatId, input.body)).body.startsWith(message.body)
             )
               return yield* new KinChatError({
                 reason: "not_found",
@@ -1565,8 +1579,10 @@ const make = Effect.gen(function* () {
                 message: "Kin wake-up is not running.",
               });
             yield* ownerOnly(input.audience, input);
-            yield* sql`UPDATE kin_messages SET body = ${input.body}
+            const named = yield* named_(input.orgId, input.chatId, input.body);
+            yield* sql`UPDATE kin_messages SET body = ${named.body}
               WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
+            yield* keepNames(input.orgId, input.messageId, named.json);
             return yield* requireRecord(messageOne(input));
           }),
         );
@@ -1762,6 +1778,11 @@ const make = Effect.gen(function* () {
                 AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = kin_events.org_id
                   AND m.wakeup_id = kin_events.wakeup_id AND m.tag = 'chat.message')
                 LIMIT 1`).length > 0;
+            // People read an entry by its name, not Kin's key for it.
+            const named =
+              author._tag === "agent" && input.kind === "text"
+                ? yield* named_(input.orgId, input.chatId, input.body)
+                : { body: input.body, json: null };
             const inserted =
               yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id, author_agent_id,
  author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, attachments_json, refs_json, intent, mentions_json, reply_to,
@@ -1769,7 +1790,7 @@ const make = Effect.gen(function* () {
  VALUES (${input.messageId}, ${input.orgId}, ${input.chatId}, ${seq}, ${author._tag},
  ${member?.principal._tag === "person" ? member.principal.personId : null}, ${member?.principal._tag === "agent" ? member.principal.agentId : null},
  ${agent?.ownerPersonId ?? null}, ${author._tag === "agent" ? author.threadId : null},
- ${memberId}, ${member?.role ?? "member"}, ${input.kind}, ${input.body}, ${attachmentsJson}, ${refs.length === 0 ? null : yield* encodeRefs(refs)}, ${input.intent}, ${mentions}, ${input.replyTo},
+ ${memberId}, ${member?.role ?? "member"}, ${input.kind}, ${named.body}, ${attachmentsJson}, ${refs.length === 0 ? null : yield* encodeRefs(refs)}, ${input.intent}, ${mentions}, ${input.replyTo},
  ${input.widgetId}, ${input.floorRunId}, ${input.status}, ${input.sentBy}, ${clientId}, ${input.createdAt}, ${input.editedAt},
  ${input.silent === true ? 1 : 0}, ${brief ? "brief" : null}, ${input.discussionId ?? null},
  ${input.relay === undefined ? null : yield* encodeRelay(input.relay)})
@@ -1779,6 +1800,7 @@ const make = Effect.gen(function* () {
                 reason: "not_found",
                 message: "Kin record not found.",
               });
+            yield* keepNames(input.orgId, input.messageId, named.json);
             // Which chat owns each file: what reading one by id is checked against.
             for (const attachment of attachments)
               yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)

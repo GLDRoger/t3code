@@ -31,7 +31,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { Link, useMatchRoute, useParams } from "@tanstack/react-router";
+import { Link, useParams } from "@tanstack/react-router";
 import { BellOffIcon, ChevronDownIcon, ChevronRightIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -46,10 +46,6 @@ import { KinRestoreButton, useKinRestore } from "./KinAgentRetire";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { ApproveOnPhone } from "./KinCards";
-import { KinMemoryEntry } from "./KinMemoryView";
-import { KinPlaceEntries } from "./KinPlaceEntries";
-import { KinTeamEntry } from "./KinTeamView";
-import { KinProfileEntry } from "./KinProfileSheet";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import type { KinLeadFormTarget } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";
@@ -87,9 +83,6 @@ export function KinChatList() {
   const { host, state, retry } = useKinInbox();
   const nowMs = useNowMinuteMs();
   const { isMobile, setOpenMobile } = useSidebar();
-  const matchRoute = useMatchRoute();
-  const memoryOpen = matchRoute({ to: "/kin/$environmentId/$orgId/memory" }) !== false;
-  const teamOpen = matchRoute({ to: "/kin/$environmentId/$orgId/team" }) !== false;
   if (state._tag === "loading") {
     return (
       <div className="flex flex-col gap-1" role="status" aria-label="Loading chats">
@@ -155,32 +148,6 @@ export function KinChatList() {
         directory={directory}
         environmentId={state.environmentId}
       />
-      {mine === null ? null : (
-        <>
-          <KinPlaceEntries
-            environmentId={mine.environmentId}
-            orgId={mine.orgId}
-            onOpen={closeSidebar}
-          />
-          <KinMemoryEntry
-            environmentId={mine.environmentId}
-            orgId={mine.orgId}
-            active={memoryOpen}
-            onOpen={closeSidebar}
-          />
-          <KinProfileEntry
-            environmentId={mine.environmentId}
-            orgId={mine.orgId}
-            onOpen={closeSidebar}
-          />
-          <KinTeamEntry
-            environmentId={mine.environmentId}
-            orgId={mine.orgId}
-            active={teamOpen}
-            onOpen={closeSidebar}
-          />
-        </>
-      )}
       {rows.length === 0 ? (
         mine === null ? (
           <Empty size="compact">

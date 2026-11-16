@@ -188,6 +188,12 @@ export async function open(session: WebSession, route: string) {
   await settle(session.page);
 }
 
+/** The browser's Back, as the person would press it. */
+export async function back(session: WebSession) {
+  await session.page.goBack();
+  await settle(session.page);
+}
+
 /** The screen as an accessibility tree: an open dialog or sheet if any, else the main area. */
 export async function snapshot(session: WebSession, full: boolean): Promise<string> {
   const { page } = session;
