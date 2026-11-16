@@ -27,7 +27,7 @@ function withSection(href: string, section: string | null): string {
 }
 
 /** Settings on `section` over the Kin page last open: for an address outside Kin's pages. */
-export function kinSettingsHref(section: string): string {
+function kinSettingsHref(section: string): string {
   return withSection(kinListSwitchHref("threads"), section);
 }
 

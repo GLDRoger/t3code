@@ -189,11 +189,7 @@ function KinSettingsModal(props: { readonly target: KinSettingsTarget; readonly 
           </header>
           <SidebarContent className="overflow-x-hidden">
             <SidebarGroup>
-              <KinSettingsMenu
-                groups={groups}
-                active={atIndex ? null : page}
-                onOpen={(section) => show(section)}
-              />
+              <KinSettingsMenu groups={groups} active={page} onOpen={(section) => show(section)} />
             </SidebarGroup>
           </SidebarContent>
         </nav>
