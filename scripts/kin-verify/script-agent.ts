@@ -125,6 +125,13 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<T
   await capture(server, prompt).catch(() => undefined);
   // The prompt may quote earlier messages; the newest marker is this turn's.
   const id = [...prompt.matchAll(MARKER)].at(-1)?.[1];
+  // A check-in (Run now) answers with `<verify dir>/checkin-reply.md` once, to show a brief.
+  const brief = NodePath.join(verifyDir, "checkin-reply.md");
+  if (prompt.includes("This is a check-in") && NodeFS.existsSync(brief)) {
+    const reply = NodeFS.readFileSync(brief, "utf8");
+    NodeFS.rmSync(brief);
+    return { reply, end: noEnd };
+  }
   if (id === undefined) return { reply: "Noted.", end: noEnd };
   const scriptPath = NodePath.join(verifyDir, "turns", `${id}.json`);
   const resultPath = NodePath.join(verifyDir, "turns", `${id}.result.json`);

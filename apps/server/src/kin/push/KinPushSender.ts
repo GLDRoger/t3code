@@ -354,7 +354,7 @@ const make = Effect.gen(function* () {
     if (row === undefined || row.awaits_card === 1) return undefined;
     const body = kinPushBody(
       row.form === "brief"
-        ? `${kinGreeting(yield* ownerHour(orgId))}. ${kinPageGist(row.body)}`
+        ? `${kinGreeting(yield* ownerHour(orgId))} · ${kinPageGist(row.body)}`
         : kinPageShape(row.body) === "page"
           ? kinPageGist(row.body)
           : row.body,

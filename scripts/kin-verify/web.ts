@@ -362,6 +362,24 @@ export async function waitFor(
   );
 }
 
+/** The window's size and light or dark, as a phone-width or wide screen would show the page. */
+export async function view(
+  session: WebSession,
+  options: { readonly width: number; readonly height: number; readonly colorScheme: "dark" | "light" | null },
+) {
+  await session.page.setViewportSize({ width: options.width, height: options.height });
+  if (options.colorScheme !== null) {
+    await session.page.emulateMedia({ colorScheme: options.colorScheme });
+    // The app keeps its own appearance, read at load.
+    await session.page.evaluate(
+      (mode) => window.localStorage.setItem("t3code:theme-appearance-mode", mode),
+      options.colorScheme,
+    );
+    await session.page.reload();
+  }
+  await settle(session.page);
+}
+
 /** Screenshots only to an explicit path, never into the live install's tree. */
 export async function screenshot(session: WebSession, path: string, full: boolean) {
   const target = NodePath.resolve(path);

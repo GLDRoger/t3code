@@ -91,7 +91,7 @@ export const kinIsGreeting = (line: string) => GREETING.test(line.trim());
 const firstLine = (markdown: string) =>
   markdown
     .split("\n")
-    .map((line) => line.trim())
+    .map((line) => line.trim().replace(/^(?:[-*+]|\d+[.)])\s+/, ""))
     .find((line) => line !== "" && !kinIsGreeting(line) && !FENCE.test(line) && !/^\|/.test(line));
 
 /**

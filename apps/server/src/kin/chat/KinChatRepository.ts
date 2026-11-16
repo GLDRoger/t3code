@@ -1708,7 +1708,8 @@ const make = Effect.gen(function* () {
  WHERE chat_id = ${input.chatId} AND org_id = ${input.orgId} RETURNING last_seq`,
             })(input);
             const seq = (yield* requireRecord(Effect.succeed(allocated))).last_seq;
-            // A check-in's or brief's reply in the chat it answers, not a relay it sent on.
+            // A check-in's or brief's reply in the chat it answers, not a relay it sent on, and not
+            // a reply to someone's message that came in the same wake-up.
             const brief =
               author._tag === "agent" &&
               input.kind === "text" &&
@@ -1718,6 +1719,8 @@ const make = Effect.gen(function* () {
                 AND wakeup_id = ${input.wakeupId}
                 AND ((tag = 'pulse' AND json_extract(json, '$.checkIn') IS NOT NULL)
                   OR (tag = 'routine' AND json_extract(json, '$.routine') IN ('morning_brief', 'evening_summary')))
+                AND NOT EXISTS (SELECT 1 FROM kin_events m WHERE m.org_id = kin_events.org_id
+                  AND m.wakeup_id = kin_events.wakeup_id AND m.tag = 'chat.message')
                 LIMIT 1`).length > 0;
             const inserted =
               yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id, author_agent_id,

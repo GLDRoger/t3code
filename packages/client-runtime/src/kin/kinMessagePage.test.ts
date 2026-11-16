@@ -76,7 +76,7 @@ describe("kinPageView", () => {
 
   it("gives a list the first thing that needs the reader, after the greeting for a brief", () => {
     expect(kinMessageGistMarkdown(said(BRIEF, { form: "brief" }))).toMatch(
-      /^Good (morning|afternoon|evening)\. - INV-1 is 12 days overdue/,
+      /^Good (morning|afternoon|evening) · INV-1 is 12 days overdue/,
     );
     expect(kinMessageGistMarkdown(said("## Plan\nShip on Friday.\n\n## Risks\nNone."))).toBe(
       "Ship on Friday.",

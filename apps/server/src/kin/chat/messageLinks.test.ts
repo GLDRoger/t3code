@@ -133,8 +133,9 @@ it.effect("links for each reader only what they may open; a hidden client leaves
         (${orgId}, 'c3', 'clients', 'C-3', 'Lumen Grove', 'person', ${ownerId}, 1, 'person', 'c3', 0, 0),
         (${orgId}, 'w1', 'work', 'W-1', 'Logo files', 'person', ${mateId}, 0, 'person', 'w1', 0, 0),
         (${orgId}, 'i1', 'invoices', 'INV-1', 'Orbit Dental retainer', 'person', ${ownerId}, 0, 'person', 'i1', 0, 0)`;
+    yield* sql`UPDATE kin_records SET fields_json = '{"number":"INV/26-27/004"}' WHERE key = 'INV-1'`;
     const said = message(
-      "Talk to Finance about INV-1 for Orbit Dental. W-1 is with Zoya Sheikh. Lumen Grove and C-3 can wait. See Settings.",
+      "Talk to Finance about INV-1 for Orbit Dental. W-1 is with Zoya Sheikh. Lumen Grove and C-3 can wait. See Settings and INV/26-27/004.",
     );
     const linksOf = (personId: KinPersonId) =>
       withLinks(orgId, { _tag: "person", personId }, [said]).pipe(
@@ -153,6 +154,7 @@ it.effect("links for each reader only what they may open; a hidden client leaves
         ["Lumen Grove", "record"],
         ["C-3", "record"],
         ["Settings", "settings"],
+        ["INV/26-27/004", "record"],
       ],
     );
     assert.strictEqual(owner.find((link) => link.text === "W-1")?.note, "Logo files · Open");
@@ -164,7 +166,7 @@ it.effect("links for each reader only what they may open; a hidden client leaves
     ]);
     // The private client is not named, numbered or hinted at anywhere in what she is sent.
     const sent = JSON.stringify(mate);
-    for (const hidden of ["Lumen Grove", "C-3", "Orbit Dental", "INV-1", "finance-chat"])
+    for (const hidden of ["Lumen Grove", "C-3", "Orbit Dental", "INV", "finance-chat"])
       assert.notInclude(sent, hidden);
 
     // Agents read the words as written.

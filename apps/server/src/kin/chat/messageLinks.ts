@@ -48,8 +48,8 @@ export const keysIn = (body: string): ReadonlyArray<string> => [
 ];
 
 /**
- * What a message names among `names` and `keys`, by exact spelling: document numbers, and whole
- * names of agents, people, clients and projects, case and all ("Finance", not "finance"), longest
+ * What a message names among `names` and `keys`, by exact spelling: keys (INV-1) and printed
+ * numbers (INV/26-27/004) of entries, and whole names of agents, people, clients and projects, case and all ("Finance", not "finance"), longest
  * first, each once. An agent also matches as "<name> chat" in any case.
  */
 export function matchLinks(
@@ -143,6 +143,12 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
       r.key, r.title, r.register_id AS register, r.state FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id IN ('clients', 'projects')
       AND r.state <> 'dropped' AND ${seenBy(sql, viewer)}`;
+  // A document's own number, such as INV/26-27/004, as it is printed and mailed.
+  const numbered = yield* sql<{ key: string; title: string; register: string; state: string; number: string }>`SELECT
+      r.key, r.title, r.register_id AS register, r.state,
+      json_extract(r.fields_json, '$.number') AS number FROM kin_records r
+    WHERE r.org_id = ${orgId} AND json_extract(r.fields_json, '$.number') IS NOT NULL
+      AND ${seenBy(sql, viewer)}`;
   const keyed =
     keys.length === 0
       ? []
@@ -166,6 +172,7 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
       note: null,
     })),
     ...named.map((row) => ({ name: row.title, ...record(row) })),
+    ...numbered.map((row) => ({ name: row.number, ...record(row) })),
   ];
   // Two things by one name would be a guess, so neither links.
   const counts = new Map<string, number>();

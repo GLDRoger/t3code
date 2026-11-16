@@ -129,5 +129,5 @@ export function kinMessageGistMarkdown(
   const layout = kinMessageLayout(message);
   if (layout === "bubble") return message.body;
   const gist = kinPageGist(message.body);
-  return layout === "brief" ? `${kinBriefHead(message.createdAt, null).greeting}. ${gist}` : gist;
+  return layout === "brief" ? `${kinBriefHead(message.createdAt, null).greeting} · ${gist}` : gist;
 }
