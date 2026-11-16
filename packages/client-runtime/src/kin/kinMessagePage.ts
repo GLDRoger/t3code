@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - A brief's greeting and date read the reader's local clock in React render.
 import {
   ComposerContextId,
   kinGreeting,
