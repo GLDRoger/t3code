@@ -20,10 +20,9 @@ export const KIN_PROFILE_COPY = {
   loadFailed: "Couldn't load this profile.",
   nameLabel: "Name",
   tagsLabel: "Roles",
-  tagsHint:
-    "Short words for what you do, such as tech, design or sales. Separate them with commas.",
+  tagsHint: "Short words such as tech, design or sales. Separate them with commas.",
   skillsLabel: "Skills",
-  skillsHint: "In your own words. Everyone on the team and their agents can read this.",
+  skillsHint: "Everyone on the team and their agents can read this.",
   hoursLabel: "Working hours",
   timeZoneLabel: "Time zone",
   noHours: "Not set",

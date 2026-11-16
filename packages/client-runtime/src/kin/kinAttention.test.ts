@@ -93,6 +93,30 @@ describe("kinAttention", () => {
     const tasks = kinTasksAttention(all.open);
     expect(tasks.rows.map((row) => row.factKey)).toEqual(["task_late:W-2", "task_due_soon:W-1"]);
     expect(tasks.money).toBe(1);
+    // A project or client fact does not repeat its own name after its key.
+    const own = kinAttention(
+      read([
+        fact("project_no_plan", "P-1", {
+          subject: {
+            kind: "record",
+            key: "P-1",
+            title: "Atlas",
+            recordId: KinRecordId.make("P-1"),
+          },
+        }),
+        fact("client_cold", "C-1", {
+          subject: {
+            kind: "record",
+            key: "C-1",
+            title: "Lumen",
+            recordId: KinRecordId.make("C-1"),
+          },
+          scope: { clientKey: "C-1", clientTitle: "Lumen" },
+        }),
+      ]),
+      { scope: { type: "all" }, names, now },
+    );
+    expect(own.open.map((row) => row.about).toSorted()).toEqual(["C-1", "P-1 · Lumen"]);
   });
 
   it("leaves out of Needs you what an attention row already covers", () => {
