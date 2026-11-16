@@ -225,7 +225,7 @@ export async function seed(
         name: agent.name,
         domain: agent.domain,
         charter: agent.charter,
-        models: { strong: SCRIPT_MODEL, cheap: SCRIPT_MODEL },
+        model: SCRIPT_MODEL,
       })) as { agentId: string; ownerChatId: string };
       agents[agent.key] = {
         agentId: created.agentId,

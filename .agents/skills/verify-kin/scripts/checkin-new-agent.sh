@@ -4,7 +4,7 @@
 source "$(dirname "$0")/lib.sh"
 AGENT="Ops $RUN"
 MODEL='{"instanceId":"kinVerifyScript","model":"script"}'
-created="$(kv as owner rpc kin.lead.create "{\"name\":\"$AGENT\",\"domain\":\"ops-$RUN\",\"charter\":\"Keeps vendors and the office running.\",\"models\":{\"strong\":$MODEL,\"cheap\":$MODEL}}")"
+created="$(kv as owner rpc kin.lead.create "{\"name\":\"$AGENT\",\"domain\":\"ops-$RUN\",\"charter\":\"Keeps vendors and the office running.\",\"model\":$MODEL}")"
 agent_id="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).agentId)' "$created")"
 kv as owner web open /settings/check-ins >/dev/null
 kv as owner web wait "Add check-in" >/dev/null || fail "the old Check-ins address didn't open Settings on Check-ins"

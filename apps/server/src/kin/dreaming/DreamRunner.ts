@@ -83,10 +83,7 @@ export class DreamRunner extends Context.Service<
 
 const dreamRoutines: ReadonlyArray<KinRoutine> = ["dream", "dream_full"];
 const scratch = ".kin-dream";
-const Models = Schema.fromJsonString(
-  Schema.Struct({ strong: ModelSelection, cheap: ModelSelection }),
-);
-const decodeModels = Schema.decodeUnknownEffect(Models);
+const decodeModel = Schema.decodeUnknownEffect(Schema.fromJsonString(ModelSelection));
 const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson));
 const encodeDream = Schema.encodeEffect(Schema.fromJsonString(DreamJson));
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -172,7 +169,7 @@ const make = Effect.gen(function* () {
     const branch = `dream/${ownerDate}`;
     return yield* sql.withTransaction(
       Effect.gen(function* () {
-        // The org's memory is one repo, so one lead's models dream for all of them.
+        // The org's memory is one repo, so one lead's model dreams for all of them.
         const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
         if (lead === undefined) return yield* Effect.fail("No active agent for this organization");
         const [previous] = yield* sql<{
@@ -201,7 +198,7 @@ const make = Effect.gen(function* () {
           from,
           until: now,
           owner: lead.ownerPersonId,
-          models: yield* decodeModels(lead.models),
+          model: yield* decodeModel(lead.model),
         };
       }),
     );
@@ -445,7 +442,7 @@ const make = Effect.gen(function* () {
       });
       const extracted = yield* turn(
         "extract",
-        claimed.models.cheap,
+        claimed.model,
         extractPrompt({ orgId, head: base.head, full }),
       );
       if (extracted === "paused") return failed([pausedFailure]);
@@ -459,7 +456,7 @@ const make = Effect.gen(function* () {
         draft?._tag === "Some" &&
         draft.value.contradictions.some((entry) => !entry.resolution && !entry.question)
       ) {
-        const resolved = yield* turn("resolve", claimed.models.strong, resolvePrompt);
+        const resolved = yield* turn("resolve", claimed.model, resolvePrompt);
         if (resolved === "paused") return failed([pausedFailure]);
         if (resolved !== "completed") return failed([`The contradiction session ${resolved}`]);
         checkout = yield* readCheckout(root);

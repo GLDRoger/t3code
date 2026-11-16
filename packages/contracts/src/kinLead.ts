@@ -52,6 +52,9 @@ export type KinLeadRoutine = typeof KinLeadRoutine.Type;
 
 export const KinLevel = Schema.Literals(["L0", "L1", "L2", "L3"]);
 export type KinLevel = typeof KinLevel.Type;
+/** The provider drivers a Kin agent may run on: the host refuses any other, pickers offer only these. */
+export const isKinAgentDriver = (driver: string | undefined): boolean => driver === "claudeAgent";
+
 export const KinLead = Schema.Struct({
   orgId: KinOrgId,
   agentId: KinAgentId,
@@ -59,7 +62,7 @@ export const KinLead = Schema.Struct({
   level: KinLevel,
   levelSince: CanonicalUtcTimestamp,
   threadId: Schema.NullOr(ThreadId),
-  models: Schema.Struct({ strong: ModelSelection, cheap: ModelSelection }),
+  model: ModelSelection,
   workerProjects: Schema.Array(ProjectId),
   ownerChatId: KinChatId,
 });
@@ -82,8 +85,8 @@ export const KinLeadCreateInput = Schema.Struct({
   domain: KinLeadDomain,
   charter: KinLeadCharter,
   intro: Schema.optional(KinLeadIntro),
-  // Omitted: the models of the org's first live lead.
-  models: Schema.optional(Schema.Struct({ strong: ModelSelection, cheap: ModelSelection })),
+  // Omitted: the company default, else the org's first live lead's model.
+  model: Schema.optional(ModelSelection),
   workerProjects: Schema.optional(Schema.Array(ProjectId)),
 });
 export type KinLeadCreateInput = typeof KinLeadCreateInput.Type;
@@ -187,13 +190,11 @@ export const KinLeadUpdateInput = Schema.Struct({
   charter: Schema.optional(KinLeadCharter),
   intro: Schema.optional(KinLeadIntro),
   roleTags: Schema.optional(KinRoleTags),
-  // Claude only; the next turn runs on them.
-  models: Schema.optional(Schema.Struct({ strong: ModelSelection, cheap: ModelSelection })),
+  // Claude only; the next turn runs on it.
+  model: Schema.optional(ModelSelection),
 });
 export type KinLeadUpdateInput = typeof KinLeadUpdateInput.Type;
 
-export const KinAgentModels = Schema.Struct({ strong: ModelSelection, cheap: ModelSelection });
-export type KinAgentModels = typeof KinAgentModels.Type;
 export const KinAgentPageInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
 export type KinAgentPageInput = typeof KinAgentPageInput.Type;
 /**
@@ -203,8 +204,8 @@ export type KinAgentPageInput = typeof KinAgentPageInput.Type;
 export const KinAgentPage = Schema.Struct({
   profile: KinLeadProfile,
   // What the owner chose, and what its turns run on now; they differ when a choice is unavailable.
-  models: KinAgentModels,
-  runsOn: KinAgentModels,
+  model: ModelSelection,
+  runsOn: ModelSelection,
   // Why it runs on something else, in the owner's words; null when it runs on its own choice.
   modelNote: Schema.NullOr(Schema.String),
   // Its character doc as written now; null before Kin has given it one.
@@ -236,16 +237,16 @@ export type KinAgentCharacterSetInput = typeof KinAgentCharacterSetInput.Type;
 export const KinAgentDefaultsInput = Schema.Struct({ orgId: KinOrgId });
 export type KinAgentDefaultsInput = typeof KinAgentDefaultsInput.Type;
 /**
- * The models new agents start on: the owner's choice, else the first live agent's (`chosen` false);
+ * The model new agents start on: the owner's choice, else the first live agent's (`chosen` false);
  * null when there is neither.
  */
 export const KinAgentDefaults = Schema.Struct({
   orgId: KinOrgId,
-  models: Schema.NullOr(KinAgentModels),
+  model: Schema.NullOr(ModelSelection),
   chosen: Schema.Boolean,
 });
 export type KinAgentDefaults = typeof KinAgentDefaults.Type;
-export const KinAgentDefaultsSetInput = Schema.Struct({ orgId: KinOrgId, models: KinAgentModels });
+export const KinAgentDefaultsSetInput = Schema.Struct({ orgId: KinOrgId, model: ModelSelection });
 export type KinAgentDefaultsSetInput = typeof KinAgentDefaultsSetInput.Type;
 /** Retire or restore one agent. Both are idempotent and answer with its profile. */
 export const KinLeadRetireInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
@@ -726,8 +727,6 @@ export const KinEvent = Schema.Union([
     ),
     // Metadata the server read from connections the owner marked Read: still outside text.
     outside: Schema.optional(Schema.Array(KinPulseOutsideLine).check(Schema.isMaxLength(200))),
-    // A judgement call (money owed, a client waiting, replanning): the agent's main model.
-    strong: Schema.optional(Schema.Boolean),
   }),
   Schema.TaggedStruct("worker.report", {
     ...EventBase,

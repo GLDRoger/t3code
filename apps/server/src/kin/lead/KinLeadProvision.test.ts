@@ -62,11 +62,7 @@ const input = (who: Provision.LeadCreator = owner, workerProjects = [project]) =
   name: "Ada",
   domain: "engineering",
   charter: "",
-  models: {
-    // The default Claude instance, and a custom one that settings name as Claude.
-    strong: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" },
-    cheap: { instanceId: ProviderInstanceId.make("work"), model: "claude-haiku-4-5" },
-  },
+  model: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-4-6" },
   workerProjects,
 });
 const counts = Effect.gen(function* () {
@@ -151,16 +147,11 @@ describe("KinLeadProvision", () => {
           "not_owner",
         );
         assert.strictEqual(yield* refusal(Provision.create(input())), "unknown_project");
-        // Only Claude sessions get LeadIsolation's no-shell tools, so either model elsewhere is refused.
-        for (const [role, instanceId] of [
-          ["strong", "codex"],
-          ["cheap", "mine"],
-          ["cheap", "missing"],
-        ] as const) {
-          const models = { ...input().models };
-          models[role] = { instanceId: ProviderInstanceId.make(instanceId), model: "gpt-5.5" };
+        // Only Claude sessions get LeadIsolation's no-shell tools, so a model elsewhere is refused.
+        for (const instanceId of ["codex", "mine", "missing"]) {
+          const model = { instanceId: ProviderInstanceId.make(instanceId), model: "gpt-5.5" };
           assert.strictEqual(
-            yield* refusal(Provision.create({ ...input(owner, []), models })),
+            yield* refusal(Provision.create({ ...input(owner, []), model })),
             "not_claude",
           );
         }
@@ -181,16 +172,16 @@ describe("KinLeadProvision", () => {
         charter: "Grow signups. Own launch posts and the waitlist.",
       });
       assert.strictEqual(growth._tag, "created");
-      // No models named: the org's first lead's.
-      const { models: _models, ...noModels } = input(owner, []);
+      // No model named: the org's first lead's.
+      const { model: _model, ...noModel } = input(owner, []);
       yield* TestClock.adjust("1 minute");
       const finance = yield* Provision.create({
-        ...noModels,
+        ...noModel,
         name: "Finance",
         domain: "finance",
         charter: "Invoices and chasing what's overdue.",
       });
-      assert.deepStrictEqual(finance.lead.models, tech.models);
+      assert.deepStrictEqual(finance.lead.model, tech.model);
       assert.deepStrictEqual(
         (yield* Provision.list()).map(({ name, domain, charter, level }) => ({
           name,
@@ -903,34 +894,29 @@ describe("KinLeadProvision", () => {
     }).pipe(Effect.provide(paired)),
   );
   it.effect(
-    "changes an agent's models and the company default, pauses and resumes it, and refuses a teammate",
+    "changes an agent's model and the company default, pauses and resumes it, and refuses a teammate",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const tech = (yield* Provision.create(input(owner, []))).lead;
-        const sonnet = {
-          strong: { instanceId: ProviderInstanceId.make("work"), model: "claude-sonnet-4-6" },
-          cheap: { instanceId: ProviderInstanceId.make("work"), model: "claude-haiku-4-5" },
-        };
+        // A custom instance that settings name as Claude.
+        const sonnet = { instanceId: ProviderInstanceId.make("work"), model: "claude-sonnet-4-6" };
         const edit = (
           fields: Parameters<typeof Provision.update>[0]["fields"],
           editor: Provision.LeadCreator = owner,
         ) => Provision.update({ editor, orgId: tech.orgId, agentId: tech.agentId, fields });
-        assert.strictEqual((yield* edit({ models: sonnet })).model, "claude-sonnet-4-6");
+        assert.strictEqual((yield* edit({ model: sonnet })).model, "claude-sonnet-4-6");
         // The runner reads this row at each wake-up, so the next turn runs on it.
-        const [row] = yield* sql<{ models: string }>`SELECT models_json AS models FROM kin_leads
+        const [row] = yield* sql<{ model: string }>`SELECT models_json AS model FROM kin_leads
           WHERE org_id = ${tech.orgId} AND agent_id = ${tech.agentId}`;
-        assert.strictEqual(JSON.parse(row!.models).strong.model, "claude-sonnet-4-6");
-        const codex = {
-          ...sonnet,
-          strong: { instanceId: ProviderInstanceId.make("mine"), model: "gpt" },
-        };
-        assert.strictEqual(yield* refusal(edit({ models: codex })), "not_claude");
+        assert.strictEqual(JSON.parse(row!.model).model, "claude-sonnet-4-6");
+        const codex = { instanceId: ProviderInstanceId.make("mine"), model: "gpt" };
+        assert.strictEqual(yield* refusal(edit({ model: codex })), "not_claude");
 
         yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
           VALUES ('teammate', ${tech.orgId}, 'teammate', 'Teammate', '2026-11-09T00:00:00.000Z')`;
         const teammate = { _tag: "person", personId: KinPersonId.make("teammate") } as const;
-        assert.strictEqual(yield* refusal(edit({ models: sonnet }, teammate)), "not_owner");
+        assert.strictEqual(yield* refusal(edit({ model: sonnet }, teammate)), "not_owner");
         assert.strictEqual(
           yield* refusal(Provision.agentDefaults(teammate, tech.orgId)),
           "not_owner",
@@ -944,14 +930,14 @@ describe("KinLeadProvision", () => {
         // Until one is chosen, new agents start on the first agent's.
         assert.deepInclude(yield* Provision.agentDefaults(owner, tech.orgId), { chosen: false });
         assert.strictEqual(
-          (yield* Provision.agentDefaults(owner, tech.orgId)).models?.strong.model,
+          (yield* Provision.agentDefaults(owner, tech.orgId)).model?.model,
           "claude-sonnet-4-6",
         );
         yield* Provision.setAgentDefaults(owner, tech.orgId, sonnet);
-        const { models: _given, ...unnamed } = input(owner, []);
+        const { model: _given, ...unnamed } = input(owner, []);
         const growth = (yield* Provision.create({ ...unnamed, name: "Growth", domain: "growth" }))
           .lead;
-        assert.strictEqual(growth.models.strong.model, "claude-sonnet-4-6");
+        assert.strictEqual(growth.model.model, "claude-sonnet-4-6");
 
         const pause = (paused: boolean, by: Provision.LeadActor = owner) =>
           Provision.setPaused({ by, orgId: tech.orgId, agentId: tech.agentId, paused });
@@ -969,8 +955,8 @@ describe("KinLeadProvision", () => {
       yield* seedCharacters(tech.orgId);
       const target = { by: owner, orgId: tech.orgId, agentId: tech.agentId };
       const page = yield* ownerLevelAgentPage(target);
-      assert.strictEqual(page.models.strong.model, "claude-opus-4-6");
-      assert.deepStrictEqual(page.runsOn, page.models);
+      assert.strictEqual(page.model.model, "claude-opus-4-6");
+      assert.deepStrictEqual(page.runsOn, page.model);
       assert.isNull(page.modelNote);
       assert.include(page.character?.body ?? "", "# Ada");
       const edited = yield* ownerLevelSetCharacter({ ...target, body: "# Ada\n\nDry and exact." });

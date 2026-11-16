@@ -4,7 +4,7 @@ import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { KinAgentModels, KinLeadProfile } from "@t3tools/contracts";
+import type { KinLeadProfile, ModelSelection } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { ChevronRightIcon } from "lucide-react";
@@ -23,7 +23,7 @@ import { useKinHost } from "./useKinHost";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import type { KinWorkTarget } from "./useKinWork";
 
-/** The company's agents and the models new ones start on, for the owner and co-owners. */
+/** The company's agents and the model new ones start on, for the owner and co-owners. */
 export function KinAgentsSetting() {
   const target = kinNewLeadTarget(useKinHost());
   return target === null ? null : <OwnerLevelAgents {...target} />;
@@ -39,7 +39,7 @@ function OwnerLevelAgents(props: KinWorkTarget) {
   );
 }
 
-/** The models new agents start on; the owner and co-owners change it. */
+/** The model new agents start on; the owner and co-owners change it. */
 export function KinAgentDefaultsSetting(props: KinWorkTarget) {
   if (!useKinOwnerLevel(props.environmentId)) return null;
   return (
@@ -56,11 +56,11 @@ function CompanyDefault(props: KinWorkTarget) {
   const save = useAtomCommand(kinClient.agentDefaultsSet, { reportFailure: false });
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const base = defaults?.models ?? null;
+  const base = defaults?.model ?? null;
 
-  const choose = async (models: KinAgentModels) => {
+  const choose = async (model: ModelSelection) => {
     setBusy(true);
-    const outcome = await save({ environmentId, input: { orgId, models } });
+    const outcome = await save({ environmentId, input: { orgId, model } });
     setBusy(false);
     setProblem(
       AsyncResult.isFailure(outcome)
@@ -82,17 +82,14 @@ function CompanyDefault(props: KinWorkTarget) {
       }
       control={
         base === null ? undefined : (
-          <div className="flex flex-col items-end gap-1.5">
-            {(["strong", "cheap"] as const).map((role) => (
-              <KinAgentModelPicker
-                key={role}
-                environmentId={environmentId}
-                label={`${KIN_AGENT_PAGE.defaults}: ${KIN_AGENT_PAGE[role].toLowerCase()}`}
-                selection={base[role]}
-                disabled={busy}
-                onChange={(selection) => void choose({ ...base, [role]: selection })}
-              />
-            ))}
+          <div className="max-w-xs">
+            <KinAgentModelPicker
+              environmentId={environmentId}
+              label={KIN_AGENT_PAGE.defaults}
+              selection={base}
+              disabled={busy}
+              onChange={(selection) => void choose(selection)}
+            />
           </div>
         )
       }

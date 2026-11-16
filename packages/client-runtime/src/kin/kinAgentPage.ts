@@ -1,4 +1,12 @@
-import type { KinAgentPage, KinPersonAccess } from "@t3tools/contracts";
+import type {
+  KinAgentPage,
+  KinPersonAccess,
+  ModelSelection,
+  ProviderOptionDescriptor,
+  ServerProviderModel,
+} from "@t3tools/contracts";
+
+import { isReasoningSelect } from "../modelTraits.ts";
 
 /**
  * What a viewer may do on an agent's page. The owner and co-owners see and change all of it; a
@@ -44,10 +52,8 @@ export function kinAgentPageCan(viewer: {
 
 export const KIN_AGENT_PAGE = {
   model: "Model",
-  modelDetail:
-    "It thinks with the first for anything you or a teammate ask it directly, check-ins and decisions, and the second for quick checks. A change applies from its next reply.",
-  strong: "For harder work",
-  cheap: "For quick replies",
+  modelDetail: "Applies from its next reply.",
+  effort: "Effort",
   defaults: "New agents run on",
   defaultsDetail: "Agents you add from now on start on these. You can change each one on its page.",
   character: "Character",
@@ -78,6 +84,77 @@ export const KIN_AGENT_PAGE = {
   characterPlaceholder:
     "Who it is: an archetype, what it loves, what it pushes back on, how it writes.",
 } as const;
+
+/** Kin's advice on reasoning effort, the same on every client and for any provider. */
+export const KIN_AGENT_EFFORT = {
+  recommended: "Recommended",
+  advice:
+    "Medium or High is recommended. Low is too shallow; anything above High tends to over-think, whichever model you pick.",
+} as const;
+const RECOMMENDED_EFFORTS: ReadonlyArray<string> = ["medium", "high"];
+
+type AdvisableModel = Pick<ServerProviderModel, "slug" | "capabilities">;
+const reasoningOf = (models: ReadonlyArray<AdvisableModel>, slug: string) =>
+  models
+    .find((model) => model.slug === slug)
+    ?.capabilities?.optionDescriptors?.find(isReasoningSelect);
+
+/** A reasoning control with Medium and High first and marked; the other levels follow as listed. */
+export function kinAdviseEffort(descriptor: ProviderOptionDescriptor): ProviderOptionDescriptor {
+  if (!isReasoningSelect(descriptor)) return descriptor;
+  const recommended = RECOMMENDED_EFFORTS.flatMap((id) => {
+    const option = descriptor.options.find((one) => one.id === id);
+    return option === undefined ? [] : [{ ...option, description: KIN_AGENT_EFFORT.recommended }];
+  });
+  if (recommended.length === 0) return descriptor;
+  const rest = descriptor.options.filter((one) => !RECOMMENDED_EFFORTS.includes(one.id));
+  return { ...descriptor, options: [...recommended, ...rest] };
+}
+
+/** The provider's models as Kin's pickers offer them: each one's effort levels advised. */
+export function kinAdvisedModels<M extends AdvisableModel>(models: ReadonlyArray<M>): Array<M> {
+  return models.map((model) => {
+    const descriptors = model.capabilities?.optionDescriptors;
+    if (descriptors === undefined || model.capabilities == null) return model;
+    return {
+      ...model,
+      capabilities: { ...model.capabilities, optionDescriptors: descriptors.map(kinAdviseEffort) },
+    };
+  });
+}
+
+/** Whether a chosen effort is below Medium or above High. An unset effort is not flagged. */
+export function kinEffortOffAdvice(
+  selection: ModelSelection,
+  models: ReadonlyArray<AdvisableModel>,
+): boolean {
+  const reasoning = reasoningOf(models, selection.model);
+  if (reasoning === undefined) return false;
+  const chosen = selection.options?.find((option) => option.id === reasoning.id)?.value;
+  return (
+    typeof chosen === "string" &&
+    reasoning.options.some((option) => option.id === chosen) &&
+    !RECOMMENDED_EFFORTS.includes(chosen)
+  );
+}
+
+/** A freshly picked model at Medium effort, when it offers Medium and no effort was chosen. */
+export function kinWithMediumEffort(
+  selection: ModelSelection,
+  models: ReadonlyArray<AdvisableModel>,
+): ModelSelection {
+  const reasoning = reasoningOf(models, selection.model);
+  if (
+    reasoning === undefined ||
+    !reasoning.options.some((option) => option.id === "medium") ||
+    selection.options?.some((option) => option.id === reasoning.id) === true
+  )
+    return selection;
+  return {
+    ...selection,
+    options: [...(selection.options ?? []), { id: reasoning.id, value: "medium" }],
+  };
+}
 
 /** "Sonnet 4.6, high effort" from a model's name and the effort it was saved with. */
 export function kinAgentModelLine(

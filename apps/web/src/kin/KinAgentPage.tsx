@@ -444,14 +444,14 @@ function AgentModels(props: {
     useAtomValue(kinClient.leadUpdate.permissionAtom(environmentId)) && !props.retired;
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const choose = async (role: "strong" | "cheap", selection: ModelSelection) => {
+  const choose = async (selection: ModelSelection) => {
     setBusy(true);
     const outcome = await update({
       environmentId,
       input: {
         orgId,
         agentId: page.profile.agentId,
-        models: { ...page.models, [role]: selection },
+        model: selection,
       },
     });
     setBusy(false);
@@ -464,32 +464,23 @@ function AgentModels(props: {
   };
   return (
     <KinAgentSection title={KIN_AGENT_PAGE.model}>
-      {(["strong", "cheap"] as const).map((role) => (
-        <div key={role} className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-sm text-foreground">{KIN_AGENT_PAGE[role]}</span>
-          {canEdit ? (
-            <KinAgentModelPicker
-              environmentId={environmentId}
-              label={KIN_AGENT_PAGE[role]}
-              selection={page.models[role]}
-              disabled={busy}
-              onChange={(selection) => void choose(role, selection)}
-            />
-          ) : (
-            <span className="text-sm text-muted-foreground">
-              {kinAgentModelLine(
-                kinLeadModelName(page.models[role].model, providers),
-                page.models[role],
-              )}
-            </span>
-          )}
-        </div>
-      ))}
+      {canEdit ? (
+        <KinAgentModelPicker
+          environmentId={environmentId}
+          label={KIN_AGENT_PAGE.model}
+          selection={page.model}
+          disabled={busy}
+          onChange={(selection) => void choose(selection)}
+        />
+      ) : (
+        <span className="text-sm text-muted-foreground">
+          {kinAgentModelLine(kinLeadModelName(page.model.model, providers), page.model)}
+        </span>
+      )}
       {page.modelNote === null ? null : (
         <Alert variant="warning">
           <AlertDescription>
-            {page.modelNote} Now: {kinLeadModelName(page.runsOn.strong.model, providers)} and{" "}
-            {kinLeadModelName(page.runsOn.cheap.model, providers)}.
+            {page.modelNote} Now: {kinLeadModelName(page.runsOn.model, providers)}.
           </AlertDescription>
         </Alert>
       )}

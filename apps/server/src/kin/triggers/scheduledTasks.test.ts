@@ -284,10 +284,7 @@ it.effect(
 // Native schedules: the task is T3's, its kin_schedules row the authority for each run.
 const scheduleId = KinMemoryItemId.make("sch-native");
 const taskId = KinSchedules.scheduleTaskId(orgId, scheduleId);
-const MODELS = JSON.stringify({
-  strong: { instanceId: "claude", model: "invented-strong" },
-  cheap: { instanceId: "claude", model: "invented-cheap" },
-});
+const MODELS = JSON.stringify({ instanceId: "claude", model: "invented-model" });
 const prompt = "Check the open PRs on acme/app and say which are stuck.";
 
 /** The owner's own message in `chatId`, in a turn only the owner read, and a schedule from it. */

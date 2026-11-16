@@ -45,7 +45,7 @@ type BudgetError = KinChatError | PersistenceSqlError;
 export type HeldBy = "org" | "teammates";
 type Admission = {
   readonly allowed: boolean;
-  readonly cheapOnly: boolean;
+  readonly atLimit: boolean;
   readonly nextReset: number;
   readonly remaining: number;
   readonly heldBy: HeldBy | null;
@@ -363,12 +363,12 @@ const make = Effect.gen(function* () {
         : ` Used today: ${leads.map((row) => `${row.name} ${Math.round((row.leadUnits / total) * 100)}%`).join(", ")}.`;
     const body =
       heldBy === "warning"
-        ? `Your agents have used 80% of today's limit. At the limit only your own messages run, on the cheaper model, until ${at}. You can raise or remove the limit in Settings.`
+        ? `Your agents have used 80% of today's limit. At the limit only your own messages run until ${at}. You can raise or remove the limit in Settings.`
         : heldBy === "teammates"
           ? teammateLimit
             ? `Today's limit for teammates' requests is used up, so they wait until ${at}${list === "" ? "" : `: ${list}`}. Raise or remove it in Settings to run them now.`
             : `Teammates' requests have used what's left of today's limit, so they wait until ${at}${list === "" ? "" : `: ${list}`}. Your own messages still run. Raise or remove the limit in Settings to run them now.`
-          : `Today's limit for your agents is used up. Your own messages still run, on the cheaper model; ${list === "" ? "other work" : `this waits: ${list}. More`} waits until ${at}.${used} Raise or remove the limit in Settings to run it all now.`;
+          : `Today's limit for your agents is used up. Your own messages still run; ${list === "" ? "other work" : `this waits: ${list}. More`} waits until ${at}.${used} Raise or remove the limit in Settings to run it all now.`;
     const posted = yield* system({
       orgId,
       chatId: KinChatId.make(lead.ownerChatId),
@@ -500,7 +500,7 @@ const make = Effect.gen(function* () {
             const allowed = budget.teammates < teammateLimit;
             return {
               allowed,
-              cheapOnly: false,
+              atLimit: false,
               nextReset,
               remaining: left(teammateLimit, budget.teammates),
               heldBy: allowed ? null : ("teammates" as const),
@@ -518,7 +518,7 @@ const make = Effect.gen(function* () {
                 (priority === "P1" || (priority === "P2" ? remaining >= 0.2 : remaining > 0.4)));
           return {
             allowed,
-            cheapOnly: remaining === 0,
+            atLimit: remaining === 0,
             nextReset,
             remaining,
             heldBy: allowed ? null : asker === "owner" ? ("org" as const) : ("teammates" as const),

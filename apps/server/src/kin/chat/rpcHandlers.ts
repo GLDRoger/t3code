@@ -63,7 +63,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
   // The host's settings name each model's provider driver; Kin's own layers don't carry them.
   const settings = yield* Effect.serviceOption(ServerSettingsService);
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
-  // What checks or reads an agent's models: the host's settings, and its providers when known.
+  // What checks or reads an agent's model: the host's settings, and its providers when known.
   const withHostModels = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     Option.isNone(settings)
       ? Effect.fail(unavailable)
@@ -340,7 +340,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               domain: input.domain,
               charter: input.charter,
               intro: input.intro,
-              models: input.models,
+              model: input.model,
               workerProjects: input.workerProjects ?? [],
             }).pipe(
               Effect.provideContext(kin.value.services.value),
@@ -504,7 +504,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
             return yield* LeadProvision.setAgentDefaults(
               { _tag: "session", session },
               input.orgId,
-              input.models,
+              input.model,
             ).pipe(withHostModels, Effect.provideContext(kin.value.services.value));
           }),
         ),

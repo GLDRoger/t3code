@@ -99,7 +99,7 @@ Create the lead with that session as its owner:
 ```bash
 KIN_ENABLED=true node ~/kin-current/apps/server/dist/bin.mjs kin lead create --base-dir ~/.t3 \
   --session <session id> --name <lead name> \
-  --strong claudeAgent:<model> --cheap claudeAgent:<model> \
+  --model claudeAgent:<model> \
   --worker-project <project id>
 ```
 
@@ -107,7 +107,7 @@ The lead starts at L0 with a direct chat to you. Models are `<provider instance 
 
 A charter says what the lead does, in the words the lead should use with you. Write what it does itself, not what it hands away: a lead told it "never does another lead's work" will send you to ask someone else. For a chief of staff, something like: "The owner's chief of staff and front door. Takes any request and answers it from what it can read: repos, PRs, CI and memory. Keeps one agenda across leads, runs reminders and routines, and sends a short daily brief." Change one later with `kin lead charter <agent id> --charter <text>`; it applies at the lead's next turn.
 
-Running it again with the same name and domain changes nothing and prints the existing lead. A host can run several live leads: give each its own `--domain <slug>` (default `engineering`) and `--charter <text>`. When `--strong` and `--cheap` are left out, a new lead copies the first live lead's models. It's safe while `kin-server` runs; a phone that's already open shows the new chat once it reconnects.
+Running it again with the same name and domain changes nothing and prints the existing lead. A host can run several live leads: give each its own `--domain <slug>` (default `engineering`) and `--charter <text>`. When `--model` is left out, a new lead uses the company default, else the first live lead's model. Older notes say `--strong`, which still works. It's safe while `kin-server` runs; a phone that's already open shows the new chat once it reconnects.
 
 - `kin lead list` shows every lead with its level, owner chat and whether it's retired.
 - `kin lead character` lists each lead's character doc; `--agent <agent id> --file <path>` or `--from-dir <dir>` sets characters from Markdown files on the host, as a new version each. See [Setting agents' characters](../../../docs/operations/kin-characters.md).

@@ -106,9 +106,9 @@ Tap an agent's name at the top of its chat, or in any message, to open its page.
 everything there; anyone else sees a short card with what the agent looks after and a way to
 message it.
 
-- **Model.** Each agent runs on a Claude model: a stronger one for your messages and urgent work,
-  a cheaper one for the rest. A change applies from its next reply. You can also say it in a
-  chat: "run Finance on Sonnet". New agents start on the company default, set under
+- **Model.** Each agent runs on one model, with one effort, for everything it does. A change
+  applies from its next reply. Medium or High effort is recommended: Low is too shallow, and
+  anything above High tends to over-think. You can also say it in a chat: "run Finance on Sonnet". New agents start on the company default, set under
   **Settings → Agents**. If a model goes away from your server, the agent runs on the
   default and its page says so. The page also shows what the agent has spent this month.
 - **Character.** Read it, **Edit** it, open its **History** to bring an older one back, or **Ask it
@@ -319,7 +319,7 @@ Owners and co-owners manage them under **Settings → Check-ins**: add one, turn
 now**. Or say it in a chat: "check in at 11 instead".
 
 **Settings → Company details → Daily limit** caps how much work your agents do each day. Once
-they reach it, only your urgent messages run until midnight.
+they reach it, only your urgent messages run, on the agent's usual model, until midnight.
 
 ## Memory
 

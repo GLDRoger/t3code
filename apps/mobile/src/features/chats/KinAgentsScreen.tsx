@@ -6,7 +6,7 @@ import {
   kinAgentGroups,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
-import { EnvironmentId, KinOrgId, type KinAgentModels } from "@t3tools/contracts";
+import { EnvironmentId, KinOrgId, type ModelSelection } from "@t3tools/contracts";
 import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -27,7 +27,13 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { kinClient } from "./state/kinClient";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { KinAgentModelRow, useKinAgentModelOptions } from "./KinAgentModelRow";
+import {
+  KinAgentEffortAdvice,
+  KinAgentEffortRow,
+  KinAgentModelRow,
+  kinPickedModel,
+  useKinAgentModelOptions,
+} from "./KinAgentModelRow";
 import { kinRetiredWhenNow, useKinAgentRetire } from "./state/useKinAgentRetire";
 
 export type KinAgentsParams = { readonly environmentId: string; readonly orgId: string };
@@ -170,7 +176,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
   );
 }
 
-/** The models new agents start on; each agent's own are on its page. */
+/** The model new agents start on; each agent's own is on its page. */
 function KinAgentDefaults(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
@@ -182,11 +188,11 @@ function KinAgentDefaults(props: {
   const save = useAtomCommand(kinClient.agentDefaultsSet, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const base = defaults?.models ?? null;
+  const base = defaults?.model ?? null;
   if (base === null) return null;
-  const choose = (models: KinAgentModels) => {
+  const choose = (model: ModelSelection) => {
     setBusy(true);
-    void save({ environmentId, input: { orgId, models } }).then((outcome) => {
+    void save({ environmentId, input: { orgId, model } }).then((outcome) => {
       setBusy(false);
       setProblem(
         AsyncResult.isFailure(outcome)
@@ -197,24 +203,30 @@ function KinAgentDefaults(props: {
     });
   };
   return (
-    <ListSection
-      title={KIN_AGENT_PAGE.defaults}
-      footer={
-        problem ??
-        `${KIN_AGENT_PAGE.defaultsDetail}${defaults?.chosen === false ? " Until you choose, they start on your first agent's." : ""}`
-      }
-    >
-      {(["strong", "cheap"] as const).map((role, index) => (
+    <View className="gap-2">
+      <ListSection
+        title={KIN_AGENT_PAGE.defaults}
+        footer={
+          problem ??
+          `${KIN_AGENT_PAGE.defaultsDetail}${defaults?.chosen === false ? " Until you choose, they start on your first agent's." : ""}`
+        }
+      >
         <KinAgentModelRow
-          key={role}
-          label={KIN_AGENT_PAGE[role]}
-          value={base[role]}
+          label={KIN_AGENT_PAGE.model}
+          value={base}
           options={options}
           disabled={busy}
-          borderTop={index > 0}
-          onPick={(selection) => choose({ ...base, [role]: selection })}
+          onPick={(selection) => choose(kinPickedModel(options, selection))}
         />
-      ))}
-    </ListSection>
+        <KinAgentEffortRow
+          label={KIN_AGENT_PAGE.effort}
+          value={base}
+          options={options}
+          disabled={busy}
+          onPick={choose}
+        />
+      </ListSection>
+      <KinAgentEffortAdvice value={base} options={options} />
+    </View>
   );
 }

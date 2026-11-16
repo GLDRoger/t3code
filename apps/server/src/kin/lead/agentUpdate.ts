@@ -13,6 +13,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { turnAsker } from "./Audience.ts";
 import { leadsIn, update } from "./KinLeadProvision.ts";
+import { kinAgentModels } from "./leadModels.ts";
 import type { resolveLead } from "./LeadMemory.ts";
 
 export const AgentUpdateInput = Schema.Struct({
@@ -28,7 +29,7 @@ const refused = (reason: KinChatError["reason"], message: string) =>
 const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9.]+/g, "");
 
 /**
- * The Claude model this host offers that the owner's words name ("Sonnet", "opus 4.6"), with an
+ * The model this host offers an agent that the owner's words name ("Sonnet", "opus 4.6"), with an
  * effort when that model has one by that name. Exact ids first, then the newest listed match.
  */
 export const matchModel = (
@@ -37,11 +38,7 @@ export const matchModel = (
   effort: string | undefined,
   current: ModelSelection,
 ): ModelSelection | string => {
-  const offered = providers
-    .filter((provider) => provider.driver === "claudeAgent" && provider.enabled)
-    .flatMap((provider) =>
-      provider.models.map((model) => ({ instanceId: provider.instanceId, model })),
-    );
+  const offered = kinAgentModels(providers);
   const wanted = squash(words);
   const found =
     offered.find(({ model }) => model.slug === words || model.aliases?.includes(words)) ??
@@ -51,7 +48,7 @@ export const matchModel = (
         ({ model }) => squash(model.name).includes(wanted) || squash(model.slug).includes(wanted),
       );
   if (found === undefined && words !== current.model)
-    return `This server offers no Claude model called ${words}. It has: ${offered
+    return `This server offers agents no model called ${words}. It has: ${offered
       .filter(({ model }) => model.isLegacy !== true)
       .map(({ model }) => model.name)
       .join(", ")}.`;
@@ -97,18 +94,13 @@ export const updateAgent = Effect.fn("KinAgentUpdate.update")(function* (
     return yield* refused("unavailable", "Kin can't change models from here right now.");
   const registry = yield* Effect.serviceOption(ProviderRegistry);
   const providers = Option.isSome(registry) ? yield* registry.value.getProviders : [];
-  const strong = matchModel(
-    providers,
-    input.model ?? agent.models.strong.model,
-    input.effort,
-    agent.models.strong,
-  );
-  if (typeof strong === "string") return yield* refused("invalid_state", strong);
+  const model = matchModel(providers, input.model ?? agent.model.model, input.effort, agent.model);
+  if (typeof model === "string") return yield* refused("invalid_state", model);
   yield* update({
     editor: { _tag: "person", personId: asker },
     orgId: lead.orgId,
     agentId: agent.agentId,
-    fields: { models: { strong, cheap: agent.models.cheap } },
+    fields: { model },
   }).pipe(
     Effect.provideService(ServerSettingsService, settings.value),
     Effect.catchTags({
@@ -118,8 +110,8 @@ export const updateAgent = Effect.fn("KinAgentUpdate.update")(function* (
         ),
     }),
   );
-  const effort = strong.options?.find((option) => option.id === "effort")?.value;
+  const effort = model.options?.find((option) => option.id === "effort")?.value;
   return {
-    saved: `${agent.name} runs on ${strong.model}${typeof effort === "string" ? ` at ${effort} effort` : ""} from its next reply.`,
+    saved: `${agent.name} runs on ${model.model}${typeof effort === "string" ? ` at ${effort} effort` : ""} from its next reply.`,
   };
 });
