@@ -10,7 +10,7 @@ import {
   kinGitHubSheet,
   kinGitHubWatchLine,
 } from "@t3tools/client-runtime/kin/kinGitHub";
-import type { EnvironmentId, KinGitHubWatch, KinOrgId } from "@t3tools/contracts";
+import type { EnvironmentId, KinGitHubRepo, KinGitHubWatch, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -164,6 +164,14 @@ function WatchedRepos(props: {
   );
 }
 
+/** "Fork · Your @-mention calls an agent", or nothing. */
+function repoNote(repo: KinGitHubRepo): string | undefined {
+  const parts: Array<string> = [];
+  if (repo.fork) parts.push(WATCH.fork);
+  if (repo.mentions) parts.push(WATCH.mentions);
+  return parts.length === 0 ? undefined : parts.join(" · ");
+}
+
 function RepoRows(props: {
   readonly target: KinConnectionsTarget;
   readonly onProblem: (problem: string | null) => void;
@@ -200,11 +208,7 @@ function RepoRows(props: {
         <ListToggleRow
           key={repo.repo}
           label={repo.repo}
-          description={
-            [repo.fork ? WATCH.fork : null, repo.mentions ? WATCH.mentions : null]
-              .filter((part) => part !== null)
-              .join(" · ") || undefined
-          }
+          description={repoNote(repo)}
           value={repo.watched}
           onValueChange={(watched) => void actions.watch(repo, watched).then(settle)}
         />
