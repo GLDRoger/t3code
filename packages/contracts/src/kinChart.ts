@@ -108,7 +108,8 @@ export type KinChartSpec = typeof KinChartFields.Type;
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
 
-const realDay = (label: string) => {
+/** A `YYYY-MM-DD` the calendar has; `2026-02-30` is not one. */
+export const kinRealDay = (label: string) => {
   const match = DAY.exec(label);
   if (match === null) return false;
   const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
@@ -217,7 +218,7 @@ export function kinChartProblem(chart: KinChartSpec): string | null {
     if (chars(label) > KIN_CHART_MAX_LABEL)
       return `The label "${label}" is too long: keep each label to ${KIN_CHART_MAX_LABEL} characters.`;
   }
-  if (chart.labelType === "day" && !labels.every(realDay))
+  if (chart.labelType === "day" && !labels.every(kinRealDay))
     return 'With labelType "day" every label is a real date written YYYY-MM-DD, such as "2026-11-03". Use labelType "category" for any other label.';
   if (chart.labelType === "month" && !labels.every((label) => MONTH.test(label)))
     return 'With labelType "month" every label is written YYYY-MM, such as "2026-11". Use labelType "category" for any other label.';

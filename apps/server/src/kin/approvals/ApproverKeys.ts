@@ -144,7 +144,7 @@ const make = Effect.gen(function* () {
     if (
       person === undefined ||
       caller.session.scopes.includes(AuthKinChatScope) ||
-      !(yield* roles.isOwner(person))
+      !(yield* roles.isOwnerLevel(person))
     )
       return yield* fail("not_owner", "Only the owner chooses the phones that approve for Kin.");
     return person;

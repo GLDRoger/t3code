@@ -480,7 +480,11 @@ export function kinApprovalFailure(
       };
     case "not_owner":
     case "session_mismatch":
-      return { text: "Only the owner can decide this.", refresh: false, reenrol: false };
+      return {
+        text: "Only the owner or a co-owner can decide this.",
+        refresh: false,
+        reenrol: false,
+      };
     case "not_found":
       return { text: "This request is gone.", refresh: true, reenrol: false };
     case "unavailable":

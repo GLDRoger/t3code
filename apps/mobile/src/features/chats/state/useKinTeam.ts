@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_TEAM_NO_EDITS,
@@ -21,9 +22,11 @@ import type {
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
+import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { kinClient } from "./kinClient";
 import { useKinHostAt } from "./useKinHost";
+import { useKinProfiles } from "./useKinProfiles";
 
 export interface KinTeamTarget {
   readonly environmentId: EnvironmentId;
@@ -76,6 +79,7 @@ function actionsFor(target: KinTeamTarget): KinTeamActions {
     createInvite: (input) => send(kinClient.inviteCreate, { environmentId, input }),
     revokeInvite: (input) => send(kinClient.inviteCancel, { environmentId, input }),
     removeAccess: (input) => send(kinClient.personRemoveAccess, { environmentId, input }),
+    setAccess: (input) => send(kinClient.personSetAccess, { environmentId, input }),
     update: (change) => appAtomRegistry.set(edits, change(appAtomRegistry.get(edits))),
     refresh: () => refreshKinTeam(target),
   });
@@ -91,23 +95,33 @@ export function useKinTeam(target: KinTeamTarget) {
   const people = useAtomValue(allowed ? peopleAtom : noPeopleAtom);
   const invites = useAtomValue(allowed ? invitesAtom : noInvitesAtom);
   const edits = useAtomValue(teamEdits(`${environmentId}:${orgId}`));
+  const profiles = useKinProfiles(environmentId, orgId).held?.profiles;
   const host = useKinHostAt(environmentId);
   const { personId } = kinFeedViewer(
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
     orgId,
   );
+  const viewer = useAtomValue(kinAccessAtom(connectionAtomRuntime, environmentId));
   // What was last read stays up while it is read again.
   const heldPeople = Option.getOrNull(AsyncResult.value(people));
   const heldInvites = Option.getOrNull(AsyncResult.value(invites));
   const list: KinTeamList | null =
     heldPeople === null || heldInvites === null
       ? null
-      : { people: heldPeople.people, joined: heldPeople.joined, invites: heldInvites.invites };
+      : {
+          people: heldPeople.people,
+          joined: heldPeople.joined,
+          places: heldPeople.places,
+          invites: heldInvites.invites,
+          profiles,
+        };
   return {
     allowed,
     list,
     failed: list === null && (AsyncResult.isFailure(people) || AsyncResult.isFailure(invites)),
     ownerPersonId: personId,
+    /** The viewer's own kind; a co-owner acts on members only. */
+    viewer: viewer ?? "member",
     edits,
     actions: actionsFor(target),
     refresh: () => void refreshKinTeam(target),

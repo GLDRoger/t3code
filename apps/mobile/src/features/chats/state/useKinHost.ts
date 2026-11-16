@@ -12,6 +12,7 @@ import { environmentPresentations } from "../../../state/presentation";
 import { kinCachedOrgsAtom, kinClient, markKinHostKnown } from "./kinClient";
 import {
   classifyKinProbe,
+  kinHostCandidate,
   kinHostIdToSave,
   resolveKinHost,
   resolveKinHostAt,
@@ -40,10 +41,9 @@ const saveKinHostAtom = connectionAtomRuntime.fn((environmentId: EnvironmentId, 
 );
 
 const kinHostCandidates = (get: Atom.AtomContext): ReadonlyArray<KinHostCandidate> =>
-  [...get(environmentPresentations.presentationsAtom)].map(([environmentId, presentation]) => ({
-    environmentId,
-    connected: presentation.connection.phase === "connected",
-  }));
+  [...get(environmentPresentations.presentationsAtom)].map(([environmentId, presentation]) =>
+    kinHostCandidate(environmentId, presentation.connection),
+  );
 
 const kinProbe = (get: Atom.AtomContext) => (environmentId: EnvironmentId) =>
   classifyKinProbe(get(kinClient.orgs({ environmentId, input: {} })));

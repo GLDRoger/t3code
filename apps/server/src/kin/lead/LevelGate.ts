@@ -8,8 +8,10 @@ import {
   type KinReaction,
   type KinReactionEmoji,
   type KinWidget,
+  KinWidgetId,
   KinAgentId,
   KinOrgId,
+  type KinPersonId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -26,6 +28,9 @@ import {
   PRIVATE_DESTINATION,
   SHARED_ELSEWHERE,
   SHARED_OTHER_CHAT,
+  OTHERS_CHAT,
+  behindAllIn,
+  ownerAlone,
   SHARED_REFUSAL,
   aborted,
   askedIn,
@@ -33,6 +38,8 @@ import {
   effectiveAudience,
 } from "./Audience.ts";
 import * as KinLevels from "./KinLevels.ts";
+import { directKey } from "./LeadAccess.ts";
+import { unreadableBy } from "../work/teamView.ts";
 
 type PostInput = KinMessagesSendInput & { readonly intent: KinAgentIntent };
 type WidgetInput = Parameters<KinChatService["Service"]["upsertWidget"]>[1];
@@ -52,6 +59,21 @@ export class KinLevelGate extends Context.Service<
       agent: AgentIdentity,
       input: PostInput,
     ) => Effect.Effect<KinMessage, KinChatError>;
+    /**
+     * A message written for one teammate, in their own direct chat with the lead. An owner-level
+     * turn may send it, though they are not the owner, when its text holds nothing they can't
+     * see (`unreadableBy`): a nudge, a relayed answer, a question about their work.
+     */
+    readonly postTo: (
+      agent: AgentIdentity,
+      personId: KinPersonId,
+      input: PostInput,
+    ) => Effect.Effect<KinMessage, KinChatError>;
+    /** The turn's one reply grows by its next segment, gated like the post that began it. */
+    readonly extend: (
+      agent: AgentIdentity,
+      input: Parameters<KinChatService["Service"]["extendReply"]>[1],
+    ) => Effect.Effect<KinMessage, KinChatError>;
     readonly upsertWidget: (
       agent: AgentIdentity,
       input: WidgetInput,
@@ -66,6 +88,11 @@ export class KinLevelGate extends Context.Service<
       bind?: (widget: KinWidget) => Effect.Effect<void, SqlError.SqlError>,
     ) => Effect.Effect<KinWidget, KinChatError>;
     /** A doc card, gated like a post. */
+    /** Closes the agent's own unanswered choice cards that a newer card replaced. */
+    readonly closeReplaced: (
+      agent: Turn,
+      widgetIds: ReadonlyArray<string>,
+    ) => Effect.Effect<void, KinChatError>;
     readonly showCard: (
       agent: AgentIdentity,
       input: Parameters<KinChatService["Service"]["showCard"]>[1],
@@ -176,11 +203,26 @@ const make = Effect.gen(function* () {
    * The level is the lower of the target chat's and the asking wake-up's, so a chat can't post
    * through the lead where it couldn't itself.
    */
+  /** Whether `chatId` is this person's own direct chat with the lead, and they are in it. */
+  const theirDirect = Effect.fn("KinLevelGate.theirDirect")(
+    function* (agent: AgentIdentity, personId: KinPersonId, chatId: KinChatId) {
+      const rows = yield* sql`SELECT 1 FROM kin_chats c
+        JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+          AND m.principal_kind = 'person' AND m.person_id = ${personId} AND m.left_at IS NULL
+        WHERE c.org_id = ${agent.orgId} AND c.chat_id = ${chatId} AND c.kind = 'direct'
+          AND c.direct_key = ${directKey(personId, agent.agentId)}
+        LIMIT 1`;
+      return rows.length > 0;
+    },
+    Effect.mapError(toPersistenceSqlError("KinLevelGate.theirDirect")),
+  );
+
   const gated = <A, E>(
     operation: string,
     agent: AgentIdentity,
     chatId: KinChatId,
     allowed: Effect.Effect<A, E>,
+    to?: { readonly personId: KinPersonId; readonly text: string },
   ): Effect.Effect<A, KinChatError> =>
     // A turn found shared stays shared: settled before the write's transaction, which a
     // refusal rolls back. The destination is checked again inside it.
@@ -230,7 +272,22 @@ const make = Effect.gen(function* () {
                   reason: "not_allowed",
                   message: SHARED_ELSEWHERE,
                 });
-              if (where === "private") return yield* new PrivateDestination(turn);
+              // A message for a person goes only to their own direct chat: it skips the floor.
+              if (to !== undefined && !(yield* theirDirect(agent, to.personId, chatId)))
+                return where === "private"
+                  ? yield* new PrivateDestination(turn)
+                  : yield* notAllowed;
+              if (where === "private") {
+                if (to === undefined) return yield* new PrivateDestination(turn);
+                const why = yield* unreadableBy(agent.orgId, to.personId, to.text).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                );
+                if (why !== undefined)
+                  return yield* new KinChatError({
+                    reason: "not_allowed",
+                    message: `Nothing was sent: ${why}. Say it without that, or tell the owner.`,
+                  });
+              }
               return yield* allowed;
             }),
           )
@@ -280,6 +337,15 @@ const make = Effect.gen(function* () {
         ))
       )
         return yield* new KinChatError({ reason: "not_allowed", message: SHARED_OTHER_CHAT });
+      // A co-owner's owner-tier turn reads the chats they are in, never the owner's own.
+      if (
+        !shared &&
+        !(yield* ownerAlone(turn).pipe(Effect.provideService(SqlClient.SqlClient, sql))) &&
+        !(yield* behindAllIn(turn, input.chatId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        ))
+      )
+        return yield* new KinChatError({ reason: "not_allowed", message: OTHERS_CHAT });
       return yield* chat.read(agent, input);
     },
     Effect.catchIf(
@@ -300,6 +366,25 @@ const make = Effect.gen(function* () {
     post: Effect.fn("KinLevelGate.post")((agent, input) =>
       gated("gated post", agent, input.chatId, chat.send(agent, input)),
     ),
+    // Words only: a file or a doc reference could carry what the text check can't read.
+    postTo: Effect.fn("KinLevelGate.postTo")((agent, personId, input) =>
+      gated(
+        "gated message",
+        agent,
+        input.chatId,
+        chat.send(agent, {
+          chatId: input.chatId,
+          clientMessageId: input.clientMessageId,
+          body: input.body,
+          intent: input.intent,
+          forChat: true,
+        }),
+        { personId, text: input.body },
+      ),
+    ),
+    extend: Effect.fn("KinLevelGate.extend")((agent, input) =>
+      gated("gated reply", agent, input.chatId, chat.extendReply(agent, input)),
+    ),
     upsertWidget: Effect.fn("KinLevelGate.upsertWidget")((agent, input) =>
       gated("gated widget upsert", agent, input.chatId, chat.upsertWidget(agent, input)),
     ),
@@ -309,6 +394,23 @@ const make = Effect.gen(function* () {
         agent,
         input.chatId,
         bind === undefined ? chat.ask(agent, input) : chat.ask(agent, input).pipe(Effect.tap(bind)),
+      ),
+    ),
+    closeReplaced: Effect.fn("KinLevelGate.closeReplaced")(
+      function* (agent, widgetIds) {
+        for (const widgetId of widgetIds)
+          yield* chat.closeReplaced({ orgId: agent.orgId, widgetId: KinWidgetId.make(widgetId) });
+      },
+      Effect.catchIf(
+        (error) => !isChatError(error),
+        (error) =>
+          Effect.logError("Kin closing a replaced card failed", error).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new KinChatError({ reason: "unavailable", message: "Kin is unavailable." }),
+              ),
+            ),
+          ),
       ),
     ),
     showCard: Effect.fn("KinLevelGate.showCard")((agent, input) =>

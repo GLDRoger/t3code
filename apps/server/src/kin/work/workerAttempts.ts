@@ -582,6 +582,17 @@ export const sensitiveShown = Effect.fn("KinWorkerAttempts.sensitiveShown")(func
     VALUES (${input.orgId}, ${input.wakeupId}, ${at}) ON CONFLICT (org_id, wakeup_id) DO NOTHING`;
 });
 
+/** Whether the turn has shown the agent anything sensitive: what it writes now may carry it. */
+export const turnSensitive = Effect.fn("KinWorkerAttempts.turnSensitive")(function* (
+  orgId: KinOrgId,
+  wakeupId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_wakeup_sensitive_reads
+    WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} LIMIT 1`;
+  return rows.length > 0;
+});
+
 /** A refusal that quotes something sensitive, so the tool marks the turn as a result would. */
 export class SensitiveRefusal extends KinChatError {}
 // @effect-diagnostics-next-line instanceOfSchema:off -- the subclass, not the schema, marks it.
@@ -602,6 +613,23 @@ export const entriesShown = Effect.fn("KinWorkerAttempts.entriesShown")(function
   ];
   const found = yield* sql`SELECT 1 FROM kin_records r
     WHERE r.org_id = ${input.orgId} AND ${sql.or(named)} AND ${sensitiveNow(sql)} LIMIT 1`;
+  if (found.length > 0) yield* sensitiveShown(input);
+});
+
+/**
+ * The same for a prompt that shows what an earlier turn wrote, such as a reminder or a scheduled
+ * task, when that turn had been shown something sensitive: the words may carry it.
+ */
+export const sourcesShown = Effect.fn("KinWorkerAttempts.sourcesShown")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: string;
+  readonly eventIds: ReadonlyArray<string>;
+}) {
+  if (input.eventIds.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  const found = yield* sql`SELECT 1 FROM kin_events e
+    JOIN kin_wakeup_sensitive_reads w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+    WHERE e.org_id = ${input.orgId} AND e.event_id IN ${sql.in(input.eventIds)} LIMIT 1`;
   if (found.length > 0) yield* sensitiveShown(input);
 });
 

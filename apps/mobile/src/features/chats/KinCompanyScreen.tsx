@@ -10,9 +10,11 @@ import {
   type KinCompanyDraft,
   type KinCompanyFieldId,
 } from "@t3tools/client-runtime/kin/kinCompanyProfile";
+import { KIN_BRAND } from "@t3tools/client-runtime/kin/kinBrand";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
 import { EnvironmentId, KinOrgId, type KinCompanyProfile } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 import { useState } from "react";
 import { View } from "react-native";
@@ -20,6 +22,7 @@ import { View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -29,6 +32,8 @@ import {
   KinWorkPrivateMark,
   KinWorkTextField,
 } from "./components/KinWorkPieces";
+import { KinBrandForm, KinBrandRows } from "./KinBrand";
+import { KinTemplateRows } from "./KinTemplates";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinCompanyProfile } from "./state/useKinMoney";
@@ -99,6 +104,8 @@ function Profile(
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [brandSaved, setBrandSaved] = useState(false);
+  const [editingBrand, setEditingBrand] = useState(false);
   const save = async (typed: KinCompanyDraft) => {
     const checked = kinCompanyInput(orgId, profile, typed);
     setProblem(null);
@@ -127,6 +134,20 @@ function Profile(
       </Text>
     </View>
   );
+  if (editingBrand) {
+    return (
+      <KinBrandForm
+        environmentId={environmentId}
+        orgId={orgId}
+        profile={profile}
+        onRefresh={props.onRefresh}
+        onDone={(done) => {
+          setEditingBrand(false);
+          setBrandSaved(done);
+        }}
+      />
+    );
+  }
   if (draft === null) {
     const sections = kinCompanyRead(profile).filter((section) => section.rows.length > 0);
     return (
@@ -182,6 +203,23 @@ function Profile(
             </ListSection>
           ))
         )}
+        <CompanyTimeZone environmentId={environmentId} orgId={orgId} />
+        {brandSaved ? <Notice message={KIN_BRAND.saved} icon="checkmark.circle" /> : null}
+        <KinBrandRows
+          environmentId={environmentId}
+          orgId={orgId}
+          profile={profile}
+          onRefresh={props.onRefresh}
+          onEdit={
+            canEdit
+              ? () => {
+                  setBrandSaved(false);
+                  setEditingBrand(true);
+                }
+              : null
+          }
+        />
+        <KinTemplateRows environmentId={environmentId} orgId={orgId} />
       </KinWorkFrame>
     );
   }
@@ -221,5 +259,25 @@ function Profile(
         </ListSection>
       ))}
     </KinWorkFrame>
+  );
+}
+
+/** What check-ins, due days and the agents' times follow; the owner's phone keeps it set. */
+function CompanyTimeZone(props: KinWorkTarget) {
+  const result = useAtomValue(
+    kinClient.workZone({ environmentId: props.environmentId, input: { orgId: props.orgId } }),
+  );
+  const zone = Option.getOrNull(AsyncResult.value(result));
+  if (zone === null) return null;
+  return (
+    <ListSection title={KIN_COMPANY.timeZone}>
+      <ListRowLayout
+        icon="clock"
+        label={zone.timeZone}
+        description={
+          zone.fromHost === true ? KIN_COMPANY.timeZoneFromHost : KIN_COMPANY.timeZoneUse
+        }
+      />
+    </ListSection>
   );
 }

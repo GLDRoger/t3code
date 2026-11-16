@@ -31,6 +31,7 @@ import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runti
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
+import { kinPickablePeople } from "./kinTeam.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
 
 export const KIN_WORK_TITLE = "Work";
@@ -38,6 +39,7 @@ export const KIN_WORK_NEW = "New task";
 export const KIN_WORK_SEARCH_PLACEHOLDER = "Search tasks";
 export const KIN_WORK_LOAD_FAILED = "Couldn't load Work";
 export const KIN_WORK_STALE = "Offline. Showing the last update.";
+export const KIN_WORK_REFRESH_FAILED = "Couldn't refresh. Showing the last update.";
 export const KIN_WORK_ONLY_OWNER = {
   title: "Only the owner can open this",
   detail: "Work is shown to the person who runs this workspace for now.",
@@ -68,6 +70,8 @@ export interface KinWorkNames {
   /** Agents the host marks retired: named as before, with nothing running. Absent reads as none. */
   readonly retired?: ReadonlySet<string>;
   readonly me: KinPersonId | null;
+  /** The company's owner; absent from a host older than kinds, where the reader reads as owner. */
+  readonly owner?: KinPersonId | null;
   /** The owner's time zone, where an all-day due date is a calendar day. Null until read. */
   readonly zone: string | null;
 }
@@ -84,6 +88,7 @@ export function kinWorkNames(input: {
     agents: new Map((org?.agents ?? []).map((agent) => [agent.agentId, agent.displayName])),
     retired: kinRetiredAgentIds(input.orgs, input.orgId),
     me: input.orgs?.me.find((me) => me.orgId === input.orgId)?.personId ?? null,
+    owner: input.people?.find((person) => person.access === "owner")?.personId ?? null,
     zone: input.zone,
   };
 }
@@ -97,11 +102,21 @@ export const kinWorkSamePrincipal = (a: KinWorkPrincipal | null, b: KinWorkPrinc
 const isMe = (who: KinWorkPrincipal, names: KinWorkNames) =>
   who._tag === "person" && who.personId === names.me;
 
+/** "you" to the owner; to anyone else the owner by name, so "you" never means someone else. */
+const ownerWord = (names: Pick<KinWorkNames, "me" | "owner" | "people">) =>
+  names.owner == null || names.owner === names.me
+    ? null
+    : (names.people.get(names.owner) ?? "the owner");
+
 /** "You", a name, or a plain stand-in for someone the directory no longer lists. */
 export function kinWorkName(who: KinWorkPrincipal, names: KinWorkNames, you = "You"): string {
   if (who._tag === "agent") return names.agents.get(who.agentId) ?? "An agent";
   return isMe(who, names) ? you : (names.people.get(who.personId) ?? "A teammate");
 }
+
+/** A name inside a sentence: the stand-ins "An agent" and "A teammate" lose their capital. */
+export const kinMidSentence = (name: string) =>
+  name === "An agent" || name === "A teammate" ? name.toLowerCase() : name;
 
 /** The task's holder is an agent its owner retired, so nobody is doing it. */
 const kinWorkRetired = (who: KinWorkPrincipal, names: KinWorkNames): boolean =>
@@ -501,17 +516,19 @@ export function kinWorkRow(
   const day = kinWorkClosed(record.state) ? null : kinWorkDueText(record, names, now);
   const due = day === null ? null : `Due ${day}`;
   const ownerRetired = kinWorkRetired(record.owner, names);
+  // What a narrow row keeps when it cuts the end off: when it is due and where it stands first,
+  // its key last. "Not started" is what the empty circle already says.
   const parts = [
-    record.key,
-    about,
-    ownerRetired ? `${owner} (retired)` : owner,
+    due,
+    record.state === "open" && !record.working ? null : status,
     record.side === "theirs" && !kinWorkClosed(record.state) && within?.sided !== true
       ? "They owe this"
       : null,
-    status,
-    due,
+    about,
+    ownerRetired ? `${owner} (retired)` : owner,
     record.pullRequest === null ? null : `PR #${record.pullRequest.number}`,
     record.confirmed || kinWorkClosed(record.state) ? null : "Suggested",
+    record.key,
   ].filter((part) => part !== null);
   return {
     key: record.key,
@@ -533,7 +550,7 @@ export function kinWorkRow(
     ownerRetired,
     about,
     line: parts.join(" · "),
-    accessibilityLabel: [record.title, ...parts.slice(1), record.late ? "Late" : null]
+    accessibilityLabel: [record.title, ...parts.slice(0, -1), record.late ? "Late" : null]
       .filter((part) => part !== null)
       .join(". "),
   };
@@ -669,8 +686,12 @@ export interface KinWorkItemView {
   };
   /** "Fri 14 Nov"; null with no date. */
   readonly due: string | null;
-  /** "You gave this to Tech lead · Nov 7". */
+  /** "Tech lead gave this to you · Nov 7". */
   readonly given: string | null;
+  /** The one line on why its holder was picked. */
+  readonly reason: string | null;
+  /** Whoever gave it to you, when you can give it back to them; null otherwise. */
+  readonly handBackTo: string | null;
   /** Things worth a line of their own: unconfirmed, private, owed by the other side. */
   readonly remarks: ReadonlyArray<string>;
   readonly notes: string | null;
@@ -695,10 +716,16 @@ export interface KinWorkItemView {
   /** The client or vendor it is for, and its project; null with none. */
   readonly party: KinWorkRef | null;
   readonly project: KinWorkRef | null;
+  /** A task's milestone; null with none. */
+  readonly milestone: KinWorkRef | null;
+  /** A milestone's tasks, open first; null on a task. */
+  readonly tasks: ReadonlyArray<KinWorkRowView> | null;
   /** Who has to do it. Only worth showing with a client. */
   readonly side: KinRecordSide;
   /** Whether it is kept to the owner, and whether that is its own label to change. */
   readonly privacy: KinWorkPrivacy;
+  /** The owner shared it with the team. */
+  readonly shared: boolean;
 }
 
 /** How private something is, and what to say about it beside the label. */
@@ -711,11 +738,24 @@ export interface KinWorkPrivacy {
 
 export const KIN_WORK_PRIVATE = "Private";
 
+/** Giving a task back to whoever gave it, with an optional word on why. */
+export const KIN_WORK_HAND_BACK = {
+  button: "Hand back",
+  title: "Hand back this task?",
+  detail: (to: string) => `It goes back to ${kinMidSentence(to)} to give to someone else.`,
+  reasonLabel: "Why (optional)",
+  reasonPlaceholder: "I'm on the release this week",
+  confirm: "Hand back",
+  failed: "Couldn't hand it back. Try again.",
+} as const;
+
 export function kinWorkPrivacy(input: {
   readonly sensitive: boolean;
   readonly inherited: boolean;
   /** What makes it private when it is not its own label: "its client", "Acme". */
   readonly because: string;
+  /** Who still sees it when its own label is on, where that is more than you. */
+  readonly privateNote?: string;
 }): KinWorkPrivacy {
   return {
     private: input.sensitive || input.inherited,
@@ -723,14 +763,103 @@ export function kinWorkPrivacy(input: {
     note: input.inherited
       ? `Private because ${input.because} is.`
       : input.sensitive
-        ? "Only you see this."
-        : "Your team will be able to see this.",
+        ? (input.privateNote ?? "Only you see this.")
+        : "Not kept from your team.",
   };
 }
 
-const CATEGORY_LABEL = { task: null, issue: "Issue", obligation: "Commitment" } as const;
+export const KIN_WORK_SHARE = {
+  label: "Share with team",
+  on: "Your teammates can see this task and follow it.",
+  off: "Teammates see this only if they hold it, or it's in a project they lead or are on.",
+  failed: "Couldn't change who sees this. Try again.",
+};
 
-const kinWorkActorName = (actor: KinWorkActor, names: KinWorkNames) =>
+/** Who sees a task: the people on it and its project, the whole team, or only the owner's side. */
+export type KinWorkAudience = "people" | "team" | "me";
+
+export const KIN_WORK_MILESTONE = {
+  label: "Milestone",
+  tasks: "Tasks",
+  noTasks: "No tasks under it yet.",
+} as const;
+
+export const KIN_WORK_AUDIENCE = {
+  label: "Who can see this",
+  failed: "Couldn't change who sees this. Try again.",
+} as const;
+
+/**
+ * A task's one privacy control, as the host decides it: private only when marked, and its holder
+ * always sees it; unmarked, its maker, holder and project's people do, and the team once shared.
+ */
+export function kinWorkAudience(
+  view: Pick<KinWorkItemView, "privacy" | "shared" | "project">,
+  /** `share` is owner-level: without it only marking private is the reader's (a project lead). */
+  can: { readonly mark: boolean; readonly share: boolean },
+  names?: Pick<KinWorkNames, "me" | "owner" | "people">,
+) {
+  const people = view.project === null ? "People on it" : "People on it and the project";
+  const current: KinWorkAudience = view.privacy.private ? "me" : view.shared ? "team" : "people";
+  const owner = names === undefined ? null : ownerWord(names);
+  const answer =
+    current === "me"
+      ? `Only ${owner ?? "you"}, co-owners and whoever has it`
+      : current === "team"
+        ? "Everyone on the team"
+        : view.project === null
+          ? `${owner ?? "You"} and whoever has it`
+          : `${owner ?? "You"}, whoever has it and the people on ${view.project.title}`;
+  const label = {
+    people,
+    team: "The whole team",
+    me: owner === null ? "Only me" : `Only ${owner} and co-owners`,
+  };
+  const ids: ReadonlyArray<KinWorkAudience> = can.share
+    ? [
+        ...(can.mark || current === "people" ? ["people" as const] : []),
+        ...(can.mark || current !== "me" ? ["team" as const] : []),
+        ...(can.mark ? ["me" as const] : []),
+      ]
+    : // Un-marking and sharing are the owner's: a lead may only make it more private.
+      can.mark && current !== "me"
+      ? [current, "me"]
+      : [];
+  const choices = ids.map((id) => ({ id, label: label[id] }));
+  return { current, answer, choices: choices.length > 1 ? choices : [] };
+}
+
+/** What picking `to` changes, null where it stays: its private mark, and its sharing. */
+export const kinWorkAudienceMove = (
+  now: { readonly private: boolean; readonly shared: boolean },
+  to: KinWorkAudience,
+) => ({
+  private: now.private === (to === "me") ? null : to === "me",
+  shared: now.shared === (to === "team") ? null : to === "team",
+});
+
+export const KIN_ENTRY_SHARE: typeof KIN_WORK_SHARE = {
+  label: "Share with team",
+  on: "Teammates who can see Money read its figures.",
+  off: "Only the owner and co-owners see this, and the lead of its project.",
+  failed: "Couldn't change who sees this. Try again.",
+};
+
+export const KIN_DOC_SHARE: typeof KIN_WORK_SHARE = {
+  label: "Share with team",
+  on: "Teammates who can see Docs read this one.",
+  off: "Only the owner and co-owners see this doc, and the lead of its project.",
+  failed: "Couldn't change who sees this. Try again.",
+};
+
+const CATEGORY_LABEL = {
+  task: null,
+  issue: "Issue",
+  obligation: "Commitment",
+  meeting: "Meeting",
+} as const;
+
+export const kinWorkActorName = (actor: KinWorkActor, names: KinWorkNames) =>
   actor._tag === "system" ? "Kin" : kinWorkName(actor, names);
 
 const principalFromText = (text: string | null): KinWorkPrincipal | null => {
@@ -747,6 +876,9 @@ const principalFromText = (text: string | null): KinWorkPrincipal | null => {
       : null;
 };
 
+/** "today", "yesterday" or "15 Nov" for an ISO time, on this device's calendar. */
+export const kinWorkDayOfTime = (iso: string, now: Date) => dayFromText(iso, now, null);
+
 /** A due time from the history, as the day it is where the owner is, like the due date itself. */
 const dayFromText = (text: string | null, now: Date, zone: string | null) => {
   if (text === null) return null;
@@ -759,6 +891,8 @@ const ADDED = {
   clients: "added this client",
   contacts: "added this contact",
   projects: "started this project",
+  invoices: "added this invoice",
+  receipts: "made this receipt",
 } as const;
 
 /**
@@ -774,8 +908,11 @@ export function kinWorkChangeText(
   const who = kinWorkActorName(change.by, names);
   const field = (name: string) => change.fields.find((held) => held.field === name);
   if (change.kind === "created") {
+    // The system brought agents' notes over; a person's import is a sheet they brought in.
     return change.via === "import"
-      ? "Brought over from your agents' notes"
+      ? change.by._tag === "system"
+        ? "Brought over from your agents' notes"
+        : "Brought over in an import"
       : `${who} ${ADDED[list]}`;
   }
   if (change.kind === "linked") {
@@ -787,11 +924,14 @@ export function kinWorkChangeText(
   const clauses: Array<string> = [];
   const owner = field("owner");
   const to = principalFromText(owner?.to ?? null);
+  const handedBack = field("handedBack");
   if (to !== null) {
     clauses.push(
-      change.by._tag !== "system" && kinWorkSamePrincipal(change.by, to)
-        ? "took it on"
-        : `gave it to ${kinWorkName(to, names, "you")}`,
+      handedBack !== undefined
+        ? `handed it back to ${kinWorkName(to, names, "you")}${handedBack.to === null ? "" : `: “${handedBack.to}”`}`
+        : change.by._tag !== "system" && kinWorkSamePrincipal(change.by, to)
+          ? "took it on"
+          : `gave it to ${kinWorkName(to, names, "you")}`,
     );
   }
   const state = field("state")?.to;
@@ -805,9 +945,12 @@ export function kinWorkChangeText(
   // A client or a contact has no work to finish: it is closed.
   else if ((state === "done" || state === "dropped") && (list === "clients" || list === "contacts"))
     clauses.push("closed it");
-  else if (state === "done") clauses.push("finished it");
-  else if (state === "dropped") clauses.push("dropped it");
+  else if (state === "done") clauses.push(list === "invoices" ? "marked it paid" : "finished it");
+  else if (state === "dropped")
+    clauses.push(list === "invoices" || list === "receipts" ? "voided it" : "dropped it");
   else if (state === "open") clauses.push("put it back to not started");
+  // An invoice waits on payment from the moment it is issued.
+  else if (state === "waiting" && list === "invoices") clauses.push("issued it");
   else if (state === "waiting" || waitingOn !== null)
     clauses.push(
       waitingOn === null
@@ -952,16 +1095,31 @@ export function kinWorkItemView(
   const row = kinWorkRow(item, names, now);
   const category = item.category === null ? null : CATEGORY_LABEL[item.category];
   const ownerName = kinWorkName(item.owner, names);
-  const giver = item.assignedBy;
+  // The agent that gave it says more than the authority it gave it with.
+  const giver: KinWorkPrincipal | null =
+    item.assignedByAgent === undefined
+      ? item.assignedBy
+      : { _tag: "agent", agentId: item.assignedByAgent };
+  // Handed back, it is with whoever gave it, and the holder's words say why.
+  const lastMove = item.changes.find((change) => change.fields.some((f) => f.field === "owner"));
+  const handBack = lastMove?.fields.find((f) => f.field === "handedBack");
   const given =
-    giver === null || kinWorkSamePrincipal(giver, item.owner)
-      ? null
-      : [
-          `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}`,
-          item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
-        ]
-          .filter((part) => part !== null)
-          .join(" · ");
+    lastMove !== undefined && handBack !== undefined
+      ? `${kinWorkActorName(lastMove.by, names)} handed this back · ${formatKinTime(new Date(lastMove.at), now)}`
+      : giver === null ||
+          kinWorkSamePrincipal(giver, item.owner) ||
+          // An agent that made the task for itself was given it by no one.
+          (item.assignedByAgent === undefined &&
+            lastMove?.kind === "created" &&
+            item.createdBy._tag !== "system" &&
+            kinWorkSamePrincipal(item.createdBy, item.owner))
+        ? null
+        : [
+            `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}`,
+            item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
+          ]
+            .filter((part) => part !== null)
+            .join(" · ");
   // The latest link to one target says the most: "PR #12 merged" over "PR #12".
   const links = new Map<string, KinWorkLinkView>();
   for (const link of item.links) {
@@ -991,6 +1149,11 @@ export function kinWorkItemView(
     },
     due: kinWorkDueText(item, names, now),
     given,
+    reason: handBack !== undefined ? (handBack.to ?? null) : item.reason?.trim() || null,
+    handBackTo:
+      !isClosed && isMe(item.owner, names) && giver !== null && !isMe(giver, names)
+        ? kinWorkName(giver, names)
+        : null,
     remarks: [
       // A host that can't take the answer here still takes it in chat.
       suggested && !editable
@@ -1005,7 +1168,12 @@ export function kinWorkItemView(
     history: item.changes.map((change) => ({
       key: String(change.seq),
       when: formatKinTime(new Date(change.at), now),
-      text: kinWorkChangeText(change, names, now),
+      text: kinWorkChangeText(
+        change,
+        names,
+        now,
+        item.list === "invoices" || item.list === "receipts" ? item.list : "work",
+      ),
     })),
     historyNote: item.changes.length >= changesCap ? "Earlier history isn't shown." : null,
     assignLabel: isClosed ? null : "Give to someone else",
@@ -1029,12 +1197,20 @@ export function kinWorkItemView(
     party: item.party === undefined ? null : { key: item.party.key, title: item.party.title },
     project:
       item.project === undefined ? null : { key: item.project.key, title: item.project.title },
+    milestone:
+      item.milestone === undefined
+        ? null
+        : { key: item.milestone.key, title: item.milestone.title },
+    tasks: item.tasks === undefined ? null : item.tasks.map((task) => kinWorkRow(task, names, now)),
     side: item.side,
+    // A task is private only by its own label; whoever holds it still sees it.
     privacy: kinWorkPrivacy({
       sensitive: item.sensitive,
-      inherited: item.sensitiveInherited === true,
+      inherited: false,
       because: "its client or project",
+      privateNote: `Only ${ownerWord(names) ?? "you"}, co-owners and whoever holds it see this.`,
     }),
+    shared: item.shared === true,
   };
 }
 
@@ -1083,13 +1259,17 @@ export interface KinWorkAssignee {
   readonly avatar: KinAvatarView;
   /** It is theirs already. */
   readonly current: boolean;
+  /** Re-invited and hasn't opened the new link: shown, not offered. */
+  readonly invited?: true;
 }
 
 export const KIN_WORK_ASSIGN = {
   title: "Give this to",
   leads: "Agents",
-  leadsHint: "An agent starts on it right away and tells you in your chat with it when it's done.",
+  leadsHint: "Given to an agent, it starts right away. Its progress shows here.",
   people: "People",
+  /** A re-invited teammate who hasn't opened the new link yet. */
+  invited: "Invited, hasn't joined yet",
 };
 
 /** Who a task can go to: the org's leads, then its people with the viewer first. */
@@ -1099,6 +1279,10 @@ export function kinWorkAssignees(input: {
   readonly people: ReadonlyArray<KinPerson> | null;
   readonly names: KinWorkNames;
   readonly current: KinWorkPrincipal | null;
+  /** People whose device still opens Kin; when given, others are offered only if they hold it now. */
+  readonly joined?: ReadonlyArray<KinPersonId> | null;
+  /** People re-invited who haven't opened the new link yet; listed as invited. */
+  readonly invited?: ReadonlyArray<KinPersonId> | null;
 }): {
   readonly leads: ReadonlyArray<KinWorkAssignee>;
   readonly people: ReadonlyArray<KinWorkAssignee>;
@@ -1113,9 +1297,23 @@ export function kinWorkAssignees(input: {
   });
   const org = input.orgs?.orgs.find((held) => held.orgId === input.orgId);
   const me = input.orgs?.me.find((held) => held.orgId === input.orgId)?.personId;
-  const others = (input.people ?? [])
-    .filter((person) => person.personId !== me)
-    .map((person) => view({ _tag: "person", personId: person.personId }));
+  const listed = (input.people ?? []).filter((person) => person.personId !== me);
+  const isCurrent = (personId: KinPersonId) =>
+    kinWorkSamePrincipal({ _tag: "person", personId }, current);
+  const others =
+    input.joined == null
+      ? listed.map((person) => view({ _tag: "person", personId: person.personId }))
+      : kinPickablePeople(
+          listed,
+          [
+            ...input.joined,
+            ...listed.flatMap((person) => (isCurrent(person.personId) ? [person.personId] : [])),
+          ],
+          input.invited ?? [],
+        ).map(({ person, invited }) => {
+          const shown = view({ _tag: "person", personId: person.personId });
+          return invited ? { ...shown, invited: true as const } : shown;
+        });
   return {
     leads: (org?.agents ?? [])
       .filter((agent) => !agent.retired)
@@ -1200,7 +1398,7 @@ export const KIN_WORK_NEW_COPY = {
 /** What happens next, said before the owner commits to it. */
 export function kinWorkDraftHint(draft: KinWorkDraft, names: KinWorkNames): string | null {
   return draft.owner?._tag === "agent"
-    ? `${kinWorkName(draft.owner, names)} starts on it right away and tells you in your chat when it's done.`
+    ? `${kinWorkName(draft.owner, names)} starts on it right away. Its progress shows here.`
     : null;
 }
 
@@ -1286,8 +1484,9 @@ function problemOf(error: unknown, doing: Refused): string {
       return KIN_WORK_CHANGED;
     case "not_found":
       return "That isn't there any more. Someone may have left, or the task was removed.";
+    // The host says what is true for this person and task, in words meant for them.
     case "not_allowed":
-      return "Only the owner can change Work for now.";
+      return error.message.trim() === "" ? "You can't change this task." : error.message;
     case "unavailable":
     case "disabled":
       return "Kin isn't answering right now. Try again in a moment.";
@@ -1326,8 +1525,24 @@ export function kinWorkSettled(
 }
 
 /** Adding a task and giving one to someone, each answered with the task or a reason in words. */
+/**
+ * The host's latest answers to the owner's changes, per task, shared by every screen on one host
+ * and org, so a screen whose own read is behind still sends the revision the host is at.
+ */
+export interface KinWorkAnswers {
+  readonly get: (key: KinRecordKey) => KinRecordDetail | undefined;
+  readonly put: (item: KinRecordDetail) => void;
+}
+
+/** A task as held, or the host's newer answer to a change made to it from any screen. */
+export function kinWorkNewest<R extends KinRecord>(record: R, answers?: KinWorkAnswers): R {
+  const answer = answers?.get(record.key);
+  return answer !== undefined && answer.rev > record.rev ? { ...record, ...answer } : record;
+}
+
 export function createKinWorkActions(options: {
   readonly orgId: KinOrgId;
+  readonly answers?: KinWorkAnswers;
   readonly create: (input: KinWorkCreateInput) => Sent<KinRecordDetail>;
   readonly assign: (input: KinWorkAssignInput) => Sent<KinRecordDetail>;
   /** Reads a task again after the host refused a change to it. */
@@ -1346,11 +1561,13 @@ export function createKinWorkActions(options: {
       item: { readonly key: KinRecordKey; readonly rev: number },
       to: KinWorkPrincipal,
     ): Promise<KinWorkChangeResult> => {
+      const rev = Math.max(item.rev, options.answers?.get(item.key)?.rev ?? 0);
       const outcome = kinWorkSettled(
-        await options.assign({ orgId, key: item.key, to, rev: item.rev }),
+        await options.assign({ orgId, key: item.key, to, rev }),
         "give",
       );
-      if (!outcome.ok) options.reread(item.key);
+      if (outcome.ok) options.answers?.put(outcome.item);
+      else options.reread(item.key);
       return outcome;
     },
   };

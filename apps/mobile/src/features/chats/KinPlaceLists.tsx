@@ -5,7 +5,7 @@ import {
   kinListRow,
   type KinListFilter,
 } from "@t3tools/client-runtime/kin/kinLists";
-import { KIN_MONEY, kinMoneyView } from "@t3tools/client-runtime/kin/kinMoney";
+import { KIN_MONEY, kinInMoney, kinMoneyView } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinListDefinition } from "@t3tools/contracts";
 import { View } from "react-native";
@@ -14,7 +14,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { KinListRowLine } from "./KinListScreen";
-import { useKinOpenList } from "./KinWorkMoney";
+import { useKinOpenPlaceList } from "./state/kinHomeTab";
 import {
   kinListsOf,
   useKinListContext,
@@ -52,17 +52,15 @@ export function KinPlaceLists(props: Shared) {
   );
 }
 
-/** What this client owes us and how late, from the same figures as Money. */
+/** What this client owes us and how late, from the same figures as Money; its invoices follow. */
 function PlaceOwed(props: Shared & { readonly party: KinWorkRef }) {
   const lists = useKinLists(props, { enabled: true, seq: props.seq });
   const { state } = useKinMoneySummary(props, { enabled: true, seq: props.seq });
-  const openList = useKinOpenList(props);
   if (state._tag !== "ready") return null;
   const client = kinMoneyView(state.value, kinListsOf(lists)).clients.find(
     (held) => held.key === props.party.key,
   );
   if (client === undefined) return null;
-  const { open } = client;
   return (
     <ListSection title={KIN_MONEY.owed}>
       <View className="gap-0.5 px-4 py-3">
@@ -82,9 +80,6 @@ function PlaceOwed(props: Shared & { readonly party: KinWorkRef }) {
           </Text>
         )}
       </View>
-      {open === null ? null : (
-        <ListActionRow label={`Show ${client.invoices}`} onPress={() => openList(open)} />
-      )}
     </ListSection>
   );
 }
@@ -98,14 +93,11 @@ function PlaceList(props: Shared & { readonly def: KinListDefinition }) {
   };
   const context = useKinListContext(props, props.directory);
   const { state, totals } = useKinListEntries(props, def.list, filter, props.seq);
-  const openList = useKinOpenList(props);
+  const openList = useKinOpenPlaceList(props);
   if (state.total === null || state.total === 0) return null;
   const header = kinListHeader(def, filter, totals, state.total);
   return (
-    <ListSection
-      title={def.name}
-      {...(header.totals.length === 0 ? {} : { footer: `${header.totals.join(" and ")} in all` })}
-    >
+    <ListSection title={def.name} {...(header.summary === null ? {} : { footer: header.summary })}>
       {state.records.slice(0, SHOWN).map((record) => {
         const row = kinListRow(record, def, context, {
           party: "party" in place ? place.party.key : null,
@@ -121,10 +113,12 @@ function PlaceList(props: Shared & { readonly def: KinListDefinition }) {
           />
         );
       })}
-      <ListActionRow
-        label={state.total > SHOWN ? `See all ${state.total}` : "Open list"}
-        onPress={() => openList({ list: def.list, filter })}
-      />
+      {state.total > SHOWN ? (
+        <ListActionRow
+          label={`See all ${state.total}`}
+          onPress={() => openList(kinInMoney(def) ? "money" : "docs", { list: def.list, filter })}
+        />
+      ) : null}
     </ListSection>
   );
 }

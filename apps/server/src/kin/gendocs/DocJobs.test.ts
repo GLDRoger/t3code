@@ -1,11 +1,15 @@
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- the fake renderer's content hash.
+import * as NodeCrypto from "node:crypto";
+
+import * as PlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentId,
   KinAgentId,
+  KinChatError,
   KinOrgId,
   KinPersonId,
   KinRecordKey,
@@ -25,9 +29,11 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { chatShared } from "../chat/sharing.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -37,11 +43,22 @@ import * as Docs from "../work/docs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadMoney from "../work/leadMoney.ts";
 import * as LeadWork from "../work/leadWork.ts";
+import { moneySection, moneySummary } from "../work/moneyViews.ts";
+import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerMoney from "../work/ownerMoney.ts";
+import * as OwnerWork from "../work/ownerWork.ts";
+import * as Amounts from "./amounts.ts";
+import { computeData } from "./compute.ts";
 import * as DocJobs from "./DocJobs.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
-import * as Numbers from "./numbering.ts";
+import * as LeadDocuments from "./leadDocuments.ts";
+import { answerReceiptCard } from "./receiptProposals.ts";
 import { assembleInputs, needsEntry, parseRecipe } from "./recipe.ts";
+import { copyReferences } from "./references.ts";
+import * as Render from "./render.ts";
+import { STARTER_FILES } from "./starter.ts";
+import { sheetCells } from "./tables.ts";
+import { KinToolchain } from "./toolchain.ts";
 import * as Workspace from "./workspace.ts";
 
 // Invented org, company, client, GSTINs and amounts only; nothing here reads a real database.
@@ -79,17 +96,40 @@ const cards: Array<{
   readonly documents: ReadonlyArray<{ readonly key: string }>;
   readonly lastError: string | null;
 }> = [];
-const chat = Layer.mock(KinChatService)({
-  setTaskCardDocuments: (input) =>
-    Effect.sync(() => {
-      cards.push({ documents: input.documents, lastError: input.lastError });
-    }).pipe(Effect.as({} as never)),
-});
+// Notices Kin posted, by chat.
+const notices: Array<{ readonly chatId: string; readonly body: string }> = [];
+const chat = Layer.unwrap(
+  Effect.map(SqlClient.SqlClient, (sql) =>
+    Layer.mock(KinChatService)({
+      setTaskCardDocuments: (input) =>
+        Effect.sync(() => {
+          cards.push({ documents: input.documents, lastError: input.lastError });
+        }).pipe(Effect.as({} as never)),
+      notice: (input) =>
+        Effect.gen(function* () {
+          if (input.audience === "owner" && (yield* chatShared(sql, input)))
+            return yield* new KinChatError({ reason: "not_allowed", message: "shared" });
+          notices.push({ chatId: input.chatId, body: input.body });
+          yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+              author_member_id, author_role, kind, body, mentions_json, status, created_at)
+            VALUES (${input.messageId}, ${input.orgId}, ${input.chatId}, ${9000 + notices.length},
+              'system', NULL, 'member', 'system', ${input.body}, '[]', 'posted', ${at})`;
+          return {} as never;
+        }).pipe(Effect.catchTags({ SqlError: Effect.die })),
+    }),
+  ),
+);
+// Doc cards the agent's call showed in the chat, by the key of the doc each shows.
+const shownCards: Array<string> = [];
 // Kin's card for the owner, stored as the chat service stores a lead's question; no level gate here.
 const gate = Layer.unwrap(
   Effect.map(SqlClient.SqlClient, (sql) =>
     Layer.mock(KinLevelGate)({
-      ask: (agent, input) =>
+      showCard: (_agent, input) =>
+        Effect.sync(() => {
+          shownCards.push(String(Reflect.get(input.state as object, "key")));
+        }).pipe(Effect.as({} as never)),
+      ask: (agent, input, bind) =>
         Effect.gen(function* () {
           const messageId = `card-${input.clientMessageId}`;
           const widgetId = `choice:${messageId}`;
@@ -116,6 +156,7 @@ const gate = Layer.unwrap(
             VALUES (${widgetId}, ${agent.orgId}, ${input.chatId}, ${messageId}, 'native', 'choice', 1,
               ${JSON.stringify(state)}, ${JSON.stringify([ownerId])}, ${at})
             ON CONFLICT DO NOTHING`;
+          if (bind !== undefined) yield* bind({ widgetId } as never);
           return { widgetId } as never;
         }).pipe(Effect.orDie),
     }),
@@ -133,7 +174,75 @@ const scopes = Layer.succeed(AgentScope, {
   ...AgentScope.defaultValue(),
   reap: (threadId: string) => Effect.succeed(!alive.has(threadId)),
 });
-const layer = DocJobs.collectorLayer.pipe(
+/**
+ * Typst stands aside here (`render.test.ts` runs it): a typst recipe "renders" as a PDF holding
+ * its computed data, so a test reads the figures Kin worked out. Table recipes and storing are real.
+ */
+const rendered: Array<{ readonly request: Render.RenderRequest; readonly data: unknown }> = [];
+const failing = { reason: undefined as string | undefined };
+const renderer = Layer.effect(
+  Render.KinDocRenderer,
+  Effect.gen(function* () {
+    const real = yield* Render.KinDocRenderer;
+    return Render.KinDocRenderer.of({
+      store: real.store,
+      drawable: real.drawable,
+      render: (request) => {
+        if (failing.reason !== undefined)
+          return Effect.succeed({ _tag: "failed", reason: failing.reason });
+        if (request.recipe.kind === "table") return real.render(request);
+        const computed = computeData(request.inputs, request.recipe.computed);
+        if ("error" in computed) return Effect.succeed({ _tag: "failed", reason: computed.error });
+        rendered.push({ request, data: computed.data });
+        const bytes = new TextEncoder().encode(
+          `%PDF-1.7\n% ${JSON.stringify(request.inputs)}\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF\n`,
+        );
+        const page = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        return Effect.succeed({
+          _tag: "made",
+          ...(request.page === true
+            ? {
+                page: {
+                  name: "page-1.png",
+                  extension: "png",
+                  mimeType: "image/png",
+                  bytes: page,
+                  sha256: NodeCrypto.createHash("sha256").update(page).digest("hex"),
+                  pages: null,
+                },
+              }
+            : {}),
+          files: request.recipe.outputs.map((name) => ({
+            name,
+            extension: "pdf",
+            mimeType: "application/pdf",
+            bytes,
+            sha256: NodeCrypto.createHash("sha256").update(bytes).digest("hex"),
+            pages: 1,
+          })),
+        });
+      },
+    });
+  }),
+).pipe(Layer.provide(Render.layer));
+const toolchain = Layer.succeed(KinToolchain, {
+  ensure: () =>
+    Effect.fail(new KinChatError({ reason: "unavailable", message: "no Typst in these tests" })),
+  present: () => Effect.undefined,
+  fonts: () => Effect.undefined,
+});
+// Follow-up passes Kin sent recipe writers, by thread.
+const sent: Array<{ readonly threadId: string; readonly text: string }> = [];
+const threads = Layer.mock(ThreadManagementService)({
+  sendToThread: (input) =>
+    Effect.sync(() => {
+      sent.push({ threadId: input.threadId, text: input.text });
+    }).pipe(Effect.as({} as never)),
+});
+const layer = DocJobs.makeCollectorLayer({ sweepPage: 1 }).pipe(
+  Layer.provideMerge(threads),
+  Layer.provideMerge(renderer),
+  Layer.provideMerge(toolchain),
   Layer.provideMerge(scopes),
   Layer.provideMerge(Layer.succeed(HostProcess.Platform, "linux")),
   Layer.provideMerge(Workspace.layer),
@@ -141,8 +250,20 @@ const layer = DocJobs.collectorLayer.pipe(
   Layer.provideMerge(chat),
   Layer.provideMerge(base),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-doc-jobs-" })),
-  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformCrypto.layer)),
 );
+
+const git = (cwd: string, ...args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const vcs = yield* Vcs.VcsProcess;
+    yield* vcs.run({
+      operation: "KinDocJobsTest.git",
+      command: "git",
+      cwd,
+      args: ["-c", "user.name=Owner", "-c", "user.email=owner@example.com", ...args],
+      env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+    });
+  });
 
 /** A turn the owner woke with a message in the lead's direct chat. */
 const turn = (n: number, body: string) =>
@@ -179,6 +300,11 @@ const turn = (n: number, body: string) =>
 /** The owner's lead in India's zone, an invoices list, a client in another state, one invoice. */
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  rendered.length = 0;
+  shownCards.length = 0;
+  notices.length = 0;
+  sent.length = 0;
+  failing.reason = undefined;
   yield* TestClock.setTime(Date.parse("2026-11-12T06:00:00.000Z"));
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${at})`;
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
@@ -197,9 +323,8 @@ const seed = Effect.gen(function* () {
       worker_projects_json, owner_chat_id)
     VALUES (${lead}, ${orgId}, 'Lead lead', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
   const asked = yield* turn(1, "Track invoices");
-  const proposed = yield* LeadMoney.define(scope, { sourceEventId: asked, template: "invoices" });
-  const yes = yield* turn(2, "Yes");
-  yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
+  yield* LeadMoney.define(scope, { sourceEventId: asked, template: "invoices" });
+  yield* turn(2, "Yes");
   yield* OwnerMoney.setCompanyProfile(people, {
     orgId,
     rev: 0,
@@ -211,7 +336,14 @@ const seed = Effect.gen(function* () {
   const work = yield* turn(3, "Invoice Invented Acme for October");
   yield* LeadWork.create(scope, {
     sourceEventId: work,
-    records: [{ list: "clients", title: "Invented Acme", placeOfSupply: "Maharashtra" }],
+    records: [
+      {
+        list: "clients",
+        title: "Invented Acme",
+        placeOfSupply: "Maharashtra",
+        address: "4 Invented Lane, Pune 411001",
+      },
+    ],
   });
   yield* LeadWork.create(scope, {
     sourceEventId: work,
@@ -228,47 +360,45 @@ const seed = Effect.gen(function* () {
   return work;
 });
 
-const input = (
-  recipe: string,
-  more: Partial<DocJobs.DocumentInput> = {},
-): DocJobs.DocumentInput => ({
+const invoice = (more: Partial<DocJobs.DocumentInput> = {}): DocJobs.DocumentInput => ({
   title: "Invoice INV-1",
-  recipe,
+  recipe: "invoice",
+  entry: "INV-1",
   sourceEventId: "event-3",
   ...more,
 });
-const shell = { available: true } as const;
+const versionsOf = (key: string) =>
+  Effect.gen(function* () {
+    const doc = yield* Docs.docRow(orgId, { key });
+    const history = yield* Docs.history(orgId, doc.recordId, { limit: 10 });
+    return { doc, history };
+  });
+const latestData = () => rendered.at(-1)!.data as Record<string, any>;
 
-/** A recipe job for INV-1 as `document` records it, with a worktree holding a PDF and a link. */
-const docJob = (
-  workerId: KinWorkerId,
-  options: { readonly worker: string; readonly commit?: string },
-) =>
+/** A one-off job as `document` records it, with a worktree holding a PDF, a stray and a link. */
+const docJob = (workerId: KinWorkerId, options: { readonly worker: string }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const fs = yield* FileSystem.FileSystem;
     const workspace = yield* Workspace.KinWorkspace;
-    const [entry] = yield* sql<{ recordId: string }>`SELECT record_id AS "recordId" FROM kin_records
-      WHERE org_id = ${orgId} AND key = 'INV-1'`;
     const prepared = yield* workspace.prepare(orgId, workerId, {
-      "in/inputs.json": '{"bank":"000111222333"}',
+      "in/inputs.json": '{"brief":"An invented note"}',
     });
     yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind, thread_id,
         model_json, provenance_json, status, started_at, ended_at, title, chat_id, context)
       VALUES (${workerId}, ${orgId}, ${lead}, 'wake-3', 'build', ${`kin-work:${workerId}`}, '{}',
-        '{}', ${options.worker}, 0, ${options.worker === "running" ? null : 1}, 'Invoice INV-1',
+        '{}', ${options.worker}, 0, ${options.worker === "running" ? null : 1}, 'Welcome note',
         'lead-chat', 'private')`;
     yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode, recipe,
         recipe_commit, entry_record_id, inputs_sha256, number, sensitive, doc_origin, worktree_path,
         branch, chat_id, audience, answered_message_id, answered_author_kind, answered_author_id,
         created_at)
-      VALUES (${orgId}, ${workerId}, ${lead}, 'wake-3', 'document', 'invoice',
-        ${options.commit ?? prepared.base}, ${entry!.recordId}, 'inputs-a', NULL, 1,
-        ${`recipe:invoice:${entry!.recordId}`}, ${prepared.worktree}, ${prepared.branch},
+      VALUES (${orgId}, ${workerId}, ${lead}, 'wake-3', 'document', NULL, ${prepared.base}, NULL,
+        'inputs-a', NULL, 1, 'file:welcome', ${prepared.worktree}, ${prepared.branch},
         'lead-chat', 'owner_only', 'msg-3', 'person', ${ownerId}, 0)`;
     yield* fs.makeDirectory(`${prepared.worktree}/out`, { recursive: true });
     yield* fs.writeFileString(
-      `${prepared.worktree}/out/invoice.pdf`,
+      `${prepared.worktree}/out/note.pdf`,
       "%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF\n",
     );
     yield* fs.writeFileString(`${prepared.worktree}/out/extra.pdf`, "%PDF-1.7\n%%EOF\n");
@@ -284,156 +414,1783 @@ const owed = Effect.gen(function* () {
 const pdfReport: WorkerReport = {
   result: "done",
   summary: "Made it.",
-  evidence: [{ kind: "file", ref: "out/invoice.pdf" }],
+  evidence: [{ kind: "file", ref: "out/note.pdf" }],
   openQuestions: [],
   memorySuggestions: [],
   misleadingMemory: [],
   parsed: true,
 };
+/** A collection that settled: a recipe writer sent another pass hasn't. */
+const settled = <A>(result: A | typeof DocJobs.CONTINUED): A => {
+  if (result === DocJobs.CONTINUED) return assert.fail("the job was sent another pass");
+  return result;
+};
 const threadOf = (workerId: KinWorkerId) => ThreadId.make(`kin-work:${workerId}`);
 
-describe("document jobs", () => {
-  it.effect("give the worker only the recipe's declared inputs, read from stored rows", () =>
+/** A worker's job writing the quote recipe, collected; `n` names the job and its description. */
+/** A quote recipe job ready to collect: its description and template are its own when given. */
+const quoteJob = (
+  n: number,
+  sensitive = 0,
+  own: {
+    readonly description?: string;
+    readonly template?: string;
+    /** RECIPE.md and sample.json as given, in place of the report recipe's renamed. */
+    readonly recipe?: string;
+    readonly sample?: string;
+  } = {},
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const sql = yield* SqlClient.SqlClient;
+    const workspace = yield* Workspace.KinWorkspace;
+    const collector = yield* DocJobs.KinDocCollector;
+    const workerId = KinWorkerId.make(`wk-quote-${n}`);
+    const job = yield* workspace.prepare(orgId, workerId, {});
+    const folder = `${job.worktree}/recipes/quote`;
+    yield* fs.makeDirectory(folder, { recursive: true });
+    yield* fs.writeFileString(
+      `${folder}/RECIPE.md`,
+      own.recipe ??
+        STARTER_FILES["recipes/report/RECIPE.md"]!.replace("name: report", "name: quote")
+          .replace("title: Report", "title: Quote")
+          .replace(/^description: .*$/m, `description: ${own.description ?? `Quote ${n}.`}`)
+          .replace("[report.pdf]", "[quote.pdf]"),
+    );
+    yield* fs.writeFileString(
+      `${folder}/template.typ`,
+      own.template ?? '#let d = json("/inputs.json")\n',
+    );
+    yield* fs.writeFileString(
+      `${folder}/sample.json`,
+      own.sample ?? STARTER_FILES["recipes/report/sample.json"]!,
+    );
+    yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind,
+        thread_id, model_json, provenance_json, status, started_at, ended_at, title, chat_id,
+        context)
+      VALUES (${workerId}, ${orgId}, ${lead}, 'wake-3', 'build', ${threadOf(workerId)}, '{}',
+        '{}', 'running', 0, NULL, 'Quote recipe', 'lead-chat', 'private')`;
+    yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode, recipe,
+        recipe_commit, entry_record_id, inputs_sha256, number, sensitive, doc_origin,
+        worktree_path, branch, chat_id, audience, created_at)
+      VALUES (${orgId}, ${workerId}, ${lead}, 'wake-3', 'recipe', 'quote', ${job.base}, NULL,
+        'brief', NULL, ${sensitive}, 'recipe:quote', ${job.worktree}, ${job.branch}, 'lead-chat',
+        'owner_only', 0)`;
+    const collected = collector.collect({ orgId, workerId, threadId: threadOf(workerId) }, true, {
+      ...pdfReport,
+      evidence: [],
+    });
+    return collected;
+  });
+const startQuote = (...args: Parameters<typeof quoteJob>) =>
+  Effect.map(quoteJob(...args), (collected) =>
+    collected.pipe(Effect.map((result) => settled(result))),
+  );
+const writeQuote = (n: number, sensitive = 0) => Effect.flatten(startQuote(n, sensitive));
+
+describe("recipe documents", () => {
+  it.effect("are made in the call from the recipe's declared inputs, read from stored rows", () =>
     Effect.gen(function* () {
       yield* seed;
-      const draft = yield* DocJobs.planJob(
-        orgId,
-        input("invoice", { entry: "INV-1", inputs: { billTo: "1 Sample Road, Pune" } }),
-        shell,
-      );
-      const declared = draft.recipe!.inputs.map((one) => one.name);
-      assert.deepStrictEqual(Object.keys(draft.inputs), declared);
+      const sql = yield* SqlClient.SqlClient;
+      const made = yield* LeadDocuments.make(scope, invoice());
+      assert.deepStrictEqual(made, {
+        workerId: null,
+        threadLink: null,
+        recipe: "invoice",
+        number: null,
+        draft: true,
+        documents: [{ key: "D-1", title: "Invoice INV-1", version: 1 }],
+        sensitive: true,
+      });
+      assert.deepStrictEqual(shownCards, ["D-1"], "its doc card is in the chat");
+      const { request, data } = rendered.at(-1)!;
       assert.deepStrictEqual(
-        [draft.inputs.total, draft.inputs.client, draft.inputs.clientPlace, draft.inputs.supplier],
+        Object.keys(request.inputs),
+        request.recipe.inputs.map((one) => one.name),
+      );
+      const figures = data as Record<string, any>;
+      assert.deepStrictEqual(
+        [
+          request.inputs.total,
+          request.inputs.client,
+          request.inputs.clientAddress,
+          request.inputs.supplier,
+          request.inputs.draft,
+          request.day,
+        ],
         [
           { minor: 100_001, currency: "INR" },
           "Invented Acme",
-          "Maharashtra",
+          "4 Invented Lane, Pune 411001",
           "Sample Studio Private Limited",
+          true,
+          "2026-11-12",
         ],
       );
+      // Karnataka to Maharashtra is inter-state: IGST, worked out by Kin, never by the template.
       assert.deepStrictEqual(
-        [draft.number, draft.draft, draft.inputs.draft, draft.sensitive],
-        [null, true, true, true],
+        [
+          figures.tax.taxes.map((one: any) => [one.name, one.rate, one.amount.text]),
+          figures.tax.total.text,
+          figures.billedAt,
+        ],
+        [[["IGST", "18", "₹152.54"]], "₹1,000.01", "4 Invented Lane, Pune 411001"],
+      );
+      const { doc, history } = yield* versionsOf("D-1");
+      const version = Docs.toVersion((yield* Docs.versionOf(orgId, doc.recordId))!);
+      const [commit] = yield* sql<{ commit: string }>`SELECT recipe_commit AS "commit"
+        FROM kin_doc_jobs WHERE org_id = ${orgId} ORDER BY created_at LIMIT 1`;
+      assert.deepStrictEqual(
+        {
+          versions: history.length,
+          name: version.file?.name,
+          recipe: version.file?.recipe,
+          rd: version.file?.workerId.startsWith("rd-"),
+          number: version.file?.number,
+          draft: version.file?.draft,
+          answered: version.provenance.answered?.messageId,
+          sensitive: doc.sensitive,
+        },
+        {
+          versions: 1,
+          name: "invoice.pdf",
+          recipe: { name: "invoice", commit: commit!.commit },
+          rd: true,
+          number: null,
+          draft: true,
+          answered: "msg-3",
+          sensitive: 1,
+        },
+      );
+      // The same call again is the same job: nothing new is rendered or filed.
+      const renders = rendered.length;
+      assert.deepStrictEqual(
+        (yield* LeadDocuments.make(scope, invoice())).documents,
+        made.documents,
+      );
+      assert.deepStrictEqual(
+        [rendered.length, (yield* versionsOf("D-1")).history.length],
+        [renders, 1],
       );
       // An amount Kin stores is never the agent's to give, and an undeclared name isn't either.
       for (const inputs of [{ total: "₹5" }, { discount: "10" }]) {
-        const refused = yield* DocJobs.planJob(
-          orgId,
-          input("invoice", { entry: "INV-1", inputs }),
-          shell,
-        ).pipe(Effect.flip);
+        const refused = yield* LeadDocuments.make(scope, invoice({ inputs })).pipe(Effect.flip);
         assert.match(refused.message, /doesn't take (total|discount) from you/);
       }
-      // Issued, the same plan carries its number and is no draft.
-      const writer = {
-        actor: { _tag: "person" as const, personId: ownerId },
-        via: "owner" as const,
-      };
-      yield* Numbers.issue(orgId, writer, "INV-1");
-      const issued = yield* DocJobs.planJob(orgId, input("invoice", { entry: "INV-1" }), shell);
-      assert.deepStrictEqual([issued.number, issued.draft], ["INV/26-27/001", false]);
-      // A table holds only its declared columns.
-      const pack = yield* DocJobs.planJob(
-        orgId,
-        input("accountant-pack", { inputs: { month: "2026-11" } }),
-        shell,
+      // A template that fails files nothing, and the agent gets Typst's words.
+      failing.reason = "invoice.pdf: template.typ:3:2: error: unknown variable: totl";
+      const broken = yield* LeadDocuments.make(scope, invoice({ title: "Invoice again" })).pipe(
+        Effect.flip,
       );
-      const rows = pack.inputs.invoices as ReadonlyArray<Record<string, unknown>>;
-      assert.deepStrictEqual(
-        rows.map((row) => Object.keys(row).sort()),
-        [["amount", "client", "date", "key", "number", "state", "tax"]],
-      );
-      assert.deepStrictEqual([rows[0]!.number, rows[0]!.state], ["INV/26-27/001", "Issued"]);
-      // A recipe runs commands, so a host whose workers have no shell refuses it before it starts.
-      const noShell = yield* DocJobs.planJob(orgId, input("report", { inputs: { title: "Q3" } }), {
-        available: false,
-        reason: "this host is darwin",
-      }).pipe(Effect.flip);
-      assert.match(noShell.message, /no shell \(this host is darwin\)/);
-      // Every new tool is refused in a turn someone besides the owner reads.
+      assert.match(broken.message, /^Nothing was made\. The invoice recipe didn't render: .*totl/);
+      failing.reason = undefined;
+      const jobs = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_doc_jobs
+        WHERE org_id = ${orgId}`;
+      assert.strictEqual(jobs[0]!.n, 1);
+      // Every document tool is refused in a turn someone besides the owner reads.
       const turnRef = { orgId, agentId: lead, wakeupId: "wake-3" };
-      for (const tool of ["kin_document", "kin_recipes", "kin_issue"])
+      for (const tool of ["kin_document", "kin_recipes", "kin_issue", "kin_recipe_undo"])
         assert.isFalse(yield* sharedToolAllowed(turnRef, tool, { recipe: "report" }), tool);
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("are made again in place when the entry is issued, carrying its number", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* LeadDocuments.make(scope, invoice({ inputs: { billTo: "9 Invented Road, Pune" } }));
+      // The number is issued even when its document fails to render; asking again makes it then.
+      failing.reason = "invoice.pdf: an invented render failure";
+      const first = yield* LeadDocuments.issue(scope, {
+        entry: KinRecordKey.make("INV-1"),
+        sourceEventId: "event-3",
+      });
+      assert.deepStrictEqual(
+        [first.number, first.issued, first.documents.length, first.problems.length],
+        ["INV/26-27/001", true, 0, 1],
+      );
+      // Issued with no due date, it is due the playbook's 15 payment days after its issue day.
+      const dated = (yield* (yield* KinRecords.KinRecords).get(orgId, "INV-1"))!;
+      assert.strictEqual(dated.dueAt! - dated.dateAt!, 15 * 86_400_000);
+      failing.reason = undefined;
+      const issued = yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make("INV-1") });
+      assert.deepStrictEqual(
+        [issued.number, issued.issued, issued.documents, issued.problems],
+        ["INV/26-27/001", false, [{ key: "D-1", title: "Invoice INV/26-27/001", version: 2 }], []],
+      );
+      const data = latestData();
+      // Made with what was asked last time, now with its number and no longer a draft.
+      assert.deepStrictEqual(
+        [data.number, data.draft, data.billedAt],
+        ["INV/26-27/001", false, "9 Invented Road, Pune"],
+      );
+      const { doc, history } = yield* versionsOf("D-1");
+      const version = Docs.toVersion((yield* Docs.versionOf(orgId, doc.recordId))!);
+      assert.deepStrictEqual(
+        [history.map((one) => one.version), version.file?.number, version.file?.draft],
+        [[2, 1], "INV/26-27/001", false],
+      );
+      // Issuing again changes nothing and makes nothing.
+      const again = yield* LeadDocuments.issue(scope, {
+        entry: KinRecordKey.make("INV-1"),
+        sourceEventId: "event-3",
+      });
+      assert.deepStrictEqual([again.issued, again.documents], [false, []]);
+      // F24: a void isn't final for the agent either: undone, it is owed again with its number.
+      const issueAs = (more: Partial<typeof LeadDocuments.IssueInput.Type>) =>
+        LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make("INV-1"),
+          sourceEventId: "event-3",
+          ...more,
+        });
+      assert.strictEqual((yield* issueAs({ void: true })).state, "dropped");
+      const back = yield* issueAs({ unvoid: true });
+      assert.deepStrictEqual([back.state, back.number], ["waiting", "INV/26-27/001"]);
+      // The accountant's pack lists it by its number, from Kin's own exporter.
+      const pack = yield* LeadDocuments.make(scope, {
+        title: "November pack",
+        recipe: "accountant-pack",
+        inputs: { month: "2026-11" },
+        sourceEventId: "event-3",
+      });
+      assert.deepStrictEqual(
+        pack.documents.map((one) => one.title),
+        [
+          "November pack · accounts-2026-11.xlsx",
+          "November pack · sales-register-2026-11.csv",
+          "November pack · receipts-2026-11.csv",
+          "November pack · tds-2026-11.csv",
+          "November pack · expenses-2026-11.csv",
+          "November pack · unpaid-expenses-2026-11.csv",
+          "November pack · bank-2026-11.csv",
+        ],
+      );
+      const config = yield* ServerConfig;
+      const csvOf = (key: string) =>
+        Effect.gen(function* () {
+          const doc = (yield* versionsOf(key)).doc;
+          const file = Docs.toVersion((yield* Docs.versionOf(orgId, doc.recordId))!).file!;
+          return yield* (yield* FileSystem.FileSystem).readFileString(
+            `${config.attachmentsDir}/${file.attachmentId}.csv`,
+          );
+        });
+      const text = yield* csvOf(pack.documents[1]!.key);
+      // Place of supply is the client's; taxable value is the total less the tax issued with it.
+      assert.match(
+        text,
+        /^INV\/26-27\/001,\d{4}-\d{2}-\d{2},Invented Acme,,Maharashtra,847\.47,152\.54,1000\.01,INR,Issued,INV-1\r$/m,
+      );
+      // A title that starts with its own number, as an import writes one, shows the number once.
+      yield* (yield* KinRecords.KinRecords).update(
+        orgId,
+        { actor: { _tag: "system" }, via: "import" },
+        "INV-1",
+        { title: "INV/26-27/001 · October retainer" },
+      );
+      yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1 again" }));
+      assert.strictEqual(rendered.at(-1)!.request.inputs.title, "October retainer");
+      // TDS the client withheld settles it beside the money that came in, on its own line.
+      const records = yield* KinRecords.KinRecords;
+      const system = { actor: { _tag: "system" as const }, via: "import" as const };
+      for (const [minor, withheld] of [
+        [10_000, true],
+        [90_001, false],
+      ] as const)
+        yield* records.pay(orgId, system, "INV-1", {
+          amount: { minor, currency: "INR" },
+          paidOn: "2026-11-12",
+          originKey: `settle:${minor}`,
+          withheld,
+        });
+      yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1 settled" }));
+      assert.deepStrictEqual(
+        [
+          (latestData().paidLines as ReadonlyArray<Record<string, unknown>>).map((one) => one.kind),
+          latestData().balance.text,
+        ],
+        [["tds", "received"], "₹0.00"],
+      );
+      yield* records.update(orgId, system, "INV-1", {
+        fields: { tax: { minor: 152_54, currency: "INR" } },
+      });
+      yield* records.update(orgId, system, "C-1", { fields: { gstin: "27AAAAA1111A1Z5" } });
+      // The month's pack shows the TDS on its own sheet and only the money received as receipts.
+      const settled = yield* LeadDocuments.make(scope, {
+        title: "November pack settled",
+        recipe: "accountant-pack",
+        inputs: { month: "2026-11" },
+        sourceEventId: "event-3",
+      });
+      const [receipts, tds] = [
+        yield* csvOf(settled.documents[2]!.key),
+        yield* csvOf(settled.documents[3]!.key),
+      ];
+      assert.include(receipts, ",900.01,INR");
+      assert.notInclude(receipts, ",100.00,INR");
+      assert.include(tds, "2026-11-12,INV/26-27/001,");
+      assert.include(tds, ",100.00,INR");
+      // Taxable value is the total less the tax as recorded, to the paisa.
+      assert.include(
+        yield* csvOf(settled.documents[1]!.key),
+        ",Invented Acme,27AAAAA1111A1Z5,Maharashtra,847.47,152.54,1000.01,INR,Paid,INV-1\r\n",
+      );
+
+      // F51: expenses confirmed, undone and confirmed again: the file, the totals a chart is drawn
+      // from and Money all count the live copy once.
+      const track = yield* turn(10, "Track expenses");
+      const proposed = yield* LeadMoney.define(scope, {
+        sourceEventId: track,
+        template: "expenses",
+      });
+      const yes = yield* turn(11, "Yes, and the CloudNest bill");
+      yield* LeadMoney.define(scope, { sourceEventId: yes, proposal: proposed.proposal! });
+      const spent = { list: "expenses", amount: "13,468.85", date: "2026-11-03" };
+      yield* LeadWork.create(scope, {
+        sourceEventId: yes,
+        records: [{ ...spent, title: "Hosting" }],
+      });
+      yield* records.update(orgId, system, "EXP-1", { state: "dropped" });
+      yield* LeadWork.create(scope, {
+        sourceEventId: yes,
+        records: [{ ...spent, title: "Hosting again" }],
+      });
+      const month = yield* LeadDocuments.make(scope, {
+        title: "November pack again",
+        recipe: "accountant-pack",
+        inputs: { month: "2026-11" },
+        sourceEventId: yes,
+      });
+      const expensesCsv = Docs.toVersion(
+        (yield* Docs.versionOf(orgId, (yield* versionsOf(month.documents[4]!.key)).doc.recordId))!,
+      ).file!;
+      const expenses = yield* (yield* FileSystem.FileSystem).readFileString(
+        `${config.attachmentsDir}/${expensesCsv.attachmentId}.csv`,
+      );
+      assert.notInclude(expenses, "EXP-1");
+      assert.include(expenses, "EXP-2");
+      const listed = yield* LeadWork.query(scope, { list: "expenses", groupBy: "month" });
+      const money = yield* moneySummary(orgId, Date.parse("2026-11-12T06:00:00.000Z"));
+      assert.deepStrictEqual(
+        [listed.totals, listed.groups?.[0]?.totals, money.spent.thisMonth.total],
+        [["₹13,468.85"], ["₹13,468.85"], [{ minor: 1_346_885, currency: "INR" }]],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("are issued with the total their own document comes to, never with none", () =>
+    Effect.gen(function* () {
+      const work = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [
+          {
+            list: "invoices",
+            title: "Website build",
+            client: "Invented Acme",
+            state: "open",
+            due: "2026-11-05",
+          },
+        ],
+      });
+      const issueIt = (entry: string) =>
+        LeadDocuments.issue(scope, { entry: KinRecordKey.make(entry), sourceEventId: work });
+      // No amount and no document to work one out from: nothing is issued, no number taken.
+      const bare = yield* issueIt("INV-2").pipe(Effect.flip);
+      assert.match(bare.message, /^INV-2 has no amount/);
+      const next = yield* OwnerMoney.nextNumber(people, { orgId, key: KinRecordKey.make("INV-2") });
+      assert.strictEqual(next.number, "INV/26-27/001");
+      // F14: drafted from its lines alone, it is issued with the total its PDF shows, tax split.
+      yield* LeadDocuments.make(
+        scope,
+        invoice({
+          entry: "INV-2",
+          title: "Invoice INV-2",
+          inputs: {
+            lines: [{ description: "Design", sac: "998391", quantity: "2", rate: "₹1,00,000" }],
+          },
+        }),
+      );
+      const issued = yield* issueIt("INV-2");
+      const row = (yield* records.get(orgId, "INV-2"))!;
+      assert.deepStrictEqual(
+        [issued.number, row.amountMinor, row.currency, JSON.parse(row.fieldsJson).tax],
+        ["INV/26-27/001", 23_600_000, "INR", { minor: 3_600_000, currency: "INR" }],
+      );
+      assert.deepStrictEqual(
+        [latestData().number, latestData().tax.total.text],
+        ["INV/26-27/001", "₹2,36,000.00"],
+      );
+      // F47: Money, and the figures the morning brief reads, see it owed and overdue.
+      const now = Date.parse("2026-11-12T06:00:00.000Z");
+      const section = moneySection(yield* moneySummary(orgId, now), "Asia/Kolkata");
+      assert.deepStrictEqual(
+        [section?.owedToUs, section?.overdue, section?.byClient[0]?.daysOverdue],
+        ["₹2,36,000.00", "₹2,36,000.00", 6],
+      );
+
+      // The issued document's own figures are kept beside its job, as it was rendered.
+      assert.deepStrictEqual(
+        yield* sql`SELECT number, total_minor AS total, tax_minor AS tax, currency,
+            taxes_json AS taxes FROM kin_doc_job_figures WHERE org_id = ${orgId}`,
+        [
+          {
+            number: "INV/26-27/001",
+            total: 23_600_000,
+            tax: 3_600_000,
+            currency: "INR",
+            taxes: '[{"amount":{"currency":"INR","minor":3600000},"name":"IGST","rate":"18"}]',
+          },
+        ],
+      );
+
+      // Review 45: an invoice issued before issuing wrote amounts is never given one at start, even
+      // where its document still works out (₹1,000 + ₹180 GST reads ₹1,000 once the GSTIN is gone).
+      // The owner is told of each, once, with what Kin believes, and sets it in a turn of his own.
+      const system = { actor: { _tag: "system" as const }, via: "import" as const };
+      const legacy = (key: string, seq: number) =>
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO kin_issued_numbers (org_id, register_id, series, seq, number,
+              record_id, issued_at, issued_by_kind, issued_by_id)
+            SELECT org_id, 'invoices', 'INV|26-27', ${seq}, ${`INV/26-27/00${seq}`}, record_id, 0,
+              'agent', ${lead}
+            FROM kin_records WHERE org_id = ${orgId} AND key = ${key}`;
+          yield* sql`UPDATE kin_records SET state = 'waiting', amount_minor = NULL,
+              currency = NULL, fields_json = json_remove(fields_json, '$.tax')
+            WHERE org_id = ${orgId} AND key = ${key}`;
+        });
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [{ list: "invoices", title: "Retainer", client: "Invented Acme", state: "open" }],
+      });
+      yield* LeadDocuments.make(
+        scope,
+        invoice({
+          entry: "INV-3",
+          title: "Invoice INV-3",
+          inputs: { lines: [{ description: "Retainer", quantity: "1", rate: "₹1,000" }] },
+        }),
+      );
+      assert.strictEqual(latestData().tax.total.text, "₹1,180.00");
+      yield* legacy("INV-3", 7);
+      yield* sql`UPDATE kin_records SET amount_minor = NULL, currency = NULL,
+          fields_json = json_remove(fields_json, '$.tax')
+        WHERE org_id = ${orgId} AND key = 'INV-2'`;
+      yield* records.create(orgId, system, {
+        list: "invoices",
+        title: "Imported retainer",
+        originKey: "import:old-books:9",
+        owner: { _tag: "agent", agentId: lead },
+        state: "open",
+      });
+      yield* legacy("INV-4", 8);
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: 1, gstin: null });
+      const amounts = sql<{ key: string; minor: number | null }>`SELECT key,
+          amount_minor AS minor FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'invoices' ORDER BY key`;
+      const before = yield* amounts;
+      // Two to a page, so three are read in two pages.
+      const first = yield* Amounts.reportIssuedWithoutAmount(orgId, 2);
+      assert.deepStrictEqual(
+        [first.reported.toSorted(), first.kept, yield* amounts],
+        [["INV-2", "INV-3", "INV-4"], [], before],
+      );
+      const told = (number: string, key: string, believed: string) =>
+        `${number} (${key}) was issued with no amount, so it isn't counted in what you're owed. ${believed}`;
+      assert.deepStrictEqual(
+        notices.map((one) => [one.chatId, one.body]).toSorted(),
+        [
+          told(
+            "INV/26-27/001",
+            "INV-2",
+            "Its issued document shows ₹2,36,000.00: confirm that, or tell your agent the right amount, and it records it.",
+          ),
+          told(
+            "INV/26-27/007",
+            "INV-3",
+            "Its document comes to ₹1,000.00 with today's details, which may not be what it showed when it was issued: confirm that, or tell your agent the right amount, and it records it.",
+          ),
+          told(
+            "INV/26-27/008",
+            "INV-4",
+            "Kin can't tell its amount from a document: tell your agent its amount, and it records it.",
+          ),
+        ].map((body) => ["lead-chat", body]),
+      );
+      // Each is told once; one found later is told even so.
+      assert.deepStrictEqual(yield* Amounts.reportIssuedWithoutAmount(orgId), {
+        reported: [],
+        kept: [],
+      });
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [{ list: "invoices", title: "Later", client: "Invented Acme", state: "open" }],
+      });
+      yield* legacy("INV-5", 9);
+      // With no owner-only chat to take it, it waits for the next start rather than being dropped.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('teammate', ${orgId}, 'teammate', 'Teammate', ${at}, 'member')`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at, left_at)
+        VALUES ('lead-chat-teammate', ${orgId}, 'lead-chat', 'person', 'teammate', 'member', ${at}, ${at})`;
+      yield* sql`UPDATE kin_chats SET shared_at = ${at} WHERE chat_id = 'lead-chat'`;
+      assert.deepStrictEqual(yield* Amounts.reportIssuedWithoutAmount(orgId), {
+        reported: [],
+        kept: ["INV-5"],
+      });
+      assert.lengthOf(notices, 3);
+      yield* sql`UPDATE kin_chats SET shared_at = NULL WHERE chat_id = 'lead-chat'`;
+      assert.deepStrictEqual(yield* Amounts.reportIssuedWithoutAmount(orgId), {
+        reported: ["INV-5"],
+        kept: [],
+      });
+      assert.deepStrictEqual(yield* amounts, [...before, { key: "INV-5", minor: null }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("are issued only with the amount the document asks for, and only when it says it", () =>
+    Effect.gen(function* () {
+      const work = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const issueIt = (entry: string) =>
+        LeadDocuments.issue(scope, { entry: KinRecordKey.make(entry), sourceEventId: work });
+      const next = (key: string) =>
+        OwnerMoney.nextNumber(people, { orgId, key: KinRecordKey.make(key) });
+      // Review 45: the owner's own invoice recipe works out its total from its lines alone.
+      const root = yield* (yield* Workspace.KinWorkspace).root(orgId);
+      const own = (markdown: string) =>
+        Effect.gen(function* () {
+          yield* (yield* FileSystem.FileSystem).writeFileString(
+            `${root}/recipes/invoice/RECIPE.md`,
+            markdown,
+          );
+          yield* git(root, "commit", "-qam", "The owner's invoice", "-m", `Kin-Person: ${ownerId}`);
+        });
+      const starter = STARTER_FILES["recipes/invoice/RECIPE.md"]!;
+      yield* own(starter.replace("      total: total\n", ""));
+      // INV-1 is recorded at ₹1,000.01; its document now prints ₹2,360.00.
+      yield* LeadDocuments.make(
+        scope,
+        invoice({ inputs: { lines: [{ description: "Design", quantity: "2", rate: "₹1,000" }] } }),
+      );
+      assert.strictEqual(latestData().tax.total.text, "₹2,360.00");
+      const differs = yield* issueIt("INV-1").pipe(Effect.flip);
+      assert.strictEqual(
+        differs.message,
+        "INV-1 is recorded at ₹1,000.01, but its document comes to ₹2,360.00. Correct whichever is wrong, the entry's amount or the document's lines or recipe, then issue it. Nothing was issued.",
+      );
+      assert.strictEqual((yield* next("INV-1")).number, "INV/26-27/001");
+      // An owner's recipe from before recipes said which figure is the amount can't issue.
+      yield* own(starter.replace("      total: total\n", "").replace(/^amount: .*\n/m, ""));
+      assert.match(
+        (yield* issueIt("INV-1").pipe(Effect.flip)).message,
+        /^INV-1 wasn't issued: The invoice recipe doesn't say which of its figures is the amount its document asks for, so Kin can't issue with it\. Change the recipe \(writeRecipe\) to declare it/,
+      );
+      // Whatever a list says about amounts, an issued entry carries one.
+      yield* sql`UPDATE kin_registers
+        SET definition_json = json_set(definition_json, '$.amount', json('false'))
+        WHERE org_id = ${orgId} AND register_id = 'invoices'`;
+      assert.match(
+        (yield* issueIt("INV-1").pipe(Effect.flip)).message,
+        /keeps no amounts, and an issued entry always carries its amount/,
+      );
+      assert.strictEqual((yield* next("INV-1")).number, "INV/26-27/001");
+      assert.strictEqual((yield* records.get(orgId, "INV-1"))!.state, "open");
+      // A line's SAC or HSN is a code, as the company's is.
+      for (const sac of ["99 83", "x".repeat(60_000)])
+        assert.match(
+          (yield* LeadDocuments.make(
+            scope,
+            invoice({ inputs: { lines: [{ description: "Design", sac, rate: "₹1,000" }] } }),
+          ).pipe(Effect.flip)).message,
+          /lines \(sac: a SAC or HSN code, 4 to 8 digits\)/,
+        );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("quote in a series of their own, and invoice a quote with its lines", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const records = yield* KinRecords.KinRecords;
+      const asked = yield* turn(10, "Track quotes");
+      yield* LeadMoney.define(scope, { sourceEventId: asked, template: "quotes" });
+      const yes = yield* turn(11, "Yes. Quote Invented Acme for the design work, valid a month");
+      yield* LeadWork.create(scope, {
+        sourceEventId: yes,
+        records: [
+          { list: "quotes", title: "Design work", client: "Invented Acme", due: "2026-12-12" },
+        ],
+      });
+      const lines = [{ description: "Design", sac: "998391", quantity: "2", rate: "₹1,00,000" }];
+      const quote = yield* LeadDocuments.make(scope, {
+        title: "Quotation QT-1",
+        recipe: "quotation",
+        entry: "QT-1",
+        inputs: { lines, terms: "Half on acceptance" },
+        sourceEventId: yes,
+      });
+      assert.deepStrictEqual(
+        [quote.draft, latestData().tax.total.text, latestData().validText],
+        [true, "₹2,36,000.00", "12 Dec 2026"],
+      );
+      const issued = yield* LeadDocuments.issue(scope, {
+        entry: KinRecordKey.make("QT-1"),
+        sourceEventId: yes,
+      });
+      const quoted = (yield* records.get(orgId, "QT-1"))!;
+      assert.deepStrictEqual(
+        [issued.number, quoted.state, quoted.amountMinor, latestData().number],
+        // Numbered, a quote is still a draft: it reads Sent only once it went out.
+        ["QT/26-27/001", "open", 23_600_000, "QT/26-27/001"],
+      );
+      // A quote is no money owed.
+      const money = yield* moneySummary(orgId, Date.parse("2026-11-12T06:00:00.000Z"));
+      assert.deepStrictEqual(money.owed.total, []);
+      // Review 45: its lines and client come from the quote exactly, never alongside it.
+      for (const inputs of [
+        { lines: [{ description: "More", rate: "₹1" }] },
+        { billTo: "Elsewhere" },
+      ])
+        assert.match(
+          (yield* LeadDocuments.make(scope, {
+            title: "Invoice for QT-1",
+            recipe: "invoice",
+            from: KinRecordKey.make("QT-1"),
+            inputs,
+            sourceEventId: yes,
+          }).pipe(Effect.flip)).message,
+          /^from copies QT-1's lines and client exactly, so (lines|billTo) can't be given with it\./,
+        );
+      assert.isUndefined(yield* records.get(orgId, "INV-2"));
+      // Invoiced once: a draft for the same client with the quote's lines; again, the same one.
+      const invoiceIt = LeadDocuments.make(scope, {
+        title: "Invoice for QT-1",
+        recipe: "invoice",
+        from: KinRecordKey.make("QT-1"),
+        sourceEventId: yes,
+      });
+      const made = yield* invoiceIt;
+      assert.deepStrictEqual(
+        [made.entry, made.draft, latestData().tax.total.text, latestData().items[0].sac],
+        ["INV-2", true, "₹2,36,000.00", "998391"],
+      );
+      assert.deepStrictEqual((yield* invoiceIt).entry, "INV-2");
+      const drafted = (yield* records.get(orgId, "INV-2"))!;
+      assert.deepStrictEqual(
+        [drafted.state, drafted.partyId, drafted.title],
+        ["open", quoted.partyId, "Design work"],
+      );
+      // The client's own terms name their days, so those set the due date.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.terms', 'Net 30')
+        WHERE record_id = ${quoted.partyId}`;
+      const billed = yield* LeadDocuments.issue(scope, {
+        entry: KinRecordKey.make("INV-2"),
+        sourceEventId: yes,
+      });
+      const due = (yield* records.get(orgId, "INV-2"))!;
+      assert.strictEqual(due.dueAt! - due.dateAt!, 30 * 86_400_000);
+      assert.deepStrictEqual(
+        [billed.number, (yield* records.get(orgId, "INV-2"))!.amountMinor],
+        ["INV/26-27/001", 23_600_000],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("are made for the owner from the client too, and only for the owner", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const asked = {
+        orgId,
+        recipe: "invoice",
+        entry: KinRecordKey.make("INV-1"),
+        clientRequestId: "make-1",
+      };
+      const someone = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("someone") }];
+      const refused = yield* OwnerDocs.render(someone, asked).pipe(Effect.flip);
+      assert.strictEqual(refused.reason, "not_allowed");
+      const preview = yield* OwnerDocs.render(people, { ...asked, preview: true });
+      assert.deepStrictEqual(
+        [preview.documents, preview.preview?.map((one) => one.name), preview.draft],
+        [[], ["invoice.pdf"], true],
+      );
+      assert.isFalse(
+        yield* Docs.docRow(orgId, { key: "D-1" }).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        ),
+      );
+      const made = yield* OwnerDocs.render(people, asked);
+      assert.deepStrictEqual(
+        [made.documents.map((one) => [one.key, one.version]), made.preview, made.sensitive],
+        [[["D-1", 1]], null, true],
+      );
+      assert.deepStrictEqual(shownCards, [], "no agent turn, so no chat card");
+      // The same request again is the same document; the same id for another request is refused.
+      assert.deepStrictEqual((yield* OwnerDocs.render(people, asked)).documents, made.documents);
+      const reused = yield* OwnerDocs.render(people, { ...asked, title: "Another" }).pipe(
+        Effect.flip,
+      );
+      assert.strictEqual(reused.reason, "not_allowed");
+      // Each list's default is marked; the owner picks another, only one made for a list.
+      const defaults = () =>
+        Effect.map(OwnerDocs.recipes(people, { orgId }), (all) =>
+          all.recipes.filter((one) => one.default === true).map((one) => one.name),
+        );
+      assert.deepStrictEqual(yield* defaults(), ["invoice", "quotation", "receipt"]);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_recipe_defaults (org_id, list, recipe, set_by_person_id, set_at)
+        VALUES (${orgId}, 'invoices', 'gone', ${ownerId}, 0)`;
+      assert.deepStrictEqual(
+        yield* defaults(),
+        ["invoice", "quotation", "receipt"],
+        "a gone recipe is no default",
+      );
+      assert.match(
+        (yield* Effect.flip(OwnerDocs.setDefaultRecipe(people, { orgId, recipe: "report" })))
+          .message,
+        /isn't made for a list's entries/,
+      );
+      assert.include(
+        yield* Effect.flip(OwnerDocs.setDefaultRecipe(someone, { orgId, recipe: "invoice" })),
+        { reason: "not_allowed" },
+      );
+      assert.deepStrictEqual(
+        yield* OwnerDocs.setDefaultRecipe(people, { orgId, recipe: "invoice" }),
+        { list: "invoices", recipe: "invoice" },
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT recipe FROM kin_recipe_defaults WHERE org_id = ${orgId}`,
+        [{ recipe: "invoice" }],
+      );
+      // A preview neither takes an id nor finds what one filed.
+      const again = yield* OwnerDocs.render(people, { ...asked, preview: true });
+      assert.deepStrictEqual(
+        again.preview?.map((one) => one.name),
+        ["invoice.pdf"],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("derive sensitivity from where inputs come from and from what the turn has read", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records
+          SET fields_json = json_set(fields_json, '$.gstin', '27AAAAA1111A1Z5')
+          WHERE org_id = ${orgId} AND title = 'Invented Acme'`;
+      const entry = yield* (yield* KinRecords.KinRecords).get(orgId, KinRecordKey.make("INV-1"));
+      const sensitivity = (inputs: string, given: Record<string, unknown> = {}) =>
+        Effect.gen(function* () {
+          const recipe = parseRecipe(
+            `---\nname: probe\ntitle: Probe\ndescription: probe\nsensitive: false\noutputs: [a.pdf]\ninputs:\n${inputs}\n---\nGo.\n`,
+          );
+          if ("reason" in recipe) return assert.fail(recipe.reason);
+          const gathered = yield* gatherFacts(
+            orgId,
+            recipe,
+            needsEntry(recipe) ? entry : undefined,
+            given,
+          );
+          const assembled = assembleInputs(recipe, given, gathered.facts, gathered.currency);
+          if ("error" in assembled) return assert.fail(assembled.error.message);
+          return jobSensitive(recipe, assembled.inputs, gathered);
+        });
+      const cases: ReadonlyArray<readonly [string, string, Record<string, unknown>, boolean]> = [
+        ["bank details", "  a: {type: text, from: company.bank.accountNumber}", {}, true],
+        ["a company tax id", "  a: {type: text, from: company.gstin}", {}, true],
+        ["the company's name", "  a: {type: text, from: company.legalName}", {}, false],
+        ["the date", "  a: {type: date, from: system.today}", {}, false],
+        ["an entry of a sensitive list", "  a: {type: text, from: entry.title}", {}, true],
+        ["the client's tax id", "  a: {type: text, from: client.gstin}", {}, true],
+        ["the client's address", "  a: {type: text, from: client.address}", {}, false],
+        ["the agent's words", "  a: {type: text}", { a: "hello" }, false],
+        ["an amount the agent gives", "  a: {type: money}", { a: "₹5" }, true],
+        [
+          "rows of a plain list",
+          "  m: {type: month}\n  a: {type: table, from: rows.work, period: m, columns: {key: text}}",
+          { m: "2026-11" },
+          false,
+        ],
+        [
+          "rows of a sensitive list",
+          "  m: {type: month}\n  a: {type: table, from: rows.invoices, period: m, columns: {key: text}}",
+          { m: "2026-11" },
+          true,
+        ],
+        [
+          "payments",
+          "  m: {type: month}\n  a: {type: table, from: payments, period: m, columns: {invoice: text}}",
+          { m: "2026-11" },
+          true,
+        ],
+      ];
+      for (const [what, inputs, given, expected] of cases)
+        assert.strictEqual(yield* sensitivity(inputs, given), expected, what);
+
+      // The agent's own words are plain, even after its turn read something sensitive (H04).
+      const quiet = yield* turn(4, "Write up the plan");
+      const report = (title: string) =>
+        LeadDocuments.make(scope, {
+          title,
+          recipe: "report",
+          inputs: { title, body: "Revenue was as the owner said." },
+          sourceEventId: quiet,
+        });
+      assert.isUndefined((yield* report("Plan")).sensitive);
+      yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+          VALUES (${orgId}, 'wake-4', 0)`;
+      const marked = yield* report("Plan after reading");
+      assert.isUndefined(marked.sensitive);
+      assert.strictEqual((yield* versionsOf(marked.documents[0]!.key)).doc.sensitive, 0);
+      // A doc made a PDF lays out the doc's own text, never retyped, and keeps its label (F38).
+      const prd = yield* Docs.create(
+        orgId,
+        { actor: { _tag: "system" }, via: "import" },
+        {},
+        {
+          title: "Invented PRD",
+          body: "# Goals\n\nShip the **beta**.\n",
+          owner: { _tag: "agent", agentId: lead },
+          summary: "Created",
+          sensitive: true,
+          originKey: "test:prd",
+        },
+      );
+      const asPdf = yield* LeadDocuments.make(scope, {
+        title: "Invented PRD",
+        recipe: "report",
+        doc: prd.row.key,
+        sourceEventId: quiet,
+      });
+      assert.deepStrictEqual(
+        [latestData().title, latestData().blocks.map((block: { kind: string }) => block.kind)],
+        ["Invented PRD", ["heading", "paragraph"]],
+      );
+      assert.isTrue(asPdf.sensitive);
+      const notText = yield* Effect.flip(
+        LeadDocuments.make(scope, {
+          title: "Again",
+          recipe: "report",
+          doc: asPdf.documents[0]!.key,
+          sourceEventId: quiet,
+        }),
+      );
+      assert.match(notText.message, /is a file, not text/);
+      // A worker's brief is plain too; a money recipe it writes is private by its kind.
+      const brief = yield* DocJobs.planJob(
+        orgId,
+        {
+          title: "Note",
+          brief: "A short note.",
+          sourceEventId: quiet,
+        },
+        "lead-chat",
+      );
+      const writing = yield* DocJobs.planJob(
+        orgId,
+        {
+          title: "Quote",
+          recipe: "quote",
+          writeRecipe: true,
+          brief: "A quote.",
+          sourceEventId: quiet,
+        },
+        "lead-chat",
+      );
+      for (const [plan, labelled] of [
+        [brief, false],
+        [writing, true],
+      ] as const)
+        assert.deepStrictEqual(
+          [plan.sensitive, yield* DocJobs.workerJobSensitive(orgId, plan)],
+          [false, labelled],
+          plan.mode,
+        );
+      // A recipe's document is never a worker's job any more.
+      const asWorker = yield* DocJobs.planJob(orgId, invoice(), "lead-chat").pipe(Effect.flip);
+      assert.match(asWorker.message, /Kin makes a recipe's document itself/);
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
+type ReceiptAsk = Omit<typeof LeadDocuments.ReceiptInput.Type, "sourceEventId">;
+/** The owner's tap on Kin's yes/no card, as the chat service runs it: the receipt, then the card. */
+const answerCard = (clientMessageId: string, kind: "yes" | "no") =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const widgetId = `choice:card-${clientMessageId}`;
+    yield* sql.withTransaction(
+      answerReceiptCard({
+        orgId,
+        widgetId,
+        personId: ownerId,
+        confirmed: kind === "yes",
+        via: "tap",
+        now: Date.parse(at),
+      }),
+    );
+    const [card] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+      WHERE widget_id = ${widgetId}`;
+    const state = JSON.parse(card!.state) as {
+      options: Array<{ optionId: string; kind?: string }>;
+    };
+    const option = state.options.find((one) => one.kind === kind)!;
+    const answer = {
+      optionId: option.optionId,
+      personId: ownerId,
+      via: "tap",
+      emoji: null,
+      answeredAt: at,
+    };
+    yield* sql`UPDATE kin_widgets SET state_json = ${JSON.stringify({ ...state, answer })},
+        revision = revision + 1 WHERE widget_id = ${widgetId}`;
+  });
+/**
+ * The agent's receipt as the owner asked for it; one that records money waits for the owner's
+ * Confirm on its card, tapped here, and the agent's call with its proposal reads what it made.
+ */
+const agentReceipt = (asked: string, input: ReceiptAsk) =>
+  Effect.gen(function* () {
+    const first = yield* LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+    if (first.status === "made") return first;
+    yield* answerCard(`kin-receipt:${first.proposal}`, "yes");
+    const made = yield* LeadDocuments.receipt(scope, {
+      sourceEventId: asked,
+      proposal: first.proposal,
+    });
+    if (made.status !== "made") return assert.fail(`expected a receipt, got ${made.status}`);
+    return made;
+  });
+
+describe("the accountant's pack", () => {
+  it.effect("totals what Money totals for the month: paid apart from unpaid, void in neither", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const asked = yield* turn(4, "Track expenses");
+      const proposed = yield* LeadMoney.define(scope, {
+        sourceEventId: asked,
+        template: "expenses",
+      });
+      const work = yield* turn(5, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: work, proposal: proposed.proposal! });
+      const records = yield* KinRecords.KinRecords;
+      const system = { actor: { _tag: "system" as const }, via: "import" as const };
+      const owner = { _tag: "person" as const, personId: ownerId };
+      const day = (iso: string) => Date.parse(`${iso}T12:00:00.000Z`);
+      for (const [key, state, category, minor, dateAt] of [
+        ["taxi", "done", "travel", 100_00, day("2026-11-03")],
+        ["hosting", "done", "software", 50_50, day("2026-11-04")],
+        ["rent", "open", "rent", 400_00, day("2026-11-05")],
+        ["void", "dropped", "travel", 999_00, day("2026-11-06")],
+        ["october", "done", "travel", 7_00, day("2026-10-30")],
+        ["undated", "done", "software", 1_25, undefined],
+      ] as const)
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: `Invented ${key}`,
+          owner,
+          state,
+          category,
+          amount: { minor, currency: "INR" },
+          ...(dateAt === undefined ? {} : { dateAt }),
+          originKey: key,
+        });
+      // Money in on a live invoice counts; on one since voided it doesn't.
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [
+          { list: "invoices", title: "Invented void", client: "Invented Acme", amount: "70" },
+        ],
+      });
+      for (const [key, minor] of [
+        ["INV-1", 300_00],
+        ["INV-2", 70_00],
+      ] as const)
+        yield* records.pay(orgId, system, key, {
+          amount: { minor, currency: "INR" },
+          paidOn: "2026-11-07",
+          originKey: `pay:${key}`,
+        });
+      yield* records.update(orgId, system, "INV-2", { state: "dropped" });
+
+      const recipe = parseRecipe(STARTER_FILES["recipes/accountant-pack/RECIPE.md"]!);
+      if ("reason" in recipe) return assert.fail(recipe.reason);
+      const given = { month: "2026-11" };
+      const gathered = yield* gatherFacts(orgId, recipe, undefined, given);
+      const assembled = assembleInputs(recipe, given, gathered.facts, gathered.currency);
+      if ("error" in assembled) return assert.fail(assembled.error.message);
+      const totals = (sheet: string) => {
+        const decl = recipe.sheets.find((one) => one.name === sheet)!;
+        const rows = assembled.inputs[decl.input];
+        const at = decl.columns.findIndex((one) => one.field === "amount");
+        return sheetCells(Array.isArray(rows) ? (rows as never) : [], decl)
+          .filter((row) => "text" in row[0]! && row[0].text.startsWith("Total"))
+          .map((row) => [
+            (row[0] as { text: string }).text,
+            (row[at] as { number: string }).number,
+          ]);
+      };
+      const money = yield* moneySummary(orgId, Date.parse("2026-11-12T06:00:00.000Z"));
+      assert.deepStrictEqual(money.spent.thisMonth.total, [{ minor: 151_75, currency: "INR" }]);
+      assert.deepStrictEqual(totals("Expenses"), [
+        ["Total software", "51.75"],
+        ["Total travel", "100.00"],
+      ]);
+      assert.deepStrictEqual(totals("Unpaid expenses"), [["Total", "400.00"]]);
+      assert.deepStrictEqual(money.received.thisMonth, [{ minor: 300_00, currency: "INR" }]);
+      assert.deepStrictEqual(totals("Receipts"), [["Total", "300.00"]]);
+      // The voided invoice is listed in the sales register and left out of its total.
+      assert.deepStrictEqual(totals("Sales register"), [["Total", "0.00"]]);
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("receipts", () => {
   it.effect(
-    "derive a job's sensitivity from where its inputs come from, not the recipe's say",
+    "stand on money received: an entry an agent made is recorded as received as it is numbered, and TDS gets none",
     () =>
       Effect.gen(function* () {
-        yield* seed;
-        yield* (yield* SqlClient.SqlClient)`UPDATE kin_records
-        SET fields_json = json_set(fields_json, '$.gstin', '27AAAAA1111A1Z5')
-        WHERE org_id = ${orgId} AND title = 'Invented Acme'`;
-        const entry = yield* (yield* KinRecords.KinRecords).get(orgId, KinRecordKey.make("INV-1"));
-        const sensitivity = (inputs: string, given: Record<string, unknown> = {}) =>
-          Effect.gen(function* () {
-            const recipe = parseRecipe(
-              `---\nname: probe\ntitle: Probe\ndescription: probe\nsensitive: false\noutputs: [a.txt]\ninputs:\n${inputs}\n---\nGo.\n`,
-            );
-            if ("reason" in recipe) return assert.fail(recipe.reason);
-            const gathered = yield* gatherFacts(
-              orgId,
-              recipe,
-              needsEntry(recipe) ? entry : undefined,
-              given,
-            );
-            const assembled = assembleInputs(recipe, given, gathered.facts, gathered.currency);
-            if ("error" in assembled) return assert.fail(assembled.error.message);
-            return jobSensitive(recipe, assembled.inputs, gathered);
-          });
-        const cases: ReadonlyArray<readonly [string, string, Record<string, unknown>, boolean]> = [
-          ["bank details", "  a: {type: text, from: company.bank.accountNumber}", {}, true],
-          ["a company tax id", "  a: {type: text, from: company.gstin}", {}, true],
-          ["the company's name", "  a: {type: text, from: company.legalName}", {}, false],
-          ["the date", "  a: {type: date, from: system.today}", {}, false],
-          ["an entry of a sensitive list", "  a: {type: text, from: entry.title}", {}, true],
-          ["the client's tax id", "  a: {type: text, from: client.gstin}", {}, true],
-          ["the client's name", "  a: {type: text, from: client.placeOfSupply}", {}, false],
-          ["the agent's words", "  a: {type: text}", { a: "hello" }, false],
-          ["an amount the agent gives", "  a: {type: money}", { a: "₹5" }, true],
+        const asked = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        const agent = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
+        const receipt = (input: ReceiptAsk) => agentReceipt(asked, input);
+        const received = (now = Date.parse("2026-11-12T06:00:00.000Z")) =>
+          moneySummary(orgId, now).pipe(Effect.map((summary) => summary.received.thisMonth));
+        // Any first receipt makes the list; an advance stands on its own payment from the start.
+        const advance = yield* receipt({ advance: { amount: "500", receivedOn: "2026-11-05" } });
+        assert.deepStrictEqual(yield* received(), [{ minor: 50_000, currency: "INR" }]);
+        // An agent's own receipts entry, with no payment anywhere, numbered: recorded as received.
+        const { row } = yield* records.create(orgId, agent, {
+          list: "receipts",
+          originKey: "agent:receipt:big",
+          title: "Received from a client",
+          owner: { _tag: "agent", agentId: lead },
+          state: "open",
+          amount: { minor: 99_999_900, currency: "INR" },
+          dateAt: Date.parse("2026-11-06T18:29:59.999Z"),
+          dateAllDay: true,
+        });
+        const numbered = yield* receipt({ entry: KinRecordKey.make(row.key) });
+        assert.isNotNull(numbered.number);
+        const payments = yield* sql<{ minor: number; paidOn: string; voidedAt: number | null }>`
+          SELECT amount_minor AS minor, paid_on AS "paidOn", voided_at AS "voidedAt"
+          FROM kin_record_payments WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+        assert.deepStrictEqual(payments, [
+          { minor: 99_999_900, paidOn: "2026-11-06", voidedAt: null },
+        ]);
+        assert.deepStrictEqual(rendered.at(-1)!.request.inputs.amount, {
+          minor: 99_999_900,
+          currency: "INR",
+        });
+        assert.deepStrictEqual(yield* received(), [{ minor: 100_049_900, currency: "INR" }]);
+        const activity = yield* OwnerWork.get(people, { orgId, key: KinRecordKey.make(row.key) });
+        assert.isTrue(
+          activity.changes.some((change) =>
+            change.fields.some(
+              (one) => one.field === "payment" && one.to === "₹9,99,999.00 on 2026-11-06",
+            ),
+          ),
+        );
+        // Asked again, the same receipt on the same payment; void, it counts for nothing.
+        yield* receipt({ entry: KinRecordKey.make(row.key) });
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_record_payments WHERE record_id = ${row.recordId}`,
+          1,
+        );
+        yield* LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make(row.key),
+          void: true,
+          sourceEventId: asked,
+        });
+        assert.deepStrictEqual(yield* received(), [{ minor: 50_000, currency: "INR" }]);
+        // An entry with no amount can't stand on money, so it gets no number.
+        const { row: empty } = yield* records.create(orgId, agent, {
+          list: "receipts",
+          originKey: "agent:receipt:empty",
+          title: "Received",
+          owner: { _tag: "agent", agentId: lead },
+          state: "open",
+        });
+        const refused = yield* receipt({ entry: KinRecordKey.make(empty.key) }).pipe(Effect.flip);
+        assert.match(refused.message, /no amount or day received/);
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM kin_issued_numbers WHERE record_id = ${empty.recordId}`,
+          0,
+        );
+        // An advance's own payment is no invoice's to make a receipt for.
+        const own = yield* sql<{ paymentId: string }>`SELECT p.payment_id AS "paymentId"
+          FROM kin_record_payments p JOIN kin_records r ON r.record_id = p.record_id
+          WHERE r.key = ${advance.receipt}`;
+        const twice = yield* receipt({ payment: own[0]!.paymentId }).pipe(Effect.flip);
+        assert.match(twice.message, /it is its own receipt/);
+        // TDS a client deducted is no money received: no receipt for it.
+        const tds = yield* records.pay(orgId, agent, "INV-1", {
+          amount: { minor: 10_000, currency: "INR" },
+          paidOn: "2026-11-10",
+          withheld: true,
+          originKey: "tds:1",
+        });
+        const withheld = yield* receipt({ payment: tds.paymentId }).pipe(Effect.flip);
+        assert.match(withheld.message, /TDS the client deducted, not money received/);
+        // Nor does a month's payments table list it as received; the advance it does, as Money does.
+        yield* records.pay(orgId, agent, "INV-1", {
+          amount: { minor: 20_000, currency: "INR" },
+          paidOn: "2026-11-10",
+          originKey: "paid:1",
+        });
+        const recipe = parseRecipe(
+          "---\nname: probe\ntitle: Probe\ndescription: probe\nsensitive: true\noutputs: [a.pdf]\ninputs:\n  m: {type: month}\n  a: {type: table, from: payments, period: m, columns: {invoice: text, amount: money}}\n---\nGo.\n",
+        );
+        if ("reason" in recipe) return assert.fail(recipe.reason);
+        const gathered = yield* gatherFacts(orgId, recipe, undefined, { m: "2026-11" });
+        const table = assembleInputs(recipe, { m: "2026-11" }, gathered.facts, gathered.currency);
+        if ("error" in table) return assert.fail(table.error.message);
+        assert.deepStrictEqual(
+          (table.inputs.a as ReadonlyArray<{ amount: unknown }>).map((one) => one.amount),
           [
-            "rows of a plain list",
-            "  m: {type: month}\n  a: {type: table, from: rows.work, period: m, columns: {key: text}}",
-            { m: "2026-11" },
-            false,
+            { minor: 50_000, currency: "INR" },
+            { minor: 20_000, currency: "INR" },
           ],
-          [
-            "rows of a sensitive list",
-            "  m: {type: month}\n  a: {type: table, from: rows.invoices, period: m, columns: {key: text}}",
-            { m: "2026-11" },
-            true,
-          ],
-          [
-            "payments",
-            "  m: {type: month}\n  a: {type: table, from: payments, period: m, columns: {invoice: text}}",
-            { m: "2026-11" },
-            true,
-          ],
-        ];
-        for (const [what, inputs, given, expected] of cases)
-          assert.strictEqual(yield* sensitivity(inputs, given), expected, what);
+        );
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "record money an agent asks for only on the owner's Confirm, and never stand on money taken back",
+    () =>
+      Effect.gen(function* () {
+        const asked = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        const call = (input: ReceiptAsk) =>
+          LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+        const proposed = (input: ReceiptAsk) =>
+          call(input).pipe(
+            Effect.map((result) =>
+              result.status === "proposed" ? result : assert.fail("expected a proposal"),
+            ),
+          );
+        const live = sql<{ minor: number }>`SELECT amount_minor AS minor FROM kin_record_payments
+          WHERE voided_at IS NULL ORDER BY payment_id`;
+        const numbered = sql`SELECT 1 FROM kin_issued_numbers n JOIN kin_records r
+          ON r.record_id = n.record_id WHERE r.register_id = 'receipts'`;
+        const [client] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${orgId} AND register_id = 'clients'`;
+        const ask = {
+          advance: {
+            client: KinRecordKey.make(client!.key),
+            amount: "500",
+            receivedOn: "2026-11-05",
+          },
+          towards: "Website redesign",
+          mode: "upi",
+        };
+        const advance = yield* proposed(ask);
+        // Nothing is recorded or numbered; the owner's card shows who, how much, when and how.
+        assert.lengthOf(yield* live, 0);
+        assert.lengthOf(yield* numbered, 0);
+        const [card] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+          WHERE widget_id = ${`choice:card-kin-receipt:${advance.proposal}`}`;
+        const detail = String(JSON.parse(card!.state).detail);
+        for (const line of [
+          "Client: Invented Acme",
+          "Amount: ₹500.00",
+          "Received on: 2026-11-05",
+          "Set against: no invoice",
+          "Agent's note: towards Website redesign, by upi",
+        ])
+          assert.include(detail, line);
+        // The same ask is the same card; changed, it is another. Unanswered, it makes nothing.
+        assert.strictEqual((yield* proposed(ask)).proposal, advance.proposal);
+        const more = yield* proposed({ ...ask, advance: { ...ask.advance, amount: "5,000" } });
+        assert.notStrictEqual(more.proposal, advance.proposal);
+        const waiting = yield* Effect.flip(call({ proposal: advance.proposal }));
+        assert.match(waiting.message, /hasn't tapped Confirm/);
+        // Cancel ends a proposal.
+        yield* answerCard(`kin-receipt:${more.proposal}`, "no");
+        assert.match((yield* Effect.flip(call({ proposal: more.proposal }))).message, /said no/);
+        // The owner's tap records exactly what its card showed, once; the agent reads it after.
+        yield* answerCard(`kin-receipt:${advance.proposal}`, "yes");
+        assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
+        const twice = yield* Effect.flip(answerCard(`kin-receipt:${advance.proposal}`, "yes"));
+        assert.include(twice.message, "already answered");
+        const made = yield* call({ proposal: advance.proposal });
+        const again = yield* call({ proposal: advance.proposal });
+        assert.deepStrictEqual(
+          [
+            made.status,
+            again.status === "made" && made.status === "made" && again.receipt === made.receipt,
+          ],
+          ["made", true],
+        );
+        assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
+        // An agent's own receipts entry, standing on no payment, waits for Confirm too.
+        const { row } = yield* records.create(
+          orgId,
+          { actor: { _tag: "agent", agentId: lead }, via: "lead" },
+          {
+            list: "receipts",
+            originKey: "agent:receipt:made-up",
+            title: "Received",
+            owner: { _tag: "agent", agentId: lead },
+            state: "open",
+            amount: { minor: 99_999_900, currency: "INR" },
+            dateAt: Date.parse("2026-11-06T18:29:59.999Z"),
+            dateAllDay: true,
+          },
+        );
+        const entry = yield* proposed({ entry: KinRecordKey.make(row.key) });
+        assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
+        // Changed since its card was shown, it records nothing: not the card's figure, nor the new.
+        yield* records.update(
+          orgId,
+          { actor: { _tag: "agent", agentId: lead }, via: "lead" },
+          row.key,
+          { amount: { minor: 500_000, currency: "INR" } },
+        );
+        const stale = yield* Effect.flip(answerCard(`kin-receipt:${entry.proposal}`, "yes"));
+        assert.match(stale.message, /figures changed since this card was made/);
+        assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("never number a receipt again into money once its payment is taken back", () =>
+    Effect.gen(function* () {
+      const asked = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const system = { actor: { _tag: "system" as const }, via: "import" as const };
+      const call = (input: ReceiptAsk) =>
+        LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
+      const live = sql<{ minor: number }>`SELECT amount_minor AS minor FROM kin_record_payments
+        WHERE voided_at IS NULL ORDER BY payment_id`;
+
+      // A payment already recorded on an invoice is the agent's to make a receipt for.
+      const paid = yield* records.pay(orgId, system, "INV-1", {
+        amount: { minor: 20_000, currency: "INR" },
+        paidOn: "2026-11-10",
+        originKey: "paid:taken-back",
+      });
+      const forPaid = yield* call({ payment: paid.paymentId });
+      if (!("receipt" in forPaid)) return assert.fail("expected a receipt");
+      // Taken back, its receipt is void, and no one numbers it again into money received.
+      yield* records.voidPayment(orgId, system, "INV-1", paid.paymentId);
+      const before = (yield* live).length;
+      const byAgent = yield* Effect.flip(call({ entry: KinRecordKey.make(forPaid.receipt) }));
+      const byOwner = yield* Effect.flip(
+        OwnerMoney.makeReceipt(people, {
+          orgId,
+          key: KinRecordKey.make(forPaid.receipt),
+          clientRequestId: "tap-taken-back",
+        }),
+      );
+      // Nor is it set against an invoice into a payment again.
+      const against = yield* Effect.flip(
+        call({ entry: KinRecordKey.make(forPaid.receipt), against: KinRecordKey.make("INV-1") }),
+      );
+      for (const refused of [byAgent, byOwner, against])
+        assert.match(refused.message, /taken back/);
+      assert.lengthOf(yield* live, before);
+      const listed = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+        (one) => one.key === forPaid.receipt,
+      )!;
+      assert.strictEqual(listed.state, "dropped");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "are numbered in their own series once each, keeping a number the old system gave",
+    () =>
+      Effect.gen(function* () {
+        const asked = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        const system = { actor: { _tag: "system" as const }, via: "import" as const };
+        const receipt = (input: ReceiptAsk) => agentReceipt(asked, input);
+        // An advance the old system gave a receipt for, recorded on the invoice by an import,
+        // its number in the payment's note as the import writes it.
+        const imported = yield* records.pay(orgId, system, "INV-1", {
+          amount: { minor: 40_000, currency: "INR" },
+          paidOn: "2026-10-01",
+          note: "Advance received; receipt note QST-RN/2026-27/007",
+          originKey: "import:payment:1",
+        });
+        const adopted = yield* receipt({ payment: imported.paymentId });
+        assert.deepStrictEqual(
+          [adopted.number, adopted.problems, adopted.documents.length],
+          ["QST-RN/2026-27/007", [], 1],
+        );
+        // Kin's next is past the highest the old system gave, in the same series.
+        const later = yield* records.pay(orgId, system, "INV-1", {
+          amount: { minor: 60_001, currency: "INR" },
+          paidOn: "2026-11-12",
+          originKey: "payment:2",
+        });
+        const next = yield* receipt({
+          payment: later.paymentId,
+          mode: "upi",
+          reference: "Invented UTR 123",
+        });
+        assert.strictEqual(next.number, "QST-RN/26-27/008");
+        const { request, data } = rendered.at(-1)!;
+        assert.deepStrictEqual(
+          [
+            request.recipe.name,
+            request.inputs.number,
+            request.inputs.client,
+            request.inputs.towards,
+            request.inputs.mode,
+            (data as Record<string, any>).words,
+          ],
+          [
+            "receipt",
+            "QST-RN/26-27/008",
+            "Invented Acme",
+            "Invoice INV-1",
+            "upi",
+            "Rupees Six Hundred and One Paise Only",
+          ],
+        );
+        // Asked again, by the agent or the owner, it is the same receipt, number and file.
+        const renders = rendered.length;
+        const again = yield* receipt({ payment: later.paymentId });
+        const owners = yield* OwnerMoney.makeReceipt(people, {
+          orgId,
+          paymentId: later.paymentId,
+          clientRequestId: "tap-1",
+        });
+        assert.deepStrictEqual(
+          [again.receipt, again.number, again.documents, owners.receipt.number],
+          [next.receipt, next.number, next.documents, next.number],
+        );
+        assert.strictEqual(rendered.length, renders, "nothing rendered again");
+
+        // An advance before any invoice, set against one later, once.
+        const [client] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${orgId} AND register_id = 'clients'`;
+        const advance = yield* receipt({
+          advance: {
+            client: KinRecordKey.make(client!.key),
+            amount: "500",
+            receivedOn: "2026-11-05",
+          },
+          towards: "Website redesign",
+        });
+        assert.strictEqual(advance.number, "QST-RN/26-27/009");
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            {
+              list: "invoices",
+              title: "Website redesign",
+              client: "Invented Acme",
+              amount: "2,000",
+              state: "open",
+            },
+          ],
+        });
+        const against = {
+          entry: KinRecordKey.make(advance.receipt),
+          against: KinRecordKey.make("INV-2"),
+        };
+        assert.strictEqual((yield* receipt(against)).number, advance.number);
+        yield* receipt(against);
+        const elsewhere = yield* receipt({ ...against, against: KinRecordKey.make("INV-1") }).pipe(
+          Effect.flip,
+        );
+        assert.match(elsewhere.message, /already set against INV-2/);
+        // The invoice shows the advance and what is left; one paid on its day isn't an advance.
+        yield* LeadDocuments.make(scope, invoice({ entry: "INV-2", title: "Invoice INV-2" }));
+        assert.deepStrictEqual(
+          [rendered.at(-1)!.request.inputs.paid, latestData().balance.text],
+          [
+            [
+              {
+                receipt: "QST-RN/26-27/009",
+                amount: { minor: 50_000, currency: "INR" },
+                paidOn: "2026-11-05",
+                kind: "advance",
+              },
+            ],
+            "₹1,500.00",
+          ],
+        );
+        // Every payment settles it, not only the advance: nothing is left on INV-1.
+        yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1 again" }));
+        assert.deepStrictEqual(
+          [
+            (latestData().paidLines as ReadonlyArray<Record<string, unknown>>).map((one) => [
+              one.kind,
+              one.receipt,
+              one.paidText,
+            ]),
+            latestData().balance.text,
+          ],
+          [
+            [
+              ["advance", "QST-RN/2026-27/007", "1 Oct 2026"],
+              ["received", "QST-RN/26-27/008", "12 Nov 2026"],
+            ],
+            "₹0.00",
+          ],
+        );
+
+        // What a screen lists: newest first, who from, towards, the invoice and the PDF.
+        const listed = yield* OwnerMoney.receipts(people, { orgId });
+        assert.deepStrictEqual(
+          listed.receipts.map((one) => [
+            one.number,
+            one.receivedOn,
+            one.receivedFrom?.title,
+            one.towards,
+            one.invoice,
+            one.advance,
+            one.document !== null,
+          ]),
+          [
+            [
+              "QST-RN/26-27/008",
+              "2026-11-12",
+              "Invented Acme",
+              "Invoice INV-1",
+              "INV-1",
+              false,
+              true,
+            ],
+            [
+              "QST-RN/26-27/009",
+              "2026-11-05",
+              "Invented Acme",
+              "Website redesign",
+              "INV-2",
+              true,
+              true,
+            ],
+            [
+              "QST-RN/2026-27/007",
+              "2026-10-01",
+              "Invented Acme",
+              "Invoice INV-1",
+              "INV-1",
+              false,
+              true,
+            ],
+          ],
+        );
+        // A payment noted with the invoice's own number gets a receipt number of its own.
+        const issued = yield* LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make("INV-2"),
+          sourceEventId: asked,
+        });
+        const balance = yield* records.pay(orgId, system, "INV-2", {
+          amount: { minor: 150_000, currency: "INR" },
+          paidOn: "2026-11-12",
+          note: issued.number!,
+          originKey: "payment:3",
+        });
+        assert.strictEqual(
+          (yield* receipt({ payment: balance.paymentId })).number,
+          "QST-RN/26-27/010",
+        );
+        // And each payment on the invoice carries its receipt.
+        const detail = yield* OwnerWork.get(people, { orgId, key: KinRecordKey.make("INV-1") });
+        assert.deepStrictEqual(
+          detail.payments?.map((one) => one.receipt?.number),
+          ["QST-RN/26-27/008", "QST-RN/2026-27/007"],
+        );
+
+        // Ways back: a voided receipt keeps its number and the payment gets a new one; an
+        // advance whose payment was taken back stays void, set against an invoice or not.
+        yield* LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make(next.receipt),
+          void: true,
+          sourceEventId: asked,
+        });
+        const remade = yield* receipt({ payment: later.paymentId });
+        assert.deepStrictEqual(
+          [remade.receipt !== next.receipt, remade.number],
+          [true, "QST-RN/26-27/011"],
+        );
+        // The void one stays void, by the owner's Undo void or an edit: two would count it twice.
+        const backs = [
+          Effect.flip(
+            OwnerMoney.unvoidEntry(people, { orgId, key: KinRecordKey.make(next.receipt) }),
+          ),
+          Effect.flip(records.update(orgId, system, next.receipt, { state: "open" })),
+        ] as const;
+        for (const back of backs)
+          assert.match((yield* back).message, /void receipt, and stays void/);
+        const held = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+          (one) => one.key === advance.receipt,
+        )!.paymentId!;
+        yield* records.voidPayment(orgId, system, "INV-2", held);
+        const refused = yield* Effect.flip(receipt(against));
+        assert.match(refused.message, /taken back, so it is void/);
+        assert.strictEqual(
+          (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+            (one) => one.key === advance.receipt,
+          )!.state,
+          "dropped",
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "take their payment, invoice, number and amount only from what Kin recorded, and only imported notes' numbers",
+    () =>
+      Effect.gen(function* () {
+        const asked = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        const system = { actor: { _tag: "system" as const }, via: "import" as const };
+        const owner = {
+          actor: { _tag: "person" as const, personId: ownerId },
+          via: "owner" as const,
+        };
+        const receipt = (input: ReceiptAsk) => agentReceipt(asked, input);
+        const invoiceFor = (title: string, amount: string, client?: string) =>
+          LeadWork.create(scope, {
+            sourceEventId: asked,
+            records: [
+              {
+                list: "invoices",
+                title,
+                amount,
+                state: "open",
+                ...(client === undefined ? {} : { client }),
+              },
+            ],
+          }).pipe(Effect.map((made) => made.records[0]!.key));
+        const pay = (
+          writer: typeof owner | typeof system,
+          key: string,
+          minor: number,
+          originKey: string,
+          note?: string,
+        ) =>
+          records.pay(orgId, writer, key, {
+            amount: { minor, currency: "INR" },
+            paidOn: "2026-10-01",
+            originKey,
+            ...(note === undefined ? {} : { note }),
+          });
+        const retainer = yield* invoiceFor("Retainer", "50,000", "Invented Acme");
+        // The old system's receipt for an advance, as the import writes it; and one it noted
+        // with a number Kin could never issue after.
+        const imported = yield* pay(
+          system,
+          retainer,
+          1_000_000,
+          "import:oldbooks:payment:adv",
+          "Advance received; receipt note QST-RN/2026-27/001",
+        );
+        const long = yield* pay(
+          system,
+          retainer,
+          100,
+          "import:oldbooks:payment:long",
+          "Old ref QST-RN/26-27/999999999",
+        );
+        // Notes typed in Kin: a long number taken back at once, and a client's PO number.
+        const blocking = yield* pay(
+          owner,
+          "INV-1",
+          100,
+          "owner:blocking",
+          "ref QST-RN/26-27/999999999",
+        );
+        yield* records.voidPayment(orgId, owner, "INV-1", blocking.paymentId);
+        const po = yield* pay(
+          owner,
+          "INV-1",
+          100,
+          "owner:po",
+          "Cheque 004512 against client PO/2026-27/118",
+        );
+        const shownFor = (paymentId: string) =>
+          OwnerWork.get(people, { orgId, key: KinRecordKey.make("INV-1") }).pipe(
+            Effect.map(
+              (detail) => detail.payments?.find((one) => one.paymentId === paymentId)?.receipt,
+            ),
+          );
+        assert.isNull(yield* shownFor(po.paymentId));
+        const fromPo = yield* receipt({ payment: po.paymentId });
+        assert.deepStrictEqual([fromPo.number, fromPo.problems], ["QST-RN/26-27/002", []]);
+        assert.strictEqual(
+          (yield* receipt({ payment: imported.paymentId })).number,
+          "QST-RN/2026-27/001",
+        );
+        const fromLong = yield* receipt({ payment: long.paymentId });
+        assert.deepStrictEqual(
+          [fromLong.number, fromLong.problems.length],
+          ["QST-RN/26-27/003", 1],
+        );
+
+        // No one else ties a receipt to a payment or an invoice, or numbers one.
+        const tiny = yield* pay(owner, "INV-1", 100, "owner:tiny");
+        const forged = yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            {
+              list: "receipts",
+              title: "Received in full",
+              amount: "9,99,999",
+              fields: { payment: tiny.paymentId, invoice: "INV-1" },
+            },
+          ],
+        }).pipe(Effect.flip);
+        assert.match(forged.message, /Kin writes a receipt's payment, invoice and number/);
+        const plain = yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [{ list: "receipts", title: "Received in full", amount: "9,99,999" }],
+        });
+        const plainKey = plain.records[0]!.key;
+        for (const patch of [
+          { fields: { payment: tiny.paymentId } },
+          { fields: { invoice: "INV-1" } },
+          { fields: { number: "QST-RN/26-27/050" } },
+        ])
+          assert.match(
+            (yield* records.update(orgId, owner, plainKey, patch).pipe(Effect.flip)).message,
+            /Kin writes a receipt's payment/,
+          );
+        // A row tied by hand before this rule isn't the payment's receipt either.
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.payment',
+            ${tiny.paymentId}) WHERE org_id = ${orgId} AND key = ${plainKey}`;
+        const forTiny = yield* receipt({ payment: tiny.paymentId });
+        assert.notStrictEqual(forTiny.receipt, plainKey);
+        assert.deepStrictEqual(rendered.at(-1)!.request.inputs.amount, {
+          minor: 100,
+          currency: "INR",
+        });
+        // An issued receipt's amount stays what was received, and prints as its payment's.
+        const edit = yield* LeadWork.update(scope, {
+          key: KinRecordKey.make(forTiny.receipt),
+          sourceEventId: asked,
+          amount: "9,99,999",
+        }).pipe(Effect.flip);
+        assert.match(edit.message, /amount stays what was received/);
+        const byOwner = yield* records
+          .update(orgId, owner, forTiny.receipt, {
+            amount: { minor: 99_999_900, currency: "INR" },
+          })
+          .pipe(Effect.flip);
+        assert.match(byOwner.message, /amount stays what was received/);
+        yield* sql`UPDATE kin_records SET amount_minor = 99999900
+          WHERE org_id = ${orgId} AND key = ${forTiny.receipt}`;
+        // Its document would print its payment's amount, so with the entry saying otherwise it
+        // isn't made at all: a document never shows a total its entry doesn't.
+        const again = yield* LeadDocuments.make(scope, {
+          title: "Receipt again",
+          recipe: "receipt",
+          entry: forTiny.receipt,
+          sourceEventId: asked,
+        }).pipe(Effect.flip);
+        assert.match(again.message, /comes to ₹1\.00, but RCT-\d+ is recorded at ₹9,99,999\.00/);
+        assert.deepStrictEqual(rendered.at(-1)!.request.inputs.amount, {
+          minor: 100,
+          currency: "INR",
+        });
+
+        // An advance goes only to an invoice of its own client, never past what it still owes.
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [{ list: "clients", title: "Invented Beta" }],
+        });
+        const [acme] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${orgId} AND register_id = 'clients' AND title = 'Invented Acme'`;
+        const forBeta = yield* invoiceFor("Beta work", "300", "Invented Beta");
+        const unbilled = yield* invoiceFor("No client yet", "1,000");
+        const small = yield* invoiceFor("Small job", "300", "Invented Acme");
+        const nobody = yield* receipt({ advance: { amount: "200", receivedOn: "2026-11-05" } });
+        const advance = yield* receipt({
+          advance: {
+            client: KinRecordKey.make(acme!.key),
+            amount: "500",
+            receivedOn: "2026-11-05",
+          },
+        });
+        const setAgainst = (entry: string, against: string) =>
+          receipt({ entry: KinRecordKey.make(entry), against: KinRecordKey.make(against) }).pipe(
+            Effect.flip,
+            Effect.map((error) => error.message),
+          );
+        assert.match(yield* setAgainst(nobody.receipt, unbilled), /names no client/);
+        assert.match(yield* setAgainst(advance.receipt, forBeta), /another client/);
+        assert.match(yield* setAgainst(advance.receipt, unbilled), /another client/);
+        assert.match(
+          yield* setAgainst(advance.receipt, small),
+          /has ₹300\.00 left to pay, less than the ₹500\.00 advance/,
+        );
+        yield* receipt({
+          entry: KinRecordKey.make(advance.receipt),
+          against: KinRecordKey.make(retainer),
+        });
+        // Set against, it is a payment on the invoice like any other, linked by id.
+        const onRetainer = yield* OwnerWork.get(people, {
+          orgId,
+          key: KinRecordKey.make(retainer),
+        });
+        const setPayment = onRetainer.payments!.find((one) => one.paidOn === "2026-11-05")!;
+        assert.deepStrictEqual(
+          [setPayment.amount.minor, setPayment.receipt?.number],
+          [50_000, advance.number],
+        );
+        const linked = yield* sql<{ key: string }>`SELECT t.key FROM kin_record_links l
+          JOIN kin_records r ON r.org_id = l.org_id AND r.record_id = l.record_id
+          JOIN kin_records t ON t.org_id = l.org_id AND t.record_id = l.target
+          WHERE l.org_id = ${orgId} AND r.key = ${advance.receipt} AND l.kind = 'record'
+            AND t.register_id = 'invoices'`;
+        assert.deepStrictEqual(linked, [{ key: retainer }]);
+
+        // A void receipt's number never shows against its advance; the one made after it does.
+        const advances = () =>
+          LeadDocuments.make(
+            scope,
+            invoice({ entry: retainer, title: `Invoice ${retainer} ${rendered.length}` }),
+          ).pipe(
+            Effect.map(() =>
+              (
+                rendered.at(-1)!.request.inputs.paid as ReadonlyArray<{
+                  receipt: string | null;
+                  paidOn: string;
+                }>
+              ).find((one) => one.paidOn === "2026-11-05"),
+            ),
+          );
+        yield* LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make(advance.receipt),
+          void: true,
+          sourceEventId: asked,
+        });
+        assert.isNull((yield* advances())!.receipt);
+        const remade = yield* receipt({ payment: setPayment.paymentId });
+        assert.notStrictEqual(remade.number, advance.number);
+        assert.strictEqual((yield* advances())!.receipt, remade.number);
+      }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("worker document jobs", () => {
   it.effect(
     "file only the named files under out/, with provenance from the job's row, never the report",
     () =>
       Effect.gen(function* () {
         yield* seed;
         const fs = yield* FileSystem.FileSystem;
+        const sql = yield* SqlClient.SqlClient;
         const config = yield* ServerConfig;
         const collector = yield* DocJobs.KinDocCollector;
-        const job = (workerId: KinWorkerId) => docJob(workerId, { worker: "running" });
         const report: WorkerReport = {
           result: "done",
-          // The worker claims a number, a recipe and a file Kin never filed; none of it is used.
+          // The worker claims a number and a recipe Kin never gave; none of it is used.
           summary: "Made INV/99-00/999 with recipe evil at commit deadbeef.",
           evidence: [
-            { kind: "file", ref: "out/invoice.pdf", note: "number INV/99-00/999" },
+            { kind: "file", ref: "out/note.pdf", note: "number INV/99-00/999" },
             { kind: "file", ref: "out/linked.pdf" },
-            { kind: "file", ref: "out/extra.pdf" },
             { kind: "file", ref: "../../etc/passwd" },
           ],
           openQuestions: [],
@@ -442,17 +2199,20 @@ describe("document jobs", () => {
           parsed: true,
         };
         const first = KinWorkerId.make("wk-first");
-        const prepared = yield* job(first);
-        const worker = { orgId, workerId: first, threadId: ThreadId.make(`kin-work:${first}`) };
-        const result = yield* collector.collect(worker, true, report);
+        const prepared = yield* docJob(first, { worker: "running" });
+        const worker = { orgId, workerId: first, threadId: threadOf(first) };
+        const result = settled(yield* collector.collect(worker, true, report));
         assert.deepStrictEqual(
           result?.evidence.map((item) => [item.kind, item.ref]),
           [["link", "D-1"]],
         );
         assert.match(result!.summary, /^Kin filed the file as D-1\./);
-        assert.strictEqual(result!.openQuestions.length, 3);
+        assert.deepStrictEqual(result!.openQuestions, [
+          "../../etc/passwd wasn't saved: it isn't a plain file name in out/.",
+          "linked.pdf wasn't saved: it's a link.",
+        ]);
         assert.isFalse(yield* fs.exists(prepared.worktree), "the worktree goes with its inputs");
-        const doc = yield* Docs.docRow(orgId, { key: "D-1" });
+        const { doc } = yield* versionsOf("D-1");
         const version = Docs.toVersion((yield* Docs.versionOf(orgId, doc.recordId))!);
         assert.deepStrictEqual(
           {
@@ -461,17 +2221,15 @@ describe("document jobs", () => {
             inputsHash: version.file?.inputsHash,
             workerId: version.file?.workerId,
             number: version.file?.number,
-            draft: version.file?.draft,
             answered: version.provenance.answered?.messageId,
             sensitive: doc.sensitive,
           },
           {
-            name: "invoice.pdf",
-            recipe: { name: "invoice", commit: prepared.base },
+            name: "note.pdf",
+            recipe: null,
             inputsHash: "inputs-a",
             workerId: first,
             number: null,
-            draft: true,
             answered: "msg-3",
             sensitive: 1,
           },
@@ -485,47 +2243,351 @@ describe("document jobs", () => {
           ["D-1"],
         );
         // Collecting again changes nothing; a file doc's text isn't edited.
-        yield* collector.collect(worker, true, report);
-        assert.lengthOf(yield* Docs.history(orgId, doc.recordId, { limit: 10 }), 1);
+        settled(yield* collector.collect(worker, true, report));
+        assert.lengthOf((yield* versionsOf("D-1")).history, 1);
         const writer = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
         const edit = yield* Docs.rewrite(
           orgId,
           writer,
           {},
           { key: "D-1" },
-          {
-            body: "text",
-            baseVersion: 1,
-            summary: "x",
-            originKey: "edit-1",
-          },
+          { body: "text", baseVersion: 1, summary: "x", originKey: "edit-1" },
         ).pipe(Effect.flip);
         assert.match(edit.message, /generated file/);
-        // The same recipe and entry again is the next version of the same doc.
-        const second = KinWorkerId.make("wk-second");
-        yield* job(second);
-        yield* collector.collect(
-          { ...worker, workerId: second, threadId: ThreadId.make(`kin-work:${second}`) },
-          true,
-          report,
+        // A different outcome for the same job never replaces the stored one.
+        const [row] = yield* sql<{ outcomeJson: string }>`SELECT outcome_json AS "outcomeJson"
+          FROM kin_doc_jobs WHERE worker_id = ${first}`;
+        const differing = yield* DocJobs.recordOutcome(orgId, first, '{"summary":"other"}').pipe(
+          Effect.flip,
         );
-        const versions = yield* Docs.history(orgId, doc.recordId, { limit: 10 });
-        assert.deepStrictEqual(
-          versions.map((one) => one.version),
-          [2, 1],
-        );
+        assert.strictEqual(differing.reason, "not_allowed");
         // A run that didn't finish files nothing, and the card says why.
         const third = KinWorkerId.make("wk-third");
-        yield* job(third);
-        const stopped = yield* collector.collect(
-          { ...worker, workerId: third, threadId: ThreadId.make(`kin-work:${third}`) },
-          false,
-          report,
+        yield* docJob(third, { worker: "running" });
+        const stopped = settled(
+          yield* collector.collect(
+            { ...worker, workerId: third, threadId: threadOf(third) },
+            false,
+            report,
+          ),
         );
         assert.strictEqual(stopped?.result, "blocked");
         assert.match(cards.at(-1)?.lastError ?? "", /didn't finish/);
+        assert.strictEqual(
+          yield* DocJobs.recordOutcome(orgId, first, row!.outcomeJson),
+          row!.outcomeJson,
+        );
       }).pipe(Effect.provide(layer)),
   );
+
+  it.effect("keep a recipe a worker wrote only once its sample renders", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const workspace = yield* Workspace.KinWorkspace;
+      const write = (n: number) => writeQuote(n);
+      failing.reason = "quote.pdf: template.typ:2:1: error: unknown variable: blcks";
+      const refused = yield* write(1);
+      assert.match(
+        refused!.summary,
+        /didn't keep the quote recipe: its sample didn't render.*blcks/,
+      );
+      assert.isUndefined((yield* workspace.recipes(orgId)).find((one) => one.name === "quote"));
+      failing.reason = undefined;
+      const kept = yield* write(2);
+      assert.match(kept!.summary, /rendered the quote recipe's sample and committed it/);
+      assert.isDefined((yield* workspace.recipes(orgId)).find((one) => one.name === "quote"));
+      // Review 45: a numbered recipe that doesn't say which figure its document asks for goes back.
+      const unpriced = STARTER_FILES["recipes/invoice/RECIPE.md"]!.replace(
+        "name: invoice",
+        "name: quote",
+      )
+        .replace(/^amount: .*\n/m, "")
+        .replace("[invoice.pdf]", "[quote.pdf]");
+      const back = settled(
+        yield* Effect.flatten(
+          quoteJob(3, 0, {
+            recipe: unpriced,
+            // The seed's company has the starter sample's invented GSTIN and account.
+            sample: STARTER_FILES["recipes/invoice/sample.json"]!.replace(
+              "29AAAAA1111A1Z5",
+              "29CCCCC3333C1Z5",
+            ).replace("000111222333", "999888777666"),
+            template: STARTER_FILES["recipes/invoice/template.typ"]!,
+          }),
+        ),
+      );
+      assert.match(back!.summary, /it is numbered, so its front matter declares amount/);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "send a recipe writer back with what keeps its recipe out, a bounded number of times",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const fs = yield* FileSystem.FileSystem;
+        const sql = yield* SqlClient.SqlClient;
+        const config = yield* ServerConfig;
+        const workspace = yield* Workspace.KinWorkspace;
+        const collector = yield* DocJobs.KinDocCollector;
+        // The owner's old invoice, invented, sent in the chat the turn answers in.
+        const referenceId = "kin-chat-00000000-0000-4000-8000-0000000000aa-pdf";
+        const pdf = "%PDF-1.7\n% an invented reference invoice\n%%EOF\n";
+        yield* fs.makeDirectory(config.attachmentsDir, { recursive: true });
+        yield* fs.writeFileString(`${config.attachmentsDir}/${referenceId}.pdf`, pdf);
+        const asked = yield* turn(4, "Make our invoices look like this");
+        const sent_ = [
+          {
+            type: "file",
+            id: referenceId,
+            name: "Old invoice 12.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: pdf.length,
+          },
+        ];
+        yield* sql`UPDATE kin_messages SET attachments_json = ${JSON.stringify(sent_)}
+          WHERE message_id = 'msg-4'`;
+        yield* sql`INSERT INTO kin_message_attachments (attachment_id, org_id, chat_id, message_id)
+          VALUES (${referenceId}, ${orgId}, 'lead-chat', 'msg-4')`;
+        const input = {
+          title: "Letterhead",
+          recipe: "letterhead",
+          writeRecipe: true,
+          brief: "Match the reference.",
+          references: [referenceId],
+          sourceEventId: asked,
+        };
+        const elsewhere = yield* DocJobs.planJob(orgId, input, "other-chat").pipe(Effect.flip);
+        assert.match(elsewhere.message, /not a file in this chat/);
+        // A recipe written from the owner's own documents is labelled from the start.
+        const plan = yield* DocJobs.planJob(orgId, input, "lead-chat");
+        assert.deepStrictEqual(
+          [plan.sensitive, plan.references.map((one) => [one.name, one.mimeType])],
+          [true, [["Old invoice 12.pdf", "application/pdf"]]],
+        );
+
+        /** A recipe job as `document` starts it, its references copied in, in a project. */
+        const start = (workerId: KinWorkerId, recipe: string) =>
+          Effect.gen(function* () {
+            const job = yield* workspace.prepare(orgId, workerId, {});
+            yield* copyReferences(job.worktree, plan.references);
+            yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id, kind,
+                thread_id, model_json, provenance_json, status, started_at, ended_at, title,
+                chat_id, context, project_id)
+              VALUES (${workerId}, ${orgId}, ${lead}, 'wake-4', 'build', ${threadOf(workerId)},
+                '{}', '{}', 'running', 0, NULL, 'Letterhead recipe', 'lead-chat', 'private',
+                'project-kin')`;
+            yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode,
+                recipe, recipe_commit, entry_record_id, inputs_sha256, number, sensitive,
+                doc_origin, worktree_path, branch, chat_id, audience, created_at, references_json)
+              VALUES (${orgId}, ${workerId}, ${lead}, 'wake-4', 'recipe', ${recipe}, ${job.base},
+                NULL, 'brief', NULL, 1, ${`recipe:${recipe}`}, ${job.worktree}, ${job.branch},
+                'lead-chat', 'owner_only', 0, ${JSON.stringify(plan.references)})`;
+            const folder = `${job.worktree}/recipes/${recipe}`;
+            yield* fs.makeDirectory(folder, { recursive: true });
+            yield* fs.writeFileString(
+              `${folder}/RECIPE.md`,
+              STARTER_FILES["recipes/report/RECIPE.md"]!.replace(
+                "name: report",
+                `name: ${recipe}`,
+              ).replace("[report.pdf]", `[${recipe}.pdf]`),
+            );
+            yield* fs.writeFileString(`${folder}/template.typ`, '#let d = json("/inputs.json")\n');
+            yield* fs.writeFileString(
+              `${folder}/sample.json`,
+              STARTER_FILES["recipes/report/sample.json"]!,
+            );
+            const collect = collector.collect(
+              { orgId, workerId, threadId: threadOf(workerId) },
+              true,
+              { ...pdfReport, evidence: [] },
+            );
+            return { worktree: job.worktree, folder, collect };
+          });
+
+        const look = KinWorkerId.make("wk-look");
+        const job = yield* start(look, "letterhead");
+        // An image the writer drew for the template, which the owner sees before clearing a label.
+        yield* fs.writeFile(
+          `${job.folder}/stamp.png`,
+          new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        );
+        const copied = `${job.worktree}/in/references/Old invoice 12.pdf`;
+        assert.strictEqual(yield* fs.readFileString(copied), pdf);
+        assert.strictEqual(Number((yield* fs.stat(copied)).mode) & 0o222, 0, "read-only");
+        // A copy of the reference in the recipe: never kept, so the writer is told to remove it.
+        yield* fs.writeFileString(`${job.folder}/old.pdf`, pdf);
+        assert.strictEqual(yield* job.collect, DocJobs.CONTINUED);
+        assert.match(
+          sent.at(-1)!.text,
+          /old\.pdf is a copy of the owner's reference Old invoice 12\.pdf/,
+        );
+        // Then Typst's own error.
+        yield* fs.remove(`${job.folder}/old.pdf`);
+        failing.reason = "letterhead.pdf: template.typ:1:1: error: unknown variable: oops";
+        assert.strictEqual(yield* job.collect, DocJobs.CONTINUED);
+        assert.match(sent.at(-1)!.text, /its sample didn't render: .*unknown variable: oops/);
+        // Rendered, its first page goes back once to set beside the references.
+        failing.reason = undefined;
+        assert.strictEqual(yield* job.collect, DocJobs.CONTINUED);
+        assert.match(sent.at(-1)!.text, /in\/rendered-3\/page-1\.png/);
+        assert.isTrue(yield* fs.exists(`${job.worktree}/in/rendered-3/page-1.png`));
+        const kept = settled(yield* job.collect);
+        assert.match(kept!.summary, /committed it/);
+        assert.match(kept!.summary, /kin_recipe_undo with recipe letterhead/);
+        assert.deepStrictEqual(
+          [sent.length, new Set(sent.map((one) => one.threadId)).size],
+          [3, 1],
+        );
+        // The owner sees the new look on the task card: the sample's PDF and its first page.
+        assert.lengthOf(cards.at(-1)!.documents, 2);
+        const listed = yield* OwnerDocs.recipes(people, { orgId });
+        const letterhead = listed.recipes.find((one) => one.name === "letterhead");
+        assert.deepStrictEqual([letterhead?.labelled, letterhead?.files], [true, ["stamp.png"]]);
+        assert.isFalse(yield* fs.exists(job.worktree));
+
+        // A writer that never fixes it is sent back MAX_FOLLOW_UPS times, then the job ends.
+        const leaky = yield* start(KinWorkerId.make("wk-leaky"), "memo");
+        yield* fs.writeFileString(
+          `${leaky.folder}/sample.json`,
+          JSON.stringify({ title: "For Invented Acme", body: "Invented words." }),
+        );
+        for (let pass = 0; pass < DocJobs.MAX_FOLLOW_UPS; pass += 1) {
+          assert.strictEqual(yield* leaky.collect, DocJobs.CONTINUED);
+          assert.match(
+            sent.at(-1)!.text,
+            /sample\.json holds the company's or a client's real details/,
+          );
+        }
+        const refused = settled(yield* leaky.collect);
+        assert.match(refused!.summary, /didn't keep the memo recipe: its sample\.json holds/);
+        assert.lengthOf(sent, 3 + DocJobs.MAX_FOLLOW_UPS);
+        assert.isUndefined((yield* workspace.recipes(orgId)).find((one) => one.name === "memo"));
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "label every document made from a recipe a sensitive job wrote, until the owner clears it",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        let n = 0;
+        const quote = (preview = false) =>
+          OwnerDocs.render(people, {
+            orgId,
+            recipe: "quote",
+            inputs: { title: "Quote", body: "Invented plain words." },
+            clientRequestId: `quote-${(n += 1)}`,
+            preview,
+          }).pipe(Effect.map((made) => made.sensitive));
+        const listed = (name = "quote") =>
+          Effect.map(OwnerDocs.recipes(people, { orgId }), (all) =>
+            all.recipes.find((one) => one.name === name),
+          );
+        const labelled = (name = "quote") =>
+          Effect.map(listed(name), (one) => one?.labelled === true);
+        const clear = Effect.gen(function* () {
+          const commit = (yield* listed())!.commit;
+          return yield* OwnerDocs.labelRecipe(people, {
+            orgId,
+            recipe: "quote",
+            commit,
+            sensitive: false,
+          });
+        });
+        assert.match((yield* writeQuote(1, 1))!.summary, /committed it/);
+        assert.deepStrictEqual(
+          [yield* quote(), yield* quote(true), yield* labelled()],
+          [true, true, true],
+        );
+        // A plain job's change built on it keeps the label.
+        assert.match((yield* writeQuote(2))!.summary, /committed it/);
+        assert.isTrue(yield* quote());
+        const seen = (yield* listed())!.commit;
+        yield* clear;
+        assert.deepStrictEqual([yield* quote(), yield* labelled()], [false, false]);
+        // Undo brings back the first revision with its own label; redo brings back the cleared one.
+        yield* OwnerDocs.undoRecipe(people, { orgId, recipe: "quote" });
+        assert.isTrue(yield* quote());
+        yield* OwnerDocs.undoRecipe(people, { orgId, recipe: "quote" });
+        assert.isFalse(yield* quote());
+        const someone = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("someone") }];
+        const refused = yield* OwnerDocs.labelRecipe(someone, {
+          orgId,
+          recipe: "quote",
+          commit: seen,
+          sensitive: false,
+        }).pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "not_allowed");
+
+        // A crash between a commit and its label leaves no row: the revision reads sensitive.
+        const sql = yield* SqlClient.SqlClient;
+        const unlabel = Effect.gen(function* () {
+          const commit = (yield* listed())!.commit;
+          yield* sql`DELETE FROM kin_recipe_labels WHERE commit_sha = ${commit}`;
+        });
+        // A plain change built on the cleared revision, its label lost.
+        assert.match((yield* writeQuote(3))!.summary, /committed it/);
+        assert.isFalse(yield* labelled());
+        yield* unlabel;
+        assert.isTrue(yield* labelled());
+        yield* clear;
+        // Two plain changes from the same revision, the second merged with the first.
+        const first = yield* startQuote(4);
+        const second = yield* startQuote(5, 0, {
+          description: "Quote 3.",
+          template: '#let d = json("/inputs.json")\n#d.title\n',
+        });
+        assert.match((yield* first)!.summary, /committed it/);
+        const merged = (yield* second)!.summary;
+        assert.match(merged, /committed it/);
+        // The recipe is now the merge of the two, not the second job's own commit.
+        const merge = (yield* listed())!.commit;
+        assert.notInclude(merged, merge.slice(0, 12));
+        assert.isFalse(yield* labelled());
+        yield* unlabel;
+        assert.isTrue(yield* labelled());
+        yield* clear;
+        // The owner's undo of it.
+        yield* OwnerDocs.undoRecipe(people, { orgId, recipe: "quote" });
+        assert.notStrictEqual((yield* listed())!.commit, merge);
+        assert.isFalse(yield* labelled());
+        yield* unlabel;
+        assert.isTrue(yield* labelled());
+        // Clearing what the owner no longer sees is refused, and changes nothing.
+        const stale = yield* OwnerDocs.labelRecipe(people, {
+          orgId,
+          recipe: "quote",
+          commit: merge,
+          sensitive: false,
+        }).pipe(Effect.flip);
+        assert.deepInclude(stale, { reason: "invalid_state" });
+        assert.match(stale.message, /changed after you looked/);
+        assert.isTrue(yield* labelled());
+        yield* clear;
+        assert.isFalse(yield* labelled());
+        // The owner can mark it private again, and what it makes is private from then on.
+        yield* OwnerDocs.labelRecipe(people, {
+          orgId,
+          recipe: "quote",
+          commit: (yield* listed())!.commit,
+          sensitive: true,
+        });
+        assert.deepStrictEqual([yield* labelled(), yield* quote()], [true, true]);
+        yield* clear;
+        assert.deepStrictEqual([yield* labelled(), yield* quote()], [false, false]);
+        // The starter recipes, and revisions from before Kin recorded where main was, have no
+        // row and read as the job that wrote them did.
+        assert.isFalse(yield* labelled("report"));
+        yield* sql`DELETE FROM kin_recipe_label_baselines`;
+        yield* unlabel;
+        assert.isFalse(yield* labelled());
+        assert.match((yield* writeQuote(6))!.summary, /committed it/);
+        yield* OwnerDocs.undoRecipe(people, { orgId, recipe: "quote" });
+        assert.isFalse(yield* labelled());
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("remove a job's worktree and inputs whatever ended it, and say so on its row", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -538,33 +2600,51 @@ describe("document jobs", () => {
       yield* sql`UPDATE kin_doc_jobs SET collected_at = 1,
           outcome_json = '{"summary":"Kin filed no file from this job.","documents":[],"problems":[]}'
         WHERE worker_id = ${stranded}`;
-      const again = yield* collector.collect(
-        { orgId, workerId: stranded, threadId: threadOf(stranded) },
-        true,
-        pdfReport,
+      const again = settled(
+        yield* collector.collect(
+          { orgId, workerId: stranded, threadId: threadOf(stranded) },
+          true,
+          pdfReport,
+        ),
       );
       assert.match(again!.summary, /^Kin filed no file/);
       assert.isFalse(yield* fs.exists(left.worktree));
-      // A run that ended without collection (abandoned, crashed, failed to launch) goes at startup;
-      // a running one stays.
+      // A run that ended without collection (abandoned, crashed, failed to launch) goes at startup,
+      // across pages of the sweep; a running one stays.
       const failed = KinWorkerId.make("wk-failed");
+      const failedToo = KinWorkerId.make("wk-failed-too");
       const running = KinWorkerId.make("wk-running");
       const failedTree = yield* docJob(failed, { worker: "failed" });
+      const failedTooTree = yield* docJob(failedToo, { worker: "failed" });
       const runningTree = yield* docJob(running, { worker: "running" });
-      assert.deepStrictEqual(yield* owed, [failed, running]);
+      assert.deepStrictEqual(yield* owed, [failed, failedToo, running]);
       yield* collector.sweep;
       assert.deepStrictEqual(yield* owed, [running]);
       assert.isFalse(yield* fs.exists(failedTree.worktree));
+      assert.isFalse(yield* fs.exists(failedTooTree.worktree));
       assert.isTrue(yield* fs.exists(`${runningTree.worktree}/in/inputs.json`));
       // Cleanup takes the inputs first, and never follows a link planted in their place.
       yield* fs.remove(`${runningTree.worktree}/in`, { recursive: true });
       const outside = `${runningTree.worktree}.outside`;
-      yield* fs.makeDirectory(outside);
+      yield* fs.makeDirectory(`${outside}/in`, { recursive: true });
       yield* fs.writeFileString(`${outside}/inputs.json`, "not the job's");
+      yield* fs.writeFileString(`${outside}/in/inputs.json`, "not the job's either");
       yield* fs.symlink(outside, `${runningTree.worktree}/in`);
       yield* collector.cleanup(orgId, running);
       assert.deepStrictEqual(yield* owed, []);
       assert.strictEqual(yield* fs.readFileString(`${outside}/inputs.json`), "not the job's");
+      // Nor a worktree that is itself a link to a folder elsewhere: nothing there is removed.
+      const linked = KinWorkerId.make("wk-linked");
+      const linkedTree = yield* docJob(linked, { worker: "failed" });
+      yield* fs.remove(linkedTree.worktree, { recursive: true });
+      yield* fs.symlink(outside, linkedTree.worktree);
+      yield* collector.cleanup(orgId, linked);
+      assert.strictEqual(
+        yield* fs.readFileString(`${outside}/in/inputs.json`),
+        "not the job's either",
+      );
+      assert.deepStrictEqual(yield* owed, [linked], "still owed: Kin removed nothing");
+      yield* fs.remove(linkedTree.worktree);
       yield* fs.remove(outside, { recursive: true });
     }).pipe(Effect.provide(layer)),
   );
@@ -577,60 +2657,17 @@ describe("document jobs", () => {
       const workerId = KinWorkerId.make("wk-alive");
       const prepared = yield* docJob(workerId, { worker: "running" });
       alive.add(threadOf(workerId));
-      const refused = yield* collector.collect(
-        { orgId, workerId, threadId: threadOf(workerId) },
-        true,
-        pdfReport,
+      const refused = settled(
+        yield* collector.collect(
+          { orgId, workerId, threadId: threadOf(workerId) },
+          true,
+          pdfReport,
+        ),
       );
       assert.strictEqual(refused?.result, "blocked");
       assert.match(refused!.summary, /couldn't confirm the worker had stopped/);
       assert.deepStrictEqual(refused?.evidence, []);
       assert.isFalse(yield* fs.exists(prepared.worktree));
     }).pipe(Effect.provide(layer)),
-  );
-
-  it.effect(
-    "judge a job's files by the recipe at the commit it ran, and keep its first outcome",
-    () =>
-      Effect.gen(function* () {
-        yield* seed;
-        const sql = yield* SqlClient.SqlClient;
-        const fs = yield* FileSystem.FileSystem;
-        const workspace = yield* Workspace.KinWorkspace;
-        const collector = yield* DocJobs.KinDocCollector;
-        // The invoice recipe changes on main after the job started: it no longer makes invoice.pdf.
-        const writer = KinWorkerId.make("wk-recipe-writer");
-        const recipeJob = yield* workspace.prepare(orgId, writer, {});
-        const md = `${recipeJob.worktree}/recipes/invoice/RECIPE.md`;
-        yield* fs.writeFileString(
-          md,
-          (yield* fs.readFileString(md)).replace(/^outputs: .*$/m, "outputs: [renamed.pdf]"),
-        );
-        const changed = yield* workspace.applyRecipeChange(orgId, {
-          workerId: writer,
-          recipe: "invoice",
-          agentId: lead,
-        });
-        assert.strictEqual(changed._tag, "committed");
-        const workerId = KinWorkerId.make("wk-old-recipe");
-        yield* docJob(workerId, { worker: "running", commit: recipeJob.base });
-        const result = yield* collector.collect(
-          { orgId, workerId, threadId: threadOf(workerId) },
-          true,
-          pdfReport,
-        );
-        assert.match(result!.summary, /^Kin filed the file as D-/);
-        // A different outcome for the same job never replaces the stored one.
-        const [row] = yield* sql<{ outcomeJson: string }>`SELECT outcome_json AS "outcomeJson"
-        FROM kin_doc_jobs WHERE worker_id = ${workerId}`;
-        const differing = yield* DocJobs.recordOutcome(orgId, workerId, '{"summary":"other"}').pipe(
-          Effect.flip,
-        );
-        assert.strictEqual(differing.reason, "not_allowed");
-        assert.strictEqual(
-          yield* DocJobs.recordOutcome(orgId, workerId, row!.outcomeJson),
-          row!.outcomeJson,
-        );
-      }).pipe(Effect.provide(layer)),
   );
 });

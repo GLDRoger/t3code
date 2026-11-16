@@ -54,11 +54,16 @@ import { instructions as kinLeadInstructions } from "../../apps/server/src/kin/l
 import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
+import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statementTools.ts";
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
 import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
+import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
+import { KinPulseToolkit } from "../../apps/server/src/kin/pulse/mcp.ts";
 import { WITHDRAWN_WORK, WORK_RULE } from "../../apps/server/src/kin/work/workPrompt.ts";
 import { OWNER_DECLINED, WAITING_FOR_OWNER } from "../../apps/server/src/kin/lead/workerBrief.ts";
+import { SHARED_TURN_LINE } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
+import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
@@ -450,8 +455,11 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   KinApprovalsToolkit,
   KinLeadToolkit,
   KinWorkToolkit,
+  KinStatementToolkit,
   KinDocsToolkit,
   KinDocumentToolkit,
+  KinConnectionsToolkit,
+  KinPulseToolkit,
 ].flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools));
 // McpHttpServer decodes arguments with each tool's JSON codec, which drops undeclared keys.
 const t3InputDecoders = new Map(
@@ -515,8 +523,11 @@ const visibleT3Tools = (options: {
             [
               ...Object.keys(KinLeadToolkit.tools),
               ...Object.keys(KinWorkToolkit.tools),
+              ...Object.keys(KinStatementToolkit.tools),
+              ...Object.keys(KinStatementToolkit.tools),
               ...Object.keys(KinDocsToolkit.tools),
               ...Object.keys(KinDocumentToolkit.tools),
+              ...Object.keys(KinPulseToolkit.tools),
             ].some((name) => tool.name === `${T3_PREFIX}${name}`))
         : ![
             ...Object.keys(KinChatToolkit.tools),
@@ -524,6 +535,7 @@ const visibleT3Tools = (options: {
             ...Object.keys(KinWorkToolkit.tools),
             ...Object.keys(KinDocsToolkit.tools),
             ...Object.keys(KinDocumentToolkit.tools),
+            ...Object.keys(KinPulseToolkit.tools),
             ...Object.keys(KinApprovalsToolkit.tools),
           ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
@@ -1074,10 +1086,12 @@ export const buildMessages = (sample: Sample) => {
     }
     if (turn.text) push(turn.role, text(turn.text));
   }
-  // A lead case writes `{{WORK_RULE}}`, `{{WITHDRAWN_WORK}}` and the publish lines where Kin puts
-  // them, so it tests the current text.
+  // A lead case writes `{{WORK_RULE}}`, `{{STARTED_RULE}}`, `{{WITHDRAWN_WORK}}`, `{{SHARED_TURN}}`
+  // and the publish lines where Kin puts them, so it tests the current text.
   const casePrompt = testCase.prompt
     .replaceAll("{{WORK_RULE}}", WORK_RULE)
+    .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
+    .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
     .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
     .replaceAll("{{WAITING_FOR_OWNER}}", JSON.stringify(WAITING_FOR_OWNER).slice(1, -1))
     .replaceAll("{{OWNER_DECLINED}}", JSON.stringify(OWNER_DECLINED).slice(1, -1));

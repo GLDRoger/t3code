@@ -3,6 +3,7 @@ import {
   KinAgentId,
   KinChatError,
   KinChatId,
+  KinDocKind,
   KinDocSectionId,
   type KinDocCardState,
   KinMessageId,
@@ -35,11 +36,14 @@ import {
   refOrNull,
   resolveWho,
   retryKey,
+  viewOf,
+  viewWriter,
   Who,
   writerFor,
 } from "./leadWork.ts";
 import { iso, type RecordRow } from "./recordRows.ts";
 import { search } from "./search.ts";
+import { viewVisible } from "./teamView.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
 
@@ -69,6 +73,19 @@ const OutlineEntry = Schema.Struct({
   hash: Schema.String,
 });
 const Marks = { sensitive: Schema.optional(Schema.Literal(true)) };
+const Kind = KinDocKind.annotate({
+  description: "What it is: prd, proposal, quote, spec, notes, report, playbook, policy, or other.",
+});
+const Company = Schema.Boolean.annotate({
+  description:
+    "true files it as the company's own (playbooks, policies, company plans) rather than a client's.",
+});
+/** Where the doc is filed, for the result: a client and project, the company, or nowhere yet. */
+const Filed = {
+  kind: Schema.String,
+  company: Schema.optional(Schema.Literal(true)),
+  unfiled: Schema.optional(Schema.String),
+};
 
 export const CreateInput = Schema.Struct({
   sourceEventId: SourceEvent,
@@ -76,8 +93,10 @@ export const CreateInput = Schema.Struct({
   body: Body,
   summary: Schema.optional(Summary),
   owner: Schema.optional(Who),
+  kind: Schema.optional(Kind),
   client: Schema.optional(Client),
   project: Schema.optional(Project),
+  company: Schema.optional(Company),
   sensitive: Schema.optional(Schema.Literal(true)),
   links: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(20))).annotate({
     description: "Keys of entries or docs to link it to.",
@@ -91,6 +110,7 @@ export const WriteResult = Schema.Struct({
   /** False when the call changed nothing: a retry, or text already as asked. */
   changed: Schema.Boolean,
   outline: Schema.Array(OutlineEntry),
+  ...Filed,
   ...Marks,
 });
 
@@ -170,8 +190,10 @@ export const RewriteInput = Schema.Struct({
 export const MoveInput = Schema.Struct({
   key: Key,
   sourceEventId: SourceEvent,
+  kind: Schema.optional(Kind),
   client: Schema.optional(Schema.NullOr(Client)),
   project: Schema.optional(Schema.NullOr(Project)),
+  company: Schema.optional(Company),
   owner: Schema.optional(Who),
   sensitive: Schema.optional(Schema.Literal(true)),
   archived: Schema.optional(Schema.Boolean),
@@ -183,6 +205,7 @@ export const MoveResult = Schema.Struct({
   client: Schema.optional(Schema.String),
   project: Schema.optional(Schema.String),
   archived: Schema.Boolean,
+  ...Filed,
   ...Marks,
 });
 export const LinkInput = Schema.Struct({
@@ -302,7 +325,10 @@ const writeContext = Effect.fn("KinDocTools.context")(function* (
 ) {
   yield* admitted(lead, tool, input);
   const answered = yield* answering(lead, input.sourceEventId);
-  const writer = yield* writerFor(lead);
+  // In a turn others read, the write's own check decides for every person behind it (`teamGuard`).
+  const team = yield* viewOf(lead);
+  const owned = yield* writerFor(lead);
+  const writer = team === undefined ? owned : viewWriter(owned, team);
   const audience = yield* effectiveAudience(lead);
   const provenance: Docs.Provenance = {
     audience,
@@ -331,7 +357,17 @@ const writeResult = (
   version: written.version.version,
   changed,
   outline: [...outlineOf(written.version.body)],
+  ...filedOf(written.row),
   ...(sensitiveOf(written.row) ? { sensitive: true as const } : {}),
+});
+const UNFILED =
+  "Not filed: give it a client and project, or company true, with doc_move so people find it.";
+const filedOf = (row: RecordRow) => ({
+  kind: Docs.kindOf(row),
+  ...(Docs.isCompanyDoc(row) ? { company: true as const } : {}),
+  ...(row.partyId === null && row.projectId === null && !Docs.isCompanyDoc(row)
+    ? { unfiled: UNFILED }
+    : {}),
 });
 const sensitiveOf = (row: RecordRow) => row.sensitive === 1 || row.inheritedSensitive === 1;
 const ownerOf = (row: RecordRow): KinWorkPrincipal =>
@@ -340,7 +376,7 @@ const ownerOf = (row: RecordRow): KinWorkPrincipal =>
     : { _tag: "person", personId: KinPersonId.make(row.ownerId) };
 
 /** The doc as a card in the turn's chat, built from the stored version; a retry finds the same one. */
-const shown = Effect.fn("KinDocTools.shown")(function* (
+export const shown = Effect.fn("KinDocTools.shown")(function* (
   lead: Lead,
   written: Docs.Written,
   card: boolean | undefined,
@@ -385,6 +421,8 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     summary: input.summary ?? "Created",
     ...(partyId === undefined ? {} : { partyId }),
     ...(projectId === undefined ? {} : { projectId }),
+    ...(input.kind === undefined ? {} : { kind: input.kind }),
+    ...(input.company === true ? { company: true } : {}),
     ...(input.sensitive === true ? { sensitive: true } : {}),
     originKey: context.originKey,
     ...(context.answered?.tag === "chat.message"
@@ -403,8 +441,17 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
 });
 export const create = leadTool("KinDocTools.create", runCreate);
 
+/** A doc this turn may read: in one others read, only one they all see, else none at all. */
+const readable = Effect.fn("KinDocTools.readable")(function* (lead: Lead, key: string) {
+  const row = yield* Docs.docRow(lead.orgId, { key });
+  const team = yield* viewOf(lead);
+  if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, row.recordId)))
+    return yield* Docs.docNotFound(key);
+  return row;
+});
+
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
-  const row = yield* Docs.docRow(lead.orgId, { key: input.key });
+  const row = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
   const version = yield* Docs.versionOf(lead.orgId, row.recordId, input.version);
   if (latest === undefined) return yield* Docs.docNotFound(input.key);
@@ -485,6 +532,8 @@ const runMove = Effect.fnUntraced(function* (lead: Lead, input: typeof MoveInput
     ...(partyId === undefined ? {} : { partyId }),
     ...(projectId === undefined ? {} : { projectId }),
     ...(owner === undefined ? {} : { owner }),
+    ...(input.kind === undefined ? {} : { kind: input.kind }),
+    ...(input.company === undefined ? {} : { company: input.company }),
     ...(input.sensitive === true ? { sensitive: true } : {}),
     ...(input.archived === undefined ? {} : { archived: input.archived }),
   });
@@ -496,6 +545,7 @@ const runMove = Effect.fnUntraced(function* (lead: Lead, input: typeof MoveInput
     ...(row.partyKey === null ? {} : { client: `${row.partyTitle} (${row.partyKey})` }),
     ...(row.projectKey === null ? {} : { project: `${row.projectTitle} (${row.projectKey})` }),
     archived: row.state === "dropped",
+    ...filedOf(row),
     ...(sensitiveOf(row) ? { sensitive: true as const } : {}),
   };
 });
@@ -516,12 +566,14 @@ const runLink = Effect.fnUntraced(function* (lead: Lead, input: typeof LinkInput
 export const link = leadTool("KinDocTools.link", runLink);
 
 const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchInput.Type) {
+  const team = yield* viewOf(lead);
   const { hits } = yield* search(lead.orgId, {
     text: input.text,
     kinds: input.kinds,
     closed: input.closed,
     limit: input.limit ?? 10,
-    viewer: "owner",
+    viewer: team === undefined ? "owner" : "team",
+    view: team?.people,
   });
   return {
     hits: hits.map((hit) => ({
@@ -538,7 +590,7 @@ const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchI
 export const searchTool = leadTool("KinDocTools.search", runSearch);
 
 const runHistory = Effect.fnUntraced(function* (lead: Lead, input: typeof HistoryInput.Type) {
-  const row = yield* Docs.docRow(lead.orgId, { key: input.key });
+  const row = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
   if (latest === undefined) return yield* Docs.docNotFound(input.key);
   const rows = yield* Docs.history(lead.orgId, row.recordId, {

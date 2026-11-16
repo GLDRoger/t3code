@@ -1,4 +1,5 @@
 import { KinOrgId, KinMemoryItemId, MemoryItemHead } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -85,6 +86,12 @@ export function fixture<E = never>(
               ));
           return Layer.mock(Memory.Memory)({
             query: (orgId, input) => outsideTransaction("query", query(orgId, input)),
+            prepareWakeup: (orgId, _wakeupId, view) =>
+              Effect.succeed({
+                head: "head",
+                indexAsOf: DateTime.makeUnsafe(0),
+                read: `/memory/${orgId}/memory-read-${view?.lead ?? "shared"}`,
+              }),
             readItemQuietly: (orgId, id) => {
               const head = items.find((item) => item.orgId === orgId && item.id === id);
               return outsideTransaction(
@@ -124,6 +131,9 @@ export const seed = Effect.fn("test.routinesSeed")(function* () {
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at) VALUES (${`owner-member-${org}`}, ${org}, ${`chat-${org}`}, 'person', ${`owner-${org}`}, 'owner', ${timestamp})`;
     yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at) VALUES (${`lead-member-${org}`}, ${org}, ${`chat-${org}`}, 'agent', ${agent}, 'member', ${timestamp})`;
     yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES (${agent}, ${org}, 'Lead', 0, '{}', '[]', ${`chat-${org}`})`;
+    // Routines are off for a new company now; these tests drive them, so they are turned on.
+    for (const routine of ["morning_brief", "evening_summary", "owner_check"])
+      yield* sql`INSERT INTO kin_routine_preferences (org_id, routine, enabled) VALUES (${org}, ${routine}, 1)`;
   }
 });
 

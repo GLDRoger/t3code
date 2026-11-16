@@ -6,15 +6,25 @@ import type {
 } from "@t3tools/contracts";
 
 /**
- * A failure no retry fixes: the model account needs signing in again (`signin`) or cannot use
- * the lead's model (`access`). The codes are the adapters'.
+ * A failure no retry fixes: the model account needs signing in again (`signin`), cannot use
+ * the lead's model (`access`), the provider doesn't know that model (`model`), or its program
+ * exited before the turn began, such as a binary path to nothing (`program`). The codes and the
+ * last message are the adapters'.
  */
-export type SetupFailure = "signin" | "access";
+export type SetupFailure = "signin" | "access" | "model" | "program";
 export function setupFailure(failure: OrchestrationV2ProviderFailure): SetupFailure | null {
+  if (failure.message.includes("program exited before the turn started")) return "program";
   if (failure.code === "authentication_failed" || failure.code === "api_error_401") return "signin";
   if (failure.code === "api_error_403" || failure.class === "permission_error") return "access";
+  if (
+    (failure.code === "api_error_400" || failure.code === "api_error_404") &&
+    /\bmodel\b/i.test(failure.message)
+  )
+    return "model";
   return null;
 }
+/** The Claude CLI words a failed API call as the turn's own reply; it is the provider's text. */
+export const isProviderErrorText = (text: string) => text.trimStart().startsWith("API Error:");
 /** The setup failure that ended a run from `rootRunId` on, if one did. */
 export function setupFailureIn(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "turnItems">,
@@ -139,6 +149,7 @@ export const isEndCall = (item: OrchestrationV2TurnItem) =>
 // arguments or model text, and never a tool's name or how Kin works inside.
 export const PHASE_LABELS = {
   queued: "Finishing something else",
+  held: "Waiting until tomorrow",
   preparing: "Catching up",
   thinking: "Thinking",
   writing: "Writing",
@@ -154,7 +165,15 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)kin_follow_up$/, "Following up on the work"],
   [/(?:^|__|\.)kin_worker_stop$/, "Stopping the work"],
   [/(?:^|__|\.)kin_leads$/, "Checking who handles this"],
+  [/(?:^|__|\.)people_read$/, "Checking who's on the team"],
+  [/(?:^|__|\.)people_update$/, "Updating a profile"],
   [/(?:^|__|\.)kin_hand_off$/, "Passing this on"],
+  [/(?:^|__|\.)kin_take_private$/, "Answering you directly"],
+  [/(?:^|__|\.)kin_relay$/, "Passing this on"],
+  [/(?:^|__|\.)people_read$/, "Checking who's on the team"],
+  [/(?:^|__|\.)pulse_read$/, "Checking what needs attention"],
+  [/(?:^|__|\.)pulse_handle$/, null],
+  [/(?:^|__|\.)pulse_nudge$/, "Nudging a teammate"],
   [/(?:^|__|\.)kin_ask$/, "Writing a question"],
   [/(?:^|__|\.)kin_chart$/, "Drawing a chart"],
   [/(?:^|__|\.)kin_visual$/, "Putting a visual together"],
@@ -163,6 +182,8 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)kin_github_repos$/, "Checking your repos"],
   [/(?:^|__|\.)kin_github_prs?$/, "Checking pull requests"],
   [/(?:^|__|\.)kin_github_runs$/, "Checking the builds"],
+  [/(?:^|__|\.)kin_github_review$/, "Reviewing a pull request"],
+  [/(?:^|__|\.)kin_github_link$/, "Linking GitHub to Work"],
   [/(?:^|__|\.)kin_github_\w+$/, "Checking GitHub"],
   [/(?:^|__|\.)kin_chat_read$/, "Reading the chat"],
   [/(?:^|__|\.)kin_chat_post$/, "Writing"],

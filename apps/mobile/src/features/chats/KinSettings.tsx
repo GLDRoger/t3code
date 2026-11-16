@@ -1,51 +1,53 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import {
+  KIN_DAILY_LIMIT,
+  kinDailyLimitChoices,
+  kinDailyLimitWaiting,
+} from "@t3tools/client-runtime/kin/kinBudget";
 import { KIN_COMPANY } from "@t3tools/client-runtime/kin/kinCompanyProfile";
+import { KIN_CONNECTIONS_COPY } from "@t3tools/client-runtime/kin/kinConnections";
+import {
+  KIN_COMPANY_CHAT_COPY,
+  KIN_PROFILE_COPY,
+  KIN_TEAM_AGENT_COPY,
+  kinRoleLine,
+  kinTeamAgentChoices,
+  kinTeamAgentLabel,
+} from "@t3tools/client-runtime/kin/kinProfiles";
 import { kinHomeTabs } from "@t3tools/client-runtime/kin/kinJoin";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { Linking, View } from "react-native";
+import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
+import { Menu } from "../../components/ui/Menu";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useEnvironments, type EnvironmentPresentation } from "../../state/environments";
 import { environmentSession } from "../../state/session";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { useConnectionController } from "../connection/useConnectionController";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
+import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab } from "./components/KinTab";
-import { useChatOnlyEnvironments } from "./state/kinChatOnly";
+import { KinCheckInsSection } from "./KinCheckIns";
+import { useKinIsHome } from "./state/kinHome";
+import { openKinNotificationSettings } from "./notifications/installKinNotifications";
+import { useChatOnlyEnvironments, useKinOwnerLevel } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
 import { useKinInbox } from "./state/useKinInbox";
+import { useKinProfiles } from "./state/useKinProfiles";
 import { useKinReconnect } from "./state/useKinReconnect";
 
-const noMembersAtom = Atom.make(null);
 const noSessionAtom = Atom.make(null);
-
-/** The name the team knows the viewer by; a chat's member list is the only place a teammate's session can read it. */
-function useMyName(): string | null {
-  const { host, state } = useKinInbox();
-  const chatId = state._tag === "ready" ? (state.inbox.value.chats[0]?.chatId ?? null) : null;
-  const members = useAtomValue(
-    state._tag !== "ready" || chatId === null
-      ? noMembersAtom
-      : kinClient.chatMembers({ environmentId: state.environmentId, input: { chatId } }),
-  );
-  if (members === null || host._tag !== "host" || host.probe._tag !== "ready") return null;
-  const me = new Set<string>(host.probe.orgs.me.map((mine) => mine.personId));
-  return (
-    Option.getOrNull(AsyncResult.value(members))?.members.find(
-      (member) => member.principal._tag === "person" && me.has(member.principal.personId),
-    )?.displayName ?? null
-  );
-}
 
 const CONNECTION_LABEL: Record<EnvironmentPresentation["connection"]["phase"], string> = {
   connected: "Connected",
@@ -60,18 +62,22 @@ const CONNECTION_LABEL: Record<EnvironmentPresentation["connection"]["phase"], s
 /**
  * Settings where Kin is the whole app: only what this product needs. The owner gets the
  * connection to their Kin, the company (team, agents, memory, schedules), approvals and the app
- * itself; a teammate, whose session reaches none of the rest, gets the app and the way to leave.
+ * itself, and so does a co-owner; a member gets the app and the way to leave.
  * Drawn as a tab of the Kin home, or as a pushed page where there is no dock.
  */
-export function KinSettings() {
+export function KinSettings(props: {
+  /** The coding app's Settings already holds environments, sign-out and the app's own pages. */
+  readonly inCodingApp?: boolean;
+}) {
+  const inCodingApp = props.inCodingApp === true;
   const navigation = useNavigation();
   const pushed = useRoute().name !== "Home";
+  const settingsBack = useSettingsPageBack();
   const bottomClearance = useKinTab()?.bottomClearance ?? 0;
   const controller = useConnectionController();
   const { environments } = useEnvironments();
   const teammateIds = useChatOnlyEnvironments();
   const { host, state } = useKinInbox();
-  const name = useMyName();
   const session = useAtomValue(
     host._tag === "host"
       ? environmentSession.sessionStateValueAtom(host.environmentId)
@@ -80,13 +86,24 @@ export function KinSettings() {
   const probe = host._tag === "host" && host.probe._tag === "ready" ? host.probe : null;
   const team = probe?.orgs.orgs[0]?.name ?? null;
   const orgId = probe?.orgs.me[0]?.orgId ?? null;
-  const owned = environments.filter((held) => !teammateIds.includes(held.environmentId));
-  // The pages below belong to whoever runs this Kin; a teammate's session would be refused.
+  const myPersonId = probe?.orgs.me[0]?.personId ?? null;
+  const { held: profiles } = useKinProfiles(
+    host._tag === "host" ? host.environmentId : null,
+    orgId,
+  );
+  const mine = profiles?.profiles.find((profile) => profile.personId === myPersonId) ?? null;
+  const owned = environments.filter(
+    (held) =>
+      !teammateIds.includes(held.environmentId) &&
+      (!inCodingApp || (host._tag === "host" && held.environmentId === host.environmentId)),
+  );
+  const ownerLevel = useKinOwnerLevel(host._tag === "host" ? host.environmentId : null, session);
+  // The pages below belong to whoever runs this Kin: the owner or a co-owner.
   const company =
-    host._tag === "host" && orgId !== null && !teammateIds.includes(host.environmentId)
+    host._tag === "host" && orgId !== null && ownerLevel
       ? { environmentId: host.environmentId, orgId }
       : null;
-  const pages = kinHomeTabs(session);
+  const pages = kinHomeTabs(session, ownerLevel);
   const waiting = state._tag === "ready" ? selectKinInboxView(state.inbox.value).waiting.length : 0;
 
   const leave = (environmentId: EnvironmentId) =>
@@ -118,22 +135,36 @@ export function KinSettings() {
 
   return (
     <View collapsable={false} className="flex-1 bg-screen">
-      <AppBar title="Settings" {...(pushed ? { onBack: () => navigation.goBack() } : {})} />
+      <AppBar
+        title={inCodingApp ? "Kin" : "Settings"}
+        {...(inCodingApp
+          ? settingsBack === undefined
+            ? {}
+            : { onBack: settingsBack }
+          : pushed
+            ? { onBack: () => navigation.goBack() }
+            : {})}
+      />
       <ScreenContent surface="screen">
         <ScreenScrollView
           className="flex-1"
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32 + bottomClearance, gap: 20 }}
         >
-          {teammateIds.length === 0 || (name === null && team === null) ? null : (
-            <SettingsSection>
-              <View accessible className="bg-grouped-card">
-                <ListRowLayout
-                  icon="person.crop.circle"
-                  label={name ?? "You"}
-                  description={team ?? undefined}
-                />
-              </View>
+          {host._tag !== "host" || orgId === null || mine === null ? null : (
+            <SettingsSection title={team ?? undefined}>
+              <SettingsRow
+                icon="person.crop.circle"
+                label={mine.displayName}
+                value={kinRoleLine(mine.roleTags) || KIN_PROFILE_COPY.mine}
+                onPress={() =>
+                  navigation.navigate("KinProfile", {
+                    environmentId: host.environmentId,
+                    orgId,
+                    personId: mine.personId,
+                  })
+                }
+              />
             </SettingsSection>
           )}
           {owned.length === 0 ? null : (
@@ -169,16 +200,24 @@ export function KinSettings() {
                   />
                 ) : null}
                 <SettingsRow
+                  icon="link"
+                  label={KIN_CONNECTIONS_COPY.title}
+                  onPress={() => navigation.navigate("KinConnections", company)}
+                />
+                <SettingsRow
                   icon="doc.text"
                   label={KIN_COMPANY.title}
                   onPress={() => navigation.navigate("KinCompany", company)}
                 />
-                <SettingsRow
-                  icon="clock"
-                  label="Scheduled tasks"
-                  onPress={() => navigation.navigate("SettingsScheduledTasks")}
-                />
               </SettingsSection>
+              <SettingsSection footer={KIN_TEAM_AGENT_COPY.detail}>
+                <KinTeamAgentRow {...company} />
+              </SettingsSection>
+              <SettingsSection footer={KIN_COMPANY_CHAT_COPY.detail}>
+                <KinCompanyChatRow {...company} />
+              </SettingsSection>
+              <KinDailyLimitSection {...company} />
+              <KinCheckInsSection {...company} />
               <SettingsSection
                 title="Approvals"
                 footer="Your agents ask before anything that needs your say. You approve on this phone with Face ID."
@@ -202,20 +241,25 @@ export function KinSettings() {
             <SettingsRow
               icon="bell.badge"
               label="Notifications"
-              onPress={() => void Linking.openSettings()}
+              onPress={() => void openKinNotificationSettings()}
             />
-            <SettingsRow
-              icon="paintbrush"
-              label="Appearance"
-              onPress={() => navigation.navigate("SettingsAppearance")}
-            />
-            <SettingsRow
-              icon="info.circle"
-              label="About"
-              onPress={() => navigation.navigate("SettingsAbout")}
-            />
+            {inCodingApp ? null : (
+              <>
+                <SettingsRow
+                  icon="paintbrush"
+                  label="Appearance"
+                  onPress={() => navigation.navigate("SettingsAppearance")}
+                />
+                <SettingsRow
+                  icon="info.circle"
+                  label="About"
+                  onPress={() => navigation.navigate("SettingsAbout")}
+                />
+              </>
+            )}
           </SettingsSection>
-          {owned.map((environment) => (
+          {/* The coding app signs out of a computer from Environments. */}
+          {(inCodingApp ? [] : owned).map((environment) => (
             <Button
               key={environment.environmentId}
               tone="danger"
@@ -237,6 +281,11 @@ export function KinSettings() {
       </ScreenContent>
     </View>
   );
+}
+
+/** Kin's page in the coding app's Settings; where Kin is the whole app, its own Settings. */
+export function KinSettingsScreen() {
+  return <KinSettings inCodingApp={!useKinIsHome()} />;
 }
 
 /** One computer this phone is connected to: where it stands, and a way to try again now. */
@@ -262,5 +311,167 @@ function KinConnection(props: { readonly environment: EnvironmentPresentation })
         />
       )}
     </>
+  );
+}
+
+/**
+ * The owner's daily limit as a native menu of plain choices, on this page rather than its own,
+ * with the work held for it.
+ */
+function KinDailyLimitSection(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  const target = { environmentId: props.environmentId, input: { orgId: props.orgId } };
+  const budgetAtom = kinClient.budget(target);
+  const result = useAtomValue(budgetAtom);
+  const refresh = useAtomRefresh(budgetAtom);
+  const canSet = useAtomValue(kinClient.budgetSet.permissionAtom(props.environmentId));
+  const set = useAtomCommand(kinClient.budgetSet, { reportFailure: false });
+  const budget = Option.getOrNull(AsyncResult.value(result));
+  const { choices, current } = kinDailyLimitChoices(budget);
+  const label = choices.find((choice) => choice.value === current)?.label ?? "…";
+  const waiting = kinDailyLimitWaiting(budget);
+  return (
+    <>
+      <SettingsSection footer={KIN_DAILY_LIMIT.detail}>
+        <Menu
+          actions={choices.map((choice) => ({
+            id: choice.value,
+            title: choice.label,
+            state: choice.value === current ? ("on" as const) : ("off" as const),
+          }))}
+          onPressAction={({ nativeEvent }) => {
+            const picked = choices.find((choice) => choice.value === nativeEvent.event);
+            if (picked === undefined || picked.value === current) return;
+            void set({
+              environmentId: props.environmentId,
+              input: { orgId: props.orgId, limits: picked.limits },
+            }).then((outcome) => {
+              if (AsyncResult.isFailure(outcome)) Dialog.alert(KIN_DAILY_LIMIT.failed);
+              refresh();
+            });
+          }}
+        >
+          <SettingsRow
+            icon="chart.bar.xaxis"
+            label={KIN_DAILY_LIMIT.title}
+            value={label}
+            valuePosition="trailing"
+            disabled={!canSet || budget === null}
+          />
+        </Menu>
+      </SettingsSection>
+      {waiting.length === 0 ? null : (
+        <SettingsSection title={KIN_DAILY_LIMIT.waiting}>
+          {waiting.map((agent) => (
+            <SettingsRow
+              key={agent.agentId}
+              icon="moon"
+              label={agent.name}
+              value={agent.line}
+              valuePosition="trailing"
+            />
+          ))}
+        </SettingsSection>
+      )}
+    </>
+  );
+}
+
+/** Which agent every teammate can chat with, or Off. Picked here, beside the team it serves. */
+function KinTeamAgentRow(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  const leadsAtom = kinClient.leads({
+    environmentId: props.environmentId,
+    input: { orgId: props.orgId },
+  });
+  const result = useAtomValue(leadsAtom);
+  const refresh = useAtomRefresh(leadsAtom);
+  const canSet = useAtomValue(kinClient.teamAgentSet.permissionAtom(props.environmentId));
+  const set = useAtomCommand(kinClient.teamAgentSet, { reportFailure: false });
+  const list = Option.getOrNull(AsyncResult.value(result));
+  const leads = list?.leads ?? [];
+  const current = list?.teamAgentId ?? null;
+  const choices = kinTeamAgentChoices(leads);
+  return (
+    <Menu
+      actions={choices.map((choice) => ({
+        id: choice.agentId ?? "off",
+        title: choice.label,
+        ...(choice.suggested ? { subtitle: KIN_TEAM_AGENT_COPY.suggested } : {}),
+        state: choice.agentId === current ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent }) => {
+        const picked = choices.find((choice) => (choice.agentId ?? "off") === nativeEvent.event);
+        if (picked === undefined || picked.agentId === current) return;
+        void set({
+          environmentId: props.environmentId,
+          input: { orgId: props.orgId, agentId: picked.agentId },
+        }).then((outcome) => {
+          if (AsyncResult.isFailure(outcome)) Dialog.alert(KIN_TEAM_AGENT_COPY.failed);
+          refresh();
+        });
+      }}
+    >
+      <SettingsRow
+        icon="bubble.left.and.bubble.right"
+        label={KIN_TEAM_AGENT_COPY.label}
+        value={list === null ? "…" : kinTeamAgentLabel(leads, current)}
+        valuePosition="trailing"
+        disabled={!canSet || list === null}
+      />
+    </Menu>
+  );
+}
+
+/** The company chat: Off, or on with the agent that answers when nobody is named. */
+function KinCompanyChatRow(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  const leadsAtom = kinClient.leads({
+    environmentId: props.environmentId,
+    input: { orgId: props.orgId },
+  });
+  const result = useAtomValue(leadsAtom);
+  const refresh = useAtomRefresh(leadsAtom);
+  const canSet = useAtomValue(kinClient.groupSetCompany.permissionAtom(props.environmentId));
+  const set = useAtomCommand(kinClient.groupSetCompany, { reportFailure: false });
+  const list = Option.getOrNull(AsyncResult.value(result));
+  const current = list?.companyChat?.leadAgentId ?? null;
+  const choices = kinTeamAgentChoices(list?.leads ?? []);
+  const label = (agentId: string | null, name: string) =>
+    agentId === null ? name : `On, ${name} answers`;
+  const shown = choices.find((choice) => choice.agentId === current);
+  return (
+    <Menu
+      actions={choices.map((choice) => ({
+        id: choice.agentId ?? "off",
+        title: label(choice.agentId, choice.label),
+        state: choice.agentId === current ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent }) => {
+        const picked = choices.find((choice) => (choice.agentId ?? "off") === nativeEvent.event);
+        if (picked === undefined || picked.agentId === current) return;
+        void set({
+          environmentId: props.environmentId,
+          input: { orgId: props.orgId, leadAgentId: picked.agentId },
+        }).then((outcome) => {
+          if (AsyncResult.isFailure(outcome)) Dialog.alert(KIN_COMPANY_CHAT_COPY.failed);
+          refresh();
+        });
+      }}
+    >
+      <SettingsRow
+        icon="person.2"
+        label={KIN_COMPANY_CHAT_COPY.label}
+        value={list === null ? "…" : shown === undefined ? "Off" : shown.label}
+        valuePosition="trailing"
+        disabled={!canSet || list === null}
+      />
+    </Menu>
   );
 }

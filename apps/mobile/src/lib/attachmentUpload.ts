@@ -12,6 +12,7 @@ import type {
   UploadChatImageAttachment,
 } from "@t3tools/contracts";
 import {
+  AuthKinChatScope,
   AuthOrchestrationOperateScope,
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
 } from "@t3tools/contracts";
@@ -31,6 +32,11 @@ import {
 } from "./composerImages";
 import { imageMimeType } from "@t3tools/shared/image";
 import { uuidv4 } from "./uuid";
+
+// A Kin teammate's chat-only session uploads too: the host lets it ask for upload URLs.
+const mayUpload = (environmentId: EnvironmentId) =>
+  readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
+  readEnvironmentScope(environmentId, AuthKinChatScope);
 
 export type UploadedMobileAttachment =
   | UploadChatImageAttachment
@@ -68,7 +74,7 @@ export async function releasePendingAttachmentUploads(
   attachmentIds: ReadonlyArray<string>,
 ): Promise<void> {
   const deleteOnce = async (attachmentId: string): Promise<boolean> => {
-    if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) {
+    if (!mayUpload(environmentId)) {
       throw new Error("This connection cannot delete pending attachments.");
     }
     const result = await runAtomCommand(
@@ -206,7 +212,7 @@ async function uploadFileBytes(
 ): Promise<void> {
   const { File, Paths, UploadType } = await import("expo-file-system");
   if (signal.aborted) throw new Error("Upload cancelled.");
-  if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) {
+  if (!mayUpload(environmentId)) {
     throw new Error("This connection cannot upload attachments.");
   }
   const fileUri = attachment.fileUri;
@@ -232,8 +238,10 @@ async function uploadFileBytes(
       signal,
       ...(onProgress
         ? {
+            // Typed as numbers, but iOS reports these Int64 counts as BigInt.
             onProgress: ({ bytesSent, totalBytes }) => {
-              if (totalBytes > 0) onProgress(bytesSent / totalBytes);
+              const total = Number(totalBytes);
+              if (total > 0) onProgress(Number(bytesSent) / total);
             },
           }
         : {}),
@@ -285,7 +293,7 @@ export async function prepareTurnAttachments(input: {
   }
 
   const requireUploadAccess = () => {
-    if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) {
+    if (!mayUpload(environmentId)) {
       throw new Error("This connection cannot upload attachments.");
     }
   };

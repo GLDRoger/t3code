@@ -431,6 +431,61 @@ it.effect("an owner-only turn posts nothing where a teammate reads, and the owne
         AND author_kind = 'agent' ORDER BY seq`,
       [],
     );
+
+    // A message written for the teammate reaches their own chat with the lead (H03), checked
+    // for what they may read; the turn's own words still don't.
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES ('theirs', ${person.orgId}, 'direct', ${`teammate:${agentId}`}, 0, ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, agent_id, role, joined_at)
+      VALUES ('theirs-teammate', ${person.orgId}, 'theirs', 'person', 'teammate', NULL, 'member', ${at}),
+        ('theirs-lead', ${person.orgId}, 'theirs', 'agent', NULL, ${agentId}, 'member', ${at})`;
+    assert.include(
+      errorOf(
+        yield* call("kin_chat_post", {
+          chatId: "theirs",
+          body: "Invented private brief",
+          intent: "evidence",
+          clientMessageId: "routine-4",
+        }),
+      ),
+      { reason: "not_allowed", message: PRIVATE_DESTINATION },
+    );
+    const services = Option.getOrThrow((yield* Kin.KinServer).services);
+    const lead = yield* Context.get(services, KinIdentity).resolveAgent(scope);
+    const { postTo } = Context.get(services, KinLevelGate);
+    const to = (chatId: string, body: string, clientMessageId: string) =>
+      postTo(lead, KinPersonId.make("teammate"), {
+        chatId: KinChatId.make(chatId),
+        body,
+        intent: "question",
+        clientMessageId,
+      });
+    yield* to("theirs", "How did Wednesday's call with Meera go?", "nudge-1");
+    // Amounts in words or shorthand are amounts too.
+    for (const [index, body] of [
+      "INV/26-27/002 for ₹47,200 is overdue.",
+      "They agreed forty thousand rupees for it.",
+      "The budget is 40k.",
+      "Pinecrest signed at 4.5 lakh.",
+      "It came to two and a half lakh.",
+      "Around five hundred dollars a month.",
+    ].entries())
+      assert.include(
+        (yield* Effect.flip(to("theirs", body, `nudge-amount-${index}`))).message,
+        "Nothing was sent: it names an amount",
+      );
+    yield* to("theirs", "Two thousand users signed up after the launch.", "nudge-count");
+    assert.include(yield* Effect.flip(to("room", "How did the call go?", "nudge-3")), {
+      reason: "not_allowed",
+      message: PRIVATE_DESTINATION,
+    });
+    assert.deepStrictEqual(
+      yield* sql`SELECT body FROM kin_messages WHERE chat_id = 'theirs' ORDER BY seq`,
+      [
+        { body: "How did Wednesday's call with Meera go?" },
+        { body: "Two thousand users signed up after the launch." },
+      ],
+    );
   }).pipe(Effect.provide(layer)),
 );
 

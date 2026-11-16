@@ -1,13 +1,17 @@
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
-import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import { EnvironmentId, type KinOrgId } from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
 import { useEffect, type ReactNode } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
 import type { AppBarProps } from "../../components/ui/AppBar.types";
+import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KIN_ONLY } from "../../lib/kinOnly";
@@ -16,10 +20,15 @@ import { KinMemoryEntry } from "./KinMemoryScreen";
 import { KinTeamEntry } from "./KinTeamScreen";
 import { KinWorkEntry } from "./KinWorkScreen";
 import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
-import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
+import { KinInboxNotice, KinScreenState, KinStandInNotice } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
-import { kinChatListRowLabel, kinChatListRows } from "@t3tools/client-runtime/kin/kinChatListRows";
+import {
+  kinChatListRowLabel,
+  kinChatListRows,
+  kinRoomLine,
+  type KinChatListRow,
+} from "@t3tools/client-runtime/kin/kinChatListRows";
 import {
   formatKinTime,
   kinDirectory,
@@ -30,7 +39,11 @@ import {
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinClient } from "./state/kinClient";
 import { rememberKinListAtom } from "./state/kinLastList";
+import { kinJoinedNameAtom } from "./state/kinJoin";
 import { useKinInbox } from "./state/useKinInbox";
+import { useKinProfiles } from "./state/useKinProfiles";
+
+const NO_ENVIRONMENT = EnvironmentId.make("kin:none");
 
 /** The Kin list as a page over coding threads: opening and leaving it is the switch between them. */
 export function KinChatsScreen() {
@@ -47,12 +60,12 @@ export function KinChatsScreen() {
 
 /** The chat list under its own bar: a page over coding threads, or the first tab of the Kin home. */
 export function KinChatsList({
-  emptyDetail,
+  empty,
   bottomClearance = 0,
   ...bar
 }: Pick<AppBarProps, "onBack" | "actions"> & {
-  /** What an empty list says, for a viewer who can't start chats with leads. */
-  readonly emptyDetail?: string;
+  /** What an empty list says, for a viewer who can't start chats with agents. */
+  readonly empty?: { readonly title: string; readonly detail: string };
   readonly bottomClearance?: number;
 }) {
   const navigation = useNavigation();
@@ -61,8 +74,15 @@ export function KinChatsList({
     host._tag === "host" && host.probe._tag === "ready"
       ? (host.probe.orgs.me[0]?.orgId ?? null)
       : null;
+  const myPersonId =
+    host._tag === "host" && host.probe._tag === "ready"
+      ? (host.probe.orgs.me[0]?.personId ?? null)
+      : null;
   const newLeadAt =
     state._tag === "ready" && orgId !== null ? { environmentId: state.environmentId, orgId } : null;
+  const canAddLead = useAtomValue(
+    kinClient.leadCreate.permissionAtom(newLeadAt?.environmentId ?? NO_ENVIRONMENT),
+  );
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       {newLeadAt === null ? (
@@ -76,17 +96,37 @@ export function KinChatsList({
           directory={kinDirectory(host)}
           onRetry={retry}
           bottomClearance={bottomClearance}
-          {...(emptyDetail === undefined ? {} : { emptyDetail })}
+          {...(empty === undefined ? {} : { empty })}
           memory={
-            // Where Kin is the whole app these are Settings pages and a tab, and the list is chats.
-            newLeadAt === null || KIN_ONLY ? null : (
-              <>
-                <KinWorkEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
-                <KinMemoryEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
-                <KinTeamEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
-              </>
-            )
+            <>
+              {state._tag === "ready" && orgId !== null && myPersonId !== null ? (
+                <KinJoinedName
+                  environmentId={state.environmentId}
+                  orgId={orgId}
+                  personId={myPersonId}
+                />
+              ) : null}
+              {
+                // Where Kin is the whole app these are Settings pages and a tab, and the list is chats.
+                newLeadAt === null || KIN_ONLY ? null : (
+                  <>
+                    <KinWorkEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
+                    <KinMemoryEntry
+                      environmentId={newLeadAt.environmentId}
+                      orgId={newLeadAt.orgId}
+                    />
+                    <KinTeamEntry environmentId={newLeadAt.environmentId} orgId={newLeadAt.orgId} />
+                  </>
+                )
+              }
+            </>
           }
+          {...(newLeadAt === null || !canAddLead
+            ? {}
+            : {
+                onCreateFirstAgent: () =>
+                  navigation.navigate("KinLeadForm", { ...newLeadAt, suggest: "chief" }),
+              })}
           onOpenWaiting={() => navigation.navigate("KinWaiting")}
           onOpenChat={(chatId) => {
             if (state._tag !== "ready") return;
@@ -100,6 +140,42 @@ export function KinChatsList({
           }}
         />
       </ScreenContent>
+    </View>
+  );
+}
+
+/** Right after joining: the name the team gave this person, to keep or change. */
+function KinJoinedName(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly personId: string;
+}) {
+  const navigation = useNavigation();
+  // Only on the computer just joined: elsewhere this person may go by another name.
+  const joined = useAtomValue(kinJoinedNameAtom) === props.environmentId;
+  const setJoined = useAtomSet(kinJoinedNameAtom);
+  const { held } = useKinProfiles(joined ? props.environmentId : null, props.orgId);
+  const mine = held?.profiles.find((profile) => profile.personId === props.personId) ?? null;
+  if (!joined || mine === null) return null;
+  return (
+    <View className="px-4 pb-2 pt-2">
+      <Notice
+        icon="person.crop.circle"
+        message={`You joined as ${mine.displayName}. Is that your name?`}
+        dismissLabel="Yes"
+        onDismiss={() => setJoined(null)}
+        action={{
+          label: "Change it",
+          onPress: () => {
+            setJoined(null);
+            navigation.navigate("KinProfileEdit", {
+              environmentId: props.environmentId,
+              orgId: props.orgId,
+              personId: mine.personId,
+            });
+          },
+        }}
+      />
     </View>
   );
 }
@@ -172,12 +248,14 @@ export function KinChatsView(props: {
   readonly onRetry: () => void;
   /** The owner's way in to what the leads remember, above the chats. */
   readonly memory?: ReactNode;
-  /** What an empty list says, for a viewer who can't start chats with leads. */
-  readonly emptyDetail?: string;
+  /** What an empty list says, for a viewer who can't start chats with agents. */
+  readonly empty?: { readonly title: string; readonly detail: string };
   /** Room under the last row for a tab dock drawn over the list. */
   readonly bottomClearance?: number;
   readonly onOpenWaiting: () => void;
   readonly onOpenChat: (chatId: KinChatRowView["chatId"]) => void;
+  /** A company with no chats yet starts here: its first agent, the Chief of staff suggested. */
+  readonly onCreateFirstAgent?: () => void;
 }) {
   const { state, onOpenChat } = props;
   const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
@@ -204,10 +282,24 @@ export function KinChatsView(props: {
                 </View>
               )}
               {props.memory == null ? null : <View className="-mx-4">{props.memory}</View>}
-              <EmptyState
-                title="No chats yet"
-                detail={props.emptyDetail ?? "Chats with your agents show up here."}
-              />
+              {props.onCreateFirstAgent === undefined ? (
+                <EmptyState
+                  title={props.empty?.title ?? "No chats yet"}
+                  detail={props.empty?.detail ?? "Chats with your agents show up here."}
+                />
+              ) : (
+                <EmptyState
+                  title="Create your first agent"
+                  detail="Start with a Chief of staff: your front door for everything. You chat with it like a colleague, and it passes work to the agents you add later."
+                  action={
+                    <Button
+                      tone="primary"
+                      label="Create Chief of staff"
+                      onPress={props.onCreateFirstAgent}
+                    />
+                  }
+                />
+              )}
             </>
           )}
         </KinScreenState>
@@ -227,32 +319,71 @@ export function KinChatsView(props: {
       recycleItems
       renderItem={({ item, index }) => (
         <>
-          <KinChatRow
-            row={item}
-            accessibilityLabel={kinChatListRowLabel(item, (date) => formatKinTime(date))}
-            onPress={() => onOpenChat(item.chat.chatId)}
-          />
+          {item.company ? (
+            <KinCompanyChatRow
+              row={item}
+              environmentId={state.environmentId}
+              me={props.directory.me}
+              onPress={() => onOpenChat(item.chat.chatId)}
+            />
+          ) : (
+            <KinChatRow
+              row={item}
+              accessibilityLabel={kinChatListRowLabel(item, (date) => formatKinTime(date))}
+              onPress={() => onOpenChat(item.chat.chatId)}
+            />
+          )}
           {index < rows.length - 1 ? <View className="ml-5 h-px bg-border-subtle" /> : null}
         </>
       )}
       ListHeaderComponent={
-        notice || banner !== null || props.memory != null ? (
-          <>
-            {notice ? (
-              <View className="px-4 pb-2 pt-2">
-                <KinInboxNotice state={state} />
-              </View>
-            ) : null}
-            {banner === null ? null : (
-              <>
-                <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
-                <View className="ml-5 h-px bg-border-subtle" />
-              </>
-            )}
-            {props.memory}
-          </>
-        ) : null
+        <>
+          {notice ? (
+            <View className="px-4 pb-2 pt-2">
+              <KinInboxNotice state={state} />
+            </View>
+          ) : (
+            <KinStandInNotice className="px-4 pb-2 pt-2" />
+          )}
+          {banner === null ? null : (
+            <>
+              <KinWaitingBanner view={banner} onPress={props.onOpenWaiting} />
+              <View className="ml-5 h-px bg-border-subtle" />
+            </>
+          )}
+          {props.memory}
+        </>
       }
+    />
+  );
+}
+
+/** The company chat's row, with who is in it under its last line. */
+function KinCompanyChatRow(props: {
+  readonly row: KinChatListRow;
+  readonly environmentId: EnvironmentId;
+  readonly me: ReadonlySet<string>;
+  readonly onPress: () => void;
+}) {
+  const members = Option.getOrNull(
+    AsyncResult.value(
+      useAtomValue(
+        kinClient.chatMembers({
+          environmentId: props.environmentId,
+          input: { chatId: props.row.chat.chatId },
+        }),
+      ),
+    ),
+  )?.members;
+  const roomLine = members === undefined ? null : kinRoomLine(members, props.me);
+  return (
+    <KinChatRow
+      row={props.row}
+      roomLine={roomLine}
+      accessibilityLabel={[kinChatListRowLabel(props.row, (date) => formatKinTime(date)), roomLine]
+        .filter((part) => part !== null)
+        .join(" ")}
+      onPress={props.onPress}
     />
   );
 }

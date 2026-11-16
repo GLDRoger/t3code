@@ -380,7 +380,7 @@ function harness(
     }),
   );
   const roles = Layer.succeed(KinOrgRoles, {
-    isOwner: (ref) =>
+    isOwnerLevel: (ref) =>
       Effect.suspend(() => {
         roleChecks.count += 1;
         return roleChecks.during?.(roleChecks.count) ?? Effect.void;
@@ -437,8 +437,8 @@ const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
     VALUES ('org_01', 'Kin', '2026-11-07T00:00:00.000Z')`;
-  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
-    VALUES (${owner}, 'org_01', 'nishchay', 'Nishchay', '2026-11-07T00:00:00.000Z')`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+    VALUES (${owner}, 'org_01', 'nishchay', 'Nishchay', '2026-11-07T00:00:00.000Z', 'owner')`;
   yield* insertKey("org_01");
   return { sql, actions: yield* PendingActions.KinPendingActions };
 });
@@ -1998,18 +1998,39 @@ describe("KinActionExecutor", () => {
     // nothing, since no shared context holds it (the production layer test checks the output).
     assert.notInclude(source("kin/KinServer.ts"), "KinActionExecutor");
 
-    // Leads are the owner's: the `kin lead` CLI, and RPCs that check the caller owns the lead
-    // (`create`, `update`, `retire`, `restore`, `access`, `allow`, `disallow`) or read only what's
-    // the caller's (`profiles`, `contacts`). Nothing else the server runs (MCP, agent toolkits,
-    // routes, schedules) reaches this module, and no RPC reaches what the CLI does unchecked.
+    // Leads are the owner's: the `kin lead` CLI, RPCs that check the caller owns the lead, and reads
+    // of only what's the caller's (`profiles`, `contacts`, also by the refresh stream). Nothing else
+    // the server runs (MCP, agent toolkits, routes, schedules) reaches this module, and no RPC
+    // reaches what the CLI does unchecked.
     assert.deepStrictEqual(importers("kin/lead/KinLeadProvision.ts"), [
+      "kin/chat/refreshes.ts",
       "kin/chat/rpcHandlers.ts",
       "kin/cli/lead.ts",
+      "kin/people/rpcHandlers.ts",
     ]);
-    assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), ["kin/rpcHandlers.ts"]);
+    // The team agent is set with the caller's own session, checked as the editor's.
+    assert.notMatch(
+      source("kin/people/rpcHandlers.ts"),
+      /\bLeadProvision\.(?!setTeamAgent\b|ts\b)\w+/,
+    );
+    assert.notMatch(
+      source("kin/chat/refreshes.ts"),
+      /\bLeadProvision\.(?!profiles\b|contacts\b|ts\b)\w+/,
+    );
+    assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
+    assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), [
+      "kin/people/rpcHandlers.ts",
+      "kin/rpcHandlers.ts",
+    ]);
     assert.notMatch(
       source("kin/chat/rpcHandlers.ts"),
-      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|KinLeadProvisionError\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|teamAgent\b|KinLeadProvisionError\b|ts\b)\w+/,
+    );
+    // The refresh stream reads only the caller's own lead list to tell them it moved.
+    assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
+    assert.notMatch(
+      source("kin/chat/refreshes.ts"),
+      /\bLeadProvision\.(?!profiles\b|contacts\b|ts\b)\w+/,
     );
     assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
     const served = new Set<string>();

@@ -1,3 +1,4 @@
+import type { EnvironmentConnectionPresentation } from "../connection/presentation.ts";
 import { EnvironmentRpcUnavailableError } from "../rpc/index.ts";
 import {
   EnvironmentAuthorizationError,
@@ -12,7 +13,9 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   classifyKinProbe,
+  kinHostCandidate,
   kinHostIdToSave,
+  kinStandInLine,
   resolveKinHost,
   resolveKinHostAt,
   type KinProbe,
@@ -106,15 +109,22 @@ const resolve = (
   probes: Record<string, KinProbe>,
   options: {
     savedHostId?: EnvironmentId | null;
+    /** Not connected; a blip such as the first `connecting` unless `phases` says otherwise. */
     offline?: ReadonlyArray<EnvironmentId>;
+    phases?: Record<string, Pick<EnvironmentConnectionPresentation, "phase" | "error">>;
     cached?: Record<string, KinOrgsListResult>;
   } = {},
 ) =>
   resolveKinHost({
-    candidates: [a, b, c].map((environmentId) => ({
-      environmentId,
-      connected: !(options.offline ?? []).includes(environmentId),
-    })),
+    candidates: [a, b, c].map((environmentId) =>
+      kinHostCandidate(
+        environmentId,
+        options.phases?.[environmentId] ??
+          ((options.offline ?? []).includes(environmentId)
+            ? { phase: "connecting", error: null }
+            : { phase: "connected", error: null }),
+      ),
+    ),
     savedHostId: options.savedHostId === undefined ? null : options.savedHostId,
     probe: (environmentId) => probes[environmentId] ?? notKin,
     cachedOrgs: (environmentId) => options.cached?.[environmentId] ?? null,
@@ -141,12 +151,92 @@ describe("resolveKinHost", () => {
       environmentId: c,
       connected: true,
     });
-    expect(resolve({ [b]: ready }, { savedHostId: c, offline: [c] })).toMatchObject({
+    expect(resolve({ [b]: pending }, { savedHostId: c, offline: [c] })).toMatchObject({
       _tag: "host",
       environmentId: c,
       connected: false,
       probe: pending,
     });
+  });
+
+  it.each([
+    ["connecting for the first time", { phase: "connecting", error: null }],
+    ["reconnecting before any attempt failed", { phase: "reconnecting", error: null }],
+  ] as const)("holds the saved host's cache while it is %s, saving nothing", (_name, phase) => {
+    const host = resolve({ [b]: ready }, { savedHostId: c, phases: { [c]: phase } });
+    expect(host).toMatchObject({ environmentId: c, connected: false });
+    expect(host).not.toHaveProperty("standInFor");
+  });
+
+  it.each([
+    ["unreachable after a failed attempt", { phase: "reconnecting", error: "timed out" }],
+    ["failing", { phase: "error", error: "refused" }],
+    ["unsupported", { phase: "unsupported", error: "too old" }],
+    ["offline", { phase: "offline", error: null }],
+  ] as const)("lets a live host stand in, unsaved, for a saved host %s", (_name, phase) => {
+    const host = resolve({ [b]: ready }, { savedHostId: c, phases: { [c]: phase } });
+    expect(host).toMatchObject({ environmentId: b, connected: true, probe: ready, standInFor: c });
+    expect(kinHostIdToSave(host)).toBeNull();
+    const names = new Map([[b, "Studio Mac"]]);
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null, true)).toEqual({
+      message: "Showing Studio Mac. Your usual computer can't be reached.",
+      usual: c,
+    });
+    expect(kinStandInLine(host, () => "Studio Mac", true)?.message).toBe(
+      "Showing Studio Mac. Your usual computer can't be reached.",
+    );
+    names.set(c, "Office Mac");
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null, true)?.message).toBe(
+      "Showing Studio Mac. Office Mac can't be reached.",
+    );
+    // A teammate never reads a computer's name.
+    expect(kinStandInLine(host, (id) => names.get(id) ?? null, false)?.message).toBe(
+      "Showing another computer. Your usual computer can't be reached.",
+    );
+  });
+
+  it("stands in quietly for a saved host switched off on this device", () => {
+    const host = resolve(
+      { [b]: ready },
+      { savedHostId: c, phases: { [c]: { phase: "available", error: null } } },
+    );
+    expect(host).toMatchObject({ environmentId: b, connected: true, standInFor: c });
+    expect(kinHostIdToSave(host)).toBeNull();
+    expect(kinStandInLine(host, () => "Studio Mac", true)).toBeNull();
+  });
+
+  it("waits on an earlier host's probe before letting a later one stand in", () => {
+    const down = { [c]: { phase: "available", error: null } } as const;
+    expect(resolve({ [a]: pending, [b]: ready }, { savedHostId: c, phases: down })).toMatchObject({
+      environmentId: c,
+      connected: false,
+    });
+    expect(resolve({ [a]: notKin, [b]: ready }, { savedHostId: c, phases: down })).toMatchObject({
+      environmentId: b,
+      standInFor: c,
+    });
+  });
+
+  it("goes back to the saved host once it reconnects, and keeps its cache with no live host", () => {
+    const down = { [c]: { phase: "available", error: null } } as const;
+    expect(resolve({ [b]: ready }, { savedHostId: c, phases: down })).toMatchObject({
+      environmentId: b,
+    });
+    const back = resolve({ [b]: ready, [c]: ready }, { savedHostId: c });
+    expect(back).toMatchObject({ environmentId: c, connected: true });
+    expect(kinStandInLine(back, () => "Office Mac", true)).toBeNull();
+    expect(kinHostIdToSave(back)).toBe(c);
+    const noIdentity: KinProbe = { _tag: "noIdentity", orgs: orgs([]) };
+    const flaky: KinProbe = { _tag: "error", message: "socket closed", transient: true };
+    expect(
+      resolve({ [a]: noIdentity, [b]: flaky }, { savedHostId: c, phases: down }),
+    ).toMatchObject({ environmentId: c, connected: false });
+  });
+
+  it("saves a host picked over a saved one that isn't Kin or has no identity", () => {
+    const noIdentity: KinProbe = { _tag: "noIdentity", orgs: orgs([]) };
+    expect(kinHostIdToSave(resolve({ [a]: notKin, [b]: ready }, { savedHostId: a }))).toBe(b);
+    expect(kinHostIdToSave(resolve({ [a]: noIdentity, [b]: ready }, { savedHostId: a }))).toBe(b);
   });
 
   it.each([

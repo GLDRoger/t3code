@@ -1,3 +1,4 @@
+import { kinRatesOf } from "@t3tools/client-runtime/kin/kinCurrency";
 import { useAtomValue } from "@effect/atom-react";
 import { kinReadDates, type KinDatesWindow } from "@t3tools/client-runtime/kin/kinDates";
 import {
@@ -7,6 +8,11 @@ import {
   type KinListContext,
   type KinListFilter,
 } from "@t3tools/client-runtime/kin/kinLists";
+import {
+  KIN_INVOICES,
+  kinIssueNotice,
+  kinReceiptNotice,
+} from "@t3tools/client-runtime/kin/kinInvoices";
 import { kinMoneyAgent } from "@t3tools/client-runtime/kin/kinMoney";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import {
@@ -32,6 +38,7 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useRef, useState } from "react";
 
+import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { prefillKinDraft } from "./KinChatView";
@@ -61,7 +68,7 @@ const refreshKinLists = (target: KinWorkTarget) => {
 };
 
 /** Reads again when Work says something changed; `seq` is null while that isn't known. */
-function useRereadOnChange(seq: number | null, reread: () => void) {
+export function useRereadOnChange(seq: number | null, reread: () => void) {
   const seen = useRef(seq);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the host's figures again when the host announces a change to Work
   useEffect(() => {
@@ -394,4 +401,165 @@ export function useKinCompanyProfile(target: KinWorkTarget, enabled: boolean) {
   });
   const state = kinWorkReadState(useAtomValue(enabled ? atom : noCompanyAtom));
   return { state, refresh: () => appAtomRegistry.refresh(atom) };
+}
+
+/** The owner's home currency and rates, for the estimates beside foreign amounts. Null for a teammate. */
+export function useKinRates(target: KinWorkTarget, enabled = true) {
+  // A teammate never asks: the host would refuse, and no figure reaches them anyway.
+  const allowed = useAtomValue(kinClient.companyRead.permissionAtom(target.environmentId));
+  const profile = useKinCompanyProfile(target, enabled && allowed);
+  return profile.state._tag === "ready" ? kinRatesOf(profile.state.value) : null;
+}
+
+const noReceiptsAtom: ReturnType<typeof kinClient.receipts> = Atom.make(AsyncResult.initial());
+const noRecipesAtom: ReturnType<typeof kinClient.recipes> = Atom.make(AsyncResult.initial());
+
+/** Money's receipts, newest first, read again whenever Work changes. */
+export function useKinReceipts(
+  target: KinWorkTarget,
+  options: { readonly enabled: boolean; readonly seq: number | null },
+) {
+  const atom = kinClient.receipts({
+    environmentId: target.environmentId,
+    input: { orgId: target.orgId },
+  });
+  const state = kinWorkReadState(useAtomValue(options.enabled ? atom : noReceiptsAtom));
+  useRereadOnChange(options.seq, () => appAtomRegistry.refresh(atom));
+  return { state, refresh: () => appAtomRegistry.refresh(atom) };
+}
+
+/** The company's document templates; `enabled` is off where the host would refuse. */
+export function useKinRecipes(target: KinWorkTarget, enabled: boolean) {
+  const atom = kinClient.recipes({
+    environmentId: target.environmentId,
+    input: { orgId: target.orgId },
+  });
+  const state = kinWorkReadState(useAtomValue(enabled ? atom : noRecipesAtom));
+  return { state, refresh: () => appAtomRegistry.refresh(atom) };
+}
+
+export interface KinPreviewFile {
+  readonly name: string;
+  readonly mimeType: string;
+  readonly base64: string;
+}
+
+/**
+ * The owner's taps on invoices and receipts: issue, void and undo it, make a receipt, set an
+ * advance against an invoice, and make an entry's document, previewed first. Each says what it did.
+ */
+export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
+  const issue = useAtomCommand(kinClient.workIssue, { reportFailure: false });
+  const voidIt = useAtomCommand(kinClient.workVoid, { reportFailure: false });
+  const unvoid = useAtomCommand(kinClient.workUnvoid, { reportFailure: false });
+  const receipt = useAtomCommand(kinClient.makeReceipt, { reportFailure: false });
+  const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const reread = (key?: KinRecordKey) => {
+    if (key !== undefined)
+      appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } }));
+    appAtomRegistry.refresh(moneyAtom({ environmentId, orgId }));
+    appAtomRegistry.refresh(kinClient.receipts({ environmentId, input: { orgId } }));
+  };
+  const run = async <A>(
+    send: () => Promise<AsyncResult.AsyncResult<A, unknown>>,
+    key: KinRecordKey | undefined,
+    said: (value: A) => string | null,
+  ): Promise<A | null> => {
+    setBusy(true);
+    setProblem(null);
+    setNotice(null);
+    const outcome = await kinListSend({
+      online: () => kinHostConnected(environmentId),
+      send: send as Parameters<typeof kinListSend<A>>[0]["send"],
+    });
+    setBusy(false);
+    reread(key);
+    if (!outcome.ok) {
+      setProblem(outcome.problem);
+      return null;
+    }
+    setNotice(said(outcome.value));
+    return outcome.value;
+  };
+  return {
+    busy,
+    problem,
+    notice,
+    dismiss: () => {
+      setProblem(null);
+      setNotice(null);
+    },
+    issue: (key: KinRecordKey) =>
+      run(() => issue({ environmentId, input: { orgId, key } }), key, kinIssueNotice),
+    void: (key: KinRecordKey) =>
+      run(
+        () => voidIt({ environmentId, input: { orgId, key } }),
+        key,
+        () => null,
+      ),
+    unvoid: (key: KinRecordKey) =>
+      run(
+        () => unvoid({ environmentId, input: { orgId, key } }),
+        key,
+        () => null,
+      ),
+    makeReceipt: (
+      key: KinRecordKey | undefined,
+      input: Omit<Parameters<typeof receipt>[0]["input"], "orgId" | "clientRequestId">,
+      clientRequestId: string,
+    ) =>
+      run(
+        () => receipt({ environmentId, input: { orgId, ...input, clientRequestId } }),
+        key,
+        kinReceiptNotice,
+      ),
+    /** The document as it would be made, never filed; null when it couldn't be made. */
+    preview: async (
+      recipe: string,
+      entry: KinRecordKey | undefined,
+      inputs?: Readonly<Record<string, unknown>>,
+    ) => {
+      const made = await run(
+        () =>
+          render({
+            environmentId,
+            input: {
+              orgId,
+              recipe,
+              ...(entry === undefined ? {} : { entry }),
+              ...(inputs === undefined ? {} : { inputs }),
+              preview: true,
+              clientRequestId: randomUUID(),
+            },
+          }),
+        undefined,
+        () => null,
+      );
+      return made?.preview ?? null;
+    },
+    file: (
+      recipe: string,
+      entry: KinRecordKey,
+      clientRequestId: string,
+      inputs?: Readonly<Record<string, unknown>>,
+    ) =>
+      run(
+        () =>
+          render({
+            environmentId,
+            input: {
+              orgId,
+              recipe,
+              entry,
+              ...(inputs === undefined ? {} : { inputs }),
+              clientRequestId,
+            },
+          }),
+        entry,
+        () => KIN_INVOICES.filed,
+      ),
+  };
 }

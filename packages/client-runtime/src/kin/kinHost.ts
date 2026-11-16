@@ -8,6 +8,8 @@ import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 
+import type { EnvironmentConnectionPresentation } from "../connection/presentation.ts";
+
 /** What one connected environment's `kin.orgs.list` says about Kin there. */
 export type KinProbe =
   | { readonly _tag: "pending" }
@@ -61,6 +63,32 @@ export function classifyKinProbe(
 export interface KinHostCandidate {
   readonly environmentId: EnvironmentId;
   readonly connected: boolean;
+  /** Down for more than a blip: switched off, failing, or unsupported. See `kinHostCandidate`. */
+  readonly down?: boolean;
+  /** Switched off on this device by the person, which is not the same as unreachable. */
+  readonly off?: boolean;
+}
+
+/**
+ * One environment as a Kin host candidate. A first `connecting` or a `reconnecting` that hasn't
+ * failed yet is a blip, so the saved host holds through it; `available` is a switched-off one.
+ */
+export function kinHostCandidate(
+  environmentId: EnvironmentId,
+  connection: Pick<EnvironmentConnectionPresentation, "phase" | "error">,
+): KinHostCandidate {
+  const { phase } = connection;
+  return {
+    environmentId,
+    connected: phase === "connected",
+    off: phase === "available",
+    down:
+      phase === "available" ||
+      phase === "offline" ||
+      phase === "error" ||
+      phase === "unsupported" ||
+      (phase === "reconnecting" && connection.error !== null),
+  };
 }
 
 export type KinHost =
@@ -74,6 +102,13 @@ export type KinHost =
       /** False for a saved host that is offline: show its cache. */
       readonly connected: boolean;
       readonly probe: KinProbe;
+      /**
+       * The saved host this one stands in for while it is down; never saved, so Kin goes back
+       * when it returns.
+       */
+      readonly standInFor?: EnvironmentId;
+      /** The saved host was switched off here, so standing in needs no warning. */
+      readonly usualOff?: true;
     };
 
 /** A route's host; `unpaired` when this device's catalog doesn't hold the route's environment. */
@@ -82,9 +117,10 @@ export type KinRouteHost = KinHost | { readonly _tag: "unpaired" };
 const isTransient = (probe: KinProbe) => probe._tag === "error" && probe.transient;
 
 /**
- * Saved host first, unless it isn't Kin or lacks an identity another host has; then the first
- * connected host with an identity, in catalog order; then one without. Earlier pending probes are
- * awaited so the choice stays stable. A transient failure never replaces or picks a host.
+ * Saved host first, unless it isn't Kin or lacks an identity another host has; a saved host that
+ * is down lends its place, unsaved, to a connected one with an identity. Then the first connected
+ * host with an identity in catalog order, awaiting earlier probes; then one without. A transient
+ * failure never replaces or picks a host.
  */
 export function resolveKinHost(input: {
   readonly candidates: ReadonlyArray<KinHostCandidate>;
@@ -99,6 +135,28 @@ export function resolveKinHost(input: {
   let fallback: KinHost | null = null;
   if (saved !== undefined) {
     if (!saved.connected) {
+      // A live host stands in for one that is down, awaiting earlier probes like the search below
+      // so it doesn't pick one and switch; a blip shows the saved host's cache.
+      let live: KinHostCandidate | undefined;
+      for (const candidate of saved.down ? input.candidates : []) {
+        if (!candidate.connected) continue;
+        const tag = input.probe(candidate.environmentId)._tag;
+        if (tag === "pending") break;
+        if (tag === "ready") {
+          live = candidate;
+          break;
+        }
+      }
+      if (live !== undefined) {
+        return {
+          _tag: "host",
+          environmentId: live.environmentId,
+          connected: true,
+          probe: input.probe(live.environmentId),
+          standInFor: saved.environmentId,
+          ...(saved.off === true ? { usualOff: true as const } : {}),
+        };
+      }
       return {
         _tag: "host",
         environmentId: saved.environmentId,
@@ -165,7 +223,29 @@ function kinOfflineProbe(cached: KinOrgsListResult | null): KinProbe {
     : { _tag: "pending" };
 }
 
-/** The id worth saving: only a host that answered with an identity. */
+/** The id worth saving: only a host that answered with an identity, and not a stand-in. */
 export function kinHostIdToSave(host: KinHost): EnvironmentId | null {
-  return host._tag === "host" && host.probe._tag === "ready" ? host.environmentId : null;
+  return host._tag === "host" && host.probe._tag === "ready" && host.standInFor === undefined
+    ? host.environmentId
+    : null;
+}
+
+/**
+ * The one line a stand-in host shows wherever Kin's list or a chat is, so nobody reads or writes
+ * to another host's Kin without seeing whose it is; null on the usual host. Computers are named
+ * only to the owner or a co-owner: a machine's name is the owner's, not a teammate's to read.
+ */
+export function kinStandInLine(
+  host: KinHost,
+  labelOf: (environmentId: EnvironmentId) => string | null,
+  ownerLevel: boolean,
+): { readonly message: string; readonly usual: EnvironmentId } | null {
+  // Switched off here on purpose: the person knows, and nothing is wrong.
+  if (host._tag !== "host" || host.standInFor === undefined || host.usualOff) return null;
+  const label = (environmentId: EnvironmentId) => (ownerLevel ? labelOf(environmentId) : null);
+  const shown = label(host.environmentId) ?? "another computer";
+  const named = label(host.standInFor);
+  // Two machines can share a name; then only "usual" tells them apart.
+  const usual = named === null || named === shown ? "Your usual computer" : named;
+  return { message: `Showing ${shown}. ${usual} can't be reached.`, usual: host.standInFor };
 }

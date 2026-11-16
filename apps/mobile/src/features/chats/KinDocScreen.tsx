@@ -1,18 +1,27 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
 import {
-  kinBodyMarkdown,
+  kinDocFileId,
+  kinDocMarkdown,
   kinImageSource,
   kinImageText,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinLinkToOpen } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_DOCS,
+  KIN_DOC_HOMES,
+  KIN_DOC_KIND_LABELS,
+  kinDocKindOf,
+  kinDocUnfiled,
   kinDocChangeLine,
   kinDocChat,
   kinDocExport,
   kinDocHasContents,
   kinDocOutline,
+  kinDocPdfInput,
+  kinDocPieceKey,
+  kinDocPieces,
   kinDocPrevious,
   kinDocPrivacy,
   kinDocRef,
@@ -22,11 +31,20 @@ import {
   kinPendingRefKey,
   type KinDocAsk,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import { EnvironmentId, KinOrgId, KinRecordKey, type KinDocDetail } from "@t3tools/contracts";
+import { KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
+import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
+import {
+  EnvironmentId,
+  KinOrgId,
+  KinRecordKey,
+  type KinDocDetail,
+  type KinDocEmbed,
+} from "@t3tools/contracts";
 import * as Linking from "expo-linking";
 import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
-import { useRef, useState, type ComponentRef } from "react";
+import { Fragment, useRef, useState, type ComponentRef, type ReactNode } from "react";
 import { File, Paths } from "expo-file-system";
 import { Alert, Pressable, View } from "react-native";
 
@@ -36,28 +54,43 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
+import { ListSection } from "../../components/ui/ListSection";
 import { Menu } from "../../components/ui/Menu";
+import { Chip } from "../../components/ui/Chip";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useContentTopInset } from "../../components/ui/useBarInset";
 import { useNowMinuteMs } from "../../lib/clock";
+import { uuidv4 } from "../../lib/uuid";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { shareFileFromSource } from "../../lib/shareFileFromSource";
 import {
   SelectableMarkdownText,
   type MarkdownImageRenderer,
+  type MarkdownImageSourceResolver,
 } from "../../native/SelectableMarkdownText";
+import { assetEnvironment } from "../../state/assets";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { usePreparedConnection } from "../../state/session";
+import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
+import { ThreadMarkdownImage } from "../threads/ThreadMarkdownImage";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
+import { KinDocFileRows } from "./KinInvoice";
+import { KinWorkShareRow } from "./KinWorkShareRow";
 import { kinClient } from "./state/kinClient";
+import { useKinDocLabel } from "./state/useKinDocLabel";
 import { useKinDoc } from "./state/useKinDocs";
+import { useKinWorkLink } from "./state/kinWorkLink";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import { KinVisual } from "./widgets/KinVisual";
+import { KinChartCard } from "./widgets/KinWidgetView";
 
 export type KinDocParams = {
   readonly environmentId: string;
@@ -86,6 +119,46 @@ const renderImageAsText: MarkdownImageRenderer = (image) => (
     {kinImageText(image)}
   </Text>
 );
+
+/**
+ * Where an image in a sentence loads from: a doc's own file through a URL the host mints for its
+ * reader, and nothing for any other. An image on a line of its own is drawn by `renderImage`.
+ */
+function useKinDocImageSource(environmentId: EnvironmentId): MarkdownImageSourceResolver {
+  const connection = usePreparedConnection(environmentId);
+  const httpBaseUrl = Option.isSome(connection) ? connection.value.httpBaseUrl : null;
+  const createUrl = useAtomQueryRunner(assetEnvironment.createUrl, { reportFailure: false });
+  return async (image) => {
+    const attachmentId = kinDocFileId(image.href);
+    if (attachmentId === null) return kinImageSource();
+    if (httpBaseUrl === null) throw new Error("The doc's image is unavailable offline");
+    const result = await createUrl({
+      environmentId,
+      input: { resource: { _tag: "attachment", attachmentId } },
+    });
+    if (result._tag !== "Success") throw new Error("Could not authorize the doc's image");
+    const uri = resolveAssetUrl(httpBaseUrl, result.value.relativeUrl);
+    if (uri === null) throw new Error("The doc's image URL is invalid");
+    return { uri };
+  };
+}
+
+/** What the host drew for a doc's block, at the page's width like a card in a chat. */
+function KinDocEmbedView(props: KinWorkTarget & { readonly embed: KinDocEmbed }) {
+  const { embed } = props;
+  switch (embed._tag) {
+    case "chart":
+      return <KinChartCard view={kinChartView(embed.chart)} />;
+    case "visual":
+      return <KinVisual environmentId={props.environmentId} orgId={props.orgId} visual={embed} />;
+    case "broken":
+      return (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {embed.message}
+        </Text>
+      );
+  }
+}
 
 const SECTION_ACTIONS = [
   { id: "ask", title: KIN_DOCS.ask, image: "questionmark.bubble" },
@@ -211,7 +284,9 @@ function KinDocBody(
   },
 ) {
   const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const { environmentId, orgId, doc } = props;
+  const { party, project } = doc;
   const target = { environmentId, orgId };
   const { names } = useKinWorkDirectory(target, true);
   const inbox = useKinInbox();
@@ -219,12 +294,17 @@ function KinDocBody(
   const styles = useMarkdownPreviewStyles();
   const openLink = useOpenPullRequest();
   const restore = useKinDocRestore(target, doc.key);
+  const canRender = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
+  const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
+  const [making, setMaking] = useState(false);
   const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
   // On iOS the page scrolls under the bar, so a section's top sits that far down the screen.
   const bar = useContentTopInset();
   const offsets = useRef(new Map<string, number>());
   const arrived = useRef(false);
   const [copied, setCopied] = useState(false);
+  const [preview, setPreview] = useState<FilePreviewSource | null>(null);
+  const resolveImageSource = useKinDocImageSource(environmentId);
   const undo = props.undo !== null && props.undo < doc.latest.version ? props.undo : null;
 
   const sections = kinDocSections(doc.body, doc.outline);
@@ -242,6 +322,10 @@ function KinDocBody(
   const old = doc.version.version !== doc.latest.version;
   const previous = kinDocPrevious(doc.version);
   const privacy = kinDocPrivacy(doc);
+  const label = useKinDocLabel(target, doc);
+  const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
+  const fileIt = () => navigation.navigate("KinDocFile", { environmentId, orgId, doc: doc.key });
+  const kind = kinDocKindOf(doc);
   const chats = inbox.state._tag === "ready" ? inbox.state.inbox.value.chats : [];
   const chat = kinDocChat(chats, doc, names.me);
   const first = doc.outline.find((section) => section.id !== "top");
@@ -278,6 +362,16 @@ function KinDocBody(
       { mimeType: "text/markdown", UTI: "net.daringfireball.markdown", dialogTitle: doc.title },
       "kin-doc",
     );
+  };
+  const exportPdf = async () => {
+    const input = kinDocPdfInput(orgId, doc, uuidv4());
+    if (input === null || making) return;
+    setMaking(true);
+    const result = await render({ environmentId, input });
+    setMaking(false);
+    const made = AsyncResult.isSuccess(result) ? result.value.documents[0] : undefined;
+    if (made === undefined) return Alert.alert(KIN_DOCS.exportPdfFailed);
+    openRecord("KinDoc", { environmentId, orgId, doc: made.key });
   };
   const jump = (id: string) => {
     const y = id === "top" ? 0 : offsets.current.get(id);
@@ -321,22 +415,62 @@ function KinDocBody(
             navigation.navigate("KinDocHistory", { environmentId, orgId, doc: doc.key }),
         },
         { id: "export", title: KIN_DOCS.export, onPress: () => void share() },
+        ...(canRender && kinDocPdfInput(orgId, doc, "pdf") !== null
+          ? [
+              {
+                id: "pdf",
+                title: making ? KIN_DOCS.exportingPdf : KIN_DOCS.exportPdf,
+                onPress: () => void exportPdf(),
+              },
+            ]
+          : []),
+        ...(canFile ? [{ id: "file", title: KIN_DOC_HOMES.fileTitle, onPress: fileIt }] : []),
+        ...(label.action === null
+          ? []
+          : [{ id: "label", title: label.action.label, onPress: label.ask }]),
       ],
     },
   ];
 
-  const markdown = (text: string) => (
-    <SelectableMarkdownText
-      markdown={kinBodyMarkdown(text)}
-      textStyle={styles.nativeTextStyle}
-      // A long press opens the section's own actions, which include copying its text.
-      selectable={false}
-      inlineWebLinks
-      onLinkPress={onLinkPress}
-      renderImage={renderImageAsText}
-      resolveImageSource={kinImageSource}
-    />
-  );
+  const renderImage: MarkdownImageRenderer = (image) => {
+    const attachmentId = kinDocFileId(image.href);
+    return attachmentId === null ? (
+      renderImageAsText(image)
+    ) : (
+      <ThreadMarkdownImage
+        environmentId={environmentId}
+        resource={{ _tag: "attachment", attachmentId }}
+        alt={image.alt}
+        onPressPreview={setPreview}
+      />
+    );
+  };
+  /** Text under a long press for `menu`'s actions; a drawn block sits outside it, as a chat card does. */
+  const content = (text: string, menu: (children: ReactNode) => ReactNode) =>
+    kinDocPieces(text, doc).map((piece, index) => (
+      <Fragment key={kinDocPieceKey(piece, index)}>
+        {piece.type === "text" ? (
+          menu(
+            <View>
+              <SelectableMarkdownText
+                markdown={kinDocMarkdown(piece.text)}
+                textStyle={styles.nativeTextStyle}
+                // A long press opens the section's own actions, which include copying its text.
+                selectable={false}
+                inlineWebLinks
+                onLinkPress={onLinkPress}
+                renderImage={renderImage}
+                resolveImageSource={resolveImageSource}
+              />
+            </View>,
+          )
+        ) : (
+          <View className="mb-3">
+            <KinDocEmbedView environmentId={environmentId} orgId={orgId} embed={piece.embed} />
+          </View>
+        )}
+      </Fragment>
+    ));
 
   return (
     <View collapsable={false} className="flex-1 bg-screen">
@@ -366,6 +500,72 @@ function KinDocBody(
             <Text textRole="footnote" className="text-foreground-muted">
               {line.text}
             </Text>
+            {
+              <View className="flex-row flex-wrap gap-2">
+                <Chip
+                  size="small"
+                  icon="doc.text"
+                  label={KIN_DOC_KIND_LABELS[kind].one}
+                  accessibilityLabel={`${KIN_DOC_HOMES.kind}: ${KIN_DOC_KIND_LABELS[kind].one}`}
+                  {...(canFile ? { onPress: fileIt } : {})}
+                />
+                {doc.company === true ? (
+                  <Chip
+                    size="small"
+                    icon="folder.fill"
+                    label={KIN_DOC_HOMES.company}
+                    {...(canFile ? { onPress: fileIt } : {})}
+                  />
+                ) : null}
+                {kinDocUnfiled(doc) ? (
+                  <Chip
+                    size="small"
+                    icon="tray.and.arrow.down"
+                    label={
+                      canFile
+                        ? `${KIN_DOC_HOMES.unfiled} · ${KIN_DOC_HOMES.file}`
+                        : KIN_DOC_HOMES.unfiled
+                    }
+                    {...(canFile ? { onPress: fileIt } : {})}
+                  />
+                ) : null}
+                {party === undefined ? null : (
+                  <Chip
+                    size="small"
+                    icon="person.2"
+                    label={party.title}
+                    accessibilityLabel={`Open ${party.title}`}
+                    onPress={() =>
+                      openRecord("KinClient", { environmentId, orgId, party: party.key })
+                    }
+                  />
+                )}
+                {project === undefined ? null : (
+                  <Chip
+                    size="small"
+                    icon="folder"
+                    label={project.title}
+                    accessibilityLabel={`Open ${project.title}`}
+                    onPress={() =>
+                      openRecord("KinProject", { environmentId, orgId, project: project.key })
+                    }
+                  />
+                )}
+              </View>
+            }
+            {doc.archived || doc.sensitive || doc.sensitiveInherited === true ? null : (
+              <ListSection>
+                <KinWorkShareRow
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  itemKey={doc.key}
+                  shared={doc.shared === true}
+                  disabled={false}
+                  copy={KIN_DOC_SHARE}
+                  onSettled={props.onRefresh}
+                />
+              </ListSection>
+            )}
             {previous === null ? null : (
               <Pressable
                 accessibilityRole="button"
@@ -398,6 +598,9 @@ function KinDocBody(
                   {privacy}
                 </Text>
               </View>
+            )}
+            {label.problem === null ? null : (
+              <Notice tone="danger" message={label.problem} onDismiss={label.dismiss} />
             )}
             {props.stale ? <Notice message="Offline. Showing the last copy read." /> : null}
             {restore.problem === null ? null : (
@@ -447,18 +650,25 @@ function KinDocBody(
               </View>
             ) : null}
           </View>
+          {doc.version.file === undefined ? null : (
+            <KinDocFileRows environmentId={environmentId} file={doc.version.file} />
+          )}
           {doc.body.trim() === "" ? (
-            <Text textRole="body" className="text-foreground-muted">
-              This doc has no text yet.
-            </Text>
+            doc.version.file === undefined ? (
+              <Text textRole="body" className="text-foreground-muted">
+                This doc has no text yet.
+              </Text>
+            ) : null
           ) : sections === null ? (
-            <Menu
-              shouldOpenOnLongPress
-              actions={SECTION_ACTIONS.map((action) => ({ ...action }))}
-              onPressAction={({ nativeEvent }) => act(null, doc.body, nativeEvent.event)}
-            >
-              <View>{markdown(doc.body)}</View>
-            </Menu>
+            content(doc.body, (children) => (
+              <Menu
+                shouldOpenOnLongPress
+                actions={SECTION_ACTIONS.map((action) => ({ ...action }))}
+                onPressAction={({ nativeEvent }) => act(null, doc.body, nativeEvent.event)}
+              >
+                {children}
+              </Menu>
+            ))
           ) : (
             sections.map((section) => (
               <View
@@ -475,22 +685,25 @@ function KinDocBody(
                   }
                 }}
               >
-                <Menu
-                  title={section.title}
-                  shouldOpenOnLongPress
-                  accessibilityLabel={`${section.title}. Hold for actions`}
-                  actions={SECTION_ACTIONS.map((action) => ({ ...action }))}
-                  onPressAction={({ nativeEvent }) =>
-                    act(section.id, section.text, nativeEvent.event)
-                  }
-                >
-                  <View>{markdown(section.text)}</View>
-                </Menu>
+                {content(section.text, (children) => (
+                  <Menu
+                    title={section.title}
+                    shouldOpenOnLongPress
+                    accessibilityLabel={`${section.title}. Hold for actions`}
+                    actions={SECTION_ACTIONS.map((action) => ({ ...action }))}
+                    onPressAction={({ nativeEvent }) =>
+                      act(section.id, section.text, nativeEvent.event)
+                    }
+                  >
+                    {children}
+                  </Menu>
+                ))}
               </View>
             ))
           )}
         </ScreenScrollView>
       </ScreenContent>
+      <FilePreviewModal source={preview} onRequestClose={() => setPreview(null)} />
     </View>
   );
 }

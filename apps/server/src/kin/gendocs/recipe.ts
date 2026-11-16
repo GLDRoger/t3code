@@ -1,16 +1,26 @@
-import { KinChatError } from "@t3tools/contracts";
+import { isCalendarDay, KinChatError, KinSacCode } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { parseDocument } from "yaml";
 
 import { parseAmount } from "../work/money.ts";
+import { FUNCTIONS } from "./compute.ts";
 
 /**
- * A recipe is a folder in the workspace: `RECIPE.md`, whose front matter says what it makes and
- * the inputs it takes, and whose body tells the worker how. Each input is the agent's, or read
- * by Kin from a stored row named by `from`; the worker gets exactly the declared inputs.
+ * A recipe is a folder in the workspace: `RECIPE.md`, whose front matter says what it makes, the
+ * inputs it takes and the fields Kin computes from them, and a `template.typ` that lays them out
+ * (or, for `kind: table`, the sheets and columns Kin writes). Each input is the agent's, or read
+ * by Kin from a stored row named by `from`; the server renders exactly the declared inputs.
  */
 
-const ScalarType = Schema.Literals(["text", "integer", "decimal", "money", "date", "boolean"]);
+const ScalarType = Schema.Literals([
+  "text",
+  "integer",
+  "decimal",
+  "money",
+  "date",
+  "boolean",
+  "code",
+]);
 type ScalarType = typeof ScalarType.Type;
 const InputType = Schema.Literals([...ScalarType.literals, "month", "table"]);
 export type InputType = typeof InputType.Type;
@@ -23,18 +33,59 @@ const Declared = Schema.Struct({
   columns: Schema.optional(Schema.Record(Name, ScalarType)),
   /** For `rows.*` and `payments`: the month input whose rows these are. */
   period: Schema.optional(Name),
+  /** For `rows.*`: only entries in these of Kin's own states, which renaming never changes. */
+  states: Schema.optional(
+    Schema.Array(Schema.Literals(["open", "doing", "waiting", "done", "dropped"])),
+  ),
 });
+const FileName = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9{][A-Za-z0-9 ._(){}-]{0,99}$/));
+const SheetDecl = Schema.Struct({
+  name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(31)),
+  input: Name,
+  file: Schema.optional(FileName),
+  columns: Schema.Array(
+    Schema.Struct({
+      header: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
+      field: Schema.String.check(Schema.isPattern(/^[a-z][a-zA-Z0-9_]{0,39}(?:\.currency)?$/)),
+    }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(60)),
+  leaveOutOfTotals: Schema.optional(
+    Schema.Struct({
+      field: Name,
+      values: Schema.Array(Schema.String).check(Schema.isMaxLength(20)),
+    }),
+  ),
+  /** A total per value of this field, such as a bank row's direction, instead of one for all. */
+  totalsBy: Schema.optional(Name),
+});
+export type Sheet = typeof SheetDecl.Type;
+/** A computed field or input, or one part of it, such as `tax.total`. */
+const FigurePath = Schema.String.check(
+  Schema.isPattern(/^[a-z][a-zA-Z0-9_]{0,39}(?:\.[a-z][a-zA-Z0-9_]{0,39})?$/),
+);
+const AmountDecl = Schema.Struct({
+  total: FigurePath,
+  tax: Schema.optional(FigurePath),
+  taxes: Schema.optional(FigurePath),
+});
+/** Which of a document's figures is the amount it asks for: what its entry is issued with. */
+type AmountDecl = typeof AmountDecl.Type;
 const FrontMatter = Schema.Struct({
   name: Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{1,39}$/)),
+  kind: Schema.optional(Schema.Literals(["typst", "table"])),
   title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(60)),
   description: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(300)),
   list: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{1,39}$/))),
   numbered: Schema.optional(Schema.Boolean),
   sensitive: Schema.optional(Schema.Boolean),
-  tools: Schema.optional(Schema.Array(Schema.Literals(["typst"]))),
+  default: Schema.optional(Schema.Boolean),
   inputs: Schema.optional(Schema.Record(Name, Declared)),
+  computed: Schema.optional(Schema.Record(Name, Schema.Unknown)),
+  amount: Schema.optional(AmountDecl),
+  workbook: Schema.optional(FileName),
+  sheets: Schema.optional(Schema.Array(SheetDecl).check(Schema.isMaxLength(20))),
   outputs: Schema.Array(
-    Schema.String.check(Schema.isPattern(/^[A-Za-z0-9*][A-Za-z0-9 ._()*-]{0,99}$/)),
+    Schema.String.check(Schema.isPattern(/^[A-Za-z0-9*{][A-Za-z0-9 ._()*{}-]{0,99}$/)),
   ).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
 });
 const decodeFrontMatter = Schema.decodeUnknownExit(FrontMatter);
@@ -47,31 +98,53 @@ export type InputDecl = {
   readonly description: string | undefined;
   readonly columns: Readonly<Record<string, ScalarType>>;
   readonly period: string | undefined;
+  readonly states: ReadonlyArray<string> | undefined;
 };
 export type Recipe = {
   readonly name: string;
+  /** `typst`: `template.typ` makes each PDF output; `table`: Kin writes the declared sheets. */
+  readonly kind: "typst" | "table";
   readonly title: string;
   readonly description: string;
   readonly list: string | null;
   readonly numbered: boolean;
   readonly sensitive: boolean;
-  readonly tools: ReadonlyArray<"typst">;
+  /** The one to use for its list unless the owner asks for another. */
+  readonly default: boolean;
   readonly inputs: ReadonlyArray<InputDecl>;
+  /** Fields Kin works out, in order, each `{ <function>: <arguments> }` (`compute.ts`). */
+  readonly computed: ReadonlyArray<readonly [string, unknown]>;
+  /** The figure its entry is issued with; `null` in a recipe written before recipes declared it. */
+  readonly amount: AmountDecl | null;
+  readonly sheets: ReadonlyArray<Sheet>;
+  readonly workbook: string | null;
   readonly outputs: ReadonlyArray<string>;
-  /** The body: how the worker makes it. */
+  /** The body: notes for an agent on when and how to use it. */
   readonly instructions: string;
 };
 
 const ENTRY_KEYS = ["key", "title", "state", "amount", "tax", "date", "due", "notes", "number"];
-const CLIENT_KEYS = ["name", "gstin", "placeOfSupply", "terms"];
-const COMPANY_KEYS = ["legalName", "tradeName", "address", "gstin", "pan", "placeOfSupply", "sac"];
+const CLIENT_KEYS = ["name", "address", "gstin", "placeOfSupply", "terms"];
+const COMPANY_KEYS = [
+  "legalName",
+  "tradeName",
+  "address",
+  "gstin",
+  "pan",
+  "placeOfSupply",
+  "sac",
+  "lutNumber",
+  "lutDate",
+];
 const BANK_KEYS = ["accountName", "accountNumber", "ifsc", "bankName", "branch", "upi"];
+const BRAND_KEYS = ["primaryColor", "secondaryColor", "font", "footer"];
 const SYSTEM_KEYS = ["number", "draft", "today"];
 /** What a `rows.<list>` table may hold per row; a recipe names the columns it wants. */
 const ROW_COLUMNS = [
   "key",
   "title",
   "state",
+  "stateKey",
   "amount",
   "tax",
   "date",
@@ -79,8 +152,14 @@ const ROW_COLUMNS = [
   "client",
   "category",
   "number",
+  "clientGstin",
+  "placeOfSupply",
+  "taxable",
+  "matched",
 ];
-const PAYMENT_COLUMNS = ["invoice", "client", "amount", "paidOn"];
+const PAYMENT_COLUMNS = ["invoice", "client", "amount", "paidOn", "receipt"];
+/** An entry's live payments; `kind` is advance, tds or received. */
+const ENTRY_PAYMENT_COLUMNS = ["receipt", "amount", "paidOn", "kind"];
 
 /** Where a value comes from, parsed; `undefined` for a `from` this server doesn't read. */
 export type Source =
@@ -89,24 +168,33 @@ export type Source =
   | { readonly _tag: "entryField"; readonly field: string }
   | { readonly _tag: "client"; readonly key: string }
   | { readonly _tag: "company"; readonly key: string }
+  /** The logo's path in the render root, `/brand/logo.<ext>`, or null without one. */
+  | { readonly _tag: "logo" }
   | { readonly _tag: "rows"; readonly list: string }
-  | { readonly _tag: "payments" }
+  /** Money received in the month, or with `tds` the tax clients deducted instead. */
+  | { readonly _tag: "payments"; readonly tds: boolean }
+  /** `entry.payments`, or `entry.advances`: those received before its date or from an advance. */
+  | { readonly _tag: "entryPayments"; readonly advancesOnly: boolean }
   | { readonly _tag: "system"; readonly key: string };
 export const sourceOf = (from: string): Source | undefined => {
   if (from === "agent") return { _tag: "agent" };
-  if (from === "payments") return { _tag: "payments" };
+  if (from === "payments" || from === "tds") return { _tag: "payments", tds: from === "tds" };
   const [head, ...rest] = from.split(".");
   const tail = rest.join(".");
   switch (head) {
     case "entry":
+      if (tail === "advances" || tail === "payments")
+        return { _tag: "entryPayments", advancesOnly: tail === "advances" };
       if (rest[0] === "fields" && rest.length === 2 && /^[a-z][a-zA-Z0-9]{0,39}$/.test(rest[1]!))
         return { _tag: "entryField", field: rest[1]! };
       return ENTRY_KEYS.includes(tail) ? { _tag: "entry", key: tail } : undefined;
     case "client":
       return CLIENT_KEYS.includes(tail) ? { _tag: "client", key: tail } : undefined;
     case "company":
+      if (tail === "logo") return { _tag: "logo" };
       return COMPANY_KEYS.includes(tail) ||
-        (rest[0] === "bank" && rest.length === 2 && BANK_KEYS.includes(rest[1]!))
+        (rest[0] === "bank" && rest.length === 2 && BANK_KEYS.includes(rest[1]!)) ||
+        (rest[0] === "brand" && rest.length === 2 && BRAND_KEYS.includes(rest[1]!))
         ? { _tag: "company", key: tail }
         : undefined;
     case "rows":
@@ -127,7 +215,8 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
   if (match === null) return problem("RECIPE.md has no front matter between --- lines");
   const document = parseDocument(match[1]!, { uniqueKeys: true });
   if (document.errors.length > 0) return problem("RECIPE.md's front matter isn't valid YAML");
-  const decoded = decodeFrontMatter(document.toJS({ maxAliasCount: 0 }));
+  const raw: unknown = document.toJS({ maxAliasCount: 0 });
+  const decoded = decodeFrontMatter(raw);
   if (decoded._tag === "Failure")
     return problem("RECIPE.md's front matter is missing or has a wrong field");
   const front = decoded.value;
@@ -137,22 +226,35 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
     const source = sourceOf(from);
     if (source === undefined)
       return problem(`input ${name} reads from ${from}, which Kin doesn't supply`);
-    const isTable = source._tag === "rows" || source._tag === "payments";
+    const isTable =
+      source._tag === "rows" || source._tag === "payments" || source._tag === "entryPayments";
     if (isTable !== (declared.type === "table") && source._tag !== "agent")
       return problem(`input ${name}: its type doesn't match what ${from} gives`);
     if (declared.type === "month" && source._tag !== "agent")
       return problem(`input ${name}: a month is the agent's to give`);
+    if (
+      (source._tag === "logo" || (source._tag === "company" && source.key.startsWith("brand."))) &&
+      declared.type !== "text"
+    )
+      return problem(`input ${name}: ${from} is text`);
     if (declared.type === "table" && Object.keys(declared.columns ?? {}).length === 0)
       return problem(`input ${name} is a table with no columns`);
     if (isTable) {
-      const allowed = source._tag === "payments" ? PAYMENT_COLUMNS : ROW_COLUMNS;
+      const allowed =
+        source._tag === "payments"
+          ? PAYMENT_COLUMNS
+          : source._tag === "entryPayments"
+            ? ENTRY_PAYMENT_COLUMNS
+            : ROW_COLUMNS;
       const extra = Object.keys(declared.columns ?? {}).filter(
-        (column) => !allowed.includes(column) && !column.startsWith("field_"),
+        (column) =>
+          !allowed.includes(column) &&
+          !(source._tag !== "entryPayments" && column.startsWith("field_")),
       );
       if (extra.length > 0)
         return problem(`input ${name} asks for columns Kin doesn't have: ${extra.join(", ")}`);
       const period = declared.period === undefined ? undefined : front.inputs?.[declared.period];
-      if (period?.type !== "month")
+      if (source._tag !== "entryPayments" && period?.type !== "month")
         return problem(`input ${name} needs period: a month input of the agent's`);
     }
     inputs.push({
@@ -163,17 +265,65 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
       description: declared.description,
       columns: declared.columns ?? {},
       period: declared.period,
+      states: declared.states,
     });
+  }
+  const kind = front.kind ?? "typst";
+  // In the order RECIPE.md writes them: a field may use any field before it.
+  const rawComputed: unknown =
+    typeof raw === "object" && raw !== null ? Reflect.get(raw, "computed") : undefined;
+  const computed = Object.entries(
+    typeof rawComputed === "object" && rawComputed !== null ? rawComputed : {},
+  );
+  for (const [name, spec] of computed) {
+    if (front.inputs?.[name] !== undefined)
+      return problem(`computed field ${name} has an input's name`);
+    const fn = typeof spec === "object" && spec !== null ? Object.keys(spec)[0] : undefined;
+    if (fn === undefined || !(FUNCTIONS as ReadonlyArray<string>).includes(fn))
+      return problem(`computed field ${name} names none of ${FUNCTIONS.join(", ")}`);
+  }
+  if (front.amount !== undefined) {
+    const named = new Set([...inputs.map((one) => one.name), ...computed.map(([name]) => name)]);
+    const unknown = [front.amount.total, front.amount.tax, front.amount.taxes].find(
+      (path) => path !== undefined && !named.has(path.split(".")[0]!),
+    );
+    if (unknown !== undefined)
+      return problem(`amount names ${unknown}, which is no input or computed field`);
+  }
+  const sheets = front.sheets ?? [];
+  if (kind === "typst") {
+    if (sheets.length > 0 || front.workbook !== undefined)
+      return problem("sheets and workbook are for kind: table");
+    const bad = front.outputs.find((output) => !/^[^*{}]+\.pdf$/.test(output));
+    if (bad !== undefined)
+      return problem(`output ${bad}: a typst recipe names each PDF it makes, such as invoice.pdf`);
+  } else {
+    if (sheets.length === 0) return problem("a table recipe declares its sheets");
+    if (computed.length > 0) return problem("computed fields are for kind: typst");
+    for (const sheet of sheets) {
+      const input = inputs.find((one) => one.name === sheet.input);
+      if (input?.type !== "table") return problem(`sheet ${sheet.name} reads no table input`);
+      const missing = sheet.columns.find(
+        (column) => !Object.hasOwn(input.columns, column.field.split(".")[0]!),
+      );
+      if (missing !== undefined)
+        return problem(`sheet ${sheet.name}: ${sheet.input} has no column ${missing.field}`);
+    }
   }
   return {
     name: front.name,
+    kind,
     title: front.title,
     description: front.description,
     list: front.list ?? null,
     numbered: front.numbered ?? false,
     sensitive: front.sensitive ?? false,
-    tools: front.tools ?? [],
+    default: front.default ?? false,
     inputs,
+    computed,
+    amount: front.amount ?? null,
+    sheets,
+    workbook: front.workbook ?? null,
     outputs: front.outputs,
     instructions: match[2]!.trim(),
   };
@@ -184,7 +334,12 @@ export const needsEntry = (recipe: Recipe) =>
   recipe.list !== null ||
   recipe.inputs.some((input) => {
     const source = sourceOf(input.from);
-    return source?._tag === "entry" || source?._tag === "entryField" || source?._tag === "client";
+    return (
+      source?._tag === "entry" ||
+      source?._tag === "entryField" ||
+      source?._tag === "client" ||
+      source?._tag === "entryPayments"
+    );
   });
 
 export type Money = { readonly minor: number; readonly currency: string };
@@ -197,15 +352,24 @@ export type Value =
   | ReadonlyArray<string>
   | ReadonlyArray<Readonly<Record<string, string | number | boolean | Money | null>>>;
 
+const isExactMoney = (value: unknown): value is Money =>
+  typeof value === "object" &&
+  value !== null &&
+  Number.isSafeInteger(Reflect.get(value, "minor")) &&
+  /^[A-Z]{3}$/.test(String(Reflect.get(value, "currency")));
+
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const isSacCode = Schema.is(KinSacCode);
 const MAX_TEXT = 60_000;
-const MAX_ROWS = 500;
+/** A year of a busy company's rows; what a recipe makes from them is bounded by work and size. */
+export const MAX_ROWS = 50_000;
 
 /** An agent's value for one declared input, checked and made exact; a string error says why. */
 const agentValue = (
   type: ScalarType | "month",
   value: unknown,
   currency: string,
+  exact: boolean,
 ): Exclude<Value, ReadonlyArray<unknown>> | { readonly error: string } => {
   switch (type) {
     case "text":
@@ -223,15 +387,14 @@ const agentValue = (
         : { error: "a number such as 2 or 1.5" };
     }
     case "money": {
+      if (exact && isExactMoney(value)) return { minor: value.minor, currency: value.currency };
       if (typeof value !== "string" && typeof value !== "number")
         return { error: 'an amount as said, such as "₹1,200"' };
       const parsed = parseAmount(String(value), currency);
       return "error" in parsed ? { error: 'an amount as said, such as "₹1,200"' } : parsed.money;
     }
     case "date":
-      return typeof value === "string" &&
-        /^\d{4}-\d{2}-\d{2}$/.test(value) &&
-        !Number.isNaN(Date.parse(value))
+      return typeof value === "string" && isCalendarDay(value)
         ? value
         : { error: "a day such as 2026-11-12" };
     case "month":
@@ -240,6 +403,8 @@ const agentValue = (
         : { error: "a month such as 2026-11" };
     case "boolean":
       return typeof value === "boolean" ? value : { error: "true or false" };
+    case "code":
+      return isSacCode(value) ? value : { error: "a SAC or HSN code, 4 to 8 digits" };
   }
 };
 
@@ -247,6 +412,7 @@ const agentTable = (
   input: InputDecl,
   raw: unknown,
   currency: string,
+  exact: boolean,
 ): Value | { readonly error: string } => {
   if (!Array.isArray(raw) || raw.length > MAX_ROWS) return { error: `rows, at most ${MAX_ROWS}` };
   const rows: Array<Record<string, string | number | boolean | Money | null>> = [];
@@ -262,7 +428,7 @@ const agentTable = (
         out[column] = null;
         continue;
       }
-      const checked = agentValue(type, cell, currency);
+      const checked = agentValue(type, cell, currency, exact);
       if (typeof checked === "object" && checked !== null && "error" in checked)
         return { error: `${column}: ${checked.error}` };
       out[column] = checked;
@@ -270,6 +436,35 @@ const agentTable = (
     rows.push(out);
   }
   return rows;
+};
+
+const checkedValue = (input: InputDecl, raw: unknown, currency: string, exact: boolean) =>
+  input.type === "table"
+    ? agentTable(input, raw, currency, exact)
+    : agentValue(input.type, raw, currency, exact);
+
+/**
+ * A sample's inputs, each checked by its declared type as an agent's input is, so a recipe's own
+ * sample can't hand the renderer what no job could. Amounts may be written as Kin stores them.
+ */
+export const checkedSample = (
+  recipe: Recipe,
+  given: object,
+): { readonly inputs: Readonly<Record<string, Value>> } | { readonly error: string } => {
+  const inputs: Record<string, Value> = {};
+  const wrong: Array<string> = [];
+  for (const input of recipe.inputs) {
+    const raw: unknown = Object.hasOwn(given, input.name) ? Reflect.get(given, input.name) : null;
+    if (raw === undefined || raw === null) {
+      inputs[input.name] = null;
+      continue;
+    }
+    const checked = checkedValue(input, raw, "INR", true);
+    if (typeof checked === "object" && checked !== null && "error" in checked)
+      wrong.push(`${input.name} (${checked.error})`);
+    else inputs[input.name] = checked;
+  }
+  return wrong.length > 0 ? { error: wrong.slice(0, 5).join("; ") } : { inputs };
 };
 
 /** What Kin read from stored rows for one declared input; `agent` holds the agent's checked values. */
@@ -306,10 +501,7 @@ export const assembleInputs = (
     if (input.from !== "agent") continue;
     const raw = given[input.name];
     if (raw === undefined || raw === null) continue;
-    const checked =
-      input.type === "table"
-        ? agentTable(input, raw, currency)
-        : agentValue(input.type, raw, currency);
+    const checked = checkedValue(input, raw, currency, false);
     if (typeof checked === "object" && checked !== null && "error" in checked)
       wrong.push(`${input.name} (${checked.error})`);
     else agent[input.name] = checked;
@@ -340,4 +532,66 @@ export const assembleInputs = (
       ),
     };
   return { inputs };
+};
+
+/** A recipe for a numbered list's entry: what it makes is issued, so it says what its amount is. */
+export const issuable = (recipe: Recipe) => recipe.numbered && recipe.list !== null;
+
+/** Why a recipe can't make an issued document, or `undefined`: one that is issued declares its amount. */
+export const amountProblem = (recipe: Recipe) =>
+  issuable(recipe) && recipe.amount === null
+    ? `The ${recipe.name} recipe doesn't say which of its figures is the amount its document asks for, so Kin can't issue with it. Change the recipe (writeRecipe) to declare it in its front matter, such as amount: { total: tax.total, tax: tax.tax, taxes: tax.taxes }.`
+    : undefined;
+
+type TaxLine = { readonly name: string; readonly rate: string; readonly amount: Money };
+/** What an issued document comes to, as its recipe declares it. */
+export type Figures = {
+  readonly total: Money;
+  readonly tax: Money;
+  readonly taxes: ReadonlyArray<TaxLine>;
+};
+
+const at = (data: Readonly<Record<string, unknown>>, path: string): unknown => {
+  const [head, part] = path.split(".");
+  const value = data[head!];
+  return part === undefined
+    ? value
+    : typeof value === "object" && value !== null && !Array.isArray(value)
+      ? Reflect.get(value, part)
+      : undefined;
+};
+
+/**
+ * The figures the recipe declares, read from what Kin computed for a document: the total, its tax
+ * and tax lines, all in one currency, the lines adding up to the tax. A string says what is wrong.
+ */
+export const declaredFigures = (
+  recipe: Recipe,
+  data: Readonly<Record<string, unknown>>,
+): Figures | { readonly error: string } => {
+  const declared = recipe.amount;
+  if (declared === null) return { error: amountProblem(recipe) ?? "it declares no amount" };
+  const total = at(data, declared.total);
+  if (!isExactMoney(total)) return { error: `its amount, ${declared.total}, is no amount` };
+  const currency = total.currency;
+  const rawTaxes = declared.taxes === undefined ? [] : at(data, declared.taxes);
+  if (!Array.isArray(rawTaxes)) return { error: `its tax lines, ${declared.taxes}, are no list` };
+  const taxes: Array<TaxLine> = [];
+  for (const line of rawTaxes as ReadonlyArray<unknown>) {
+    const name: unknown = typeof line === "object" && line !== null ? Reflect.get(line, "name") : 0;
+    const rate: unknown = typeof line === "object" && line !== null ? Reflect.get(line, "rate") : 0;
+    const amount: unknown =
+      typeof line === "object" && line !== null ? Reflect.get(line, "amount") : 0;
+    if (typeof name !== "string" || typeof rate !== "string" || !isExactMoney(amount))
+      return { error: `its tax lines, ${declared.taxes}, aren't each a name, rate and amount` };
+    if (amount.currency !== currency) return { error: `its tax lines aren't in ${currency}` };
+    taxes.push({ name, rate, amount: { minor: amount.minor, currency } });
+  }
+  const summed = taxes.reduce((sum, line) => sum + line.amount.minor, 0);
+  const tax = declared.tax === undefined ? { minor: summed, currency } : at(data, declared.tax);
+  if (!isExactMoney(tax) || tax.currency !== currency)
+    return { error: `its tax, ${declared.tax}, is no amount in ${currency}` };
+  if (declared.taxes !== undefined && tax.minor !== summed)
+    return { error: "its tax lines don't add up to its tax" };
+  return { total: { minor: total.minor, currency }, tax: { minor: tax.minor, currency }, taxes };
 };

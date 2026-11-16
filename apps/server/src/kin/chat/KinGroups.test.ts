@@ -700,6 +700,8 @@ it.effect(
       yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${running.wakeupId}`;
       assert.deepStrictEqual(yield* seen(running), ["Invented-priya-plan", "Invented-owner-card"]);
       const waiting = yield* say(owner, chatId, "Invented-owner-aside");
+      yield* sql`INSERT INTO kin_agent_threads (thread_id, org_id, agent_id, started_at, chat_id)
+        VALUES ('kin-shared:launch', ${orgId}, ${tech}, ${at}, ${chatId})`;
 
       yield* groups.addMember([owner], {
         chatId,
@@ -708,6 +710,12 @@ it.effect(
       const [stopped] = yield* sql<{ aborted: number | null }>`SELECT aborted_at AS aborted
         FROM kin_wakeups WHERE wakeup_id = ${running.wakeupId}`;
       assert.isNotNull(stopped?.aborted ?? null);
+      // The chat's thread ends with the join: no later turn there resumes what was said before.
+      assert.deepStrictEqual(
+        yield* sql`SELECT ended_at IS NOT NULL AS ended FROM kin_agent_threads
+          WHERE thread_id = 'kin-shared:launch'`,
+        [{ ended: 1 }],
+      );
       assert.deepStrictEqual(
         (yield* events)
           .filter((row) => row.messageId === waiting.messageId)
@@ -896,5 +904,54 @@ it.effect(
         state: { ...(fresh.state as object), title: "Invented later work, renamed" },
       });
       assert.strictEqual(updated.revision, fresh.revision + 1);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "the company chat holds everyone on the team and the owner's agents, takes joiners, and turns off keeping its history",
+  () =>
+    Effect.gen(function* () {
+      const { sql, groups, owner, orgId, tech, growth, priya, sam, say } = yield* seed;
+      const onTeam = (personId: string) =>
+        sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+          VALUES (${`session-${personId}`}, ${orgId}, ${personId}, 0)`;
+      yield* onTeam(priya.personId);
+      const names = (chatId: KinChatId) =>
+        groups
+          .members([owner], { chatId })
+          .pipe(
+            Effect.map((view) =>
+              view.members
+                .filter((member) => member.leftAt === null)
+                .map((member) => member.displayName),
+            ),
+          );
+      assert.strictEqual(
+        yield* reason(groups.setCompany([priya], { orgId, leadAgentId: tech })),
+        "not_allowed",
+      );
+      const on = (yield* groups.setCompany([owner], { orgId, leadAgentId: growth })).chat!;
+      assert.include(on, { title: "Company chat", teamId: "company", leadAgentId: growth });
+      assert.sameMembers(yield* names(on.chatId), ["Owner", "Tech lead", "Growth lead", "Priya"]);
+      // Sam joins the team later and is in it from then on.
+      yield* onTeam(sam.personId);
+      yield* groups.joinCompany(orgId, sam.personId);
+      assert.include(yield* names(on.chatId), "Sam");
+      yield* say(sam, on.chatId, "Hello all");
+      // Off: nobody answers there, the people stay and read what was said.
+      const off = (yield* groups.setCompany([owner], { orgId, leadAgentId: null })).chat!;
+      assert.include(off, { chatId: on.chatId, teamId: "company:off", leadAgentId: null });
+      assert.sameMembers(yield* names(on.chatId), ["Owner", "Priya", "Sam"]);
+      yield* groups.joinCompany(orgId, KinPersonId.make("nobody"));
+      // On again: the same chat, its agents back, another answering.
+      const again = (yield* groups.setCompany([owner], { orgId, leadAgentId: tech })).chat!;
+      assert.include(again, { chatId: on.chatId, teamId: "company", leadAgentId: tech });
+      assert.sameMembers(yield* names(on.chatId), [
+        "Owner",
+        "Tech lead",
+        "Growth lead",
+        "Priya",
+        "Sam",
+      ]);
     }).pipe(Effect.provide(layer)),
 );

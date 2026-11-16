@@ -1,10 +1,13 @@
 import {
   KIN_RECORDS_PAGE_CAP,
+  KIN_PROJECT_BILLING,
+  isCalendarDay,
   KinChatError,
   KinRecordId,
   type KinBlockedOn,
   type KinContact,
   type KinOrgId,
+  type KinPersonId,
   type KinPartyDetail,
   type KinPartyKind,
   type KinPartyPage,
@@ -20,18 +23,38 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
-import { fieldList, fieldText, listOf, parseFields, sensitiveFields, workListOf } from "./lists.ts";
+import {
+  fieldList,
+  fieldText,
+  isMoney,
+  listOf,
+  parseFields,
+  sensitiveFields,
+  workListOf,
+} from "./lists.ts";
+import {
+  meetingsOf,
+  milestonesOf,
+  moneyOf,
+  peopleOf,
+  principalOfText,
+  projectSpecChanges,
+  seenBy,
+} from "./projectSpine.ts";
 import {
   actorOf,
   iso,
   parseChanges,
+  partyKind,
   principal,
   type RecordRow,
   recordSeq,
   selectRecords,
   toRecord,
 } from "./recordRows.ts";
+import { lastContacts, touchesOf } from "./touches.ts";
 
 /**
  * The light CRM's read model: the client page, the project page and their history, computed on
@@ -41,6 +64,7 @@ import {
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const SUMMARY_CAP = 20;
+const TOUCHES_SHOWN = 5;
 const OPEN = ["open", "doing", "waiting"] as const;
 
 type Sql = SqlClient.SqlClient;
@@ -54,7 +78,7 @@ const owned = (kind: string, id: string) =>
   principal(kind, id) ?? { _tag: "person" as const, personId: id as never };
 
 /** When an entry last became `waiting`, from its change log; its last change if none says so. */
-const waitingSince = (sql: Sql, alias: string) => sql`COALESCE((
+export const waitingSince = (sql: Sql, alias: string) => sql`COALESCE((
     SELECT MAX(c.at) FROM kin_record_changes c, json_each(c.fields_json) j
     WHERE c.org_id = ${sql(alias)}.org_id AND c.record_id = ${sql(alias)}.record_id
       AND json_extract(j.value, '$.field') = 'state'
@@ -139,13 +163,14 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
               AND state IN ${sql.in(OPEN)} AND party_id IN ${sql.in(ids)})
           WHERE n = 1 ORDER BY party_id`;
   const nextBy = new Map(next.map((row) => [row.partyId, row]));
+  const last = yield* lastContacts(orgId, ids, now);
   return rows.map((row): KinPartyRow => {
     const soonest = nextBy.get(row.recordId);
     return {
       recordId: KinRecordId.make(row.recordId),
       key: row.key,
       name: titled(row.title),
-      kind: (row.category === "vendor" ? "vendor" : "client") satisfies KinPartyKind,
+      kind: partyKind(row.category),
       owner: owned(row.ownerKind, row.ownerId),
       active: row.state === "open",
       sensitive: row.sensitive === 1,
@@ -153,6 +178,7 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
       theyOwe: row.theyOwe ?? 0,
       late: row.late ?? 0,
       overdue: row.overdue ?? 0,
+      lastContactAt: last.has(row.recordId) ? iso(last.get(row.recordId)!) : null,
       next:
         soonest === undefined
           ? null
@@ -175,6 +201,7 @@ type ProjectRowSql = {
   readonly partyId: string | null;
   readonly partyKey: string | null;
   readonly partyTitle: string | null;
+  readonly partyCategory: string | null;
   readonly partySensitive: number | null;
   readonly ownerKind: string;
   readonly ownerId: string;
@@ -196,6 +223,7 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
   order: "target" | "attention",
   limit: number,
   offset = 0,
+  viewers?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const filter = sql.and([sql`p.org_id = ${orgId}`, sql`p.register_id = 'projects'`, ...where]);
@@ -204,18 +232,19 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
     WHEN COALESCE(n.late, 0) + COALESCE(n."waitingLong", 0) > 0 THEN 1 ELSE 2 END`;
   const rows = yield* sql<ProjectRowSql>`
     SELECT p.record_id AS "recordId", p.key, p.title, p.party_id AS "partyId",
-      pa.key AS "partyKey", pa.title AS "partyTitle", pa.sensitive AS "partySensitive",
+      pa.key AS "partyKey", pa.title AS "partyTitle", pa.category AS "partyCategory",
+      pa.sensitive AS "partySensitive",
       p.owner_kind AS "ownerKind", p.owner_id AS "ownerId", p.state, p.due_at AS "dueAt",
       p.due_all_day AS "dueAllDay", p.sensitive, p.rev, n.open, n.late, n."waitingLong"
     FROM kin_records p
     LEFT JOIN kin_records pa ON pa.org_id = p.org_id AND pa.record_id = p.party_id
     LEFT JOIN (
-      SELECT w.project_id, COUNT(*) AS open,
-        SUM(w.due_at IS NOT NULL AND w.due_at < ${now}) AS late,
-        SUM(w.state = 'waiting' AND ${waitingSince(sql, "w")} < ${now - WEEK_MS}) AS "waitingLong"
-      FROM kin_records w WHERE w.org_id = ${orgId} AND w.register_id = 'work'
-        AND w.state IN ${sql.in(OPEN)} AND w.project_id IS NOT NULL
-      GROUP BY w.project_id) n ON n.project_id = p.record_id
+      SELECT r.project_id, COUNT(*) AS open,
+        SUM(r.due_at IS NOT NULL AND r.due_at < ${now}) AS late,
+        SUM(r.state = 'waiting' AND ${waitingSince(sql, "r")} < ${now - WEEK_MS}) AS "waitingLong"
+      FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'work'
+        AND r.state IN ${sql.in(OPEN)} AND r.project_id IS NOT NULL AND ${seenBy(sql, viewers)}
+      GROUP BY r.project_id) n ON n.project_id = p.record_id
     WHERE ${filter}
     ORDER BY ${
       order === "target"
@@ -234,7 +263,10 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
         party:
           row.partyId === null || row.partyKey === null || row.partyTitle === null
             ? null
-            : ref(row.partyId, row.partyKey, row.partyTitle),
+            : {
+                ...ref(row.partyId, row.partyKey, row.partyTitle),
+                kind: partyKind(row.partyCategory),
+              },
         owner: owned(row.ownerKind, row.ownerId),
         state: row.state,
         targetAt: row.dueAt === null ? null : iso(row.dueAt),
@@ -277,11 +309,14 @@ export const parties = Effect.fn("KinCrm.parties")(function* (
     readonly cursor?: string | undefined;
     readonly limit?: number | undefined;
   },
+  /** Only these, for someone besides the owner (`personSeesAs` over `c`). */
+  sees?: Statement.Fragment,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const offset = yield* pageOf(input.cursor);
   const limit = Math.min(input.limit ?? 50, KIN_RECORDS_PAGE_CAP);
   const where = [
+    ...(sees === undefined ? [] : [sees]),
     input.active === false ? sql`c.state != 'open'` : sql`c.state = 'open'`,
     ...(input.kind === undefined ? [] : [sql`c.category = ${input.kind}`]),
     ...(input.text === undefined || input.text.trim() === ""
@@ -307,11 +342,14 @@ export const projects = Effect.fn("KinCrm.projects")(function* (
     readonly cursor?: string | undefined;
     readonly limit?: number | undefined;
   },
+  /** Only these, for someone besides the owner (`personSeesAs` over `p`), counting what they see. */
+  sees?: { readonly projects: Statement.Fragment; readonly viewers: ReadonlyArray<KinPersonId> },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const offset = yield* pageOf(input.cursor);
   const limit = Math.min(input.limit ?? 50, KIN_RECORDS_PAGE_CAP);
   const where = [
+    ...(sees === undefined ? [] : [sees.projects]),
     sql`p.state = ${input.state ?? "open"}`,
     ...(input.partyId === undefined ? [] : [sql`p.party_id = ${input.partyId}`]),
     ...(input.text === undefined || input.text.trim() === ""
@@ -320,7 +358,7 @@ export const projects = Effect.fn("KinCrm.projects")(function* (
   ];
   const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM kin_records p
     WHERE ${sql.and([sql`p.org_id = ${orgId}`, sql`p.register_id = 'projects'`, ...where])}`;
-  const rows = yield* projectRowsWhere(orgId, now, where, "target", limit, offset);
+  const rows = yield* projectRowsWhere(orgId, now, where, "target", limit, offset, sees?.viewers);
   const total = count?.total ?? 0;
   const next = offset + rows.length;
   return { rows: rows.map((row) => row.row), total, nextCursor: next < total ? `o:${next}` : null };
@@ -398,6 +436,9 @@ export const partyDetail = Effect.fn("KinCrm.partyDetail")(function* (row: Recor
     ...counted!,
     notes: row.notes,
     terms: fieldText(fields, "terms"),
+    address: fieldText(fields, "address"),
+    gstin: fieldText(fields, "gstin"),
+    placeOfSupply: fieldText(fields, "placeOfSupply"),
     sensitiveFields: [...sensitiveFields("clients")],
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
@@ -409,6 +450,7 @@ export const partyDetail = Effect.fn("KinCrm.partyDetail")(function* (row: Recor
 export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
   row: RecordRow,
   now: number,
+  viewers?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = row.orgId as KinOrgId;
@@ -418,12 +460,32 @@ export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
     [sql`p.record_id = ${row.recordId}`],
     "target",
     1,
+    0,
+    viewers,
   );
   const fields = parseFields(row.fieldsJson);
+  // Someone in it who doesn't lead it gets no price or terms, which the notes often carry.
+  const leads =
+    viewers === undefined ||
+    viewers.every((one) => row.ownerKind === "person" && row.ownerId === one);
+  const billing = leads ? fieldText(fields, "billing") : null;
+  const value = leads ? fields.value : undefined;
+  const day = (key: string) => {
+    const text = fieldText(fields, key);
+    return text !== null && isCalendarDay(text) ? text : null;
+  };
   return {
     ...counted!.row,
-    notes: row.notes,
+    notes: leads ? row.notes : "",
     repos: [...fieldList(fields, "repos")],
+    billing: KIN_PROJECT_BILLING.find((kind) => kind === billing) ?? null,
+    value: value !== undefined && isMoney(value) ? value : null,
+    startsOn: day("startsOn"),
+    renewsOn: day("renewsOn"),
+    members: fieldList(fields, "members").flatMap((text) => {
+      const who = principalOfText(text);
+      return who === null ? [] : [who];
+    }),
     healthBecause: counted!.because,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
@@ -454,6 +516,7 @@ const capped = Effect.fn("KinCrm.capped")(function* (
 export const history = Effect.fn("KinCrm.history")(function* (
   anchor: RecordRow,
   input: { readonly beforeSeq?: number; readonly sinceAt?: number; readonly limit: number },
+  viewers?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = anchor.orgId as KinOrgId;
@@ -466,6 +529,7 @@ export const history = Effect.fn("KinCrm.history")(function* (
     sql`(r.record_id = ${anchor.recordId} OR ${pointing})`,
     // A doc's history is its versions (`kin.docs.history`); clients older than Docs can't read it.
     sql`r.register_id != 'docs'`,
+    seenBy(sql, viewers),
     ...(input.beforeSeq === undefined ? [] : [sql`c.seq < ${input.beforeSeq}`]),
     ...(input.sinceAt === undefined ? [] : [sql`c.at >= ${input.sinceAt}`]),
   ]);
@@ -508,6 +572,7 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
   row: RecordRow,
   now: number,
   seq: number,
+  viewers?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = row.orgId as KinOrgId;
@@ -528,6 +593,8 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
     [sql`p.party_id = ${row.recordId}`],
     "target",
     KIN_RECORDS_PAGE_CAP,
+    0,
+    viewers,
   );
   return {
     party: yield* partyDetail(row, now),
@@ -540,6 +607,7 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
       open("theirs"),
       sql`(r.due_at IS NOT NULL AND r.due_at < ${now}) DESC, r.due_at IS NULL, r.due_at, r.key`,
     ),
+    touches: yield* touchesOf(orgId, row.recordId, now, TOUCHES_SHOWN),
     seq,
     asOf: iso(now),
   } satisfies KinPartyPage;
@@ -550,15 +618,17 @@ const pullNumber = (url: string) => {
   return found === undefined ? undefined : Number.parseInt(found, 10);
 };
 
+/** For anyone besides the owner, `viewers` are those it is read for: only what all of them see. */
 export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
   row: RecordRow,
   now: number,
   seq: number,
+  viewers?: ReadonlyArray<KinPersonId>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = row.orgId as KinOrgId;
   const inProject = sql`r.org_id = ${orgId} AND r.register_id = 'work'
-    AND r.project_id = ${row.recordId}`;
+    AND r.project_id = ${row.recordId} AND ${seenBy(sql, viewers)}`;
   const [counts] = yield* sql<{
     open: number | null;
     doing: number | null;
@@ -611,9 +681,10 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
     seen.add(pull.url.toLowerCase());
     return [{ url: pull.url, number, record: ref(pull.recordId, pull.key, pull.title) }];
   });
-  const week = yield* history(row, { sinceAt: now - WEEK_MS, limit: 20 });
+  const week = yield* history(row, { sinceAt: now - WEEK_MS, limit: 20 }, viewers);
+  const milestones = yield* milestonesOf(orgId, row.recordId, now, viewers);
   return {
-    project: yield* projectDetail(row, now),
+    project: yield* projectDetail(row, now, viewers),
     counts: {
       open: counts?.open ?? 0,
       doing: counts?.doing ?? 0,
@@ -632,6 +703,11 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
     nextDue: next === undefined ? null : toRecord(next, now),
     pullRequests,
     changedThisWeek: { items: week.items, total: week.total ?? week.items.length },
+    milestones,
+    people: yield* peopleOf(row, now, viewers),
+    meetings: yield* meetingsOf(orgId, row.recordId, now, viewers),
+    specChanged: yield* projectSpecChanges(orgId, row.recordId, viewers),
+    money: yield* moneyOf(orgId, row.recordId, viewers),
     seq,
     asOf: iso(now),
   } satisfies KinProjectPage;

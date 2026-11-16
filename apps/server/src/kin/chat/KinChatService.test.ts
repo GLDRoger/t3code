@@ -59,6 +59,7 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinKeyNotices } from "../approvals/ExecutionNotices.ts";
 import { keyNoticeBody, keyNoticesLayer } from "./executionNotices.ts";
 import * as Hub from "./KinChatHub.ts";
+import * as RefreshHub from "./KinRefreshHub.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Identity from "./KinIdentity.ts";
 import * as Service from "./KinChatService.ts";
@@ -77,7 +78,7 @@ const decodeTask = Schema.decodeUnknownEffect(KinTaskCardState);
 const decodeSend = Schema.decodeUnknownEffect(KinMessagesSendInput);
 const database = authorityLayer;
 const repositories = Layer.provideMerge(Repository.layer, database);
-const dependencies = Layer.provideMerge(Hub.layer, repositories);
+const dependencies = Layer.provideMerge(Layer.merge(Hub.layer, RefreshHub.layer), repositories);
 const layer = Layer.provideMerge(Service.layer, dependencies).pipe(Layer.provideMerge(environment));
 const attachmentLayer = Layer.provideMerge(
   Service.layer,
@@ -1075,6 +1076,29 @@ describe("KinChatService", () => {
             files: [{ attachmentId: photo, mimeType: "image/png" }],
           },
         );
+        // A doc's page and image: the org's owner reads them, anyone else is refused, and the
+        // page may show only that doc's files.
+        yield* sql`INSERT INTO kin_doc_files (org_id, record_id, attachment_id, mime_type, page_sha256, created_at)
+          VALUES (${person.orgId}, 'invented-doc', 'kin-chat-doc-page-html', 'text/html', 'sha', 0),
+            (${person.orgId}, 'invented-doc', 'kin-chat-doc-image', 'image/png', NULL, 0),
+            (${person.orgId}, 'other-doc', 'kin-chat-other-image', 'image/png', NULL, 0)`;
+        assert.isTrue(yield* service.attachmentReadable(person, "kin-chat-doc-page-html"));
+        const stranger = { ...person, personId: KinPersonId.make("invented-stranger") };
+        assert.isFalse(yield* service.attachmentReadable(stranger, "kin-chat-doc-page-html"));
+        assert.isFalse(yield* service.attachmentReadable(stranger, photo));
+        // The company logo: its owner reads Kin's copy to show it; nobody else does.
+        yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at, updated_by_kind, updated_by_id)
+          VALUES (${person.orgId}, '{"logo":{"attachmentId":"kin-chat-logo-png"}}', 1, 0, 'person', ${person.personId})`;
+        assert.isTrue(yield* service.attachmentReadable(person, "kin-chat-logo-png"));
+        assert.isFalse(yield* service.attachmentReadable(stranger, "kin-chat-logo-png"));
+        assert.isFalse(yield* service.attachmentReadable(person, "kin-chat-not-the-logo-png"));
+        assert.deepStrictEqual(
+          Option.getOrThrow(yield* service.visualSources("kin-chat-doc-page-html")),
+          {
+            orgId: person.orgId,
+            files: [{ attachmentId: "kin-chat-doc-image", mimeType: "image/png" }],
+          },
+        );
 
         const refusal = (change: object) =>
           service
@@ -1120,6 +1144,20 @@ describe("KinChatService", () => {
           { reason: "invalid_state" },
         );
         assert.deepStrictEqual(yield* repo.listOpenWaiting(person), []);
+        // A turn that was shown something sensitive labels its visual, as it would a doc it wrote.
+        const [turn] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_wakeups WHERE org_id = ${person.orgId} AND status = 'running'`;
+        const inTurn = { ...agent, wakeupId: KinWakeupId.make(turn!.wakeupId) };
+        const plain = yield* service.visual(inTurn, { ...input, clientMessageId: "visual-plain" });
+        assert.notProperty(plain.state, "sensitive");
+        assert.notProperty(card.state, "sensitive");
+        yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+          VALUES (${person.orgId}, ${turn!.wakeupId}, 0)`;
+        const labelled = yield* service.visual(inTurn, {
+          ...input,
+          clientMessageId: "visual-sensitive",
+        });
+        assert.deepInclude(labelled.state, { sensitive: true });
       }).pipe(Effect.provide(attachmentLayer)),
   );
 
@@ -2303,7 +2341,7 @@ describe("KinChatService", () => {
     }).pipe(Effect.provide(presenceLayer)),
   );
   it.effect(
-    "clears a chat for good: messages, cards, reactions and files go; the chat, its members, memory and seq stay",
+    "clears a chat for good: messages, cards, reactions and files go, but a doc's image stays and is counted; the chat, its members, memory and seq stay",
     () =>
       Effect.gen(function* () {
         const { repo, service, person, agent, chat } = yield* seed();
@@ -2318,6 +2356,19 @@ describe("KinChatService", () => {
           attachments: [yield* uploadPhoto("whiteboard.png")],
           uploader: TEST_UPLOAD_OWNER,
         });
+        const inDoc = (yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "The invented chart",
+          clientMessageId: "doc-photo",
+          attachments: [yield* uploadPhoto("chart.png")],
+          uploader: TEST_UPLOAD_OWNER,
+        })).attachments![0]!.id;
+        yield* sql`INSERT INTO kin_doc_files (org_id, record_id, attachment_id, mime_type, page_sha256, created_at)
+          VALUES (${person.orgId}, 'invented-doc', ${inDoc}, 'image/png', NULL, 0)`;
+        // Another org's doc naming this chat's photo keeps nothing here.
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('another-org', 'Other', ${timestamp})`;
+        yield* sql`INSERT INTO kin_doc_files (org_id, record_id, attachment_id, mime_type, page_sha256, created_at)
+          VALUES ('another-org', 'their-doc', ${photo.attachments![0]!.id}, 'image/png', NULL, 0)`;
         const answer = yield* service.send(agent, {
           chatId: chat.chatId,
           clientMessageId: "lead-answer",
@@ -2371,7 +2422,18 @@ describe("KinChatService", () => {
         });
         assert.strictEqual((yield* Queue.take(list))._tag, "snapshot");
 
-        yield* service.clear(person, { chatId: chat.chatId });
+        // The confirm asks first, and asking changes nothing.
+        assert.deepStrictEqual(
+          yield* service.clear(person, { chatId: chat.chatId, preview: true }),
+          {
+            keptFiles: 1,
+          },
+        );
+        assert.deepStrictEqual(yield* kinRowCounts, before);
+
+        assert.deepStrictEqual(yield* service.clear(person, { chatId: chat.chatId }), {
+          keptFiles: 1,
+        });
 
         const after = yield* kinRowCounts;
         assert.deepStrictEqual(
@@ -2388,8 +2450,10 @@ describe("KinChatService", () => {
         );
         for (const table of ["kin_messages", "kin_widgets", "kin_reactions"])
           assert.strictEqual(after[table], 0, table);
-        assert.deepStrictEqual(yield* storedFiles, []);
+        assert.deepStrictEqual(yield* storedFiles, [`${inDoc}.png`]);
         assert.isFalse(yield* service.attachmentReadable(person, photo.attachments![0]!.id));
+        // The doc still shows it to the person who reads Docs.
+        assert.isTrue(yield* service.attachmentReadable(person, inDoc));
         // The chat is as empty as a new one, and still the same chat.
         const cleared = yield* repo.getChat(chat);
         assert.deepInclude(Option.getOrThrow(cleared), {
@@ -2588,6 +2652,10 @@ describe("KinChatService", () => {
       Effect.gen(function* () {
         const { person } = yield* seed(true);
         const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+            evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+            quiet_hours_json)
+          VALUES (${person.orgId}, 'UTC', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
         const notices = yield* KinKeyNotices;
         const first = KinKeyThumbprint.make("NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
         const second = KinKeyThumbprint.make("aZ3kLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9X");
@@ -2616,6 +2684,13 @@ describe("KinChatService", () => {
         assert.deepStrictEqual(yield* owed, []);
         yield* sql.withTransaction(notices.changed(change(first, "added", 1)));
         // With every chat shared, nobody else may read it: the change commits, owing its push.
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('teammate', ${person.orgId}, 'teammate', 'Teammate', '2026-01-01T00:00:00.000Z', 'member')`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, role, joined_at, left_at)
+          SELECT 'left-' || chat_id, org_id, chat_id, 'person', 'teammate', 'member',
+            '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+          FROM kin_chats WHERE org_id = ${person.orgId}`;
         yield* sql`UPDATE kin_chats SET shared_at = 1 WHERE org_id = ${person.orgId}`;
         yield* sql.withTransaction(notices.changed(change(second, "removed", 2)));
         // An identical retry owes nothing more.
@@ -2757,15 +2832,24 @@ describe("KinChatService", () => {
           { reason: "not_allowed" },
         );
         assert.isNull(yield* profile());
-        // The owner's first possible tap already finds the change.
-        yield* service.act(person, {
-          widgetId: card.widgetId,
-          revision: card.revision,
-          actionId: "choose",
-          value: "option-1",
-          clientActionId: "fast-confirm",
-        });
+        const company = (yield* RefreshHub.KinRefreshHub).changes(person.orgId).pipe(
+          Stream.runHead,
+          Effect.map((now) => Option.getOrThrow(now).company),
+        );
+        assert.strictEqual(yield* company, 0);
+        // The owner's first possible tap already finds the change. A tap arrives on an RPC
+        // handler, whose context holds none of Kin's services.
+        yield* service
+          .act(person, {
+            widgetId: card.widgetId,
+            revision: card.revision,
+            actionId: "choose",
+            value: "option-1",
+            clientActionId: "fast-confirm",
+          })
+          .pipe(Effect.provideService(RefreshHub.KinRefreshObserver, { touch: () => Effect.void }));
         assert.strictEqual(yield* profile(), "9999999999");
+        assert.strictEqual(yield* company, 1);
       }).pipe(Effect.provide(Layer.provideMerge(LevelGate.layer, layer))),
   );
 });

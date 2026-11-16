@@ -45,6 +45,7 @@ import {
   memoryDateMillis as dateMillis,
   parseFrontMatter,
 } from "./frontMatter.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 
 export class MemoryError extends Schema.TaggedError<MemoryError>()("MemoryError", {
   orgId: Schema.String,
@@ -149,8 +150,8 @@ export class MemoryRecoveryHooks extends Context.Service<
       branch: string;
       reason: string;
       conflictBranch?: string;
-      /** The owner must act or has lost something; anything else is logged and posted silently. */
-      needsOwner?: true;
+      /** What the owner reads, in plain words, when they must act or lost something; else only logged. */
+      owner?: string;
     }) => Effect.Effect<void>;
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}
@@ -306,7 +307,15 @@ export class Memory extends Context.Service<
 
 const decodeHead = Schema.decodeEffect(MemoryItemHead);
 
-export const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
+export const folders = [
+  "objectives",
+  "commitments",
+  "deferrals",
+  "decisions",
+  "people",
+  "claims",
+  "relationships",
+];
 
 export const maxBlobBytes = 256 * 1024;
 // Well under memoryGit's 64 MiB output cap, so a large journal reads in a few `cat-file` runs.
@@ -337,6 +346,7 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const { notify } = yield* MemoryRecoveryHooks;
   const vcs = yield* VcsProcess;
+  const refresh = yield* KinRefreshObserver;
   const memoryGit = (...args: Parameters<typeof runMemoryGit>) =>
     runMemoryGit(...args).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -420,6 +430,7 @@ const make = Effect.gen(function* () {
           // The front-matter cache follows commits to the default branch.
           if (branch === (config.defaultBranch ?? "main") && pinnedHeads.get(orgId) === previous)
             pinnedHeads.set(orgId, head);
+          yield* refresh.touch(orgId, "memory");
         }),
       )
       .pipe(
@@ -653,7 +664,8 @@ const make = Effect.gen(function* () {
           orgId,
           branch,
           reason: "Reset tampered branch to anchor; unpushed work at the replaced tip is lost",
-          needsOwner: true,
+          owner:
+            "Kin's memory was changed outside Kin, so Kin put back its last saved copy. The outside changes were dropped.",
         });
       }
     }).pipe(
@@ -1329,7 +1341,8 @@ const make = Effect.gen(function* () {
             orgId,
             branch: row.branch,
             reason: `Shadow memory at ${row.head} never reached the remote and is gone from this server; the agent's shadow memory restarts from the default branch`,
-            needsOwner: true,
+            owner:
+              "Some of an agent's recent notes were never backed up and are gone from this server. It carries on from the rest of its memory.",
           });
       }
     }

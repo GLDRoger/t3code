@@ -1,7 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import { AuthSettingsWriteScope, EnvironmentAuthorizationError } from "./auth.ts";
+import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId, KinTrimmedText } from "./kinChat.ts";
 
@@ -13,6 +13,8 @@ export const KinVisualCardState = Schema.Struct({
   title: KinTrimmedText.check(Schema.isMaxLength(120)),
   attachmentId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   height: Schema.Finite.check(Schema.isBetween({ minimum: 80, maximum: 2000 })),
+  /** Built in a turn that was shown something sensitive, as a doc it wrote would be labelled. */
+  sensitive: Schema.optional(Schema.Literal(true)),
 });
 export type KinVisualCardState = typeof KinVisualCardState.Type;
 
@@ -52,7 +54,7 @@ export const KinVisualRpcs = [
 ] as const;
 
 export const KIN_VISUAL_RPC_SCOPES = {
-  "kin.visuals.hosts.list": AuthSettingsWriteScope,
-  "kin.visuals.hosts.allow": AuthSettingsWriteScope,
-  "kin.visuals.hosts.remove": AuthSettingsWriteScope,
+  "kin.visuals.hosts.list": AuthKinChatScope,
+  "kin.visuals.hosts.allow": AuthKinChatScope,
+  "kin.visuals.hosts.remove": AuthKinChatScope,
 } as const;

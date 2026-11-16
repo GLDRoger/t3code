@@ -13,6 +13,7 @@ import {
   type KinFileRef,
   type KinOrgId,
   type KinPayment,
+  type KinPartyKind,
   type KinRecord,
   type KinRecordCategory,
   type KinRecordChange,
@@ -28,6 +29,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import { parseFields } from "./lists.ts";
 import { isBuiltIn } from "./registers.ts";
@@ -53,14 +55,20 @@ export type RecordRow = {
   readonly dueAt: number | null;
   readonly dueAllDay: number;
   readonly sensitive: number;
+  /** The owner shared it with the team (`teamView.ts`). */
+  readonly teamShared: number;
   readonly confirmed: number;
   readonly notes: string;
+  /** The person whose words the title and the notes are (`KinRecords` sets them on each write). */
+  readonly titleBy: string | null;
+  readonly notesBy: string | null;
   readonly rev: number;
   readonly sourceChatId: string | null;
   readonly sourceMessageId: string | null;
   readonly createdByKind: "person" | "agent" | "system";
   readonly createdById: string | null;
   readonly assignedBy: string | null;
+  readonly assignedByAgent: string | null;
   readonly assignedAt: number | null;
   readonly originKey: string;
   readonly createdAt: number;
@@ -74,6 +82,7 @@ export type RecordRow = {
   readonly pullUrl: string | null;
   readonly partyKey: string | null;
   readonly partyTitle: string | null;
+  readonly partyCategory: string | null;
   readonly projectKey: string | null;
   readonly projectTitle: string | null;
   /** Its client, its project or its project's client is labelled sensitive. */
@@ -85,6 +94,8 @@ export type RecordRow = {
   readonly repeatJson: string | null;
   /** Payments not voided, in its own currency. */
   readonly paid: number;
+  /** Of `paid`, tax the payer withheld at source rather than paid in. */
+  readonly withheld: number;
   /** Its list's entries are paid over time: Invoices, or a list whose definition says so. */
   readonly takesPayments: number;
 };
@@ -127,10 +138,18 @@ export const samePrincipal = (left: Principal | null, right: Principal | null) =
 export const actorOf = (kind: string, id: string | null): Actor =>
   kind === "system" ? { _tag: "system" } : (principal(kind, id) ?? { _tag: "system" });
 
-/** Whether `r`'s client, its project or its project's client is labelled sensitive (design 4.9). */
-const inheritedSensitive = (sql: SqlClient.SqlClient) => sql`EXISTS (SELECT 1 FROM kin_records s
+/** Lists whose entries are private only by their own label: a task never inherits one. */
+export const OWN_LABEL_LISTS = ["work", "milestones"] as const;
+
+/**
+ * Whether `r`'s client, its project or its project's client is labelled sensitive (design 4.9).
+ * Tasks and milestones are private only when marked so themselves.
+ */
+export const inheritedSensitive = (
+  sql: SqlClient.SqlClient,
+) => sql`(r.register_id NOT IN ${sql.in(OWN_LABEL_LISTS)} AND EXISTS (SELECT 1 FROM kin_records s
     WHERE s.org_id = r.org_id AND s.sensitive = 1 AND s.record_id IN (r.party_id, r.project_id,
-      (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id)))`;
+      (SELECT p.party_id FROM kin_records p WHERE p.org_id = r.org_id AND p.record_id = r.project_id))))`;
 
 /** `r`'s own label or one it inherits: the one definition every sensitivity check uses. */
 export const sensitiveNow = (sql: SqlClient.SqlClient) =>
@@ -160,6 +179,83 @@ const takesPayments = (sql: SqlClient.SqlClient) =>
  * The columns every read selects, with the derived ones: a running worker, the last PR, the client
  * and project as they are now, and the label they lend it. Joins stay inside the entry's org.
  */
+/**
+ * The one rule for what a figure, a chart or a file counts: an entry `r` that isn't void, dropped
+ * or undone, unless the filter it answers names dropped entries itself. Every query that adds up
+ * or exports amounts uses it or `countedPayment`; `counted.test.ts` finds one that doesn't.
+ */
+export const countedEntry = (
+  sql: SqlClient.SqlClient,
+  asked?: ReadonlyArray<KinRecordState> | undefined,
+) => (asked?.includes("dropped") === true ? sql`1 = 1` : sql`r.state <> 'dropped'`);
+/** A payment `p` not taken back, on an entry `r` that counts. */
+export const countedPayment = (sql: SqlClient.SqlClient) =>
+  sql`p.voided_at IS NULL AND ${countedEntry(sql)}`;
+
+/**
+ * When an issued invoice `r` falls due: its due date, else (issued before Kin set one) its issue
+ * day. Overdue is past it, the same in the pulse, Money, the client page and every brief.
+ */
+export const invoiceDue = (sql: SqlClient.SqlClient) => sql`COALESCE(r.due_at, r.date_at)`;
+
+const DAY = 86_400_000;
+
+/**
+ * Issued invoices still owed, oldest due first: counted, issued (waiting), with an amount and a
+ * balance after payments not taken back. Overdue is past `invoiceDue`. What a client owes, the
+ * Money tab and the weekly brief all read owed money here; the pulse chases on the same rows.
+ */
+export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly now: number;
+  readonly partyId?: string | undefined;
+  /** A viewer filter over `r`, such as `viewSees`; the company's own figures with none. */
+  readonly seen?: Statement.Fragment | undefined;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    recordId: string;
+    key: string;
+    title: string;
+    partyId: string | null;
+    partyKey: string | null;
+    partyTitle: string | null;
+    minor: number;
+    currency: string;
+    paid: number;
+    dueAt: number | null;
+  }>`SELECT r.record_id AS "recordId", r.key, r.title, r.party_id AS "partyId",
+      pa.key AS "partyKey", pa.title AS "partyTitle", r.amount_minor AS minor, r.currency,
+      (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
+        WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
+      ${invoiceDue(sql)} AS "dueAt"
+    FROM kin_records r
+    LEFT JOIN kin_records pa ON pa.org_id = r.org_id AND pa.record_id = r.party_id
+    WHERE r.org_id = ${input.orgId} AND r.register_id = 'invoices' AND ${countedEntry(sql)}
+      AND r.state = 'waiting' AND r.amount_minor IS NOT NULL
+      ${input.partyId === undefined ? sql`` : sql`AND r.party_id = ${input.partyId}`}
+      ${input.seen === undefined ? sql`` : sql`AND ${input.seen}`}
+    ORDER BY r.due_at, r.key`;
+  return rows
+    .map((row) => {
+      const overdue = row.dueAt !== null && row.dueAt < input.now;
+      return {
+        ...row,
+        balance: { minor: row.minor - row.paid, currency: row.currency },
+        overdue,
+        daysOverdue: overdue ? Math.floor((input.now - row.dueAt!) / DAY) : 0,
+      };
+    })
+    .filter((row) => row.balance.minor > 0);
+});
+
+/** Payment days written in a client's terms, such as "Net 30" or "15 days"; undefined if none. */
+export const termsDays = (terms: string | null | undefined) => {
+  const found = /(?:net\s*(\d{1,3}))|(?:(\d{1,3})\s*(?:days?|d)\b)/i.exec(terms ?? "");
+  const days = Number(found?.[1] ?? found?.[2]);
+  return Number.isSafeInteger(days) && days >= 0 && days <= 365 ? days : undefined;
+};
+
 /** An entry's money day: its own date, else when it was added. Filters, groups and Money share it. */
 export const moneyDay = (sql: SqlClient.SqlClient) => sql`COALESCE(r.date_at, r.created_at)`;
 
@@ -168,10 +264,12 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.title, r.state,
     r.waiting_on_kind AS "waitingOnKind", r.waiting_on_id AS "waitingOnId",
     r.owner_kind AS "ownerKind", r.owner_id AS "ownerId", r.side, r.category,
-    r.due_at AS "dueAt", r.due_all_day AS "dueAllDay", r.sensitive, r.confirmed, r.notes, r.rev,
+    r.due_at AS "dueAt", r.due_all_day AS "dueAllDay", r.sensitive, r.team_shared AS "teamShared",
+    r.confirmed, r.notes, r.title_by AS "titleBy", r.notes_by AS "notesBy", r.rev,
     r.source_chat_id AS "sourceChatId", r.source_message_id AS "sourceMessageId",
     r.created_by_kind AS "createdByKind", r.created_by_id AS "createdById",
-    r.assigned_by_person_id AS "assignedBy", r.assigned_at AS "assignedAt",
+    r.assigned_by_person_id AS "assignedBy", r.assigned_by_agent_id AS "assignedByAgent",
+    r.assigned_at AS "assignedAt",
     r.origin_key AS "originKey", r.created_at AS "createdAt", r.updated_at AS "updatedAt",
     r.closed_at AS "closedAt", r.party_id AS "partyId", r.project_id AS "projectId", r.repo,
     r.fields_json AS "fieldsJson",
@@ -179,8 +277,12 @@ export const selectRecords = (sql: SqlClient.SqlClient) => sql`
     r.date_all_day AS "dateAllDay", r.repeat_json AS "repeatJson",
     (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
       WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid,
+    (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
+      WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL
+        AND p.withheld = 1) AS withheld,
     ${takesPayments(sql)} AS "takesPayments",
-    pa.key AS "partyKey", pa.title AS "partyTitle", pj.key AS "projectKey",
+    pa.key AS "partyKey", pa.title AS "partyTitle", pa.category AS "partyCategory",
+    pj.key AS "projectKey",
     pj.title AS "projectTitle",
     ${inheritedSensitive(sql)} AS "inheritedSensitive",
     EXISTS (SELECT 1 FROM kin_record_links l JOIN kin_workers k
@@ -213,6 +315,9 @@ const pullNumber = (url: string) => {
 };
 
 const WORK_CATEGORIES: ReadonlyArray<string> = ["task", "issue", "obligation"];
+/** A client's category says whether it is one we sell to or buy from. */
+export const partyKind = (category: string | null): KinPartyKind =>
+  category === "vendor" ? "vendor" : "client";
 const refOf = (recordId: string | null, key: string | null, title: string | null) =>
   recordId === null || key === null || title === null
     ? undefined
@@ -220,7 +325,8 @@ const refOf = (recordId: string | null, key: string | null, title: string | null
 
 export const toRecord = (row: RecordRow, now: number): KinRecord => {
   const number = row.pullUrl === null ? undefined : pullNumber(row.pullUrl);
-  const party = refOf(row.partyId, row.partyKey, row.partyTitle);
+  const ref = refOf(row.partyId, row.partyKey, row.partyTitle);
+  const party = ref === undefined ? undefined : { ...ref, kind: partyKind(row.partyCategory) };
   const project = refOf(row.projectId, row.projectKey, row.projectTitle);
   return {
     recordId: KinRecordId.make(row.recordId),
@@ -253,6 +359,7 @@ export const toRecord = (row: RecordRow, now: number): KinRecord => {
     ...(project === undefined ? {} : { project }),
     ...(row.repo === null ? {} : { repo: row.repo }),
     ...(row.inheritedSensitive === 1 ? { sensitiveInherited: true as const } : {}),
+    ...(row.teamShared === 1 ? { shared: true as const } : {}),
     ...moneyOf(row),
   };
 };
@@ -269,7 +376,13 @@ const moneyOf = (row: RecordRow) => {
     ...(repeat === undefined ? {} : { repeat: repeat.rule }),
     ...(amount === undefined || row.takesPayments !== 1
       ? {}
-      : { balance: { minor: Math.max(amount.minor - row.paid, 0), currency: amount.currency } }),
+      : {
+          balance: { minor: Math.max(amount.minor - row.paid, 0), currency: amount.currency },
+          received: { minor: row.paid - row.withheld, currency: amount.currency },
+          ...(row.withheld === 0
+            ? {}
+            : { tdsDeducted: { minor: row.withheld, currency: amount.currency } }),
+        }),
   };
 };
 export const amountOf = (row: RecordRow) =>
@@ -404,6 +517,7 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
   changeLimit?: number,
 ) {
   const orgId = row.orgId as KinOrgId;
+  const reason = row.registerId === "work" ? parseFields(row.fieldsJson).reason : undefined;
   return {
     ...toRecord(row, now),
     notes: row.notes,
@@ -413,6 +527,10 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
     },
     assignedBy: principal("person", row.assignedBy),
     assignedAt: row.assignedAt === null ? null : iso(row.assignedAt),
+    ...(row.assignedByAgent === null
+      ? {}
+      : { assignedByAgent: KinAgentId.make(row.assignedByAgent) }),
+    ...(typeof reason === "string" ? { reason } : {}),
     createdBy: actorOf(row.createdByKind, row.createdById),
     links: yield* linksOf(orgId, row.recordId),
     changes: yield* changesOf(orgId, row.recordId, changeLimit),
@@ -463,12 +581,40 @@ const definedDetail = Effect.fn("KinRecords.definedDetail")(function* (row: Reco
         ];
   });
   const payments = row.takesPayments === 1 ? yield* paymentsOf(orgId, row.recordId) : undefined;
+  const sent = yield* sentWith(orgId, row.recordId);
   return {
     fields,
     ...(files.length === 0 ? {} : { files }),
     ...(payments === undefined ? {} : { payments }),
+    ...(sent.length === 0 ? {} : { sent }),
   };
 });
+
+/** Mail that carried this entry's file, sent on the owner's Confirm (`connections/Sending.ts`). */
+const sentWith = Effect.fn("KinRecords.sentWith")(function* (orgId: KinOrgId, recordId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    to: string | null;
+    subject: string | null;
+    threadId: string | null;
+    at: number;
+  }>`
+    SELECT json_extract(payload_json, '$.to') AS "to",
+      json_extract(payload_json, '$.subject') AS subject,
+      json_extract(result_json, '$.threadId') AS "threadId", done_at AS at
+    FROM kin_connection_asks
+    WHERE org_id = ${orgId} AND entry_record_id = ${recordId} AND state = 'sent'
+    ORDER BY done_at DESC, ask_id LIMIT 20`;
+  return rows.map((sent) => ({
+    to: Option.getOrElse(decodeAddresses(sent.to ?? "[]"), () => []),
+    subject: sent.subject ?? "",
+    at: iso(sent.at),
+    threadId: sent.threadId,
+  }));
+});
+const decodeAddresses = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
 
 const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
   orgId: KinOrgId,
@@ -481,20 +627,94 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
     currency: string;
     paidOn: string;
     note: string;
+    originKey: string;
     createdAt: number;
     voidedAt: number | null;
+    withheld: number;
   }>`SELECT payment_id AS "paymentId", amount_minor AS minor, currency, paid_on AS "paidOn",
-      note, created_at AS "createdAt", voided_at AS "voidedAt"
+      note, origin_key AS "originKey", created_at AS "createdAt", voided_at AS "voidedAt",
+      withheld
     FROM kin_record_payments WHERE org_id = ${orgId} AND record_id = ${recordId}
     ORDER BY paid_on DESC, created_at DESC, payment_id`;
-  return rows.map((payment): KinPayment => ({
-    paymentId: payment.paymentId,
-    amount: { minor: payment.minor, currency: payment.currency },
-    paidOn: payment.paidOn,
-    note: payment.note,
-    recordedAt: iso(payment.createdAt),
-    voidedAt: payment.voidedAt === null ? null : iso(payment.voidedAt),
-  }));
+  const receipts =
+    rows.length === 0
+      ? []
+      : yield* sql<{ payment: string; key: string; number: string | null; doc: string | null }>`
+        SELECT json_extract(r.fields_json, '$.payment') AS payment, r.key, n.number,
+          (SELECT d.key FROM kin_doc_jobs j
+            JOIN kin_doc_versions v ON v.org_id = j.org_id AND v.worker_id = j.worker_id
+            JOIN kin_records d ON d.org_id = v.org_id AND d.record_id = v.record_id
+            WHERE j.org_id = r.org_id AND j.entry_record_id = r.record_id AND j.recipe = 'receipt'
+            ORDER BY j.created_at DESC LIMIT 1) AS doc
+        FROM kin_records r
+        LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
+        WHERE r.org_id = ${orgId} AND r.register_id = 'receipts' AND r.state <> 'dropped'
+          AND r.origin_key LIKE 'receipt:%'
+          AND json_extract(r.fields_json, '$.payment') IN ${sql.in(rows.map((row) => row.paymentId))}
+        ORDER BY r.created_at DESC, r.record_id DESC`;
+  const numbers = yield* notedReceiptNumbers(
+    orgId,
+    rows.filter(fromImport).map((row) => row.note),
+  );
+  return rows.map((payment): KinPayment => {
+    const receipt = receipts.find((one) => one.payment === payment.paymentId);
+    const noted = fromImport(payment) ? numbers.get(payment.note) : undefined;
+    return {
+      paymentId: payment.paymentId,
+      amount: { minor: payment.minor, currency: payment.currency },
+      paidOn: payment.paidOn,
+      note: payment.note,
+      recordedAt: iso(payment.createdAt),
+      voidedAt: payment.voidedAt === null ? null : iso(payment.voidedAt),
+      ...(payment.withheld === 1 ? { withheld: true as const } : {}),
+      receipt:
+        receipt === undefined && noted === undefined
+          ? null
+          : {
+              key: receipt?.key ?? null,
+              number: receipt?.number ?? noted ?? null,
+              receivedOn: payment.paidOn,
+              amount: { minor: payment.minor, currency: payment.currency },
+              document: receipt?.doc ?? null,
+            },
+    };
+  });
+});
+
+/** Written by an import: only such a payment's note can hold a number another system issued. */
+export const fromImport = (payment: { readonly originKey: string }) =>
+  payment.originKey.startsWith("import:");
+/** `QST-RN/2026-27/001`: a receipt number another system issued, written in a payment's note. */
+const RECEIPT_IN_NOTE =
+  /(?<![A-Za-z0-9/-])([A-Za-z][A-Za-z0-9-]{0,7}\/(?:\d{2})?\d{2}-\d{2}\/\d{1,9})(?![A-Za-z0-9/-])/g;
+/** Every number in a note shaped like a receipt number, in order. */
+export const receiptNumbersIn = (note: string) =>
+  [...note.matchAll(RECEIPT_IN_NOTE)].map((found) => found[1]!);
+/**
+ * The receipt number each payment note holds, such as "Advance received; receipt note
+ * QST-RN/2026-27/001": its first number of that shape that isn't a number of an entry in another
+ * list, such as the invoice's own. Notes with none aren't in the map.
+ */
+export const notedReceiptNumbers = Effect.fn("KinRecords.notedReceiptNumbers")(function* (
+  orgId: KinOrgId,
+  notes: ReadonlyArray<string>,
+) {
+  const found = new Map(notes.map((note) => [note, receiptNumbersIn(note)] as const));
+  const shaped = [...new Set([...found.values()].flat())];
+  const noted = new Map<string, string>();
+  if (shaped.length === 0) return noted;
+  const sql = yield* SqlClient.SqlClient;
+  const other = new Set(
+    (yield* sql<{ number: string }>`SELECT number FROM kin_issued_numbers
+      WHERE org_id = ${orgId} AND register_id <> 'receipts' AND number IN ${sql.in(shaped)}`).map(
+      (row) => row.number,
+    ),
+  );
+  for (const [note, numbers] of found) {
+    const number = numbers.find((one) => !other.has(one));
+    if (number !== undefined) noted.set(note, number);
+  }
+  return noted;
 });
 
 export const recordSeq = Effect.fn("KinRecords.recordSeq")(function* (
@@ -515,15 +735,21 @@ export const latestSeq = Effect.fn("KinRecords.latestSeq")(function* (orgId: Kin
   return row?.seq ?? 0;
 });
 
-/** The owner's IANA zone, for all-day due dates; UTC when unset. */
+/** The zone Kin uses until the owner sets one: the host's, whose clock check-ins run on. */
+export const unsetOwnerZone = () => {
+  const host = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return validZone(host) ? host : "UTC";
+};
+
+/** The owner's IANA zone, for all-day due dates; the host's until he sets one. */
 export const ownerZone = Effect.fn("KinRecords.ownerZone")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone
     FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`.pipe(
     Effect.orElseSucceed(() => []),
   );
-  const zone = row?.zone ?? "UTC";
-  return validZone(zone) ? zone : "UTC";
+  const zone = row?.zone ?? unsetOwnerZone();
+  return validZone(zone) ? zone : unsetOwnerZone();
 });
 const validZone = (zone: string) => {
   try {
@@ -533,12 +759,43 @@ const validZone = (zone: string) => {
   }
 };
 
-/** A calendar day's last millisecond in `zone`: an all-day entry is late only once it is over. */
-export const endOfDay = (day: string, zone: string) => {
+const dayStart = (day: string, zone: string) => {
   const [year, month, date] = day.split("-").map((part) => Number.parseInt(part, 10));
-  const start = DateTime.makeZonedUnsafe(
+  return DateTime.makeZonedUnsafe(
     { year: year ?? 1970, month: month ?? 1, day: date ?? 1 },
     { timeZone: zone, adjustForTimeZone: true },
   );
-  return DateTime.toEpochMillis(DateTime.add(start, { days: 1 })) - 1;
 };
+/** A calendar day's last millisecond in `zone`: an all-day entry is late only once it is over. */
+export const endOfDay = (day: string, zone: string) =>
+  DateTime.toEpochMillis(DateTime.add(dayStart(day, zone), { days: 1 })) - 1;
+/** A date field's value as an instant: a day is its last millisecond, as an all-day entry's is. */
+export const fieldDateAt = (value: string, zone: string) => {
+  if (value.length === 10) return { at: endOfDay(value, zone), allDay: true };
+  const [hour, minute] = value
+    .slice(11)
+    .split(":")
+    .map((part) => Number.parseInt(part, 10));
+  const [year, month, day] = value
+    .slice(0, 10)
+    .split("-")
+    .map((part) => Number.parseInt(part, 10));
+  return {
+    at: DateTime.toEpochMillis(
+      DateTime.makeZonedUnsafe(
+        {
+          year: year ?? 1970,
+          month: month ?? 1,
+          day: day ?? 1,
+          hour: hour ?? 0,
+          minute: minute ?? 0,
+        },
+        { timeZone: zone, adjustForTimeZone: true },
+      ),
+    ),
+    allDay: false,
+  };
+};
+/** A calendar day's first millisecond in `zone`. */
+export const startOfDay = (day: string, zone: string) =>
+  DateTime.toEpochMillis(dayStart(day, zone));

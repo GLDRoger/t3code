@@ -655,10 +655,10 @@ function parseDpopToken(request: HttpServerRequest.HttpServerRequest): string | 
 
 export function selectRequestCredential(
   request: HttpServerRequest.HttpServerRequest,
-  cookieName: string,
+  cookieName: string | undefined,
   legacyCookieName: string | undefined,
 ) {
-  const cookieToken = request.cookies[cookieName];
+  const cookieToken = cookieName ? request.cookies[cookieName] : undefined;
   if (cookieToken) {
     return { token: cookieToken, source: "cookie" } as const;
   }
@@ -700,6 +700,20 @@ export const trustedBrowserOrigins = (
     ...DESKTOP_RENDERER_ORIGINS,
     ...config.devAllowedOrigins,
   ]);
+
+/**
+ * WebKit sends a SameSite=Lax cookie on a sandboxed frame's own requests back here. Cross-site,
+ * the session rides only on a top-level page load or a request from a trusted app origin.
+ */
+export function ignoresBrowserCookie(
+  headers: Readonly<Record<string, string | undefined>>,
+  trustedOrigins: ReadonlySet<string>,
+): boolean {
+  if (headers["sec-fetch-site"] !== "cross-site") return false;
+  if (headers["sec-fetch-mode"] === "navigate" && headers["sec-fetch-dest"] === "document")
+    return false;
+  return headers.origin === undefined || !trustedOrigins.has(headers.origin);
+}
 
 // Missing Origin allows same-origin reads and non-browser clients; otherwise require
 // same-origin Sec-Fetch-Site, this server's host (including X-Forwarded-Host), or a trusted app origin.
@@ -765,14 +779,18 @@ export const make = Effect.gen(function* () {
       })),
     );
 
+  // Cookies span ports; reject cookie-authenticated requests and sockets from other same-site origins.
+  const browserOrigins = trustedBrowserOrigins(config);
+
   const resolveRequestCredential = (request: HttpServerRequest.HttpServerRequest) => {
+    const cookies = !ignoresBrowserCookie(request.headers, browserOrigins);
     const selectedCredential = selectRequestCredential(
       request,
-      sessions.cookieName,
-      sessions.legacyCookieName,
+      cookies ? sessions.cookieName : undefined,
+      cookies ? sessions.legacyCookieName : undefined,
     );
     const hasAuthorization = request.headers.authorization !== undefined;
-    const devCookieToken = devAuth ? request.cookies[devAuth.cookieName] : undefined;
+    const devCookieToken = devAuth && cookies ? request.cookies[devAuth.cookieName] : undefined;
     return (
       selectedCredential ??
       (!hasAuthorization && devCookieToken !== undefined
@@ -780,9 +798,6 @@ export const make = Effect.gen(function* () {
         : undefined)
     );
   };
-
-  // Cookies span ports; reject cookie-authenticated requests and sockets from other same-site origins.
-  const browserOrigins = trustedBrowserOrigins(config);
 
   const authenticateRequest = (
     request: HttpServerRequest.HttpServerRequest,

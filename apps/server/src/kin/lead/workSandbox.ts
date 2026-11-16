@@ -32,8 +32,9 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { resolveClaudeHomePath } from "../../provider/Drivers/ClaudeHome.ts";
 import { resolveCodexHomeLayout } from "../../provider/Drivers/CodexHomeLayout.ts";
 import { makeConfiner, type WorkerCredentials } from "../claudeConfinement.ts";
-import { toolDirectories } from "../gendocs/toolchain.ts";
-import { ownerPath, workerPaths } from "./workerPath.ts";
+import { documentWorktrees } from "../gendocs/workspace.ts";
+import { chromeBuildsDir, playwrightCoreDir } from "./workerBrowser.ts";
+import { ownerPath, serverVp, workerPaths } from "./workerPath.ts";
 import { grantedHosts, noteBlocked, refusedHosts } from "./workNetwork.ts";
 import { type CheckLine, type CheckResult, probe, type ShellPaths } from "./workSandboxProbe.ts";
 import { shellTools, type WorkerPlace, type WorkSession } from "./workSession.ts";
@@ -364,8 +365,6 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
   readonly providerHomes: ReadonlyArray<string>;
   readonly readPaths: ReadonlyArray<string>;
   readonly runtime: string | undefined;
-  /** Kin's own tools; one that is missing or would reopen private data is left out. */
-  readonly toolDirs?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -396,12 +395,7 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
     [home, ...privateRoots].find(
       (root) => isInside(target, root) || (root !== home && isInside(root, target)),
     );
-  const tools: Array<string> = [];
-  for (const entry of input.toolDirs ?? []) {
-    const target = yield* real(entry);
-    if (target !== undefined && holds(target) === undefined) tools.push(target);
-  }
-  const readable: Array<string> = [...tools];
+  const readable: Array<string> = [];
   for (const entry of [
     ...(input.runtime === undefined ? [] : [input.runtime]),
     ...input.readPaths,
@@ -423,7 +417,7 @@ export const shellRoots = Effect.fn("KinWorkSandbox.shellRoots")(function* (inpu
       return yield* Effect.fail(`${covered} would hide the system directory ${root}`);
   }
   // All of them: `sandboxSettings` keeps each one an allowed root holds, the worktree included.
-  return { denied: [home, ...privateRoots], readable: [...system, ...readable], tmpRoot, tools };
+  return { denied: [home, ...privateRoots], readable: [...system, ...readable], tmpRoot };
 });
 
 export type Prepared =
@@ -528,7 +522,6 @@ export const fileOnly = (reason: string, privateHome = "/nonexistent/kin-worker-
           const { env: paths } = yield* workerPaths({
             providerEnv,
             claude: input.session.options.pathToClaudeCodeExecutable,
-            toolDirs: [],
             ownerPath: [],
             writable: input.worktree === undefined ? [] : [input.worktree],
           });
@@ -553,11 +546,11 @@ const gitCommonDir = Effect.fn("KinWorkSandbox.gitCommonDir")(function* (worktre
   return yield* fs.realPath(path.resolve(gitDir, common));
 });
 
-const installHints: Record<KinWorkerSandboxInstall, string> = {
+export const installHints: Record<KinWorkerSandboxInstall, string> = {
   bubblewrap: "bubblewrap isn't installed",
   socat: "socat isn't installed",
   apparmor_bwrap_profile:
-    "Ubuntu's AppArmor may be stopping bubblewrap: no /etc/apparmor.d/bwrap profile",
+    "Ubuntu's AppArmor may be stopping bubblewrap: it needs the /etc/apparmor.d/bwrap profile loaded and bwrap-userns-restrict disabled, which takes root (see the host README)",
 };
 
 /** What the host most likely lacks for Claude Code's sandbox, for the owner's status. */
@@ -577,7 +570,12 @@ const missing = Effect.fn("KinWorkSandbox.missing")(
     const restricted = yield* fs
       .readFileString("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
       .pipe(Effect.orElseSucceed(() => "0"));
-    if (restricted.trim() === "1" && !(yield* fs.exists("/etc/apparmor.d/bwrap")))
+    // Ubuntu's own `bwrap-userns-restrict` also names its profile `bwrap` and loads after ours;
+    // it denies every capability to what bubblewrap starts, so Claude Code's seccomp helper fails.
+    const restrictive =
+      (yield* fs.exists("/etc/apparmor.d/bwrap-userns-restrict")) &&
+      !(yield* fs.exists("/etc/apparmor.d/disable/bwrap-userns-restrict"));
+    if (restricted.trim() === "1" && (restrictive || !(yield* fs.exists("/etc/apparmor.d/bwrap"))))
       install.push("apparmor_bwrap_profile");
     return install;
   },
@@ -626,7 +624,6 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
   readonly readPaths: ReadonlyArray<string>;
   /** Absolute, as each provider resolves them; see `providerHomes`. */
   readonly providerHomes: ReadonlyArray<string>;
-  readonly toolDirs?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -637,14 +634,15 @@ export const checkShell = Effect.fn("KinWorkSandbox.checkShell")(function* (inpu
   const runtime = yield* fs
     .realPath(path.dirname(path.dirname(yield* HostProcess.ExecutablePath)))
     .pipe(Effect.orElseSucceed(() => undefined));
+  // The server's `vp` is on every worker's PATH (`workerPaths`); its commands read it from here.
+  const vp = yield* serverVp(hostEnv);
   const roots = yield* shellRoots({
     home: yield* HostProcess.HomeDirectory,
     stateDir: input.stateDir,
     system: systemRoots[platform] ?? [],
     providerHomes: input.providerHomes,
-    readPaths: input.readPaths,
+    readPaths: [...(vp === undefined ? [] : [vp.home]), ...input.readPaths],
     runtime,
-    ...(input.toolDirs === undefined ? {} : { toolDirs: input.toolDirs }),
   }).pipe(Effect.result);
   if (roots._tag === "Failure") return { _tag: "unresolved", reason: roots.failure } as const;
   const { denied, readable, tmpRoot } = roots.success;
@@ -704,7 +702,11 @@ export const layer = Layer.effect(
   KinWorkSandbox,
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const { stateDir, baseDir, worktreesDir } = yield* ServerConfig;
+    const { baseDir, stateDir, worktreesDir } = yield* ServerConfig;
+    // What a UI test's commands drive (`workerBrowser.ts`): T3's Chrome and the server's Playwright.
+    const browserPaths = [chromeBuildsDir(baseDir), playwrightCoreDir()].filter(
+      (entry): entry is string => entry !== undefined && !isInside(stateDir, entry),
+    );
     const agentScope = yield* AgentScope;
     const settings = yield* Effect.serviceOption(ServerSettingsService);
     const context = yield* Effect.context<
@@ -786,7 +788,6 @@ export const layer = Layer.effect(
         const built = yield* workerPaths({
           providerEnv,
           claude: input.session.options.pathToClaudeCodeExecutable,
-          toolDirs: toolDirectories(baseDir),
           ownerPath: ownerPath(serverEnv),
           writable: workerWritable({ worktree: input.worktree, worktreesDir, stateDir }),
         });
@@ -806,6 +807,21 @@ export const layer = Layer.effect(
             Effect.as({ _tag: "file-only", place, paths, reason } as const),
           );
         };
+        // A recipe or a one-off file is written with file tools, on every host: no shell, ever.
+        const documents = yield* fs
+          .realPath(documentWorktrees(worktreesDir))
+          .pipe(Effect.orElseSucceed(() => undefined));
+        if (
+          input.worktree !== undefined &&
+          documents !== undefined &&
+          isInside(documents, input.worktree)
+        )
+          return {
+            _tag: "file-only",
+            place,
+            paths,
+            reason: "a document job writes its files with file tools only",
+          } as const;
         const host = hostShell(serverEnv);
         if (host._tag === "off") return yield* fileOnlyBecause(host.reason);
         const platform = yield* HostProcess.Platform;
@@ -826,8 +842,7 @@ export const layer = Layer.effect(
           place,
           paths,
           domains,
-          readPaths: host.readPaths,
-          toolDirs: toolDirectories(baseDir),
+          readPaths: [...host.readPaths, ...browserPaths],
           providerHomes: homes,
         });
         if (checked._tag === "unresolved") return yield* fileOnlyBecause(checked.reason);

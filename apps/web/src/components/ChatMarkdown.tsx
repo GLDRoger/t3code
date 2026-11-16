@@ -252,6 +252,8 @@ interface ChatMarkdownProps {
   /** The change request's repository, when it can differ from the checkout at `cwd`. */
   sourceControlMediaRepository?: string | undefined;
   headingLevelOffset?: number | undefined;
+  /** An image whose source this names an attachment for loads it, as a chat's attached image does. */
+  imageAttachment?: ((src: string) => string | null) | undefined;
 }
 
 export interface ChatMarkdownContextReference {
@@ -499,6 +501,7 @@ function useChatMarkdownState({
   headingLevelOffset = 0,
   sourceControlMedia = false,
   sourceControlMediaRepository,
+  imageAttachment,
 }: ChatMarkdownProps) {
   const resolvedTheme = useRenderedAppearance();
   const markdownRef = useRef<HTMLElement>(null);
@@ -899,6 +902,7 @@ function useChatMarkdownState({
     sourceControlMediaRepository,
     renderContextReference,
     headingLevelOffset,
+    imageAttachment,
     imageBaseDir,
     workspaceMutationId,
     inlineCodeFileLinkMetaByText,
@@ -1382,6 +1386,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       renderContextReference,
       fileLinkChip,
       resolvedTheme,
+      imageAttachment,
     } = use(ChatMarkdownRendererContext);
     const imageExpand = use(MarkdownLinkContext) ? undefined : expandMedia;
     const contextReference = typeof src === "string" ? parseComposerContextHref(src) : null;
@@ -1409,6 +1414,22 @@ const CHAT_MARKDOWN_COMPONENTS = {
     const copyMarkdown = markdownImageCopy(altText, srcString, authoredTitle);
     const { className, style: _style, width, height, ...imageProps } = props;
     const authoredSizeStyle = authoredImageSizeStyle(width, height);
+    const attachmentId = imageAttachment?.(srcString) ?? null;
+    if (attachmentId !== null && environmentId !== null) {
+      return (
+        <ChatMarkdownAssetImage
+          environmentId={environmentId}
+          resource={{ _tag: "attachment", attachmentId }}
+          alt={altText}
+          copyMarkdown={copyMarkdown}
+          standalone={standalone}
+          className={className}
+          style={authoredSizeStyle}
+          imageProps={imageProps}
+          onImageExpand={imageExpand}
+        />
+      );
+    }
     const imageSource = classifyMarkdownImageSource(classifiedSrc, imageBaseDir ?? cwd);
     const mediaKind = mediaKindFromPath(classifiedSrc);
     if (mediaKind === "audio") {

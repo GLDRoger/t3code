@@ -27,7 +27,11 @@ import * as ServerConfig from "../../config.ts";
 import * as EnvironmentAuth from "../auth/EnvironmentAuthRuntime.ts";
 import * as KinEnabled from "../KinEnabled.ts";
 import type * as Provision from "../lead/KinLeadProvision.ts";
+import { announceToServer, cliChanges } from "./announce.ts";
 import { githubCommand } from "./githubWebhook.ts";
+import { importCommand } from "./importCommand.ts";
+import { statementCommand } from "./statementCommand.ts";
+import { pulseCommand } from "./pulseCommand.ts";
 import { workerShellCommand } from "./workerShell.ts";
 
 export class KinLeadCliError extends Schema.TaggedError<KinLeadCliError>()("KinLeadCliError", {
@@ -87,7 +91,8 @@ const runOnHost = Effect.fn("kin.lead.runOnHost")(
     const provision = yield* Effect.promise(() => import("../lead/KinLeadProvision.ts"));
     const retiredActions = yield* Effect.promise(() => import("../approvals/retiredActions.ts"));
     const isRefusal = Schema.is(provision.KinLeadProvisionError);
-    return yield* run(provision).pipe(
+    const changes = cliChanges();
+    const result = yield* run(provision).pipe(
       Effect.tapError((error) => (isRefusal(error) ? Console.error(error.message) : Effect.void)),
       Effect.provide(
         Layer.merge(provision.layer, retiredActions.hostLayer).pipe(
@@ -97,9 +102,13 @@ const runOnHost = Effect.fn("kin.lead.runOnHost")(
           Layer.provide(
             Layer.succeed(References.MinimumLogLevel, flags.json ? "Error" : config.logLevel),
           ),
+          // Provision's free functions read the observer where they run, so it is merged in.
+          Layer.provideMerge(changes.layer),
         ),
       ),
     );
+    yield* announceToServer(config, changes.all());
+    return result;
   },
   Effect.tapError((error) => (isCliError(error) ? Console.error(error.message) : Effect.void)),
 );
@@ -357,7 +366,10 @@ export const kinCommand = Command.make("kin").pipe(
       ]),
     ),
     githubCommand,
+    importCommand,
     peopleCommand,
+    pulseCommand,
+    statementCommand,
     workerShellCommand,
   ]),
 );

@@ -43,10 +43,9 @@ export const makeKinPushHandlers = Effect.fn("makeKinPushHandlers")(function* (
       ),
     "kin.push.unregisterDevice": (input) =>
       caller.pipe(Effect.flatMap(({ devices, caller }) => devices.unregister(caller, input))),
-    // Only ever quiets this session's own pushes, so it needs no access check on the chat.
     "kin.push.watch": (input) =>
       Stream.unwrap(
-        caller.pipe(Effect.map(({ presence }) => presence.watch(session.sessionId, input.chatId))),
+        caller.pipe(Effect.map(({ presence, caller }) => presence.watch(caller, input.chatId))),
       ),
   });
 });

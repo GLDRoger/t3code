@@ -6,6 +6,8 @@ import {
 } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinAgentAvatar, type KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
+import { kinPickablePeople } from "@t3tools/client-runtime/kin/kinTeam";
+import { KIN_WORK_ASSIGN } from "@t3tools/client-runtime/kin/kinWork";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   KinAgentId,
@@ -37,6 +39,7 @@ import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { kinGroupFormAtom, type KinGroupFormTarget } from "./kinGroupForm";
 import { useKinHostAt } from "./useKinHost";
+import { useKinReinvited } from "./useKinWork";
 
 const closeGroupForm = () => appAtomRegistry.set(kinGroupFormAtom, null);
 
@@ -90,6 +93,7 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
   );
   const leadsResult = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
   const peopleResult = useAtomValue(kinClient.people({ environmentId, input: { orgId } }));
+  const invited = useKinReinvited({ environmentId, orgId });
   // A new group has no members to leave out of the lists.
   const membersAtom =
     chatId === null ? null : kinClient.chatMembers({ environmentId, input: { chatId } });
@@ -121,8 +125,12 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
     ? leadsResult.value.leads.filter((lead) => !inGroup.has(lead.agentId))
     : [];
   const people = AsyncResult.isSuccess(peopleResult)
-    ? peopleResult.value.people.filter(
-        (person) => !me.has(person.personId) && !inGroup.has(person.personId),
+    ? kinPickablePeople(
+        peopleResult.value.people.filter(
+          (person) => !me.has(person.personId) && !inGroup.has(person.personId),
+        ),
+        peopleResult.value.joined,
+        invited,
       )
     : [];
   const loading =
@@ -250,14 +258,14 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
                     <fieldset className="flex flex-col gap-1.5">
                       <legend className="text-xs font-medium text-muted-foreground">People</legend>
                       <ul className="flex flex-col">
-                        {people.map((person) => (
+                        {people.map(({ person, invited: waiting }) => (
                           <PickRow
                             key={person.personId}
                             name={person.displayName}
-                            detail={null}
+                            detail={waiting ? KIN_WORK_ASSIGN.invited : null}
                             avatar={{ kind: "person", seed: `person:${person.personId}` }}
                             checked={personIds.includes(person.personId)}
-                            disabled={busy}
+                            disabled={busy || waiting}
                             onChange={() => setPersonIds((held) => toggle(held, person.personId))}
                           />
                         ))}

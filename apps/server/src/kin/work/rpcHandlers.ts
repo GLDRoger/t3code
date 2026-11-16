@@ -1,4 +1,13 @@
-import { KinChatError, KinDocsRpcs, KinFinanceRpcs, KinWorkRpcs } from "@t3tools/contracts";
+import {
+  KinChatError,
+  KinDocsRpcs,
+  KinFinanceRpcs,
+  KinMoneyAnswerRpcs,
+  KinPulseRpcs,
+  KinRefreshRpcs,
+  KinStatementRpcs,
+  KinWorkRpcs,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -7,14 +16,28 @@ import * as Stream from "effect/Stream";
 
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { announceRefreshes, subscribeRefreshes } from "../chat/refreshes.ts";
 import { KinServer } from "../KinServer.ts";
+import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
+import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
+import * as CheckIns from "../pulse/checkIns.ts";
+import * as Pulse from "../pulse/people.ts";
+import * as KinSchedules from "../triggers/kinSchedules.ts";
+import * as Goals from "./goals.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Docs from "./ownerDocs.ts";
 import * as Money from "./ownerMoney.ts";
+import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
+import * as Statements from "./ownerStatements.ts";
 import * as Work from "./ownerWork.ts";
 
 const group = RpcGroup.make(...KinWorkRpcs, ...KinDocsRpcs);
 const finance = RpcGroup.make(...KinFinanceRpcs);
+const answers = RpcGroup.make(...KinMoneyAnswerRpcs);
+const statements = RpcGroup.make(...KinStatementRpcs);
+const refreshes = RpcGroup.make(...KinRefreshRpcs);
+const pulse = RpcGroup.make(...KinPulseRpcs);
 const disabled = new KinChatError({
   reason: "disabled",
   message: "Kin is not running on this host.",
@@ -26,11 +49,17 @@ const defect = (cause: unknown) =>
     ),
   );
 
-/** Thin transport: resolve the session's people, then one owner-checked Work or Docs call. */
+/** Thin transport: resolve the session's people, then one Work, Docs or refresh call. */
 export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
   session: AuthenticatedSession,
 ) {
   const kin = yield* Effect.serviceOption(KinServer);
+  // Saving a check-in writes its native task; the socket's own services do that.
+  const scheduling = Option.all({
+    tasks: yield* Effect.serviceOption(ScheduledTaskService.ScheduledTaskService),
+    launcher: yield* Effect.serviceOption(ThreadLaunchService.ThreadLaunchService),
+    threads: yield* Effect.serviceOption(ThreadManagementService.ThreadManagementService),
+  });
   const call = Effect.fn("KinWork.rpc.call")(function* <A, E, R>(
     run: (
       people: Effect.Success<ReturnType<KinIdentity["Service"]["resolve"]>>,
@@ -39,7 +68,7 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
     if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
     const services = kin.value.services.value;
     const people = yield* Context.get(services, KinIdentity).resolve(session);
-    return yield* run(people).pipe(Effect.provideContext(services as Context.Context<R>));
+    return yield* run(people).pipe(Effect.provideContext(services));
   }, Effect.catchDefect(defect));
   const stream = <A, E, R>(
     run: (
@@ -51,7 +80,7 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
         if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
         const services = kin.value.services.value;
         const people = yield* Context.get(services, KinIdentity).resolve(session);
-        return run(people).pipe(Stream.provideContext(services as Context.Context<R>));
+        return run(people).pipe(Stream.provideContext(services));
       }),
     );
   return {
@@ -72,6 +101,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.assign": Effect.fn("KinWork.rpc.assign")(function* (input) {
         return yield* call((people) => Work.assign(people, input));
       }),
+      "kin.work.handBack": Effect.fn("KinWork.rpc.handBack")(function* (input) {
+        return yield* call((people) => Work.handBack(people, input));
+      }),
       "kin.work.update": Effect.fn("KinWork.rpc.update")(function* (input) {
         return yield* call((people) => Work.update(people, input));
       }),
@@ -80,6 +112,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.decline": Effect.fn("KinWork.rpc.decline")(function* (input) {
         return yield* call((people) => Work.decline(people, input));
+      }),
+      "kin.work.share": Effect.fn("KinWork.rpc.share")(function* (input) {
+        return yield* call((people) => Work.share(people, input));
       }),
       "kin.work.parties": Effect.fn("KinWork.rpc.parties")(function* (input) {
         return yield* call((people) => Clients.parties(people, input));
@@ -104,6 +139,12 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.createContact": Effect.fn("KinWork.rpc.createContact")(function* (input) {
         return yield* call((people) => Clients.createContact(people, input));
+      }),
+      "kin.work.logTouch": Effect.fn("KinWork.rpc.logTouch")(function* (input) {
+        return yield* call((people) => Clients.logTouch(people, input));
+      }),
+      "kin.work.removeTouch": Effect.fn("KinWork.rpc.removeTouch")(function* (input) {
+        return yield* call((people) => Clients.removeTouch(people, input));
       }),
       "kin.work.updateContact": Effect.fn("KinWork.rpc.updateContact")(function* (input) {
         return yield* call((people) => Clients.updateContact(people, input));
@@ -132,6 +173,27 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.docs.subscribe": (input) => stream((people) => Docs.subscribe(people, input)),
       "kin.docs.recipes": Effect.fn("KinDocs.rpc.recipes")(function* (input) {
         return yield* call((people) => Docs.recipes(people, input));
+      }),
+      "kin.docs.render": Effect.fn("KinDocs.rpc.render")(function* (input) {
+        return yield* call((people) => Docs.render(people, input));
+      }),
+      "kin.docs.undoRecipe": Effect.fn("KinDocs.rpc.undoRecipe")(function* (input) {
+        return yield* call((people) => Docs.undoRecipe(people, input));
+      }),
+      "kin.docs.label": Effect.fn("KinDocs.rpc.label")(function* (input) {
+        return yield* call((people) => Docs.label(people, input));
+      }),
+      "kin.docs.file": Effect.fn("KinDocs.rpc.file")(function* (input) {
+        return yield* call((people) => Docs.file(people, input));
+      }),
+      "kin.docs.clearRecipeLabel": Effect.fn("KinDocs.rpc.clearRecipeLabel")(function* (input) {
+        return yield* call((people) => Docs.labelRecipe(people, { ...input, sensitive: false }));
+      }),
+      "kin.docs.labelRecipe": Effect.fn("KinDocs.rpc.labelRecipe")(function* (input) {
+        return yield* call((people) => Docs.labelRecipe(people, input));
+      }),
+      "kin.docs.setDefaultRecipe": Effect.fn("KinDocs.rpc.setDefaultRecipe")(function* (input) {
+        return yield* call((people) => Docs.setDefaultRecipe(people, input));
       }),
       "kin.search": Effect.fn("KinDocs.rpc.search")(function* (input) {
         return yield* call((people) => Docs.search(people, input));
@@ -168,8 +230,111 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.issue": Effect.fn("KinWork.rpc.issue")(function* (input) {
         return yield* call((people) => Money.issue(people, input));
       }),
+      "kin.work.nextNumber": Effect.fn("KinWork.rpc.nextNumber")(function* (input) {
+        return yield* call((people) => Money.nextNumber(people, input));
+      }),
       "kin.work.void": Effect.fn("KinWork.rpc.void")(function* (input) {
         return yield* call((people) => Money.voidEntry(people, input));
+      }),
+      "kin.work.unvoid": Effect.fn("KinWork.rpc.unvoid")(function* (input) {
+        return yield* call((people) => Money.unvoidEntry(people, input));
+      }),
+      "kin.work.receipts": Effect.fn("KinWork.rpc.receipts")(function* (input) {
+        return yield* call((people) => Money.receipts(people, input));
+      }),
+      "kin.work.makeReceipt": Effect.fn("KinWork.rpc.makeReceipt")(function* (input) {
+        return yield* call((people) => Money.makeReceipt(people, input));
+      }),
+    }),
+    ...answers.of({
+      "kin.work.cash": Effect.fn("KinWork.rpc.cash")(function* (input) {
+        return yield* call((people) => MoneyAnswers.cash(people, input));
+      }),
+      "kin.work.outlook": Effect.fn("KinWork.rpc.outlook")(function* (input) {
+        return yield* call((people) => MoneyAnswers.outlook(people, input));
+      }),
+      "kin.work.budgets": Effect.fn("KinWork.rpc.budgets")(function* (input) {
+        return yield* call((people) => MoneyAnswers.budgets(people, input));
+      }),
+      "kin.work.setBudget": Effect.fn("KinWork.rpc.setBudget")(function* (input) {
+        return yield* call((people) => MoneyAnswers.setBudget(people, input));
+      }),
+      "kin.work.entryLines": Effect.fn("KinWork.rpc.entryLines")(function* (input) {
+        return yield* call((people) => MoneyAnswers.entryLines(people, input));
+      }),
+      "kin.work.invoiceFromQuote": Effect.fn("KinWork.rpc.invoiceFromQuote")(function* (input) {
+        return yield* call((people) => MoneyAnswers.invoiceFromQuote(people, input));
+      }),
+    }),
+    ...statements.of({
+      "kin.work.statementUnlock": Effect.fn("KinWork.rpc.statementUnlock")(function* (input) {
+        return yield* call((people) => Statements.unlock(people, input));
+      }),
+      "kin.work.statementForgetPassword": Effect.fn("KinWork.rpc.statementForgetPassword")(
+        function* (input) {
+          return yield* call((people) => Statements.forgetPassword(people, input));
+        },
+      ),
+      "kin.work.statementApply": Effect.fn("KinWork.rpc.statementApply")(function* (input) {
+        return yield* call((people) => Statements.apply(people, input));
+      }),
+      "kin.work.statementUndo": Effect.fn("KinWork.rpc.statementUndo")(function* (input) {
+        return yield* call((people) => Statements.undo(people, input));
+      }),
+      "kin.work.statementReread": Effect.fn("KinWork.rpc.statementReread")(function* (input) {
+        return yield* call((people) => Statements.reread(people, input));
+      }),
+      "kin.work.statementSelect": Effect.fn("KinWork.rpc.statementSelect")(function* (input) {
+        return yield* call((people) => Statements.select(people, input));
+      }),
+      "kin.work.statementRows": Effect.fn("KinWork.rpc.statementRows")(function* (input) {
+        return yield* call((people) => Statements.rows(people, input));
+      }),
+      "kin.work.statementPasswords": Effect.fn("KinWork.rpc.statementPasswords")(function* (input) {
+        return yield* call((people) => Statements.passwords(people, input));
+      }),
+      "kin.work.statementForgetAccount": Effect.fn("KinWork.rpc.statementForgetAccount")(
+        function* (input) {
+          return yield* call((people) => Statements.forgetAccount(people, input));
+        },
+      ),
+    }),
+    ...refreshes.of({
+      "kin.refreshes.subscribe": (input) => stream((people) => subscribeRefreshes(people, input)),
+      "kin.refreshes.announce": Effect.fn("KinWork.rpc.announceRefreshes")(function* (input) {
+        return yield* call((people) => announceRefreshes(people, input));
+      }),
+    }),
+    ...pulse.of({
+      "kin.pulse.read": Effect.fn("KinPulse.rpc.read")(function* (input) {
+        return yield* call((people) => Pulse.read(people, input));
+      }),
+      "kin.pulse.handle": Effect.fn("KinPulse.rpc.handle")(function* (input) {
+        return yield* call((people) => Pulse.handle(people, input));
+      }),
+      "kin.goals.list": Effect.fn("KinGoals.rpc.list")(function* (input) {
+        return yield* call((people) => Goals.list(people, input.orgId));
+      }),
+      "kin.goals.save": Effect.fn("KinGoals.rpc.save")(function* (input) {
+        return yield* call((people) => Goals.save(people, input));
+      }),
+      "kin.checkIns.list": Effect.fn("KinCheckIns.rpc.list")(function* (input) {
+        return yield* call((people) => CheckIns.list(people, input.orgId));
+      }),
+      "kin.checkIns.save": Effect.fn("KinCheckIns.rpc.save")(function* (input) {
+        if (Option.isNone(scheduling)) return yield* disabled;
+        const { tasks, launcher, threads } = scheduling.value;
+        return yield* call((people) =>
+          CheckIns.save(people, input).pipe(
+            Effect.provide(KinSchedules.layer),
+            Effect.provideService(ScheduledTaskService.ScheduledTaskService, tasks),
+            Effect.provideService(ThreadLaunchService.ThreadLaunchService, launcher),
+            Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+          ),
+        );
+      }),
+      "kin.checkIns.act": Effect.fn("KinCheckIns.rpc.act")(function* (input) {
+        return yield* call((people) => CheckIns.act(people, input));
       }),
     }),
   };

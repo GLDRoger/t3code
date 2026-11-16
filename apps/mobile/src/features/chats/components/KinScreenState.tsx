@@ -1,18 +1,29 @@
 import { KIN_ONLY } from "../../../lib/kinOnly";
 import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED } from "../kinOnlyCopy";
+import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { ReactNode } from "react";
-import { View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../../components/ui/AppBar";
+import { SymbolView } from "../../../components/ui/AppSymbol";
+import { AppText } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
 import { EmptyState } from "../../../components/ui/EmptyState";
 import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
+import { environmentPresentations } from "../../../state/presentation";
+import { kinStandInLine } from "@t3tools/client-runtime/kin/kinHost";
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinOwnerLevel, type KinPersonAccess } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
+import { connectionAtomRuntime } from "../../../connection/runtime";
+
+const noAccessAtom = Atom.make<KinPersonAccess | null>(null);
 import {
   formatKinTime,
   kinInboxNotice,
@@ -186,11 +197,85 @@ export function KinOfflineState(props: {
   );
 }
 
+/** The stand-in line for a screen, or null while the usual computer is the one showing. */
+export function useKinStandIn(environmentId?: EnvironmentId) {
+  const host = useKinHost();
+  const presentations = useAtomValue(environmentPresentations.presentationsAtom);
+  const access = useAtomValue(
+    host._tag === "host" ? kinAccessAtom(connectionAtomRuntime, host.environmentId) : noAccessAtom,
+  );
+  const line = kinStandInLine(
+    host,
+    (id) => presentations.get(id)?.entry.target.label ?? null,
+    kinOwnerLevel(access ?? undefined),
+  );
+  const { status, reconnect } = useKinReconnect(line?.usual ?? null);
+  if (line === null || host._tag !== "host") return null;
+  if (environmentId !== undefined && environmentId !== host.environmentId) return null;
+  return {
+    message: status === "failed" ? `${line.message} Still no answer.` : line.message,
+    action: reconnect === null ? null : status === "pending" ? "Trying…" : "Try again",
+    onPress: status === "pending" ? null : reconnect,
+  };
+}
+
+/**
+ * "Showing Studio Mac. Office Mac can't be reached." while another computer's Kin stands in: one
+ * quiet line in the layout, never over content, that tries the usual one again when tapped.
+ */
+export function KinStandInLine(props: {
+  readonly line: NonNullable<ReturnType<typeof useKinStandIn>>;
+}) {
+  const { message, action, onPress } = props.line;
+  return (
+    <Pressable
+      accessibilityRole={action === null ? "text" : "button"}
+      accessibilityLabel={action === null ? message : `${message} ${action}`}
+      accessibilityLiveRegion="polite"
+      disabled={onPress === null}
+      onPress={onPress ?? undefined}
+      className="flex-row items-start gap-2 py-1 active:opacity-60"
+    >
+      <View className="pt-0.5">
+        <SymbolView name="wifi.slash" size={12} tintColorClassName="accent-icon-muted" />
+      </View>
+      {/* A status line, capped like the chat title so it never crowds out the chats. */}
+      <AppText
+        textRole="caption"
+        maxFontSizeMultiplier={1.5}
+        className="min-w-0 flex-1 text-foreground-muted"
+      >
+        {message}
+        {action === null ? null : (
+          <AppText
+            textRole="caption"
+            maxFontSizeMultiplier={1.5}
+            className="font-t3-medium text-primary"
+          >
+            {` ${action}`}
+          </AppText>
+        )}
+      </AppText>
+    </Pressable>
+  );
+}
+
+/** The stand-in line in a padded view, drawn only when there is one. */
+export function KinStandInNotice(props: { readonly className?: string }) {
+  const line = useKinStandIn();
+  if (line === null) return null;
+  return (
+    <View className={props.className}>
+      <KinStandInLine line={line} />
+    </View>
+  );
+}
+
 /** "Offline. Last updated 9:41." over a cached inbox, with Reconnect; nothing while it is live. */
 export function KinInboxNotice(props: { readonly state: KinReadyState }) {
   const { status, reconnect } = useKinReconnect(props.state.environmentId);
   const notice = kinInboxNotice(props.state, status, (date) => formatKinTime(date));
-  if (notice === null) return null;
+  if (notice === null) return <KinStandInNotice />;
   return <KinStaleNoticeView notice={notice} status={status} reconnect={reconnect} />;
 }
 

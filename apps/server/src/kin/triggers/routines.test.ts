@@ -196,12 +196,38 @@ it.effect(
     }).pipe(Effect.provide(fixture())),
 );
 
-it.effect("the owner's time zone reschedules routines from the defaults; others are refused", () =>
+it.effect("a new company's routines stay off: the check-ins carry the briefs", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DELETE FROM kin_routine_preferences WHERE org_id = ${orgA}`;
+    const routines = yield* Routines.KinRoutines;
+    const store = yield* TriggerStore.KinTriggerStore;
+    yield* TestClock.setTime(Date.parse("2026-11-09T00:00:00.000Z"));
+    assert.isFalse(yield* routines.isEnabled(orgA, "morning_brief"));
+    // Any reconcile writes the missing preferences, off.
+    yield* routines.setEnabled(orgA, "owner_check", false);
+    for (const routine of ["morning_brief", "evening_summary", "owner_check"] as const) {
+      assert.isFalse(yield* routines.isEnabled(orgA, routine));
+      assert.notEqual(
+        (yield* store.get(orgA, KinTriggerId.make(`routine:${routine}`)))?.enabled,
+        true,
+      );
+    }
+  }).pipe(Effect.provide(fixture())),
+);
+
+it.effect("the owner's time zone reschedules routines from the defaults; only he sets it", () =>
   Effect.gen(function* () {
     yield* seed();
     const routines = yield* Routines.KinRoutines;
     const store = yield* TriggerStore.KinTriggerStore;
     const sql = yield* SqlClient.SqlClient;
+    // Unset, the host's zone would stand in; the defaults here are read in UTC.
+    yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+      dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+    VALUES (${orgA}, 'UTC', '08:30', '18:30', '03:00', 0, 1, '09:00',
+      '{"from":"21:00","to":"08:00"}')`;
     const zones = yield* OwnerTimeZone.KinOwnerTimeZone;
     yield* zones.attach(routines);
     yield* TestClock.setTime(Date.parse("2026-11-09T00:00:00.000Z"));
@@ -227,8 +253,8 @@ it.effect("the owner's time zone reschedules routines from the defaults; others 
     const input = { orgId: orgA, timeZone: "Asia/Kolkata" };
 
     assert.deepEqual(yield* zones.get(owner, input), { orgId: orgA, timeZone: "UTC" });
-    for (const call of [zones.set(member, input), zones.get(member, input)])
-      assert.include(yield* call.pipe(Effect.flip), { reason: "not_allowed" });
+    assert.include(yield* zones.set(member, input).pipe(Effect.flip), { reason: "not_allowed" });
+    assert.deepEqual(yield* zones.get(member, input), { orgId: orgA, timeZone: "UTC" });
     assert.include(
       yield* zones.set(owner, { ...input, timeZone: "Mars/Olympus" }).pipe(Effect.flip),
       { reason: "invalid_state" },

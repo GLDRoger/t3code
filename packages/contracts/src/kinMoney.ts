@@ -23,8 +23,25 @@ export type KinMoneyTotals = typeof KinMoneyTotals.Type;
 /** A built-in list (`work`, `clients`, `expenses`) or one defined in chat. */
 export const KinListId = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_]{1,39}$/));
 export type KinListId = typeof KinListId.Type;
+/** A real calendar day as YYYY-MM-DD from year 1000: `Date.parse` takes 30 February as 2 March. */
+export const isCalendarDay = (value: string) => {
+  const match = /^([1-9]\d{3})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return false;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  return days !== undefined && day >= 1 && day <= days;
+};
+/** An ISO day or time as epoch ms, NaN unless it parses and its day is real. */
+export const calendarTimeMillis = (value: string) =>
+  /^\d{4}-\d{2}-\d{2}/.test(value) && !isCalendarDay(value.slice(0, 10))
+    ? Number.NaN
+    : Date.parse(value);
 /** A calendar day in the owner's time zone. */
-export const KinDay = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/));
+export const KinDay = Schema.String.check(
+  Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/),
+  Schema.makeFilter(isCalendarDay, { expected: "a real YYYY-MM-DD calendar date" }),
+);
 export type KinDay = typeof KinDay.Type;
 
 /**
@@ -59,6 +76,19 @@ export const KinFieldValue = Schema.Union([Schema.String, Schema.Array(Schema.St
 export type KinFieldValue = typeof KinFieldValue.Type;
 
 /** Money paid against an entry that is paid over time. A voided one stays in the history and counts for nothing. */
+/**
+ * The receipt for a payment: Kin's receipt entry, or only the number another system gave it,
+ * kept in the payment's note, until a receipt is made for it (`key` and `document` then null).
+ */
+export const KinPaymentReceipt = Schema.Struct({
+  key: Schema.NullOr(TrimmedNonEmptyString),
+  number: Schema.NullOr(TrimmedNonEmptyString),
+  receivedOn: KinDay,
+  amount: KinMoney,
+  /** The receipt's PDF, a doc. */
+  document: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type KinPaymentReceipt = typeof KinPaymentReceipt.Type;
 export const KinPayment = Schema.Struct({
   paymentId: TrimmedNonEmptyString,
   amount: KinMoney,
@@ -66,5 +96,9 @@ export const KinPayment = Schema.Struct({
   note: Schema.String,
   recordedAt: IsoDateTime,
   voidedAt: Schema.NullOr(IsoDateTime),
+  /** Tax the client deducted at source (TDS), recorded so the invoice settles; not money in. */
+  withheld: Schema.optionalKey(Schema.Literal(true)),
+  /** Absent from older servers; `null` when it has no receipt yet (make one with makeReceipt). */
+  receipt: Schema.optionalKey(Schema.NullOr(KinPaymentReceipt)),
 });
 export type KinPayment = typeof KinPayment.Type;

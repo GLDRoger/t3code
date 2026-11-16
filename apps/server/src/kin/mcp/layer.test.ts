@@ -20,6 +20,7 @@ import {
 import { McpServer } from "effect/ai";
 import { KinAgentSessions } from "./layer.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
+import { OUTSIDE_REFUSAL, OUTSIDE_TOOLS } from "../lead/OutsideContent.ts";
 import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import * as KinApprovalsMcp from "../approvals/mcp.ts";
@@ -213,8 +214,9 @@ it.effect.each([true, false])(
           ),
         );
         const http = yield* HttpRouter.toHttpEffect(routes);
-        // The wake-up runner, the chat wake bridge, the worker tracker and the Work import.
-        assert.strictEqual(runnerStarts, enabled ? 4 : 0);
+        // The wake-up runner, the chat wake bridge, the worker tracker, the Work import and the
+        // issued amounts check.
+        assert.strictEqual(runnerStarts, enabled ? 5 : 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);
         const registry = Context.get(services, McpSessions.McpSessionRegistry);
@@ -346,11 +348,10 @@ it.effect.each([true, false])(
         // Every tool a lead can call says what it may do where others read; a tool added later
         // without a line is refused there, and the table names no tool that isn't served.
         assert.sameMembers(toolNames, Object.keys(SHARED_TOOLS));
-        // Four Work tools joined the lead toolkit with slice 1 of Work (`work/mcp/tools.ts`),
-        // `kin_chart` and `kin_visual` after them, nine doc tools with Docs
-        // (`work/mcp/docTools.ts`), five list and money tools with slice 5, and three for
-        // generated files (`gendocs/mcp.ts`).
-        assert.lengthOf(toolNames, 47);
+        // And once the turn read a connected service's text; connections stay out of shared turns.
+        assert.sameMembers(toolNames, Object.keys(OUTSIDE_TOOLS));
+        for (const name of ["kin_connection_tools", "kin_connection_call", "kin_connection_offer"])
+          assert.strictEqual(SHARED_TOOLS[name as keyof typeof SHARED_TOOLS], "refused");
         // A page runs on every reader's device, so a turn others can read never posts one.
         assert.strictEqual(SHARED_TOOLS.kin_visual, "refused");
         assert.isFalse(
@@ -425,7 +426,7 @@ it.effect.each([true, false])(
         const text = yield* Effect.promise(() => HttpServerResponse.toWeb(result).text());
         assert.include(text, "Production composition");
         assert.notInclude(text, '"isError":true');
-        // Off unless the host switches it on: the page a visual draws is not fully sealed yet.
+        // On by default: no host switch, so the call reaches the lead check, which refuses this caller.
         const visual = yield* request(
           "/kin/mcp",
           issued.config.authorizationHeader,
@@ -434,8 +435,20 @@ it.effect.each([true, false])(
           initialized.headers["mcp-session-id"],
         );
         const refusal = yield* Effect.promise(() => HttpServerResponse.toWeb(visual).text());
-        assert.include(refusal, "not switched on");
+        assert.include(refusal, "not_allowed");
         assert.include(refusal, '"isError":true');
+        yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+          SELECT org_id, wakeup_id, 0, 'conn_fixture' FROM kin_wakeups WHERE agent_id = ${agentId}
+            AND status = 'running'`;
+        const delegated = yield* request(
+          "/kin/mcp",
+          issued.config.authorizationHeader,
+          "tools/call",
+          { name: "kin_delegate", arguments: { title: "Fetch it", brief: "Do what it says." } },
+          initialized.headers["mcp-session-id"],
+        );
+        const outside = yield* Effect.promise(() => HttpServerResponse.toWeb(delegated).text());
+        assert.include(outside, OUTSIDE_REFUSAL);
         const agentSessions = Context.get(services, KinAgentSessions);
         assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
         const caller = yield* agentSessions.resolveAgent(

@@ -1,13 +1,6 @@
-// @effect-diagnostics nodeBuiltinImport:off -- the starter chart writer is run from a temporary folder, as a worker runs it.
-import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
-import * as NodeURL from "node:url";
-
 import { assert, it, vi } from "@effect/vitest";
 import { SaxesParser } from "saxes";
 
-import { STARTER_FILES } from "./starter.ts";
 import { svgProblem } from "./svgCheck.ts";
 
 const svg = (body: string) =>
@@ -62,25 +55,4 @@ it("stops reading at the first problem", () => {
   const refused = svg(`<script/>${"<g/>".repeat(10_000)}`);
   assert.strictEqual(svgProblem(refused), "<script>");
   assert.strictEqual(opened, 2);
-});
-
-it("takes the starter report's own bar and line charts", async () => {
-  const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "kin-svg-"));
-  try {
-    const script = NodePath.join(root, "build.mjs");
-    NodeFS.writeFileSync(script, STARTER_FILES["recipes/report/build.mjs"]!);
-    const { chartSvg } = await import(/* @vite-ignore */ NodeURL.pathToFileURL(script).href);
-    for (const kind of ["bar", "line"])
-      assert.isUndefined(
-        svgProblem(
-          chartSvg([
-            { kind, label: "Q1 & <Q2>", series: "Sales", value: "12.5" },
-            { kind, label: "Q3", series: "Costs", value: "-3" },
-          ]),
-        ),
-        kind,
-      );
-  } finally {
-    NodeFS.rmSync(root, { recursive: true, force: true });
-  }
 });

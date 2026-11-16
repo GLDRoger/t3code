@@ -1,12 +1,8 @@
+import * as Effect from "effect/Effect";
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
-  AuthSettingsWriteScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinLabelText, KinOrgId, KinTrimmedText } from "./kinChat.ts";
 import {
@@ -19,6 +15,7 @@ import {
   KinMoneyTotals,
 } from "./kinMoney.ts";
 import {
+  KinGstin,
   KinRecord,
   KinRecordDetail,
   KinRecordKey,
@@ -160,6 +157,8 @@ export const KinDateRow = Schema.Struct({
   kind: Schema.Literals(["due", "date"]),
   /** What its list calls this date. */
   label: Label,
+  /** The list's own date field this row is for; absent for the entry's due date and date. */
+  field: Schema.optional(Schema.String),
   at: IsoDateTime,
   allDay: Schema.Boolean,
 });
@@ -225,8 +224,14 @@ export const KinMoneySummary = Schema.Struct({
       }),
     ),
   }),
+  /** Money paid in: tax a client deducted at source settles an invoice but isn't counted here. */
   received: Schema.Struct({ thisMonth: KinMoneyTotals, lastMonth: KinMoneyTotals }),
   receivedThisFinancialYear: KinMoneyTotals,
+  /** TDS clients deducted from invoice payments, by the day paid; absent from older servers. */
+  tdsDeducted: Schema.optional(
+    Schema.Struct({ thisMonth: KinMoneyTotals, lastMonth: KinMoneyTotals }),
+  ),
+  tdsDeductedThisFinancialYear: Schema.optional(KinMoneyTotals),
   spent: Schema.Struct({ thisMonth: KinSpent, lastMonth: KinSpent }),
   spentThisFinancialYear: KinMoneyTotals,
   /** Open entries due or dated in the next 30 days, soonest first, at most 50. */
@@ -252,6 +257,8 @@ export const KinPaymentInput = Schema.Struct({
   amount: KinMoney,
   paidOn: KinDay,
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+  /** Tax the client deducted at source (TDS), recorded with the cash; an amount of 0 is TDS alone. */
+  tds: Schema.optional(KinMoney),
   /** A retry with the same id records nothing more. */
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
@@ -263,6 +270,65 @@ export const KinPaymentVoidInput = Schema.Struct({
   paymentId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
 export type KinPaymentVoidInput = typeof KinPaymentVoidInput.Type;
+
+/**
+ * A receipt: money received, numbered in its own series. Against an invoice's payment, or an
+ * advance received before any invoice, later set against one (`invoice` then names it).
+ */
+export const KinReceipt = Schema.Struct({
+  key: KinRecordKey,
+  number: Schema.NullOr(TrimmedNonEmptyString),
+  state: KinRecordState,
+  receivedOn: Schema.NullOr(KinDay),
+  amount: Schema.NullOr(KinMoney),
+  receivedFrom: Schema.NullOr(KinRecordRef),
+  towards: Schema.NullOr(Schema.String),
+  mode: Schema.NullOr(Schema.String),
+  reference: Schema.NullOr(Schema.String),
+  invoice: Schema.NullOr(KinRecordKey),
+  /** The issued number of `invoice` (INV/26-27/001), null while it has none. */
+  invoiceNumber: Schema.NullOr(Schema.String),
+  paymentId: Schema.NullOr(TrimmedNonEmptyString),
+  /** True when it was received before it was set against an invoice. */
+  advance: Schema.Boolean,
+  document: Schema.NullOr(Schema.Struct({ key: KinRecordKey, title: KinTrimmedText })),
+});
+export type KinReceipt = typeof KinReceipt.Type;
+export const KinReceiptsInput = Schema.Struct({
+  orgId: KinOrgId,
+  /** Newest first; default 100. */
+  limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 200 }))),
+});
+export type KinReceiptsInput = typeof KinReceiptsInput.Type;
+export const KinReceiptsResult = Schema.Struct({ receipts: Schema.Array(KinReceipt) });
+export type KinReceiptsResult = typeof KinReceiptsResult.Type;
+/**
+ * Makes a receipt, numbered and with its PDF: for a payment recorded on an invoice (a number the
+ * old system gave it, in its note, is kept), or for a receipts entry such as an advance. With
+ * `against`, an advance is set against that invoice as a payment. Retries return the same receipt.
+ */
+export const KinMakeReceiptInput = Schema.Struct({
+  orgId: KinOrgId,
+  paymentId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  key: Schema.optional(KinRecordKey),
+  /** Money received before any invoice: a new receipt from the client, towards some work. */
+  advance: Schema.optional(
+    Schema.Struct({ client: Schema.optional(KinRecordKey), amount: KinMoney, receivedOn: KinDay }),
+  ),
+  against: Schema.optional(KinRecordKey),
+  towards: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(300))),
+  mode: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(40))),
+  reference: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
+  /** A retry with the same id returns the same receipt. */
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinMakeReceiptInput = typeof KinMakeReceiptInput.Type;
+export const KinMakeReceiptResult = Schema.Struct({
+  receipt: KinReceipt,
+  /** Why its PDF couldn't be made; the receipt and its number stand either way. */
+  problems: Schema.Array(Schema.String),
+});
+export type KinMakeReceiptResult = typeof KinMakeReceiptResult.Type;
 
 /** A file the owner can keep on an entry: one on a message in a chat the owner is in. */
 export const KinWorkFile = Schema.Struct({ ...KinFileRef.fields, sentAt: IsoDateTime });
@@ -289,7 +355,10 @@ export type KinWorkFilesResult = typeof KinWorkFilesResult.Type;
  */
 export const KinIssueInput = Schema.Struct({ orgId: KinOrgId, key: KinRecordKey });
 export type KinIssueInput = typeof KinIssueInput.Type;
-/** Voids an entry: kept, with its number if it had one, so the series stays complete. */
+/**
+ * Voids an entry: kept, with its number if it had one, so the series stays complete. `unvoid`
+ * takes it back: owed again, or paid if its payments cover it. A void receipt stays void.
+ */
 export const KinVoidInput = Schema.Struct({ orgId: KinOrgId, key: KinRecordKey });
 export type KinVoidInput = typeof KinVoidInput.Type;
 export const KinIssueResult = Schema.Struct({
@@ -299,14 +368,24 @@ export const KinIssueResult = Schema.Struct({
   state: KinRecordState,
   /** True when this call issued it; false when it already had its number. */
   issued: Schema.Boolean,
+  /** Its documents, made again in place with the number when this call issued it. */
+  documents: Schema.Array(
+    Schema.Struct({ key: KinRecordKey, title: KinTrimmedText, version: Schema.Number }),
+  ),
+  /** Why a document couldn't be made again; the number stands either way. */
+  problems: Schema.Array(Schema.String),
+  /** Said plainly when its number follows entries dated after it, as a backdated one's does. */
+  notice: Schema.optional(Schema.String),
 });
 export type KinIssueResult = typeof KinIssueResult.Type;
+/** The number Issue would give the entry now; another issue first may take it. */
+export const KinNextNumberResult = Schema.Struct({
+  /** `null` when it has one already or its list doesn't number its entries. */
+  number: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type KinNextNumberResult = typeof KinNextNumberResult.Type;
 
 const ProfileText = Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(500)));
-/** India's 15-character GST number. */
-export const KinGstin = Schema.String.check(
-  Schema.isPattern(/^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/),
-);
 export const KinCompanyBank = Schema.Struct({
   accountName: ProfileText,
   accountNumber: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9A-Z]{6,34}$/))),
@@ -316,6 +395,64 @@ export const KinCompanyBank = Schema.Struct({
   upi: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[\w.-]{2,256}@[A-Za-z]{2,64}$/))),
 });
 export type KinCompanyBank = typeof KinCompanyBank.Type;
+/** Logo files a recipe may show: drawn as sent, never re-encoded. */
+const KIN_LOGO_MIME_TYPES = ["image/png", "image/jpeg", "image/svg+xml"] as const;
+/** The company's logo: Kin's own copy of an image the owner sent, kept with the profile. */
+export const KinCompanyLogo = Schema.Struct({
+  attachmentId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  name: KinTrimmedText.check(Schema.isMaxLength(255)),
+  mimeType: Schema.Literals(KIN_LOGO_MIME_TYPES),
+  bytes: NonNegativeInt,
+  /** In pixels; `null` for an SVG with no size of its own. */
+  width: Schema.NullOr(NonNegativeInt),
+  height: Schema.NullOr(NonNegativeInt),
+  sha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+});
+export type KinCompanyLogo = typeof KinCompanyLogo.Type;
+/** Fonts every recipe can use: Typst's own and the open-licence ones Kin fetches. */
+export const KIN_RECIPE_FONTS = [
+  "Poppins",
+  "Mukta",
+  "Libertinus Serif",
+  "New Computer Modern",
+  "DejaVu Sans Mono",
+] as const;
+const BrandColor = Schema.NullOr(Schema.String.check(Schema.isPattern(/^#[0-9A-Fa-f]{6}$/)));
+/** How the company's documents look where a recipe asks: colours, a font and a footer line. */
+export const KinCompanyBrand = Schema.Struct({
+  primaryColor: BrandColor,
+  secondaryColor: BrandColor,
+  font: Schema.NullOr(Schema.Literals(KIN_RECIPE_FONTS)),
+  footer: Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(300))),
+});
+export type KinCompanyBrand = typeof KinCompanyBrand.Type;
+const NO_BRAND: KinCompanyBrand = {
+  primaryColor: null,
+  secondaryColor: null,
+  font: null,
+  footer: null,
+};
+/**
+ * A rate the owner set: `rate` units of the home currency for one unit of `currency`, as of a day.
+ * Only for "about ₹x" beside a foreign amount; never in an exact figure, invoice or export.
+ */
+export const KinCurrencyRate = Schema.Struct({
+  currency: KinCurrency,
+  rate: Schema.String.check(Schema.isPattern(/^(?:0|[1-9]\d{0,6})(?:\.\d{1,6})?$/)),
+  asOf: KinDay,
+});
+export type KinCurrencyRate = typeof KinCurrencyRate.Type;
+const KinCurrencyRates = Schema.Array(KinCurrencyRate).check(
+  Schema.isMaxLength(20),
+  Schema.makeFilter(
+    (rates: ReadonlyArray<KinCurrencyRate>) =>
+      new Set(rates.map((one) => one.currency)).size === rates.length &&
+      rates.every((one) => /[1-9]/.test(one.rate)),
+    { expected: "one rate above zero per currency" },
+  ),
+);
+/** A SAC or HSN code as GST writes it: 4 to 8 digits. */
+export const KinSacCode = Schema.String.check(Schema.isPattern(/^\d{4,8}$/));
 const KinCompanyProfileFields = {
   legalName: ProfileText,
   tradeName: ProfileText,
@@ -325,8 +462,19 @@ const KinCompanyProfileFields = {
   /** The State the company supplies from, as a GST state code or name. */
   placeOfSupply: Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(60))),
   /** The services accounting code its invoices usually carry. */
-  sac: Schema.NullOr(Schema.String.check(Schema.isPattern(/^\d{4,8}$/))),
+  sac: Schema.NullOr(KinSacCode),
   bank: KinCompanyBank,
+  /** The letter of undertaking exports go under without IGST: its ARN, and the day it was filed. */
+  lutNumber: Schema.optional(
+    Schema.NullOr(Schema.String.check(Schema.isPattern(/^[A-Z0-9]{8,20}$/))),
+  ),
+  lutDate: Schema.optional(Schema.NullOr(KinDay)),
+  // Profiles stored before the logo and brand existed read as having neither.
+  logo: Schema.NullOr(KinCompanyLogo).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  brand: KinCompanyBrand.pipe(Schema.withDecodingDefaultKey(Effect.succeed(NO_BRAND))),
+  /** What the company keeps its books in; estimates beside foreign amounts are in it. */
+  homeCurrency: KinCurrency.pipe(Schema.withDecodingDefaultKey(Effect.succeed("INR"))),
+  rates: KinCurrencyRates.pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 };
 export const KinCompanyProfileData = Schema.Struct(KinCompanyProfileFields);
 export type KinCompanyProfileData = typeof KinCompanyProfileData.Type;
@@ -350,6 +498,8 @@ export const KinCompanyProfileSetInput = Schema.Struct({
   pan: Schema.optional(KinCompanyProfileFields.pan),
   placeOfSupply: Schema.optional(KinCompanyProfileFields.placeOfSupply),
   sac: Schema.optional(KinCompanyProfileFields.sac),
+  lutNumber: KinCompanyProfileFields.lutNumber,
+  lutDate: KinCompanyProfileFields.lutDate,
   bank: Schema.optional(
     Schema.Struct({
       accountName: Schema.optional(KinCompanyBank.fields.accountName),
@@ -360,6 +510,19 @@ export const KinCompanyProfileSetInput = Schema.Struct({
       upi: Schema.optional(KinCompanyBank.fields.upi),
     }),
   ),
+  /** A client only clears the logo; a new one comes from a file the owner sent, by the agent's card. */
+  logo: Schema.optional(Schema.Null),
+  brand: Schema.optional(
+    Schema.Struct({
+      primaryColor: Schema.optional(KinCompanyBrand.fields.primaryColor),
+      secondaryColor: Schema.optional(KinCompanyBrand.fields.secondaryColor),
+      font: Schema.optional(KinCompanyBrand.fields.font),
+      footer: Schema.optional(KinCompanyBrand.fields.footer),
+    }),
+  ),
+  homeCurrency: Schema.optional(KinCurrency),
+  /** Replaces every rate; send the list without one to remove it. */
+  rates: Schema.optional(KinCurrencyRates),
 });
 export type KinCompanyProfileSetInput = typeof KinCompanyProfileSetInput.Type;
 
@@ -374,7 +537,11 @@ const KIN_FINANCE_WS_METHODS = {
   companyProfile: "kin.work.companyProfile",
   setCompanyProfile: "kin.work.setCompanyProfile",
   issue: "kin.work.issue",
+  nextNumber: "kin.work.nextNumber",
   void: "kin.work.void",
+  unvoid: "kin.work.unvoid",
+  receipts: "kin.work.receipts",
+  makeReceipt: "kin.work.makeReceipt",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -430,22 +597,47 @@ export const KinFinanceRpcs = [
     success: KinIssueResult,
     error,
   }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.nextNumber, {
+    payload: KinIssueInput,
+    success: KinNextNumberResult,
+    error,
+  }),
   Rpc.make(KIN_FINANCE_WS_METHODS.void, { payload: KinVoidInput, success: KinIssueResult, error }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.unvoid, {
+    payload: KinVoidInput,
+    success: KinIssueResult,
+    error,
+  }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.receipts, {
+    payload: KinReceiptsInput,
+    success: KinReceiptsResult,
+    error,
+  }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.makeReceipt, {
+    payload: KinMakeReceiptInput,
+    success: KinMakeReceiptResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_FINANCE_RPC_SCOPES = {
-  [KIN_FINANCE_WS_METHODS.lists]: AuthOrchestrationReadScope,
+  [KIN_FINANCE_WS_METHODS.lists]: AuthKinChatScope,
   // What a list is, like what a lead is for, is an owner setting.
-  [KIN_FINANCE_WS_METHODS.updateList]: AuthSettingsWriteScope,
-  [KIN_FINANCE_WS_METHODS.dates]: AuthOrchestrationReadScope,
-  [KIN_FINANCE_WS_METHODS.money]: AuthOrchestrationReadScope,
-  [KIN_FINANCE_WS_METHODS.recordPayment]: AuthOrchestrationOperateScope,
-  [KIN_FINANCE_WS_METHODS.voidPayment]: AuthOrchestrationOperateScope,
-  [KIN_FINANCE_WS_METHODS.files]: AuthOrchestrationReadScope,
+  [KIN_FINANCE_WS_METHODS.updateList]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.dates]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.money]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.recordPayment]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.voidPayment]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.files]: AuthKinChatScope,
   // Bank details: read and written only where owner settings are.
-  [KIN_FINANCE_WS_METHODS.companyProfile]: AuthSettingsWriteScope,
-  [KIN_FINANCE_WS_METHODS.setCompanyProfile]: AuthSettingsWriteScope,
+  [KIN_FINANCE_WS_METHODS.companyProfile]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.setCompanyProfile]: AuthKinChatScope,
   // A number is an entry change, like a payment; nothing leaves the host.
-  [KIN_FINANCE_WS_METHODS.issue]: AuthOrchestrationOperateScope,
-  [KIN_FINANCE_WS_METHODS.void]: AuthOrchestrationOperateScope,
+  [KIN_FINANCE_WS_METHODS.issue]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.nextNumber]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.void]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.unvoid]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.receipts]: AuthKinChatScope,
+  // A receipt is an entry with a number, like issuing one.
+  [KIN_FINANCE_WS_METHODS.makeReceipt]: AuthKinChatScope,
 } as const;

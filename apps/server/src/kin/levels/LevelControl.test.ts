@@ -45,7 +45,7 @@ import { recordFacts } from "../approvals/grantFacts.ts";
 import * as KeySeal from "../approvals/KeySeal.ts";
 import { makeKinHandlers } from "../rpcHandlers.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
-import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
+import { kinHostDependencies } from "../lead/layer.testkit.ts";
 
 const session = {
   sessionId: AuthSessionId.make("owner-session"),
@@ -60,7 +60,7 @@ const ownerKey = makeApprovalKey();
 const memberKey = makeApprovalKey();
 // The test seal, so `seed` can write key rows as the server activates them.
 const root = Kin.layerWithSeal(KeySeal.layerTest()).pipe(
-  Layer.provide(dormantLeadDependencies),
+  Layer.provideMerge(kinHostDependencies),
   Layer.provideMerge(Chat.layer),
   Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
   Layer.provideMerge(
@@ -235,16 +235,16 @@ it.effect("only the lead's owner reads, lowers or raises; others are refused", (
       member["kin.levels.raise"]({ ...lead, level: "L3" }).pipe(Effect.flip),
     ]);
     for (const refusal of refusals)
-      assert.include(refusal, { _tag: "KinChatError", reason: "not_allowed" });
+      assert.include(refusal, { _tag: "EnvironmentAuthorizationError" });
     assert.include(
       yield* client["kin.levels.get"]({ orgId: KinOrgId.make("foreign"), agentId }).pipe(
         Effect.flip,
       ),
       { reason: "not_found" },
     );
-    // A read-only session may look, never change.
-    assert.strictEqual((yield* readOnly["kin.levels.get"](lead)).level, "L2");
+    // A session without Kin's grant neither looks nor changes.
     const forbidden = yield* Effect.all([
+      readOnly["kin.levels.get"](lead).pipe(Effect.flip),
       readOnly["kin.levels.lower"](lowerGroup).pipe(Effect.flip),
       readOnly["kin.levels.raise"]({ ...lead, level: "L3" }).pipe(Effect.flip),
     ]);

@@ -4,18 +4,23 @@ import {
   kinDocExport,
   kinDocHasContents,
   kinDocOutline,
+  kinDocPieceKey,
+  kinDocPieces,
   kinDocPrevious,
   kinDocPrivacy,
   kinDocRef,
   type KinDocAsk,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import type { KinDocDetail, KinDocSection, KinMessageRef } from "@t3tools/contracts";
+import { kinChartView } from "@t3tools/client-runtime/kin/kinChart";
+import type { KinDocDetail, KinDocEmbed, KinDocSection, KinMessageRef } from "@t3tools/contracts";
 import {
   EllipsisIcon,
+  FileDownIcon,
   HistoryIcon,
   LinkIcon,
   ListIcon,
   LockIcon,
+  LockOpenIcon,
   MessageCircleQuestionIcon,
   PencilLineIcon,
   ShareIcon,
@@ -23,7 +28,7 @@ import {
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 
-import { kinBodyMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { kinDocFileId, kinDocMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import ChatMarkdown from "../components/ChatMarkdown";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -35,6 +40,11 @@ import {
   type SelectionActionPoint,
 } from "../lib/selectionActions";
 import { downloadPlanAsTextFile } from "../proposedPlan";
+import { CardFrame } from "./KinCards";
+import { KinChart } from "./KinChart";
+import { KinVisual } from "./KinVisual";
+import { useKinDocLabel } from "./KinConfirm";
+import { KinDocFileCard } from "./KinInvoice";
 import { useNowMinuteMs } from "./useKinClock";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
@@ -56,7 +66,7 @@ function findHeadings(
 ): ReadonlyMap<string, HTMLElement> {
   const found = new Map<string, HTMLElement>();
   const drawn = Array.from(root.querySelectorAll<HTMLElement>(HEADINGS)).filter(
-    (heading) => heading.closest("blockquote,li,table") === null,
+    (heading) => heading.closest("blockquote,li,table,[data-kin-doc-embed]") === null,
   );
   let at = 0;
   for (const section of outline) {
@@ -109,6 +119,34 @@ function sectionAt(
 
 export type KinDocPoint = (ref: KinMessageRef, intent: KinDocAsk) => void;
 
+const FILE_IMAGE = "#kin-file:";
+// The sanitizer drops a source with a scheme it doesn't know; a fragment reaches the renderer,
+// which loads nothing else from one.
+const fileImageSource = (id: string) => `${FILE_IMAGE}${id}`;
+const fileImageAttachment = (src: string) =>
+  src.startsWith(FILE_IMAGE) ? kinDocFileId(src.slice(1)) : null;
+
+/** What the host drew for a doc's block, at the reading column's width like a card in chat. */
+function KinDocEmbedView(props: KinWorkTarget & { readonly embed: KinDocEmbed }) {
+  const { embed } = props;
+  switch (embed._tag) {
+    case "chart":
+      return (
+        <CardFrame>
+          <KinChart view={kinChartView(embed.chart)} />
+        </CardFrame>
+      );
+    case "visual":
+      return (
+        <CardFrame label={embed.title}>
+          <KinVisual environmentId={props.environmentId} orgId={props.orgId} visual={embed} />
+        </CardFrame>
+      );
+    case "broken":
+      return <p className="text-sm text-muted-foreground">{embed.message}</p>;
+  }
+}
+
 function AskItems(props: {
   readonly onAsk: ((intent: KinDocAsk) => void) | null;
   readonly onCopyLink: () => void;
@@ -144,6 +182,8 @@ export function KinDocReader(
     readonly onSeeChanges: (to: number) => void;
     readonly onOpenLatest: () => void;
     readonly onHistory: () => void;
+    /** Null where the doc is a file already, or this browser may not make one. */
+    readonly onExportPdf: (() => void) | null;
     /** Null where this browser may not restore. */
     readonly onRestore: ((version: number) => void) | null;
     /** Where the page header's own buttons go. */
@@ -171,6 +211,7 @@ export function KinDocReader(
   const old = doc.version.version !== doc.latest.version;
   const previous = kinDocPrevious(doc.version);
   const privacy = kinDocPrivacy(doc);
+  const label = useKinDocLabel(props, doc);
   // The body opens with the doc's own name as its heading: say it once.
   const first = doc.outline.find((section) => section.id !== "top");
   const titled =
@@ -299,6 +340,18 @@ export function KinDocReader(
                     <ShareIcon />
                     {KIN_DOCS.export}
                   </MenuItem>
+                  {props.onExportPdf === null ? null : (
+                    <MenuItem onClick={props.onExportPdf}>
+                      <FileDownIcon />
+                      {KIN_DOCS.exportPdf}
+                    </MenuItem>
+                  )}
+                  {label.action === null ? null : (
+                    <MenuItem onClick={label.ask}>
+                      {label.action.sensitive ? <LockIcon /> : <LockOpenIcon />}
+                      {label.action.label}
+                    </MenuItem>
+                  )}
                 </MenuPopup>
               </Menu>
             </>,
@@ -329,6 +382,17 @@ export function KinDocReader(
                 </>
               )}
             </p>
+            {label.dialog}
+            {label.problem === null ? null : (
+              <Alert variant="error">
+                <AlertDescription>{label.problem}</AlertDescription>
+                <AlertAction>
+                  <Button size="xs" variant="ghost" onClick={label.dismiss}>
+                    Dismiss
+                  </Button>
+                </AlertAction>
+              </Alert>
+            )}
             {privacy === null ? null : (
               <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
                 <LockIcon aria-hidden className="size-3.5 shrink-0" />
@@ -358,19 +422,38 @@ export function KinDocReader(
               </Alert>
             ) : null}
           </header>
+          {doc.version.file === undefined ? null : (
+            <KinDocFileCard environmentId={props.environmentId} file={doc.version.file} />
+          )}
           {doc.body.trim() === "" ? (
-            <p className="text-sm text-muted-foreground">This doc has no text yet.</p>
+            doc.version.file === undefined ? (
+              <p className="text-sm text-muted-foreground">This doc has no text yet.</p>
+            ) : null
           ) : (
             <div
               ref={setArticle}
               onClickCapture={followFragment}
-              className="leading-relaxed text-foreground"
+              className="flex flex-col gap-3 leading-relaxed text-foreground"
             >
-              <ChatMarkdown
-                text={kinBodyMarkdown(doc.body)}
-                cwd={undefined}
-                environmentId={props.environmentId}
-              />
+              {kinDocPieces(doc.body, doc).map((piece, index) =>
+                piece.type === "text" ? (
+                  <ChatMarkdown
+                    key={kinDocPieceKey(piece, index)}
+                    text={kinDocMarkdown(piece.text, fileImageSource)}
+                    cwd={undefined}
+                    environmentId={props.environmentId}
+                    imageAttachment={fileImageAttachment}
+                  />
+                ) : (
+                  <div key={kinDocPieceKey(piece, index)} data-kin-doc-embed="">
+                    <KinDocEmbedView
+                      environmentId={props.environmentId}
+                      orgId={props.orgId}
+                      embed={piece.embed}
+                    />
+                  </div>
+                ),
+              )}
             </div>
           )}
         </article>

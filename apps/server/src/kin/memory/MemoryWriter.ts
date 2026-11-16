@@ -1,5 +1,6 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Supersession fingerprints compare in-process strings synchronously.
 import * as NodeCrypto from "node:crypto";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { toPersistenceSqlError, type PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -41,7 +42,13 @@ import {
   MemoryDuplicateId,
   shadowBranch,
 } from "./Memory.ts";
-import { changedKeys, parseFrontMatter, MemoryItemError, schemaKeyFailure } from "./frontMatter.ts";
+import {
+  changedKeys,
+  endedBy,
+  parseFrontMatter,
+  MemoryItemError,
+  schemaKeyFailure,
+} from "./frontMatter.ts";
 import { journalEntry, MemoryJournalError, type JournalContext } from "./journal.ts";
 import { QUOTE_MISSING, quoteRefusal } from "./keeping.ts";
 import { isOwnerReviewedPath, kinShapeFailure } from "./lint.ts";
@@ -52,6 +59,11 @@ import * as MemoryLander from "./MemoryLander.ts";
 import { MemoryPullRequests } from "./MemoryPullRequests.ts";
 
 export const LEAD_ENDED_WITHOUT_KIN_END = "Agent ended without calling kin_end.";
+export const RESTART_JOURNAL_LINE =
+  "Kin restarted during this turn; what was noted before the restart may not have been saved.";
+const FINISHED_KEPT = 1_000;
+const RESTART_OWNER_NOTICE =
+  "Kin restarted while an agent was working, so something it said it saved may not have been kept. If it matters, tell it again.";
 
 export interface WakeupContext extends JournalContext {
   readonly orgId: KinOrgId;
@@ -236,6 +248,14 @@ export class MemoryWriter extends Context.Service<
       input: { readonly itemId: KinMemoryItemId; readonly by: "owner" | "nightly" },
     ) => Effect.Effect<{ readonly retired: boolean }, Failure>;
     /**
+     * The owner's way back from forgetting: a default-branch item no longer true, and replaced by
+     * nothing, is true again. Who may know it stays ended; `restored` is false when it was current.
+     */
+    readonly restore: (
+      orgId: KinOrgId,
+      input: { readonly itemId: KinMemoryItemId },
+    ) => Effect.Effect<{ readonly restored: boolean }, Failure>;
+    /**
      * Ends who may know every item the default branch holds retired, whatever retired it: a
      * GitHub merge, a promoted shadow branch, or a grant older than retirement clearing one.
      */
@@ -250,7 +270,15 @@ export class MemoryWriter extends Context.Service<
 >()("t3/kin/memory/MemoryWriter") {}
 const isRepoSlug = Schema.is(RepoSlug);
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
-const folders = ["objectives", "commitments", "deferrals", "decisions", "people", "claims"];
+const folders = [
+  "objectives",
+  "commitments",
+  "deferrals",
+  "decisions",
+  "people",
+  "claims",
+  "relationships",
+];
 const render = (fields: object, body: string) => `---\n${stringify(fields)}---\n${body}`;
 const retired = (head: {
   readonly invalid_at: string | null;
@@ -259,10 +287,12 @@ const retired = (head: {
 const make = Effect.gen(function* () {
   const memory = yield* Memory;
   const sql = yield* SqlClient.SqlClient;
+  const refresh = yield* KinRefreshObserver;
   /** Ends who may know items as they stop being true, before the commit that retires them. */
   const endSharing = (orgId: KinOrgId, itemIds: ReadonlyArray<string>) =>
     retireLabels(orgId, itemIds).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(KinRefreshObserver, refresh),
       Effect.mapError(toPersistenceSqlError("MemoryWriter.endSharing")),
     );
   // The default-branch head `reconcileSharing` last swept, so an unchanged branch costs one read.
@@ -317,6 +347,17 @@ const make = Effect.gen(function* () {
   };
   const sessions = new Map<string, SessionState>();
   const sessionKey = (orgId: KinOrgId, wakeupId: string) => `${orgId}\u0000${wakeupId}`;
+  // Wake-ups this process already committed: a late write for one (a second kin_end,
+  // text streamed after it) finds no session, and that is not a restart. Oldest go first.
+  const finished = new Set<string>();
+  const finish = (orgId: KinOrgId, wakeupId: string) => {
+    const key = sessionKey(orgId, wakeupId);
+    sessions.delete(key);
+    finished.delete(key);
+    finished.add(key);
+    const oldest = finished.values().next();
+    if (finished.size > FINISHED_KEPT && oldest.done !== true) finished.delete(oldest.value);
+  };
   const io = <A, E, R>(orgId: KinOrgId, effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError((cause) => new MemoryError({ orgId, operation: "writer", cause })));
   const git = Effect.fn("MemoryWriter.git")(function* (
@@ -468,16 +509,20 @@ const make = Effect.gen(function* () {
       supersessions: new Map<string, string>(),
       changes: new Map<string, MemoryChange>(),
     };
-    if (!previous && ctx.stagedReceipts) {
+    if (!previous && ctx.stagedReceipts && !finished.has(key)) {
       const { writer } = yield* validate(orgId);
       const branch =
         ctx.level === "L0" ? shadowBranch(ctx.agentId) : (config.defaultBranch ?? "main");
       const head = yield* branchHead(orgId, writer, branch);
       if ((yield* ownCommit(orgId, writer, head, ctx)) === undefined) {
-        const reason =
-          "Staged changes and kin_end summary were lost on restart; tool receipts do not prove those changes were committed.";
-        state.lines.push(reason);
-        yield* recovery.notify({ orgId, branch: `wakeup:${wakeupId}`, reason });
+        state.lines.push(RESTART_JOURNAL_LINE);
+        yield* recovery.notify({
+          orgId,
+          branch: `wakeup:${wakeupId}`,
+          reason:
+            "Staged changes and kin_end summary were lost on restart; tool receipts do not prove those changes were committed.",
+          owner: RESTART_OWNER_NOTICE,
+        });
       }
     }
     sessions.set(key, state);
@@ -1005,6 +1050,9 @@ const make = Effect.gen(function* () {
       locked(
         orgId,
         Effect.gen(function* () {
+          // Its journal is already written: lines that come after it have nowhere to go.
+          const key = sessionKey(orgId, wakeupId);
+          if (finished.has(key) && !sessions.has(key)) return;
           const { ctx, state } = yield* session(orgId, wakeupId);
           if (lines.length === 1 && lines[0] === LEAD_ENDED_WITHOUT_KIN_END) {
             const { writer } = yield* validate(orgId);
@@ -1225,9 +1273,7 @@ const make = Effect.gen(function* () {
               if (viaPullRequest) yield* lander.signal(orgId);
               else yield* push(commit);
               return { commit };
-            }).pipe(
-              Effect.ensuring(Effect.sync(() => sessions.delete(sessionKey(orgId, wakeupId)))),
-            );
+            }).pipe(Effect.ensuring(Effect.sync(() => finish(orgId, wakeupId))));
           }),
         ),
       ),
@@ -1505,8 +1551,9 @@ const make = Effect.gen(function* () {
             return yield* new MemoryNotFound({ orgId, id: input.itemId });
           // First, so the team stops knowing it whatever the commit below does.
           yield* endSharing(orgId, [input.itemId]);
-          if (frontMatter.invalid_at !== null) return { retired: false };
-          const invalidAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+          const now = yield* Clock.currentTimeMillis;
+          if (endedBy(frontMatter, now)) return { retired: false };
+          const invalidAt = DateTime.formatIso(DateTime.makeUnsafe(now));
           yield* ownerCommit(orgId, {
             writer,
             repoUrl: repo.repoUrl,
@@ -1522,6 +1569,46 @@ const make = Effect.gen(function* () {
                 : `kin: nightly pass retires spent ${input.itemId}\n`,
           });
           return { retired: true };
+        }),
+      ),
+    ),
+    restore: Effect.fn("MemoryWriter.restore")((orgId, input) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          if (mainWrites === "refused") return yield* refuseMainWrite(orgId);
+          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+          const item = yield* memory.readItemQuietly(orgId, input.itemId);
+          const head = yield* branchHead(orgId, writer, main);
+          const headFiles = yield* filesAt(orgId, writer, head);
+          const current = headFiles.get(item.head.path);
+          if (current === undefined) return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          const { frontMatter, body } = yield* parseFrontMatter(
+            orgId,
+            item.head.path,
+            current.toString("utf8"),
+          );
+          if (frontMatter.id !== input.itemId)
+            return yield* new MemoryNotFound({ orgId, id: input.itemId });
+          if (
+            !endedBy(frontMatter, yield* Clock.currentTimeMillis) ||
+            frontMatter.superseded_by !== null
+          )
+            return { restored: false };
+          yield* ownerCommit(orgId, {
+            writer,
+            repoUrl: repo.repoUrl,
+            branch: main,
+            head,
+            headFiles,
+            files: new Map([[item.head.path, render({ ...frontMatter, invalid_at: null }, body)]]),
+            message: `kin: owner restores ${input.itemId}\n`,
+          });
+          return { restored: true };
         }),
       ),
     ),

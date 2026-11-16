@@ -172,6 +172,8 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     -apple-system, BlinkMacSystemFont, "Inter Variable", "Segoe UI", system-ui, sans-serif;
   --font-mono:
     ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  /* Mid grey in both themes, so a white logo and a dark one both show on it. */
+  --color-image-ground: #8c8c8c;
 }
 
 @theme inline {

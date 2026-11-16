@@ -12,12 +12,12 @@ import { Command, Flag, GlobalFlag } from "effect/cli";
 
 import { authLocationFlags, resolveCliAuthConfig } from "../../cli/config.ts";
 import { managedAuth, ownerAuth, resolveWorkerCredentials } from "../claudeConfinement.ts";
-import { toolDirectories } from "../gendocs/toolchain.ts";
 import { DEFAULT_WORKER_HOSTS } from "../lead/workerNetwork.ts";
 import {
   type CheckLine,
   checkShell,
   hostShell,
+  installHints,
   protectedOverlap,
   providerHomes,
   readStatus,
@@ -84,7 +84,6 @@ const runCheck = Effect.fn("KinWorkerShellCli.check")(function* (input: {
   const paths = yield* workerPaths({
     providerEnv: env,
     claude,
-    toolDirs: toolDirectories(input.baseDir),
     ownerPath: ownerPath(env),
     writable: workerWritable({ worktree: undefined, worktreesDir, stateDir: input.stateDir }),
   });
@@ -136,7 +135,6 @@ const runCheck = Effect.fn("KinWorkerShellCli.check")(function* (input: {
           paths: paths.env,
           domains: [...DEFAULT_WORKER_HOSTS, ...(host._tag === "on" ? host.domains : [])],
           readPaths: host._tag === "on" ? host.readPaths : [],
-          toolDirs: toolDirectories(input.baseDir),
           providerHomes: homes,
         });
   const platform = yield* HostProcess.Platform;
@@ -153,12 +151,18 @@ const runCheck = Effect.fn("KinWorkerShellCli.check")(function* (input: {
             ? `no per-worker limits: ${last.limitsNote ?? "no systemd scope at the last worker start"}`
             : `each worker's Claude Code, native or a script, runs in its own scope: ${Math.round(last.limits.memoryMaxBytes / 1024 ** 3)} GiB memory, ${last.limits.tasksMax} tasks, CPU weight ${last.limits.cpuWeight}${last.limitsNote === undefined ? "" : `; ${last.limitsNote}`}`,
   };
+  const install = checked._tag === "checked" ? checked.install : [];
   const lines = [
     ...environment,
     ...(checked._tag === "unresolved"
       ? [{ passed: false, kind: "gate" as const, label: checked.reason }]
       : checked.result.lines),
     limits,
+    ...install.map((item): CheckLine => ({
+      passed: false,
+      kind: "info",
+      label: `likely cause: ${installHints[item]}`,
+    })),
   ];
   const failed =
     overlap !== undefined
@@ -170,13 +174,17 @@ const runCheck = Effect.fn("KinWorkerShellCli.check")(function* (input: {
     yield* Console.log(
       yield* encodeJson({
         passed: failed === undefined,
+        failed: failed ?? null,
         claudeCodeVersion: checked._tag === "checked" ? checked.result.version : null,
+        install,
         lines,
       }),
     );
   else
     for (const line of lines)
-      yield* Console.log(`${line.passed ? "✓" : line.kind === "info" ? "·" : "✗"} ${line.label}`);
+      yield* Console.log(
+        `${line.passed ? "✓" : line.kind === "info" ? "·" : line.kind === "unchecked" ? "–" : "✗"} ${line.label}`,
+      );
   if (failed !== undefined)
     return yield* new KinWorkerShellCheckError({ message: `Worker shell check failed: ${failed}` });
   if (input.json) return;

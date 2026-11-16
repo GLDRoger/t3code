@@ -22,15 +22,30 @@ import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
 import * as KinRecords from "./work/KinRecords.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
+import { KinChatService } from "./chat/KinChatService.ts";
+import * as FileSystem from "effect/FileSystem";
+import { ServerConfig } from "../config.ts";
+import { answerChoice } from "./work/cardAnswers.ts";
+import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
+import { KinIdentity } from "./chat/KinIdentity.ts";
+import { seedPlaybooks } from "./work/playbookSeeds.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
 export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as Render from "./gendocs/render.ts";
+import * as Toolchain from "./gendocs/toolchain.ts";
 import * as Workspace from "./gendocs/workspace.ts";
 import * as Vcs from "../vcs/VcsProcess.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import { FetchHttpClient } from "effect/http";
 import * as GithubWebhooks from "./triggers/githubWebhooks.ts";
+import * as Connections from "./connections/ConnectionsService.ts";
+import * as ConnectionSecrets from "./connections/ConnectionSecrets.ts";
+import * as DevFakeMail from "./connections/DevFakeMail.ts";
+import * as McpGateway from "./connections/McpGateway.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   Layer.effect(
@@ -38,7 +53,23 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
     Effect.gen(function* () {
       const services = yield* Effect.context<Services>();
       const slot = yield* T3GitHubCredential.T3GitHubCredential;
+      yield* requireRefreshObserver(services);
+      const { owner } = yield* KinIdentity;
+      // A failed seed leaves Kin running; the next start tries the missing ones again.
+      yield* seedPlaybooks(owner.orgId, owner.personId).pipe(
+        Effect.provide(services),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin default playbooks not written", Cause.pretty(cause)),
+        ),
+      );
+      yield* DevFakeMail.connectFakeAccounts(owner).pipe(Effect.provide(services));
       const hub = yield* KinChatHub;
+      const scope = yield* Effect.scope;
+      const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
+      // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
+      yield* (yield* KinChatService).attachChoiceAnswers((input) =>
+        answerChoice(input, scope).pipe(Effect.provide(services), Effect.provide(files)),
+      );
       const updaterServices = yield* Effect.context<
         KinChatRepository | TaskCardIndex | KinChatHub | SqlClient.SqlClient
       >();
@@ -67,7 +98,16 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               LevelControl.layer,
               MemoryChanges.layer,
               KinRecords.layer,
-              Workspace.layer.pipe(Layer.provide(Vcs.layer)),
+              Render.layer.pipe(
+                Layer.provideMerge(Workspace.layer),
+                Layer.provide(
+                  Toolchain.layer.pipe(
+                    Layer.provide(ProcessRunner.layer),
+                    Layer.provide(FetchHttpClient.layer),
+                  ),
+                ),
+                Layer.provide(Vcs.layer),
+              ),
               ApprovalCards.layer,
               RetiredActions.layer,
             ).pipe(
@@ -78,6 +118,12 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
         ),
         GithubWebhooks.lockLayer,
+        // Every request to a connection goes through the egress guard.
+        Connections.layer.pipe(
+          Layer.provide(ConnectionSecrets.layer),
+          Layer.provide(McpGateway.layer),
+          Layer.provide(DevFakeMail.egress),
+        ),
       ).pipe(Layer.provideMerge(KinChat.layer)),
     ),
     // Inside `enabled`: built only with Kin on, and a secret store failure disables Kin, not the server.

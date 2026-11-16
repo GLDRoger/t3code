@@ -66,8 +66,14 @@ const environmentInput = {
 function makeFakeBrowserWindow() {
   const windowListeners = new Map<string, (...args: readonly unknown[]) => void>();
   const webContentsListeners = new Map<string, (...args: readonly unknown[]) => void>();
+  const sessionListeners = new Map<string, (...args: readonly unknown[]) => void>();
   let zoomLevel = 0;
   const webContents = {
+    session: {
+      on: vi.fn((eventName: string, listener: (...args: readonly unknown[]) => void) => {
+        sessionListeners.set(eventName, listener);
+      }),
+    },
     copyImageAt: vi.fn(),
     focus: vi.fn(),
     isDestroyed: vi.fn(() => false),
@@ -153,6 +159,7 @@ function makeFakeBrowserWindow() {
     setFullScreen: window.setFullScreen,
     setOpacity: window.setOpacity,
     webContentsListeners,
+    sessionListeners,
     webContentsOnce: webContents.once,
     windowListeners,
   };
@@ -1182,6 +1189,40 @@ describe("DesktopWindow", () => {
 
         assert.isTrue(prevented);
         assert.deepEqual(openedExternalUrls, ["https://accounts.microsoft.com/oauth"]);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("asks where to save a sandboxed frame's file, under a bare name", () =>
+    Effect.gen(function* () {
+      const fakeWindow = makeFakeBrowserWindow();
+      const layer = layerTest({
+        window: fakeWindow.window,
+        createCount: yield* Ref.make(0),
+        mainWindow: yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none()),
+        openedExternalUrls: [],
+      });
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+        const willDownload = fakeWindow.sessionListeners.get("will-download");
+        if (!willDownload) return yield* Effect.die("will-download listener was not registered");
+        for (const [origin, name, proposed] of [
+          ["null", "../Kin invoice\u202Efdp.command", "Kin invoicefdp.command"],
+          ["null", "\u0000", "download"],
+          ["t3code://app", "rows.csv", undefined],
+        ] as const) {
+          const setSaveDialogOptions = vi.fn();
+          willDownload(
+            {},
+            { getInitiatorOrigin: () => origin, getFilename: () => name, setSaveDialogOptions },
+          );
+          assert.deepEqual(
+            setSaveDialogOptions.mock.calls,
+            proposed === undefined ? [] : [[{ defaultPath: proposed }]],
+            name,
+          );
+        }
       }).pipe(Effect.provide(layer));
     }),
   );

@@ -11,7 +11,12 @@ import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { AtomCommandResult } from "../state/runtime.ts";
-import type { KinWorkNames } from "./kinWork.ts";
+import {
+  createKinWorkActions,
+  kinWorkNewest,
+  type KinWorkAnswers,
+  type KinWorkNames,
+} from "./kinWork.ts";
 import {
   KIN_WORK_EDIT_CHANGED,
   KIN_WORK_OFFLINE_CHANGE,
@@ -19,6 +24,7 @@ import {
   createKinWorkItemWatch,
   kinWorkApplied,
   kinWorkEditMoved,
+  kinWorkItemNotice,
   kinWorkListNotice,
 } from "./kinWorkChanges.ts";
 import { KIN_WORK_NOTHING_NAMED, kinWorkNote } from "./kinWorkStream.ts";
@@ -73,7 +79,7 @@ const never = (): never => {
 };
 
 /** A host whose answers the test releases one at a time. */
-function harness() {
+function harness(answers?: KinWorkAnswers) {
   const sent: Array<readonly [string, object]> = [];
   const waiting: Array<(answer: AtomCommandResult<KinRecordDetail, unknown>) => void> = [];
   const reread: Array<string> = [];
@@ -92,6 +98,7 @@ function harness() {
     decline: call("decline"),
     reread: (key) => reread.push(key),
     online: () => online,
+    ...(answers === undefined ? {} : { answers }),
     onChange: () => undefined,
   });
   return {
@@ -117,6 +124,7 @@ describe("createKinWorkChanges", () => {
     h.answer(AsyncResult.success(task({ owner: lead, state: "done", rev: 4, seq: 6 })));
     expect(await done).toBe(true);
     expect(kinWorkApplied(held, h.state())).toMatchObject({ state: "done", rev: 4 });
+    expect(h.reread).toEqual([]);
     expect(h.state().notice).toMatchObject({
       kind: "saved",
       text: "Marked done. Tech lead was told to stop.",
@@ -177,6 +185,53 @@ describe("createKinWorkChanges", () => {
     expect(h.state()).toMatchObject({ edit: null, notice: { kind: "saved", text: "Saved." } });
   });
 
+  it("puts a changed due date back, time and all, and says so once", async () => {
+    const h = harness();
+    const held = task({ dueAt: "2026-11-20T15:30:00.000Z", dueAllDay: false });
+    const moved = h.changes.run(held, { type: "due", day: "2026-11-14" }, names);
+    h.answer(AsyncResult.success(task({ dueAt: "2026-11-14T12:00:00.000Z", rev: 4 })));
+    expect(await moved).toBe(true);
+    expect(h.state().notice).toMatchObject({
+      text: "Due date changed.",
+      undo: { type: "dueBack" },
+    });
+
+    const undone = h.changes.undo(names);
+    expect(h.sent[1]).toEqual([
+      "update",
+      { orgId, key: "W-1", rev: 4, dueAt: "2026-11-20T15:30:00.000Z", dueAllDay: false },
+    ]);
+    h.answer(AsyncResult.success(task({ ...held, rev: 5 })));
+    await undone;
+    expect(h.state().notice).toMatchObject({ text: "Due date put back.", undo: null });
+  });
+
+  it.each([
+    [
+      "an all-day date",
+      { dueAt: "2026-11-20T12:00:00.000Z", dueAllDay: true },
+      { dueAt: "2026-11-20T12:00:00.000Z", dueAllDay: true },
+    ],
+    ["no date before, so Undo takes it off", { dueAt: null, dueAllDay: false }, { dueAt: null }],
+  ] as const)("puts back %s", async (_name, before, sent) => {
+    const h = harness();
+    const moved = h.changes.run(task(before), { type: "due", day: "2026-11-14" }, names);
+    h.answer(AsyncResult.success(task({ dueAt: "2026-11-14T12:00:00.000Z", rev: 4 })));
+    await moved;
+    void h.changes.undo(names);
+    expect(h.sent[1]).toEqual(["update", { orgId, key: "W-1", rev: 4, ...sent }]);
+  });
+
+  it("drops a task's notice once a later change to it, such as Give to, is held", async () => {
+    const h = harness();
+    const moved = h.changes.run(task(), { type: "due", day: "2026-11-14" }, names);
+    h.answer(AsyncResult.success(task({ rev: 4 })));
+    await moved;
+    expect(kinWorkItemNotice(h.state(), task({ rev: 4 }))).toMatchObject({ kind: "saved" });
+    expect(kinWorkItemNotice(h.state(), task({ rev: 5, owner: lead }))).toBeNull();
+    expect(kinWorkItemNotice(h.state(), task({ key: "W-2" }))).toBeNull();
+  });
+
   it("sends nothing while offline, and queues nothing for later", async () => {
     const h = harness();
     h.goOffline();
@@ -224,6 +279,49 @@ describe("createKinWorkChanges", () => {
     expect(h.state().notice?.text).toBe(
       "This task is closed. Reopen it before giving it to someone.",
     );
+  });
+});
+
+describe("answers shared between a task's screens", () => {
+  const store = () => {
+    const held = new Map<string, KinRecordDetail>();
+    return {
+      get: (key: string) => held.get(key),
+      put: (item: KinRecordDetail) => void held.set(item.key, item),
+    };
+  };
+
+  it("sends the revision another screen's change reached, from a copy read before it", async () => {
+    const answers = store();
+    const sent: Array<readonly [string, object]> = [];
+    const actions = createKinWorkActions({
+      orgId,
+      answers,
+      create: () => Promise.resolve(AsyncResult.success(task())),
+      assign: (input) => {
+        sent.push(["assign", input]);
+        return Promise.resolve(
+          AsyncResult.success(
+            task({ owner: input.to ?? me, state: "done", rev: (input.rev ?? 0) + 1 }),
+          ),
+        );
+      },
+      reread: () => undefined,
+    });
+    // Give to, on its own screen.
+    expect((await actions.give(task({ rev: 3 }), lead)).ok).toBe(true);
+
+    // Back on the sheet, whose read still holds revision 3: Mark done goes at revision 4.
+    const h = harness(answers);
+    const done = h.changes.run(task({ rev: 3 }), { type: "state", state: "done" }, names);
+    expect(h.sent).toEqual([["update", { orgId, key: "W-1", rev: 4, state: "done" }]]);
+    h.answer(AsyncResult.success(task({ owner: lead, state: "done", rev: 5 })));
+    await done;
+
+    // Give to again: it reads revision 3 too, and sends 5.
+    await actions.give(task({ rev: 3 }), me);
+    expect(sent.at(-1)).toEqual(["assign", { orgId, key: "W-1", to: me, rev: 5 }]);
+    expect(kinWorkNewest(task({ rev: 3 }), answers)).toMatchObject({ rev: 6, owner: me });
   });
 });
 

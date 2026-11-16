@@ -48,6 +48,7 @@ import {
   type DesktopWslState,
   type EnvironmentId,
   type FilesystemBrowseResult,
+  isKinLeadProjectId,
   SourceControlProviderKind,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
   resolveEnvironmentMachineKind,
@@ -526,7 +527,8 @@ function OpenCommandPaletteDialog(props: {
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
   const paletteRouteTarget = useThreadRouteTarget();
-  const projects = useProjects();
+  // A lead's own project holds its memory, not code, and is reached through Kin.
+  const projects = useProjects().filter((project) => !isKinLeadProjectId(project.id));
   const referenceThreadRef =
     pathname === "/pull-requests"
       ? environments.some((environment) => environment.serverConfig !== null)
@@ -1745,11 +1747,11 @@ function OpenCommandPaletteDialog(props: {
         "agents",
         "leads",
       ],
-      title: "Work: what's open and who has it",
+      title: "Tasks: what's open and who has it",
       icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({
-          to: "/kin/$environmentId/$orgId/work",
+          to: "/kin/$environmentId/$orgId/tasks",
           params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
         });
       },
@@ -1767,9 +1769,8 @@ function OpenCommandPaletteDialog(props: {
         icon: <ContactRoundIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           await navigate({
-            to: "/kin/$environmentId/$orgId/work",
+            to: "/kin/$environmentId/$orgId/clients",
             params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-            search: { show: "clients" },
           });
         },
       },
@@ -1781,9 +1782,8 @@ function OpenCommandPaletteDialog(props: {
         icon: <FolderKanbanIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           await navigate({
-            to: "/kin/$environmentId/$orgId/work",
+            to: "/kin/$environmentId/$orgId/clients",
             params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-            search: { show: "projects" },
           });
         },
       },
@@ -1795,9 +1795,8 @@ function OpenCommandPaletteDialog(props: {
         icon: <FileTextIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           await navigate({
-            to: "/kin/$environmentId/$orgId/work",
+            to: "/kin/$environmentId/$orgId/docs",
             params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-            search: { show: "docs" },
           });
         },
       },
@@ -1819,9 +1818,8 @@ function OpenCommandPaletteDialog(props: {
         icon: <WalletIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           await navigate({
-            to: "/kin/$environmentId/$orgId/work",
+            to: "/kin/$environmentId/$orgId/money",
             params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-            search: { show: "money" },
           });
         },
       },
@@ -1833,9 +1831,8 @@ function OpenCommandPaletteDialog(props: {
         icon: <ListIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           await navigate({
-            to: "/kin/$environmentId/$orgId/work",
+            to: "/kin/$environmentId/$orgId/docs",
             params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-            search: { show: "lists" },
           });
         },
       },
@@ -1847,9 +1844,9 @@ function OpenCommandPaletteDialog(props: {
         icon: <CalendarDaysIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           await navigate({
-            to: "/kin/$environmentId/$orgId/work",
+            to: "/kin/$environmentId/$orgId/money",
             params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
-            search: { show: "dates" },
+            search: { dates: true },
           });
         },
       },
@@ -2052,7 +2049,12 @@ function OpenCommandPaletteDialog(props: {
               icon: <Icon className={ITEM_ICON_CLASS} />,
               run: async () => {
                 await navigate({
-                  to: "/kin/$environmentId/$orgId/work",
+                  to:
+                    hit.kind === "docs"
+                      ? "/kin/$environmentId/$orgId/docs"
+                      : hit.kind === "clients" || hit.kind === "projects"
+                        ? "/kin/$environmentId/$orgId/clients"
+                        : "/kin/$environmentId/$orgId/tasks",
                   params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
                   search:
                     hit.kind === "docs"

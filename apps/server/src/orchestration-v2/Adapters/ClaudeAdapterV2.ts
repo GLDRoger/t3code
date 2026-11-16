@@ -11,6 +11,7 @@ import {
   formatReadToolLabel,
   formatSearchToolLabel,
 } from "@t3tools/shared/toolActivity";
+import { redactSecretArguments } from "../toolInputSecrets.ts";
 import { field, text } from "../unknownField.ts";
 import { mergeWorkflowAgentMetadata, type WorkflowAgentMetadata } from "../workflowAgentAnswers.ts";
 import {
@@ -1087,7 +1088,7 @@ function makeClaudeAgentSdkProtocolLogger(input: {
           protocol: CLAUDE_AGENT_SDK_QUERY_PROTOCOL,
           kind: "protocol",
           providerSessionId: input.providerSessionId,
-          event: boundProviderEventForLogging(event),
+          event: boundProviderEventForLogging(redactSecretArguments(event)),
         },
         input.threadId,
       )
@@ -2095,6 +2096,16 @@ function providerSession(input: {
 function textFromClaudeContent(content: SDKAssistantMessage["message"]["content"]): string {
   return content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 }
+
+/** The native id of a message's `index`th thinking block; `isClaudeThinkingItem` reads it back. */
+export const claudeThinkingItemId = (messageId: string, index: number) =>
+  `${messageId}:thinking:${index}`;
+const THINKING_ITEM_ID = /:thinking:\d+$/u;
+
+/** A turn item made from a thinking block (`claudeThinkingItemId`), even one shown as an update. */
+export const isClaudeThinkingItem = (item: Pick<OrchestrationV2TurnItem, "nativeItemRef">) =>
+  item.nativeItemRef?.driver === CLAUDE_PROVIDER &&
+  THINKING_ITEM_ID.test(item.nativeItemRef.nativeId ?? "");
 
 // Claude 5.1+ emits at most one pre-tool text block as thinking; treat only a second consecutive thinking block as text.
 function claudeWritesUpdatesAsThinking(model: string): boolean {
@@ -3516,7 +3527,7 @@ function summarizeClaudeToolRequest(toolName: string, input: ClaudeNativeToolInp
   if (path !== undefined) {
     return `${toolName}: ${path.slice(0, 400)}`;
   }
-  const serialized = jsonStringifyForTool(claudeNativeToolInputValue(input));
+  const serialized = jsonStringifyForTool(redactSecretArguments(claudeNativeToolInputValue(input)));
   return serialized.length <= 400
     ? `${toolName}: ${serialized}`
     : `${toolName}: ${serialized.slice(0, 397)}...`;
@@ -4478,6 +4489,8 @@ interface ClaudeLiveQueryContext {
   selection: CompiledClaudeModelSelection;
   readonly closed: Deferred.Deferred<void, never>;
   lastTurn: ActiveClaudeTurnContext | null;
+  // Set when the process failed before any turn attached, such as a binary that isn't there.
+  exitedBeforeTurn: { readonly cause: unknown } | null;
   // "early" echoes on the first frame; "acknowledged" confirms uuid acceptance, but resume turns can still precede the prompt.
   promptEchoMode: "unknown" | "acknowledged" | "early" | "result_only";
   // The CLI may fall back from the requested mode on its first init frame.
@@ -7650,7 +7663,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             block.type === "thinking" && block.thinking.trim().length > 0 ? [block.thinking] : [],
           );
           for (const [index, text] of thinking.entries()) {
-            const nativeItemId = `${message.uuid}:thinking:${index}`;
+            const nativeItemId = claudeThinkingItemId(message.uuid, index);
             yield* emitProviderEvent({
               type: "turn_item.updated",
               driver: CLAUDE_PROVIDER,
@@ -8490,7 +8503,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const current = yield* Ref.get(activeTurn);
           // A replacement query can reuse the native thread id; only this query's turn is ours.
           const context = closedQuery.lastTurn;
-          if (context === null) return;
+          if (context === null) {
+            if (cause !== undefined) closedQuery.exitedBeforeTurn = { cause: Cause.squash(cause) };
+            return;
+          }
           const interrupted =
             closedQuery.stopping || (yield* Ref.get(interruptedTurns)).has(context.providerTurnId);
           // Finalization can yield to a replacement process; capture ownership and outcomes first.
@@ -9185,7 +9201,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ) {
               const index = reasoning.nextBlockIndex.get(reasoning.messageId) ?? 0;
               reasoning.nextBlockIndex.set(reasoning.messageId, index + 1);
-              const itemId = `${reasoning.messageId}:thinking:${index}`;
+              const itemId = claudeThinkingItemId(reasoning.messageId, index);
               reasoning.streamBlocks.set(event.index, itemId);
               yield* ensureReasoningBlock(context, itemId);
               yield* reasoningDeltas.append({
@@ -9273,7 +9289,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
               const index = context.reasoning.snapshotBlockIndex.get(message.message.id) ?? 0;
               context.reasoning.snapshotBlockIndex.set(message.message.id, index + 1);
-              const itemId = `${message.message.id}:thinking:${index}`;
+              const itemId = claudeThinkingItemId(message.message.id, index);
               yield* ensureReasoningBlock(context, itemId);
               const finalText = block.thinking || context.reasoning.blocks.get(itemId)?.text;
               const completedText = yield* reasoningDeltas.complete({
@@ -11220,6 +11236,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             selection: compiledSelection,
             closed,
             lastTurn: null,
+            exitedBeforeTurn: null,
             promptEchoMode: "unknown",
             openedPermissionMode: queryOptions.permissionMode,
             receivedInit: false,
@@ -11463,6 +11480,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               executedModel: undefined,
             };
             const attachTurn = Effect.gen(function* () {
+              // Checked and attached in one step, so an exit can't land between the two unseen.
+              if (querySession.exitedBeforeTurn !== null)
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: "Claude Code exited before the turn could start",
+                  reason: "process_exited",
+                  cause: querySession.exitedBeforeTurn.cause,
+                });
               querySession.lastTurn = context;
               yield* Ref.set(activeTurn, context);
               if (

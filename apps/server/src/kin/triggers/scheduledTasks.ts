@@ -26,10 +26,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import * as ProjectService from "../../project/ProjectService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
+import { bootstrapLeadProject, leadProjectId } from "../lead/leadProject.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -40,6 +43,10 @@ import {
   scheduleOf,
   scheduledTaskTriggerId,
 } from "../widgets/scheduledTaskCard.ts";
+import { KinConnections } from "../connections/ConnectionsService.ts";
+import { queueCheckIn } from "../pulse/checkIn.ts";
+import { followOwnerZone, seedCheckIns } from "../pulse/checkInSeeds.ts";
+import { fromConnections, noOutside } from "../pulse/outside.ts";
 import { cardChatFor, firingOrigin } from "./deferralOrigin.ts";
 import { hex } from "./deferrals.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
@@ -64,6 +71,12 @@ const armed = (item: SyncItem) =>
   item.duplicate !== true;
 
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+const clockTime = (ms: number) =>
+  new Intl.DateTimeFormat("en-GB", {
+    timeZone: KinSchedules.hostTimeZone(),
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(ms);
 const encodeSchedule = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSchedule));
 const encodeSubject = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSubject));
 const decodeCard = Schema.decodeUnknownEffect(KinScheduledTaskCard);
@@ -288,6 +301,17 @@ const make = Effect.gen(function* () {
   const ticks = yield* Scheduler.Scheduler;
   const cards = yield* LeadDelivery.makeCardWriter;
   const schedules = yield* KinSchedules.KinSchedules;
+  const eventQueue = yield* KinEventQueue.KinEventQueue;
+  const projects = yield* ProjectService.ProjectService;
+  const withQueue = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(KinEventQueue.KinEventQueue, eventQueue),
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+  const outsideSource = Option.match(yield* Effect.serviceOption(KinConnections), {
+    onNone: () => noOutside,
+    onSome: (connections) => fromConnections(connections, sql),
+  });
 
   const notice = (orgId: KinOrgId, chatId: KinChatId, runId: string, body: string, now: number) =>
     repo
@@ -362,10 +386,20 @@ const make = Effect.gen(function* () {
       lead === undefined
         ? false
         : yield* budget.admit(orgId, "P2").pipe(
+            // Held for a limit: the owner hears it once a day, with what waits.
+            Effect.tap((admission) =>
+              admission.allowed ? Effect.void : budget.notifyOwner(orgId, "org"),
+            ),
             Effect.map((admission) => admission.allowed),
             Effect.orElseSucceed(() => false),
           );
     const paused = yield* isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    // Read before the transaction: these are calls to outside services.
+    const outside =
+      schedule.checkIn === 1 && confirmed && admitted && !paused
+        ? yield* outsideSource.read(orgId)
+        : undefined;
+    let checkedIn = false;
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const row = yield* KinSchedules.readSchedule(sql, orgId, schedule.scheduleId);
@@ -386,7 +420,7 @@ const make = Effect.gen(function* () {
         const card = Option.isSome(widget)
           ? Option.getOrUndefined(yield* decodeCard(widget.value.state).pipe(Effect.option))
           : undefined;
-        const every = KinSchedules.everyOf(task) ?? card?.every;
+        const every = KinSchedules.everyOf(task, row.looseAt) ?? card?.every;
         if (every === undefined) return yield* consume;
         const base: KinScheduledTaskCard = {
           itemId,
@@ -395,6 +429,7 @@ const make = Effect.gen(function* () {
           timeZone: KinSchedules.hostTimeZone(),
           status: task.enabled === 1 ? "active" : "paused",
           nextRunAt: task.nextRunAt,
+          around: KinSchedules.isAround(task, row.looseAt),
           lastRun: card?.lastRun ?? null,
         };
         const at = fire.dueAt;
@@ -413,6 +448,34 @@ const make = Effect.gen(function* () {
         if (paused) return yield* skip("Kin is paused.");
         if (lead === undefined) return yield* skip("there is no agent to run it.");
         if (!admitted) return yield* skip("today's budget is used up.");
+        if (row.checkIn === 1 && confirmed && outside !== undefined) {
+          const result = yield* withQueue(
+            queueCheckIn({
+              orgId,
+              agentId: lead.agentId,
+              scheduleId: itemId,
+              title,
+              what: task.prompt,
+              dueAt: Date.parse(fire.dueAt),
+              loose: row.looseAt !== null,
+              manualId: manual ? fire.fireId : undefined,
+              zone: KinSchedules.hostTimeZone(),
+              at: now,
+              outside,
+            }),
+          );
+          checkedIn = true;
+          yield* settleCard(
+            result._tag === "nothing_new"
+              ? { at, status: "skipped", note: "Nothing new since the last check-in." }
+              : {
+                  at,
+                  status: "posted",
+                  note: `${result.facts} open facts, ${result.outside} new outside; at ${clockTime(result.notBefore)}.`,
+                },
+          );
+          return yield* consume;
+        }
         if (!confirmed) {
           if (row.askedSha256 === hash) {
             yield* settleCard({
@@ -459,6 +522,7 @@ const make = Effect.gen(function* () {
         yield* consume;
       }),
     );
+    if (checkedIn && outside !== undefined) yield* outsideSource.seen(orgId, outside.seen);
   });
 
   /**
@@ -497,7 +561,7 @@ const make = Effect.gen(function* () {
         );
         continue;
       }
-      const every = KinSchedules.everyOf(task) ?? card?.every;
+      const every = KinSchedules.everyOf(task, row.looseAt) ?? card?.every;
       if (every === undefined) continue;
       const lead = yield* scheduleLead(orgId, row.agentId);
       const chatId = yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
@@ -514,6 +578,7 @@ const make = Effect.gen(function* () {
             timeZone: KinSchedules.hostTimeZone(),
             status: enabled ? "active" : "paused",
             nextRunAt: enabled ? task.nextRunAt : null,
+            around: KinSchedules.isAround(task, row.looseAt),
             lastRun: card?.lastRun ?? null,
           },
           closed: false,
@@ -566,6 +631,10 @@ const make = Effect.gen(function* () {
       lead === undefined
         ? false
         : yield* budget.admit(orgId, "P2").pipe(
+            // Held for a limit: the owner hears it once a day, with what waits.
+            Effect.tap((admission) =>
+              admission.allowed ? Effect.void : budget.notifyOwner(orgId, "org"),
+            ),
             Effect.map((admission) => admission.allowed),
             Effect.orElseSucceed(() => false),
           );
@@ -726,18 +795,95 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  /**
+   * A lead's project is made at its first wake-up; its check-ins launch into it, so it is made here
+   * first, for a new lead or one from before this. A failure waits a while; a wake-up also makes it.
+   */
+  const projectReady = new Set<string>();
+  const projectFailedAt = new Map<string, number>();
+  const ensureLeadProjects = Effect.fn("KinScheduledTasks.ensureLeadProjects")(function* (
+    orgId: KinOrgId,
+  ) {
+    const leads = yield* sql<{ agentId: string; name: string; orgName: string }>`SELECT
+        l.agent_id AS "agentId", l.name, o.name AS "orgName"
+      FROM kin_leads l
+      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
+      JOIN kin_orgs o ON o.org_id = l.org_id
+      WHERE l.org_id = ${orgId} ORDER BY l.agent_id`;
+    const now = yield* Clock.currentTimeMillis;
+    for (const lead of leads) {
+      const key = `${orgId}:${lead.agentId}`;
+      if (projectReady.has(key) || now - (projectFailedAt.get(key) ?? -Infinity) < 10 * 60_000)
+        continue;
+      const agentId = KinAgentId.make(lead.agentId);
+      yield* projects.getById(leadProjectId(orgId, agentId)).pipe(
+        Effect.flatMap((found) =>
+          Option.isSome(found)
+            ? Effect.void
+            : memory.prepareWakeup(orgId, undefined, { lead: agentId }).pipe(
+                Effect.flatMap((pinned) =>
+                  bootstrapLeadProject(projects, {
+                    orgId,
+                    agentId,
+                    workspaceRoot: pinned.read,
+                    orgName: lead.orgName,
+                    name: lead.name,
+                  }),
+                ),
+              ),
+        ),
+        Effect.matchEffect({
+          onSuccess: () => Effect.sync(() => projectReady.add(key)),
+          onFailure: (cause) =>
+            Effect.sync(() => projectFailedAt.set(key, now)).pipe(
+              Effect.andThen(Effect.logWarning("Kin lead project not made", { key, cause })),
+            ),
+        }),
+      );
+    }
+  });
+
+  const seeded = new Set<string>();
   yield* ticks.register(
     "kin-scheduled-tasks",
     Effect.gen(function* () {
       const orgs = yield* sql<{
         orgId: string;
       }>`SELECT org_id AS "orgId" FROM kin_orgs ORDER BY org_id`;
-      for (const { orgId } of orgs)
+      for (const { orgId } of orgs) {
+        yield* ensureLeadProjects(KinOrgId.make(orgId)).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin lead projects scan failed", { orgId, cause }),
+          ),
+        );
+        if (!seeded.has(orgId))
+          yield* seedCheckIns(KinOrgId.make(orgId), schedules).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.tap((wrote) =>
+              Effect.sync(() => {
+                if (wrote) seeded.add(orgId);
+              }),
+            ),
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin default check-ins not written", { orgId, cause }),
+            ),
+          );
+        else
+          yield* followOwnerZone(KinOrgId.make(orgId), schedules).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin default check-ins not moved to the owner's zone", {
+                orgId,
+                cause,
+              }),
+            ),
+          );
         yield* drain(KinOrgId.make(orgId)).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("Kin scheduled tasks tick failed", { orgId, cause }),
           ),
         );
+      }
     }).pipe(
       Effect.catch((cause) => Effect.logWarning("Kin scheduled tasks scan failed", { cause })),
     ),

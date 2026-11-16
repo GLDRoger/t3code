@@ -2,6 +2,7 @@ import type {
   EnvironmentId,
   KinActionId,
   KinChatId,
+  KinMemberId,
   KinMessageId,
   KinOrgId,
   KinPendingAction,
@@ -9,6 +10,7 @@ import type {
   KinPushCategory,
   KinPushData,
   KinPushSendingStatus,
+  KinPushToken,
   KinWidgetId,
 } from "@t3tools/contracts";
 import { KinTriggerSettings } from "@t3tools/contracts";
@@ -24,7 +26,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import { ApproverKeys } from "../approvals/ApproverKeys.ts";
 import { KinPendingActions } from "../approvals/PendingActions.ts";
-import { memberReads } from "../chat/sharing.ts";
+import { memberReads, readableFrom } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
 import { KinApnsTransport } from "./Apns.ts";
@@ -38,7 +40,14 @@ import { KinPushPresence } from "./KinPushPresence.ts";
 export type KinPushNotification =
   | { readonly _tag: "approval"; readonly orgId: KinOrgId; readonly actionId: KinActionId }
   | { readonly _tag: "message"; readonly orgId: KinOrgId; readonly messageId: KinMessageId }
-  | { readonly _tag: "widget"; readonly orgId: KinOrgId; readonly widgetId: KinWidgetId };
+  | { readonly _tag: "widget"; readonly orgId: KinOrgId; readonly widgetId: KinWidgetId }
+  /** A member's read mark moved: their other devices get the new badge, with no banner. */
+  | {
+      readonly _tag: "read";
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly memberId: KinMemberId;
+    };
 
 export type KinPushOutcome = {
   readonly status: KinPushSendingStatus;
@@ -217,15 +226,19 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     personId: KinPersonId,
   ) {
+    // Counted as the inbox counts each chat's `unread`, so the app sets the same number.
     const [row] = yield* sql<{ unread: number; waiting: number }>`
       SELECT (
           SELECT COUNT(*) FROM kin_chat_members cm
-          JOIN kin_messages m ON m.org_id = cm.org_id AND m.chat_id = cm.chat_id
+          JOIN kin_messages ON kin_messages.org_id = cm.org_id
+            AND kin_messages.chat_id = cm.chat_id
           WHERE cm.org_id = ${orgId} AND cm.person_id = ${personId}
             AND cm.principal_kind = 'person' AND cm.left_at IS NULL
-            AND m.status = 'posted' AND m.silent = 0 AND m.seq >= cm.joined_seq
-            AND (m.author_member_id IS NULL OR m.author_member_id != cm.member_id)
-            AND m.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r
+            AND kin_messages.status = 'posted' AND kin_messages.silent = 0
+            AND ${readableFrom(sql, orgId, sql`cm.joined_seq`)}
+            AND (kin_messages.author_member_id IS NULL
+              OR kin_messages.author_member_id != cm.member_id)
+            AND kin_messages.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r
               WHERE r.chat_id = cm.chat_id AND r.member_id = cm.member_id), 0)
         ) AS unread, (
           SELECT COUNT(*) FROM kin_waiting w
@@ -435,6 +448,9 @@ const make = Effect.gen(function* () {
     );
   });
 
+  // The badge each device was last sent, so a read that leaves it unchanged sends nothing.
+  const shownBadge = new Map<KinPushToken, number>();
+
   const sendTo = Effect.fn("KinPushSender.sendTo")(function* (
     orgId: KinOrgId,
     push: Push,
@@ -469,7 +485,10 @@ const make = Effect.gen(function* () {
         body: push.data,
       },
     });
-    if (result.status === 200) return "sent" as const;
+    if (result.status === 200) {
+      shownBadge.set(device.token, recipient.badge);
+      return "sent" as const;
+    }
     const deviceId = kinPushDeviceId(device.token);
     if (result.status === 410) {
       yield* devices.forget(orgId, device.token, result.timestamp);
@@ -526,11 +545,53 @@ const make = Effect.gen(function* () {
     return { sent: count("sent"), suppressed: count("suppressed"), failed: count("failed") };
   });
 
+  /** A badge-only push to the reader's other devices; the one reading watches the chat. */
+  const readBadge = Effect.fn("KinPushSender.readBadge")(function* (
+    orgId: KinOrgId,
+    chatId: KinChatId,
+    memberId: KinMemberId,
+  ) {
+    const [row] = yield* sql<{ person_id: KinPersonId }>`
+      SELECT person_id FROM kin_chat_members
+      WHERE org_id = ${orgId} AND chat_id = ${chatId} AND member_id = ${memberId}
+        AND principal_kind = 'person' AND left_at IS NULL`;
+    if (row === undefined) return { sent: 0, suppressed: 0, failed: 0 };
+    const badge = yield* badgeFor(orgId, row.person_id);
+    const targets = yield* devices.forPeople(orgId, [row.person_id]);
+    const data: KinPushData = { kin: 1, orgId, chatId, deepLink: chatLink(orgId, chatId) };
+    const results = yield* Effect.forEach(
+      targets,
+      Effect.fnUntraced(function* (device) {
+        if (shownBadge.get(device.token) === badge) return "suppressed" as const;
+        if (yield* presence.isWatching(device.sessionId, chatId)) return "suppressed" as const;
+        const result = yield* apns.send({
+          token: device.token,
+          environment: device.apsEnvironment,
+          payload: { aps: { badge }, body: data },
+        });
+        if (result.status !== 200) return "failed" as const;
+        shownBadge.set(device.token, badge);
+        return "sent" as const;
+      }),
+      { concurrency: SEND_CONCURRENCY },
+    );
+    const count = (outcome: (typeof results)[number]) =>
+      results.filter((result) => result === outcome).length;
+    return { sent: count("sent"), suppressed: count("suppressed"), failed: count("failed") };
+  });
+
   const nothing: KinPushOutcome = { status: apns.status, sent: 0, suppressed: 0, failed: 0 };
 
   const run = Effect.fn("KinPushSender.run")(
     function* (notification: KinPushNotification) {
       if (apns.status === "unconfigured") return nothing;
+      if (notification._tag === "read") {
+        const outcome: KinPushOutcome = {
+          status: apns.status,
+          ...(yield* readBadge(notification.orgId, notification.chatId, notification.memberId)),
+        };
+        return outcome;
+      }
       const push =
         notification._tag === "approval"
           ? yield* approvalPush(notification.orgId, notification.actionId)

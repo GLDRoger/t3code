@@ -233,6 +233,8 @@ it.live(
       }).pipe(
         Effect.provideService(HostProcess.HomeDirectory, home),
         Effect.provideService(HostProcess.Platform, "linux"),
+        // The server finds no `vp` of its own here, whatever this machine has.
+        Effect.provideService(HostProcess.Environment, { ...process.env, PATH: "/usr/bin:/bin" }),
       );
       const other = yield* opened("thread-1", { cwd: tree, env });
 
@@ -499,6 +501,8 @@ it.effect(
         CLAUDE_CONFIG_DIR: configDir,
         ...WorkSession.commandLimits,
         CLAUDE_CODE_TMPDIR: "/tmp/kin-task",
+        // Claude Code's proxy sockets go in its own temp directory, the one its commands can reach.
+        TMPDIR: "/tmp/kin-task",
       });
       assert.deepStrictEqual(work.settingSources, []);
       assert.strictEqual(work.strictMcpConfig, true);

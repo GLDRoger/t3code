@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import type { KinChartView } from "@t3tools/client-runtime/kin/kinChart";
 import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
 import { memo } from "react";
 import { View } from "react-native";
@@ -16,8 +17,18 @@ import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
 import { KinDocCard } from "./KinDocCard";
 import { KinMemoryChangesCard } from "./KinMemoryChangesCard";
+import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinTaskCard } from "./KinTaskCard";
 import { KinVisual } from "./KinVisual";
+
+/** A chart in a card's frame, in a chat or a doc alike. */
+export function KinChartCard(props: { readonly view: KinChartView }) {
+  return (
+    <View className="rounded-[20px] border border-border bg-card-alt p-4">
+      <KinChart view={props.view} />
+    </View>
+  );
+}
 
 /** The native card for a message's widget. Only a `visual` card draws a page, in a sealed view. */
 export const KinWidgetView = memo(function KinWidgetView(props: {
@@ -53,11 +64,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
         />
       );
     case "chart":
-      return (
-        <View className="rounded-[20px] border border-border bg-card-alt p-4">
-          <KinChart view={view.chart} />
-        </View>
-      );
+      return <KinChartCard view={view.chart} />;
     case "visual":
       return (
         <KinVisual environmentId={props.environmentId} orgId={view.orgId} visual={view.visual} />
@@ -82,6 +89,12 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           orgId={props.widget.orgId}
           {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
         />
+      );
+    case "statement_review":
+      return <KinStatementReviewCard review={view.review} environmentId={props.environmentId} />;
+    case "statement_password":
+      return (
+        <KinStatementPasswordCard password={view.password} environmentId={props.environmentId} />
       );
     case "missing":
       return (

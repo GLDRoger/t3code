@@ -1,4 +1,7 @@
+import { KIN_QUOTES_LIST, kinQuoteRow } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
 import {
@@ -16,6 +19,13 @@ import {
   type KinPaymentDraft,
 } from "@t3tools/client-runtime/kin/kinLists";
 import {
+  KIN_INVOICE_NUMBER_FIELD,
+  KIN_INVOICES,
+  kinInvoiceView,
+  kinIsInvoice,
+} from "@t3tools/client-runtime/kin/kinInvoices";
+import {
+  KIN_ENTRY_SHARE,
   kinWorkDayOf,
   kinWorkDueChoices,
   kinWorkDueLabel,
@@ -40,6 +50,7 @@ import { useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { SymbolView } from "../../components/ui/AppSymbol";
+import { connectionAtomRuntime } from "../../connection/runtime";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
@@ -55,6 +66,16 @@ import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
 import { uuidv4 } from "../../lib/uuid";
 import { MessageAttachmentList } from "../threads/ThreadFeed";
+import {
+  KinInvoiceActions,
+  KinInvoiceDocuments,
+  KinInvoiceFigures,
+  KinInvoiceSent,
+  KinInvoicePayments,
+  KinMoneyActionNotice,
+} from "./KinInvoice";
+import { KinQuoteActions } from "./KinMoneyAnswers";
+import { KinNotesVersions } from "./KinNotesVersions";
 import { KinMonthGrid } from "./components/KinMonthGrid";
 import {
   KinWorkFrame,
@@ -64,6 +85,7 @@ import {
 } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { kinClient } from "./state/kinClient";
+import { KinWorkShareRow } from "./KinWorkShareRow";
 import {
   kinListsOf,
   useKinAskAgent,
@@ -71,13 +93,18 @@ import {
   useKinListChanges,
   useKinListContext,
   useKinLists,
+  useKinMoneyActions,
+  useKinRates,
 } from "./state/useKinMoney";
+import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import {
   kinWorkChoicesAtom,
   useKinWorkDirectory,
+  useKinWorkItemWatch,
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { useKinWorkLink } from "./state/kinWorkLink";
 
 const NO_PLAYBACK = () => {};
 const DAY = "day:";
@@ -216,14 +243,27 @@ export function KinListEntryBody(
   },
 ) {
   const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const { item, view, environmentId, orgId } = props;
   const lists = useKinLists(props, { enabled: true, archived: true, seq: null });
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
+  const invoice = kinIsInvoice(item) ? kinInvoiceView(item, def, props.now) : null;
+  const quote = item.list === KIN_QUOTES_LIST ? kinQuoteRow(item, null, props.now) : null;
+  const money = useKinMoneyActions(props);
+  const rates = useKinRates(props, invoice !== null || quote !== null);
   const changes = useKinEntryChanges(props, item.key);
   const agent = useKinAskAgent(props);
-  const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
+  const mayUpdate = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
+  const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  // A project's lead drafts its entries' words and figures; state, files and the rest are the owner's.
+  const leads =
+    item.project !== undefined &&
+    (me?.leads ?? []).some((project) => project.key === item.project?.key);
+  const canChange = mayUpdate && ownerLevel;
+  const canDraft = mayUpdate && (ownerLevel || leads);
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const [preview, setPreview] = useState<FilePreviewSource | null>(null);
   const { busy } = changes;
@@ -246,8 +286,8 @@ export function KinListEntryBody(
   const openPlace = (fact: KinListEntryView["facts"][number]) => {
     if (fact.opens === null) return;
     if (fact.id === "project")
-      return navigation.navigate("KinProject", { environmentId, orgId, project: fact.opens });
-    navigation.navigate("KinClient", { environmentId, orgId, party: fact.opens });
+      return openRecord("KinProject", { environmentId, orgId, project: fact.opens });
+    openRecord("KinClient", { environmentId, orgId, party: fact.opens });
   };
   const takeBack = (paymentId: string) =>
     Dialog.confirm({
@@ -265,9 +305,14 @@ export function KinListEntryBody(
           accessibilityRole="header"
           className="font-t3-bold text-foreground"
         >
-          {item.title}
+          {invoice?.heading ?? item.title}
         </Text>
-        {entry.amountEdit !== null && canChange ? (
+        {invoice?.description == null ? null : (
+          <Text textRole="body" selectable className="text-foreground-muted">
+            {invoice.description}
+          </Text>
+        )}
+        {entry.amountEdit !== null && canDraft ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`${KIN_LISTS.entry.amount}: ${entry.amount ?? KIN_LISTS.entry.none}. ${KIN_LISTS.entry.edit}`}
@@ -295,15 +340,33 @@ export function KinListEntryBody(
         <View className="flex-row flex-wrap items-center gap-2">
           <KinWorkStateSymbol state={entry.state} />
           <Text textRole="body" className="text-foreground">
-            {entry.stateLabel}
+            {quote?.stateLabel ?? entry.stateLabel}
           </Text>
-          {entry.late ? (
+          {invoice?.void === true ? (
+            entry.stateLabel === KIN_INVOICES.void ? null : (
+              <Text textRole="footnote" className="font-t3-medium text-foreground-muted">
+                {KIN_INVOICES.void}
+              </Text>
+            )
+          ) : entry.late && quote === null ? (
             <Text textRole="footnote" className="font-t3-medium text-danger-foreground">
               {KIN_LISTS.late}
             </Text>
           ) : null}
         </View>
-        {entry.balance === null ? null : (
+        {invoice !== null ? (
+          <>
+            <KinInvoiceCurrency
+              environmentId={environmentId}
+              orgId={orgId}
+              item={item}
+              rates={rates}
+              settled={invoice.settled}
+            />
+            <KinInvoiceFigures invoice={invoice} />
+            <KinInvoiceSent invoice={invoice} />
+          </>
+        ) : entry.balance === null ? null : (
           <View className="flex-row gap-6">
             <View className="gap-0.5">
               <Text textRole="footnote" className="text-foreground-muted">
@@ -324,7 +387,17 @@ export function KinListEntryBody(
           </View>
         )}
       </View>
-      {!canChange ? null : (
+      {quote !== null ? (
+        <KinQuoteActions
+          {...props}
+          item={item}
+          quote={quote}
+          def={def}
+          busy={busy}
+          canChange={canChange}
+          onState={(state) => void changes.update(item.rev, { state })}
+        />
+      ) : !canChange ? null : (
         <View className="gap-2">
           {finish === null ? null : (
             <Button
@@ -354,11 +427,24 @@ export function KinListEntryBody(
           )}
         </View>
       )}
+      {invoice === null ? null : (
+        <KinInvoiceActions
+          {...props}
+          itemKey={item.key}
+          invoice={invoice}
+          def={def}
+          actions={money}
+          busy={busy}
+          party={item.party ?? null}
+          currency={item.amount?.currency ?? def?.currency ?? "INR"}
+        />
+      )}
+      <KinMoneyActionNotice actions={money} />
       {changes.problem === null ? null : (
         <Notice message={changes.problem} tone="danger" onDismiss={changes.dismiss} />
       )}
       <ListSection>
-        {!canChange ? null : (
+        {!canChange || quote !== null ? null : (
           <Menu
             title={KIN_LISTS.entry.status}
             accessibilityRole="button"
@@ -479,148 +565,166 @@ export function KinListEntryBody(
           </>
         )}
       </ListSection>
+      {ownerLevel && item.list !== "bank_transactions" ? (
+        <ListSection>
+          <KinWorkShareRow
+            environmentId={environmentId}
+            orgId={orgId}
+            itemKey={item.key}
+            shared={view.shared}
+            disabled={busy}
+            copy={KIN_ENTRY_SHARE}
+          />
+        </ListSection>
+      ) : null}
       {entry.fields.length === 0 ? null : (
-        <ListSection {...(view.privacy.private ? { footer: KIN_LISTS.entry.private } : {})}>
-          {entry.fields.map((field) => {
-            const { opens } = field;
-            const label = (
-              <View className="flex-row items-center gap-2">
-                <Text className="text-sm text-foreground-muted">{field.label}</Text>
-                {field.private ? <KinWorkPrivateMark label="" /> : null}
-                {field.retired ? (
-                  <Text textRole="footnote" className="text-foreground-muted">
-                    {KIN_LISTS.entry.retiredField}
-                  </Text>
-                ) : null}
-              </View>
-            );
-            const editable = canChange && !field.retired;
-            const current = typeof field.value === "string" ? field.value : null;
-            const openLink =
-              opens === null
-                ? undefined
-                : () =>
-                    opens.list === "projects"
-                      ? navigation.navigate("KinProject", {
-                          environmentId,
-                          orgId,
-                          project: opens.key,
-                        })
-                      : navigation.navigate("KinClient", {
-                          environmentId,
-                          orgId,
-                          party: opens.key,
-                        });
-            if (field.files.length > 0 || (editable && field.type === "file")) {
-              const ids = field.files.map((file) => file.attachmentId);
-              return (
-                <View key={field.key}>
-                  <View className="gap-2 px-4 py-3">
-                    {label}
-                    {field.files.length === 0 ? null : (
-                      <EntryFiles
-                        environmentId={environmentId}
-                        files={field.files}
-                        onPreview={setPreview}
-                      />
-                    )}
-                  </View>
-                  {!editable
-                    ? null
-                    : field.files.map((file) => (
-                        <ListActionRow
-                          key={file.attachmentId}
-                          label={`${KIN_LISTS.entry.removeFile} ${file.name}`}
-                          tone="danger"
-                          disabled={busy}
-                          onPress={() =>
-                            setField(
-                              field.key,
-                              ids.length === 1
-                                ? null
-                                : ids.filter((id) => id !== file.attachmentId),
-                            )
-                          }
-                        />
-                      ))}
-                  {editable && ids.length < KIN_FIELD_FILES_MAX ? (
-                    <ListActionRow
-                      label={KIN_LISTS.entry.addFile}
-                      disabled={busy}
-                      onPress={() => edit(`field:${field.key}`)}
-                    />
+        <ListSection
+          {...(view.privacy.private && ownerLevel && !view.shared
+            ? { footer: KIN_LISTS.entry.private }
+            : {})}
+        >
+          {entry.fields
+            .filter((field) => invoice === null || field.key !== KIN_INVOICE_NUMBER_FIELD)
+            .map((field) => {
+              const { opens } = field;
+              const label = (
+                <View className="flex-row items-center gap-2">
+                  <Text className="text-sm text-foreground-muted">{field.label}</Text>
+                  {field.private ? <KinWorkPrivateMark label="" /> : null}
+                  {field.retired ? (
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {KIN_LISTS.entry.retiredField}
+                    </Text>
                   ) : null}
                 </View>
               );
-            }
-            if (editable && field.type === "date")
-              return (
-                <DayRow
-                  key={field.key}
-                  label={field.label}
-                  text={field.text}
-                  day={current}
-                  now={props.now}
-                  disabled={busy}
-                  onOther={() => edit(`field:${field.key}`)}
-                  onPick={(day) => setField(field.key, day)}
-                />
-              );
-            if (
-              editable &&
-              (field.type === "choice" || field.type === "person" || field.type === "link")
-            )
-              return (
-                <PickRow
-                  key={field.key}
-                  label={field.label}
-                  shown={field.text}
-                  current={current}
-                  disabled={busy}
-                  choices={
-                    field.type === "person"
-                      ? people
-                      : field.type === "choice"
-                        ? field.choices.map((choice) => ({ value: choice, label: choice }))
-                        : (field.link === "projects" ? projects : clients).map((row) => ({
-                            value: row.recordId,
-                            label: row.name,
-                          }))
-                  }
-                  onOpen={openLink}
-                  onPick={(value) => setField(field.key, value)}
-                />
-              );
-            if (editable && (field.type === "text" || field.type === "money"))
-              return (
+              const editable = canDraft && !field.retired && (canChange || field.type !== "file");
+              const current = typeof field.value === "string" ? field.value : null;
+              const openLink =
+                opens === null
+                  ? undefined
+                  : () =>
+                      opens.list === "projects"
+                        ? openRecord("KinProject", {
+                            environmentId,
+                            orgId,
+                            project: opens.key,
+                          })
+                        : openRecord("KinClient", {
+                            environmentId,
+                            orgId,
+                            party: opens.key,
+                          });
+              if (field.files.length > 0 || (editable && field.type === "file")) {
+                const ids = field.files.map((file) => file.attachmentId);
+                return (
+                  <View key={field.key}>
+                    <View className="gap-2 px-4 py-3">
+                      {label}
+                      {field.files.length === 0 ? null : (
+                        <EntryFiles
+                          environmentId={environmentId}
+                          files={field.files}
+                          onPreview={setPreview}
+                        />
+                      )}
+                    </View>
+                    {!editable
+                      ? null
+                      : field.files.map((file) => (
+                          <ListActionRow
+                            key={file.attachmentId}
+                            label={`${KIN_LISTS.entry.removeFile} ${file.name}`}
+                            tone="danger"
+                            disabled={busy}
+                            onPress={() =>
+                              setField(
+                                field.key,
+                                ids.length === 1
+                                  ? null
+                                  : ids.filter((id) => id !== file.attachmentId),
+                              )
+                            }
+                          />
+                        ))}
+                    {editable && ids.length < KIN_FIELD_FILES_MAX ? (
+                      <ListActionRow
+                        label={KIN_LISTS.entry.addFile}
+                        disabled={busy}
+                        onPress={() => edit(`field:${field.key}`)}
+                      />
+                    ) : null}
+                  </View>
+                );
+              }
+              if (editable && field.type === "date")
+                return (
+                  <DayRow
+                    key={field.key}
+                    label={field.label}
+                    text={field.text}
+                    day={current}
+                    now={props.now}
+                    disabled={busy}
+                    onOther={() => edit(`field:${field.key}`)}
+                    onPick={(day) => setField(field.key, day)}
+                  />
+                );
+              if (
+                editable &&
+                (field.type === "choice" || field.type === "person" || field.type === "link")
+              )
+                return (
+                  <PickRow
+                    key={field.key}
+                    label={field.label}
+                    shown={field.text}
+                    current={current}
+                    disabled={busy}
+                    choices={
+                      field.type === "person"
+                        ? people
+                        : field.type === "choice"
+                          ? field.choices.map((choice) => ({ value: choice, label: choice }))
+                          : (field.link === "projects" ? projects : clients).map((row) => ({
+                              value: row.recordId,
+                              label: row.name,
+                            }))
+                    }
+                    onOpen={openLink}
+                    onPick={(value) => setField(field.key, value)}
+                  />
+                );
+              if (editable && (field.type === "text" || field.type === "money"))
+                return (
+                  <ListRow
+                    key={field.key}
+                    label={field.text ?? "–"}
+                    detail={field.label}
+                    disabled={busy}
+                    onPress={() => edit(`field:${field.key}`)}
+                  />
+                );
+              return opens === null ? (
+                <View key={field.key} className="min-h-14 justify-center gap-1 px-4 py-3">
+                  {label}
+                  <Text
+                    textRole="body"
+                    selectable
+                    className={field.text === null ? "text-foreground-muted" : "text-foreground"}
+                  >
+                    {field.text ?? "–"}
+                  </Text>
+                </View>
+              ) : (
                 <ListRow
                   key={field.key}
                   label={field.text ?? "–"}
                   detail={field.label}
-                  disabled={busy}
-                  onPress={() => edit(`field:${field.key}`)}
+                  onPress={() => openLink?.()}
                 />
               );
-            return opens === null ? (
-              <View key={field.key} className="min-h-14 justify-center gap-1 px-4 py-3">
-                {label}
-                <Text
-                  textRole="body"
-                  selectable
-                  className={field.text === null ? "text-foreground-muted" : "text-foreground"}
-                >
-                  {field.text ?? "–"}
-                </Text>
-              </View>
-            ) : (
-              <ListRow
-                key={field.key}
-                label={field.text ?? "–"}
-                detail={field.label}
-                onPress={() => openLink?.()}
-              />
-            );
-          })}
+            })}
         </ListSection>
       )}
       {entry.otherFiles.length === 0 ? null : (
@@ -635,7 +739,20 @@ export function KinListEntryBody(
           />
         </View>
       )}
-      {entry.balance === null ? null : (
+      {invoice !== null ? (
+        <>
+          <KinInvoicePayments
+            {...props}
+            itemKey={item.key}
+            invoice={invoice}
+            actions={money}
+            canPay={canPay}
+            busy={busy}
+            onTakeBack={takeBack}
+          />
+          <KinInvoiceDocuments {...props} invoice={invoice} />
+        </>
+      ) : entry.balance === null ? null : (
         <ListSection title={KIN_LISTS.entry.payments}>
           {entry.payments.length === 0 ? (
             <Text textRole="body" className="px-4 py-3 text-foreground-muted">
@@ -671,14 +788,23 @@ export function KinListEntryBody(
           )}
         </ListSection>
       )}
-      {view.notes === null ? null : (
+      {view.notes === null && !kinHasNotesHistory(item) ? null : (
         <View className="gap-2 px-2">
           <Text textRole="footnote" className="text-foreground-muted">
             {KIN_LISTS.entry.notes}
           </Text>
-          <Text textRole="body" selectable className="text-foreground">
-            {view.notes}
-          </Text>
+          {view.notes === null ? null : (
+            <Text textRole="body" selectable className="text-foreground">
+              {view.notes}
+            </Text>
+          )}
+          <KinNotesVersions
+            item={item}
+            names={names}
+            now={props.now}
+            busy={changes.busy}
+            onRestore={canChange ? (notes) => void changes.update(item.rev, { notes }) : null}
+          />
         </View>
       )}
       {props.links}
@@ -736,13 +862,19 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
     null,
   );
   const item = state._tag === "ready" ? state.item : null;
+  useKinWorkItemWatch(props, itemKey, item === null ? null : item.seq);
   const directory = useKinWorkDirectory(props, allowed);
   const lists = useKinLists(props, { enabled: allowed, archived: true, seq: null });
   const context = useKinListContext(props, directory, allowed);
   const changes = useKinEntryChanges(props, itemKey);
   const now = new Date(useNowMinuteMs());
   const today = kinWorkDayOf(now);
-  const [draft, setDraft] = useState<KinPaymentDraft>({ amount: "", paidOn: today, note: "" });
+  const [draft, setDraft] = useState<KinPaymentDraft>({
+    amount: "",
+    paidOn: today,
+    note: "",
+    tds: "",
+  });
   const [problem, setProblem] = useState<string | null>(null);
   const [requestId] = useState(uuidv4);
   const [month, setMonth] = useState<string | null>(null);
@@ -789,6 +921,7 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
     setProblem(null);
     const saved = await changes.pay({
       amount: checked.amount,
+      ...(checked.tds === undefined ? {} : { tds: checked.tds }),
       paidOn: draft.paidOn,
       ...(draft.note.trim() === "" ? {} : { note: draft.note.trim() }),
       clientRequestId: requestId,
@@ -805,7 +938,7 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
         label: KIN_LISTS.entry.paySave,
         onPress: () => void save(),
         loading: changes.busy,
-        disabled: changes.busy || draft.amount.trim() === "",
+        disabled: changes.busy || (draft.amount.trim() === "" && draft.tds?.trim() === ""),
       }}
     >
       <View className="gap-1 px-2">
@@ -827,6 +960,16 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
           placeholder={entry.balance.leftText}
           onChangeText={(amount) => setDraft({ ...draft, amount })}
         />
+        {entry.takesTds ? (
+          <KinWorkTextField
+            label={KIN_LISTS.entry.payTds}
+            value={draft.tds ?? ""}
+            keyboard="numbers"
+            disabled={changes.busy}
+            placeholder={KIN_LISTS.entry.payTdsPlaceholder}
+            onChangeText={(tds) => setDraft({ ...draft, tds })}
+          />
+        ) : null}
       </ListSection>
       <ListSection>
         <Menu

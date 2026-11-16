@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
@@ -24,6 +25,11 @@ export const dormantLeadDependencies = Layer.mergeAll(
     getEnvironmentId: Effect.succeed(EnvironmentId.make("env_kin")),
   }),
 ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
+
+/** The host services Kin's RPC handlers run with beside Kin's own: the WS server provides them. */
+export const kinHostDependencies = ServerSecretStore.layer.pipe(
+  Layer.provideMerge(dormantLeadDependencies),
+);
 
 /** What Kin's approver key seal reads its secret through: a throwaway server home. */
 export const kinSecretsTest = Layer.mergeAll(

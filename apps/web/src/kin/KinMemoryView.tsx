@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_MEMORY_EMPTY,
   KIN_MEMORY_FORGET,
+  KIN_MEMORY_FORGOTTEN,
   KIN_MEMORY_LOAD_FAILED,
   KIN_MEMORY_NO_EDITS,
   KIN_MEMORY_SEARCH_PLACEHOLDER,
@@ -15,7 +16,12 @@ import {
   type KinMemoryOriginView,
   type KinMemoryRow,
 } from "@t3tools/client-runtime/kin/kinMemoryScreen";
-import type { EnvironmentId, KinMemoryListResult, KinOrgId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  KinMemoryItemId,
+  KinMemoryListResult,
+  KinOrgId,
+} from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import { Link } from "@tanstack/react-router";
 import * as Option from "effect/Option";
@@ -43,6 +49,7 @@ import { isElectron } from "../env";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
+import { KinWorkSection } from "./KinWorkParts";
 
 interface KinMemoryTarget {
   readonly environmentId: EnvironmentId;
@@ -183,14 +190,24 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
     people: Option.getOrNull(AsyncResult.value(people))?.people ?? [],
     agents: Option.getOrNull(AsyncResult.value(agents))?.leads ?? [],
   });
+  const forgotten = (
+    <KinMemoryForgotten
+      environmentId={environmentId}
+      orgId={orgId}
+      onRestored={() => appAtomRegistry.refresh(listAtom)}
+    />
+  );
   if (view.total === 0) {
     return (
-      <Empty size="compact">
-        <EmptyHeader>
-          <EmptyTitle>{KIN_MEMORY_EMPTY.title}</EmptyTitle>
-          <EmptyDescription>{KIN_MEMORY_EMPTY.detail}</EmptyDescription>
-        </EmptyHeader>
-      </Empty>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <Empty size="compact">
+          <EmptyHeader>
+            <EmptyTitle>{KIN_MEMORY_EMPTY.title}</EmptyTitle>
+            <EmptyDescription>{KIN_MEMORY_EMPTY.detail}</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+        {forgotten}
+      </div>
     );
   }
   return (
@@ -256,6 +273,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
             )}
           </div>
         )}
+        ListFooterComponent={forgotten}
         estimatedItemSize={64}
         drawDistance={640}
         className="min-h-0 flex-1 overscroll-contain pb-6"
@@ -288,6 +306,66 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
         </AlertDialogPopup>
       </AlertDialog>
     </>
+  );
+}
+
+/** What the owner forgot, one line that opens to the list with a way to bring each back. */
+function KinMemoryForgotten(props: KinMemoryTarget & { readonly onRestored: () => void }) {
+  const { environmentId, orgId } = props;
+  const forgottenAtom = kinClient.memory({ environmentId, input: { orgId, forgotten: true } });
+  const result = useAtomValue(forgottenAtom);
+  const restore = useAtomCommand(kinClient.memoryRestore, { reportFailure: false });
+  const [busy, setBusy] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const items = Option.getOrNull(AsyncResult.value(result))?.items ?? null;
+  if (items === null) return null;
+  const bringBack = async (itemId: KinMemoryItemId) => {
+    setBusy(itemId);
+    setFailed(false);
+    const outcome = await restore({ environmentId, input: { orgId, itemId } });
+    setBusy(null);
+    if (AsyncResult.isSuccess(outcome)) {
+      appAtomRegistry.refresh(forgottenAtom);
+      props.onRestored();
+    } else setFailed(true);
+  };
+  return (
+    <div className="mx-auto w-full max-w-3xl px-4 pt-6">
+      <KinWorkSection
+        title={KIN_MEMORY_FORGOTTEN.title}
+        fold={{ summary: KIN_MEMORY_FORGOTTEN.count(items.length) }}
+      >
+        {failed ? (
+          <Alert variant="error">
+            <AlertDescription>{KIN_MEMORY_FORGOTTEN.failed}</AlertDescription>
+          </Alert>
+        ) : null}
+        <ul className="flex flex-col">
+          {[...items].reverse().map((item) => (
+            <li
+              key={item.itemId}
+              className="flex items-start gap-3 border-b border-border/60 py-2 last:border-b-0"
+            >
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="text-sm text-foreground">{item.title}</span>
+                {item.preview === undefined ? null : (
+                  <span className="line-clamp-2 text-xs text-muted-foreground">{item.preview}</span>
+                )}
+              </span>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={busy !== null}
+                aria-label={`${KIN_MEMORY_FORGOTTEN.restore} ${item.title}`}
+                onClick={() => void bringBack(item.itemId)}
+              >
+                {KIN_MEMORY_FORGOTTEN.restore}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      </KinWorkSection>
+    </div>
   );
 }
 

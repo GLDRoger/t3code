@@ -18,6 +18,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinReactionEmoji,
+  KinRoleTags,
   KinWidgetId,
 } from "./kinChat.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
@@ -122,6 +123,8 @@ export const KinLeadProfile = Schema.Struct({
   charter: KinLeadCharter,
   // Absent from a host that predates it; empty when the owner wrote none.
   intro: Schema.optional(KinLeadIntro),
+  // Absent from a host that predates them.
+  roleTags: Schema.optional(KinRoleTags),
   // The model it thinks with, as the provider names it.
   model: TrimmedNonEmptyString,
   // The owner's direct chat with it.
@@ -163,6 +166,12 @@ export type KinLeadContact = typeof KinLeadContact.Type;
 export const KinLeadsListResult = Schema.Struct({
   leads: Schema.Array(KinLeadProfile),
   contacts: Schema.optional(Schema.Array(KinLeadContact)),
+  // The agent every teammate may message; null when off. Older hosts leave it out.
+  teamAgentId: Schema.optional(Schema.NullOr(KinAgentId)),
+  // The company chat while it is on, and who answers there by default. Older hosts leave it out.
+  companyChat: Schema.optional(
+    Schema.NullOr(Schema.Struct({ chatId: KinChatId, leadAgentId: Schema.NullOr(KinAgentId) })),
+  ),
 });
 export type KinLeadsListResult = typeof KinLeadsListResult.Type;
 /** Omitted fields stay as they are. */
@@ -173,6 +182,7 @@ export const KinLeadUpdateInput = Schema.Struct({
   domain: Schema.optional(KinLeadDomain),
   charter: Schema.optional(KinLeadCharter),
   intro: Schema.optional(KinLeadIntro),
+  roleTags: Schema.optional(KinRoleTags),
 });
 export type KinLeadUpdateInput = typeof KinLeadUpdateInput.Type;
 /** Retire or restore one agent. Both are idempotent and answer with its profile. */
@@ -206,6 +216,8 @@ export const MemoryItemKind = Schema.Literals([
   "decision",
   "person",
   "claim",
+  // One client's lasting nature and dynamic with us, linked `client:<key>`.
+  "relationship",
 ]);
 export type MemoryItemKind = typeof MemoryItemKind.Type;
 export const MemoryTrust = Schema.Literals(["owner", "member", "external", "agent"]);
@@ -389,6 +401,8 @@ export const KinScheduledTaskCard = Schema.Struct({
   timeZone: TimeZone,
   status: Schema.Literals(["active", "paused", "deleted"]),
   nextRunAt: Schema.NullOr(Schema.toEncoded(CanonicalUtcTimestamp)),
+  /** Fires somewhere around `every.at`: clients say "around" and never show an exact next run. */
+  around: Schema.optional(Schema.Boolean),
   lastRun: Schema.NullOr(
     Schema.Struct({
       at: Schema.toEncoded(CanonicalUtcTimestamp),
@@ -518,6 +532,27 @@ export const KinEventOrigin = Schema.Struct({
   chatId: KinChatId,
   personId: Schema.optional(KinPersonId),
 });
+const OutsideText = (max: number) => Schema.NullOr(Schema.String.check(Schema.isMaxLength(max)));
+/** One new item at a connection, as metadata: who, what, when and where. Never a body. */
+export const KinPulseOutsideLine = Schema.Struct({
+  source: Schema.Literals(["mail", "calendar", "github"]),
+  connection: Schema.String.check(Schema.isMaxLength(120)),
+  /** The connected account it is in, such as a Gmail address. */
+  account: Schema.optional(Schema.String.check(Schema.isMaxLength(320))),
+  /** The account's address that received the mail: its own or an alias. */
+  to: Schema.optional(Schema.String.check(Schema.isMaxLength(320))),
+  /** The service's id: a mail thread, a calendar event, a webhook delivery. */
+  id: Schema.String.check(Schema.isMaxLength(200)),
+  at: OutsideText(60),
+  who: OutsideText(300),
+  subject: OutsideText(300),
+  /** A repo, or a calendar event's start. */
+  where: OutsideText(200),
+  /** What it matched that Kin knows, such as "contact CT-2 of client C-1 Lumen". */
+  matched: Schema.optional(Schema.String.check(Schema.isMaxLength(300))),
+});
+export type KinPulseOutsideLine = typeof KinPulseOutsideLine.Type;
+
 export const KinEvent = Schema.Union([
   Schema.TaggedStruct("chat.message", {
     ...EventBase,
@@ -581,6 +616,8 @@ export const KinEvent = Schema.Union([
   Schema.TaggedStruct("routine", {
     ...EventBase,
     routine: KinLeadRoutine,
+    // A morning brief that is also the week's: its prompt adds goals and the week (`weekly.ts`).
+    weekly: Schema.optional(Schema.Literal(true)),
     dueAt: Schema.optional(CanonicalUtcTimestamp),
     lateByMs: Schema.optional(NonNegativeInt),
     foldedRoutines: Schema.optional(
@@ -605,6 +642,27 @@ export const KinEvent = Schema.Union([
     finding: Schema.String,
     itemIds: Schema.Array(KinMemoryItemId),
   }),
+  // Code enqueues one per new pulse fact that matters now, per check-in with something new, and
+  // per outside item a playbook watch matched; the prompt reads the facts at turn time.
+  Schema.TaggedStruct("pulse", {
+    ...EventBase,
+    factKeys: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(300))).check(
+      Schema.isMaxLength(50),
+    ),
+    checkIn: Schema.optional(
+      Schema.Struct({
+        scheduleId: KinMemoryItemId,
+        title: Schema.String.check(Schema.isMaxLength(200)),
+        // The schedule's instruction, the owner's words: what this check-in is for.
+        what: Schema.String.check(Schema.isMaxLength(2000)),
+        slot: Schema.String.check(Schema.isMaxLength(200)),
+      }),
+    ),
+    // Metadata the server read from connections the owner marked Read: still outside text.
+    outside: Schema.optional(Schema.Array(KinPulseOutsideLine).check(Schema.isMaxLength(200))),
+    // A judgement call (money owed, a client waiting, replanning): the agent's main model.
+    strong: Schema.optional(Schema.Boolean),
+  }),
   Schema.TaggedStruct("worker.report", {
     ...EventBase,
     workerId: KinWorkerId,
@@ -615,15 +673,21 @@ export const KinEvent = Schema.Union([
     chatId: Schema.optional(KinChatId),
     origin: Schema.optional(KinEventOrigin),
   }),
-  // Code enqueues it when someone else gives this lead an entry (`assigned`), or when its owner
-  // closes or takes back an open one it holds (`withdrawn`). Its provenance is that human, the
-  // only authority the turn has; the entry's text is data.
+  // Code enqueues it when someone else gives this lead an entry (`assigned`), when its owner
+  // closes or takes back an open one it holds (`withdrawn`), or when whoever it gave one to gives
+  // it back (`handed_back`, with their words as `note`). Its provenance is the human whose
+  // authority the entry carries, the only authority the turn has; the entry's text is data.
   Schema.TaggedStruct("record.changed", {
     ...EventBase,
     recordId: KinRecordId,
     key: KinRecordKey,
     seq: NonNegativeInt,
-    reason: Schema.Literals(["assigned", "withdrawn"]),
+    reason: Schema.Literals(["assigned", "withdrawn", "handed_back"]),
+    note: Schema.optional(Schema.String.check(Schema.isMaxLength(280))),
+    // Given by a teammate: their direct chat with the lead, where it reports, and `origin` naming
+    // them, so the turn is theirs and never the owner's. From stored rows, as a worker report's.
+    chatId: Schema.optional(KinChatId),
+    origin: Schema.optional(KinEventOrigin),
   }),
   Schema.TaggedStruct("action.resolved", {
     ...EventBase,
@@ -648,9 +712,17 @@ export const KinEvent = Schema.Union([
 ]);
 export type KinEvent = typeof KinEvent.Type;
 
+const KinBudgetUnits = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+/**
+ * The owner's daily limits, in budget units; null is no limit, which is the default. Coding
+ * workers spend `workerUnits`. Agents' turns the owner asked for spend `leadUnits` less only what
+ * the owner's own turns used, so teammates never use up the owner's share. Turns a teammate asked
+ * for spend `teammateUnits` when it is set, else what is left of `leadUnits` after every turn.
+ */
 export const KinBudgetLimits = Schema.Struct({
-  leadUnits: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-  workerUnits: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  leadUnits: Schema.NullOr(KinBudgetUnits),
+  workerUnits: Schema.NullOr(KinBudgetUnits),
+  teammateUnits: Schema.optional(Schema.NullOr(KinBudgetUnits)),
 });
 export type KinBudgetLimits = typeof KinBudgetLimits.Type;
 export const KinBudget = Schema.Struct({
@@ -668,8 +740,29 @@ export const KinBudget = Schema.Struct({
   ),
   leadUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
   workerUnits: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  /** The owner's view: today's lead units on turns the owner asked for, within `leadUnits`. */
+  ownerUnits: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  /** The owner's view: today's lead units on turns a teammate asked for, within `leadUnits`. */
+  teammateUnits: Schema.optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   limits: KinBudgetLimits,
-  // Today's lead units by lead, largest first; the limit stays one figure for the org.
+  /** The owner's view: the daily limit a client offers as "the usual", to scale its choices from. */
+  usual: Schema.optional(Schema.Struct({ leadUnits: KinBudgetUnits, workerUnits: KinBudgetUnits })),
+  /** Work held for a limit, by agent: it runs when the day turns or a limit is raised. */
+  waiting: Schema.optional(
+    Schema.Struct({
+      until: Schema.NullOr(Schema.toEncoded(CanonicalUtcTimestamp)),
+      agents: Schema.Array(
+        Schema.Struct({
+          agentId: KinAgentId,
+          name: Schema.String,
+          requests: NonNegativeInt,
+          tasks: NonNegativeInt,
+          other: NonNegativeInt,
+        }),
+      ),
+    }),
+  ),
+  // Today's lead units by lead, largest first.
   leads: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -712,3 +805,6 @@ export const KinOrgResumeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinOrgResumeInput = typeof KinOrgResumeInput.Type;
 export const KinOrgGetInput = Schema.Struct({ orgId: KinOrgId });
 export type KinOrgGetInput = typeof KinOrgGetInput.Type;
+
+/** The project a lead's own runs and memory live in (`kin:<org>:<agent>`); never someone's code. */
+export const isKinLeadProjectId = (projectId: string) => projectId.startsWith("kin:");

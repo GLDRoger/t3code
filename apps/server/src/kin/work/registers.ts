@@ -9,12 +9,14 @@ import {
   KinNumberingRule,
   type KinOrgId,
   KinRecordState,
+  isCalendarDay,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import { type FieldValue, isMoney, LISTS, type ListName, sensitiveFields } from "./lists.ts";
 import { DEFAULT_CURRENCY, isCurrency } from "./money.ts";
@@ -28,7 +30,7 @@ import { cardAnswer } from "./ownerCards.ts";
 
 export type FieldDef = KinListField;
 export type FieldType = FieldDef["type"];
-export const PRESET_IDS = ["expenses", "invoices", "dates"] as const;
+export const PRESET_IDS = ["expenses", "invoices", "dates", "receipts", "quotes"] as const;
 export type PresetId = (typeof PRESET_IDS)[number];
 
 const Label = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(60));
@@ -61,7 +63,7 @@ export type StoredDefinition = typeof StoredDefinition.Type;
 const DefinitionJson = Schema.fromJsonString(StoredDefinition);
 const decodeStored = Schema.decodeUnknownOption(StoredDefinition);
 /** A label as one line; ones stored before control characters were refused read so too. */
-export const plain = (text: string) => text.replace(/\p{Cc}/gu, " ").trim();
+const plain = (text: string) => text.replace(/\p{Cc}/gu, " ").trim();
 const decodeDefinition = (json: string) =>
   Option.flatMap(
     Option.liftThrowable(() =>
@@ -108,6 +110,7 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
       "rent",
       "fees",
       "taxes",
+      "salaries",
       "other",
     ],
     fields: [
@@ -144,6 +147,54 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     payments: true,
     numbering: { prefix: "INV", series: "financial_year", width: 3 },
   },
+  // Money received: against an invoice's payment, or an advance before any invoice exists.
+  receipts: {
+    name: "Receipts",
+    prefix: "RCT",
+    noun: "receipt",
+    states: ["open", "waiting", "dropped"],
+    stateLabels: { open: "Draft", waiting: "Issued", dropped: "Void" },
+    defaultState: "open",
+    categories: [],
+    fields: [
+      field("number", "Receipt number", "text"),
+      field("towards", "Towards", "text"),
+      field("mode", "Mode", "choice", {
+        choices: ["bank transfer", "upi", "cheque", "cash", "card", "other"],
+      }),
+      field("reference", "Reference", "text"),
+      field("invoice", "Invoice", "text"),
+      field("payment", "Payment", "text"),
+      field("file", "Receipt file", "file", { sensitive: true }),
+    ],
+    sensitive: true,
+    amount: true,
+    currency: DEFAULT_CURRENCY,
+    dueLabel: "Due",
+    dateLabel: "Received on",
+    numbering: { prefix: "RCT", series: "financial_year", width: 3 },
+  },
+  // What was offered before an invoice: numbered in its own series, valid until its due day.
+  quotes: {
+    name: "Quotes",
+    prefix: "QT",
+    noun: "quote",
+    states: ["open", "waiting", "done", "dropped"],
+    stateLabels: { open: "Draft", waiting: "Sent", done: "Accepted", dropped: "Void" },
+    defaultState: "open",
+    categories: [],
+    fields: [
+      field("number", "Quote number", "text"),
+      field("tax", "Tax", "money"),
+      field("file", "Quote file", "file", { sensitive: true }),
+    ],
+    sensitive: true,
+    amount: true,
+    currency: DEFAULT_CURRENCY,
+    dueLabel: "Valid until",
+    dateLabel: "Dated",
+    numbering: { prefix: "QT", series: "financial_year", width: 3 },
+  },
   dates: {
     name: "Dates",
     prefix: "DT",
@@ -161,7 +212,8 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     categoryLabels: { gst: "GST", tds: "TDS" },
     fields: [field("form", "Form", "text"), field("period", "Period", "text")],
     sensitive: false,
-    amount: false,
+    // A renewal's fee or a filing's tax due; most dates have none.
+    amount: true,
     currency: DEFAULT_CURRENCY,
     dueLabel: "Due",
   },
@@ -305,14 +357,6 @@ export const sensitiveKeys = (def: ListDef): ReadonlyArray<string> => [
   ...def.fields.filter((one) => one.sensitive || one.type === "money").map((one) => one.key),
 ];
 
-const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const validDay = (day: string) =>
-  DAY.test(day) &&
-  Option.match(DateTime.make(`${day}T00:00:00Z`), {
-    onNone: () => false,
-    onSome: (at) => DateTime.formatIsoDate(at) === day,
-  });
-
 /**
  * Whether stored values fit a defined list's fields: known, not retired unless cleared, and of
  * the field's type. Ids in them are checked against this org by `verifyRefs`.
@@ -341,7 +385,7 @@ export const checkFields = (
         if (typeof value !== "string" || !(spec.choices ?? []).includes(value)) return wrong;
         break;
       case "date":
-        if (typeof value !== "string" || !validDay(value)) return wrong;
+        if (typeof value !== "string" || !isFieldDate(value)) return wrong;
         break;
       case "person":
         if (typeof value !== "string" || !/^(?:person|agent):.{1,120}$/.test(value)) return wrong;
@@ -359,11 +403,16 @@ export const checkFields = (
   }
   return undefined;
 };
+/** A date field's value: a day, or a day and a time of day in the owner's zone. */
+export const isFieldDate = (value: string) =>
+  isCalendarDay(value.slice(0, 10)) &&
+  (value.length === 10 || /^.{10}T(?:[01]\d|2[0-3]):[0-5]\d$/.test(value));
+
 export const describe = (spec: FieldDef) =>
   spec.type === "choice"
     ? `one of ${(spec.choices ?? []).join(", ")}`
     : spec.type === "date"
-      ? "a day such as 2026-11-20"
+      ? "a day such as 2026-11-20, or a day and time such as 2026-11-18T15:00"
       : spec.type === "person"
         ? '"me", "owner" or an agentId'
         : spec.type === "link"
@@ -415,10 +464,12 @@ export const verifyRefs = Effect.fn("KinRegisters.verifyRefs")(function* (
   }
 });
 
-/** How a list numbers what it issues; invoices defined before numbering existed take the preset's. */
+/** How a list numbers what it issues; invoices, receipts and quotes without one take the preset's. */
 export const numberingOf = (def: ListDef): KinNumberingRule | undefined =>
   def.numbering ??
-  (def.id === "invoices" && def.builtIn === null ? PRESETS.invoices.numbering : undefined);
+  (def.builtIn === null && (def.id === "invoices" || def.id === "receipts" || def.id === "quotes")
+    ? PRESETS[def.id].numbering
+    : undefined);
 
 const shownLabels = (labels: Readonly<Record<string, string>> | undefined) => {
   const shown = Object.entries(labels ?? {}).filter(([category, label]) => label !== category);
@@ -531,7 +582,7 @@ export const keyFor = (label: string) => {
   return isFieldKey(key) ? key : undefined;
 };
 /** `Leave requests` is `leave_requests`. */
-export const idFor = (name: string) => {
+const idFor = (name: string) => {
   const id = name
     .normalize("NFKD")
     .toLowerCase()
@@ -540,7 +591,7 @@ export const idFor = (name: string) => {
     .slice(0, 40);
   return /^[a-z][a-z0-9_]{1,39}$/.test(id) ? id : undefined;
 };
-export const prefixFor = (name: string) =>
+const prefixFor = (name: string) =>
   name
     .toUpperCase()
     .replace(/[^A-Z]/g, "")
@@ -593,15 +644,153 @@ const extended = (def: StoredDefinition, additions: Additions) => {
 };
 
 /** What a proposal would make, checked now, so a yes never meets a refusal. */
-export const checkDraft = (draft: Draft): KinChatError | undefined => {
+const checkDraft = (draft: Draft): KinChatError | undefined => {
   const def = draft.definition;
   if (!def.states.includes(def.defaultState))
     return invalid(`A new ${def.noun} starts ${def.defaultState}, which the list doesn't have.`);
   if (!/^[A-Z][A-Z0-9]{0,5}$/.test(draft.prefix))
     return invalid("A key prefix is one to six capital letters or digits, such as LV.");
+  // Built-in registers are written on first use, so their prefixes are reserved before then.
+  if (isBuiltIn(draft.id) || Object.values(LISTS).some((list) => list.prefix === draft.prefix))
+    return invalid(`The key prefix ${draft.prefix} is Kin's own. Propose another.`);
   if (!isCurrency(def.currency)) return invalid(`${def.currency} is not a currency code.`);
   return checkFieldDefs(def.fields);
 };
+
+/** What a list is asked to be: `list_define`'s input, or an import's list. */
+export type ListInput = {
+  /** The list's id, where the caller names it; otherwise the template's, or one from the name. */
+  readonly id?: string | undefined;
+  readonly template?: PresetId | undefined;
+  readonly list?: string | undefined;
+  readonly name?: string | undefined;
+  readonly noun?: string | undefined;
+  readonly prefix?: string | undefined;
+  readonly fields?:
+    | ReadonlyArray<{
+        readonly label: string;
+        readonly type: FieldType;
+        readonly choices?: ReadonlyArray<string> | undefined;
+        readonly link?: "clients" | "projects" | undefined;
+        readonly sensitive?: boolean | undefined;
+      }>
+    | undefined;
+  readonly categories?: ReadonlyArray<string> | undefined;
+  readonly states?: ReadonlyArray<KinRecordState> | undefined;
+  readonly stateNames?: StoredDefinition["stateLabels"] | undefined;
+  readonly amount?: boolean | undefined;
+  readonly currency?: string | undefined;
+  readonly sensitive?: boolean | undefined;
+  readonly dueLabel?: string | undefined;
+  readonly dateLabel?: string | undefined;
+};
+
+const fieldDefs = (fields: NonNullable<ListInput["fields"]>) => {
+  const defs: Array<FieldDef> = [];
+  for (const one of fields) {
+    const label = plain(one.label);
+    const key = keyFor(label);
+    if (key === undefined) return invalid(`${one.label} needs a name made of letters.`);
+    defs.push({
+      key,
+      label,
+      type: one.type,
+      ...(one.choices === undefined ? {} : { choices: one.choices.map(plain) }),
+      ...(one.link === undefined ? {} : { link: one.link }),
+      sensitive: one.type === "money" || one.type === "file" || one.sensitive === true,
+    });
+  }
+  return defs;
+};
+
+/** The proposal a call describes: a preset with any extras, a new list, or additions to one. */
+export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
+  orgId: KinOrgId,
+  input: ListInput,
+) {
+  const fields = fieldDefs(input.fields ?? []);
+  if (!Array.isArray(fields)) return yield* fields;
+  if (input.list !== undefined) {
+    const def = yield* listDef(orgId, input.list);
+    if (def === undefined) return yield* unknownList(input.list);
+    if (def.builtIn !== null)
+      return yield* invalid(`${def.name} is built in; its fields are fixed.`);
+    // A field named again with new choices adds those choices to it.
+    const choices: Record<string, ReadonlyArray<string>> = {};
+    const added = fields.filter((one) => {
+      const existing = def.fields.find((field) => field.key === one.key);
+      if (existing?.type === "choice" && one.type === "choice") {
+        choices[one.key] = one.choices ?? [];
+        return false;
+      }
+      return true;
+    });
+    return {
+      _tag: "extend",
+      id: def.id,
+      fields: added,
+      categories: input.categories ?? [],
+      choices,
+      stateLabels: input.stateNames ?? {},
+    } satisfies Proposal;
+  }
+  const named =
+    input.id ?? input.template ?? (input.name === undefined ? undefined : idFor(input.name));
+  if (named === undefined)
+    return yield* invalid("Name the list, start from a template, or say which list to add to.");
+  const preset = (PRESET_IDS as ReadonlyArray<string>).includes(named)
+    ? PRESETS[named as (typeof PRESET_IDS)[number]]
+    : undefined;
+  if (preset === undefined && (isBuiltIn(named) || named === "docs"))
+    return yield* invalid(`${input.name ?? named} is one of Kin's own lists already.`);
+  const name = preset?.name ?? input.name ?? named;
+  const amount = input.amount ?? preset?.amount ?? false;
+  if (!amount && preset?.numbering !== undefined)
+    return yield* invalid(
+      `${name} entries are numbered when issued, and an issued one always carries its amount, so this list keeps amounts.`,
+    );
+  const states = input.states ?? preset?.states ?? ["open", "done", "dropped"];
+  const definition: StoredDefinition = {
+    noun: input.noun ?? preset?.noun ?? name.toLowerCase().replace(/s$/, ""),
+    states,
+    stateLabels: { ...preset?.stateLabels, ...input.stateNames },
+    defaultState:
+      preset !== undefined && states.includes(preset.defaultState)
+        ? preset.defaultState
+        : states.includes("open")
+          ? "open"
+          : states[0]!,
+    categories: [...new Set([...(preset?.categories ?? []), ...(input.categories ?? [])])],
+    fields: [
+      ...(preset?.fields ?? []),
+      ...fields.filter((one) => !(preset?.fields ?? []).some((field) => field.key === one.key)),
+    ],
+    sensitive: input.sensitive ?? preset?.sensitive ?? amount,
+    amount,
+    currency: input.currency ?? preset?.currency ?? "INR",
+    ...((input.dueLabel ?? preset?.dueLabel)
+      ? { dueLabel: (input.dueLabel ?? preset?.dueLabel)! }
+      : {}),
+    ...((input.dateLabel ?? preset?.dateLabel)
+      ? { dateLabel: (input.dateLabel ?? preset?.dateLabel)! }
+      : {}),
+  };
+  if (!isCurrency(definition.currency))
+    return yield* invalid(`${definition.currency} is not a currency code.`);
+  const draft = {
+    id: named,
+    name,
+    prefix: input.prefix ?? preset?.prefix ?? prefixFor(name),
+    definition,
+  };
+  const refused = checkDraft(draft);
+  if (refused !== undefined) return yield* refused;
+  if ((yield* listDef(orgId, draft.id)) !== undefined)
+    return yield* invalid(
+      `There is already a list ${draft.name}; propose fields to add to it with list instead.`,
+    );
+  return { _tag: "new", ...draft } satisfies Proposal;
+});
 
 const proposalIdFor = (orgId: string, agentId: string, wakeupId: string, json: string) =>
   `lp_${NodeCrypto.createHash("sha256").update(`${orgId.length}:${orgId}${agentId}:${wakeupId}:${json}`).digest("hex").slice(0, 16)}`;
@@ -617,10 +806,24 @@ export const propose = Effect.fn("KinRegisters.propose")(function* (input: {
 }) {
   const sql = yield* SqlClient.SqlClient;
   const json = yield* encodeProposal(input.proposal);
-  const proposalId = proposalIdFor(input.orgId, input.agentId, input.wakeupId, json);
   const [chat] = yield* sql<{ seq: number }>`SELECT last_seq AS seq FROM kin_chats
     WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
   if (chat === undefined) return yield* invalid("This turn has no chat to propose a list in.");
+  // The same list asked again in this chat, from a later turn such as the owner's tap on it, is
+  // that question still: one card. Only a no the owner gave closes it.
+  const [open] = yield* sql<{ proposalId: string; widgetId: string | null; owner: string }>`
+    SELECT p.proposal_id AS "proposalId", p.widget_id AS "widgetId", a.owner_person_id AS owner
+    FROM kin_list_proposals p
+    JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
+    WHERE p.org_id = ${input.orgId} AND p.agent_id = ${input.agentId}
+      AND p.chat_id = ${input.chatId} AND p.definition_json = ${json} AND p.defined_at IS NULL
+    ORDER BY p.proposed_at DESC, p.proposal_id LIMIT 1`;
+  if (
+    open !== undefined &&
+    (open.widgetId === null || (yield* cardAnswer(input.orgId, open.widgetId, open.owner)) !== "no")
+  )
+    return open.proposalId;
+  const proposalId = proposalIdFor(input.orgId, input.agentId, input.wakeupId, json);
   yield* sql`INSERT INTO kin_list_proposals (org_id, proposal_id, agent_id, chat_id, wakeup_id,
       register_id, extends_existing, definition_json, chat_seq, proposed_at)
     VALUES (${input.orgId}, ${proposalId}, ${input.agentId}, ${input.chatId}, ${input.wakeupId},
@@ -639,6 +842,43 @@ export const attachCard = Effect.fn("KinRegisters.attachCard")(function* (input:
   const sql = yield* SqlClient.SqlClient;
   yield* sql`UPDATE kin_list_proposals SET widget_id = ${input.widgetId}
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId} AND widget_id IS NULL`;
+});
+
+/** Creates or extends the list `proposal` describes, now, in the caller's transaction. */
+export const defineList = Effect.fn("KinRegisters.defineList")(function* (
+  orgId: KinOrgId,
+  proposal: Proposal,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (proposal._tag === "new") {
+    const draft = { ...proposal };
+    const refused = checkDraft(draft);
+    if (refused !== undefined) return yield* refused;
+    const taken = yield* sql<{ id: string; prefix: string }>`SELECT register_id AS id,
+        key_prefix AS prefix FROM kin_registers WHERE org_id = ${orgId}
+        AND (register_id = ${draft.id} OR key_prefix = ${draft.prefix}) ORDER BY register_id`;
+    if (taken.length > 0)
+      return yield* new KinChatError({
+        reason: "conflict",
+        message:
+          taken[0]!.id === draft.id
+            ? `There is already a list ${draft.name}. Propose adding fields to it instead.`
+            : `The key prefix ${draft.prefix} is taken. Propose the list with another prefix.`,
+      });
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json, rev)
+      VALUES (${orgId}, ${draft.id}, ${draft.name}, ${draft.prefix}, 0, ${now},
+        ${yield* encodeDefinition(draft.definition)}, 1)`;
+  } else {
+    const def = yield* listDef(orgId, proposal.id);
+    if (def === undefined || def.builtIn !== null) return yield* unknownList(proposal.id);
+    const next = extended(def, proposal);
+    if (isChatError(next)) return yield* next;
+    yield* sql`UPDATE kin_registers SET definition_json = ${yield* encodeDefinition(next)},
+        rev = rev + 1
+      WHERE org_id = ${orgId} AND register_id = ${proposal.id}`;
+  }
 });
 
 /**
@@ -707,45 +947,45 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
     });
   const proposal = Option.getOrUndefined(decodeProposal(row.json));
   if (proposal === undefined) return yield* invalid("That proposal can no longer be read.");
-  if (proposal._tag === "new") {
-    const draft = { ...proposal };
-    const refused = checkDraft(draft);
-    if (refused !== undefined) return yield* refused;
-    const taken = yield* sql<{ id: string; prefix: string }>`SELECT register_id AS id,
-        key_prefix AS prefix FROM kin_registers WHERE org_id = ${input.orgId}
-        AND (register_id = ${draft.id} OR key_prefix = ${draft.prefix}) ORDER BY register_id`;
-    if (taken.length > 0)
-      return yield* new KinChatError({
-        reason: "conflict",
-        message:
-          taken[0]!.id === draft.id
-            ? `There is already a list ${draft.name}. Propose adding fields to it instead.`
-            : `The key prefix ${draft.prefix} is taken. Propose the list with another prefix.`,
-      });
-    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
-        created_at, definition_json, rev)
-      VALUES (${input.orgId}, ${draft.id}, ${draft.name}, ${draft.prefix}, 0, ${input.now},
-        ${yield* encodeDefinition(draft.definition)}, 1)`;
-  } else {
-    const def = yield* listDef(input.orgId, proposal.id);
-    if (def === undefined || def.builtIn !== null) return yield* unknownList(proposal.id);
-    const next = extended(def, proposal);
-    if (isChatError(next)) return yield* next;
-    yield* sql`UPDATE kin_registers SET definition_json = ${yield* encodeDefinition(next)},
-        rev = rev + 1
-      WHERE org_id = ${input.orgId} AND register_id = ${proposal.id}`;
-  }
+  yield* defineList(input.orgId, proposal, input.now);
   yield* sql`UPDATE kin_list_proposals SET defined_at = ${input.now}
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}`;
   return { id: proposal.id, created: true };
 });
 
 /** Open entries per list, for the definitions the owner sees. */
-export const openCounts = Effect.fn("KinRegisters.openCounts")(function* (orgId: KinOrgId) {
+export const openCounts = Effect.fn("KinRegisters.openCounts")(function* (
+  orgId: KinOrgId,
+  /** Only entries someone besides the owner may see (`personSees`), lists with none left out. */
+  sees?: Statement.Fragment,
+) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ id: string; open: number }>`SELECT register_id AS id,
-      COUNT(*) AS open FROM kin_records
-    WHERE org_id = ${orgId} AND state NOT IN ('done', 'dropped')
-    GROUP BY register_id ORDER BY register_id`;
+  const rows = yield* sql<{ id: string; open: number }>`SELECT r.register_id AS id,
+      SUM(r.state NOT IN ('done', 'dropped')) AS open FROM kin_records r
+    WHERE r.org_id = ${orgId} AND ${sees ?? sql`r.state NOT IN ('done', 'dropped')`}
+    GROUP BY r.register_id ORDER BY r.register_id`;
   return new Map(rows.map((row) => [row.id, row.open]));
+});
+
+/** Lists a built-in recipe needs: made from the preset on first use, with no card to approve. */
+const RECIPE_LISTS: ReadonlyArray<PresetId> = ["quotes", "invoices"];
+export const isRecipeList = (id: string) => (RECIPE_LISTS as ReadonlyArray<string>).includes(id);
+
+/** The list by id, making a recipe's list from its preset when this org has none yet. */
+export const listOrPreset = Effect.fn("KinRegisters.listOrPreset")(function* (
+  orgId: KinOrgId,
+  id: string,
+  now: number,
+) {
+  const existing = yield* listDef(orgId, id);
+  if (existing !== undefined || !isRecipeList(id)) return existing;
+  const proposal = yield* proposalFor(orgId, { template: id as PresetId });
+  yield* defineList(orgId, proposal, now).pipe(
+    // Two first quotes at once: the other made it, which is the same list.
+    Effect.catchIf(
+      (error) => isChatError(error) && error.reason === "conflict",
+      () => Effect.void,
+    ),
+  );
+  return yield* listDef(orgId, id);
 });

@@ -1,48 +1,68 @@
 import {
   KinChatError,
   KinCompanyBank,
+  KinCompanyBrand,
+  KinCompanyProfileSetInput,
   KinDay,
   KinGstin,
   KinListFieldType,
   KinListId,
+  type KinMoney,
   KinRecordKey,
   KinChatId,
   KinRecordState,
+  KinSacCode,
   KinWakeupId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
+import { takeLogo } from "../gendocs/brand.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { attachChangeCard, changeLines, proposeChange, readProfile } from "./companyProfile.ts";
+import { budgetsAnswer, budgetsView, setBudget } from "./budgets.ts";
+import {
+  attachChangeCard,
+  changeLines,
+  proposeChange,
+  readProfile,
+  replaceOlderChanges,
+} from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
-import { admitted, type Lead, leadTool, retryKey, sourceOf, writerFor } from "./leadWork.ts";
-import { dayIn, formatMoney, isCurrency, parseAmount } from "./money.ts";
-import { dates, moneySection, moneySummary } from "./moneyViews.ts";
+import {
+  admitted,
+  type Lead,
+  leadTool,
+  ownerAsked,
+  Project,
+  refOrNull,
+  retryKey,
+  sourceOf,
+  viewOf,
+  writerFor,
+} from "./leadWork.ts";
+import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
+import { dayIn, formatMinor, formatMoney, parseAmount } from "./money.ts";
+import { dates, moneySection, moneySummary, stillToInvoice } from "./moneyViews.ts";
 import { endOfDay, iso, notFound, ownerZone } from "./recordRows.ts";
 import {
   attachCard,
   carryOut,
-  checkDraft,
   type FieldDef,
-  idFor,
-  isBuiltIn,
-  keyFor,
   listDef,
-  plain,
   PRESET_IDS,
-  PRESETS,
-  prefixFor,
-  type Proposal,
   propose,
+  proposalFor,
   stateLabel,
-  type StoredDefinition,
+  isRecipeList,
+  listOrPreset,
   unknownList,
 } from "./registers.ts";
 
@@ -64,7 +84,7 @@ const tooLongForCard = (detail: string) =>
  * was made for, bound to it by `bind` in the card's own commit. A retry with the same
  * `clientMessageId` finds the same card. Its detail is shown whole or not at all.
  */
-const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
+export const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
   lead: Lead,
   input: {
     readonly chatId: string;
@@ -73,6 +93,7 @@ const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
     readonly detail: string;
     readonly yes: string;
     readonly no: string;
+    readonly image?: { readonly attachmentId: string; readonly mimeType: string };
   },
   bind: (widgetId: string) => Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient>,
 ) {
@@ -90,6 +111,7 @@ const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
         { label: input.yes, kind: "yes" },
         { label: input.no, kind: "no" },
       ],
+      ...(input.image === undefined ? {} : { image: input.image }),
     },
     (card) => bind(card.widgetId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
   );
@@ -118,7 +140,7 @@ export const DefineInput = Schema.Struct({
     description: "A proposal this tool returned in an earlier turn: creates exactly that.",
   }),
   template: Schema.optional(Schema.Literals(PRESET_IDS)).annotate({
-    description: "Start from Kin's expenses, invoices or dates list.",
+    description: "Start from Kin's expenses, invoices, dates, receipts or quotes list.",
   }),
   list: Schema.optional(KinListId).annotate({
     description: "An existing defined list to add fields, choices or categories to.",
@@ -166,108 +188,6 @@ const shownFields = (fields: ReadonlyArray<FieldDef>) =>
       ...(one.choices === undefined ? {} : { choices: [...one.choices] }),
     }));
 
-const fieldDefs = (fields: ReadonlyArray<typeof FieldInput.Type>) => {
-  const defs: Array<FieldDef> = [];
-  for (const one of fields) {
-    const label = plain(one.label);
-    const key = keyFor(label);
-    if (key === undefined) return invalid(`${one.label} needs a name made of letters.`);
-    defs.push({
-      key,
-      label,
-      type: one.type,
-      ...(one.choices === undefined ? {} : { choices: one.choices.map(plain) }),
-      ...(one.link === undefined ? {} : { link: one.link }),
-      sensitive: one.type === "money" || one.type === "file" || one.sensitive === true,
-    });
-  }
-  return defs;
-};
-
-/** The proposal a call describes: a preset with any extras, a new list, or additions to one. */
-const proposalFor = Effect.fn("KinWorkTools.proposalFor")(function* (
-  lead: Lead,
-  input: typeof DefineInput.Type,
-) {
-  const fields = fieldDefs(input.fields ?? []);
-  if (!Array.isArray(fields)) return yield* fields;
-  if (input.list !== undefined) {
-    const def = yield* listDef(lead.orgId, input.list);
-    if (def === undefined) return yield* unknownList(input.list);
-    if (def.builtIn !== null)
-      return yield* invalid(`${def.name} is built in; its fields are fixed.`);
-    // A field named again with new choices adds those choices to it.
-    const choices: Record<string, ReadonlyArray<string>> = {};
-    const added = fields.filter((one) => {
-      const existing = def.fields.find((field) => field.key === one.key);
-      if (existing?.type === "choice" && one.type === "choice") {
-        choices[one.key] = one.choices ?? [];
-        return false;
-      }
-      return true;
-    });
-    return {
-      _tag: "extend",
-      id: def.id,
-      fields: added,
-      categories: input.categories ?? [],
-      choices,
-      stateLabels: input.stateNames ?? {},
-    } satisfies Proposal;
-  }
-  const named = input.template ?? (input.name === undefined ? undefined : idFor(input.name));
-  if (named === undefined)
-    return yield* invalid("Name the list, start from a template, or say which list to add to.");
-  const preset = (PRESET_IDS as ReadonlyArray<string>).includes(named)
-    ? PRESETS[named as (typeof PRESET_IDS)[number]]
-    : undefined;
-  if (preset === undefined && (isBuiltIn(named) || named === "docs"))
-    return yield* invalid(`${input.name ?? named} is one of Kin's own lists already.`);
-  const name = preset?.name ?? input.name ?? named;
-  const amount = input.amount ?? preset?.amount ?? false;
-  const states = input.states ?? preset?.states ?? ["open", "done", "dropped"];
-  const definition: StoredDefinition = {
-    noun: input.noun ?? preset?.noun ?? name.toLowerCase().replace(/s$/, ""),
-    states,
-    stateLabels: { ...preset?.stateLabels, ...input.stateNames },
-    defaultState:
-      preset !== undefined && states.includes(preset.defaultState)
-        ? preset.defaultState
-        : states.includes("open")
-          ? "open"
-          : states[0]!,
-    categories: [...new Set([...(preset?.categories ?? []), ...(input.categories ?? [])])],
-    fields: [
-      ...(preset?.fields ?? []),
-      ...fields.filter((one) => !(preset?.fields ?? []).some((field) => field.key === one.key)),
-    ],
-    sensitive: input.sensitive ?? preset?.sensitive ?? amount,
-    amount,
-    currency: input.currency ?? preset?.currency ?? "INR",
-    ...((input.dueLabel ?? preset?.dueLabel)
-      ? { dueLabel: (input.dueLabel ?? preset?.dueLabel)! }
-      : {}),
-    ...((input.dateLabel ?? preset?.dateLabel)
-      ? { dateLabel: (input.dateLabel ?? preset?.dateLabel)! }
-      : {}),
-  };
-  if (!isCurrency(definition.currency))
-    return yield* invalid(`${definition.currency} is not a currency code.`);
-  const draft = {
-    id: named,
-    name,
-    prefix: input.prefix ?? preset?.prefix ?? prefixFor(name),
-    definition,
-  };
-  const refused = checkDraft(draft);
-  if (refused !== undefined) return yield* refused;
-  if ((yield* listDef(lead.orgId, draft.id)) !== undefined)
-    return yield* invalid(
-      `There is already a list ${draft.name}; propose fields to add to it with list instead.`,
-    );
-  return { _tag: "new", ...draft } satisfies Proposal;
-});
-
 const describeDefined = Effect.fn("KinWorkTools.describeDefined")(function* (
   lead: Lead,
   id: string,
@@ -306,7 +226,25 @@ const runDefine = Effect.fnUntraced(function* (lead: Lead, input: typeof DefineI
       next: "Created. Say so in one line, without listing the fields again.",
     };
   }
-  const proposal = yield* proposalFor(lead, input);
+  // Only the template named: the preset as it ships, which a recipe already knows.
+  const plainRecipe =
+    input.template !== undefined &&
+    isRecipeList(input.template) &&
+    Object.entries(input).every(
+      ([key, value]) => key === "sourceEventId" || key === "template" || value === undefined,
+    );
+  if (plainRecipe) {
+    const def = yield* listOrPreset(lead.orgId, input.template!, now);
+    if (def !== undefined) {
+      const made: typeof DefineResult.Type = {
+        status: "defined",
+        ...(yield* describeDefined(lead, def.id)),
+        next: "Kin's own list, made as it ships; no card needed. Go on with the quote or invoice.",
+      };
+      return made;
+    }
+  }
+  const proposal = yield* proposalFor(lead.orgId, input);
   const chat = yield* turnChat(lead);
   if (chat === undefined) return yield* invalid("This turn has no chat to propose a list in.");
   const proposalId = yield* propose({
@@ -377,7 +315,11 @@ export const PaymentInput = Schema.Struct({
   key: KinRecordKey.annotate({ description: "The invoice, such as INV-4." }),
   amount: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
     description:
-      'What was received, as said: "1,20,000" or "1.2 lakh". In the invoice\'s currency.',
+      'The cash that came in, as said: "1,20,000" or "1.2 lakh". In the invoice\'s currency.',
+  }),
+  withheld: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+    description:
+      'TDS the client deducted, as said, such as "18,000": it settles the invoice but is not cash received.',
   }),
   paidOn: Schema.optional(KinDay).annotate({
     description: "The day it was received, in the owner's time zone.",
@@ -391,9 +333,12 @@ export const PaymentResult = Schema.Struct({
   key: Schema.String,
   state: Schema.String,
   amount: Schema.String,
+  /** Cash received only; TDS the client deducted is `tdsWithheld`. */
   received: Schema.String,
+  tdsWithheld: Schema.optional(Schema.String),
   balance: Schema.String,
   paymentId: Schema.optional(Schema.String),
+  tdsPaymentId: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
 
@@ -405,19 +350,61 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
   const before = yield* records.get(lead.orgId, input.key);
   if (before === undefined) return yield* notFound(input.key);
   let paymentId: string | undefined;
+  let tdsPaymentId: string | undefined;
   if (input.void !== undefined) {
     yield* records.voidPayment(lead.orgId, writer, input.key, input.void);
   } else {
-    if (input.amount === undefined || input.paidOn === undefined)
-      return yield* invalid("A payment needs amount and paidOn, or void to take one back.");
-    const parsed = parseAmount(input.amount, before.currency ?? "INR");
-    if ("error" in parsed) return yield* parsed.error;
-    paymentId = (yield* records.pay(lead.orgId, writer, input.key, {
-      amount: parsed.money,
-      paidOn: input.paidOn,
-      ...(input.note === undefined ? {} : { note: input.note }),
-      originKey: `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(`${input.key}|${parsed.money.minor}|${input.paidOn}`)}`,
-    })).paymentId;
+    const paidOn = input.paidOn;
+    if ((input.amount === undefined && input.withheld === undefined) || paidOn === undefined)
+      return yield* invalid(
+        "A payment needs amount (cash received), withheld (TDS) or both, and paidOn; or void to take one back.",
+      );
+    const parsed = (text: string | undefined) => {
+      if (text === undefined) return Effect.undefined;
+      const one = parseAmount(text, before.currency ?? "INR");
+      return "error" in one ? Effect.fail(one.error) : Effect.succeed(one.money);
+    };
+    const cash = yield* parsed(input.amount);
+    const tds = yield* parsed(input.withheld);
+    // One settlement per owner message, entry and day, whatever its parts: a retry finds it.
+    const settlement = `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(`${input.key}|settlement|${paidOn}`)}`;
+    const sql = yield* SqlClient.SqlClient;
+    // The cash and the tax withheld are recorded together or not at all.
+    const settled = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const earlier = yield* sql<{ part: string; minor: number; note: string }>`SELECT
+            substr(origin_key, ${settlement.length + 2}) AS part, amount_minor AS minor, note
+          FROM kin_record_payments
+          WHERE org_id = ${lead.orgId} AND origin_key IN (${`${settlement}:cash`},
+            ${`${settlement}:tds`})
+          ORDER BY origin_key`;
+        const was = (part: string) => earlier.find((one) => one.part === part);
+        const same = (part: string, money: KinMoney | undefined) =>
+          money === undefined
+            ? was(part) === undefined
+            : was(part)?.minor === money.minor && was(part)?.note === (input.note ?? "");
+        if (earlier.length > 0 && !(same("cash", cash) && same("tds", tds)))
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message: `This message already recorded a different payment on ${before.key} for ${paidOn}. Nothing was recorded. To correct it, void the earlier payment and record the right one from the owner's next message.`,
+          });
+        const one = (money: KinMoney | undefined, withheld: boolean) =>
+          money === undefined
+            ? Effect.undefined
+            : records
+                .pay(lead.orgId, writer, input.key, {
+                  amount: money,
+                  paidOn,
+                  ...(input.note === undefined ? {} : { note: input.note }),
+                  ...(withheld ? { withheld: true } : {}),
+                  originKey: `${settlement}:${withheld ? "tds" : "cash"}`,
+                })
+                .pipe(Effect.map((paid) => paid.paymentId));
+        return { cash: yield* one(cash, false), tds: yield* one(tds, true) };
+      }),
+    );
+    paymentId = settled.cash ?? settled.tds;
+    tdsPaymentId = settled.tds;
   }
   const after = yield* records.get(lead.orgId, input.key);
   if (after === undefined) return yield* notFound(input.key);
@@ -427,9 +414,13 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
     key: after.key,
     state: after.state,
     amount: formatMoney({ minor: amount, currency }),
-    received: formatMoney({ minor: after.paid, currency }),
+    received: formatMoney({ minor: after.paid - after.withheld, currency }),
+    ...(after.withheld === 0
+      ? {}
+      : { tdsWithheld: formatMoney({ minor: after.withheld, currency }) }),
     balance: formatMoney({ minor: Math.max(amount - after.paid, 0), currency }),
     ...(paymentId === undefined ? {} : { paymentId }),
+    ...(tdsPaymentId === undefined ? {} : { tdsPaymentId }),
     sensitive: true as const,
   };
 });
@@ -438,20 +429,140 @@ export const payment = leadTool("KinWorkTools.payment", runPayment);
 export const MoneyResult = Schema.Struct({
   asOf: Schema.String,
   summary: Schema.optional(Schema.Unknown),
+  /** Per open project: what is agreed but not invoiced yet, beside what is owed on invoices. */
+  stillToInvoice: Schema.optional(Schema.Unknown),
   nothing: Schema.optional(Schema.Literal(true)),
   sensitive: Schema.Literal(true),
 });
 const runMoney = Effect.fnUntraced(function* (lead: Lead, _input: unknown) {
   const now = yield* Clock.currentTimeMillis;
-  const summary = yield* moneySummary(lead.orgId, now);
+  // In a turn others read: figures of only the money lines they all see, such as their project's.
+  const team = yield* viewOf(lead);
+  const summary = yield* moneySummary(lead.orgId, now, team?.people);
   const section = moneySection(summary, summary.timeZone);
+  const toInvoice = team === undefined ? yield* stillToInvoice(lead.orgId) : [];
   return {
     asOf: iso(now),
-    ...(section === undefined ? { nothing: true as const } : { summary: section }),
+    ...(section === undefined && toInvoice.length === 0
+      ? { nothing: true as const }
+      : { summary: section }),
+    ...(toInvoice.length === 0 ? {} : { stillToInvoice: toInvoice }),
     sensitive: true as const,
   };
 });
 export const money = leadTool("KinWorkTools.money", runMoney);
+
+const Month = Schema.String.check(Schema.isPattern(/^\d{4}-(?:0[1-9]|1[0-2])$/));
+export const MoneyQueryInput = Schema.Struct({
+  view: Schema.Literals(["cash", "outlook", "budgets"]).annotate({
+    description:
+      "cash: balances from the bank statements Kin read. outlook: due in and out ahead, and runway. budgets: this month's spending against each limit.",
+  }),
+  days: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(366)),
+  ).annotate({
+    description: "outlook only: one window this many days ahead instead of 30, 60 and 90.",
+  }),
+  month: Schema.optional(Month).annotate({
+    description: "budgets only: another month, such as 2026-10.",
+  }),
+});
+export const MoneyQueryResult = Schema.Struct({
+  asOf: Schema.String,
+  view: Schema.String,
+  answer: Schema.Unknown,
+  sensitive: Schema.Literal(true),
+});
+const runMoneyQuery = Effect.fnUntraced(function* (lead: Lead, input: typeof MoneyQueryInput.Type) {
+  yield* admitted(lead, "money_query", input);
+  const now = yield* Clock.currentTimeMillis;
+  const answer =
+    input.view === "cash"
+      ? cashAnswer(yield* cashPosition(lead.orgId, now))
+      : input.view === "outlook"
+        ? outlookAnswer(yield* outlook(lead.orgId, now, input.days))
+        : budgetsAnswer(yield* budgetsView(lead.orgId, now, input.month));
+  return { asOf: iso(now), view: input.view, answer, sensitive: true as const };
+});
+export const moneyQuery = leadTool("KinWorkTools.moneyQuery", runMoneyQuery);
+
+export const BudgetInput = Schema.Struct({
+  sourceEventId: TrimmedNonEmptyString,
+  category: Schema.optional(Label).annotate({
+    description: "One of the expenses list's categories.",
+  }),
+  project: Schema.optional(Project),
+  limit: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(60))).annotate({
+    description: 'The monthly limit as said: "50k", "₹1,20,000". null removes the budget.',
+  }),
+  currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
+});
+export const BudgetResult = Schema.Struct({
+  status: Schema.Literals(["set", "removed", "none"]),
+  was: Schema.String,
+  now: Schema.String,
+  next: Schema.String,
+  answer: Schema.Unknown,
+  sensitive: Schema.Literal(true),
+});
+const runBudget = Effect.fnUntraced(function* (lead: Lead, input: typeof BudgetInput.Type) {
+  yield* admitted(lead, "budget_set", input);
+  yield* sourceOf(lead, input.sourceEventId);
+  if (!(yield* ownerAsked(lead, input.sourceEventId)))
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message:
+        "A budget is set only from the owner's own message or tap; this turn wasn't one (a routine, schedule, hand-over or report). Nothing changed. Propose it to the owner instead: the budget, the limit and why.",
+    });
+  if (input.category === undefined && input.project === undefined)
+    return yield* invalid("A budget is for a category, a project, or a category in a project.");
+  const expenses = yield* listDef(lead.orgId, "expenses");
+  if (expenses === undefined)
+    return yield* invalid("There is no expenses list yet: track expenses first.");
+  const category =
+    input.category === undefined
+      ? null
+      : expenses.categories.find((one) => one.toLowerCase() === input.category!.toLowerCase());
+  if (category === undefined)
+    return yield* invalid(
+      `Expenses have no category ${input.category!.slice(0, 60)}. They have: ${expenses.categories.join(", ")}.`,
+    );
+  const projectId = (yield* refOrNull(lead, input.project, "projects")) ?? null;
+  const parsed =
+    input.limit === null
+      ? undefined
+      : parseAmount(input.limit, input.currency ?? expenses.currency);
+  if (parsed !== undefined && "error" in parsed) return yield* parsed.error;
+  const now = yield* Clock.currentTimeMillis;
+  const done = yield* setBudget(
+    lead.orgId,
+    {
+      category,
+      projectId,
+      currency: parsed?.money.currency ?? input.currency,
+      limitMinor: parsed?.money.minor ?? null,
+      sourceEventId: input.sourceEventId,
+    },
+    { kind: "agent", id: lead.agentId },
+    now,
+  );
+  const amount = (minor: bigint | null) =>
+    minor === null || done.currency === null ? "none" : formatMinor(minor, done.currency);
+  const was = amount(done.was);
+  const after = amount(parsed === undefined ? null : BigInt(parsed.money.minor));
+  return {
+    status: done.outcome,
+    was,
+    now: after,
+    next:
+      done.outcome === "none"
+        ? "There was no such budget, so nothing was removed. Say so in one line."
+        : `Tell the owner in one line that it was ${was} and is now ${after}.`,
+    answer: budgetsAnswer(yield* budgetsView(lead.orgId, now)),
+    sensitive: true as const,
+  };
+});
+export const budget = leadTool("KinWorkTools.budget", runBudget);
 
 export const DatesInput = Schema.Struct({
   from: KinDay,
@@ -487,9 +598,17 @@ const runDates = Effect.fnUntraced(function* (lead: Lead, input: typeof DatesInp
   const to = endOfDay(input.to, zone) + 1;
   if (to <= from) return yield* invalid("to is on or after from.");
   const now = yield* Clock.currentTimeMillis;
+  const team = yield* viewOf(lead);
   const page = yield* dates(
     lead.orgId,
-    { from, to, lists: input.lists, open: input.open ?? true, limit: input.limit ?? 30 },
+    {
+      from,
+      to,
+      lists: input.lists,
+      open: input.open ?? true,
+      limit: input.limit ?? 30,
+      view: team?.people,
+    },
     now,
   );
   return {
@@ -528,7 +647,9 @@ export const ProfileInput = Schema.Struct({
         Schema.NullOr(Schema.String.check(Schema.isPattern(/^[A-Z]{5}\d{4}[A-Z]$/))),
       ),
       placeOfSupply: Schema.optional(ProfileText),
-      sac: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isPattern(/^\d{4,8}$/)))),
+      sac: Schema.optional(Schema.NullOr(KinSacCode)),
+      lutNumber: KinCompanyProfileSetInput.fields.lutNumber,
+      lutDate: KinCompanyProfileSetInput.fields.lutDate,
       bank: Schema.optional(
         Schema.Struct({
           accountName: Schema.optional(KinCompanyBank.fields.accountName),
@@ -537,6 +658,15 @@ export const ProfileInput = Schema.Struct({
           bankName: Schema.optional(KinCompanyBank.fields.bankName),
           branch: Schema.optional(KinCompanyBank.fields.branch),
           upi: Schema.optional(KinCompanyBank.fields.upi),
+        }),
+      ),
+      logo: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(128)))),
+      brand: Schema.optional(
+        Schema.Struct({
+          primaryColor: Schema.optional(KinCompanyBrand.fields.primaryColor),
+          secondaryColor: Schema.optional(KinCompanyBrand.fields.secondaryColor),
+          font: Schema.optional(KinCompanyBrand.fields.font),
+          footer: Schema.optional(KinCompanyBrand.fields.footer),
         }),
       ),
     }),
@@ -559,7 +689,27 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
     if (input.sourceEventId === undefined)
       return yield* invalid("Pass this turn's sourceEventId to change the profile.");
     yield* sourceOf(lead, input.sourceEventId);
-    const lines = changeLines(current, input.set);
+    const { logo: logoId, ...fields } = input.set;
+    // The logo is an image the owner sent in this chat, copied now so clearing the chat keeps it.
+    const taken =
+      typeof logoId === "string"
+        ? yield* takeLogo(lead.orgId, (yield* writerFor(lead)).chatId, logoId)
+        : undefined;
+    // Drawn once as documents draw it, where Typst is here already, so the card shows a real logo.
+    const renderer = yield* Effect.serviceOption(KinDocRenderer);
+    const undrawable =
+      taken === undefined || Option.isNone(renderer)
+        ? undefined
+        : yield* renderer.value.drawable({ bytes: taken.bytes, extension: taken.extension });
+    if (undrawable !== undefined)
+      return yield* invalid(
+        `That logo can't be used: it didn't draw (${undrawable}). Send it again or as a PNG. Nothing changed.`,
+      );
+    const patch = {
+      ...fields,
+      ...(logoId === undefined ? {} : { logo: taken?.logo ?? null }),
+    };
+    const lines = changeLines(current, patch);
     const refused = tooLongForCard(lines.join("\n"));
     if (refused !== undefined) return yield* refused;
     if (lines.length > 0) {
@@ -567,13 +717,13 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
       const [chat] = yield* sql<{ chatId: string }>`SELECT owner_chat_id AS "chatId" FROM kin_leads
         WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`;
       if (chat === undefined) return yield* invalid("There is no owner chat to confirm this in.");
-      const changeId = `pc_${retryKey(`${lead.orgId}|${lead.agentId}|${lead.wakeupId}|${rev}|${stableStringify(input.set)}`)}`;
+      const changeId = `pc_${retryKey(`${lead.orgId}|${lead.agentId}|${lead.wakeupId}|${rev}|${stableStringify(patch)}`)}`;
       yield* proposeChange({
         orgId: lead.orgId,
         changeId,
         agentId: lead.agentId,
         wakeupId: lead.wakeupId,
-        patch: input.set,
+        patch,
         baseRev: rev,
         now: yield* Clock.currentTimeMillis,
       });
@@ -587,8 +737,13 @@ const runProfile = Effect.fnUntraced(function* (lead: Lead, input: typeof Profil
           detail: lines.join("\n"),
           yes: "Confirm",
           no: "Cancel",
+          ...(taken === undefined ? {} : { image: taken.shown }),
         },
         (widgetId) => attachChangeCard(lead.orgId, changeId, widgetId),
+      );
+      yield* (yield* KinLevelGate).closeReplaced(
+        lead,
+        yield* replaceOlderChanges(lead.orgId, changeId, yield* Clock.currentTimeMillis),
       );
       proposed = lines;
     }

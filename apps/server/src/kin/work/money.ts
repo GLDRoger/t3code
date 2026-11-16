@@ -13,7 +13,7 @@ const CURRENCIES: ReadonlySet<string> = new Set(Intl.supportedValuesOf("currency
 export const isCurrency = (code: string) => CURRENCIES.has(code);
 
 /** Minor units per major one, as a power of ten: 2 for INR and USD, 0 for JPY, 3 for KWD. */
-const currencyDigits = (currency: string) =>
+export const currencyDigits = (currency: string) =>
   new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions()
     .maximumFractionDigits ?? 2;
 
@@ -87,18 +87,27 @@ export const parseAmount = (
 };
 
 /** For people and models: Indian digit grouping for INR, `₹4,20,000.00`. */
-export const formatMoney = (money: KinMoney) => {
-  const digits = currencyDigits(money.currency);
-  const minor = BigInt(money.minor);
+export const formatMoney = (money: KinMoney) => formatMinor(BigInt(money.minor), money.currency);
+
+/** Exact minor units of any size, `-₹1,200.50` below zero; never through a float. */
+export const formatMinor = (minor: bigint, currency: string) => {
+  const digits = currencyDigits(currency);
+  const size = minor < 0n ? -minor : minor;
   const unit = 10n ** BigInt(digits);
-  const whole = new Intl.NumberFormat(money.currency === "INR" ? "en-IN" : "en", {
+  const whole = new Intl.NumberFormat(currency === "INR" ? "en-IN" : "en", {
     style: "currency",
-    currency: money.currency,
+    currency,
     maximumFractionDigits: 0,
     minimumFractionDigits: 0,
-  }).format(minor / unit);
-  return digits === 0 ? whole : `${whole}.${(minor % unit).toString().padStart(digits, "0")}`;
+  }).format(size / unit);
+  const sign = minor < 0n ? "-" : "";
+  return digits === 0
+    ? `${sign}${whole}`
+    : `${sign}${whole}.${(size % unit).toString().padStart(digits, "0")}`;
 };
+
+/** A line people read: `₹4,20,000`, with paise only when there are some. */
+export const formatMoneyPlain = (money: KinMoney) => formatMoney(money).replace(/\.0+$/, "");
 
 /** One exact total per currency: INR first, then by code. Refuses a total past a safe integer. */
 export const addUp = (amounts: Iterable<KinMoney>): ReadonlyArray<KinMoney> => {

@@ -26,6 +26,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import { stringify } from "yaml";
 import { isSqlError } from "effect/sql/SqlError";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -59,10 +60,12 @@ import {
   suggest,
   teamMemoryOn,
 } from "../memory/sensitivity.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import { deferralOrigin } from "../triggers/deferralOrigin.ts";
 import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
 import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { turnSensitive } from "../work/workerAttempts.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -130,6 +133,14 @@ export const ScheduleInput = Schema.Struct({
   chatId: KinChatId,
   sourceEventId: TrimmedNonEmptyString,
   replaces: Schema.optional(KinMemoryItemId),
+  around: Schema.optional(Schema.Boolean).annotate({
+    description:
+      'Loose: fires once somewhere from 5 minutes before to 20 after at, a different minute each day. For "around", "-ish" or a check-in; a plain time stays exact. A replacement keeps what it replaces unless set.',
+  }),
+  checkIn: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "A check-in: each run wakes you with what needs attention and what is new on connected sources, and is skipped when nothing is. A replacement keeps what it replaces unless set.",
+  }),
 });
 export const CancelInput = Schema.Struct({
   itemId: KinMemoryItemId,
@@ -316,7 +327,8 @@ export const authority = Layer.effect(
                 ? (yield* sql<{
                     handle: string;
                     role: string;
-                  }>`SELECT p.handle, m.role FROM kin_people p JOIN kin_chat_members m ON m.org_id = p.org_id AND m.person_id = p.person_id WHERE p.org_id = ${orgId} AND p.person_id = ${who.personId} AND m.member_id = ${who.memberId}`)[0]
+                    level: number;
+                  }>`SELECT p.handle, m.role, ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))} AS level FROM kin_people p JOIN kin_chat_members m ON m.org_id = p.org_id AND m.person_id = p.person_id WHERE p.org_id = ${orgId} AND p.person_id = ${who.personId} AND m.member_id = ${who.memberId}`)[0]
                 : undefined;
             if (who._tag === "human" && !person)
               return yield* new Writer.MemoryWriteRejected({ reason: "Unknown source person" });
@@ -330,7 +342,7 @@ export const authority = Layer.effect(
               ...(said === undefined ? {} : { text: said.body }),
               saidBy: person?.handle ?? (who._tag === "agent" ? who.agentId : "external"),
               trust: person
-                ? person.role === "owner"
+                ? person.role === "owner" || person.level === 1
                   ? "owner"
                   : "member"
                 : who._tag === "agent"
@@ -348,6 +360,11 @@ export const authority = Layer.effect(
             agentId: row.agentId,
             wakeupId,
           }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          // A shared turn's kin_end stages nothing (`end` below), so its receipt shows nothing lost.
+          const ownerOnly =
+            (yield* effectiveAudience({ orgId, agentId: row.agentId, wakeupId }).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            )) === "owner_only";
           return {
             orgId,
             wakeupId,
@@ -358,8 +375,8 @@ export const authority = Layer.effect(
             eventIds: [...sources.keys()],
             sources,
             stagedReceipts:
-              (yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} LIMIT 1`)
-                .length > 0,
+              (yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
+                AND (call_key <> 'end' OR ${ownerOnly ? 1 : 0} = 1) LIMIT 1`).length > 0,
           };
         },
         Effect.mapError((error) =>
@@ -430,7 +447,13 @@ const make = Effect.gen(function* () {
       Effect.provideService(KinIdentity, identity),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
-  const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const refresh = yield* KinRefreshObserver;
+  // The labels these write are what the memory page reads, so their commits tell its refresh.
+  const provideSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(KinRefreshObserver, refresh),
+    );
   /** The calling turn and who reads it; every memory read and write below starts here. */
   const turn = Effect.fn("LeadMemory.turn")(function* (scope: McpInvocationScope) {
     const ctx = yield* resolve(scope);
@@ -486,13 +509,14 @@ const make = Effect.gen(function* () {
     ctx: Effect.Success<ReturnType<typeof resolve>>,
     eventId: string,
   ) {
-    const [row] = yield* sql<{ owner: string }>`SELECT a.owner_person_id AS owner
+    const [row] = yield* sql<{ owner: string }>`SELECT m.author_person_id AS owner
       FROM kin_events e
       JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
       JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
         AND m.message_id = json_extract(e.json, '$.messageId')
         AND m.chat_id = json_extract(e.json, '$.chatId')
-        AND m.author_person_id = a.owner_person_id
+        AND (m.author_person_id = a.owner_person_id
+          OR ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))})
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId}
         AND e.wakeup_id = ${ctx.wakeupId} AND e.event_id = ${eventId} AND e.tag = 'chat.message'
       ORDER BY e.event_id`;
@@ -784,13 +808,15 @@ const make = Effect.gen(function* () {
     const sensitiveBefore = (head: MemoryItemHead) => isSensitive(head, known);
     // Only ever more sensitive here: an item the owner alone had stays theirs through an update
     // or a replacement, and `label` is the one way to let the team know it.
+    // A turn shown something sensitive may be writing it down, so what it writes stays the owner's.
     const sensitive = shared
       ? false
-      : stored !== undefined && input.op !== "supersede"
-        ? asked || sensitiveBefore(stored)
-        : asked ||
-          mustBeSensitive(judged) ||
-          (replaced._tag === "Some" && sensitiveBefore(replaced.value.head));
+      : (yield* turnSensitive(ctx.orgId, ctx.wakeupId).pipe(provideSql)) ||
+        (stored !== undefined && input.op !== "supersede"
+          ? asked || sensitiveBefore(stored)
+          : asked ||
+            mustBeSensitive(judged) ||
+            (replaced._tag === "Some" && sensitiveBefore(replaced.value.head)));
     if (sensitive && stored !== undefined && !sensitiveBefore(stored))
       yield* hold(ctx.orgId, stored.id).pipe(provideSql);
     const labels = {
@@ -1144,7 +1170,11 @@ const make = Effect.gen(function* () {
             );
           if (input.replaces === id) return yield* invalid("`replaces` names this same item.");
           // The native task is the record; its prompt is the instruction, its row the authority.
-          const save = (scheduleId: KinMemoryItemId, existing: boolean) =>
+          const save = (
+            scheduleId: KinMemoryItemId,
+            existing: boolean,
+            kept?: KinSchedules.KinSchedule,
+          ) =>
             Clock.currentTimeMillis.pipe(
               Effect.flatMap((now) =>
                 schedules.save({
@@ -1161,6 +1191,8 @@ const make = Effect.gen(function* () {
                     at: input.at,
                     days: [...new Set(input.days)].toSorted((a, b) => a - b),
                   },
+                  around: input.around ?? (kept !== undefined && kept.looseAt !== null),
+                  checkIn: input.checkIn ?? kept?.checkIn === 1,
                   now,
                 }),
               ),
@@ -1176,7 +1208,7 @@ const make = Effect.gen(function* () {
               ctx,
               `item:${replaced.scheduleId}`,
               { ...input, itemId: replaced.scheduleId },
-              save(replaced.scheduleId, true),
+              save(replaced.scheduleId, true, replaced),
             );
             return { itemId: replaced.scheduleId };
           }
@@ -1233,6 +1265,10 @@ const make = Effect.gen(function* () {
         ctx.agentId,
         Effect.gen(function* () {
           const ctx = yield* resolve(scope, true);
+          // The turn already ended: a second kin_end, whatever its summary, changes nothing.
+          const [done] = yield* sql`SELECT 1 FROM kin_lead_tool_calls
+            WHERE org_id = ${ctx.orgId} AND wakeup_id = ${ctx.wakeupId} AND call_key = 'end'`;
+          if (done !== undefined) return;
           // The turn still ends; only an owner-only turn's own words reach the journal.
           const shared =
             (yield* effectiveAudience(ctx).pipe(

@@ -1,6 +1,7 @@
 import {
   CommandId,
   KinAgentId,
+  type KinEvent,
   KinLead,
   KinMessageId,
   KinOrgId,
@@ -45,21 +46,26 @@ import * as KinBudget from "./KinBudget.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import {
   SHARED_THREAD_PREFIX,
+  ownerAlone,
   aborted,
   audienceChanged,
   effectiveAudience,
   recordedAudience,
+  turnChat,
 } from "./Audience.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import { nonClaudeLeadModel } from "./leadModels.ts";
+import { bootstrapLeadProject } from "./leadProject.ts";
 import * as RoutineContent from "./RoutineContent.ts";
 import * as LeadDelivery from "./LeadDelivery.ts";
 import { PAUSE_POLL_INTERVAL_MS } from "./KinStop.ts";
 import { isOrgPaused } from "./orgState.ts";
+import { isMorningCheckIn, wantsWeekly } from "../pulse/weekly.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import { RETIRED_WORKER_REASON, retiredWorkerKey } from "./Retirement.ts";
 import { WorkerTracker } from "./WorkerTracker.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
+import { ownerLevelPeople } from "../people/KinAccess.ts";
 
 /** How long one wake-up may run before it is interrupted. */
 const WAKEUP_DEADLINE_MS = 900_000;
@@ -100,7 +106,7 @@ export class WakeupRunner extends Context.Service<
   WakeupRunner,
   {
     readonly runOnce: (orgId: KinOrgId, agentId: KinAgentId) => Effect.Effect<void, KinWakeupError>;
-    /** Stops a wake-up `abortPrivateTurns` marked: its line and draft go, then its run. */
+    /** Stops a wake-up `abortChatTurns` marked: its line and draft go, then its run. */
     readonly abort: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
     readonly recover: Effect.Effect<void, KinWakeupError>;
     readonly start: Effect.Effect<void, never, Scope.Scope>;
@@ -164,19 +170,18 @@ const make = Effect.gen(function* () {
     const finished = yield* queue.finish({ orgId: row.orgId, wakeupId: row.wakeupId, status });
     if (Option.isNone(bridge) || Option.isNone(lane)) return;
     // Something visible already happened, so a silent retry could repeat it; say so instead.
-    // Otherwise the person waiting hears at once that it is retrying, or has stopped.
+    // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run
+    // nobody waits on (a check-in, a reminder) retries quietly, but never fails silently.
     const outcome =
       finished.stranded > 0
         ? "partway"
-        : lane.value.mode !== "reply"
-          ? undefined
-          : setup !== null
-            ? setup
-            : finished.failedEventIds.length > 0
-              ? "gave_up"
-              : finished.retried > 0
-                ? "retrying"
-                : undefined;
+        : setup !== null
+          ? setup
+          : finished.failedEventIds.length > 0
+            ? "gave_up"
+            : finished.retried > 0 && lane.value.owed
+              ? "retrying"
+              : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({
         orgId: row.orgId,
@@ -189,6 +194,46 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
   const budget = yield* KinBudget.KinBudget;
+  /**
+   * The budget's say on claimed events, by priority and by who asked: a teammate's request
+   * counts against the teammates' limit, never as the owner's.
+   */
+  const admitEvents = Effect.fn("WakeupRunner.admitEvents")(function* <
+    E extends KinEvent & { readonly priority: "P0" | "P1" | "P2" | "P3" },
+  >(orgId: KinOrgId, agentId: KinAgentId, events: ReadonlyArray<E>) {
+    const [agent] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner
+      FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`;
+    const ownerLevel = new Set(
+      yield* ownerLevelPeople(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+    );
+    if (agent !== undefined) ownerLevel.add(agent.owner);
+    const groups = new Map<string, Array<E>>();
+    for (const event of events) {
+      const asker = KinBudget.askedByTeammate(event, ownerLevel) ? "teammate" : "owner";
+      const key = `${event.priority}:${asker}`;
+      groups.set(key, [...(groups.get(key) ?? []), event]);
+    }
+    const cheap: Array<boolean> = [];
+    const held: Array<{
+      readonly events: ReadonlyArray<E>;
+      readonly heldBy: KinBudget.HeldBy;
+      readonly nextReset: number;
+    }> = [];
+    for (const [key, group] of groups) {
+      const [priority, asker] = key.split(":") as ["P0" | "P1" | "P2" | "P3", "owner" | "teammate"];
+      const admission = yield* budget.admit(orgId, priority, asker);
+      if (admission.allowed) cheap.push(admission.cheapOnly);
+      else
+        held.push({
+          events: group,
+          heldBy: admission.heldBy ?? "org",
+          nextReset: admission.nextReset,
+        });
+    }
+    // The strong model runs while any work it takes still has room: a teammate's spending never
+    // moves the owner's own message to the cheaper one.
+    return { cheapOnly: cheap.length > 0 && cheap.every(Boolean), held };
+  });
   const memory = yield* Memory.Memory;
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
@@ -267,10 +312,19 @@ const make = Effect.gen(function* () {
               }),
             ),
           );
-    if (record.threadId !== null) {
-      const stopped = yield* threads.forceStopThread({ threadId: record.threadId });
+    // The owner's thread and every chat's.
+    const live = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
+      FROM kin_agent_threads WHERE org_id = ${record.orgId} AND agent_id = ${record.agentId}
+        AND ended_at IS NULL ORDER BY thread_id`;
+    for (const threadId of new Set([
+      ...(record.threadId === null ? [] : [record.threadId]),
+      ...live.map((row) => row.threadId),
+    ])) {
+      const stopped = yield* threads.forceStopThread({ threadId });
       if (stopped.outcome === "releasing") return;
-      yield* identity.endAgentThread({ orgId: record.orgId, threadId: record.threadId });
+      yield* identity
+        .endAgentThread({ orgId: record.orgId, threadId })
+        .pipe(Effect.catchTags({ KinChatError: () => Effect.succeed(false) }));
     }
     retired.add(pass);
   });
@@ -322,18 +376,10 @@ const make = Effect.gen(function* () {
       const steer = Effect.fn("WakeupRunner.steer")(function* () {
         if (!steering.open || steering.steers >= MAX_STEERS) return;
         let events = yield* queue.steer({ orgId, agentId, wakeupId });
-        for (const priority of new Set(events.map((event) => event.priority))) {
-          const admission = yield* budget.admit(orgId, priority);
-          if (admission.allowed) continue;
-          yield* queue.release({
-            orgId,
-            wakeupId,
-            eventIds: events.filter((event) => event.priority === priority).map((e) => e.eventId),
-            notBefore: admission.nextReset,
-            countAttempt: false,
-            budgetDeferred: true,
-          });
-          events = events.filter((event) => event.priority !== priority);
+        for (const group of (yield* admitEvents(orgId, agentId, events)).held) {
+          const ids = new Set(group.events.map((event) => event.eventId));
+          yield* budget.defer({ orgId, agentId, wakeupId, ...group });
+          events = events.filter((event) => !ids.has(event.eventId));
         }
         if (events.length === 0) return;
         // An owner-only turn takes no message that would let someone else read its reply, and a
@@ -357,7 +403,7 @@ const make = Effect.gen(function* () {
         const n = steering.steers;
         const messageId = MessageId.make(KinIdentity.steerMessageId(wakeupId, n));
         const deliver = Effect.gen(function* () {
-          const text = yield* prompt.steer({ orgId, agentId, events });
+          const text = yield* prompt.steer({ orgId, agentId, wakeupId, events });
           const attachments = yield* prompt.attachments({ orgId, events });
           const claimed = yield* sql<{ messageId: string }>`
             SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
@@ -730,14 +776,11 @@ const make = Effect.gen(function* () {
             const notClaude = nonClaudeLeadModel(yield* settings.getSettings, current.models);
             if (notClaude !== undefined)
               return yield* new KinWakeupError({ orgId, agentId, cause: notClaude });
-            let cheapOnly = false;
-            for (const priority of new Set(events.map((item) => item.priority))) {
-              const admission = yield* budget.admit(orgId, priority);
-              cheapOnly ||= admission.cheapOnly;
-              if (!admission.allowed) {
-                const deferred = new Set(
-                  events.filter((item) => item.priority === priority).map((item) => item.eventId),
-                );
+            const admitted = yield* admitEvents(orgId, agentId, events);
+            const cheapOnly = admitted.cheapOnly;
+            for (const group of admitted.held) {
+              {
+                const deferred = new Set(group.events.map((item) => item.eventId));
                 // A brief can't wait for tomorrow's budget: Kin sends its own line, saying so.
                 if (Option.isSome(routineContent))
                   for (const event of events) {
@@ -764,19 +807,20 @@ const make = Effect.gen(function* () {
                       events = events.filter((item) => item.eventId !== event.eventId);
                     }
                   }
-                yield* queue.release({
+                const waits = events.filter((event) => deferred.has(event.eventId));
+                yield* budget.defer({
                   orgId,
+                  agentId,
                   wakeupId,
-                  eventIds: events
-                    .filter((event) => deferred.has(event.eventId))
-                    .map((event) => event.eventId),
-                  notBefore: admission.nextReset,
-                  countAttempt: false,
-                  budgetDeferred: true,
+                  events: waits,
+                  heldBy: group.heldBy,
+                  nextReset: group.nextReset,
                 });
                 events = events.filter((event) => !deferred.has(event.eventId));
               }
             }
+            // The owner's own messages run on the cheaper model at the limit: they hear why once.
+            if (cheapOnly) yield* budget.notifyOwner(orgId, "org");
             const routines = yield* Effect.serviceOption(Routines.KinRoutines);
             if (Option.isSome(routines))
               events = yield* Effect.filter(events, (event) =>
@@ -878,6 +922,30 @@ const make = Effect.gen(function* () {
                 if (prepared !== null) routineFacts.set(event.eventId, prepared.body);
               }
             }
+            // The morning check-in carries the retired morning brief's sections as facts.
+            if (Option.isSome(routineContent))
+              for (const event of events.filter(isMorningCheckIn)) {
+                const facts = yield* routineContent.value.morningFacts(orgId, agentId).pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("Kin morning facts unavailable", {
+                      cause: error.cause,
+                    }).pipe(Effect.as(null)),
+                  ),
+                );
+                if (facts !== null) routineFacts.set(event.eventId, facts);
+              }
+            // The weekly check-in's figures are Kin's to post; the lead adds judgement under them.
+            if (Option.isSome(routineContent))
+              for (const event of events.filter(
+                (one) => one._tag === "pulse" && wantsWeekly([one]),
+              ))
+                yield* routineContent.value
+                  .weeklyFigures(orgId, agentId, event.eventId)
+                  .pipe(
+                    Effect.catch((error) =>
+                      Effect.logWarning("Kin weekly figures unavailable", { cause: error.cause }),
+                    ),
+                  );
             if (Option.isSome(routineContent)) {
               events = events.filter(
                 (event) =>
@@ -904,43 +972,51 @@ const make = Effect.gen(function* () {
             const shared =
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             // A project per lead, since its root is the provider's cwd: the lead's own checkout.
-            const { project } = yield* projects.bootstrap({
-              commandId: CommandId.make(`kin-project:${orgId}:${agentId}`),
-              projectId: ProjectId.make(`kin:${orgId}:${agentId}`),
+            const { project } = yield* bootstrapLeadProject(projects, {
+              orgId,
+              agentId,
               workspaceRoot: pinned.read,
-              title: `Kin · ${record.orgName} · ${record.name}`,
+              orgName: record.orgName,
+              name: record.name,
             });
-            let existingThreadId = current.threadId;
-            // Retiring ended its thread, which can't be registered again: a restored lead
-            // launches a fresh one.
-            if (
-              existingThreadId !== null &&
-              (yield* sql`SELECT 1 FROM kin_agent_threads WHERE org_id = ${orgId}
-                AND thread_id = ${existingThreadId} AND ended_at IS NOT NULL`).length > 0
-            ) {
-              yield* sql`UPDATE kin_leads SET thread_id = NULL WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${existingThreadId}`;
-              existingThreadId = null;
-            }
+            // The owner's own turns share one thread; any other, a co-owner's included, runs on
+            // its chat's own, so no model context crosses chats. Ended threads can't be
+            // registered again.
+            const alone = !shared && (yield* ownerAlone(row).pipe(provideSql));
+            const chatId = alone ? null : ((yield* turnChat(row).pipe(provideSql))?.chatId ?? null);
+            const prefix = shared ? SHARED_THREAD_PREFIX : "kin:";
+            const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
+              FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
+                AND ended_at IS NULL AND chat_id IS ${chatId}
+                AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
+              ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
+            let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {
               const existing = yield* threads
                 .getThreadProjection(existingThreadId)
                 .pipe(Effect.option);
-              // A thread keeps its cwd and its tools: one from another project, or made for the
-              // other audience, ends so this wake-up launches its own.
-              if (
-                Option.isSome(existing) &&
-                (existing.value.thread.projectId !== project.id ||
-                  existingThreadId.startsWith(SHARED_THREAD_PREFIX) !== shared)
-              ) {
+              // A thread keeps its cwd: one from another project ends so this launches its own.
+              if (Option.isSome(existing) && existing.value.thread.projectId !== project.id) {
                 yield* identity.endAgentThread({ orgId, threadId: existingThreadId });
-                yield* sql`UPDATE kin_leads SET thread_id = NULL WHERE org_id = ${orgId} AND agent_id = ${agentId} AND thread_id = ${existingThreadId}`;
                 existingThreadId = null;
               }
             }
-            const urgent =
-              yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND priority IN ('P0', 'P1') LIMIT 1`;
+            // Anyone writing to the agent one to one gets its strong model: what they ask may
+            // need a decision or a hand-over.
+            const urgent = yield* sql`SELECT 1 FROM kin_events e
+              WHERE e.org_id = ${orgId} AND e.wakeup_id = ${wakeupId}
+                AND (e.priority IN ('P0', 'P1') OR (e.tag = 'chat.message'
+                  AND json_extract(e.json, '$.provenance._tag') = 'human'
+                  AND EXISTS (SELECT 1 FROM kin_chats c WHERE c.org_id = e.org_id
+                    AND c.chat_id = json_extract(e.json, '$.chatId') AND c.kind = 'direct')))
+              LIMIT 1`;
             const modelSelection =
-              !cheapOnly && (urgent.length > 0 || events.some((event) => event._tag === "routine"))
+              !cheapOnly &&
+              (urgent.length > 0 ||
+                events.some(
+                  (event) =>
+                    event._tag === "routine" || (event._tag === "pulse" && event.strong === true),
+                ))
                 ? current.models.strong
                 : current.models.cheap;
             // A join aborted it while it prepared: nothing launches, a fresh wake-up answers.
@@ -972,7 +1048,13 @@ const make = Effect.gen(function* () {
                       : [],
                   ),
                 });
-                yield* identity.registerAgentThread({ orgId, agentId, threadId });
+                yield* identity.registerAgentThread({
+                  orgId,
+                  agentId,
+                  threadId,
+                  ...(chatId === null ? {} : { chatId }),
+                });
+                // The running turn's thread: one wake-up runs per lead at a time.
                 yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
                 yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, model = ${modelSelection.model},
                 prepared_at = ${preparedAt}

@@ -8,6 +8,8 @@ import { KinIdentity } from "./chat/KinIdentity.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 import type { KinGroups } from "./chat/KinGroups.ts";
+import type { KinRefreshHub } from "./chat/KinRefreshHub.ts";
+import type { KinFloor } from "./floor/KinFloor.ts";
 import type { KinVisualHosts } from "./chat/KinVisualHosts.ts";
 import { KinBudget } from "./lead/KinBudget.ts";
 import type { KinChatRepository } from "./chat/KinChatRepository.ts";
@@ -26,8 +28,10 @@ import type { KinPushDevices } from "./push/KinPushDevices.ts";
 import type { KinPushPresence } from "./push/KinPushPresence.ts";
 import type { KinPushSender } from "./push/KinPushSender.ts";
 import type { KinPresence } from "./reply/KinPresence.ts";
+import type { KinDocRenderer } from "./gendocs/render.ts";
 import type { KinWorkspace } from "./gendocs/workspace.ts";
 import type { KinRecords } from "./work/KinRecords.ts";
+import type { KinConnections } from "./connections/ConnectionsService.ts";
 
 export type Services =
   | KinIdentity
@@ -38,6 +42,8 @@ export type Services =
   | SqlClient.SqlClient
   | KinEventQueue
   | KinChatHub
+  | KinRefreshHub
+  | KinFloor
   | KinStop
   | KinOwnerTimeZone
   | KinVisualHosts
@@ -53,7 +59,9 @@ export type Services =
   | KinPushSender
   | KinPresence
   | KinRecords
-  | KinWorkspace;
+  | KinWorkspace
+  | KinDocRenderer
+  | KinConnections;
 
 export class KinServer extends Context.Service<
   KinServer,

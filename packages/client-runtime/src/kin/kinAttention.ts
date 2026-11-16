@@ -1,0 +1,402 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format host times and local days for React render, outside an Effect runtime.
+import type { KinGoal, KinPulseFact, KinPulseRead, KinRecordKey } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+
+import { kinMoneyDraft, kinMoneyText } from "./kinLists.ts";
+import type { KinNeedsYouRow } from "./kinWorkHome.ts";
+
+/**
+ * "Needs attention": what Kin worked out needs someone, on the screens it is about. One model for
+ * web and mobile: which facts a screen shows, how a row reads, and the three answers to it.
+ */
+
+export const KIN_ATTENTION = {
+  title: "Needs attention",
+  gotIt: "I've got it",
+  notAProblem: "Not a problem",
+  handled: "Handled",
+  undo: "Undo",
+  ask: (name: string) => `Ask ${name}`,
+  snoozeTomorrow: "Snooze until tomorrow",
+  snoozeMonday: "Snooze until Monday",
+  snoozeWeek: "Snooze for a week",
+  failed: "Couldn't save that. Try again.",
+} as const;
+
+/** Where a row opens: the entry itself, Money, or nowhere of its own (ask the agent instead). */
+export type KinAttentionOpen =
+  | { readonly type: "record"; readonly key: KinRecordKey }
+  | { readonly type: "money" }
+  | { readonly type: "none" };
+
+export interface KinAttentionRow {
+  readonly id: string;
+  readonly factKey: string;
+  readonly title: string;
+  readonly detail: string;
+  /** The project or client it is about, when the screen isn't already that one. */
+  readonly about: string | null;
+  /** A date is missed or money is owed now, not only soon. */
+  readonly urgent: boolean;
+  readonly open: KinAttentionOpen;
+  /** The agent that should act, for "Ask"; null when it is a person's or the owner's. */
+  readonly agentId: string | null;
+  /** What "Ask" puts in the chat, so the agent knows what it is about. */
+  readonly askDraft: string;
+  /** In the Handled list: who has it, until when, or that it is not a problem. */
+  readonly handled: string | null;
+  /** About money: Tasks counts these in one row that opens Money, which lists them. */
+  readonly money: boolean;
+}
+
+/** Which facts a screen is about: the whole company, one project, one client, or Money. */
+export type KinAttentionScope =
+  | { readonly type: "all" }
+  | { readonly type: "project"; readonly key: KinRecordKey }
+  | { readonly type: "client"; readonly key: KinRecordKey }
+  | { readonly type: "money" };
+
+const URGENT = new Set<KinPulseFact["sense"]>([
+  "task_late",
+  "theirs_late",
+  "invoice_overdue",
+  "budget_over",
+  "worker_failed",
+  "goal_behind",
+  "milestone_late",
+]);
+
+/** A client's own matters; its late or due tasks are Tasks', so the client page doesn't repeat them. */
+const CLIENT_MATTERS = new Set<KinPulseFact["sense"]>([
+  "client_cold",
+  "client_quiet",
+  "client_waiting_on_us",
+  "theirs_late",
+  "quote_unanswered",
+  "invoice_overdue",
+  "retainer_due",
+  "renewal_due",
+]);
+
+const inScope = (fact: KinPulseFact, scope: KinAttentionScope) => {
+  switch (scope.type) {
+    case "all":
+      return true;
+    case "project":
+      return fact.scope.projectKey === scope.key;
+    case "client":
+      return fact.scope.clientKey === scope.key && CLIENT_MATTERS.has(fact.sense);
+    case "money":
+      // Goals sit above it on Money with their own bars; Tasks keeps their answers.
+      return fact.family === "money";
+  }
+};
+
+const openOf = (fact: KinPulseFact): KinAttentionOpen =>
+  fact.family === "goals" || fact.subject.kind === "budget"
+    ? { type: "money" }
+    : fact.subject.kind === "record"
+      ? { type: "record", key: fact.subject.key }
+      : { type: "none" };
+
+const dayLabel = (at: DateTime.Utc, now: Date) =>
+  new Date(DateTime.toEpochMillis(at)).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    ...(new Date(DateTime.toEpochMillis(at)).getFullYear() === now.getFullYear()
+      ? {}
+      : { year: "numeric" }),
+  });
+
+const handledText = (fact: KinPulseFact, names: ReadonlyMap<string, string>, now: Date) => {
+  const handled = fact.handled;
+  if (handled === null) return null;
+  const by =
+    handled.by._tag === "agent"
+      ? (names.get(handled.by.agentId) ?? "An agent")
+      : (names.get(handled.by.personId) ?? "Someone");
+  return handled.until === null
+    ? `${by}: not a problem`
+    : `${by} has it until ${dayLabel(handled.until, now)}`;
+};
+
+const MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+/** The host words its facts for agents, with ISO days; a person reads "Nov 12" and "November". */
+export function kinPlainDates(text: string): string {
+  return text
+    .replace(/ \((\d{4}-\d{2}-\d{2})\)/g, "")
+    .replace(
+      /\b(\d{4})-(\d{2})-(\d{2})\b/g,
+      (_, _year, month: string, day: string) =>
+        `${MONTHS[Number(month) - 1]?.slice(0, 3) ?? month} ${Number(day)}`,
+    )
+    .replace(
+      /\b(\d{4})-(\d{2})\b/g,
+      (_, _year, month: string) => MONTHS[Number(month) - 1] ?? month,
+    );
+}
+
+function kinAttentionRow(
+  fact: KinPulseFact,
+  input: {
+    readonly scope: KinAttentionScope;
+    readonly names: ReadonlyMap<string, string>;
+    readonly now: Date;
+  },
+): KinAttentionRow {
+  const { subject, scope } = fact;
+  const label = subject.kind === "record" ? `${subject.key} ${subject.title}` : subject.title;
+  const where = [
+    input.scope.type === "project" ? null : (scope.projectTitle ?? null),
+    input.scope.type === "client" || input.scope.type === "project"
+      ? null
+      : (scope.clientTitle ?? null),
+  ].filter((part) => part !== null);
+  return {
+    id: fact.key,
+    factKey: fact.key,
+    title: subject.title,
+    detail: kinPlainDates(fact.consequence),
+    about:
+      [subject.kind === "record" ? subject.key : null, ...where]
+        .filter((part) => part !== null)
+        .join(" · ") || null,
+    urgent: URGENT.has(fact.sense),
+    open: openOf(fact),
+    agentId: fact.actor._tag === "agent" ? fact.actor.agentId : null,
+    askDraft: `About ${label}: ${fact.consequence} `,
+    handled: handledText(fact, input.names, input.now),
+    money: fact.family === "money",
+  };
+}
+
+/**
+ * What a screen shows: the open facts in its scope, most urgent first, and the ones someone
+ * handled, for the Handled list and its Undo. Null while nothing has been read.
+ */
+export function kinAttention(
+  read: KinPulseRead | null,
+  input: {
+    readonly scope: KinAttentionScope;
+    readonly names: ReadonlyMap<string, string>;
+    readonly now: Date;
+  },
+): {
+  readonly open: ReadonlyArray<KinAttentionRow>;
+  readonly handled: ReadonlyArray<KinAttentionRow>;
+} {
+  if (read === null) return { open: [], handled: [] };
+  const facts = read.facts.filter((fact) => inScope(fact, input.scope));
+  const rows = (list: ReadonlyArray<KinPulseFact>) =>
+    [...list]
+      .sort((a, b) => Number(URGENT.has(b.sense)) - Number(URGENT.has(a.sense)))
+      .map((fact) => kinAttentionRow(fact, input));
+  return {
+    open: rows(facts.filter((fact) => fact.handled === null)),
+    handled: rows(facts.filter((fact) => fact.handled !== null)),
+  };
+}
+
+/** Tasks shows what isn't money row by row, and money as one count that opens Money. */
+export function kinTasksAttention(open: ReadonlyArray<KinAttentionRow>): {
+  readonly rows: ReadonlyArray<KinAttentionRow>;
+  readonly money: number;
+  readonly moneyRow: KinNeedsYouRow | null;
+} {
+  const money = open.filter((row) => row.money).length;
+  return {
+    rows: open.filter((row) => !row.money),
+    money,
+    moneyRow:
+      money === 0
+        ? null
+        : {
+            id: "attention:money",
+            kind: "money",
+            title: "Money",
+            detail: money === 1 ? "1 thing needs attention" : `${money} things need attention`,
+            late: open.some((row) => row.money && row.urgent),
+            open: { type: "money" },
+          },
+  };
+}
+
+/** The badge on Tasks: what needs attention and nobody has in hand yet. */
+export const kinAttentionCount = (read: KinPulseRead | null) =>
+  read === null ? 0 : read.facts.filter((fact) => fact.handled === null).length;
+
+/** The badge's text: nothing at zero, and "99+" past what fits. */
+export const kinAttentionBadge = (count: number) =>
+  count === 0 ? null : count > 99 ? "99+" : String(count);
+
+/**
+ * "Needs you" on Tasks is fed by both: what needs attention, then what it showed before without
+ * the tasks and the overdue-money row the attention rows already cover.
+ */
+export function kinNeedsYouBeside(
+  rows: ReadonlyArray<KinNeedsYouRow>,
+  { open, handled }: ReturnType<typeof kinAttention>,
+): ReadonlyArray<KinNeedsYouRow> {
+  // Something already answered stays answered here too, not back as a plain row.
+  const attention = [...open, ...handled];
+  const covered = new Set(
+    attention.flatMap((row) => (row.open.type === "record" ? [row.open.key] : [])),
+  );
+  const money = attention.some((row) => row.factKey.startsWith("invoice_overdue:"));
+  return rows.filter(
+    (row) =>
+      !(row.open.type === "task" && covered.has(row.open.key)) &&
+      !(money && row.id === "money:overdue"),
+  );
+}
+
+const pad = (value: number) => String(value).padStart(2, "0");
+const dayOf = (date: Date) =>
+  `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+const plusDays = (date: Date, days: number) =>
+  new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+
+/** Snooze's three choices, as the days the host hides a row until. */
+export function kinSnoozeDays(now: Date) {
+  const toMonday = (8 - now.getDay()) % 7 || 7;
+  return [
+    { label: KIN_ATTENTION.snoozeTomorrow, until: dayOf(plusDays(now, 1)) },
+    { label: KIN_ATTENTION.snoozeMonday, until: dayOf(plusDays(now, toMonday)) },
+    { label: KIN_ATTENTION.snoozeWeek, until: dayOf(plusDays(now, 7)) },
+  ] as const;
+}
+
+// Goals
+
+export const KIN_GOALS = {
+  title: "Goals",
+  add: "Add goal",
+  edit: "Edit goal",
+  name: "Name",
+  measure: "Measures",
+  target: "Target",
+  current: "Now at",
+  unit: "Counts",
+  startsOn: "From",
+  dueOn: "By",
+  save: "Save",
+  reached: "Mark reached",
+  remove: "Remove goal",
+  behind: "Behind",
+  onTrack: "On track",
+  reachedLabel: "Reached",
+  measures: {
+    revenue_received: "Money received",
+    clients_won: "Clients won",
+    tasks_done: "Tasks done",
+    manual: "A number we update",
+  } satisfies Record<KinGoal["measure"], string>,
+  targetHint: {
+    revenue_received: "40 lakh, ₹40,00,000",
+    clients_won: "5",
+    tasks_done: "40",
+    manual: "2",
+  } satisfies Record<KinGoal["measure"], string>,
+} as const;
+
+export interface KinGoalView {
+  readonly key: KinRecordKey;
+  readonly title: string;
+  /** "₹12,00,000 of ₹40,00,000". */
+  readonly figure: string;
+  /** "By 31 Mar · ₹18,00,000 expected by now". */
+  readonly detail: string;
+  /** 0 to 1, for the bar. */
+  readonly progress: number;
+  /** Where the straight line stands, 0 to 1, marked on the bar. */
+  readonly pace: number;
+  readonly status: "behind" | "on_track" | "reached";
+}
+
+const figureOf = (goal: KinGoal, value: number, withUnit = true) =>
+  goal.currency === undefined
+    ? `${Math.round(value)}${goal.unit === undefined || !withUnit ? "" : ` ${goal.unit}`}`
+    : kinMoneyText({ minor: Math.round(value / 100) * 100, currency: goal.currency });
+
+const clamp = (value: number) => Math.max(0, Math.min(1, value));
+const shortDay = (day: string, now: Date) => {
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(year ?? 1970, (month ?? 1) - 1, date ?? 1).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    ...(year === now.getFullYear() ? {} : { year: "numeric" }),
+  });
+};
+
+export function kinGoalView(goal: KinGoal, now: Date): KinGoalView {
+  const reached = goal.state === "done" || goal.current >= goal.target;
+  return {
+    key: goal.key,
+    title: goal.title,
+    figure: `${figureOf(goal, goal.current, false)} of ${figureOf(goal, goal.target)}`,
+    detail: [
+      goal.dueOn === null ? null : `By ${shortDay(goal.dueOn, now)}`,
+      reached || goal.dueOn === null ? null : `${figureOf(goal, goal.expected)} expected by now`,
+    ]
+      .filter((part) => part !== null)
+      .join(" · "),
+    progress: clamp(goal.current / goal.target),
+    pace: clamp(goal.expected / goal.target),
+    status: reached ? "reached" : goal.behind ? "behind" : "on_track",
+  };
+}
+
+/** Goals in a line: how many are behind, else how many are reached or on track. */
+export function kinGoalsSummary(views: ReadonlyArray<Pick<KinGoalView, "status">>): string {
+  const count = (status: KinGoalView["status"]) =>
+    views.filter((one) => one.status === status).length;
+  return [
+    count("behind") === 0 ? null : `${count("behind")} behind`,
+    count("on_track") === 0 ? null : `${count("on_track")} on track`,
+    count("reached") === 0 ? null : `${count("reached")} reached`,
+  ]
+    .filter((part) => part !== null)
+    .join(", ");
+}
+
+/** A goal as its edit sheet starts: the figures as a person would type them. */
+export function kinGoalDraft(goal: KinGoal | null, now: Date) {
+  const today = dayOf(now);
+  if (goal === null)
+    return {
+      title: "",
+      measure: "revenue_received" as KinGoal["measure"],
+      target: "",
+      current: "",
+      unit: "",
+      startsOn: today,
+      dueOn: dayOf(new Date(now.getFullYear(), now.getMonth() + 3, now.getDate())),
+    };
+  return {
+    title: goal.title,
+    measure: goal.measure,
+    target:
+      goal.currency === undefined
+        ? String(goal.target)
+        : kinMoneyDraft({ minor: goal.target, currency: goal.currency }, goal.currency),
+    current: goal.measure === "manual" ? String(goal.current) : "",
+    unit: goal.unit ?? "",
+    startsOn: goal.startsOn,
+    dueOn: goal.dueOn ?? today,
+  };
+}
+export type KinGoalDraft = ReturnType<typeof kinGoalDraft>;

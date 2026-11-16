@@ -1,11 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import {
   EnvironmentId,
   IsoDateTime,
@@ -52,7 +48,8 @@ const KIN_RECORD_STATES = ["open", "doing", "waiting", "done", "dropped"] as con
 export const KinRecordState = Schema.Literals(KIN_RECORD_STATES);
 export type KinRecordState = typeof KinRecordState.Type;
 /** The Work list's kinds: one field, so a request that turns out to be a bug keeps its key. */
-export const KinRecordCategory = Schema.Literals(["task", "issue", "obligation"]);
+/** A `meeting` has its start as `dateAt` and the people in it as `attendees`. */
+export const KinRecordCategory = Schema.Literals(["task", "issue", "obligation", "meeting"]);
 export type KinRecordCategory = typeof KinRecordCategory.Type;
 /** Who has to do it: `theirs` when the other party owes it and the owner is whoever chases. */
 export const KinRecordSide = Schema.Literals(["ours", "theirs"]);
@@ -73,8 +70,15 @@ export type KinWorkActor = typeof KinWorkActor.Type;
 
 const KinPullRequestRef = Schema.Struct({ url: Schema.String, number: NonNegativeInt });
 
-/** The built-in lists. Only `work` entries are tasks; the other three are the light CRM. */
-export const KinWorkListName = Schema.Literals(["work", "clients", "contacts", "projects"]);
+/** The built-in lists. Only `work` entries are tasks; milestones belong to projects. */
+export const KinWorkListName = Schema.Literals([
+  "work",
+  "clients",
+  "contacts",
+  "projects",
+  "milestones",
+  "goals",
+]);
 export type KinWorkListName = typeof KinWorkListName.Type;
 /** A client or a vendor: one list, by kind. */
 export const KinPartyKind = Schema.Literals(["client", "vendor"]);
@@ -86,6 +90,12 @@ export const KinRecordRef = Schema.Struct({
   title: KinTrimmedText,
 });
 export type KinRecordRef = typeof KinRecordRef.Type;
+/** A client or vendor an entry or project is for. `kind` is absent from hosts before it was sent. */
+export const KinPartyRef = Schema.Struct({
+  ...KinRecordRef.fields,
+  kind: Schema.optional(KinPartyKind),
+});
+export type KinPartyRef = typeof KinPartyRef.Type;
 /** `owner/name` on GitHub. */
 export const KinRepoName = Schema.String.check(
   Schema.isPattern(/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/),
@@ -122,11 +132,13 @@ export const KinRecord = Schema.Struct({
   closedAt: Schema.NullOr(IsoDateTime),
   // Optional below: absent when unset, and from hosts older than the clients slice.
   /** The client or vendor it is for, which makes it part of that client's record. */
-  party: Schema.optional(KinRecordRef),
+  party: Schema.optional(KinPartyRef),
   project: Schema.optional(KinRecordRef),
   repo: Schema.optional(KinRepoName),
   /** True when its project or client is labelled sensitive, whatever its own label says. */
   sensitiveInherited: Schema.optional(Schema.Literal(true)),
+  /** The owner shared it with the team (`kin.work.share`). */
+  shared: Schema.optional(Schema.Literal(true)),
   // Defined lists, such as expenses (slice 5); absent on Work and the light CRM.
   /** The defined list it is in. */
   list: Schema.optional(KinListId),
@@ -139,6 +151,10 @@ export const KinRecord = Schema.Struct({
   repeat: Schema.optional(KinRepeatRule),
   /** An invoice's amount less the payments received against it. */
   balance: Schema.optional(KinMoney),
+  /** Of what settled an invoice, the money paid in; absent from older servers. */
+  received: Schema.optional(KinMoney),
+  /** Tax the client deducted at source: it settles the invoice but is not money received. */
+  tdsDeducted: Schema.optional(KinMoney),
   /** In a defined list's own rows, its fields by key, as its definition types them. */
   fields: Schema.optional(Schema.Record(Schema.String, KinFieldValue)),
 });
@@ -213,6 +229,10 @@ export type KinRecordChange = typeof KinRecordChange.Type;
 export const KinRecordDetail = Schema.Struct({
   ...KinRecord.fields,
   notes: KinText,
+  /** A task's milestone; absent with none, and from older hosts. */
+  milestone: Schema.optional(KinRecordRef),
+  /** A milestone's tasks, open first, at most 100; absent on anything else. */
+  tasks: Schema.optional(Schema.Array(KinRecord)),
   /** The chat and message it came from, when it came from one. */
   source: Schema.Struct({
     chatId: Schema.NullOr(KinChatId),
@@ -221,6 +241,10 @@ export const KinRecordDetail = Schema.Struct({
   /** The human who gave it to its current owner. The only authority a lead's work on it has. */
   assignedBy: Schema.NullOr(KinWorkPrincipal),
   assignedAt: Schema.NullOr(IsoDateTime),
+  /** The agent that gave it to its current holder, when one did; absent from older hosts. */
+  assignedByAgent: Schema.optional(KinAgentId),
+  /** The one line on why its holder was picked. */
+  reason: Schema.optional(KinText),
   createdBy: KinWorkActor,
   links: Schema.Array(KinRecordLink),
   /** Newest first, at most `KIN_RECORD_CHANGES_CAP`. */
@@ -231,6 +255,18 @@ export const KinRecordDetail = Schema.Struct({
   files: Schema.optional(Schema.Array(KinFileRef)),
   /** An invoice's payments, newest first, voided ones included. */
   payments: Schema.optional(Schema.Array(KinPayment)),
+  /** Mail that carried its file, sent on the owner's Confirm, newest first. */
+  sent: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        to: Schema.Array(Schema.String),
+        subject: Schema.String,
+        at: IsoDateTime,
+        /** The mail thread it went in: a reminder replies there. */
+        threadId: Schema.NullOr(Schema.String),
+      }),
+    ),
+  ),
 });
 export type KinRecordDetail = typeof KinRecordDetail.Type;
 export const KIN_RECORD_CHANGES_CAP = 50;
@@ -246,6 +282,9 @@ const KinListSums = {
   owed: Schema.optional(KinMoneyTotals),
   /** With `paidFrom` or `paidTo`: the payments made in those days, not the entries' amounts. */
   received: Schema.optional(KinMoneyTotals),
+  /** Quotes: those sent and waiting for an answer, and those accepted. Drafts aren't totalled. */
+  sent: Schema.optional(KinMoneyTotals),
+  accepted: Schema.optional(KinMoneyTotals),
 };
 /** `group` is a category, `2026-11` or `FY2026-27`; null is entries with none. */
 export const KinListTotals = Schema.Struct({
@@ -375,7 +414,9 @@ export type KinWorkSummary = typeof KinWorkSummary.Type;
 
 /**
  * Live updates without lists on the socket: the latest change number now, then again after each
- * change. A client with a list, entry or count open refetches it, debounced.
+ * change. A client with a list, entry or count open refetches it, debounced. Numbers are the
+ * viewer's own: a teammate's count only changes to tasks they could see, so compare a number only
+ * with others from the same session (summary, list, entry and these events share one count).
  */
 export const KinWorkSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinWorkSubscribeInput = typeof KinWorkSubscribeInput.Type;
@@ -391,6 +432,8 @@ export type KinWorkEvent = typeof KinWorkEvent.Type;
 /** The owner's "New": a short form. Long text belongs in chat. */
 export const KinWorkCreateInput = Schema.Struct({
   orgId: KinOrgId,
+  /** `milestones` adds a milestone to `project`; default a Work entry. */
+  list: Schema.optional(Schema.Literal("milestones")),
   title: KinTrimmedText.check(Schema.isMaxLength(280)),
   /** Defaults to the owner. A lead given work this way is woken to do it. */
   owner: Schema.optional(KinWorkPrincipal),
@@ -468,6 +511,32 @@ export const KinWorkUpdateInput = Schema.Struct({
 });
 export type KinWorkUpdateInput = typeof KinWorkUpdateInput.Type;
 
+/**
+ * The owner shares tasks with the team (`shared: true`) or takes them back. Every task that
+ * existed before teammates could read Work is the owner's alone until he shares it.
+ */
+export const KinWorkShareInput = Schema.Struct({
+  orgId: KinOrgId,
+  keys: Schema.Array(KinRecordKey).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  shared: Schema.Boolean,
+});
+export type KinWorkShareInput = typeof KinWorkShareInput.Type;
+export const KinWorkShareResult = Schema.Struct({ records: Schema.Array(KinRecord) });
+export type KinWorkShareResult = typeof KinWorkShareResult.Type;
+
+/**
+ * Whoever holds an open task gives it back to whoever gave it to them, an agent or a person, with
+ * an optional word on why. The agent that gave it is woken to give it to someone else.
+ */
+export const KinWorkHandBackInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  note: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(280))),
+});
+export type KinWorkHandBackInput = typeof KinWorkHandBackInput.Type;
+export const KinWorkHandBackResult = Schema.Struct({ key: KinRecordKey, to: KinWorkPrincipal });
+export type KinWorkHandBackResult = typeof KinWorkHandBackResult.Type;
+
 /** Keep a lead's suggested entry (`confirm`), or decline it, which drops it. */
 export const KinWorkConfirmInput = Schema.Struct({
   orgId: KinOrgId,
@@ -479,16 +548,62 @@ export type KinWorkConfirmInput = typeof KinWorkConfirmInput.Type;
 // The light CRM. A client page and a project page each come whole from one call: no joins or
 // arithmetic on the client. Everything is computed on read from entries and their change logs.
 
+/** India's 15-character GST number. */
+export const KIN_GSTIN_PATTERN = /^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+export const KinGstin = Schema.String.check(Schema.isPattern(KIN_GSTIN_PATTERN));
+/** GST state codes, as the first two digits of a GSTIN, and their states. */
+export const KIN_GST_STATES: Readonly<Record<string, string>> = {
+  "01": "Jammu and Kashmir",
+  "02": "Himachal Pradesh",
+  "03": "Punjab",
+  "04": "Chandigarh",
+  "05": "Uttarakhand",
+  "06": "Haryana",
+  "07": "Delhi",
+  "08": "Rajasthan",
+  "09": "Uttar Pradesh",
+  "10": "Bihar",
+  "11": "Sikkim",
+  "12": "Arunachal Pradesh",
+  "13": "Nagaland",
+  "14": "Manipur",
+  "15": "Mizoram",
+  "16": "Tripura",
+  "17": "Meghalaya",
+  "18": "Assam",
+  "19": "West Bengal",
+  "20": "Jharkhand",
+  "21": "Odisha",
+  "22": "Chhattisgarh",
+  "23": "Madhya Pradesh",
+  "24": "Gujarat",
+  "26": "Dadra and Nagar Haveli and Daman and Diu",
+  "27": "Maharashtra",
+  "29": "Karnataka",
+  "30": "Goa",
+  "31": "Lakshadweep",
+  "32": "Kerala",
+  "33": "Tamil Nadu",
+  "34": "Puducherry",
+  "35": "Andaman and Nicobar Islands",
+  "36": "Telangana",
+  "37": "Andhra Pradesh",
+  "38": "Ladakh",
+};
+
 /** Fields sensitive whatever the entry's own label: contact details and commercial terms. */
 export const KIN_SENSITIVE_FIELDS = {
   clients: ["terms"],
   contacts: ["email", "phone"],
+  projects: ["value"],
 } as const;
 const SensitiveFields = Schema.Array(TrimmedNonEmptyString);
 const Name = KinTrimmedText.check(Schema.isMaxLength(200));
 const Notes = KinText.check(Schema.isMaxLength(4_000));
 const ShortText = KinTrimmedText.check(Schema.isMaxLength(200));
 const RequestId = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
+const Address = KinTrimmedText.check(Schema.isMaxLength(500));
+const PlaceOfSupply = KinTrimmedText.check(Schema.isMaxLength(60));
 const PageLimit = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(1),
   Schema.isLessThanOrEqualTo(KIN_RECORDS_PAGE_CAP),
@@ -512,6 +627,8 @@ export const KinPartyRow = Schema.Struct({
   active: Schema.Boolean,
   sensitive: Schema.Boolean,
   ...KinPartyCounts,
+  /** The latest contact Kin knows of (`KinClientTouch`); absent from hosts before contact logs. */
+  lastContactAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   /** The soonest open entry we owe them. */
   next: Schema.NullOr(
     Schema.Struct({
@@ -530,6 +647,12 @@ export const KinPartyDetail = Schema.Struct({
   notes: KinText,
   /** Commercial terms in a line or a paragraph. Always sensitive. */
   terms: Schema.NullOr(KinText),
+  /** The billing address an invoice shows. */
+  address: Schema.NullOr(KinText),
+  /** Its GSTIN, when it has one; its invoices are taxed by its state. */
+  gstin: Schema.NullOr(KinText),
+  /** Where it is supplied: an Indian state, or a country outside India for an export. */
+  placeOfSupply: Schema.NullOr(KinText),
   /** Which fields here are sensitive whatever `sensitive` says. */
   sensitiveFields: SensitiveFields,
   createdAt: IsoDateTime,
@@ -565,7 +688,7 @@ export const KinProjectRow = Schema.Struct({
   recordId: KinRecordId,
   key: KinRecordKey,
   name: KinTrimmedText,
-  party: Schema.NullOr(KinRecordRef),
+  party: Schema.NullOr(KinPartyRef),
   /** Who leads it: a person or a lead. */
   owner: KinWorkPrincipal,
   state: KinProjectState,
@@ -579,10 +702,21 @@ export const KinProjectRow = Schema.Struct({
   rev: NonNegativeInt,
 });
 export type KinProjectRow = typeof KinProjectRow.Type;
+export const KIN_PROJECT_BILLING = ["fixed", "hourly", "retainer"] as const;
+export const KinProjectBilling = Schema.Literals(KIN_PROJECT_BILLING);
+export type KinProjectBilling = typeof KinProjectBilling.Type;
 export const KinProjectDetail = Schema.Struct({
   ...KinProjectRow.fields,
   notes: KinText,
   repos: Schema.Array(KinRepoName),
+  // Absent from hosts before the project spine.
+  billing: Schema.optional(Schema.NullOr(KinProjectBilling)),
+  value: Schema.optional(Schema.NullOr(KinMoney)),
+  startsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** A retainer's next renewal day. */
+  renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** The people and agents on it besides its lead (`owner`). Membership only; it grants nothing. */
+  members: Schema.optional(Schema.Array(KinWorkPrincipal)),
   /** Why `health` is what it is. */
   healthBecause: Schema.Struct({
     targetPassed: Schema.Boolean,
@@ -617,6 +751,27 @@ export type KinBlockedOn = typeof KinBlockedOn.Type;
 
 export const KinPartyPageInput = KinRecordLookup;
 export type KinPartyPageInput = typeof KinPartyPageInput.Type;
+/** What someone logged by hand or a lead was told of. */
+export const KinTouchKind = Schema.Literals(["call", "meeting", "email", "message", "other"]);
+export type KinTouchKind = typeof KinTouchKind.Type;
+/**
+ * One contact with a client: logged, or what Kin already knows (an invoice or quote issued, a
+ * payment received, a meeting that has passed). A chat mentioning them is not one.
+ */
+export const KinClientTouch = Schema.Struct({
+  /** A logged one's id; Kin's own are `record:<key>` or `payment:<id>` and can't be removed. */
+  id: TrimmedNonEmptyString,
+  at: IsoDateTime,
+  kind: Schema.Literals([...KinTouchKind.literals, "invoice", "quote", "payment"]),
+  note: KinText,
+  /** Who on our side, by name, when known. */
+  who: Schema.NullOr(KinTrimmedText),
+  logged: Schema.Boolean,
+  /** The entry it comes from, for Kin's own. */
+  record: Schema.NullOr(KinRecordRef),
+});
+export type KinClientTouch = typeof KinClientTouch.Type;
+
 /** The client page. `weOwe` is soonest due first; `theyOwe` is overdue first, then soonest. */
 export const KinPartyPage = Schema.Struct({
   party: KinPartyDetail,
@@ -626,6 +781,8 @@ export const KinPartyPage = Schema.Struct({
   projects: Schema.Array(KinProjectRow),
   weOwe: Capped(KinRecord),
   theyOwe: Capped(KinRecord),
+  /** Newest first, a few; absent from hosts before contact logs. */
+  touches: Schema.optional(Schema.Array(KinClientTouch)),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });
@@ -633,6 +790,46 @@ export type KinPartyPage = typeof KinPartyPage.Type;
 
 export const KinProjectPageInput = KinRecordLookup;
 export type KinProjectPageInput = typeof KinProjectPageInput.Type;
+/** A milestone with its tasks' progress. `atRisk`: due within a week with late or later work. */
+export const KinMilestone = Schema.Struct({
+  ...KinRecordRef.fields,
+  state: KinRecordState,
+  dueAt: Schema.NullOr(IsoDateTime),
+  dueAllDay: Schema.Boolean,
+  total: NonNegativeInt,
+  done: NonNegativeInt,
+  late: Schema.Boolean,
+  atRisk: Schema.Boolean,
+  rev: NonNegativeInt,
+});
+export type KinMilestone = typeof KinMilestone.Type;
+/** A task made from a doc section that has changed since the task was written from it. */
+export const KinSpecChange = Schema.Struct({
+  record: KinRecordRef,
+  doc: KinRecordRef,
+  section: Schema.String,
+  /** The section is no longer in the doc. */
+  gone: Schema.Boolean,
+});
+export type KinSpecChange = typeof KinSpecChange.Type;
+/** One person or agent on the project, with what they hold in it. */
+export const KinProjectPerson = Schema.Struct({
+  who: KinWorkPrincipal,
+  lead: Schema.Boolean,
+  member: Schema.Boolean,
+  open: NonNegativeInt,
+  late: NonNegativeInt,
+});
+export type KinProjectPerson = typeof KinProjectPerson.Type;
+/** Money against the project, per currency: never summed across currencies. */
+export const KinProjectMoney = Schema.Struct({
+  quoted: Schema.Array(KinMoney),
+  invoiced: Schema.Array(KinMoney),
+  received: Schema.Array(KinMoney),
+  unpaid: Schema.Array(KinMoney),
+});
+export type KinProjectMoney = typeof KinProjectMoney.Type;
+
 /** The project page. Its full entry list is `kin.work.list` with `project`. */
 export const KinProjectPage = Schema.Struct({
   project: KinProjectDetail,
@@ -659,6 +856,15 @@ export const KinProjectPage = Schema.Struct({
     items: Schema.Array(KinWorkHistoryItem),
     total: NonNegativeInt,
   }),
+  // Absent from hosts before the project spine.
+  /** By due date, undated last. */
+  milestones: Schema.optional(Schema.Array(KinMilestone)),
+  /** Its lead, members, then anyone else holding its open tasks. */
+  people: Schema.optional(Schema.Array(KinProjectPerson)),
+  /** Meetings from a day ago onwards, soonest first; a passed one stays until it is closed. */
+  meetings: Schema.optional(Schema.Array(KinRecord)),
+  specChanged: Schema.optional(Schema.Array(KinSpecChange)),
+  money: Schema.optional(KinProjectMoney),
   seq: NonNegativeInt,
   asOf: IsoDateTime,
 });
@@ -727,6 +933,10 @@ export const KinPartyCreateInput = Schema.Struct({
   owner: Schema.optional(KinWorkPrincipal),
   notes: Schema.optional(Notes),
   terms: Schema.optional(Notes),
+  address: Schema.optional(Address),
+  gstin: Schema.optional(KinGstin),
+  /** A state from `KIN_GST_STATES`, or a country for an export. */
+  placeOfSupply: Schema.optional(PlaceOfSupply),
   /** Labels everything pointing at it sensitive too. */
   sensitive: Schema.optional(Schema.Boolean),
   clientRequestId: RequestId,
@@ -746,6 +956,11 @@ export const KinPartyUpdateInput = Schema.Struct({
   notes: Schema.optional(Notes),
   /** `null` clears. */
   terms: Schema.optional(Schema.NullOr(Notes)),
+  /** `null` clears. */
+  address: Schema.optional(Schema.NullOr(Address)),
+  /** `null` clears these two. */
+  gstin: Schema.optional(Schema.NullOr(KinGstin)),
+  placeOfSupply: Schema.optional(Schema.NullOr(PlaceOfSupply)),
   sensitive: Schema.optional(Schema.Boolean),
   active: Schema.optional(Schema.Boolean),
 });
@@ -764,6 +979,23 @@ export const KinContactCreateInput = Schema.Struct({
   clientRequestId: RequestId,
 });
 export type KinContactCreateInput = typeof KinContactCreateInput.Type;
+export const KinTouchLogInput = Schema.Struct({
+  orgId: KinOrgId,
+  party: KinRecordKey,
+  kind: KinTouchKind,
+  /** When it happened; now if left out. */
+  at: Schema.optional(IsoDateTime),
+  note: Schema.optional(Notes),
+  clientRequestId: RequestId,
+});
+export type KinTouchLogInput = typeof KinTouchLogInput.Type;
+export const KinTouchRemoveInput = Schema.Struct({
+  orgId: KinOrgId,
+  touchId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinTouchRemoveInput = typeof KinTouchRemoveInput.Type;
+export const KinTouchRemoveResult = Schema.Struct({ removed: Schema.Boolean });
+export type KinTouchRemoveResult = typeof KinTouchRemoveResult.Type;
 export const KinContactUpdateInput = Schema.Struct({
   orgId: KinOrgId,
   key: KinRecordKey,
@@ -791,6 +1023,12 @@ export const KinProjectCreateInput = Schema.Struct({
   targetAt: Schema.optional(IsoDateTime),
   targetAllDay: Schema.optional(Schema.Boolean),
   repos: Schema.optional(Schema.Array(KinRepoName).check(Schema.isMaxLength(20))),
+  billing: Schema.optional(Schema.NullOr(KinProjectBilling)),
+  /** `null` clears. */
+  value: Schema.optional(Schema.NullOr(KinMoney)),
+  startsOn: Schema.optional(Schema.NullOr(KinDay)),
+  renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   clientRequestId: RequestId,
@@ -808,6 +1046,12 @@ export const KinProjectUpdateInput = Schema.Struct({
   targetAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   targetAllDay: Schema.optional(Schema.Boolean),
   repos: Schema.optional(Schema.Array(KinRepoName).check(Schema.isMaxLength(20))),
+  billing: Schema.optional(Schema.NullOr(KinProjectBilling)),
+  /** `null` clears. */
+  value: Schema.optional(Schema.NullOr(KinMoney)),
+  startsOn: Schema.optional(Schema.NullOr(KinDay)),
+  renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   state: Schema.optional(KinProjectState),
@@ -821,9 +1065,11 @@ export const KIN_WORK_WS_METHODS = {
   subscribe: "kin.work.subscribe",
   create: "kin.work.create",
   assign: "kin.work.assign",
+  handBack: "kin.work.handBack",
   update: "kin.work.update",
   confirm: "kin.work.confirm",
   decline: "kin.work.decline",
+  share: "kin.work.share",
   parties: "kin.work.parties",
   party: "kin.work.party",
   projects: "kin.work.projects",
@@ -835,10 +1081,13 @@ export const KIN_WORK_WS_METHODS = {
   updateContact: "kin.work.updateContact",
   createProject: "kin.work.createProject",
   updateProject: "kin.work.updateProject",
+  logTouch: "kin.work.logTouch",
+  removeTouch: "kin.work.removeTouch",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
-// Owner only, on the server; a chat-only session is refused before any handler runs.
+// Tasks reach a teammate's session too, and the server shows them only their view of them
+// (`teamView.ts`); clients, projects, confirming and sharing are the owner's.
 export const KinWorkRpcs = [
   Rpc.make(KIN_WORK_WS_METHODS.summary, {
     payload: KinWorkSummaryInput,
@@ -867,6 +1116,11 @@ export const KinWorkRpcs = [
     success: KinRecordDetail,
     error,
   }),
+  Rpc.make(KIN_WORK_WS_METHODS.handBack, {
+    payload: KinWorkHandBackInput,
+    success: KinWorkHandBackResult,
+    error,
+  }),
   Rpc.make(KIN_WORK_WS_METHODS.update, {
     payload: KinWorkUpdateInput,
     success: KinRecordDetail,
@@ -875,6 +1129,11 @@ export const KinWorkRpcs = [
   Rpc.make(KIN_WORK_WS_METHODS.confirm, {
     payload: KinWorkConfirmInput,
     success: KinRecordDetail,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.share, {
+    payload: KinWorkShareInput,
+    success: KinWorkShareResult,
     error,
   }),
   Rpc.make(KIN_WORK_WS_METHODS.decline, {
@@ -933,30 +1192,46 @@ export const KinWorkRpcs = [
     success: KinProjectDetail,
     error,
   }),
+  Rpc.make(KIN_WORK_WS_METHODS.logTouch, {
+    payload: KinTouchLogInput,
+    success: KinClientTouch,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.removeTouch, {
+    payload: KinTouchRemoveInput,
+    success: KinTouchRemoveResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_WORK_RPC_SCOPES = {
-  [KIN_WORK_WS_METHODS.summary]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.list]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.get]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.subscribe]: AuthOrchestrationReadScope,
-  // Giving a lead work starts agent work on the owner's budget, as a message to it does.
-  [KIN_WORK_WS_METHODS.create]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.assign]: AuthOrchestrationOperateScope,
-  // Closing, reopening or declining an entry a lead holds wakes that lead.
-  [KIN_WORK_WS_METHODS.update]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.confirm]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.decline]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.parties]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.party]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.projects]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.project]: AuthOrchestrationReadScope,
-  [KIN_WORK_WS_METHODS.history]: AuthOrchestrationReadScope,
+  // A teammate's session reaches tasks; the service shows them their view and changes only theirs.
+  [KIN_WORK_WS_METHODS.summary]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.list]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.get]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.subscribe]: AuthKinChatScope,
+  // Giving a lead work wakes it as a message to it does: a teammate's runs as theirs, within
+  // their daily turns, in their own chat with it (`KinRecords.teammateWake`).
+  [KIN_WORK_WS_METHODS.create]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.assign]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.handBack]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.update]: AuthKinChatScope,
+  // Keeping a lead's suggestion makes it the owner's word; only he does that, or shares.
+  [KIN_WORK_WS_METHODS.confirm]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.decline]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.share]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.parties]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.party]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.projects]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.project]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.history]: AuthKinChatScope,
   // Writes like the entry edits beside them; none of these starts agent work.
-  [KIN_WORK_WS_METHODS.createParty]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.updateParty]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.createContact]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.updateContact]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.createProject]: AuthOrchestrationOperateScope,
-  [KIN_WORK_WS_METHODS.updateProject]: AuthOrchestrationOperateScope,
+  [KIN_WORK_WS_METHODS.createParty]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.updateParty]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.createContact]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.updateContact]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.createProject]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.updateProject]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.logTouch]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.removeTouch]: AuthKinChatScope,
 } as const;

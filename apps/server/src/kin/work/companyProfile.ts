@@ -1,9 +1,11 @@
 import {
   KinChatError,
+  KinCompanyLogo,
   type KinCompanyProfile,
   KinCompanyProfileData,
   KinCompanyProfileSetInput,
   type KinOrgId,
+  KinPersonId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -11,12 +13,14 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { iso } from "./recordRows.ts";
 
 /**
- * The company profile: legal name, address, tax ids and bank details, one sensitive record per
- * org. The owner reads and sets it from a client. An agent reads it in a turn only the owner
- * reads, and changes it only by a card the owner confirms.
+ * The company profile: legal name, address, tax ids, bank details, logo and brand, one sensitive
+ * record per org. The owner reads and sets it from a client. An agent reads it in a turn only the
+ * owner reads, and changes it only by a card the owner confirms.
  */
 
 const ProfileJson = Schema.fromJsonString(KinCompanyProfileData);
@@ -38,8 +42,15 @@ const EMPTY: KinCompanyProfileData = {
     branch: null,
     upi: null,
   },
+  logo: null,
+  brand: { primaryColor: null, secondaryColor: null, font: null, footer: null },
+  homeCurrency: "INR",
+  rates: [],
 };
-export type ProfilePatch = Omit<KinCompanyProfileSetInput, "orgId" | "rev">;
+/** A client only clears the logo; a new one is Kin's copy of a file, from an agent's card. */
+export type ProfilePatch = Omit<KinCompanyProfileSetInput, "orgId" | "rev" | "logo"> & {
+  readonly logo?: KinCompanyLogo | null | undefined;
+};
 export type ProfileWriter =
   | { readonly _tag: "person"; readonly personId: string }
   | { readonly _tag: "agent"; readonly agentId: string };
@@ -69,16 +80,14 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
     Effect.gen(function* () {
       const current = yield* readProfile(orgId);
       const { rev: _rev, updatedAt: _at, ...data } = current;
-      const { bank, ...rest } = patch;
+      const { bank, brand, ...rest } = patch;
+      const given = <A extends object>(value: A | undefined) =>
+        Object.fromEntries(Object.entries(value ?? {}).filter(([, one]) => one !== undefined));
       const next: KinCompanyProfileData = {
         ...data,
-        ...Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined)),
-        bank: {
-          ...data.bank,
-          ...Object.fromEntries(
-            Object.entries(bank ?? {}).filter(([, value]) => value !== undefined),
-          ),
-        },
+        ...given(rest),
+        bank: { ...data.bank, ...given(bank) },
+        brand: { ...data.brand, ...given(brand) },
       };
       const json = yield* encodeProfile(next);
       if (json === (yield* encodeProfile(data))) return current;
@@ -95,32 +104,51 @@ export const setProfile = Effect.fn("KinCompanyProfile.set")(function* (
         ON CONFLICT (org_id) DO UPDATE SET profile_json = excluded.profile_json,
           rev = kin_company_profile.rev + 1, updated_at = excluded.updated_at,
           updated_by_kind = excluded.updated_by_kind, updated_by_id = excluded.updated_by_id`;
+      yield* (yield* KinRefreshObserver).touch(orgId, "company");
       return yield* readProfile(orgId);
     }),
   );
 });
 
-const { orgId: _orgId, rev: _rev, ...patchFields } = KinCompanyProfileSetInput.fields;
-const PatchJson = Schema.fromJsonString(Schema.Struct(patchFields));
+const { orgId: _orgId, rev: _rev, logo: _logo, ...patchFields } = KinCompanyProfileSetInput.fields;
+const PatchJson = Schema.fromJsonString(
+  Schema.Struct({ ...patchFields, logo: Schema.optional(Schema.NullOr(KinCompanyLogo)) }),
+);
 const encodePatch = Schema.encodeEffect(PatchJson);
 const decodePatch = Schema.decodeUnknownEffect(PatchJson);
-const LABELS: Record<Exclude<keyof ProfilePatch, "bank">, string> = {
+// Home currency and rates are the owner's own settings; no agent card proposes them.
+const LABELS: Record<
+  Exclude<keyof ProfilePatch, "bank" | "brand" | "logo" | "homeCurrency" | "rates">,
+  string
+> = {
   gstin: "GSTIN",
   pan: "PAN",
   placeOfSupply: "Place of supply",
   sac: "SAC",
+  lutNumber: "LUT number",
+  lutDate: "LUT date",
   legalName: "Legal name",
   tradeName: "Trade name",
   address: "Address",
 };
 const BANK_LABELS: Record<keyof KinCompanyProfileData["bank"], string> = {
-  accountName: "Account name",
-  accountNumber: "Account number",
-  ifsc: "IFSC",
-  bankName: "Bank",
-  branch: "Branch",
+  accountName: "Bank account name",
+  accountNumber: "Bank account number",
+  ifsc: "Bank IFSC",
+  bankName: "Bank name",
+  branch: "Bank branch",
   upi: "UPI",
 };
+const BRAND_LABELS: Record<keyof KinCompanyProfileData["brand"], string> = {
+  primaryColor: "Brand colour",
+  secondaryColor: "Second brand colour",
+  font: "Document font",
+  footer: "Document footer",
+};
+const logoLine = (logo: KinCompanyLogo | null) =>
+  logo === null
+    ? "none"
+    : `${logo.name} (${logo.mimeType === "image/svg+xml" ? "SVG" : logo.mimeType === "image/png" ? "PNG" : "JPEG"}${logo.width === null || logo.height === null ? "" : `, ${logo.width} × ${logo.height} px`}, ${Math.max(1, Math.round(logo.bytes / 1024))} KB)`;
 
 /**
  * Each field the patch changes, old value beside new, as the owner's card shows it: bank details
@@ -131,10 +159,18 @@ export const changeLines = (current: KinCompanyProfileData, patch: ProfilePatch)
     to === undefined || to === from ? [] : [`${label}: ${from ?? "none"} → ${to ?? "cleared"}`];
   return [
     ...(Object.keys(BANK_LABELS) as Array<keyof typeof BANK_LABELS>).flatMap((key) =>
-      line(`Bank ${BANK_LABELS[key].toLowerCase()}`, current.bank[key], patch.bank?.[key]),
+      line(BANK_LABELS[key], current.bank[key], patch.bank?.[key]),
     ),
     ...(Object.keys(LABELS) as Array<keyof typeof LABELS>).flatMap((key) =>
-      line(LABELS[key], current[key], patch[key]),
+      line(LABELS[key], current[key] ?? null, patch[key]),
+    ),
+    ...(patch.logo === undefined || patch.logo?.sha256 === current.logo?.sha256
+      ? []
+      : [
+          `Logo: ${logoLine(current.logo)} → ${patch.logo === null ? "cleared" : logoLine(patch.logo)}`,
+        ]),
+    ...(Object.keys(BRAND_LABELS) as Array<keyof typeof BRAND_LABELS>).flatMap((key) =>
+      line(BRAND_LABELS[key], current.brand[key], patch.brand?.[key]),
     ),
   ];
 };
@@ -155,6 +191,27 @@ export const proposeChange = Effect.fn("KinCompanyProfile.proposeChange")(functi
     VALUES (${input.orgId}, ${input.changeId}, ${input.agentId}, ${input.wakeupId},
       ${yield* encodePatch(input.patch)}, ${input.baseRev}, ${input.now})
     ON CONFLICT (org_id, change_id) DO NOTHING`;
+});
+
+/**
+ * A newer change card replaces every older one still unanswered: they can never be confirmed, so
+ * an emptier, older card can't overwrite what the newer one shows. Returns their cards to close.
+ */
+export const replaceOlderChanges = Effect.fn("KinCompanyProfile.replaceOlderChanges")(function* (
+  orgId: KinOrgId,
+  changeId: string,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const older = yield* sql<{ changeId: string; widgetId: string }>`
+    SELECT change_id AS "changeId", widget_id AS "widgetId" FROM kin_profile_changes
+    WHERE org_id = ${orgId} AND change_id != ${changeId} AND widget_id IS NOT NULL
+      AND applied_at IS NULL AND declined_at IS NULL
+    ORDER BY change_id`;
+  if (older.length === 0) return [];
+  yield* sql`UPDATE kin_profile_changes SET declined_at = ${now}
+    WHERE org_id = ${orgId} AND change_id IN ${sql.in(older.map((row) => row.changeId))}`;
+  return older.map((row) => row.widgetId);
 });
 
 export const attachChangeCard = Effect.fn("KinCompanyProfile.attachChangeCard")(function* (
@@ -186,16 +243,15 @@ export const answerChange = Effect.fn("KinCompanyProfile.answerChange")(function
     patch: string;
     baseRev: number;
     done: number;
-    owner: string;
   }>`SELECT c.change_id AS "changeId", c.patch_json AS patch, c.base_rev AS "baseRev",
-      (c.applied_at IS NOT NULL OR c.declined_at IS NOT NULL) AS done, a.owner_person_id AS owner
-    FROM kin_profile_changes c JOIN kin_agents a ON a.org_id = c.org_id AND a.agent_id = c.agent_id
+      (c.applied_at IS NOT NULL OR c.declined_at IS NOT NULL) AS done
+    FROM kin_profile_changes c
     WHERE c.org_id = ${input.orgId} AND c.widget_id = ${input.widgetId}`;
   if (row === undefined) return;
-  if (row.owner !== input.personId)
+  if (!(yield* ownerLevel(input.orgId, KinPersonId.make(input.personId)).pipe(Effect.orDie)))
     return yield* new KinChatError({
       reason: "not_allowed",
-      message: "Only the owner changes the company profile.",
+      message: "Only the owner or a co-owner changes the company profile.",
     });
   if (input.via === "reaction")
     return yield* new KinChatError({
@@ -205,7 +261,7 @@ export const answerChange = Effect.fn("KinCompanyProfile.answerChange")(function
   if (row.done === 1)
     return yield* new KinChatError({
       reason: "widget_changed",
-      message: "This change was already answered.",
+      message: "This change was already answered or replaced by a newer one.",
     });
   if (!input.confirmed) {
     yield* sql`UPDATE kin_profile_changes SET declined_at = ${input.now}

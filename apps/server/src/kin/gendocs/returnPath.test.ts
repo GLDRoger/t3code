@@ -38,6 +38,20 @@ it.effect("takes only named, plain, regular files of the type their names say", 
     NodeFS.writeFileSync(NodePath.join(out, "invoice.pdf"), pdf);
     NodeFS.writeFileSync(NodePath.join(out, "chart.png"), png);
     NodeFS.writeFileSync(NodePath.join(out, "pack.xlsx"), xlsx);
+    NodeFS.writeFileSync(
+      NodePath.join(out, "macro.xlsx"),
+      zip([
+        [
+          "[Content_Types].xml",
+          types(
+            "xl/workbook.xml",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+          ),
+        ],
+        ["xl/workbook.xml", "<workbook/>"],
+        ["xl/vbaProject.bin", "macro"],
+      ]),
+    );
     NodeFS.writeFileSync(NodePath.join(out, "unnamed.pdf"), pdf);
     NodeFS.writeFileSync(NodePath.join(root, "secret.pdf"), pdf);
     NodeFS.symlinkSync(NodePath.join(root, "secret.pdf"), NodePath.join(out, "link.pdf"));
@@ -52,6 +66,7 @@ it.effect("takes only named, plain, regular files of the type their names say", 
         "out/invoice.pdf",
         "chart.png",
         "out/pack.xlsx",
+        "out/macro.xlsx",
         "out/link.pdf",
         "out/hard.pdf",
         "out/lies.pdf",
@@ -87,12 +102,26 @@ it.effect("takes only named, plain, regular files of the type their names say", 
         ["/etc/passwd", "it isn't a plain file name in out/"],
         ["out/sub/inner.pdf", "it isn't a plain file name in out/"],
         ["secret.exe", ".exe isn't a file type Kin takes back"],
+        [
+          "macro.xlsx",
+          "it's a XLSX that carries xl/vbaProject.bin, which runs, embeds or fetches content",
+        ],
         ["link.pdf", "it's a link"],
         ["hard.pdf", "it has another link to it (a hard link)"],
         ["lies.pdf", "its bytes aren't a PDF file"],
         ["big.pdf", "it's over the 0 MB cap"],
         ["folder.pdf", "it isn't a regular file"],
         ["missing.pdf", "it was named but isn't there"],
+      ],
+    );
+    // How to make it again is the worker's to read, kept apart from what the owner sees.
+    assert.deepStrictEqual(
+      result.refused.flatMap((one) => (one.retry === undefined ? [] : [[one.name, one.retry]])),
+      [
+        [
+          "macro.xlsx",
+          "Kin takes back Office files with no macros, embedded objects or outside links, plain web and email hyperlinks aside: make it again without them, or return a PDF.",
+        ],
       ],
     );
     // What was never named stays where it is.
@@ -179,20 +208,20 @@ it.effect("reads only the out/ it checked, even when out/ is swapped right after
   }).pipe(Effect.scoped),
 );
 
-it("checks leading bytes and text", () => {
-  assert.isUndefined(typeMismatch("pdf", pdf));
+it("checks leading bytes and text", async () => {
+  assert.isUndefined(await typeMismatch("pdf", pdf));
   assert.isDefined(
-    typeMismatch("xlsx", Buffer.from("PK\x03\x04[Content_Types].xml word/document.xml")),
+    await typeMismatch("xlsx", Buffer.from("PK\x03\x04[Content_Types].xml word/document.xml")),
   );
-  assert.isUndefined(typeMismatch("xlsx", xlsx));
+  assert.isUndefined(await typeMismatch("xlsx", xlsx));
   assert.strictEqual(
-    typeMismatch("csv", Buffer.from([0x61, 0x00, 0x62])),
+    await typeMismatch("csv", Buffer.from([0x61, 0x00, 0x62])),
     "it isn't plain UTF-8 text",
   );
-  assert.isDefined(typeMismatch("json", Buffer.from("{not json")));
+  assert.isDefined(await typeMismatch("json", Buffer.from("{not json")));
   // A cell a spreadsheet would run as a formula, unless it is a plain number or starts with '.
   assert.isUndefined(
-    typeMismatch("csv", Buffer.from('a,-5,"1,000.50",+3.5\r\n\'=1+1,"\'@x","a ""=q"""\r\n')),
+    await typeMismatch("csv", Buffer.from('a,-5,"1,000.50",+3.5\r\n\'=1+1,"\'@x","a ""=q"""\r\n')),
   );
   const fix =
     "a spreadsheet would run it as a formula. Write that cell with a leading ' (as the starter recipes do) or as a plain number";
@@ -206,12 +235,12 @@ it("checks leading bytes and text", () => {
     ['"\rx"', "row 1, column 1 starts with a carriage return"],
     ["a,  =1", 'row 1, column 2 starts with "="'],
   ] as const)
-    assert.strictEqual(typeMismatch("csv", Buffer.from(csv)), `${where}: ${fix}`, csv);
+    assert.strictEqual(await typeMismatch("csv", Buffer.from(csv)), `${where}: ${fix}`, csv);
 });
 
 const NS = 'xmlns="http://www.w3.org/2000/svg"';
 const XL = 'xmlns:xlink="http://www.w3.org/1999/xlink"';
-it("takes an SVG only when it parses as a drawing made of listed parts", () => {
+it("takes an SVG only when it parses as a drawing made of listed parts", async () => {
   const svg = (body: string, root = `<svg ${NS} ${XL} viewBox="0 0 10 10">`) =>
     Buffer.from(`${root}${body}</svg>`);
   // What recipes, Typst and charting libraries write.
@@ -222,9 +251,9 @@ it("takes an SVG only when it parses as a drawing made of listed parts", () => {
     '<style type="text/css"><![CDATA[ *{stroke-linejoin: round;} @media print { rect { fill: #000 } } ]]></style><text x="1" xml:space="preserve">a &amp; b &#x41;<tspan>c@d</tspan></text>',
     "<!-- a comment --><g><title>t</title><desc>d</desc></g>",
   ])
-    assert.isUndefined(typeMismatch("svg", svg(body)), body);
+    assert.isUndefined(await typeMismatch("svg", svg(body)), body);
   assert.isUndefined(
-    typeMismatch("svg", Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>\n<svg ${NS}/>`)),
+    await typeMismatch("svg", Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>\n<svg ${NS}/>`)),
   );
   const refused = [
     ["<script>alert(1)</script>", "<script>"],
@@ -271,11 +300,7 @@ it("takes an SVG only when it parses as a drawing made of listed parts", () => {
     ["<g>", "XML that isn't well formed"],
   ] as const;
   for (const [body, why] of refused)
-    assert.strictEqual(
-      typeMismatch("svg", svg(body)),
-      `it's an SVG with ${why}: Kin takes back only plain drawings. Return it as a PNG or a PDF, or show it in chat with kin_visual`,
-      body,
-    );
+    assert.strictEqual(await typeMismatch("svg", svg(body)), `it's an SVG with ${why}`, body);
   for (const [text, why] of [
     [`<!DOCTYPE svg [<!ENTITY x "y">]><svg ${NS}>&x;</svg>`, "a DOCTYPE"],
     [
@@ -287,9 +312,12 @@ it("takes an SVG only when it parses as a drawing made of listed parts", () => {
     [`<g ${NS}><svg/></g>`, "no <svg> at its root"],
   ] as const)
     assert.strictEqual(
-      typeMismatch("svg", Buffer.from(text)),
-      `it's an SVG with ${why}: Kin takes back only plain drawings. Return it as a PNG or a PDF, or show it in chat with kin_visual`,
+      await typeMismatch("svg", Buffer.from(text)),
+      `it's an SVG with ${why}`,
       text,
     );
-  assert.strictEqual(typeMismatch("svg", Buffer.from("not xml")), "its bytes aren't a SVG file");
+  assert.strictEqual(
+    await typeMismatch("svg", Buffer.from("not xml")),
+    "its bytes aren't a SVG file",
+  );
 });

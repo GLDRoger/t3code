@@ -160,6 +160,10 @@ const runRoutine = (event: KinEvent, setup: Setup = Effect.void) =>
     yield* seed;
     const sql = yield* SqlClient.SqlClient;
     yield* sql`UPDATE kin_chats SET kind = 'direct', direct_key = 'owner-direct' WHERE org_id = ${orgId} AND chat_id = 'owner-chat'`;
+    // Unset, the host's zone would stand in; these briefs are read in UTC.
+    yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+        dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+      VALUES (${orgId}, 'UTC', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
     yield* setup;
     yield* (yield* Queue.KinEventQueue).enqueue(event);
     const runner = yield* WakeupRunner.WakeupRunner;
@@ -592,6 +596,8 @@ it.effect("a failed brief retries on its own with a counted attempt", () =>
                     cause: "fixture",
                   }),
                 ),
+              morningFacts: () => Effect.succeed(null),
+              weeklyFigures: () => Effect.succeed(false),
             }),
           ),
           Layer.provideMerge(orchestrationHarness()),

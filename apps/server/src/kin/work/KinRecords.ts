@@ -1,10 +1,11 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import {
   KIN_RECORDS_PAGE_CAP,
   KinChatError,
-  type KinAgentId,
-  type KinChatId,
+  KinAgentId,
+  KinChatId,
   type KinMessageId,
   type KinMoney,
   type KinRepeatRule,
@@ -23,6 +24,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
@@ -32,9 +34,13 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
+import * as LeadAccess from "../lead/LeadAccess.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
+import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal, withdrawAttempts } from "./workerAttempts.ts";
 import {
@@ -51,7 +57,9 @@ import {
   amountOf,
   byId,
   byKey,
+  countedEntry,
   effectivelySensitive,
+  OWN_LABEL_LISTS,
   encodeRepeat,
   type FieldChange,
   type Principal,
@@ -85,6 +93,17 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
+import {
+  bumpTeamSeqs,
+  dependents,
+  teamGuard,
+  teamPairs,
+  personSees,
+  ROOM_LISTS,
+  teamSeq,
+  viewGuard,
+  viewSees,
+} from "./teamView.ts";
 
 /** Who is writing and how: a lead in its turn, the owner from a client, or Kin from an event. */
 export type Writer = {
@@ -97,7 +116,19 @@ export type Writer = {
   readonly chatId?: KinChatId;
   /** The human who asked for this, from stored rows: becomes the assigner of work given away. */
   readonly askedBy?: KinPersonId | null;
+  /** A teammate from their own app: `teamGuard` decides the write inside its transaction. */
+  readonly teammate?: boolean;
+  /** Shared with the team when made; a turn others read shares its tasks too (`ROOM_LISTS`). */
+  readonly teamShared?: boolean;
+  /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
+  readonly view?: {
+    readonly people: ReadonlyArray<KinPersonId>;
+    readonly askers: ReadonlyArray<KinPersonId>;
+  };
 };
+/** Whose words a write's text is: the person writing, else the human a lead wrote it for. */
+const textBy = (writer: Writer) =>
+  writer.actor._tag === "person" ? writer.actor.personId : (writer.askedBy ?? null);
 
 export type Fields = {
   readonly title: string;
@@ -113,6 +144,8 @@ export type Fields = {
   readonly confirmed?: boolean;
   /** Raised by anyone; lowered only by a person, which the owner-only callers make the owner. */
   readonly sensitive?: boolean;
+  /** Shared with the team (`teamView.ts`); only the owner's `share` and a teammate's own create set it. */
+  readonly team?: boolean;
   /** Record ids of a client and a project in this org. */
   readonly partyId?: string | null;
   readonly projectId?: string | null;
@@ -132,10 +165,19 @@ export type CreateInput = Fields & {
   readonly list?: string;
   /** A create with a key already stored returns that entry and changes nothing. */
   readonly originKey: string;
+  /** A person's request (`requestHashOf`): the same key asking for something else is refused. */
+  readonly requestHash?: string;
   readonly source?: { readonly chatId: KinChatId; readonly messageId: KinMessageId };
   readonly links?: ReadonlyArray<LinkInput>;
+  /** When an import says it was made, and closed if it is; otherwise now. */
+  readonly createdAt?: number;
+  readonly closedAt?: number;
 };
-export type Patch = Partial<Omit<Fields, "owner">> & { readonly owner?: KinWorkPrincipal };
+export type Patch = Partial<Omit<Fields, "owner">> & {
+  readonly owner?: KinWorkPrincipal;
+  /** The holder gives it back to `owner`, whoever gave it to them, in their own words. */
+  readonly handedBack?: { readonly note: string | null };
+};
 export type LinkInput = {
   readonly kind: KinRecordLinkKind;
   readonly target: string;
@@ -171,6 +213,10 @@ export type QueryInput = {
   readonly limit?: number;
   /** The time `late` is judged at; a later page passes the first page's so offsets hold. */
   readonly at?: number;
+  /** Only what this teammate may see (`teamView.ts`), and the change number of only that. */
+  readonly team?: KinPersonId;
+  /** Only what every one of these people may see (`viewSees`). */
+  readonly view?: ReadonlyArray<KinPersonId>;
 };
 
 /** An entry the owner closed or took from a lead while it held it open, after that commits. */
@@ -196,6 +242,18 @@ const encodeFields = Schema.encodeEffect(
     ),
   ),
 );
+export type Tick = {
+  readonly seq: number;
+  readonly key?: string;
+  readonly registerId?: string;
+  /** Each person who could see what changed, before or after it, and their own number now. */
+  readonly team?: ReadonlyMap<string, number>;
+};
+/** Whose view of Work a change can move: the entries it may show or hide, and who saw them before. */
+type TeamScope = {
+  readonly scope: ReadonlyArray<string>;
+  readonly before: ReadonlyArray<{ readonly personId: string; readonly recordId: string }>;
+};
 export type GroupBy = "party" | "project" | "side" | "owner" | "state" | "category";
 export type TotalsBy = GroupBy | "month" | "financialYear";
 /** Past this many entries with an amount, totals ask for a narrower filter instead of guessing. */
@@ -206,6 +264,9 @@ type Sums = {
   readonly owed?: ReadonlyArray<KinMoney>;
   /** With a paid window: the payments made in it. */
   readonly received?: ReadonlyArray<KinMoney>;
+  /** Quotes sent and waiting, and accepted. */
+  readonly sent?: ReadonlyArray<KinMoney>;
+  readonly accepted?: ReadonlyArray<KinMoney>;
 };
 export type Totals = Sums & {
   readonly counted: number;
@@ -216,15 +277,26 @@ export type PaymentInput = {
   /** A day in the owner's zone. */
   readonly paidOn: string;
   readonly note?: string;
-  /** A retry with the same key records nothing more. */
+  /** Tax the payer withheld at source: it settles the invoice but is no money received. */
+  readonly withheld?: boolean;
+  /** A retry with the same key records nothing more; one whose payment was voided is refused. */
   readonly originKey: string;
 };
 const CLOSED = ["done", "dropped"] as const;
+/** A retry whose first result was taken back since: answering it with that result would lie. */
+const undoneRetry = (what: string) =>
+  new KinChatError({
+    reason: "conflict",
+    message: `That retry key's ${what} was taken back since, so a retry can't stand for it. Record it again as a new one.`,
+  });
 const conflict = (key: string, rev: number) =>
   new KinChatError({
     reason: "conflict",
     message: `${key} changed since you read it; it is at revision ${rev} now. Read it again.`,
   });
+/** What a person's create asked for, without the id it was sent under. */
+export const requestHashOf = ({ clientRequestId: _, ...request }: { clientRequestId: string }) =>
+  NodeCrypto.createHash("sha256").update(stableStringify(request)).digest("hex");
 const recordIdFor = (orgId: string, originKey: string) =>
   KinRecordId.make(
     `rec_${NodeCrypto.createHash("sha256").update(`${orgId.length}:${orgId}${originKey}`).digest("hex").slice(0, 24)}`,
@@ -246,13 +318,17 @@ const shownRepeat = (rule: KinRepeatRule | null | undefined) =>
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const NUMBERS_ARE_ISSUED =
   "Kin gives this list's entries their numbers when they are issued, so nothing else sets one. Issue the entry instead; an invoice numbered elsewhere keeps that number in its notes.";
+/** A receipt's payment, invoice and number are Kin's own (`gendocs/receipts.ts` writes them). */
+const RECEIPT_TIES = ["payment", "invoice", "number"];
+const RECEIPT_TIES_ARE_KINS =
+  "Kin writes a receipt's payment, invoice and number itself: make the receipt from its payment, or set an advance against an invoice, instead. Nothing changed.";
 const actorIdOf = (writer: Writer) =>
   writer.actor._tag === "agent"
     ? writer.actor.agentId
     : writer.actor._tag === "person"
       ? writer.actor.personId
       : null;
-const paymentIdFor = (orgId: string, originKey: string) =>
+export const paymentIdFor = (orgId: string, originKey: string) =>
   `pay_${NodeCrypto.createHash("sha256").update(`${orgId.length}:${orgId}${originKey}`).digest("hex").slice(0, 20)}`;
 
 /** What a write may set on a list: its states, kinds, fields, and an amount, date or repeat. */
@@ -277,7 +353,13 @@ const checkInput = (
     if (!isCurrency(input.amount.currency))
       return invalid(`${input.amount.currency} is not a currency code.`);
   }
-  if (input.dateAt !== undefined && input.dateAt !== null && def.builtIn !== null)
+  // A Work meeting's start is its date; due stays what someone owes by when.
+  if (
+    input.dateAt !== undefined &&
+    input.dateAt !== null &&
+    def.builtIn !== null &&
+    def.builtIn !== "work"
+  )
     return invalid(`A ${def.noun} has no date of its own; use due.`);
   if (
     input.repeat !== undefined &&
@@ -320,6 +402,17 @@ export class KinRecords extends Context.Service<
       expectedRev?: number,
       /** Logged with the change even when no column changes: a doc's new version. */
       also?: ReadonlyArray<FieldChange>,
+    ) => Effect.Effect<RecordRow, KinChatError>;
+    /**
+     * The holder gives an open task back to whoever gave it to them: the agent that did, else the
+     * person, else the owner. It reopens, and an agent it goes back to is woken with their words.
+     */
+    readonly handBack: (
+      orgId: KinOrgId,
+      writer: Writer,
+      key: string,
+      holder: KinWorkPrincipal,
+      note: string | null,
     ) => Effect.Effect<RecordRow, KinChatError>;
     readonly link: (
       orgId: KinOrgId,
@@ -382,10 +475,13 @@ export class KinRecords extends Context.Service<
       changeLimit?: number,
     ) => Effect.Effect<Effect.Success<ReturnType<typeof toDetail>>, KinChatError>;
     readonly seq: (orgId: KinOrgId) => Effect.Effect<number, KinChatError>;
-    /** The latest change number now, then again with the entry after every committed change. */
-    readonly changes: (
-      orgId: KinOrgId,
-    ) => Stream.Stream<{ readonly seq: number; readonly key?: string }, KinChatError>;
+    /**
+     * The latest change number now, then again with the entry after every committed change, its
+     * list, and the people besides the owner who may see it after that change (`teamView.ts`).
+     */
+    readonly changes: (orgId: KinOrgId) => Stream.Stream<Tick, KinChatError>;
+    /** Tells `changes` an org's entries moved with no change logged here: an undo, another process. */
+    readonly announce: (orgId: KinOrgId) => Effect.Effect<void, KinChatError>;
     /** The lead runtime stops a withdrawn entry's workers; the WS side has no thread services. */
     readonly attachWithdrawals: (
       onWithdrawn: (withdrawal: Withdrawal) => Effect.Effect<void>,
@@ -396,11 +492,12 @@ export class KinRecords extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue;
-  const ticks = yield* PubSub.unbounded<{
-    readonly orgId: KinOrgId;
-    readonly seq: number;
-    readonly key: string;
-  }>();
+  const dailyTurns = yield* LeadAccess.dailyTurns;
+  const ticks = yield* PubSub.unbounded<Tick & { readonly orgId: KinOrgId }>();
+  const refreshes = yield* KinRefreshObserver;
+  /** The clients and projects a task or project can be put under (`workChoices`) changed. */
+  const choicesMoved = (orgId: KinOrgId, list: string) =>
+    list === "clients" || list === "projects" ? refreshes.touch(orgId, "workChoices") : Effect.void;
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
   let onWithdrawn: ((withdrawal: Withdrawal) => Effect.Effect<void>) | undefined;
 
@@ -444,6 +541,7 @@ const make = Effect.gen(function* () {
     kind: "created" | "updated" | "linked",
     fields: ReadonlyArray<FieldChange>,
     now: number,
+    team?: TeamScope,
   ) {
     const actorId =
       writer.actor._tag === "agent"
@@ -458,15 +556,99 @@ const make = Effect.gen(function* () {
         ${writer.chatId ?? null})
       RETURNING seq`;
     const seq = change?.seq ?? 0;
-    yield* sql.afterCommit(PubSub.publish(ticks, { orgId, seq, key: row.key }));
+    // Who sees it as this change leaves it, and what else of theirs it showed or hid (`personSees`).
+    const [stored] = yield* sql<{ registerId: string }>`SELECT register_id AS "registerId"
+      FROM kin_records WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+    const before = team?.before ?? [];
+    const after = yield* teamPairs(orgId, [
+      ...new Set([row.recordId, ...(team?.scope ?? [])]),
+    ]).pipe(provideSql);
+    const seen = (pairs: typeof after, personId: string) =>
+      pairs
+        .filter((pair) => pair.personId === personId)
+        .map((pair) => pair.recordId)
+        .join(" ");
+    // Its own number moves for anyone who saw it before or sees it after, and for anyone whose
+    // view of the rest it moved, as a client's label or a project's lead does.
+    const moved = [...new Set([...before, ...after].map((pair) => pair.personId))].filter(
+      (personId) =>
+        [...before, ...after].some(
+          (pair) => pair.personId === personId && pair.recordId === row.recordId,
+        ) || seen(before, personId) !== seen(after, personId),
+    );
+    const numbers = yield* bumpTeamSeqs(orgId, moved).pipe(provideSql);
+    yield* sql.afterCommit(
+      PubSub.publish(ticks, {
+        orgId,
+        seq,
+        key: row.key,
+        ...(stored === undefined ? {} : { registerId: stored.registerId }),
+        team: numbers,
+      }),
+    );
     return seq;
+  });
+
+  /**
+   * Where a teammate's assignment wakes a lead: their direct chat with it, while its owner lets
+   * them message it and they have turns left today, as `ChatWake` admits their messages. Asked
+   * from their own app, a refusal fails the write, so nothing is given away that won't be done.
+   */
+  const teammateWake = Effect.fn("KinRecords.teammateWake")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    agentId: KinAgentId,
+    personId: KinPersonId,
+    now: number,
+  ) {
+    const own = writer.actor._tag === "person" && writer.actor.personId === personId;
+    const refuse = (error: KinChatError) => (own ? Effect.fail(error) : Effect.void);
+    // A co-owner messages every lead and has no daily cap, as the owner does.
+    const level = yield* ownerLevel(orgId, personId).pipe(provideSql);
+    if (!level && !(yield* LeadAccess.allowed({ orgId, agentId, personId }).pipe(provideSql)))
+      return yield* refuse(
+        new KinChatError({
+          reason: "not_found",
+          message: `No agent ${agentId.slice(0, 60)} here to own it.`,
+        }),
+      );
+    const [agent] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_agents
+      WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+    const name = agent?.name ?? "That agent";
+    const [chat] = yield* sql<{ chatId: string; memberId: string }>`
+      SELECT c.chat_id AS "chatId", m.member_id AS "memberId" FROM kin_chats c
+      JOIN kin_chat_members m ON m.org_id = c.org_id AND m.chat_id = c.chat_id
+        AND m.principal_kind = 'person' AND m.person_id = ${personId} AND m.left_at IS NULL
+      JOIN kin_chat_members l ON l.org_id = c.org_id AND l.chat_id = c.chat_id
+        AND l.principal_kind = 'agent' AND l.agent_id = ${agentId} AND l.left_at IS NULL
+      WHERE c.org_id = ${orgId} AND c.kind = 'direct'
+        AND c.direct_key = ${LeadAccess.directKey(personId, agentId)}
+      ORDER BY c.chat_id LIMIT 1`;
+    if (chat === undefined)
+      return yield* refuse(
+        new KinChatError({
+          reason: "not_allowed",
+          message: `Open your chat with ${name} once, then give it this again.`,
+        }),
+      );
+    const used = level
+      ? { turns: 0 }
+      : yield* LeadAccess.recentTurns({ orgId, personId, now }).pipe(provideSql);
+    if (used.turns >= dailyTurns)
+      return yield* refuse(
+        new KinChatError({
+          reason: "not_allowed",
+          message: `${name} has done as much as it can for you today. Give it this again later.`,
+        }),
+      );
+    return { chatId: KinChatId.make(chat.chatId), memberId: chat.memberId };
   });
 
   /**
    * Wakes a lead about an entry someone else changed, with that human as the turn's provenance:
    * given to it (`assigned`, by the stored assigner), or closed or taken back while it held it
-   * open (`withdrawn`, by the person who did). Slice 1 wakes only for the lead's owner; any other
-   * change is recorded and waits.
+   * open (`withdrawn`, by the person who did; only its owner is told). A teammate's assignment
+   * wakes it in their own direct chat with it, as a message from them would (`teammateWake`).
    */
   const wakeLead = Effect.fn("KinRecords.wakeLead")(function* (
     orgId: KinOrgId,
@@ -476,12 +658,19 @@ const make = Effect.gen(function* () {
     assignedBy: KinPersonId | null,
     seq: number,
     now: number,
-    reason: "assigned" | "withdrawn" = "assigned",
+    reason: "assigned" | "withdrawn" | "handed_back" = "assigned",
+    note?: string | null,
   ) {
     // Looking after a client or leading a project is not an instruction to do anything.
     if (row.registerId !== "work") return false;
     if (to._tag !== "agent") return false;
-    if (writer.actor._tag === "agent" && writer.actor.agentId === to.agentId) return false;
+    // Handed back in its own turn others read, it is still woken to replan where the owner reads.
+    if (
+      reason !== "handed_back" &&
+      writer.actor._tag === "agent" &&
+      writer.actor.agentId === to.agentId
+    )
+      return false;
     if (assignedBy === null) return false;
     const [lead] = yield* sql<{ memberId: string; ownerPersonId: string }>`
       SELECT m.member_id AS "memberId", a.owner_person_id AS "ownerPersonId"
@@ -490,8 +679,14 @@ const make = Effect.gen(function* () {
         AND m.principal_kind = 'person' AND m.person_id = a.owner_person_id AND m.left_at IS NULL
       WHERE l.org_id = ${orgId} AND l.agent_id = ${to.agentId} AND a.retired_at IS NULL
       ORDER BY m.member_id LIMIT 1`;
-    // Only the lead's owner is an assigner this slice wakes for; a teammate's waits for slice 2.
-    if (lead === undefined || lead.ownerPersonId !== assignedBy) return false;
+    if (lead === undefined) return false;
+    const teammate =
+      lead.ownerPersonId === assignedBy
+        ? undefined
+        : reason !== "withdrawn"
+          ? yield* teammateWake(orgId, writer, to.agentId, assignedBy, now)
+          : undefined;
+    if (lead.ownerPersonId !== assignedBy && teammate === undefined) return false;
     const key = `record-${reason}:${row.recordId}:${seq}`;
     return yield* queue
       .enqueue({
@@ -504,20 +699,47 @@ const make = Effect.gen(function* () {
         provenance: {
           _tag: "human",
           personId: assignedBy as KinPersonId,
-          memberId: lead.memberId as never,
+          memberId: (teammate?.memberId ?? lead.memberId) as never,
         },
         recordId: KinRecordId.make(row.recordId),
         key: row.key,
         seq,
         reason,
+        ...(note === undefined || note === null ? {} : { note }),
+        ...(teammate === undefined
+          ? {}
+          : {
+              chatId: teammate.chatId,
+              origin: { agentId: to.agentId, chatId: teammate.chatId, personId: assignedBy },
+            }),
       })
       .pipe(
+        // Given out after an outside read: the receiving lead's turn starts outside-read too.
+        Effect.tap(({ event }) =>
+          writer.wakeupId === undefined
+            ? Effect.void
+            : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
+                Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+                Effect.provideService(SqlClient.SqlClient, sql),
+              ),
+        ),
         Effect.as(true),
         Effect.catchTags({
           KinEventQueueRetiredAgent: () => Effect.succeed(false),
           KinEventQueueUnknownAgent: () => Effect.succeed(false),
         }),
       );
+  });
+
+  /** Whose agent this is: the authority a hand back wakes it with when none was stored. */
+  const agentOwner = Effect.fn("KinRecords.agentOwner")(function* (
+    orgId: KinOrgId,
+    who: KinWorkPrincipal,
+  ) {
+    if (who._tag !== "agent") return null;
+    const [row] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
+      WHERE org_id = ${orgId} AND agent_id = ${who.agentId}`;
+    return row === undefined ? null : KinPersonId.make(row.owner);
   });
 
   const ownerExists = Effect.fn("KinRecords.ownerExists")(function* (
@@ -585,7 +807,7 @@ const make = Effect.gen(function* () {
       ? new KinChatError({ reason: "invalid_state", message: "A client has no client or project." })
       : list === "contacts" && partyId === null
         ? new KinChatError({ reason: "invalid_state", message: "A contact needs its client." })
-        : list !== "work" && list !== "docs" && projectId !== null
+        : list !== "work" && list !== "docs" && list !== "milestones" && projectId !== null
           ? new KinChatError({
               reason: "invalid_state",
               message: `A ${LISTS[list].noun} has no project.`,
@@ -600,7 +822,7 @@ const make = Effect.gen(function* () {
     partyId: string | null,
     except: string | null,
   ) {
-    if (list === "work" || list === "docs" || !isBuiltIn(list)) return;
+    if (list === "work" || list === "docs" || list === "milestones" || !isBuiltIn(list)) return;
     const [row] = yield* sql<{ key: string; sensitive: number }>`SELECT r.key,
         ${sensitiveNow(sql)} AS sensitive FROM kin_records r
       WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state NOT IN ${sql.in(CLOSED)}
@@ -649,11 +871,39 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     writer: Writer,
     input: CreateInput,
-    options: { readonly wake: boolean; readonly repeat?: StoredRepeat },
+    options: {
+      readonly wake: boolean;
+      readonly repeat?: StoredRepeat;
+      /** Whose words the copied title and notes are, for an occurrence copied from another. */
+      readonly authors?: { readonly title: string | null; readonly notes: string | null };
+    },
   ) {
     const recordId = recordIdFor(orgId, input.originKey);
     const existing = yield* byId(orgId, recordId).pipe(provideSql);
-    if (existing !== undefined) return { row: existing, created: false };
+    if (writer.teammate === true && writer.actor._tag === "person")
+      yield* teamGuard(orgId, writer.actor.personId, {
+        row: existing,
+        changes: false,
+        input,
+      }).pipe(provideSql);
+    if (writer.view !== undefined)
+      yield* viewGuard(orgId, writer.view, { row: existing, changes: false, input }).pipe(
+        provideSql,
+      );
+    if (existing !== undefined) {
+      const [stored] = yield* sql<{ hash: string | null }>`SELECT request_hash AS hash
+        FROM kin_records WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+      if (
+        input.requestHash !== undefined &&
+        stored?.hash != null &&
+        stored.hash !== input.requestHash
+      )
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: "That retry key already created a different entry.",
+        });
+      return { row: existing, created: false };
+    }
     const def = yield* resolveList(orgId, input.list ?? "work");
     if (def.archivedAt !== null)
       return yield* invalid(`${def.name} is archived; the owner can restore it.`);
@@ -673,6 +923,8 @@ const make = Effect.gen(function* () {
       repeat: input.repeat,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
+    if (list === "receipts" && RECEIPT_TIES.some((field) => field in fields))
+      return yield* invalid(RECEIPT_TIES_ARE_KINS);
     if (writer.actor._tag !== "person" && numberingOf(def) !== undefined && "number" in fields)
       return yield* invalid(NUMBERS_ARE_ISSUED);
     if (def.builtIn === null) yield* verifyRefs(orgId, def, fields).pipe(provideSql);
@@ -699,25 +951,33 @@ const make = Effect.gen(function* () {
       !(writer.actor._tag === "person" && samePrincipal(writer.actor, input.owner));
     const assignedBy = writer.askedBy ?? null;
     const amount = input.amount ?? null;
+    const notes = input.notes ?? "";
+    const author = textBy(writer);
     yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
         waiting_on_kind, waiting_on_id, owner_kind, owner_id, side, category, due_at, due_all_day,
         sensitive, confirmed, notes, rev, source_chat_id, source_message_id, created_by_kind,
         created_by_id, assigned_by_person_id, assigned_at, origin_key, created_at, updated_at,
         closed_at, party_id, project_id, repo, fields_json, amount_minor, currency, date_at,
-        date_all_day, repeat_json)
+        date_all_day, repeat_json, request_hash, team_shared, title_by, notes_by,
+        assigned_by_agent_id)
       VALUES (${orgId}, ${recordId}, ${list}, ${key}, ${input.title}, ${state},
         ${waitingOn?._tag ?? null}, ${waitingOn === null ? null : principalId(waitingOn)},
         ${input.owner._tag}, ${principalId(input.owner)}, ${input.side ?? "ours"},
         ${input.category ?? null}, ${input.dueAt ?? null}, ${input.dueAllDay === true ? 1 : 0},
         ${input.sensitive === true || def.sensitive ? 1 : 0}, ${input.confirmed === false ? 0 : 1},
-        ${input.notes ?? ""}, 1, ${input.source?.chatId ?? null},
+        ${notes}, 1, ${input.source?.chatId ?? null},
         ${input.source?.messageId ?? null}, ${writer.actor._tag},
         ${writer.actor._tag === "agent" ? writer.actor.agentId : writer.actor._tag === "person" ? writer.actor.personId : null},
-        ${assignedBy}, ${assignedBy === null ? null : now}, ${input.originKey}, ${now}, ${now},
-        ${isClosed(state) ? now : null}, ${partyId}, ${projectId}, ${input.repo ?? null},
+        ${assignedBy}, ${assignedBy === null ? null : now}, ${input.originKey},
+        ${input.createdAt ?? now}, ${now}, ${isClosed(state) ? (input.closedAt ?? now) : null},
+        ${partyId}, ${projectId}, ${input.repo ?? null},
         ${yield* encodeFieldValues(fields)}, ${amount?.minor ?? null}, ${amount?.currency ?? null},
         ${input.dateAt ?? null}, ${input.dateAllDay === true ? 1 : 0},
-        ${repeat === undefined ? null : yield* encodeRepeat(repeat)})`;
+        ${repeat === undefined ? null : yield* encodeRepeat(repeat)}, ${input.requestHash ?? null},
+        ${input.team === true || writer.teammate === true || writer.teamShared === true || (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list)) ? 1 : 0},
+        ${options.authors === undefined ? author : options.authors.title},
+        ${notes === "" ? null : options.authors === undefined ? author : options.authors.notes},
+        ${givenAway && writer.actor._tag === "agent" ? writer.actor.agentId : null})`;
     const changes: Array<FieldChange> = [
       { field: "title", from: null, to: input.title },
       { field: "state", from: null, to: state },
@@ -748,6 +1008,7 @@ const make = Effect.gen(function* () {
       })),
     ];
     const seq = yield* logChange(orgId, writer, { recordId, key, rev: 1 }, "created", changes, now);
+    yield* choicesMoved(orgId, def.id);
     if (input.source !== undefined)
       yield* insertLink(
         orgId,
@@ -841,7 +1102,7 @@ const make = Effect.gen(function* () {
         ...(amount === undefined ? {} : { amount }),
         links: [{ kind: "record", target: row.recordId, relation: "relates", label: row.key }],
       },
-      { wake: false, repeat },
+      { wake: false, repeat, authors: { title: row.titleBy, notes: row.notesBy } },
     );
   });
 
@@ -853,6 +1114,8 @@ const make = Effect.gen(function* () {
     return yield* transaction(
       Effect.gen(function* () {
         const result = yield* insert(orgId, writer, input, { wake: true });
+        if (!result.created && result.row.state === "dropped" && input.state !== "dropped")
+          return yield* undoneRetry("entry");
         // Made already closed, a repeating entry's next one is owed at once.
         if (result.created && isClosed(result.row.state))
           yield* spawnNext(orgId, writer, result.row);
@@ -873,6 +1136,16 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
+        if (writer.teammate === true && writer.actor._tag === "person")
+          yield* teamGuard(orgId, writer.actor.personId, {
+            row,
+            changes: true,
+            input: patch,
+          }).pipe(provideSql);
+        if (writer.view !== undefined)
+          yield* viewGuard(orgId, writer.view, { row, changes: true, input: patch }).pipe(
+            provideSql,
+          );
         const now = yield* Clock.currentTimeMillis;
         const before = toRecord(row, now);
         const def = yield* resolveList(orgId, row.registerId);
@@ -887,6 +1160,23 @@ const make = Effect.gen(function* () {
           repeat: patch.repeat,
         });
         if (invalidFor !== undefined) return yield* invalidFor;
+        if (list === "receipts") {
+          if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
+            return yield* invalid(RECEIPT_TIES_ARE_KINS);
+          // Its payment may have a new receipt since: two live ones would count it twice.
+          if (row.state === "dropped" && patch.state !== undefined && patch.state !== "dropped")
+            return yield* invalid(`${row.key} is a void receipt, and stays void. Make a new one.`);
+          const tied =
+            patch.amount !== undefined &&
+            (patch.amount?.minor !== row.amountMinor || patch.amount?.currency !== row.currency) &&
+            (typeof parseFields(row.fieldsJson).payment === "string" ||
+              (yield* sql`SELECT 1 FROM kin_issued_numbers
+                WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length > 0);
+          if (tied)
+            return yield* invalid(
+              `${row.key} is a receipt Kin numbered or tied to a payment, so its amount stays what was received. Void it and make a new one instead.`,
+            );
+        }
         if (
           numberingOf(def) !== undefined &&
           patch.fields !== undefined &&
@@ -932,9 +1222,11 @@ const make = Effect.gen(function* () {
           changes.push({ field: "repo", from: row.repo, to: patch.repo });
           set("repo", patch.repo);
         }
+        const author = textBy(writer);
         if (patch.title !== undefined && patch.title !== row.title) {
           changes.push({ field: "title", from: row.title, to: patch.title });
           set("title", patch.title);
+          set("title_by", author ?? row.titleBy);
         }
         if (patch.title !== undefined || partyId !== row.partyId)
           yield* sameName(orgId, list, patch.title ?? row.title, partyId, row.recordId);
@@ -949,6 +1241,17 @@ const make = Effect.gen(function* () {
           fieldsChanged = true;
           if (value === null) delete merged[field];
           else merged[field] = value;
+        }
+        // Why it was given no longer holds once it moves on with no new why; its history keeps the old.
+        const movedOn =
+          patch.handedBack !== undefined ||
+          (patch.owner !== undefined &&
+            !samePrincipal(patch.owner, before.owner) &&
+            patch.fields?.reason === undefined);
+        if (movedOn && merged.reason !== undefined) {
+          changes.push({ field: "reason", from: shownField(merged.reason), to: null });
+          delete merged.reason;
+          fieldsChanged = true;
         }
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
         const amount = amountOf(row) ?? null;
@@ -1046,6 +1349,11 @@ const make = Effect.gen(function* () {
               message: `${row.key} is ${state}. Reopen it before giving it to someone.`,
             });
           yield* ownerExists(orgId, patch.owner);
+          // A project's lead sees more or less from now on; their places follow `leads`.
+          if (list === "projects") {
+            const refresh = yield* Effect.serviceOption(KinRefreshObserver);
+            if (Option.isSome(refresh)) yield* sql.afterCommit(refresh.value.touch(orgId, "leads"));
+          }
           changes.push({
             field: "owner",
             from: shownPrincipal(before.owner),
@@ -1054,8 +1362,27 @@ const make = Effect.gen(function* () {
           set("owner_kind", patch.owner._tag);
           set("owner_id", principalId(patch.owner));
           // Reassigning never launders authority: the assigner is whoever asked for this change.
-          set("assigned_by_person_id", writer.askedBy ?? null);
-          set("assigned_at", writer.askedBy === undefined || writer.askedBy === null ? null : now);
+          // Handed back, it keeps the authority it was given with; the holder's words go with it.
+          if (patch.handedBack === undefined) {
+            set("assigned_by_person_id", writer.askedBy ?? null);
+            set(
+              "assigned_at",
+              writer.askedBy === undefined || writer.askedBy === null ? null : now,
+            );
+          } else
+            changes.push({
+              field: "handedBack",
+              from: shownPrincipal(before.owner),
+              to: patch.handedBack.note,
+            });
+          set(
+            "assigned_by_agent_id",
+            writer.actor._tag === "agent" &&
+              patch.handedBack === undefined &&
+              !samePrincipal(writer.actor, patch.owner)
+              ? writer.actor.agentId
+              : null,
+          );
           reassigned = patch.owner;
         }
         // Reopened by a person, a lead's entry is given to it again, with that person's authority.
@@ -1132,6 +1459,7 @@ const make = Effect.gen(function* () {
         if (patch.notes !== undefined && patch.notes !== row.notes) {
           changes.push({ field: "notes", from: row.notes, to: patch.notes });
           set("notes", patch.notes);
+          set("notes_by", patch.notes === "" ? null : (author ?? row.notesBy));
         }
         if (patch.category !== undefined && patch.category !== row.category) {
           changes.push({ field: "category", from: row.category, to: patch.category });
@@ -1161,6 +1489,10 @@ const make = Effect.gen(function* () {
           changes.push({ field: "sensitive", from: "true", to: "false" });
           set("sensitive", 0);
         }
+        if (patch.team !== undefined && (patch.team ? 1 : 0) !== row.teamShared) {
+          changes.push({ field: "team", from: shown(row.teamShared === 1), to: shown(patch.team) });
+          set("team_shared", patch.team ? 1 : 0);
+        }
         changes.push(...also);
         // A retry of a change that already landed finds nothing to do: that is success.
         if (sets.length === 0 && also.length === 0) return row;
@@ -1169,10 +1501,23 @@ const make = Effect.gen(function* () {
         const rev = row.rev + 1;
         set("rev", rev);
         set("updated_at", now);
+        // Who saw what before this change, for who it moves: the entry, and what a client's or
+        // project's label, client or lead shows or hides.
+        const scope = [
+          row.recordId,
+          ...((list === "clients" || list === "projects") &&
+          (patch.sensitive !== undefined ||
+            patch.partyId !== undefined ||
+            patch.owner !== undefined)
+            ? yield* dependents(orgId, row.recordId).pipe(provideSql)
+            : []),
+        ];
+        const team: TeamScope = { scope, before: yield* teamPairs(orgId, scope).pipe(provideSql) };
         // Each update rewrites only the fields it changed, so two changes to one entry both land.
         yield* sql`UPDATE kin_records SET ${sql.csv(sets)}
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
         yield* indexRecord(orgId, row.recordId).pipe(provideSql);
+        yield* choicesMoved(orgId, row.registerId);
         const seq = yield* logChange(
           orgId,
           writer,
@@ -1180,11 +1525,13 @@ const make = Effect.gen(function* () {
           "updated",
           changes,
           now,
+          team,
         );
         // Only a person lowers what is sensitive: any other write that would, labels the entry
         // instead, as Kin's own change. What inherits through it then stays sensitive too.
         if (
           writer.actor._tag !== "person" &&
+          !(OWN_LABEL_LISTS as ReadonlyArray<string>).includes(list) &&
           (row.sensitive === 1 || row.inheritedSensitive === 1) &&
           (yield* effectivelySensitive(orgId, row.recordId).pipe(provideSql)) === false
         ) {
@@ -1202,9 +1549,24 @@ const make = Effect.gen(function* () {
             "updated",
             [{ field: "sensitive", from: "false", to: "true" }],
             now,
+            team,
           );
         }
-        if (reassigned !== undefined)
+        if (reassigned !== undefined && patch.handedBack !== undefined)
+          yield* wakeLead(
+            orgId,
+            writer,
+            row,
+            reassigned,
+            row.assignedBy === null
+              ? yield* agentOwner(orgId, reassigned)
+              : KinPersonId.make(row.assignedBy),
+            seq,
+            now,
+            "handed_back",
+            patch.handedBack.note,
+          );
+        else if (reassigned !== undefined)
           yield* wakeLead(orgId, writer, row, reassigned, writer.askedBy ?? null, seq, now);
         if (reopened)
           yield* wakeLead(orgId, writer, row, before.owner, writer.askedBy ?? null, seq, now);
@@ -1263,6 +1625,57 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const handBack = Effect.fn("KinRecords.handBack")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    key: string,
+    holder: KinWorkPrincipal,
+    note: string | null,
+  ) {
+    return yield* transaction(
+      Effect.gen(function* () {
+        const row = yield* byKey(orgId, key).pipe(provideSql);
+        if (row === undefined) return yield* notFound(key);
+        // What a teammate can't see is no task at all, before anything says who holds it.
+        if (writer.teammate === true && writer.actor._tag === "person")
+          yield* teamGuard(orgId, writer.actor.personId, { row, changes: false, input: {} }).pipe(
+            provideSql,
+          );
+        const held = toRecord(row, yield* Clock.currentTimeMillis);
+        if (row.registerId !== "work" || !samePrincipal(held.owner, holder))
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message: `Only whoever holds ${row.key} can hand it back.`,
+          });
+        if (isClosed(row.state))
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: `${row.key} is ${row.state}. Reopen it first.`,
+          });
+        const [owner] = yield* sql<{ id: string }>`SELECT owner_person_id AS id FROM kin_agents
+          WHERE org_id = ${orgId} ORDER BY created_at, agent_id LIMIT 1`;
+        const to: KinWorkPrincipal | undefined =
+          row.assignedByAgent !== null
+            ? { _tag: "agent", agentId: KinAgentId.make(row.assignedByAgent) }
+            : row.assignedBy !== null
+              ? { _tag: "person", personId: KinPersonId.make(row.assignedBy) }
+              : owner === undefined
+                ? undefined
+                : { _tag: "person", personId: KinPersonId.make(owner.id) };
+        if (to === undefined || samePrincipal(to, holder))
+          return yield* new KinChatError({
+            reason: "invalid_state",
+            message: `Nobody else gave ${row.key} to its holder, so there is no one to hand it back to. Drop it or give it to someone.`,
+          });
+        return yield* update(orgId, writer, key, {
+          owner: to,
+          state: "open",
+          handedBack: { note },
+        });
+      }),
+    );
+  });
+
   const link = Effect.fn("KinRecords.link")(function* (
     orgId: KinOrgId,
     writer: Writer,
@@ -1311,8 +1724,11 @@ const make = Effect.gen(function* () {
           currency: string;
           paidOn: string;
           note: string;
+          withheld: number;
+          voidedAt: number | null;
         }>`
-          SELECT record_id AS "recordId", amount_minor AS minor, currency, paid_on AS "paidOn", note
+          SELECT record_id AS "recordId", amount_minor AS minor, currency, paid_on AS "paidOn", note,
+            withheld, voided_at AS "voidedAt"
           FROM kin_record_payments WHERE org_id = ${orgId} AND origin_key = ${payment.originKey}`;
         if (earlier !== undefined) {
           if (
@@ -1320,12 +1736,14 @@ const make = Effect.gen(function* () {
             earlier.minor !== payment.amount.minor ||
             earlier.currency !== payment.amount.currency ||
             earlier.paidOn !== payment.paidOn ||
-            earlier.note !== (payment.note ?? "")
+            earlier.note !== (payment.note ?? "") ||
+            earlier.withheld !== (payment.withheld === true ? 1 : 0)
           )
             return yield* new KinChatError({
               reason: "not_allowed",
               message: "That retry key already recorded a different payment.",
             });
+          if (earlier.voidedAt !== null) return yield* undoneRetry("payment");
           return { row, paymentId };
         }
         if (row.state === "dropped")
@@ -1346,10 +1764,12 @@ const make = Effect.gen(function* () {
           });
         const now = yield* Clock.currentTimeMillis;
         yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
-            currency, paid_on, note, origin_key, created_at, created_by_kind, created_by_id)
+            currency, paid_on, note, origin_key, created_at, created_by_kind, created_by_id,
+            withheld)
           VALUES (${orgId}, ${paymentId}, ${row.recordId}, ${payment.amount.minor},
             ${payment.amount.currency}, ${payment.paidOn}, ${payment.note ?? ""},
-            ${payment.originKey}, ${now}, ${writer.actor._tag}, ${actorIdOf(writer)})`;
+            ${payment.originKey}, ${now}, ${writer.actor._tag}, ${actorIdOf(writer)},
+            ${payment.withheld === true ? 1 : 0})`;
         const paidUp =
           payment.amount.minor === balance && row.state !== "done" && def.states.includes("done");
         const rev = row.rev + 1;
@@ -1452,8 +1872,10 @@ const make = Effect.gen(function* () {
           everyEntry === true
             ? filterOf(orgId, input, now)
             : sql.and([filterOf(orgId, input, now), sql`r.amount_minor IS NOT NULL`]);
+        // A void entry's amount is no money: a total leaves it out unless the filter names it.
+        const asked = input.states ?? (input.open === false ? ["done", "dropped"] : undefined);
         const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records r
-          WHERE ${filter}`;
+          WHERE ${filter} AND ${countedEntry(sql, asked)}`;
         const counted = count?.n ?? 0;
         if (counted > TOTALS_CAP)
           return yield* invalid(
@@ -1478,10 +1900,11 @@ const make = Effect.gen(function* () {
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
             ${moneyDay(sql)} AS at,
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}) AS paid,
-            (SELECT COALESCE(SUM(p.amount_minor), 0) ${live}
+            (SELECT COALESCE(SUM(p.amount_minor), 0) ${live} AND p.withheld = 0
               AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
               AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received
-          FROM kin_records r WHERE ${filter} ORDER BY r.record_id`;
+          FROM kin_records r WHERE ${filter} AND ${countedEntry(sql, asked)}
+          ORDER BY r.record_id`;
         const listDef = yield* resolveList(orgId, input.list ?? "work");
         const paidOverTime = listDef.payments === true;
         const amounts = (members: typeof rows): Sums => {
@@ -1497,6 +1920,12 @@ const make = Effect.gen(function* () {
                       .filter((row) => owesIn(listDef, row.state) && row.minor > row.paid)
                       .map((row) => ({ minor: row.minor - row.paid, currency: row.currency })),
                   ),
+                }
+              : {}),
+            ...(listDef.id === "quotes"
+              ? {
+                  sent: addUp(priced.filter((row) => row.state === "waiting")),
+                  accepted: addUp(priced.filter((row) => row.state === "done")),
                 }
               : {}),
             ...(windowed
@@ -1558,6 +1987,8 @@ const make = Effect.gen(function* () {
 
   const filterOf = (orgId: KinOrgId, input: QueryInput, now: number) => {
     const where = [sql`r.org_id = ${orgId}`, sql`r.register_id = ${input.list ?? "work"}`];
+    if (input.team !== undefined) where.push(personSees(sql, input.team));
+    if (input.view !== undefined) where.push(viewSees(sql, input.view));
     if (input.partyId !== undefined) where.push(sql`r.party_id IS ${input.partyId}`);
     if (input.projectId !== undefined) where.push(sql`r.project_id = ${input.projectId}`);
     if (input.repo !== undefined) where.push(sql`lower(r.repo) = lower(${input.repo})`);
@@ -1596,6 +2027,9 @@ const make = Effect.gen(function* () {
     return yield* failed(
       Effect.gen(function* () {
         const now = input.at ?? (yield* Clock.currentTimeMillis);
+        // A teammate's number is read first: a change landing during the read then reads as newer.
+        const team =
+          input.team === undefined ? undefined : yield* teamSeq(orgId, input.team).pipe(provideSql);
         const filter = filterOf(orgId, input, now);
         const [count] = yield* sql<{ total: number }>`SELECT COUNT(*) AS total FROM kin_records r
           WHERE ${filter}`;
@@ -1614,7 +2048,8 @@ const make = Effect.gen(function* () {
         const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${filter}
           ORDER BY ${order}
           LIMIT ${limit} OFFSET ${Math.max(input.offset ?? 0, 0)}`;
-        return { rows, total: count?.total ?? 0, seq: yield* latestSeq(orgId).pipe(provideSql) };
+        const seq = team ?? (yield* latestSeq(orgId).pipe(provideSql));
+        return { rows, total: count?.total ?? 0, seq };
       }),
     );
   });
@@ -1664,6 +2099,7 @@ const make = Effect.gen(function* () {
     }),
     create,
     update,
+    handBack,
     link,
     pay,
     voidPayment,
@@ -1688,16 +2124,26 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(ticks);
           const now = yield* failed(latestSeq(orgId).pipe(provideSql));
-          const first: { readonly seq: number; readonly key?: string } = { seq: now };
+          const first: Tick = { seq: now };
           return Stream.concat(
             Stream.make(first),
             Stream.fromEffectRepeat(PubSub.take(subscription)).pipe(
               Stream.filter((tick) => tick.orgId === orgId),
-              Stream.map((tick) => ({ seq: tick.seq, key: tick.key })),
+              Stream.map(({ orgId: _orgId, ...tick }): Tick => tick),
             ),
           );
         }),
       ),
+    announce: Effect.fn("KinRecords.announce")(function* (orgId) {
+      // A number no change will take, past every one a client heard: an undo's entries took their
+      // changes with them, and clients read again only past what they already hold.
+      const [taken] = yield* failed(
+        sql<{ seq: number }>`UPDATE sqlite_sequence SET seq = seq + 1
+          WHERE name = 'kin_record_changes' RETURNING seq`,
+      );
+      const seq = taken?.seq ?? (yield* failed(latestSeq(orgId).pipe(provideSql)));
+      yield* PubSub.publish(ticks, { orgId, seq });
+    }),
   });
 });
 

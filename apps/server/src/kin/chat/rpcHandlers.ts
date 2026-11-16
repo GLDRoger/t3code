@@ -15,7 +15,7 @@ import { KinStop } from "../lead/KinStop.ts";
 import { KinOwnerTimeZone } from "../triggers/ownerTimeZone.ts";
 import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
-import { KinGroups } from "./KinGroups.ts";
+import { KinGroups, companyChatOf } from "./KinGroups.ts";
 import { KinVisualHosts } from "./KinVisualHosts.ts";
 
 const rpcs = RpcGroup.make(...KinChatAndBudgetRpcs);
@@ -25,6 +25,12 @@ const disabled = new KinChatError({
   message: "Kin is not running on this host.",
 });
 const isKinChatError = Schema.is(KinChatError);
+/** Open chats per connection: an owner keeps a few dozen open at most; this is several times that. */
+export const KIN_OPEN_CHATS_PER_CONNECTION = 200;
+const tooManyChats = new KinChatError({
+  reason: "limit",
+  message: "Too many chats are open on this device. Close some and try again.",
+});
 const leadRefusal = Schema.is(LeadProvision.KinLeadProvisionError);
 const leadReasons = {
   not_owner: "not_allowed",
@@ -36,7 +42,7 @@ const leadReasons = {
   conflict: "conflict",
   last_agent: "invalid_state",
 } as const satisfies Record<LeadProvision.KinLeadProvisionError["reason"], KinChatError["reason"]>;
-const toLeadError = (error: unknown) =>
+export const toLeadError = (error: unknown) =>
   leadRefusal(error)
     ? new KinChatError({ reason: leadReasons[error.reason], message: error.message })
     : error;
@@ -97,6 +103,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     const { identity, chat } = yield* services;
     return { chat, people: yield* identity.resolve(session) };
   });
+  let openChats = 0;
   return rpcs.of({
     "kin.budget.get": (input) =>
       services.pipe(
@@ -195,7 +202,19 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       ),
     "kin.chat.subscribe": (input) =>
       Stream.unwrap(
-        viewer.pipe(Effect.map(({ chat, people }) => chat.subscribe(people, input))),
+        Effect.gen(function* () {
+          // Held for as long as the stream runs: `unwrap` scopes the effect to it.
+          yield* Effect.acquireRelease(
+            Effect.suspend(() =>
+              openChats >= KIN_OPEN_CHATS_PER_CONNECTION
+                ? Effect.fail(tooManyChats)
+                : Effect.sync(() => void (openChats += 1)),
+            ),
+            () => Effect.sync(() => void (openChats -= 1)),
+          );
+          const { chat, people } = yield* viewer;
+          return chat.subscribe(people, input);
+        }),
       ).pipe(
         Stream.tapError(logInfra),
         Stream.mapError(mapError),
@@ -218,7 +237,6 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     "kin.chats.clear": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.clear(people, input)),
-        Effect.as({}),
         Effect.tapError(logInfra),
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
@@ -232,6 +250,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     "kin.groups.rename": (input) => group((groups, people) => groups.rename(people, input)),
     "kin.groups.delete": (input) =>
       group((groups, people) => groups.remove(people, input).pipe(Effect.as({}))),
+    "kin.groups.setCompany": (input) => group((groups, people) => groups.setCompany(people, input)),
     "kin.chat.history": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.history(people, input)),
@@ -281,7 +300,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
             if (!people.some((person) => person.orgId === input.orgId))
               return yield* new KinChatError({
                 reason: "not_allowed",
-                message: "Only the owner can create agents.",
+                message: "Only the owner or a co-owner can create agents.",
               });
             const { _tag, lead } = yield* LeadProvision.create({
               creator: { _tag: "session", session },
@@ -321,10 +340,13 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               (entry) => entry.orgId === input.orgId,
             );
             // An org the session's person isn't in has no leads to show them.
-            if (person === undefined) return { leads: [], contacts: [] };
+            if (person === undefined)
+              return { leads: [], contacts: [], teamAgentId: null, companyChat: null };
             return yield* Effect.all({
               leads: LeadProvision.profiles(person, { includeRetired: input.includeRetired }),
               contacts: LeadProvision.contacts(person),
+              teamAgentId: LeadProvision.teamAgent(person.orgId),
+              companyChat: companyChatOf(person.orgId),
             }).pipe(Effect.provideContext(kin.value.services.value));
           }),
         ),

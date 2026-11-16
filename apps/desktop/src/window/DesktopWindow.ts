@@ -216,6 +216,17 @@ export function isSameOriginRendererNavigation(input: {
   }
 }
 
+/** What the Save dialog proposes for a sandboxed frame's file: a bare name, nothing that hides or moves it. */
+function sandboxedDownloadName(name: string): string {
+  const bare = name
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, "")
+    .replace(/[\\/:*?"<>|]/g, "-")
+    .replace(/^[\s.-]+|[\s.]+$/g, "");
+  return bare === "" ? "download" : bare;
+}
+
+const guardedDownloadSessions = new WeakSet<Electron.Session>();
+
 function isRetryableDevelopmentRendererLoadFailure(input: {
   readonly applicationUrl: string;
   readonly errorCode: number;
@@ -651,6 +662,16 @@ export const make = Effect.gen(function* () {
         void runPromise(electronShell.openExternal(url));
       }
     });
+
+    // A sandboxed frame (an HTML preview, an MCP app) has an opaque origin: its file is never saved
+    // silently or under the name it chose. Kin visuals cannot download at all; the app saves for them.
+    if (!guardedDownloadSessions.has(window.webContents.session)) {
+      guardedDownloadSessions.add(window.webContents.session);
+      window.webContents.session.on("will-download", (_event, item) => {
+        if (item.getInitiatorOrigin() !== "null") return;
+        item.setSaveDialogOptions({ defaultPath: sandboxedDownloadName(item.getFilename()) });
+      });
+    }
 
     const quitShortcutHandler = makeQuitShortcutHandler({
       platform: environment.platform,

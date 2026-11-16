@@ -80,6 +80,7 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof KIN_CHAT_WS_METHODS.chatSubscribe
   | "kin.docs.subscribe"
   | "kin.work.subscribe"
+  | "kin.refreshes.subscribe"
   | typeof KIN_PUSH_WS_METHODS.watch;
 
 export type EnvironmentStreamCommandRpcTag =

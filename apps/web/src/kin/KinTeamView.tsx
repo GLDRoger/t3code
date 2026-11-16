@@ -11,7 +11,12 @@ import {
   kinRemoveAccessCopy,
   kinTeamEntrySummary,
   kinTeamView,
+  KIN_ACCESS_CHOICES,
+  KIN_PLACE_SWITCHES,
+  kinAccessChangeCopy,
   kinTeammateActions,
+  kinTeammateAgentsLine,
+  kinTeammateKindEditable,
   kinTeammateLeadLine,
   type KinMadeInvite,
   type KinTeamActions,
@@ -19,7 +24,17 @@ import {
   type KinTeammate,
 } from "@t3tools/client-runtime/kin/kinTeam";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, KinLeadProfile, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import type {
+  EnvironmentId,
+  KinLeadProfile,
+  KinOrgId,
+  KinPeopleSetAccessInput,
+  KinPersonAccess,
+  KinPersonId,
+  KinPersonPlaceSwitches,
+  KinPersonPlaces,
+} from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -39,6 +54,7 @@ import {
 } from "../components/ui/alert-dialog";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
+import { Radio, RadioGroup } from "../components/ui/radio-group";
 import {
   Empty,
   EmptyContent,
@@ -54,14 +70,17 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
+import { Switch } from "../components/ui/switch";
+import { connectionAtomRuntime } from "../connection/runtime";
 import { isElectron } from "../env";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinInviteDialog, type KinInviteDialogState } from "./KinInviteDialog";
-import { KinVisualHosts } from "./KinVisualHosts";
 import { kinClient } from "./kinClient";
 import { kinProfileRequestAtom, kinTeamAddRequestAtom } from "./kinTeamForm";
+import { openKinProfile } from "./KinProfileSheet";
+import { KinCompanyChatRow, KinTeamAgentRow } from "./KinTeamAgent";
 import { useKinHostAt } from "./useKinHost";
 
 interface KinTeamTarget {
@@ -72,6 +91,7 @@ interface KinTeamTarget {
 const teamAtoms = ({ environmentId, orgId }: KinTeamTarget) => ({
   peopleAtom: kinClient.people({ environmentId, input: { orgId } }),
   invitesAtom: kinClient.invites({ environmentId, input: { orgId } }),
+  profilesAtom: kinClient.profiles({ environmentId, input: { orgId } }),
 });
 
 async function refreshKinTeam(target: KinTeamTarget) {
@@ -87,24 +107,34 @@ async function refreshKinTeam(target: KinTeamTarget) {
 /** The people and unopened links, once both have been read; what was last read stays up. */
 function useKinTeam(target: KinTeamTarget) {
   const { environmentId, orgId } = target;
-  const { peopleAtom, invitesAtom } = teamAtoms(target);
+  const { peopleAtom, invitesAtom, profilesAtom } = teamAtoms(target);
   const people = useAtomValue(peopleAtom);
   const invites = useAtomValue(invitesAtom);
+  const profiles = Option.getOrNull(AsyncResult.value(useAtomValue(profilesAtom)))?.profiles;
   const host = useKinHostAt(environmentId);
   const { personId } = kinFeedViewer(
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
     orgId,
   );
+  const viewer = useAtomValue(kinAccessAtom(connectionAtomRuntime, environmentId));
   const heldPeople = Option.getOrNull(AsyncResult.value(people));
   const heldInvites = Option.getOrNull(AsyncResult.value(invites));
   const list: KinTeamList | null =
     heldPeople === null || heldInvites === null
       ? null
-      : { people: heldPeople.people, joined: heldPeople.joined, invites: heldInvites.invites };
+      : {
+          people: heldPeople.people,
+          joined: heldPeople.joined,
+          places: heldPeople.places,
+          invites: heldInvites.invites,
+          profiles,
+        };
   return {
     list,
     failed: list === null && (AsyncResult.isFailure(people) || AsyncResult.isFailure(invites)),
     ownerPersonId: personId,
+    /** The viewer's own kind; a co-owner acts on members only. */
+    viewer: viewer ?? "member",
     refresh: () => void refreshKinTeam(target),
   };
 }
@@ -203,6 +233,7 @@ function KinTeamBody(
   const createInvite = useAtomCommand(kinClient.inviteCreate, { reportFailure: false });
   const revokeInvite = useAtomCommand(kinClient.inviteCancel, { reportFailure: false });
   const removeAccess = useAtomCommand(kinClient.personRemoveAccess, { reportFailure: false });
+  const setAccess = useAtomCommand(kinClient.personSetAccess, { reportFailure: false });
   const [edits, setEdits] = useState(KIN_TEAM_NO_EDITS);
   const [actions] = useState(() =>
     createKinTeamActions({
@@ -210,6 +241,7 @@ function KinTeamBody(
       createInvite: (input) => createInvite({ environmentId, input }),
       revokeInvite: (input) => revokeInvite({ environmentId, input }),
       removeAccess: (input) => removeAccess({ environmentId, input }),
+      setAccess: (input) => setAccess({ environmentId, input }),
       update: setEdits,
       refresh: () => refreshKinTeam({ environmentId, orgId }),
     }),
@@ -272,6 +304,8 @@ function KinTeamBody(
             <AlertDescription>{edits.problem}</AlertDescription>
           </Alert>
         )}
+        <KinTeamAgentRow environmentId={environmentId} orgId={orgId} />
+        <KinCompanyChatRow environmentId={environmentId} orgId={orgId} />
         {alone ? (
           <Empty size="compact">
             <EmptyHeader>
@@ -289,12 +323,19 @@ function KinTeamBody(
           <ul className="flex flex-col">
             {rows.map((row) => (
               <li key={row.key} className="border-b border-border/60 last:border-b-0">
-                <KinTeamRow row={row} onOpen={() => setOpenKey(row.key)} />
+                <KinTeamRow
+                  row={row}
+                  onOpen={() => {
+                    // Your own row is your profile; there is no access of yours to manage here.
+                    if (row.state === "you" && row.personId !== null)
+                      openKinProfile({ environmentId, orgId, personId: row.personId });
+                    else setOpenKey(row.key);
+                  }}
+                />
               </li>
             ))}
           </ul>
         )}
-        <KinVisualHosts environmentId={environmentId} orgId={orgId} />
       </div>
       {open === null ? null : (
         <KinTeammateSheet
@@ -302,6 +343,7 @@ function KinTeamBody(
           environmentId={environmentId}
           orgId={orgId}
           actions={actions}
+          viewer={team.viewer}
           onMade={(invite) => {
             setOpenKey(null);
             setMade({ stage: "link", invite });
@@ -329,11 +371,15 @@ function KinTeamRow(props: { readonly row: KinTeammate; readonly onOpen: () => v
       <KinAvatar avatar={row.avatar} />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="truncate text-sm font-medium text-foreground">{row.name}</span>
-        <span className="text-xs text-muted-foreground">{row.detail}</span>
+        {row.roles === "" ? null : (
+          <span className="truncate text-xs text-foreground/80">{row.roles}</span>
+        )}
+        <span className="text-xs text-muted-foreground">
+          {row.load === "" ? row.detail : `${row.detail} · ${row.load}`}
+        </span>
       </span>
     </>
   );
-  if (row.state === "you") return <div className="flex items-center gap-3 px-2 py-3">{text}</div>;
   return (
     <button
       type="button"
@@ -361,14 +407,18 @@ function KinTeammateSheet(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly actions: KinTeamActions;
+  readonly viewer: KinPersonAccess;
   readonly onMade: (invite: KinMadeInvite) => void;
   readonly onClose: () => void;
 }) {
   const { teammate, actions } = props;
-  const offered = kinTeammateActions(teammate);
+  const offered = kinTeammateActions(teammate, props.viewer);
+  const [kindAsked, setKindAsked] = useState<KinPeopleSetAccessInput["access"] | null>(null);
+  const kindCopy = kindAsked === null ? null : kinAccessChangeCopy(teammate.name, kindAsked);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const removal = kinRemoveAccessCopy(teammate.name);
 
   const makeLink = async () => {
@@ -403,11 +453,63 @@ function KinTeammateSheet(props: {
           </div>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
+          {teammate.personId === null ? null : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="self-start"
+              onClick={() => {
+                const personId = teammate.personId;
+                if (personId === null) return;
+                props.onClose();
+                openKinProfile({
+                  environmentId: props.environmentId,
+                  orgId: props.orgId,
+                  personId,
+                });
+              }}
+            >
+              Profile
+            </Button>
+          )}
+          {kinTeammateKindEditable(teammate, props.viewer) ? (
+            <Section title="What they can do">
+              <RadioGroup
+                value={teammate.access}
+                disabled={busy}
+                onValueChange={(value) => {
+                  const choice = KIN_ACCESS_CHOICES.find((held) => held.access === value);
+                  if (choice !== undefined && choice.access !== teammate.access)
+                    setKindAsked(choice.access);
+                }}
+              >
+                {KIN_ACCESS_CHOICES.map((choice) => (
+                  <label key={choice.access} className="flex cursor-pointer items-start gap-3">
+                    <Radio value={choice.access} className="mt-0.5" />
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="text-sm text-foreground">{choice.label}</span>
+                      <span className="text-xs text-muted-foreground">{choice.detail}</span>
+                    </span>
+                  </label>
+                ))}
+              </RadioGroup>
+            </Section>
+          ) : null}
+          {teammate.places === null || teammate.personId === null ? null : (
+            <KinTeammatePlaces
+              places={teammate.places}
+              personId={teammate.personId}
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+            />
+          )}
           <Section title="Agents">
             {teammate.personId === null ? (
               <p className="text-sm text-muted-foreground">
                 Once {teammate.name} joins, open an agent's details to let them message it.
               </p>
+            ) : kinTeammateAgentsLine(teammate) !== null ? (
+              <p className="text-sm text-muted-foreground">{kinTeammateAgentsLine(teammate)}</p>
             ) : (
               <KinTeammateLeads
                 personId={teammate.personId}
@@ -436,12 +538,7 @@ function KinTeammateSheet(props: {
                   variant="outline"
                   className="self-start"
                   disabled={busy}
-                  onClick={() => {
-                    if (teammate.inviteId === null) return;
-                    // Shown at once; the page says so if the host refuses.
-                    void actions.cancelInvite(teammate.inviteId);
-                    if (teammate.personId === null) props.onClose();
-                  }}
+                  onClick={() => setCancelling(true)}
                 >
                   {offered.cancel.label}
                 </Button>
@@ -468,6 +565,28 @@ function KinTeammateSheet(props: {
           ) : null}
         </div>
       </SheetPopup>
+      <AlertDialog open={kindCopy !== null} onOpenChange={(open) => !open && setKindAsked(null)}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{kindCopy?.title}</AlertDialogTitle>
+            <AlertDialogDescription>{kindCopy?.detail}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button
+              onClick={() => {
+                const access = kindAsked;
+                setKindAsked(null);
+                if (teammate.personId === null || access === null) return;
+                setBusy(true);
+                void actions.setAccess(teammate.personId, access).finally(() => setBusy(false));
+              }}
+            >
+              {kindCopy?.confirm}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
         <AlertDialogPopup>
           <AlertDialogHeader>
@@ -488,7 +607,105 @@ function KinTeammateSheet(props: {
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
+      {offered.cancel === null ? null : (
+        <AlertDialog open={cancelling} onOpenChange={setCancelling}>
+          <AlertDialogPopup>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{offered.cancel.title}</AlertDialogTitle>
+              <AlertDialogDescription>{offered.cancel.detail}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogClose render={<Button variant="outline" />}>
+                {offered.cancel.keep}
+              </AlertDialogClose>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  setCancelling(false);
+                  if (teammate.inviteId === null) return;
+                  // Shown at once; the page says so if the host refuses.
+                  void actions.cancelInvite(teammate.inviteId);
+                  if (teammate.personId === null) props.onClose();
+                }}
+              >
+                {offered.cancel.label}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogPopup>
+        </AlertDialog>
+      )}
     </Sheet>
+  );
+}
+
+/** A member's places beyond Tasks, and the projects they lead (set on each project's page). */
+function KinTeammatePlaces(props: {
+  readonly places: KinPersonPlaces;
+  readonly personId: KinPersonId;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  const { places, personId, environmentId, orgId } = props;
+  const setPlaces = useAtomCommand(kinClient.personSetPlaces, { reportFailure: false });
+  // What the owner just switched, shown until the host's next read agrees or refuses.
+  const [asked, setAsked] = useState<Partial<KinPersonPlaceSwitches>>({});
+  const [problem, setProblem] = useState<string | null>(null);
+  const flip = async (place: keyof KinPersonPlaceSwitches, on: boolean) => {
+    setProblem(null);
+    setAsked((held) => ({ ...held, [place]: on }));
+    const result = await setPlaces({ environmentId, input: { orgId, personId, [place]: on } });
+    if (AsyncResult.isFailure(result))
+      setProblem("That didn't save. Check your connection and try again.");
+    await refreshKinTeam({ environmentId, orgId });
+    setAsked((held) => {
+      const rest = { ...held };
+      delete rest[place];
+      return rest;
+    });
+  };
+  return (
+    <>
+      <Section title="What they can see">
+        <p className="text-xs text-muted-foreground">Tasks shared with the team, always.</p>
+        {KIN_PLACE_SWITCHES.map((entry) => {
+          const id = `kin-place-${entry.place}`;
+          return (
+            <div key={entry.place} className="flex items-start justify-between gap-3">
+              <label htmlFor={id} className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-sm text-foreground">{entry.label}</span>
+                <span className="text-xs text-muted-foreground">{entry.detail}</span>
+              </label>
+              <Switch
+                id={id}
+                checked={asked[entry.place] ?? places[entry.place]}
+                disabled={asked[entry.place] !== undefined}
+                onCheckedChange={(on) => void flip(entry.place, on)}
+              />
+            </div>
+          );
+        })}
+        {problem === null ? null : (
+          <p role="alert" className="text-xs text-destructive-foreground">
+            {problem}
+          </p>
+        )}
+      </Section>
+      <Section title="Projects they lead">
+        {places.leads.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            None. Make them a project's lead on that project's page.
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {places.leads.map((project) => (
+              <li key={project.recordId} className="truncate text-sm text-foreground">
+                {project.title}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Section>
+    </>
   );
 }
 

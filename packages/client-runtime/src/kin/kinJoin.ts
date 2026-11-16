@@ -1,10 +1,11 @@
 import {
-  KIN_MEMORY_RPC_SCOPES,
-  KIN_PEOPLE_RPC_SCOPES,
   KIN_WORK_RPC_SCOPES,
+  kinOwnerLevel,
   sessionGrantsScope,
   sessionIsChatOnly,
+  type AuthEnvironmentScope,
   type EnvironmentId,
+  type KinPersonAccess,
   type SessionGrantInput,
 } from "@t3tools/contracts";
 import { readKinJoinLink } from "@t3tools/shared/remote";
@@ -130,31 +131,85 @@ export function kinAccessEnded(
   );
 }
 
+const grants = (session: SessionGrantInput | null) => (scope: AuthEnvironmentScope) =>
+  session !== null && sessionGrantsScope(session, scope);
+
 export type KinHomeTab = "chats" | "work" | "team" | "memory" | "settings";
 
-/** The tabs a Kin home's dock draws. Team and Memory are pages of Settings, not tabs. */
-export type KinDockTab = Extract<KinHomeTab, "chats" | "work" | "settings">;
+/** The places a Kin home's dock draws. Settings is a button on Chats, Team and Memory its pages. */
+export type KinDockTab = "chats" | "tasks" | "money" | "clients" | "docs";
 
-const isDockTab = (tab: KinHomeTab): tab is KinDockTab =>
-  tab === "chats" || tab === "work" || tab === "settings";
-
-/** Chats, Work and Settings for a session the host lets read Work; Chats and Settings otherwise. */
-export function kinDockTabs(session: SessionGrantInput | null): ReadonlyArray<KinDockTab> {
-  return kinHomeTabs(session).filter(isDockTab);
+/** Places the host has answered it won't show this viewer, which a grant can't tell apart. */
+export interface KinDockRefused {
+  readonly money: boolean;
+  readonly clients: boolean;
+  readonly docs: boolean;
 }
 
 /**
- * The tabs of a Kin-only home, in order, from what the session has been allowed: a tab whose page
- * the host would refuse is never offered. A teammate's session gets chats and settings.
+ * Chats and Tasks, then each place the host hasn't refused: every one for the owner or a co-owner,
+ * for anyone else the ones the host says they reach (`kin.access.me`), none until it has.
  */
-export function kinHomeTabs(session: SessionGrantInput | null): ReadonlyArray<KinHomeTab> {
-  const allowed = (scope: Parameters<typeof sessionGrantsScope>[1]) =>
-    session !== null && sessionGrantsScope(session, scope);
+export function kinDockTabs(
+  session: SessionGrantInput | null,
+  ownerLevel: boolean,
+  refused: KinDockRefused,
+  reaches: KinPlaceReach | null = null,
+): ReadonlyArray<KinDockTab> {
+  if (!grants(session)(KIN_WORK_RPC_SCOPES["kin.work.list"])) return ["chats"];
+  const shown = (place: keyof KinDockRefused) =>
+    !refused[place] && (ownerLevel || reaches?.[place] === true);
+  return [
+    "chats",
+    "tasks",
+    ...(shown("money") ? (["money"] as const) : []),
+    ...(shown("clients") ? (["clients"] as const) : []),
+    ...(shown("docs") ? (["docs"] as const) : []),
+  ];
+}
+
+/** Which places someone besides the owner reaches: switched on for them, or a project they lead. */
+export type KinPlaceReach = KinDockRefused;
+export function kinPlaceReach(
+  me: {
+    readonly places?: KinDockRefused | undefined;
+    readonly leads?: ReadonlyArray<unknown> | undefined;
+  } | null,
+): KinPlaceReach | null {
+  if (me === null || me.places === undefined) return null;
+  const lead = (me.leads?.length ?? 0) > 0;
+  return {
+    money: me.places.money || lead,
+    clients: me.places.clients || lead,
+    docs: me.places.docs || lead,
+  };
+}
+
+/**
+ * Whether the viewer runs the company here: their stored kind once the host has said, and until
+ * then a session with more than chat (the owner's own) is taken for the owner's.
+ */
+export function kinViewerOwnerLevel(
+  access: KinPersonAccess | null,
+  session: SessionGrantInput | null,
+): boolean {
+  if (access !== null) return kinOwnerLevel(access);
+  return session !== null && session.authenticated && !sessionIsChatOnly(session);
+}
+
+/**
+ * The tabs of a Kin-only home, in order: a tab whose page the host would refuse is never offered.
+ * A member gets chats, work and settings; the owner and a co-owner also team and memory.
+ */
+export function kinHomeTabs(
+  session: SessionGrantInput | null,
+  ownerLevel: boolean,
+): ReadonlyArray<KinHomeTab> {
+  const allowed = grants(session);
   return [
     "chats",
     ...(allowed(KIN_WORK_RPC_SCOPES["kin.work.list"]) ? (["work"] as const) : []),
-    ...(allowed(KIN_PEOPLE_RPC_SCOPES["kin.people.listInvites"]) ? (["team"] as const) : []),
-    ...(allowed(KIN_MEMORY_RPC_SCOPES["kin.memory.list"]) ? (["memory"] as const) : []),
+    ...(ownerLevel ? (["team", "memory"] as const) : []),
     "settings",
   ];
 }

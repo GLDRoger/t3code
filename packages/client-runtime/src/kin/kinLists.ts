@@ -23,7 +23,7 @@ import type {
 import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
-import { formatKinChartValue } from "./kinChart.ts";
+import { formatKinChartValue, KIN_CURRENCY_SYMBOLS } from "./kinChart.ts";
 import {
   isKinChatError,
   isKinWorkAuthorizationError,
@@ -57,12 +57,15 @@ export const KIN_LISTS = {
   showArchived: "Show lists you put away",
   all: "All",
   late: "Overdue",
+  expired: "Expired",
   noCategory: "No category",
   noClient: "No client",
   anyCategory: "Any category",
   anyClient: "Any client",
   clientFilter: "Client",
   billed: "Billed",
+  sentWaiting: "Sent, waiting",
+  accepted: "Accepted",
   owed: "Still owed",
   received: "Received",
   paidOut: "Paid",
@@ -73,6 +76,7 @@ export const KIN_LISTS = {
     month: "Month",
     financialYear: "Financial year",
   } satisfies Record<KinListGroupBy, string>,
+  view: "View",
   rows: "Rows",
   table: "Table",
   entry: {
@@ -93,6 +97,8 @@ export const KIN_LISTS = {
     payDay: "Received on",
     payNote: "Note",
     payNotePlaceholder: "Bank transfer, UPI reference…",
+    payTds: "TDS deducted",
+    payTdsPlaceholder: "0",
     paySave: "Record payment",
     takeBack: "Take back",
     takenBack: "Taken back",
@@ -135,7 +141,8 @@ export const KIN_LISTS = {
     payments: "Entries are paid in parts",
     paymentsDetail: "Each entry keeps its payments and what is still owed, as invoices do.",
     archive: "Put this list away",
-    archiveDetail: "It stops taking new entries and leaves this page. Nothing is deleted.",
+    archiveDetail:
+      "It stops taking new entries. Nothing is deleted, and you can bring it back here in its settings.",
     restoreList: "Bring this list back",
     builtIn: "This list is part of Kin and can't be changed here.",
     save: "Save",
@@ -152,7 +159,7 @@ export const KIN_LISTS = {
 const moneyUnit = (currency: string) => ({ kind: "money" as const, currency });
 
 /** How many digits follow the point in `currency`: 2 for rupees, 0 for yen. */
-const kinMinorDigits = (currency: string) =>
+export const kinMinorDigits = (currency: string) =>
   (formatKinChartValue(moneyUnit(currency), 1, "full", true).split(".")[1] ?? "").length;
 
 /** An exact amount: "₹4,20,000", with paise only when there are some unless `paise` keeps them. */
@@ -179,11 +186,14 @@ const afterLabel = (when: string) =>
 export const kinTotalsText = (totals: KinMoneyTotals, nothing = KIN_MONEY_NOTHING) =>
   totals.length === 0 ? nothing : kinTotalsLines(totals).join(" and ");
 
+// Longest first, so "S$" is Singapore dollars before "$" is read as US ones.
 const SYMBOLS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/US\$/, "USD"],
+  ...Object.entries(KIN_CURRENCY_SYMBOLS)
+    .filter(([code]) => code !== "INR")
+    .sort(([, a], [, b]) => b.length - a.length)
+    .map(([code, sign]) => [new RegExp(sign.replace(/[$]/g, "\\$&")), code] as const),
   [/₹|\brs\.?(?=\s|\d|$)/i, "INR"],
-  [/\$/, "USD"],
-  [/€/, "EUR"],
-  [/£/, "GBP"],
 ];
 
 /**
@@ -534,6 +544,23 @@ export function kinListNarrowings(
   ];
 }
 
+/** Everything a list is narrowed to, as the one chip its Filter shows; null on the whole list. */
+export function kinListFilterLabel(def: KinListDefinition, filter: KinListFilter): string | null {
+  const state = kinListChips(def, filter).find((chip) => chip.selected && chip.id !== "all");
+  const parts = [
+    ...(state === undefined ? [] : [state.label]),
+    ...kinListNarrowings(filter, def).map((narrowing) => narrowing.label),
+  ];
+  return parts.length === 0 ? null : parts.join(" · ");
+}
+
+/** The whole list again, keeping what is typed in search and how the totals split. */
+export const kinListFilterCleared = (filter: KinListFilter): KinListFilter => ({
+  ...KIN_LIST_DEFAULT_FILTER,
+  text: filter.text,
+  groupBy: filter.groupBy,
+});
+
 /** Which ways this list's totals can split: only by what it has. */
 export const kinListGroupings = (def: KinListDefinition): ReadonlyArray<KinListGroupBy> => [
   "none",
@@ -545,13 +572,13 @@ export const kinListGroupings = (def: KinListDefinition): ReadonlyArray<KinListG
 
 /** One figure over a list: "Still owed" with a line per currency. */
 export interface KinListFigure {
-  readonly id: "total" | "owed" | "received";
+  readonly id: "total" | "owed" | "received" | "sent" | "accepted";
   /** Null for the only figure of a list that isn't paid over time: it needs no name. */
   readonly label: string | null;
   readonly lines: ReadonlyArray<string>;
 }
 
-type Sums = Pick<KinListTotals, "total" | "owed" | "received">;
+type Sums = Pick<KinListTotals, "total" | "owed" | "received" | "sent" | "accepted">;
 
 /**
  * The figures a filter's sums make, the one the filter is about first: what was received in a
@@ -562,6 +589,12 @@ function figuresOf(def: KinListDefinition, sums: Sums): ReadonlyArray<KinListFig
   const some = (totals: KinMoneyTotals) =>
     totals.length === 0 ? [KIN_MONEY_NOTHING] : kinTotalsLines(totals);
   const billed = { id: "total" as const, label: KIN_LISTS.billed, lines: some(sums.total) };
+  // Quotes add up only what is out and what was won; a draft is not money yet.
+  if (sums.sent !== undefined || sums.accepted !== undefined)
+    return [
+      { id: "sent", label: KIN_LISTS.sentWaiting, lines: some(sums.sent ?? []) },
+      { id: "accepted", label: KIN_LISTS.accepted, lines: some(sums.accepted ?? []) },
+    ];
   if (sums.received !== undefined)
     return [
       {
@@ -595,8 +628,10 @@ const countText = (count: number) => (count === 1 ? "1 entry" : `${count} entrie
 export interface KinListHeaderView {
   /** What the filter's entries add up to, the leading figure first; empty without amounts. */
   readonly figures: ReadonlyArray<KinListFigure>;
-  /** The full amounts, one line per currency; empty without amounts. */
+  /** The full amounts, one line per currency; empty without amounts, and for quotes. */
   readonly totals: ReadonlyArray<string>;
+  /** One line under a few entries shown elsewhere: "₹40,000 in all", or a quotes' two sums. */
+  readonly summary: string | null;
   readonly count: string | null;
   readonly groups: ReadonlyArray<KinListGroupView>;
 }
@@ -654,9 +689,17 @@ export function kinListHeader(
       selected,
     };
   });
+  const figures = totals === null ? [] : figuresOf(def, totals);
+  const quotes = figures[0]?.id === "sent";
+  const full = def.amount && totals !== null && !quotes ? kinTotalsLines(totals.total) : [];
   return {
-    figures: totals === null ? [] : figuresOf(def, totals),
-    totals: def.amount && totals !== null ? kinTotalsLines(totals.total) : [],
+    figures,
+    totals: full,
+    summary: quotes
+      ? figures.map((figure) => `${figure.label}: ${figure.lines.join(" and ")}`).join(" · ")
+      : full.length === 0 || (total ?? 0) < 2
+        ? null
+        : `${full.join(" and ")} in all`,
     count: total === null ? null : countText(total),
     // Periods read newest first; the host sends them oldest first.
     groups: filter.groupBy === "category" ? groups : [...groups].reverse(),
@@ -885,7 +928,7 @@ export function kinListRow(
       amount,
       owed,
       ...parts.slice(1),
-      record.late ? KIN_LISTS.late : null,
+      record.late ? (def?.list === "quotes" ? KIN_LISTS.expired : KIN_LISTS.late) : null,
     ]
       .filter((part) => part !== null)
       .join(". "),
@@ -965,6 +1008,8 @@ export interface KinListEntryView {
   /** Files no field of the list holds any more. */
   readonly otherFiles: ReadonlyArray<KinFileRef>;
   readonly payments: ReadonlyArray<KinPaymentView>;
+  /** An invoice's payment form also takes the TDS the client deducted. */
+  readonly takesTds: boolean;
   /** Every status the list uses, to move the entry to. */
   readonly states: ReadonlyArray<{
     readonly state: KinRecordState;
@@ -1122,11 +1167,15 @@ export function kinListEntryView(
     facts,
     fields,
     otherFiles: (item.files ?? []).filter((file) => !held.has(file.attachmentId)),
+    takesTds: item.list === "invoices",
     payments: (item.payments ?? []).map((payment: KinPayment) => ({
       paymentId: payment.paymentId,
       amount: kinMoneyText(payment.amount, true),
       when: dayText(payment.paidOn, now),
-      note: payment.note.trim() === "" ? null : payment.note.trim(),
+      note:
+        [payment.withheld === true ? KIN_LISTS.entry.payTds : null, payment.note.trim()]
+          .filter((part) => part !== null && part !== "")
+          .join(" · ") || null,
       voided: payment.voidedAt !== null,
     })),
     states: (def?.states ?? [item.state]).map((state) => ({
@@ -1234,6 +1283,8 @@ export interface KinPaymentDraft {
   /** `YYYY-MM-DD`. */
   readonly paidOn: string;
   readonly note: string;
+  /** TDS the client deducted, on an invoice; blank for none. */
+  readonly tds?: string;
 }
 
 /** What was typed as a payment, or why it can't be recorded. */
@@ -1241,18 +1292,26 @@ export function kinPaymentCheck(
   draft: KinPaymentDraft,
   left: KinMoney,
 ):
-  | { readonly ok: true; readonly amount: KinMoney }
+  | { readonly ok: true; readonly amount: KinMoney; readonly tds?: KinMoney }
   | { readonly ok: false; readonly problem: string } {
-  const amount = kinParseAmount(draft.amount, left.currency);
-  if (amount === null)
+  const tdsText = draft.tds?.trim() ?? "";
+  const tds = tdsText === "" ? null : kinParseAmount(tdsText, left.currency);
+  if (tdsText !== "" && (tds === null || tds.minor === 0))
+    return { ok: false, problem: "Enter the TDS deducted, like 4,000, or leave it blank." };
+  // With TDS, the cash received may be left blank: the client kept it all as tax.
+  const amount =
+    tds !== null && draft.amount.trim() === ""
+      ? { minor: 0, currency: left.currency }
+      : kinParseAmount(draft.amount, left.currency);
+  if (amount === null || (amount.minor === 0 && tds === null))
     return { ok: false, problem: "Enter the amount received, like 40,000 or 40000.50." };
-  if (amount.minor > left.minor)
+  if (amount.minor + (tds?.minor ?? 0) > left.minor)
     return {
       ok: false,
       problem: `That's more than the ${kinMoneyText(left, true)} still owed.`,
     };
   if (!DAY.test(draft.paidOn)) return { ok: false, problem: "Pick the day it was received." };
-  return { ok: true, amount };
+  return tds === null ? { ok: true, amount } : { ok: true, amount, tds };
 }
 
 export type KinListOutcome<A> =
@@ -1286,10 +1345,16 @@ export async function kinListSend<A>(input: {
     case "not_found":
       return failed("That isn't there any more.");
     case "not_allowed":
-      return failed("Only whoever runs this Kin can change this.");
+      // A retry key reused for something else: the form's id is stale, not the person's rights.
+      return failed(
+        /retry key/i.test(error.message)
+          ? "This was already sent once with different details. Close it and start again."
+          : "Only whoever runs this Kin can change this.",
+      );
     case "unavailable":
     case "disabled":
       return failed("Kin isn't answering right now. Try again in a moment.");
+    case "limit":
     case "invalid_state":
       // The host says exactly what it refused; words meant for an agent's tools are not shown.
       return failed(

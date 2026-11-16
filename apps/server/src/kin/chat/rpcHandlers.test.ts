@@ -1,5 +1,5 @@
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
-import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
+import { kinHostDependencies } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Hub from "./KinChatHub.ts";
@@ -58,6 +58,7 @@ import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 import * as Repository from "./KinChatRepository.ts";
 import { makeKinHandlers } from "../rpcHandlers.ts";
+import { KIN_OPEN_CHATS_PER_CONNECTION } from "./rpcHandlers.ts";
 
 const decodeTaskState = Schema.decodeEffect(KinTaskCardState);
 
@@ -69,7 +70,7 @@ const session = {
 };
 const configured = ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }));
 const root = Kin.layer.pipe(
-  Layer.provide(dormantLeadDependencies),
+  Layer.provideMerge(kinHostDependencies),
   Layer.provideMerge(Chat.layer),
   Layer.provide(configured),
 );
@@ -392,6 +393,28 @@ it.effect(
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
+// QA Q17: one socket held 1,000 subscriptions to a chat, about 240 KB of server memory each.
+it.effect("caps the chats one connection keeps open with a plain refusal", () =>
+  Effect.gen(function* () {
+    const { direct } = yield* seed;
+    const handlers = yield* makeKinHandlers(session);
+    const client = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.merge(
+          group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+          RpcAuthorization.layer(AuthStandardClientScopes),
+        ),
+      ),
+    );
+    const subscribe = () => client["kin.chat.subscribe"]({ chatId: direct.chatId });
+    for (let open = 0; open < KIN_OPEN_CHATS_PER_CONNECTION; open++) {
+      const events = yield* Stream.toQueue(subscribe(), { capacity: "unbounded" });
+      assert.include(yield* Queue.take(events), { _tag: "backlog" });
+    }
+    assert.include(yield* Stream.runHead(subscribe()).pipe(Effect.flip), { reason: "limit" });
+  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
 it.effect("keeps transport handlers out of persistence", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -625,7 +648,7 @@ it.effect("denies settings-only sessions before Kin handlers execute", () =>
       (yield* client["kin.orgs.list"]({}).pipe(Effect.flip))._tag,
       "EnvironmentAuthorizationError",
     );
-  }).pipe(Effect.provide(Sqlite.layerMemory)),
+  }).pipe(Effect.provide(Layer.merge(Sqlite.layerMemory, kinHostDependencies))),
 );
 
 it.effect("drops a failed waiting read without ending the chat list stream", () =>
@@ -692,10 +715,12 @@ it.effect(
         ),
       );
       const input = { orgId: person.orgId, limits: { leadUnits: 300, workerUnits: 600 } };
-      assert.deepStrictEqual((yield* client["kin.budget.set"](input)).limits, input.limits);
+      // Teammates' own limit stays unset when the owner sets only the org's.
+      const stored = { ...input.limits, teammateUnits: null };
+      assert.deepStrictEqual((yield* client["kin.budget.set"](input)).limits, stored);
       assert.deepStrictEqual(
         (yield* client["kin.budget.get"]({ orgId: person.orgId })).limits,
-        input.limits,
+        stored,
       );
       assert.include(
         yield* client["kin.budget.set"]({ ...input, orgId: KinOrgId.make("foreign") }).pipe(
@@ -735,8 +760,9 @@ it.effect(
           ),
         ),
       );
+      // A member is refused before any handler runs (`KIN_RPC_ACCESS`).
       assert.include(yield* memberClient["kin.budget.set"](input).pipe(Effect.flip), {
-        reason: "not_allowed",
+        _tag: "EnvironmentAuthorizationError",
       });
       const readOnly = yield* RpcTest.makeClient(group).pipe(
         Effect.provide(
@@ -749,10 +775,12 @@ it.effect(
       const zone = { orgId: person.orgId, timeZone: "Asia/Kolkata" };
       assert.deepStrictEqual(yield* client["kin.triggers.getTimeZone"]({ orgId: person.orgId }), {
         ...zone,
-        timeZone: "UTC",
+        // None set: the host's zone stands in, and the answer says so.
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        fromHost: true,
       });
       assert.include(yield* memberClient["kin.triggers.setTimeZone"](zone).pipe(Effect.flip), {
-        reason: "not_allowed",
+        _tag: "EnvironmentAuthorizationError",
       });
       assert.strictEqual(
         (yield* readOnly["kin.budget.set"](input).pipe(Effect.flip))._tag,
@@ -774,7 +802,7 @@ it.effect(
         memberClient["kin.visuals.hosts.allow"]({ ...host, host: "evil.example.com" }),
         memberClient["kin.visuals.hosts.remove"](host),
       ])
-        assert.include(yield* call.pipe(Effect.flip), { reason: "not_allowed" });
+        assert.strictEqual((yield* call.pipe(Effect.flip))._tag, "EnvironmentAuthorizationError");
       for (const call of [
         readOnly["kin.visuals.hosts.list"]({ orgId: person.orgId }),
         readOnly["kin.visuals.hosts.allow"](host),
@@ -793,7 +821,7 @@ it.effect("lets only the owner stop and resume Kin over RPC; members may read th
     const { person, repo } = yield* seed;
     const clientFor = (
       handlers: Effect.Success<ReturnType<typeof makeKinHandlers>>,
-      scopes: ReadonlyArray<(typeof AuthStandardClientScopes)[number]> = AuthStandardClientScopes,
+      scopes: ReadonlyArray<AuthEnvironmentScope> = AuthStandardClientScopes,
     ) =>
       RpcTest.makeClient(group).pipe(
         Effect.provide(
@@ -827,34 +855,47 @@ it.effect("lets only the owner stop and resume Kin over RPC; members may read th
     const kin = yield* Kin.KinServer;
     const services = Option.getOrThrow(kin.services);
     const identity = Context.get(services, KinIdentity);
-    const member = yield* clientFor(
-      yield* makeKinHandlers(session).pipe(
-        Effect.provideService(Kin.KinServer, {
-          ...kin,
-          services: Option.some(
-            Context.add(services, KinIdentity, {
-              ...identity,
-              resolve: () =>
-                Effect.succeed([{ _tag: "person", orgId: person.orgId, personId: memberId }]),
-            }),
-          ),
-        }),
-      ),
+    const memberHandlers = yield* makeKinHandlers(session).pipe(
+      Effect.provideService(Kin.KinServer, {
+        ...kin,
+        services: Option.some(
+          Context.add(services, KinIdentity, {
+            ...identity,
+            resolve: () =>
+              Effect.succeed([{ _tag: "person", orgId: person.orgId, personId: memberId }]),
+          }),
+        ),
+      }),
     );
-    assert.deepStrictEqual(yield* member["kin.org.get"](input), paused);
+    const member = yield* clientFor(memberHandlers);
+    // The owner's own words for why stay his.
+    assert.deepStrictEqual(yield* member["kin.org.get"](input), { ...paused, reason: null });
+    // QA Q15: a teammate's session holds only kin:chat, and still sees the switch and the zone.
+    const teammate = yield* clientFor(memberHandlers, [AuthKinChatScope]);
+    assert.deepStrictEqual(yield* teammate["kin.org.get"](input), { ...paused, reason: null });
+    assert.deepStrictEqual(yield* teammate["kin.triggers.getTimeZone"](input), {
+      ...input,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      fromHost: true,
+    });
+    // The budget's amounts stay with the owner's settings.
+    assert.strictEqual(
+      (yield* teammate["kin.budget.get"](input).pipe(Effect.flip))._tag,
+      "EnvironmentAuthorizationError",
+    );
     assert.include(yield* member["kin.org.resume"](input).pipe(Effect.flip), {
-      reason: "not_allowed",
+      _tag: "EnvironmentAuthorizationError",
     });
     assert.include(yield* member["kin.org.pause"](input).pipe(Effect.flip), {
-      reason: "not_allowed",
+      _tag: "EnvironmentAuthorizationError",
     });
     const readOnly = yield* clientFor(handlers, [AuthOrchestrationReadScope]);
-    for (const method of ["kin.org.pause", "kin.org.resume"] as const)
+    // Reading the switch is Kin's chat scope now: a session without it sees no Kin at all.
+    for (const method of ["kin.org.pause", "kin.org.resume", "kin.org.get"] as const)
       assert.strictEqual(
         (yield* readOnly[method](input).pipe(Effect.flip))._tag,
         "EnvironmentAuthorizationError",
       );
-    assert.isTrue((yield* readOnly["kin.org.get"](input)).paused);
 
     const resumed = yield* client["kin.org.resume"](input);
     assert.isFalse(resumed.paused);
@@ -946,7 +987,7 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
     );
     assert.include(
       yield* member["kin.lead.create"]({ ...input, domain: "finance" }).pipe(Effect.flip),
-      { reason: "not_allowed" },
+      { _tag: "EnvironmentAuthorizationError" },
     );
     const operator = yield* clientFor(handlers, [
       AuthOrchestrationReadScope,
@@ -970,10 +1011,17 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       (yield* operator["kin.leads.list"](org).pipe(Effect.flip))._tag,
       "EnvironmentAuthorizationError",
     );
-    assert.deepStrictEqual(yield* member["kin.leads.list"](org), { leads: [], contacts: [] });
+    assert.deepStrictEqual(yield* member["kin.leads.list"](org), {
+      leads: [],
+      contacts: [],
+      teamAgentId: null,
+      companyChat: null,
+    });
     assert.deepStrictEqual(yield* client["kin.leads.list"]({ orgId: KinOrgId.make("foreign") }), {
       leads: [],
       contacts: [],
+      teamAgentId: null,
+      companyChat: null,
     });
     const edit = { ...org, agentId: growth.agentId, charter: "Grow paid signups." };
     assert.deepStrictEqual(yield* client["kin.lead.update"](edit), {
@@ -981,7 +1029,7 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       charter: "Grow paid signups.",
     });
     assert.include(yield* member["kin.lead.update"](edit).pipe(Effect.flip), {
-      reason: "not_allowed",
+      _tag: "EnvironmentAuthorizationError",
     });
     assert.strictEqual(
       (yield* operator["kin.lead.update"](edit).pipe(Effect.flip))._tag,
@@ -999,19 +1047,18 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       [{ domain: "growth" }, { domain: "social-media" }],
     );
 
-    // Retiring and restoring are the owner's: a member reads the agent as not there, and a
-    // session without the settings grant (a chat-only one included) never reaches the service.
+    // Retiring and restoring are owner-level: neither a member nor a session that can't chat
+    // reaches the service. The owner's chat-only session (his phone) is still the owner.
     const target = { ...org, agentId: social.agentId };
-    assert.include(yield* member["kin.lead.retire"](target).pipe(Effect.flip), {
-      reason: "not_found",
-    });
-    const chatOnly = yield* clientFor(handlers, [AuthKinChatScope]);
-    for (const caller of [operator, chatOnly])
-      for (const method of ["kin.lead.retire", "kin.lead.restore"] as const)
-        assert.strictEqual(
-          (yield* caller[method](target).pipe(Effect.flip))._tag,
-          "EnvironmentAuthorizationError",
-        );
+    assert.strictEqual(
+      (yield* member["kin.lead.retire"](target).pipe(Effect.flip))._tag,
+      "EnvironmentAuthorizationError",
+    );
+    for (const method of ["kin.lead.retire", "kin.lead.restore"] as const)
+      assert.strictEqual(
+        (yield* operator[method](target).pipe(Effect.flip))._tag,
+        "EnvironmentAuthorizationError",
+      );
     const retired = yield* client["kin.lead.retire"](target);
     assert.strictEqual(retired.retired?.byPersonId, person.personId);
     assert.deepStrictEqual(
@@ -1033,9 +1080,10 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       yield* client["kin.lead.retire"]({ ...org, agentId: growth.agentId }).pipe(Effect.flip),
       { reason: "invalid_state" },
     );
-    assert.include(yield* member["kin.lead.restore"](target).pipe(Effect.flip), {
-      reason: "not_found",
-    });
+    assert.strictEqual(
+      (yield* member["kin.lead.restore"](target).pipe(Effect.flip))._tag,
+      "EnvironmentAuthorizationError",
+    );
     assert.isUndefined((yield* client["kin.lead.restore"](target)).retired);
   }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
@@ -1139,7 +1187,12 @@ it.effect(
         unauthorized,
       );
       // Nothing is hers until the owner says so.
-      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), { leads: [], contacts: [] });
+      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
+        leads: [],
+        contacts: [],
+        teamAgentId: null,
+        companyChat: null,
+      });
       assert.include(yield* priya["kin.chats.createDirect"](lead).pipe(Effect.flip), {
         reason: "not_allowed",
       });
@@ -1170,6 +1223,8 @@ it.effect(
             ownerName: "Owner",
           },
         ],
+        teamAgentId: null,
+        companyChat: null,
       });
       assert.strictEqual((yield* priya["kin.chats.createDirect"](lead)).chatId, chat.chatId);
       yield* send(priya, chat.chatId, "hers-1");
@@ -1218,7 +1273,12 @@ it.effect(
         reason: "not_allowed",
       });
       assert.lengthOf((yield* page(priya, chat.chatId)).messages, 1);
-      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), { leads: [], contacts: [] });
+      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
+        leads: [],
+        contacts: [],
+        teamAgentId: null,
+        companyChat: null,
+      });
       // Allowed again: the same chat.
       yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId });
       yield* send(priya, chat.chatId, "hers-3");

@@ -30,7 +30,7 @@ import {
   kinPlainText,
   type KinFeedRow,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
-import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
+import { kinOutboxRetractable, type KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
 import {
   KIN_PICKER_REACTIONS,
   KIN_REACTION_NAMES,
@@ -95,18 +95,37 @@ function KinAttachments(props: {
 }
 
 /** Who wrote the messages under it, in a chat with more than one other author. */
-function KinAuthorLine(props: { readonly label: string; readonly avatar: KinAvatarView }) {
-  return (
+function KinAuthorLine(props: {
+  readonly label: string;
+  readonly avatar: KinAvatarView;
+  readonly onPress?: (() => void) | undefined;
+}) {
+  const line = (
+    <>
+      <KinAvatar avatar={props.avatar} size="mini" />
+      <Text textRole="caption" className="font-t3-medium text-foreground-muted">
+        {props.label}
+      </Text>
+    </>
+  );
+  return props.onPress === undefined ? (
     <View
       className="flex-row items-center gap-1.5 px-1"
       importantForAccessibility="no-hide-descendants"
       accessibilityElementsHidden
     >
-      <KinAvatar avatar={props.avatar} size="mini" />
-      <Text textRole="caption" className="font-t3-medium text-foreground-muted">
-        {props.label}
-      </Text>
+      {line}
     </View>
+  ) : (
+    <Pressable
+      className="flex-row items-center gap-1.5 px-1"
+      accessibilityRole="button"
+      accessibilityLabel={`${props.label}, profile`}
+      hitSlop={8}
+      onPress={props.onPress}
+    >
+      {line}
+    </Pressable>
   );
 }
 
@@ -137,6 +156,8 @@ export function KinMessageBubble(props: {
   readonly direct: boolean;
   /** Opens an attached image or PDF full screen. */
   readonly onPressPreview: (source: FilePreviewSource) => void;
+  /** Opens a teammate's profile from their name. */
+  readonly onOpenPerson?: (personId: KinPersonId) => void;
 }) {
   const { row, onReact, onOpenActions } = props;
   const { message } = row;
@@ -229,7 +250,16 @@ export function KinMessageBubble(props: {
       className={cn("gap-1 px-4", rowSpacing(row.continues), row.own ? "items-end" : "items-start")}
     >
       {row.showAuthor && !props.direct && message.author._tag !== "system" ? (
-        <KinAuthorLine label={row.authorLabel} avatar={kinAuthorAvatar(message.author)} />
+        <KinAuthorLine
+          label={row.authorLabel}
+          avatar={kinAuthorAvatar(message.author)}
+          onPress={
+            message.author._tag === "human" && props.onOpenPerson !== undefined
+              ? () =>
+                  message.author._tag === "human" && props.onOpenPerson?.(message.author.personId)
+              : undefined
+          }
+        />
       ) : null}
       {attachments.length > 0 ? (
         <KinAttachments
@@ -370,24 +400,29 @@ export function KinPendingBubble(props: {
   readonly connected: boolean;
   /** The row above is the viewer's own bubble. */
   readonly continues: boolean;
-  /** Puts the body back in the draft and drops the refused send. */
+  /** Puts the body back in the draft and drops the unsent message. */
   readonly onEdit: () => void;
   readonly onDiscard: () => void;
 }) {
   const { entry } = props;
   const failed = entry.state === "failed";
+  const queued = !failed && entry.state !== "sending" && !props.connected;
   const status = failed
     ? `Not sent: ${entry.error ?? "refused"}`
-    : props.connected || entry.state === "sending"
-      ? "Sending…"
-      : "Waiting for connection";
+    : queued
+      ? "Waiting for connection"
+      : "Sending…";
   const attachments = entry.attachments ?? [];
   const refs = entry.refs ?? [];
+  // Only while it reads as refused or waiting: a "Sending…" bubble is on its way.
+  const editable = (failed || queued) && kinOutboxRetractable(entry);
+  // Edit keeps only the text, so a message with files or doc references is only deleted.
+  const canEdit = editable && attachments.length === 0 && refs.length === 0;
   const hasBody = entry.body.trim().length > 0;
   const remove = () =>
     Dialog.confirm({
       title: "Delete this message?",
-      message: "It was never sent.",
+      message: failed ? "It was never sent." : "It hasn't been sent yet.",
       confirmText: "Delete",
       destructive: true,
       onConfirm: props.onDiscard,
@@ -409,12 +444,22 @@ export function KinPendingBubble(props: {
       )}
       {hasBody ? (
         <Pressable
-          disabled={!failed}
-          onPress={props.onEdit}
-          onLongPress={failed ? remove : undefined}
-          accessibilityRole={failed ? "button" : undefined}
+          disabled={!editable}
+          onPress={canEdit ? props.onEdit : remove}
+          onLongPress={editable ? remove : undefined}
+          accessibilityRole={editable ? "button" : undefined}
           accessibilityLabel={kinSentences([`You: ${kinPlainText(entry.body)}`, status])}
-          accessibilityHint={failed ? "Edit it in the message box." : undefined}
+          accessibilityHint={
+            canEdit
+              ? "Edit it in the message box. Touch and hold to delete it."
+              : editable
+                ? "Deletes it."
+                : undefined
+          }
+          accessibilityActions={editable ? [{ name: "delete", label: "Delete" }] : undefined}
+          onAccessibilityAction={(event) => {
+            if (event.nativeEvent.actionName === "delete") remove();
+          }}
           className={cn(OWN_WIDTH_CLASS_NAME, OWN_BUBBLE_CLASS_NAME, !failed && "opacity-70")}
         >
           <Text textRole="body" className="text-user-bubble-foreground">
@@ -438,14 +483,14 @@ export function KinPendingBubble(props: {
         >
           {status}
         </Text>
-        {failed && hasBody ? (
+        {hasBody && canEdit ? (
           <Pressable onPress={props.onEdit} hitSlop={12}>
             <Text textRole="caption" className="font-t3-medium text-foreground">
               Edit
             </Text>
           </Pressable>
         ) : null}
-        {failed && !hasBody ? (
+        {editable && !(hasBody && canEdit) ? (
           <Pressable onPress={remove} hitSlop={12}>
             <Text textRole="caption" className="font-t3-medium text-foreground">
               Delete

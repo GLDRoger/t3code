@@ -179,6 +179,7 @@ describe("KinChatRepository", () => {
           handle: "owner",
           displayName: "Owner",
           githubLogin: null,
+          access: "member" as const,
         };
         assert.deepStrictEqual(
           Option.getOrThrow(yield* repo.getPerson({ orgId, personId })),
@@ -595,6 +596,16 @@ describe("KinChatRepository", () => {
               ]
             : [{ id: "card", revision: write === "updateWidget" ? 2 : 1 }],
         );
+        // G01: a co-owner's chat is owner-level, as the owner's own is.
+        yield* sql`UPDATE kin_people SET access = 'co_owner'
+          WHERE org_id = ${orgId} AND person_id = ${teammate}`;
+        yield* write === "updateWidget"
+          ? repo.updateWidget({
+              ...card("card", "anchor"),
+              audience: "owner",
+              expectedRevision: 2,
+            })
+          : attempt("owner");
       }).pipe(Effect.provide(layer)),
   );
 

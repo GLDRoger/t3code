@@ -41,6 +41,7 @@ import { sectionsOf } from "../work/docBody.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
 import { messageForViewer } from "./messageView.ts";
 import { chatShared, readableBy, recordJoin } from "./sharing.ts";
+import { accessSql } from "../people/KinAccess.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlSchema from "effect/sql/SqlSchema";
 import {
@@ -147,7 +148,7 @@ const defaultOwnerId = Schema.decodeSync(KinPersonId)("kin-default-owner");
 const OrgRow = KinOrg;
 const orgColumns = `org_id AS "orgId", name AS "name", created_at AS "createdAt"`;
 const PersonRow = KinPerson;
-const personColumns = `person_id AS "personId", org_id AS "orgId", handle AS "handle", display_name AS "displayName", github_login AS "githubLogin"`;
+const personColumns = `person_id AS "personId", org_id AS "orgId", handle AS "handle", display_name AS "displayName", github_login AS "githubLogin", ${accessSql("kin_people")} AS access`;
 const AgentIdentityRow = Schema.Struct({
   ...KinAgent.fields,
   retiredAt: Schema.NullOr(IsoDateTime),
@@ -383,7 +384,7 @@ export class KinChatRepository extends Context.Service<
     ) => Effect.Effect<boolean, RepositoryError>;
     readonly addWaiting: (input: KinWaitingItem) => Effect.Effect<boolean, RepositoryError>;
     readonly registerAgentThread: (
-      input: KinAgentThread,
+      input: KinAgentThread & { readonly chatId?: string | undefined },
     ) => Effect.Effect<KinAgentThread, RepositoryError>;
     readonly createChat: (
       input: Omit<KinChat, "lastSeq"> & {
@@ -405,6 +406,20 @@ export class KinChatRepository extends Context.Service<
       },
     ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
     readonly insertMessage: (input: InsertMessage) => Effect.Effect<KinMessage, RepositoryError>;
+    /**
+     * A wake-up's one reply grows by its next segment: the same lead thread's posted text, while
+     * that wake-up runs. The new body keeps the old one as its start.
+     */
+    readonly extendAgentReply: (
+      input: ChatScope & {
+        readonly messageId: KinMessageId;
+        readonly agentId: KinAgentId;
+        readonly threadId: ThreadId;
+        readonly wakeupId: KinWakeupId;
+        readonly audience: WriteAudience;
+        readonly body: string;
+      },
+    ) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
       input: Scope & KinChatHistoryInput & { readonly viewerMemberId?: KinMemberId },
     ) => Effect.Effect<KinChatHistoryResult, RepositoryError>;
@@ -452,6 +467,8 @@ export class KinChatRepository extends Context.Service<
      * aborted and what was queued about them never runs. Returns what the caller finishes after
      * the commit.
      */
+    /** How many of the chat's files a doc of its org uses: a clear leaves these. */
+    readonly docKeptFiles: (input: ChatScope) => Effect.Effect<number, RepositoryError>;
     readonly clearChat: (
       input: ChatScope & { readonly clearedAt: IsoDateTime; readonly clearedAtMs: number },
     ) => Effect.Effect<
@@ -459,6 +476,8 @@ export class KinChatRepository extends Context.Service<
         readonly lastSeq: number;
         readonly lastChangeSeq: number;
         readonly attachmentIds: ReadonlyArray<string>;
+        /** The chat's files that stay because a doc uses them. */
+        readonly keptFiles: number;
         /** The open items it closed. */
         readonly waiting: ReadonlyArray<KinWaitingItem>;
         readonly taskCards: ReadonlyArray<KinWidget>;
@@ -495,6 +514,12 @@ const refRefused = (message: string) => new KinChatError({ reason: "not_allowed"
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  // A doc of the org shows the file, by `kin-file:` or as a generated version; docs are archived,
+  // never deleted, so any doc row keeps it.
+  const docUses = (orgId: KinOrgId) =>
+    sql`(attachment_id IN (SELECT attachment_id FROM kin_doc_files WHERE org_id = ${orgId})
+      OR attachment_id IN (SELECT file_attachment_id FROM kin_doc_versions
+        WHERE org_id = ${orgId} AND file_attachment_id IS NOT NULL))`;
   /**
    * The doc sections a message points at, checked in the write's transaction: the org owner's
    * own message, docs of this org at a version they have, and nothing sensitive where others read.
@@ -917,8 +942,8 @@ const make = Effect.gen(function* () {
  SELECT ${orgId}, ${input.orgName}, ${input.createdAt} WHERE NOT EXISTS (SELECT 1 FROM kin_orgs)
  ON CONFLICT (org_id) DO NOTHING RETURNING org_id`;
         if (inserted.length > 0) {
-          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login, created_at)
- VALUES (${personId}, ${orgId}, ${input.ownerHandle}, ${input.ownerDisplayName}, NULL, ${input.createdAt})
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login, created_at, access)
+ VALUES (${personId}, ${orgId}, ${input.ownerHandle}, ${input.ownerDisplayName}, NULL, ${input.createdAt}, 'owner')
  ON CONFLICT (person_id) DO NOTHING RETURNING person_id`;
         }
         // Never infer ownership from a handle or whichever person happens to sort first.
@@ -1368,7 +1393,7 @@ const make = Effect.gen(function* () {
                 });
               return existing.value;
             }
-            yield* sql`INSERT INTO kin_agent_threads (org_id, thread_id, agent_id, started_at, ended_at) VALUES (${input.orgId}, ${input.threadId}, ${input.agentId}, ${input.startedAt}, ${input.endedAt})
+            yield* sql`INSERT INTO kin_agent_threads (org_id, thread_id, agent_id, started_at, ended_at, chat_id) VALUES (${input.orgId}, ${input.threadId}, ${input.agentId}, ${input.startedAt}, ${input.endedAt}, ${input.chatId ?? null})
  ON CONFLICT (thread_id) DO NOTHING RETURNING thread_id`;
             return yield* requireRecord(agentThreadOne(input));
           }),
@@ -1427,6 +1452,40 @@ const make = Effect.gen(function* () {
         })(input).pipe(NodeSqliteClient.readOnly);
       },
       Effect.mapError(toRepositoryError("KinChatRepository.findClientMessage")),
+    ),
+    extendAgentReply: Effect.fn("KinChatRepository.extendAgentReply")(
+      function* (input) {
+        yield* decodeBody(input.body);
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const message = yield* requireRecord(messageOne(input));
+            if (
+              message.chatId !== input.chatId ||
+              message.author._tag !== "agent" ||
+              message.author.agentId !== input.agentId ||
+              message.author.threadId !== input.threadId ||
+              message.status !== "posted" ||
+              message.kind !== "text" ||
+              message.widgetId !== null ||
+              !input.body.startsWith(message.body)
+            )
+              return yield* new KinChatError({
+                reason: "not_found",
+                message: "Kin record not found.",
+              });
+            if (!(yield* wakeupRunning(input)))
+              return yield* new KinChatError({
+                reason: "not_allowed",
+                message: "Kin wake-up is not running.",
+              });
+            yield* ownerOnly(input.audience, input);
+            yield* sql`UPDATE kin_messages SET body = ${input.body}
+              WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
+            return yield* requireRecord(messageOne(input));
+          }),
+        );
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.extendAgentReply")),
     ),
     insertMessage: Effect.fn("KinChatRepository.insertMessage")(
       function* (input) {
@@ -1818,6 +1877,16 @@ const make = Effect.gen(function* () {
       },
       Effect.mapError(toRepositoryError("KinChatRepository.endAgentThread")),
     ),
+    docKeptFiles: Effect.fn("KinChatRepository.docKeptFiles")(
+      function* (input) {
+        const [row] = yield* sql<{ count: number }>`SELECT COUNT(DISTINCT attachment_id) AS count
+          FROM kin_message_attachments
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+            AND ${docUses(input.orgId)}`;
+        return row?.count ?? 0;
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.docKeptFiles")),
+    ),
     clearChat: Effect.fn("KinChatRepository.clearChat")(
       function* (input) {
         yield* requireRecord(chatOne(input));
@@ -1825,9 +1894,11 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
         const about = sql`tag IN ('chat.message', 'widget.action', 'chat.reaction')
           AND json_extract(json, '$.messageId') IN (${said})`;
-        const attachments = yield* sql<{ id: string }>`
-          SELECT attachment_id AS id FROM kin_message_attachments
-          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} ORDER BY attachment_id`;
+        const attachments = yield* sql<{ id: string; kept: number }>`
+          SELECT DISTINCT attachment_id AS id, ${docUses(input.orgId)} AS kept
+          FROM kin_message_attachments
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+          ORDER BY attachment_id`;
         const taskCards = yield* SqlSchema.findAll({
           Request: Schema.Unknown,
           Result: WidgetRow,
@@ -1885,7 +1956,8 @@ const make = Effect.gen(function* () {
         return {
           lastSeq: counters!.lastSeq,
           lastChangeSeq: counters!.lastChangeSeq,
-          attachmentIds: attachments.map((row) => row.id),
+          attachmentIds: attachments.flatMap((row) => (row.kept === 1 ? [] : [row.id])),
+          keptFiles: attachments.filter((row) => row.kept === 1).length,
           waiting,
           taskCards,
           abortedWakeupIds: aborted.map((row) => KinWakeupId.make(row.wakeupId)),

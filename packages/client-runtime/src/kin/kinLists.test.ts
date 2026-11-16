@@ -19,6 +19,8 @@ import {
   kinListEntryView,
   kinListFilterParam,
   kinListHeader,
+  kinListFilterCleared,
+  kinListFilterLabel,
   kinListNarrowings,
   kinMoneyDraft,
   kinParseMoney,
@@ -127,6 +129,18 @@ describe("money", () => {
       ok: false,
       problem: "That's more than the ₹60,000.00 still owed.",
     });
+    // TDS counts towards what is owed, and alone it may settle the rest.
+    const day = { paidOn: "2026-11-12", note: "" };
+    expect(kinPaymentCheck({ ...day, amount: "54,000", tds: "6,000" }, left)).toEqual({
+      ok: true,
+      amount: { minor: 5_400_000, currency: "INR" },
+      tds: { minor: 600_000, currency: "INR" },
+    });
+    expect(kinPaymentCheck({ ...day, amount: "", tds: "6,000" }, left)).toMatchObject({
+      ok: true,
+      amount: { minor: 0 },
+    });
+    expect(kinPaymentCheck({ ...day, amount: "55,000", tds: "6,000" }, left).ok).toBe(false);
   });
 });
 
@@ -389,6 +403,13 @@ describe("a list by its definition", () => {
     const none = header.groups[1]!.narrowed!;
     expect(kinListQuery(orgId, def.list, none)).toMatchObject({ listCategory: null });
     expect(kinListNarrowings(none, def)[0]).toMatchObject({ label: "No category" });
+    // The Filter's one chip names every narrowing, and clearing it keeps search and the split.
+    expect(kinListFilterLabel(def, byCategory)).toBeNull();
+    expect(kinListFilterLabel(def, { ...none, noParty: true })).toBe("No category · No client");
+    expect(kinListFilterCleared({ ...none, text: "rent" })).toEqual({
+      ...byCategory,
+      text: "rent",
+    });
     expect(kinListQuery(orgId, def.list, { ...byCategory, noParty: true })).toMatchObject({
       party: null,
     });
@@ -409,6 +430,15 @@ describe("a list by its definition", () => {
         1,
       ).figures,
     ).toEqual([{ id: "total", label: null, lines: ["₹1"] }]);
+    // Quotes total only what is out and what was won, never one sum across drafts.
+    const quotes = kinListHeader(
+      list({ amount: true }),
+      KIN_LIST_DEFAULT_FILTER,
+      { total: inr(300), sent: inr(100), accepted: inr(200), groups: [] },
+      3,
+    );
+    expect(quotes.totals).toEqual([]);
+    expect(quotes.summary).toBe("Sent, waiting: ₹1 · Accepted: ₹2");
     expect(kinListFilterParam(JSON.stringify({ noParty: true, noCategory: true }))).toMatchObject({
       noParty: true,
       noCategory: true,
@@ -462,5 +492,11 @@ describe("a list by its definition", () => {
       { minor: 1200, currency: "JPY" },
     ])
       expect(kinParseMoney(kinMoneyDraft(money, "INR"), "INR")).toEqual(money);
+    // Each symbol an amount is shown with reads back as its own currency, not as dollars.
+    expect(
+      ["S$40", "A$40", "CA$40", "HK$40", "NZ$40", "US$40", "$40", "€40", "¥40", "CN¥40"].map(
+        (text) => kinParseMoney(text, "INR")?.currency,
+      ),
+    ).toEqual(["SGD", "AUD", "CAD", "HKD", "NZD", "USD", "USD", "EUR", "JPY", "CNY"]);
   });
 });

@@ -14,6 +14,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlError from "effect/sql/SqlError";
 
 import { toPersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { ownerLevel, ownerLevelSql } from "../people/KinAccess.ts";
+import { CHAT_ANSWER_TAGS } from "./Audience.ts";
 
 // Approvals import this module, so it must not reach the chat service.
 
@@ -43,19 +45,24 @@ const OWNER_PLACED_LEVEL: KinLevel = "L2";
 
 /**
  * Whether the lead's owner placed it in `chatId`, from stored rows only: its owner chat (a direct
- * chat whose key binds exactly that person and that lead), or a group the lead is in whose owner
- * is the lead's owner. Only a chat's owner adds members, so the owner put the lead there. A chat
- * someone else owns keeps the lead's own level, the conservative default.
+ * chat whose key binds exactly that person and that lead), a co-owner's own direct chat with it,
+ * or a group the lead is in whose owner is the lead's owner or owner-level. Only a chat's owner
+ * adds members, so they put the lead there. A chat someone else owns keeps the lead's own level.
  */
 const ownerPlacedSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => sql`(EXISTS (
     SELECT 1 FROM kin_chats d WHERE d.org_id = l.org_id AND d.chat_id = l.owner_chat_id
       AND d.chat_id = ${chatId} AND d.kind = 'direct'
       AND d.direct_key = a.owner_person_id || ':' || l.agent_id)
   OR EXISTS (
+    SELECT 1 FROM kin_chats d JOIN kin_people q ON q.org_id = d.org_id
+      AND q.access = 'co_owner' AND d.direct_key = q.person_id || ':' || l.agent_id
+    WHERE d.org_id = l.org_id AND d.chat_id = ${chatId} AND d.kind = 'direct')
+  OR EXISTS (
     SELECT 1 FROM kin_chats g
     JOIN kin_chat_members o ON o.org_id = g.org_id AND o.chat_id = g.chat_id
       AND o.principal_kind = 'person' AND o.role = 'owner' AND o.left_at IS NULL
-      AND o.person_id = a.owner_person_id
+      AND (o.person_id = a.owner_person_id
+        OR ${sql.literal(ownerLevelSql("o.org_id", "o.person_id"))})
     JOIN kin_chat_members lm ON lm.org_id = g.org_id AND lm.chat_id = g.chat_id
       AND lm.principal_kind = 'agent' AND lm.agent_id = l.agent_id AND lm.left_at IS NULL
     WHERE g.org_id = l.org_id AND g.chat_id = ${chatId} AND g.kind <> 'direct'))`;
@@ -67,15 +74,21 @@ const ownerPlacedSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => s
 const TEAMMATE_LEVEL: KinLevel = "L1";
 
 /**
- * Whether `chatId` is the direct chat of a person the lead's owner let message it, from stored
- * rows only. A row that has since been revoked still counts, so a reply under way when access
- * ends can land; nothing new wakes the lead there (`ChatWake`).
+ * Whether `chatId` is the direct chat of a person the lead's owner let message it, or of anyone
+ * but the owner while it is the team agent, from stored rows only. A revoked row still counts, so
+ * a reply under way when access ends can land; nothing new wakes the lead there (`ChatWake`).
  */
-const teammateChatSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => sql`EXISTS (
+const teammateChatSql = (sql: SqlClient.SqlClient, chatId: KinChatId | null) => sql`(EXISTS (
     SELECT 1 FROM kin_lead_access x
     JOIN kin_chats t ON t.org_id = x.org_id AND t.kind = 'direct'
       AND t.direct_key = x.person_id || ':' || x.agent_id
-    WHERE x.org_id = l.org_id AND x.agent_id = l.agent_id AND t.chat_id = ${chatId})`;
+    WHERE x.org_id = l.org_id AND x.agent_id = l.agent_id AND t.chat_id = ${chatId})
+  OR EXISTS (
+    SELECT 1 FROM kin_team_agents g
+    JOIN kin_chats t ON t.org_id = g.org_id AND t.kind = 'direct'
+      AND t.direct_key LIKE '%:' || g.agent_id
+      AND t.direct_key <> a.owner_person_id || ':' || g.agent_id
+    WHERE g.org_id = l.org_id AND g.agent_id = l.agent_id AND t.chat_id = ${chatId}))`;
 
 /**
  * A chat's level before its cap: the lead's, raised to `OWNER_PLACED_LEVEL` where its owner put
@@ -148,11 +161,14 @@ export const originLevel = Effect.fn("KinLevels.originLevel")(function* (
     agentId: origin.agentId,
     chatId: origin.chatId,
   }).pipe(Effect.catchTags({ KinLevelRefused: () => Effect.succeed<KinLevel>("L0") }));
-  return origin.personId === undefined ? level : lowest(level, TEAMMATE_LEVEL);
+  if (origin.personId === undefined) return level;
+  if (yield* ownerLevel(orgId, origin.personId).pipe(Effect.orElseSucceed(() => false)))
+    return level;
+  return lowest(level, TEAMMATE_LEVEL);
 });
 
 /**
- * The people, other than the lead's owner, whose messages, card taps or reactions the wake-up
+ * The people, other than owner-level ones, whose messages, card taps or reactions the wake-up
  * answers. A message's author is read from its stored row and a reaction's from the event the
  * server wrote, never from tool input or model text.
  */
@@ -177,6 +193,10 @@ export const askers = Effect.fn("KinLevels.askers")(function* (input: {
       AND COALESCE(m.author_person_id,
         CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)
         <> a.owner_person_id
+      AND NOT EXISTS (SELECT 1 FROM kin_people q WHERE q.org_id = e.org_id
+        AND q.person_id = COALESCE(m.author_person_id,
+          CASE WHEN e.tag = 'chat.reaction' THEN json_extract(e.json, '$.provenance.personId') END)
+        AND ${sql.literal(ownerLevelSql("q.org_id", "q.person_id"))})
     ORDER BY 1`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.askers")));
   return rows.map((row) => row.personId);
 });
@@ -200,7 +220,7 @@ export const ownerPlaced = Effect.fn("KinLevels.ownerPlaced")(function* (
 });
 
 /**
- * The chats the wake-up's due deferrals and passed-on requests were first asked in, read from the
+ * The chats the wake-up's due deferrals, passed-on requests and teammates' tasks were first asked in, read from the
  * stored events only. Both the level cap and worker reach read this, so neither can drop one.
  */
 export const origins = Effect.fn("KinLevels.origins")(function* (input: {
@@ -218,7 +238,7 @@ export const origins = Effect.fn("KinLevels.origins")(function* (input: {
       json_extract(json, '$.origin.chatId') AS "chatId",
       json_extract(json, '$.origin.personId') AS "personId" FROM kin_events
     WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND wakeup_id = ${input.wakeupId}
-      AND tag IN ('deferral.due', 'chat.message', 'worker.report')
+      AND tag IN ('deferral.due', 'chat.message', 'worker.report', 'record.changed')
       AND json_extract(json, '$.origin.chatId') IS NOT NULL
     ORDER BY 1, 2, 3`.pipe(Effect.mapError(toPersistenceSqlError("KinLevels.origins")));
   return rows.map(({ personId, ...origin }): KinOrigin =>
@@ -236,7 +256,13 @@ export const ownerAlone = Effect.fn("KinLevels.ownerAlone")(function* (input: {
   readonly wakeupId: string;
 }) {
   if ((yield* askers(input)).length > 0) return false;
-  return (yield* origins(input)).every((origin) => origin.personId === undefined);
+  for (const origin of yield* origins(input))
+    if (
+      origin.personId !== undefined &&
+      !(yield* ownerLevel(input.orgId, origin.personId).pipe(Effect.orElseSucceed(() => false)))
+    )
+      return false;
+  return true;
 });
 
 /**
@@ -275,7 +301,7 @@ export const wakeupLevel = Effect.fn("KinLevels.wakeupLevel")(function* (input: 
   const [lane] = yield* sql<{ chatId: string | null }>`
     SELECT COALESCE((SELECT json_extract(e.json, '$.chatId') FROM kin_events e
         WHERE e.org_id = l.org_id AND e.agent_id = l.agent_id AND e.wakeup_id = ${input.wakeupId}
-          AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction', 'worker.report')
+          AND e.tag IN ${sql.in(CHAT_ANSWER_TAGS)}
           AND json_extract(e.json, '$.chatId') IS NOT NULL
         ORDER BY e.priority, e.received_at, e.event_id LIMIT 1), l.owner_chat_id) AS "chatId"
     FROM kin_leads l WHERE l.org_id = ${input.orgId} AND l.agent_id = ${input.agentId}

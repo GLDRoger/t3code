@@ -207,6 +207,41 @@ describe("KinStop", () => {
       }).pipe(provideDeterministicTestRuntime),
   );
 
+  // QA: Stop pressed twice answered true both times, so a client couldn't tell it was done.
+  it.effect("an owner's stop answers true once, then false while the wake-up winds down", () =>
+    Effect.gen(function* () {
+      const entered = yield* Queue.unbounded<ThreadId>();
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const runner = yield* WakeupRunner.WakeupRunner;
+        const stop = yield* KinStop.KinStop;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* stop.attach(yield* KinStop.makeFanOut(Option.none()));
+        yield* queue.enqueue(event("work"));
+        const run = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
+        yield* TestClock.adjust("20 seconds");
+        yield* Queue.take(entered);
+        const [running] = yield* sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY wakeup_id`;
+        const input = { orgId, wakeupId: running!.wakeupId };
+        assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: true });
+        assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: false });
+        yield* worker.drain();
+        yield* Fiber.join(run);
+        assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: false });
+      }).pipe(
+        Effect.provide(
+          harness({
+            untilInterrupted: true,
+            onTurn: ({ threadId }) => Queue.offer(entered, threadId).pipe(Effect.asVoid),
+          }),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
+  );
+
   it.effect("stops two leads' running wake-ups at once and starts none until resume", () =>
     Effect.gen(function* () {
       const enteredThreads = yield* Queue.unbounded<ThreadId>();

@@ -40,10 +40,18 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   private let composeButton = UIButton(type: .system)
   private lazy var tabBarTrailing = tabBar.trailingAnchor.constraint(equalTo: trailingAnchor)
   private var itemsByTab: [String: UITabBarItem] = [:]
+  private let labels = [
+    "threads": "Chats", "pullRequests": "PRs", "usage": "Usage", "settings": "Settings",
+    "tasks": "Tasks", "money": "Money", "clients": "Clients", "docs": "Docs",
+  ]
   var tabs = ["threads", "pullRequests", "usage", "settings"] {
     didSet { if tabs != oldValue { updateItems() } }
   }
   var selectedTab = "threads" { didSet { updateSelection() } }
+  /// A small count on a tab, such as what needs attention on Tasks; absent tabs show none.
+  var badges: [String: String] = [:] { didSet { if badges != oldValue { updateBadges() } } }
+  /// Titles under the icons, as a stock UITabBar draws them; the workspace dock stays icon-only.
+  var showsLabels = false { didSet { if showsLabels != oldValue { updateItems() } } }
   var selectedColor: UIColor = .systemBlue { didSet { tabBar.tintColor = selectedColor } }
   var compact = false {
     didSet {
@@ -106,8 +114,10 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
   private func prepareItems() {
     let iconBundle = Bundle(for: Self.self).url(forResource: "T3NativeControlIcons", withExtension: "bundle").flatMap(Bundle.init(url:))
     let pullRequestIcon = UIImage(named: "pull-request", in: iconBundle, compatibleWith: nil)?.withRenderingMode(.alwaysTemplate)
-    let labels = ["threads": "Chats", "pullRequests": "PRs", "usage": "Usage", "work": "Work", "settings": "Settings"]
-    let symbols = ["threads": "text.bubble", "usage": "chart.bar.xaxis", "work": "checkmark.circle", "settings": "gearshape"]
+    let symbols = [
+      "threads": "text.bubble", "usage": "chart.bar.xaxis", "settings": "gearshape",
+      "tasks": "checkmark.circle", "money": "banknote", "clients": "person.2", "docs": "doc.text",
+    ]
     for (tab, label) in labels {
       let icon = tab == "pullRequests" ? pullRequestIcon : UIImage(systemName: symbols[tab] ?? "circle")
       let item = UITabBarItem(title: nil, image: tabIcon(icon), tag: 0)
@@ -122,9 +132,15 @@ final class T3SidebarTabBarView: ExpoView, UITabBarDelegate {
     tabBar.items = tabs.enumerated().compactMap { index, tab in
       guard let item = itemsByTab[tab] else { return nil }
       item.tag = index
+      item.title = showsLabels ? labels[tab] : nil
       return item
     }
+    updateBadges()
     updateSelection()
+  }
+
+  private func updateBadges() {
+    for (tab, item) in itemsByTab { item.badgeValue = badges[tab] }
   }
 
   private func layoutCompose(alongside frame: CGRect) {

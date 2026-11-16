@@ -2,33 +2,43 @@
 import * as NodeCrypto from "node:crypto";
 import { KinChatError, KinWakeupId } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
-import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { KinRepoReads } from "../../github/KinRepoReads.ts";
+import { KinPullRequestCare } from "../../github/PullRequestCare.ts";
+import { SHARED_REFUSAL } from "../Audience.ts";
+import { toolAdmitted } from "../SharedTools.ts";
 import { laneFor } from "../../reply/KinReplyBridge.ts";
 import { KinHandoff } from "../Handoff.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import { quote } from "../LeadPrompt.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
 import { KinWorkers } from "../Workers.ts";
+import { readPeople } from "../peopleRead.ts";
+import { updatePeople } from "../peopleUpdate.ts";
 import { KinLeadToolkit } from "./tools.ts";
-
-// Off until the host says so: a page can still reach the network through WebRTC and preconnect,
-// which no browser lets a policy close (see docs/kin/specs/chat.md, "Visuals").
-const visualsOn = Config.Boolean("KIN_VISUALS").pipe(
-  Config.withDefault(false),
-  Effect.orElseSucceed(() => false),
-);
 
 const isKinChatError = Schema.is(KinChatError);
 const failure = (error: unknown) =>
   isKinChatError(error)
     ? error
     : new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+
+const admitted = (
+  lead: Effect.Success<ReturnType<typeof resolveLead>>,
+  name: string,
+  args: unknown,
+) =>
+  toolAdmitted(lead, name, args).pipe(
+    Effect.flatMap((ok) =>
+      ok
+        ? Effect.void
+        : Effect.fail(new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL })),
+    ),
+  );
 
 const githubQuote = (value: unknown) => ({ quoted: quote("GitHub data (untrusted)", value, true) });
 
@@ -54,9 +64,32 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       return yield* (yield* KinHandoff).leads(yield* McpInvocationContext);
     }),
   ),
+  people_read: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.peopleRead")(function* () {
+      return yield* readPeople(yield* resolveLead(yield* McpInvocationContext));
+    }, Effect.mapError(failure)),
+  ),
+  people_update: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.peopleUpdate")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      yield* admitted(lead, "people_update", input);
+      return yield* updatePeople(lead, input);
+    }, Effect.mapError(failure)),
+  ),
   kin_hand_off: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.handOff")(function* (input) {
       return yield* (yield* KinHandoff).handOff(yield* McpInvocationContext, input);
+    }),
+  ),
+  kin_take_private: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.takePrivate")(function* (input) {
+      return yield* (yield* KinHandoff).takePrivate(yield* McpInvocationContext, input);
+    }),
+  ),
+  kin_relay: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.relay")(function* (input) {
+      const { postTo } = yield* KinLevelGate;
+      return yield* (yield* KinHandoff).relay(yield* McpInvocationContext, input, postTo);
     }),
   ),
   kin_ask: McpToolAccess.actsAsCaller(
@@ -102,12 +135,6 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   ),
   kin_visual: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.visual")(function* (input) {
-      if (!(yield* visualsOn))
-        return yield* new KinChatError({
-          reason: "unavailable",
-          message:
-            "Visuals are not switched on for this server yet. Send a kin_chart if one of its kinds fits, or say it in text.",
-        });
       const lead = yield* resolveLead(yield* McpInvocationContext);
       const wakeupId = KinWakeupId.make(lead.wakeupId);
       const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
@@ -202,6 +229,20 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.githubRuns")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       return githubQuote(yield* (yield* KinRepoReads).runs(lead, input));
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_review: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.githubReview")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      yield* admitted(lead, "kin_github_review", input);
+      return yield* (yield* KinPullRequestCare).review(lead, input);
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_link: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.githubLink")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      yield* admitted(lead, "kin_github_link", input);
+      return yield* (yield* KinPullRequestCare).link(lead, input);
     }, Effect.mapError(failure)),
   ),
   kin_end: McpToolAccess.actsAsCaller(

@@ -7,10 +7,10 @@ import {
   type KinTaskTone,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
-  KIN_CHOICE_EXPIRED_TEXT,
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
   kinChoiceAnswerText,
+  kinChoiceFailureNotice,
   kinChoicePhase,
   type KinChoiceCardView,
 } from "@t3tools/client-runtime/kin/kinChoicePresentation";
@@ -40,9 +40,21 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import type { EnvironmentId, KinPersonId, KinWidget } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
-import { SmartphoneIcon } from "lucide-react";
+import { FileTextIcon, SmartphoneIcon } from "lucide-react";
+import { kinConnectionChange } from "@t3tools/client-runtime/kin/kinConnections";
+import {
+  Menu,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuTrigger,
+} from "../components/ui/menu";
 import { memo, useRef, useState, type ReactNode } from "react";
 
+import { useAssetUrls } from "../assets/assetUrls";
+import { AttachmentImage } from "../components/media/AttachmentImage";
 import { environmentCatalog } from "../connection/catalog";
 import { useNowMinuteMs } from "./useKinClock";
 import { cn, randomUUID } from "../lib/utils";
@@ -50,6 +62,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "../components/ui/button";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { KinChart } from "./KinChart";
+import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
 import { useKinHostAt } from "./useKinHost";
@@ -57,7 +70,7 @@ import { useKinHostAt } from "./useKinHost";
 const CANT_ACT_TEXT =
   "This browser can't answer here. Pair it again with the server that runs Kin.";
 
-function CardFrame(props: {
+export function CardFrame(props: {
   readonly eyebrow?: string;
   readonly label?: string;
   readonly children: ReactNode;
@@ -156,6 +169,12 @@ export const KinCard = memo(function KinCard(props: {
       return <KinApprovalCard approval={view.approval} />;
     case "doc":
       return <KinDocCard doc={view.doc} environmentId={props.environmentId} orgId={props.orgId} />;
+    case "statement_review":
+      return <KinStatementReviewCard review={view.review} environmentId={props.environmentId} />;
+    case "statement_password":
+      return (
+        <KinStatementPasswordCard password={view.password} environmentId={props.environmentId} />
+      );
     case "missing":
       return (
         <CardFrame>
@@ -259,7 +278,7 @@ function KinDocCard(props: {
           size="xs"
           variant="outline"
           render={
-            <Link to="/kin/$environmentId/$orgId/work" params={params} search={{ doc: doc.key }} />
+            <Link to="/kin/$environmentId/$orgId/docs" params={params} search={{ doc: doc.key }} />
           }
         >
           Open
@@ -270,7 +289,7 @@ function KinDocCard(props: {
             variant="ghost"
             render={
               <Link
-                to="/kin/$environmentId/$orgId/work"
+                to="/kin/$environmentId/$orgId/docs"
                 params={params}
                 search={{ doc: doc.key, changes: doc.version, from: doc.previousVersion }}
               />
@@ -328,6 +347,9 @@ function KinChoiceCard(props: {
   const post = useWidgetPost(environmentId);
   const actions = useRef<ReturnType<typeof createKinCardActions<KinChoiceCardView, string>>>(null);
   const [pending, setPending] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
+  const [switchProblem, setSwitchProblem] = useState<string | null>(null);
+  const setSendFrom = useAtomCommand(kinClient.connectionSetSendFrom, { reportFailure: false });
   const [lastStatus, setLastStatus] = useState<
     (KinCardStatus & { readonly optionId: string }) | null
   >(null);
@@ -344,6 +366,7 @@ function KinChoiceCard(props: {
       actions.current = createKinCardActions<KinChoiceCardView, string>({
         newId: randomUUID,
         toInput: kinChoiceActInput,
+        failureNotice: kinChoiceFailureNotice,
         post,
       });
     const revision = choice.revision;
@@ -360,6 +383,26 @@ function KinChoiceCard(props: {
     );
   };
 
+  const pickFrom = async (choiceId: string) => {
+    if (switching || pending !== null) return;
+    setSwitching(true);
+    setSwitchProblem(null);
+    const failed = await kinConnectionChange(
+      setSendFrom({
+        environmentId,
+        input: {
+          orgId: choice.orgId,
+          widgetId: choice.widgetId,
+          revision: choice.revision,
+          choice: choiceId,
+        },
+      }),
+      "change who it's from",
+    );
+    setSwitching(false);
+    setSwitchProblem(failed);
+  };
+
   const answerText =
     choice.answer !== null
       ? kinChoiceAnswerText(choice.answer, props.viewerPersonId)
@@ -370,13 +413,25 @@ function KinChoiceCard(props: {
   return (
     <CardFrame label={kinChoiceAccessibilityLabel(choice, answerText)}>
       <p className="font-medium text-foreground">{choice.question}</p>
-      {choice.detail === null ? null : (
+      {choice.send !== null ? (
+        <KinSendDetail
+          send={choice.send}
+          pickFrom={
+            phase === "open" && canAct && answerText === null && choice.send.fromChoices.length > 1
+              ? { busy: switching, problem: switchProblem, pick: (id) => void pickFrom(id) }
+              : null
+          }
+        />
+      ) : choice.detail === null ? null : (
         <p className="whitespace-pre-line text-xs text-muted-foreground">{choice.detail}</p>
+      )}
+      {choice.image === null ? null : (
+        <KinChoiceImage environmentId={environmentId} image={choice.image} />
       )}
       {answerText !== null ? (
         <p className="text-xs font-medium text-muted-foreground">{answerText}</p>
       ) : phase === "expired" ? (
-        <p className="text-xs text-muted-foreground">{KIN_CHOICE_EXPIRED_TEXT}</p>
+        <p className="text-xs text-muted-foreground">{choice.closedText}</p>
       ) : !canAct ? (
         <p className="text-xs text-muted-foreground">{CANT_ACT_TEXT}</p>
       ) : (
@@ -389,7 +444,7 @@ function KinChoiceCard(props: {
                 variant="outline"
                 size="sm-multiline"
                 aria-busy={pending === option.id}
-                disabled={pending !== null}
+                disabled={pending !== null || switching}
                 onClick={() => void press(option.id)}
               >
                 {option.label}
@@ -399,6 +454,171 @@ function KinChoiceCard(props: {
         </>
       )}
     </CardFrame>
+  );
+}
+
+/** Exactly what a send card sends: who, the subject, the whole body and each file. */
+function KinSendDetail(props: {
+  readonly send: NonNullable<KinChoiceCardView["send"]>;
+  /** Set while the owner may still switch From. */
+  readonly pickFrom: {
+    readonly busy: boolean;
+    readonly problem: string | null;
+    readonly pick: (id: string) => void;
+  } | null;
+}) {
+  const { send, pickFrom } = props;
+  const current = send.fromChoices.find((one) => one.current)?.id ?? "";
+  const accounts = [...new Set(send.fromChoices.map((one) => one.account))];
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-xs text-muted-foreground">{send.heading}</p>
+      {send.thread === null ? null : (
+        <div className="flex flex-col gap-0.5 rounded-md border border-border px-3 py-2 text-xs">
+          <p className="font-medium text-foreground">{send.thread.subject}</p>
+          <p className="text-muted-foreground">
+            Replying to {send.thread.replyingTo}
+            {send.thread.date === null ? "" : `, ${send.thread.date}`}
+          </p>
+          {send.thread.lines === "" ? null : (
+            <p className="line-clamp-2 text-foreground">{send.thread.lines}</p>
+          )}
+        </div>
+      )}
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+        {send.lines.map((line) => (
+          <div key={line.label} className="contents">
+            <dt className="text-muted-foreground">{line.label}</dt>
+            <dd className="flex min-w-0 items-start justify-between gap-2">
+              <span className="min-w-0 break-words text-foreground">{line.value}</span>
+              {line.label === "From" && pickFrom !== null ? (
+                <Menu>
+                  <MenuTrigger
+                    render={
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        aria-busy={pickFrom.busy}
+                        disabled={pickFrom.busy}
+                      />
+                    }
+                  >
+                    {pickFrom.busy ? "Changing…" : "Change"}
+                  </MenuTrigger>
+                  <MenuPopup align="end" side="bottom">
+                    <MenuRadioGroup
+                      value={current}
+                      onValueChange={(value) => pickFrom.pick(String(value))}
+                    >
+                      {accounts.map((account) => (
+                        <MenuGroup key={account}>
+                          {accounts.length > 1 ? <MenuGroupLabel>{account}</MenuGroupLabel> : null}
+                          {send.fromChoices
+                            .filter((one) => one.account === account)
+                            .map((one) => (
+                              <MenuRadioItem key={one.id} value={one.id} closeOnClick>
+                                {one.label}
+                              </MenuRadioItem>
+                            ))}
+                        </MenuGroup>
+                      ))}
+                    </MenuRadioGroup>
+                  </MenuPopup>
+                </Menu>
+              ) : null}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      {pickFrom?.problem == null ? null : (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {pickFrom.problem}
+        </p>
+      )}
+      <div
+        tabIndex={0}
+        aria-label="Message"
+        className="max-h-80 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-3 py-2 text-sm text-foreground"
+      >
+        {send.body}
+        {send.quoted === null ? null : (
+          <span className="mt-3 block text-muted-foreground">{send.quoted}</span>
+        )}
+      </div>
+      {send.attachments.length === 0 ? null : (
+        <ul className="flex flex-col gap-1">
+          {send.attachments.map((file) => (
+            <li key={file.name} className="flex items-start gap-2 text-xs">
+              <FileTextIcon
+                aria-hidden
+                className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+              />
+              <span className="min-w-0">
+                <span className="break-words text-foreground">{file.name}</span>
+                {file.detail === "" ? null : (
+                  <span className="block text-muted-foreground">{file.detail}</span>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {send.outcome === null ? null : (
+        <p
+          role="status"
+          className={cn(
+            "text-xs font-medium",
+            send.outcome.tone === "error"
+              ? "text-destructive-foreground"
+              : send.outcome.tone === "ok"
+                ? "text-success-foreground"
+                : "text-muted-foreground",
+          )}
+        >
+          {send.outcome.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The card's picture, such as a logo to confirm, at a bounded size on a mid grey that a white
+ * logo and a black one both stand out on. Its bytes load from the viewer's signed asset URL.
+ */
+function KinChoiceImage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly image: NonNullable<KinChoiceCardView["image"]>;
+}) {
+  const { image } = props;
+  const name = `image.${image.mimeType.split("/")[1]?.replace("svg+xml", "svg") ?? "png"}`;
+  const [src] = useAssetUrls(props.environmentId, [
+    {
+      _tag: "attachment",
+      attachmentId: image.attachmentId,
+      fileName: name,
+      mimeType: image.mimeType,
+    },
+  ]);
+  const [failed, setFailed] = useState(false);
+  return (
+    <div className="flex h-28 items-center justify-center overflow-hidden rounded-md border border-border/80 bg-image-ground p-3">
+      {failed ? (
+        <p className="rounded bg-background/90 px-2 py-1 text-xs text-muted-foreground">
+          The picture couldn't load. Open the chat to see the file.
+        </p>
+      ) : src == null ? null : (
+        <AttachmentImage
+          name={name}
+          mimeType={image.mimeType}
+          src={src}
+          alt="The picture this question is about"
+          decoding="async"
+          onError={() => setFailed(true)}
+          className="max-h-full max-w-full object-contain"
+        />
+      )}
+    </div>
   );
 }
 

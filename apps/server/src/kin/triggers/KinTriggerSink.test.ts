@@ -62,7 +62,7 @@ const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   for (const org of [orgA, orgB]) {
     yield* sql`INSERT INTO kin_orgs VALUES (${org}, 'Kin', ${timestamp})`;
-    yield* sql`INSERT INTO kin_people VALUES (${`person-${org}`}, ${org}, 'owner', 'Owner', NULL, ${timestamp})`;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, github_login, created_at) VALUES (${`person-${org}`}, ${org}, 'owner', 'Owner', NULL, ${timestamp})`;
     yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at) VALUES (${`agent-${org}`}, ${org}, 'Lead', 'lead', ${`person-${org}`}, ${timestamp}, NULL)`;
     yield* sql`INSERT INTO orchestration_v2_projection_threads
       (thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json)

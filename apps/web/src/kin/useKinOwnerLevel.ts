@@ -1,0 +1,21 @@
+import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
+import type { EnvironmentId } from "@t3tools/contracts";
+
+import { connectionAtomRuntime } from "../connection/runtime";
+import { isChatOnlySession } from "../environments/primary";
+
+/**
+ * Whether the viewer runs the company here: the owner's own session always does; a chat-only
+ * session does once the host says its person is the owner or a co-owner.
+ */
+export function useKinOwnerLevel(environmentId: EnvironmentId): boolean {
+  const stored = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
+  return !isChatOnlySession() || stored;
+}
+
+/** The places a member reaches here (switched on, or a project they lead); null until known. */
+export function useKinPlaceReach(environmentId: EnvironmentId): KinPlaceReach | null {
+  return kinPlaceReach(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)));
+}

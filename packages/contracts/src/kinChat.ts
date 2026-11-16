@@ -100,6 +100,7 @@ export const KinChat = Schema.Struct({
   chatId: KinChatId,
   kind: KinChatKind,
   title: Schema.NullOr(KinTrimmedText),
+  // `KIN_COMPANY_CHAT_TEAM_ID` on the company chat while it is on.
   teamId: Schema.NullOr(TrimmedNonEmptyString),
   lastSeq: NonNegativeInt,
   lastMessageAt: Schema.NullOr(IsoDateTime),
@@ -134,12 +135,26 @@ export const KinOrg = Schema.Struct({
   createdAt: IsoDateTime,
 });
 export type KinOrg = typeof KinOrg.Type;
+/** What a person is in the company. Owner and co-owner are owner-level; a member is a teammate. */
+export const KIN_PERSON_ACCESS = ["owner", "co_owner", "member"] as const;
+export const KinPersonAccess = Schema.Literals(KIN_PERSON_ACCESS);
+export type KinPersonAccess = typeof KinPersonAccess.Type;
+export const kinOwnerLevel = (access: KinPersonAccess | undefined) =>
+  access === "owner" || access === "co_owner";
+
+/** A word for what someone does, such as tech, design or sales: a short lowercase slug. */
+export const KinRoleTag = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,23}$/));
+export const KIN_ROLE_TAGS_MAX = 6;
+export const KinRoleTags = Schema.Array(KinRoleTag).check(Schema.isMaxLength(KIN_ROLE_TAGS_MAX));
+export type KinRoleTags = typeof KinRoleTags.Type;
 export const KinPerson = Schema.Struct({
   personId: KinPersonId,
   orgId: KinOrgId,
   handle: KinTrimmedText,
   displayName: KinTrimmedText,
   githubLogin: Schema.NullOr(KinTrimmedText),
+  // Absent from a host older than kinds.
+  access: Schema.optional(KinPersonAccess),
 });
 export type KinPerson = typeof KinPerson.Type;
 export const KinAgent = Schema.Struct({
@@ -277,10 +292,79 @@ export const KIN_CHOICE_CARD_ACTION = "choose";
  * `updatedAt`): the same day-long window after which Kin stops waking a lead for old messages.
  */
 export const KIN_CHOICE_CARD_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * What an "Ask me" call to a connection would send, in full, as the owner's Confirm will send
+ * it. `outcome` is set by the server after the tap: sending, then sent or failed with a reason.
+ */
+export const KinSendCard = Schema.Struct({
+  service: KinTrimmedText.check(Schema.isMaxLength(80)),
+  action: Schema.Literals(["email", "reply", "event", "call"]),
+  /** The address it goes from; on cards from before accounts, the signed-in account. */
+  from: Schema.NullOr(KinText.check(Schema.isMaxLength(320))),
+  /** The From name shown beside the address, such as "Ana Rao". */
+  fromName: Schema.optionalKey(Schema.NullOr(KinText.check(Schema.isMaxLength(200)))),
+  /** The connected account it goes from, or whose calendar an event is on. */
+  account: Schema.optionalKey(Schema.NullOr(KinText.check(Schema.isMaxLength(320)))),
+  /** What the owner may switch From to before Confirm; `id` is what the switch names. */
+  fromChoices: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        id: KinTrimmedText.check(Schema.isMaxLength(400)),
+        account: KinText.check(Schema.isMaxLength(320)),
+        address: KinText.check(Schema.isMaxLength(320)),
+        name: Schema.NullOr(KinText.check(Schema.isMaxLength(200))),
+      }),
+    ).check(Schema.isMaxLength(30)),
+  ),
+  /** A reply's thread as it stands: so the owner sees it is the right one. */
+  thread: Schema.optionalKey(
+    Schema.Struct({
+      subject: KinText.check(Schema.isMaxLength(400)),
+      replyingTo: KinText.check(Schema.isMaxLength(400)),
+      date: Schema.NullOr(KinText.check(Schema.isMaxLength(100))),
+      lines: KinText.check(Schema.isMaxLength(600)),
+    }),
+  ),
+  /** The earlier message quoted under the body, as Gmail quotes it; sent after the body. */
+  quoted: Schema.optionalKey(Schema.NullOr(KinText.check(Schema.isMaxLength(6_000)))),
+  to: Schema.Array(KinText.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+  cc: Schema.Array(KinText.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+  /** The subject, or an event's title, or the tool for a plain call. */
+  subject: KinText.check(Schema.isMaxLength(400)),
+  /** The whole body, an event's time and notes, or a call's arguments. */
+  body: KinText.check(Schema.isMaxLength(24_000)),
+  attachments: Schema.Array(
+    Schema.Struct({
+      name: KinTrimmedText.check(Schema.isMaxLength(200)),
+      /** "Invoice INV/26-27/004 · ₹1,18,000.00", read by the server from the record. */
+      label: Schema.NullOr(KinText.check(Schema.isMaxLength(200))),
+      bytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    }),
+  ).check(Schema.isMaxLength(10)),
+  outcome: Schema.NullOr(
+    Schema.Struct({
+      state: Schema.Literals(["sending", "sent", "failed"]),
+      reason: Schema.NullOr(KinText.check(Schema.isMaxLength(500))),
+      at: IsoDateTime,
+    }),
+  ),
+});
+export type KinSendCard = typeof KinSendCard.Type;
 export const KinChoiceCardState = Schema.Struct({
   question: KinTrimmedText.check(Schema.isMaxLength(240)),
   detail: Schema.NullOr(KinText.check(Schema.isMaxLength(2000))),
   options: Schema.Array(KinChoiceOption).check(Schema.isMinLength(2), Schema.isMaxLength(4)),
+  /** A picture of what is asked about, such as a new logo: a file in this card's chat. */
+  image: Schema.optionalKey(
+    Schema.Struct({
+      attachmentId: KinTrimmedText,
+      mimeType: KinTrimmedText.check(Schema.isMaxLength(100)),
+    }),
+  ),
+  /** Set on a card that asks to send something out of the company: exactly what goes. */
+  send: Schema.optionalKey(KinSendCard),
+  /** Set when a newer card for the same thing closed this one. */
+  replaced: Schema.optionalKey(Schema.Literal(true)),
   // The first answer settles the card.
   answer: Schema.NullOr(
     Schema.Struct({
@@ -522,6 +606,16 @@ export type KinGroupRenameInput = typeof KinGroupRenameInput.Type;
 export const KinGroupDeleteInput = Schema.Struct({ chatId: KinChatId });
 export type KinGroupDeleteInput = typeof KinGroupDeleteInput.Type;
 export const KinGroupDone = Schema.Struct({});
+/** `KinChat.teamId` of the company chat while it is on: the one group everyone on the team is in. */
+export const KIN_COMPANY_CHAT_TEAM_ID = "company";
+/** Turns the company chat on with this agent answering by default, or off with null. Owner only. */
+export const KinGroupSetCompanyInput = Schema.Struct({
+  orgId: KinOrgId,
+  leadAgentId: Schema.NullOr(KinAgentId),
+});
+export type KinGroupSetCompanyInput = typeof KinGroupSetCompanyInput.Type;
+export const KinGroupSetCompanyResult = Schema.Struct({ chat: Schema.NullOr(KinChat) });
+export type KinGroupSetCompanyResult = typeof KinGroupSetCompanyResult.Type;
 export const KinChatSubscribeInput = Schema.Struct({
   chatId: KinChatId,
   afterSeq: Schema.optional(NonNegativeInt),
@@ -582,12 +676,17 @@ export type KinChatsMuteInput = typeof KinChatsMuteInput.Type;
 export type KinMessagesMarkReadResult = typeof KinMessagesMarkReadResult.Type;
 /**
  * Empties a chat for everyone in it, for good: its messages, cards, reactions and files. The chat,
- * its members and what its leads remember stay. A group's owner, or the one person in a direct
- * chat with a lead, may.
+ * its members and what its leads remember stay, and so do files a doc uses. A group's owner, or
+ * the one person in a direct chat with a lead, may. `preview` changes nothing and says what stays.
  */
-export const KinChatsClearInput = Schema.Struct({ chatId: KinChatId });
+export const KinChatsClearInput = Schema.Struct({
+  chatId: KinChatId,
+  preview: Schema.optional(Schema.Boolean),
+});
 export type KinChatsClearInput = typeof KinChatsClearInput.Type;
-export const KinChatsClearResult = Schema.Struct({});
+/** `keptFiles`: the chat's files that stay because a doc uses them. Absent from older servers. */
+export const KinChatsClearResult = Schema.Struct({ keptFiles: Schema.optional(NonNegativeInt) });
+export type KinChatsClearResult = typeof KinChatsClearResult.Type;
 export const KinWidgetsActInput = Schema.Struct({
   widgetId: KinWidgetId,
   revision: PositiveInt,
@@ -765,6 +864,11 @@ export const KinGroupRpcs = [
   Rpc.make("kin.groups.delete", {
     payload: KinGroupDeleteInput,
     success: KinGroupDone,
+    error: KinGroupError,
+  }),
+  Rpc.make("kin.groups.setCompany", {
+    payload: KinGroupSetCompanyInput,
+    success: KinGroupSetCompanyResult,
     error: KinGroupError,
   }),
 ] as const;

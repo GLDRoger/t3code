@@ -2,6 +2,8 @@
 import {
   KIN_DOC_CARD,
   KIN_MEMORY_CHANGES_CARD,
+  KIN_STATEMENT_PASSWORD_CARD,
+  KIN_STATEMENT_REVIEW_CARD,
   KIN_WORKER_PUBLISH_CARD,
   KinWorkerPublishCard,
   KinReminderCard,
@@ -32,6 +34,12 @@ import {
   kinDeferralIsBookkeeping,
   type KinDeferralCardView,
 } from "./kinDeferralPresentation.ts";
+import {
+  kinStatementPasswordView,
+  kinStatementReviewView,
+  type KinStatementPasswordView,
+  type KinStatementReviewView,
+} from "./kinStatementPresentation.ts";
 import {
   kinMemoryChangesView,
   type KinMemoryChangesCardView,
@@ -69,6 +77,8 @@ export type KinCardView =
   | { readonly kind: "memory_changes"; readonly changes: KinMemoryChangesCardView }
   | { readonly kind: "approval"; readonly approval: KinApprovalWidgetView }
   | { readonly kind: "doc"; readonly doc: KinDocCardView }
+  | { readonly kind: "statement_review"; readonly review: KinStatementReviewView }
+  | { readonly kind: "statement_password"; readonly password: KinStatementPasswordView }
   | { readonly kind: "missing" }
   /** A card this build can't draw: its own plain words, or nothing when it has none. */
   | { readonly kind: "unknown"; readonly text: string | null };
@@ -297,7 +307,12 @@ export function kinReminderCardView(
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
 /** "Weekdays at 8:00", read in the owner's zone, which is named when this device is elsewhere. */
-function scheduleLine(every: KinScheduledTaskCard["every"], ownerZone: string, timeZone?: string) {
+function scheduleLine(
+  every: KinScheduledTaskCard["every"],
+  ownerZone: string,
+  timeZone?: string,
+  around = false,
+) {
   const days = [...new Set(every.days)].sort((a, b) => a - b);
   const key = days.join("");
   const when =
@@ -311,7 +326,7 @@ function scheduleLine(every: KinScheduledTaskCard["every"], ownerZone: string, t
   const [hour, minute] = every.at.split(":");
   const deviceZone = timeZone ?? new Intl.DateTimeFormat().resolvedOptions().timeZone;
   const zone = deviceZone === ownerZone ? "" : ` (${ownerZone})`;
-  return `${when} at ${Number(hour)}:${minute}${zone}.`;
+  return `${when} ${around ? "around" : "at"} ${Number(hour)}:${minute}${zone}.`;
 }
 
 function lastRunLine(run: NonNullable<KinScheduledTaskCard["lastRun"]>, timeZone?: string) {
@@ -339,11 +354,13 @@ export function kinScheduledTaskCardView(
   const card = decoded.value;
   const title = clamp(card.title, 200) || "This scheduled task";
   const open = widget.closedAt === null && card.status !== "deleted";
-  const nextMs = card.nextRunAt === null ? null : Date.parse(card.nextRunAt);
+  // A loose one fires somewhere in a window: its stored next run is only the window's start.
+  const nextMs =
+    card.nextRunAt === null || card.around === true ? null : Date.parse(card.nextRunAt);
   const lines = !open
     ? ["Deleted."]
     : [
-        scheduleLine(card.every, card.timeZone, timeZone),
+        scheduleLine(card.every, card.timeZone, timeZone, card.around),
         ...(card.status === "paused" ? ["Paused."] : []),
         ...(card.status === "active" && nextMs !== null
           ? [`Next run ${formatKinDeferralTime(nextMs, timeZone)}.`]
@@ -588,6 +605,14 @@ function kinLiveCardView(
     case KIN_DOC_CARD: {
       const doc = kinDocCardView(widget);
       return doc === null ? unknown(widget) : { kind: "doc", doc };
+    }
+    case KIN_STATEMENT_REVIEW_CARD: {
+      const review = kinStatementReviewView(widget);
+      return review === null ? unknown(widget) : { kind: "statement_review", review };
+    }
+    case KIN_STATEMENT_PASSWORD_CARD: {
+      const password = kinStatementPasswordView(widget);
+      return password === null ? unknown(widget) : { kind: "statement_password", password };
     }
     case KIN_MEMORY_CHANGES_CARD: {
       const changes = kinMemoryChangesView(widget);

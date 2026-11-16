@@ -29,8 +29,10 @@ import {
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_CLEAR_CHAT_ACTION,
+  KIN_CLEAR_CHAT_DONE,
   KIN_CLEAR_CHAT_TITLE,
   kinClearChatBody,
+  kinClearChatKept,
   kinOwnsDirectChat,
 } from "@t3tools/client-runtime/kin/kinClearChat";
 import { kinAgentAvatar, kinChatMuted } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -314,6 +316,7 @@ function KinLeadClearChat(props: {
   const inbox = useAtomValue(kinClient.inbox({ environmentId, input: {} }));
   const canClear = useAtomValue(kinClient.clear.permissionAtom(environmentId));
   const runClear = useAtomCommand(kinClient.clear, "Clearing this chat");
+  const preview = useAtomCommand(kinClient.clearPreview, { reportFailure: false });
   const { personId } = kinFeedViewer(
     host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
     props.orgId,
@@ -332,16 +335,28 @@ function KinLeadClearChat(props: {
         icon="bubble.left"
         tone="danger"
         onPress={() =>
-          Dialog.confirm({
-            title: KIN_CLEAR_CHAT_TITLE,
-            message: kinClearChatBody(props.remembers),
-            confirmText: KIN_CLEAR_CHAT_ACTION,
-            destructive: true,
-            onConfirm: () =>
-              void runClear({ environmentId, input: { chatId: chat.chatId } }).then((result) => {
-                if (AsyncResult.isSuccess(result)) navigation.goBack();
+          // The confirm says what a doc keeps, so it opens once the host has said.
+          void preview({ environmentId, input: { chatId: chat.chatId, preview: true } }).then(
+            (asked) =>
+              Dialog.confirm({
+                title: KIN_CLEAR_CHAT_TITLE,
+                message: kinClearChatBody(
+                  props.remembers,
+                  AsyncResult.isSuccess(asked) ? asked.value.keptFiles : undefined,
+                ),
+                confirmText: KIN_CLEAR_CHAT_ACTION,
+                destructive: true,
+                onConfirm: () =>
+                  void runClear({ environmentId, input: { chatId: chat.chatId } }).then(
+                    (result) => {
+                      if (!AsyncResult.isSuccess(result)) return;
+                      const kept = kinClearChatKept(result.value.keptFiles);
+                      if (kept !== null) Dialog.alert(KIN_CLEAR_CHAT_DONE, kept);
+                      navigation.goBack();
+                    },
+                  ),
               }),
-          })
+          )
         }
       />
     </ListSection>

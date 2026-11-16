@@ -2,6 +2,7 @@
 import {
   KinAgentId,
   KinChatError,
+  KinListId,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -24,6 +25,9 @@ import {
   createKinWorkActions,
   kinWorkDraftCheck,
   kinWorkHostClients,
+  kinWorkAssignees,
+  kinWorkAudience,
+  kinWorkAudienceMove,
   kinWorkHostEdits,
   kinWorkItemView,
   kinWorkListFooter,
@@ -233,7 +237,19 @@ describe("kinWorkItemView", () => {
     const view = kinWorkItemView(
       detail({
         owner: lead,
+        reason: "You know the auth flow best",
         changes: [
+          {
+            seq: 5,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [
+              { field: "owner", from: `person:${priya.personId}`, to: `agent:${lead.agentId}` },
+              { field: "handedBack", from: `person:${priya.personId}`, to: "On the release" },
+            ],
+          },
           {
             seq: 4,
             at,
@@ -271,11 +287,42 @@ describe("kinWorkItemView", () => {
       50,
       place,
     );
+    expect(view.given).toMatch(/^Priya handed this back · /);
+    expect(view.reason).toBe("On the release");
     expect(view.history.map((line) => line.text)).toEqual([
+      "Priya handed it back to Tech lead: “On the release”",
       "Tech lead marked it waiting on Priya",
       "You gave it to Tech lead",
       "Tech lead updated it",
       "You added this",
+    ]);
+  });
+
+  it("says an invoice was issued, paid or voided, not marked waiting, finished or dropped", () => {
+    const at = "2026-11-10T09:00:00.000Z";
+    const closed = (seq: number, to: string) =>
+      ({
+        seq,
+        at,
+        by: lead,
+        via: "lead",
+        kind: "updated",
+        fields: [{ field: "state", from: "open", to }],
+      }) as const;
+    const view = kinWorkItemView(
+      detail({
+        list: KinListId.make("invoices"),
+        changes: [closed(3, "dropped"), closed(2, "done"), closed(1, "waiting")],
+      }),
+      names,
+      now,
+      50,
+      place,
+    );
+    expect(view.history.map((line) => line.text)).toEqual([
+      "Tech lead voided it",
+      "Tech lead marked it paid",
+      "Tech lead issued it",
     ]);
   });
 
@@ -302,6 +349,48 @@ describe("kinWorkItemView", () => {
     expect(view.links.map((held) => [held.label, held.open?.type ?? null])).toEqual([
       ["PR #12 merged", "url"],
     ]);
+  });
+
+  it("puts who sees a task as one answer, and a pick changes only what it must", () => {
+    const project = { key: "P-1", title: "Invented app" };
+    const at = (sensitive: boolean, shared: boolean) =>
+      kinWorkItemView(
+        detail({ sensitive, ...(shared ? { shared: true } : {}) }),
+        names,
+        now,
+        50,
+        place,
+      );
+    const owner = { mark: true, share: true };
+    const plain = kinWorkAudience({ ...at(false, false), project }, owner);
+    expect(plain.current).toBe("people");
+    expect(plain.answer).toBe("You, whoever has it and the people on Invented app");
+    expect(plain.choices.map((one) => one.id)).toEqual(["people", "team", "me"]);
+    // Marked private wins over an old share, so it reads as only you.
+    expect(kinWorkAudience(at(true, true), owner).current).toBe("me");
+    expect(kinWorkAudienceMove({ private: true, shared: true }, "people")).toEqual({
+      private: false,
+      shared: false,
+    });
+    expect(kinWorkAudienceMove({ private: false, shared: false }, "team")).toEqual({
+      private: null,
+      shared: true,
+    });
+    // A teammate who can't share or mark sees the answer with nothing to pick.
+    expect(kinWorkAudience(at(false, false), { mark: false, share: false }).choices).toEqual([]);
+    // J14: Priya, the project's lead, reads it from her side: "you" is never the owner.
+    const priyas = { ...names, me: priya.personId, owner: me.personId };
+    const lead = { mark: true, share: false };
+    const hers = kinWorkAudience({ ...at(false, false), project }, lead, priyas);
+    expect(hers.answer).toBe("Invented Owner, whoever has it and the people on Invented app");
+    // She may make it private; un-marking and sharing stay the owner's.
+    expect(hers.choices.map((one) => one.id)).toEqual(["people", "me"]);
+    const marked = kinWorkAudience(at(true, false), lead, priyas);
+    expect(marked.answer).toBe("Only Invented Owner, co-owners and whoever has it");
+    expect(marked.choices).toEqual([]);
+    expect(kinWorkAudience(at(true, false), owner, { ...names, owner: me.personId }).answer).toBe(
+      "Only you, co-owners and whoever has it",
+    );
   });
 });
 
@@ -335,7 +424,7 @@ describe("a task on an older host", () => {
       "Tech lead is retired, so nobody is working on this. Give it to someone else, or restore Tech lead.",
     );
     expect(kinWorkRow(record({ owner: lead }), retired, now).line).toBe(
-      "W-1 · Tech lead (retired) · Not started",
+      "Tech lead (retired) · W-1",
     );
     expect(kinWorkRow(record({ owner: lead }), names, now).ownerRetired).toBe(false);
   });
@@ -425,13 +514,50 @@ describe("kinWorkRow", () => {
       title: "Invented Foods",
     } as const;
     const owed = record({ party, side: "theirs" });
-    expect(kinWorkRow(owed, names, now).line).toBe(
-      "W-1 · Invented Foods · You · They owe this · Not started",
-    );
+    expect(kinWorkRow(owed, names, now).line).toBe("They owe this · Invented Foods · You · W-1");
     expect(kinWorkRow(owed, names, now, { party: party, project: null }).about).toBeNull();
     // A host from before clients sends none of it: the row and the ways in show nothing new.
-    expect(kinWorkRow(record(), names, now).line).toBe("W-1 · You · Not started");
+    expect(kinWorkRow(record(), names, now).line).toBe("You · W-1");
     expect(kinWorkHostClients(null)).toBe(false);
+  });
+});
+
+describe("kinWorkAssignees", () => {
+  const person = (personId: KinPersonId, displayName: string) => ({
+    personId,
+    orgId,
+    handle: displayName.toLowerCase(),
+    displayName,
+    githubLogin: null,
+  });
+  const sami = { _tag: "person", personId: KinPersonId.make("invented-sami") } as const;
+  const people = [
+    person(me.personId, "Invented Owner"),
+    person(priya.personId, "Priya"),
+    person(sami.personId, "Sami"),
+  ];
+  const offered = (current: typeof sami | null, invited: ReadonlyArray<KinPersonId> = []) =>
+    kinWorkAssignees({
+      orgs: null,
+      orgId,
+      people,
+      names,
+      current,
+      joined: [me.personId, priya.personId],
+      invited,
+    }).people.map((to) => (to.invited ? `${to.key} (invited)` : to.key));
+
+  it("leaves out people whose access was removed, unless the task is with them now", () => {
+    expect(offered(null)).toEqual(["person:invented-owner", "person:invented-priya"]);
+    expect(offered(sami)).toContain("person:invented-sami");
+  });
+
+  it("lists someone re-invited who hasn't opened the link as invited, last", () => {
+    expect(offered(null, [sami.personId])).toEqual([
+      "person:invented-owner",
+      "person:invented-priya",
+      "person:invented-sami (invited)",
+    ]);
   });
 });
 

@@ -10,6 +10,7 @@ import {
   type KinPersonId,
   type KinWidget,
 } from "@t3tools/contracts";
+import { KIN_VISUAL_FILE_SCHEME } from "@t3tools/shared/kinVisual";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -23,7 +24,7 @@ import {
   type KinChatClosedReason,
   type KinChatState,
 } from "./kinInboxModel.ts";
-import { kinTapText } from "./kinTap.ts";
+import { kinTapAnswersChoice, kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
 import { kinSentences } from "./kinScreenState.ts";
@@ -97,6 +98,41 @@ export function kinChatScreenState(
   }
   if (!host.connected) return { _tag: "offline" };
   return { _tag: "error", message: message ?? "Kin didn't answer.", retry: "chat" };
+}
+
+/** Why a chat can't be shown, in words: never the host's reason code. */
+export function kinChatGoneCopy(reason: "left" | KinChatClosedReason): {
+  readonly title: string;
+  readonly detail: string;
+} {
+  switch (reason) {
+    case "left":
+      return {
+        title: "You were removed from this chat",
+        detail: "Ask the chat's owner to add you back.",
+      };
+    case "disabled":
+      return {
+        title: "Kin is turned off on this server",
+        detail: "Ask whoever runs Kin here to turn it back on, then come back.",
+      };
+    case "limit":
+      return {
+        title: "Too many chats are open",
+        detail: "Close a few chats on this device, then open this one again.",
+      };
+    case "not_found":
+    case "not_allowed":
+      return {
+        title: "This chat isn't available",
+        detail: "It may have been removed, or you're no longer a member.",
+      };
+    default:
+      return {
+        title: "This chat isn't available",
+        detail: "Kin couldn't open this chat. Go back to your chats and try again.",
+      };
+  }
 }
 
 // Paging
@@ -256,7 +292,8 @@ const messageRowKey = (message: KinMessage) =>
 // A card tap shows as the button's label, never its JSON, and never repeats the card it answered.
 const shownMessage = (message: KinMessage): KinMessage => {
   // A host card's body is its inbox summary; the card says the same, so it isn't repeated.
-  if (isSystem(message)) return message.body === "" ? message : { ...message, body: "" };
+  if (isSystem(message) && message.widgetId !== null)
+    return message.body === "" ? message : { ...message, body: "" };
   if (message.kind !== "widget_action") return message;
   return { ...message, body: kinTapText(message.body), widgetId: null };
 };
@@ -324,7 +361,11 @@ export function buildKinFeedRows(
   now: Date = new Date(),
   drafts: ReadonlyArray<KinHeldDraft> = [],
 ): ReadonlyArray<KinFeedRow> {
-  const visible = messages.filter((message) => message.status !== "dismissed");
+  const visible = messages.filter(
+    (message) =>
+      message.status !== "dismissed" &&
+      !(message.kind === "widget_action" && kinTapAnswersChoice(message.body)),
+  );
   const rows: KinFeedRow[] = [];
   const foldKeys = new Set<string>();
   let previousAuthor: string | null = null;
@@ -361,8 +402,13 @@ export function buildKinFeedRows(
 
   const pushMessage = (message: KinMessage) => {
     startDay(message);
-    // Host cards (memory changes, routines) arrive as system messages carrying a widget.
-    if (isSystem(message) && message.widgetId === null) {
+    // Host cards (memory changes, routines) arrive as system messages carrying a widget, and a
+    // worker's screenshots as one carrying files: both draw as messages, not a line.
+    if (
+      isSystem(message) &&
+      message.widgetId === null &&
+      (message.attachments ?? []).length === 0
+    ) {
       const notice = retryNotice(message);
       const retry = notice ? lastOwnText : null;
       if (notice) {
@@ -567,8 +613,9 @@ export function kinLinkToOpen(href: string): string | null {
  */
 export const kinImageSource = () => ({ uri: "" });
 
-const MARKDOWN_IMAGE = /!\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])/g;
+const MARKDOWN_IMAGE = /!\[([^\]]*)\](?:\(([^)]*)\)|\[[^\]]*\])/g;
 const HTML_IMAGE = /<img\b[^>]*>/gi;
+const imageAsText = (alt: string) => (alt.trim() ? `Image: ${alt.trim()}` : "Image");
 
 /**
  * The body a bubble renders: images become text before parsing, so no build (even one without
@@ -576,9 +623,31 @@ const HTML_IMAGE = /<img\b[^>]*>/gi;
  */
 export const kinBodyMarkdown = (body: string) =>
   body
-    .replace(MARKDOWN_IMAGE, (_match, alt: string) =>
-      alt.trim() ? `Image: ${alt.trim()}` : "Image",
-    )
+    .replace(MARKDOWN_IMAGE, (_match, alt: string) => imageAsText(alt))
+    .replace(HTML_IMAGE, "Image");
+
+const KIN_DOC_FILE = new RegExp(`^${KIN_VISUAL_FILE_SCHEME}([A-Za-z0-9_-]{1,200})$`, "i");
+
+/** The file a doc's image source names (`kin-file:<id>`, as the host keeps it), or null. */
+export function kinDocFileId(src: string): string | null {
+  const written = src.trim();
+  const bare = /^<([^>]*)>/.exec(written)?.[1] ?? written.split(/\s/, 1)[0] ?? "";
+  return KIN_DOC_FILE.exec(bare)?.[1]?.toLowerCase() ?? null;
+}
+
+/**
+ * The body a doc's reader renders: as a bubble's, except an inline image of a `kin-file:` keeps
+ * its place, its source written by `src`. The host serves a doc's reader only the doc's own files.
+ */
+export const kinDocMarkdown = (
+  body: string,
+  src: (id: string) => string = (id) => `${KIN_VISUAL_FILE_SCHEME}${id}`,
+) =>
+  body
+    .replace(MARKDOWN_IMAGE, (_match, alt: string, destination: string | undefined) => {
+      const id = destination === undefined ? null : kinDocFileId(destination);
+      return id === null ? imageAsText(alt) : `![${alt}](${src(id)})`;
+    })
     .replace(HTML_IMAGE, "Image");
 
 /** A standalone image block, drawn as text in its place. */

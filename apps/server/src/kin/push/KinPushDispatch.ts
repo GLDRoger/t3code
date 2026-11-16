@@ -72,7 +72,14 @@ const make = Effect.gen(function* () {
       ? sender.notify({ _tag: "message", orgId: event.orgId, messageId: event.message.messageId })
       : event.type === "widget.updated"
         ? onWidget(event.widget)
-        : Effect.void,
+        : event.type === "read.updated"
+          ? sender.notify({
+              _tag: "read",
+              orgId: event.orgId,
+              chatId: event.chatId,
+              memberId: event.memberId,
+            })
+          : Effect.void,
   ).pipe(Effect.forkScoped);
 });
 

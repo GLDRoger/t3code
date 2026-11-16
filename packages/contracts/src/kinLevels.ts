@@ -1,11 +1,7 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthOrchestrationReadScope,
-  AuthSettingsWriteScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { KinActionId } from "./kinApprovals.ts";
 import { KinAgentId, KinChatError, KinChatId, KinOrgId } from "./kinChat.ts";
 import { CanonicalUtcTimestamp, KinLevel } from "./kinLead.ts";
@@ -47,7 +43,7 @@ export type KinLevelsSetInput = typeof KinLevelsSetInput.Type;
 export const KinLevelsRaiseResult = Schema.Struct({ actionId: KinActionId });
 export type KinLevelsRaiseResult = typeof KinLevelsRaiseResult.Type;
 
-export const KIN_LEVEL_WS_METHODS = {
+const KIN_LEVEL_WS_METHODS = {
   get: "kin.levels.get",
   lower: "kin.levels.lower",
   raise: "kin.levels.raise",
@@ -75,8 +71,8 @@ export const KinLevelRpcs = [
 ] as const;
 
 export const KIN_LEVEL_RPC_SCOPES = {
-  [KIN_LEVEL_WS_METHODS.get]: AuthOrchestrationReadScope,
+  [KIN_LEVEL_WS_METHODS.get]: AuthKinChatScope,
   // Levels are the lead's permissions, set like its budget.
-  [KIN_LEVEL_WS_METHODS.lower]: AuthSettingsWriteScope,
-  [KIN_LEVEL_WS_METHODS.raise]: AuthSettingsWriteScope,
+  [KIN_LEVEL_WS_METHODS.lower]: AuthKinChatScope,
+  [KIN_LEVEL_WS_METHODS.raise]: AuthKinChatScope,
 } as const;

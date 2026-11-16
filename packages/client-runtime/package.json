@@ -555,9 +555,41 @@
       "types": "./src/kinPush.ts",
       "default": "./src/kinPush.ts"
     },
+    "./kin/kinAccess": {
+      "types": "./src/kin/kinAccess.ts",
+      "default": "./src/kin/kinAccess.ts"
+    },
+    "./kin/kinTimeZone": {
+      "types": "./src/kin/kinTimeZone.ts",
+      "default": "./src/kin/kinTimeZone.ts"
+    },
     "./kin/kinAgentRetire": {
       "types": "./src/kin/kinAgentRetire.ts",
       "default": "./src/kin/kinAgentRetire.ts"
+    },
+    "./kin/kinAttention": {
+      "types": "./src/kin/kinAttention.ts",
+      "default": "./src/kin/kinAttention.ts"
+    },
+    "./kin/kinCheckIns": {
+      "types": "./src/kin/kinCheckIns.ts",
+      "default": "./src/kin/kinCheckIns.ts"
+    },
+    "./kin/kinConnections": {
+      "types": "./src/kin/kinConnections.ts",
+      "default": "./src/kin/kinConnections.ts"
+    },
+    "./kin/kinCurrency": {
+      "types": "./src/kin/kinCurrency.ts",
+      "default": "./src/kin/kinCurrency.ts"
+    },
+    "./kin/kinSubscriptions": {
+      "types": "./src/kin/kinSubscriptions.ts",
+      "default": "./src/kin/kinSubscriptions.ts"
+    },
+    "./kin/kinBudget": {
+      "types": "./src/kin/kinBudget.ts",
+      "default": "./src/kin/kinBudget.ts"
     },
     "./kin/kinAttachments": {
       "types": "./src/kin/kinAttachments.ts",
@@ -571,6 +603,10 @@
       "types": "./src/kin/kinGroups.ts",
       "default": "./src/kin/kinGroups.ts"
     },
+    "./kin/kinInvoices": {
+      "types": "./src/kin/kinInvoices.ts",
+      "default": "./src/kin/kinInvoices.ts"
+    },
     "./kin/kinJoin": {
       "types": "./src/kin/kinJoin.ts",
       "default": "./src/kin/kinJoin.ts"
@@ -578,6 +614,10 @@
     "./kin/kinTeam": {
       "types": "./src/kin/kinTeam.ts",
       "default": "./src/kin/kinTeam.ts"
+    },
+    "./kin/kinProfiles": {
+      "types": "./src/kin/kinProfiles.ts",
+      "default": "./src/kin/kinProfiles.ts"
     },
     "./kin/kinListSwitch": {
       "types": "./src/kin/kinListSwitch.ts",
@@ -647,6 +687,10 @@
       "types": "./src/kin/kinCardPresentation.ts",
       "default": "./src/kin/kinCardPresentation.ts"
     },
+    "./kin/kinStatementPresentation": {
+      "types": "./src/kin/kinStatementPresentation.ts",
+      "default": "./src/kin/kinStatementPresentation.ts"
+    },
     "./kin/kinChart": {
       "types": "./src/kin/kinChart.ts",
       "default": "./src/kin/kinChart.ts"
@@ -671,6 +715,10 @@
       "types": "./src/kin/kinMoney.ts",
       "default": "./src/kin/kinMoney.ts"
     },
+    "./kin/kinMoneyAnswers": {
+      "types": "./src/kin/kinMoneyAnswers.ts",
+      "default": "./src/kin/kinMoneyAnswers.ts"
+    },
     "./kin/kinDates": {
       "types": "./src/kin/kinDates.ts",
       "default": "./src/kin/kinDates.ts"
@@ -686,6 +734,10 @@
     "./kin/kinWorkChanges": {
       "types": "./src/kin/kinWorkChanges.ts",
       "default": "./src/kin/kinWorkChanges.ts"
+    },
+    "./kin/kinWorkHome": {
+      "types": "./src/kin/kinWorkHome.ts",
+      "default": "./src/kin/kinWorkHome.ts"
     },
     "./kin/kinWorkList": {
       "types": "./src/kin/kinWorkList.ts",
@@ -711,6 +763,10 @@
       "types": "./src/kin/kinDocsStream.ts",
       "default": "./src/kin/kinDocsStream.ts"
     },
+    "./kin/kinRefresh": {
+      "types": "./src/kin/kinRefresh.ts",
+      "default": "./src/kin/kinRefresh.ts"
+    },
     "./kin/kinWorkStream": {
       "types": "./src/kin/kinWorkStream.ts",
       "default": "./src/kin/kinWorkStream.ts"
@@ -726,6 +782,14 @@
     "./kin/kinApprovalPresentation": {
       "types": "./src/kin/kinApprovalPresentation.ts",
       "default": "./src/kin/kinApprovalPresentation.ts"
+    },
+    "./kin/kinBrand": {
+      "types": "./src/kin/kinBrand.ts",
+      "default": "./src/kin/kinBrand.ts"
+    },
+    "./kin/kinTemplates": {
+      "types": "./src/kin/kinTemplates.ts",
+      "default": "./src/kin/kinTemplates.ts"
     }
   },
   "scripts": {

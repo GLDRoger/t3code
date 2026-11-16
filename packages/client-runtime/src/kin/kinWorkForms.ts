@@ -1,6 +1,9 @@
 import {
+  KIN_GST_STATES,
+  KIN_GSTIN_PATTERN,
   KinRecordKey,
   KinRepoName,
+  kinRealDay,
   type KinContact,
   type KinContactCreateInput,
   type KinContactUpdateInput,
@@ -9,6 +12,7 @@ import {
   type KinPartyUpdateInput,
   type KinProjectCreateInput,
   type KinProjectDetail,
+  type KinProjectBilling,
   type KinProjectUpdateInput,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -22,13 +26,18 @@ import {
   kinWorkFailuresOf,
   kinWorkRefused,
   type KinWorkRef,
+  kinWorkDueLabel,
 } from "./kinWork.ts";
+import { kinMoneyDraft, kinParseMoney } from "./kinLists.ts";
+import { kinContactEmailOk, kinContactPhoneOk, KIN_PROJECTS } from "./kinWorkClients.ts";
 import { KIN_WORK_OFFLINE_CHANGE } from "./kinWorkChanges.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
 
 const NAME_MAX = 200;
 const SHORT_MAX = 200;
 const NOTES_MAX = 4_000;
+const ADDRESS_MAX = 500;
+const PLACE_MAX = 60;
 export const KIN_WORK_FORM_LIMITS = { name: NAME_MAX, short: SHORT_MAX, notes: NOTES_MAX };
 
 export const KIN_WORK_FORM_COPY = {
@@ -47,6 +56,19 @@ export const KIN_WORK_FORM_COPY = {
     terms: "Terms",
     termsPlaceholder: "Retainer, billed monthly, net 30",
     termsHint: "Always private. Only you see the terms.",
+    address: "Billing address",
+    addressPlaceholder: "Street, city, state and PIN code",
+    addressHint: "Printed on their invoices.",
+    gstin: "GSTIN",
+    gstinPlaceholder: "27ABCDE1234F1Z5",
+    gstinHint: "Leave empty if they aren't registered for GST.",
+    place: "State",
+    placeNone: "Not set",
+    placeAbroad: "Outside India",
+    placeHint:
+      "Where the supply goes. Invoices charge CGST and SGST in your own state, IGST in another.",
+    country: "Country",
+    countryPlaceholder: "United States",
     notes: "Notes",
     notesPlaceholder: "Anything worth remembering about them",
   },
@@ -77,6 +99,12 @@ export const KIN_WORK_FORM_COPY = {
     target: "Target date",
     repos: "Repos",
     reposPlaceholder: "owner/name, one per line",
+    billing: "Billing",
+    noBilling: "Not set",
+    value: "Value",
+    valuePlaceholder: "600000 or $12,000",
+    startsOn: "Starts",
+    renewsOn: "Renews on",
     notes: "Notes",
     notesPlaceholder: "What done looks like",
   },
@@ -88,17 +116,72 @@ export interface KinClientDraft {
   readonly name: string;
   readonly vendor: boolean;
   readonly terms: string;
+  readonly address: string;
+  readonly gstin: string;
+  /** A state's name from `KIN_GST_STATES`, a country when `abroad`, or empty. */
+  readonly placeOfSupply: string;
+  readonly abroad: boolean;
   readonly notes: string;
   readonly private: boolean;
 }
 
-export const kinClientDraftOf = (party?: KinPartyDetail): KinClientDraft => ({
-  name: party?.name ?? "",
-  vendor: party?.kind === "vendor",
-  terms: party?.terms ?? "",
-  notes: party?.notes ?? "",
-  private: party?.sensitive ?? false,
-});
+/** The states a client may be in, by name. */
+export const KIN_GST_STATE_NAMES = Object.values(KIN_GST_STATES).sort((a, b) => a.localeCompare(b));
+const letters = (text: string) => text.toLowerCase().replace(/[^a-z]/g, "");
+/** A stored place as a state's name: by name, or by its code as the server reads one. */
+function kinGstStateName(place: string): string | null {
+  const code = /^\s*(\d{2})\b/.exec(place)?.[1];
+  if (code !== undefined && KIN_GST_STATES[code] !== undefined) return KIN_GST_STATES[code];
+  const wanted = letters(place);
+  if (wanted === "") return null;
+  return KIN_GST_STATE_NAMES.find((name) => letters(name) === wanted) ?? null;
+}
+const gstinOf = (text: string) => text.replace(/\s+/g, "").toUpperCase();
+/** The state a GSTIN is registered in, from its first two digits; null for one that isn't valid. */
+function kinGstinState(gstin: string): string | null {
+  const value = gstinOf(gstin);
+  return KIN_GSTIN_PATTERN.test(value) ? (KIN_GST_STATES[value.slice(0, 2)] ?? null) : null;
+}
+
+export const kinClientDraftOf = (
+  party?: Pick<
+    KinPartyDetail,
+    "name" | "kind" | "terms" | "address" | "gstin" | "placeOfSupply" | "notes" | "sensitive"
+  >,
+): KinClientDraft => {
+  const place = party?.placeOfSupply?.trim() ?? "";
+  const state = kinGstStateName(place);
+  return {
+    name: party?.name ?? "",
+    vendor: party?.kind === "vendor",
+    terms: party?.terms ?? "",
+    address: party?.address ?? "",
+    gstin: party?.gstin ?? "",
+    placeOfSupply: state ?? place,
+    abroad: place !== "" && state === null,
+    notes: party?.notes ?? "",
+    private: party?.sensitive ?? false,
+  };
+};
+
+/** A GSTIN typed in: the state it names fills in an empty one. */
+export function kinClientDraftWithGstin(draft: KinClientDraft, gstin: string): KinClientDraft {
+  const state = kinGstinState(gstin);
+  return state !== null && !draft.abroad && draft.placeOfSupply === ""
+    ? { ...draft, gstin, placeOfSupply: state }
+    : { ...draft, gstin };
+}
+
+/** What a GSTIN and the state chosen beside it say together, when they disagree. */
+export function kinClientGstinNote(draft: KinClientDraft): string | null {
+  const state = kinGstinState(draft.gstin);
+  if (state === null) return null;
+  if (draft.abroad)
+    return `This GSTIN is registered in ${state}, so its invoices are taxed as supplies to ${state}, not as exports.`;
+  if (draft.placeOfSupply !== "" && draft.placeOfSupply !== state)
+    return `This GSTIN is registered in ${state}, not ${draft.placeOfSupply}. Its invoices use the GSTIN's state, ${state}.`;
+  return null;
+}
 
 const tooLong = (text: string, max: number, what: string) =>
   text.trim().length > max ? `Keep ${what} under ${max} characters.` : null;
@@ -108,6 +191,11 @@ export const kinClientDraftCheck = (draft: KinClientDraft): string | null =>
     ? "Give them a name."
     : (tooLong(draft.name, NAME_MAX, "the name") ??
       tooLong(draft.terms, NOTES_MAX, "the terms") ??
+      tooLong(draft.address, ADDRESS_MAX, "the address") ??
+      (draft.gstin.trim() !== "" && !KIN_GSTIN_PATTERN.test(gstinOf(draft.gstin))
+        ? "That GSTIN isn't right: it has 15 letters and digits, like 27ABCDE1234F1Z5."
+        : null) ??
+      tooLong(draft.placeOfSupply, PLACE_MAX, "the country") ??
       tooLong(draft.notes, NOTES_MAX, "the notes"));
 
 export const kinClientCreateInput = (
@@ -116,6 +204,9 @@ export const kinClientCreateInput = (
   name: draft.name.trim(),
   ...(draft.vendor ? { kind: "vendor" as const } : {}),
   ...(draft.terms.trim() === "" ? {} : { terms: draft.terms.trim() }),
+  ...(draft.address.trim() === "" ? {} : { address: draft.address.trim() }),
+  ...(draft.gstin.trim() === "" ? {} : { gstin: gstinOf(draft.gstin) }),
+  ...(draft.placeOfSupply.trim() === "" ? {} : { placeOfSupply: draft.placeOfSupply.trim() }),
   ...(draft.notes.trim() === "" ? {} : { notes: draft.notes.trim() }),
   ...(draft.private ? { sensitive: true } : {}),
 });
@@ -130,6 +221,11 @@ export const kinClientUpdateInput = (
     ? {}
     : { kind: changed.vendor ? ("vendor" as const) : ("client" as const) }),
   ...(changed.terms === undefined ? {} : { terms: changed.terms.trim() || null }),
+  ...(changed.address === undefined ? {} : { address: changed.address.trim() || null }),
+  ...(changed.gstin === undefined ? {} : { gstin: gstinOf(changed.gstin) || null }),
+  ...(changed.placeOfSupply === undefined
+    ? {}
+    : { placeOfSupply: changed.placeOfSupply.trim() || null }),
   ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
   ...(changed.private === undefined ? {} : { sensitive: changed.private }),
 });
@@ -150,14 +246,28 @@ export const kinContactDraftOf = (contact?: KinContact): KinContactDraft => ({
   notes: contact?.notes ?? "",
 });
 
-export const kinContactDraftCheck = (draft: KinContactDraft): string | null =>
-  draft.name.trim() === ""
-    ? "Give them a name."
-    : (tooLong(draft.name, NAME_MAX, "the name") ??
-      tooLong(draft.role, SHORT_MAX, "the role") ??
-      tooLong(draft.email, SHORT_MAX, "the email") ??
-      tooLong(draft.phone, SHORT_MAX, "the phone number") ??
-      tooLong(draft.notes, NOTES_MAX, "the notes"));
+const retyped = (typed: string, saved: string | undefined) => typed.trim() !== (saved ?? "").trim();
+
+/** Email and phone are checked only when retyped, so an old entry never blocks other edits. */
+export const kinContactDraftCheck = (
+  draft: KinContactDraft,
+  saved?: KinContactDraft,
+): string | null => {
+  if (draft.name.trim() === "") return "Give them a name.";
+  const email = draft.email.trim();
+  if (email !== "" && retyped(email, saved?.email) && !kinContactEmailOk(email))
+    return "Enter an email like name@example.com.";
+  const phone = draft.phone.trim();
+  if (phone !== "" && retyped(phone, saved?.phone) && !kinContactPhoneOk(phone))
+    return "Enter a phone number with digits in it.";
+  return (
+    tooLong(draft.name, NAME_MAX, "the name") ??
+    tooLong(draft.role, SHORT_MAX, "the role") ??
+    tooLong(draft.email, SHORT_MAX, "the email") ??
+    tooLong(draft.phone, SHORT_MAX, "the phone number") ??
+    tooLong(draft.notes, NOTES_MAX, "the notes")
+  );
+};
 
 export const kinContactCreateInput = (
   draft: KinContactDraft,
@@ -188,7 +298,19 @@ export interface KinProjectDraft {
   readonly repos: string;
   readonly notes: string;
   readonly private: boolean;
+  readonly billing: KinProjectBilling | null;
+  /** As typed: "600000", "$12,000"; empty for none. */
+  readonly value: string;
+  readonly startsOn: string | null;
+  readonly renewsOn: string | null;
 }
+
+const VALUE_CURRENCY = "INR";
+export const KIN_PROJECT_BILLING_LABELS: Readonly<Record<KinProjectBilling, string>> = {
+  fixed: "Fixed price",
+  hourly: "Hourly",
+  retainer: "Retainer",
+};
 
 export const kinProjectDraftOf = (
   project?: KinProjectDetail,
@@ -208,7 +330,16 @@ export const kinProjectDraftOf = (
   repos: project?.repos.join("\n") ?? "",
   notes: project?.notes ?? "",
   private: project?.sensitive ?? false,
+  billing: project?.billing ?? null,
+  value:
+    project?.value === undefined || project.value === null
+      ? ""
+      : kinMoneyDraft(project.value, VALUE_CURRENCY),
+  startsOn: project?.startsOn ?? null,
+  renewsOn: project?.renewsOn ?? null,
 });
+const valueOf = (text: string) =>
+  text.trim() === "" ? null : kinParseMoney(text.trim(), VALUE_CURRENCY);
 
 const isRepo = Schema.is(KinRepoName);
 const reposOf = (text: string) =>
@@ -217,13 +348,25 @@ const reposOf = (text: string) =>
     .map((line) => line.trim())
     .filter((line) => line !== "");
 
+const NOT_A_DAY = "Enter a real date.";
+
+/** What the target field says under itself while the owner types a day. */
+export const kinProjectTargetHint = (target: string, now: Date): string => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(target))
+    return `A day as year-month-day. Leave it empty for ${KIN_PROJECTS.noTarget.toLowerCase()}.`;
+  return kinRealDay(target) ? kinWorkDueLabel(target, now) : NOT_A_DAY;
+};
+
 export const kinProjectDraftCheck = (draft: KinProjectDraft): string | null => {
   if (draft.name.trim() === "") return "Give the project a name.";
   const repos = reposOf(draft.repos);
   if (!repos.every((repo) => isRepo(repo))) return "Write each repo as owner/name, one per line.";
   if (repos.length > 20) return "A project can have up to 20 repos.";
-  if (draft.target !== null && !/^\d{4}-\d{2}-\d{2}$/.test(draft.target))
-    return "That date doesn't look right.";
+  if (draft.target !== null && !kinRealDay(draft.target)) return NOT_A_DAY;
+  if (draft.startsOn !== null && !kinRealDay(draft.startsOn)) return NOT_A_DAY;
+  if (draft.renewsOn !== null && !kinRealDay(draft.renewsOn)) return NOT_A_DAY;
+  if (draft.value.trim() !== "" && valueOf(draft.value) === null)
+    return "Write the value as an amount, such as 600000 or $12,000.";
   return tooLong(draft.name, NAME_MAX, "the name") ?? tooLong(draft.notes, NOTES_MAX, "the notes");
 };
 
@@ -238,6 +381,10 @@ export const kinProjectCreateInput = (
   ...(repoNames(draft.repos).length === 0 ? {} : { repos: repoNames(draft.repos) }),
   ...(draft.notes.trim() === "" ? {} : { notes: draft.notes.trim() }),
   ...(draft.private ? { sensitive: true } : {}),
+  ...(draft.billing === null ? {} : { billing: draft.billing }),
+  ...(valueOf(draft.value) === null ? {} : { value: valueOf(draft.value) }),
+  ...(draft.startsOn === null ? {} : { startsOn: draft.startsOn }),
+  ...(draft.renewsOn === null ? {} : { renewsOn: draft.renewsOn }),
 });
 
 export const kinProjectUpdateInput = (
@@ -253,6 +400,10 @@ export const kinProjectUpdateInput = (
   ...(changed.repos === undefined ? {} : { repos: repoNames(changed.repos) }),
   ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
   ...(changed.private === undefined ? {} : { sensitive: changed.private }),
+  ...(changed.billing === undefined ? {} : { billing: changed.billing }),
+  ...(changed.value === undefined ? {} : { value: valueOf(changed.value) }),
+  ...(changed.startsOn === undefined ? {} : { startsOn: changed.startsOn }),
+  ...(changed.renewsOn === undefined ? {} : { renewsOn: changed.renewsOn }),
 });
 
 // Why a change didn't go through
@@ -324,7 +475,7 @@ function kinWorkFormProblem(
     case "not_found":
       return failed(`That ${about.noun} isn't there any more.`);
     case "not_allowed":
-      return failed("Only the owner can change this for now.");
+      return failed(error.message.trim() === "" ? "You can't change this." : error.message);
     case "unavailable":
     case "disabled":
       return failed("Kin isn't answering right now. Try again in a moment.");
@@ -413,7 +564,8 @@ export function createKinWorkForm<D extends Draft, A>(options: {
   /** The key and revision being edited; null for a new one. */
   readonly editing: { readonly key: KinRecordKey; readonly rev: number } | null;
   readonly nameOf: (draft: D) => string;
-  readonly check: (draft: D) => string | null;
+  /** `from` is what it said when opened, so a check can pass over fields nobody retyped. */
+  readonly check: (draft: D, from: D) => string | null;
   /** Sends a new one whole, or the retyped fields of an existing one at `rev`. */
   readonly send: (
     change:
@@ -459,7 +611,7 @@ export function createKinWorkForm<D extends Draft, A>(options: {
       { readonly saved: true; readonly value: A | null } | { readonly saved: false }
     > => {
       if (state.saving) return { saved: false };
-      const invalid = options.check(state.draft);
+      const invalid = options.check(state.draft, state.from);
       if (invalid !== null) {
         set({ problem: { kind: "invalid", text: invalid } });
         return { saved: false };

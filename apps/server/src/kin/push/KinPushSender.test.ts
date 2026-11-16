@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   KinChatId,
   KinEventId,
+  KinMemberId,
   KinMessageId,
   KinOrgId,
   KinPersonId,
@@ -40,7 +41,7 @@ import { KinApnsTransport, type KinApnsPush, type KinApnsResult } from "./Apns.t
 import { KinPushDevices, type KinPushCaller } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
 import * as Devices from "./KinPushDevices.ts";
-import * as Presence from "./KinPushPresence.ts";
+import { layerTrusting, watcher } from "./KinPushPresence.testkit.ts";
 import * as Sender from "./KinPushSender.ts";
 
 const NOW = Date.parse("2026-11-08T00:00:00Z");
@@ -90,7 +91,7 @@ const makeApns = (
 
 const buildOn = <A, E, R>(apns: ReturnType<typeof makeApns>, database: Layer.Layer<A, E, R>) =>
   Sender.layer.pipe(
-    Layer.provideMerge(Layer.mergeAll(Devices.layer, Presence.layer, apns.layer)),
+    Layer.provideMerge(Layer.mergeAll(Devices.layer, layerTrusting, apns.layer)),
     Layer.provideMerge(ApproverKeys.layer),
     Layer.provide(MemoryCache.layer),
     Layer.provideMerge(PendingActions.layer),
@@ -560,6 +561,54 @@ describe("KinPushSender", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
+  it.effect("sends a read's new badge, with no banner, to the reader's other devices", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      const presence = yield* KinPushPresence;
+      const dm = KinChatId.make("chat_dm");
+      const read = { _tag: "read", orgId, chatId: dm, memberId: KinMemberId.make("m_owner_dm") };
+      const messageId = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+        chatId: "chat_dm",
+      });
+      yield* postMessage(sql, { agentMemberId: "m_fin" });
+      yield* notify({ _tag: "message", orgId, messageId });
+      // The phone is where the owner reads it, so only the tablet hears.
+      yield* presence
+        .watch(watcher(AuthSessionId.make("sess-owner-phone")), dm)
+        .pipe(Stream.runDrain, Effect.forkChild({ startImmediately: true }));
+      yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq, updated_at)
+        SELECT 'org_01', 'chat_dm', 'm_owner_dm', seq, ${T} FROM kin_messages
+        WHERE message_id = ${messageId}`;
+      apns.sent.length = 0;
+      assert.deepStrictEqual(yield* notify(read as Sender.KinPushNotification), {
+        status: "ready",
+        sent: 1,
+        suppressed: 1,
+        failed: 0,
+      });
+      assert.deepStrictEqual(
+        apns.sent.map((push) => [push.token, push.collapseId, push.payload]),
+        [
+          [
+            ownerTablet,
+            undefined,
+            {
+              aps: { badge: 1 },
+              body: { kin: 1, orgId, chatId: dm, deepLink: "/kin/env_kin/org_01/chats/chat_dm" },
+            },
+          ],
+        ],
+      );
+      // An unchanged badge sends nothing; a member who left hears nothing.
+      apns.sent.length = 0;
+      yield* notify(read as Sender.KinPushNotification);
+      yield* sql`UPDATE kin_chat_members SET left_at = ${T} WHERE member_id = 'm_owner_dm'`;
+      yield* notify(read as Sender.KinPushNotification);
+      assert.deepStrictEqual(apns.sent, []);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect("keeps quiet hours silent, except for what the owner timed", () => {
     const apns = makeApns();
     return Effect.gen(function* () {
@@ -635,7 +684,7 @@ describe("KinPushSender", () => {
         },
       );
       const watching = yield* presence
-        .watch(phone, chat)
+        .watch(watcher(phone), chat)
         .pipe(Stream.runDrain, Effect.forkChild({ startImmediately: true }));
       const watched = yield* notify({ _tag: "message", orgId, messageId });
       assert.deepStrictEqual(watched, { status: "ready", sent: 1, suppressed: 1, failed: 0 });
@@ -651,7 +700,7 @@ describe("KinPushSender", () => {
       const elsewhere = yield* notify({ _tag: "message", orgId, messageId: yield* lead() });
       assert.deepStrictEqual(elsewhere, { status: "ready", sent: 2, suppressed: 0, failed: 0 });
       const both = yield* presence
-        .watch(phone, dm)
+        .watch(watcher(phone), dm)
         .pipe(Stream.runDrain, Effect.forkChild({ startImmediately: true }));
       const bothOpen = yield* notify({ _tag: "message", orgId, messageId: yield* lead() });
       assert.deepStrictEqual(bothOpen, { status: "ready", sent: 1, suppressed: 1, failed: 0 });
@@ -664,7 +713,7 @@ describe("KinPushSender", () => {
 
       // A phone that dropped off without closing its socket stops acking. After an idle hour,
       // the next message reaches it.
-      yield* presence.watch(phone, chat).pipe(
+      yield* presence.watch(watcher(phone), chat).pipe(
         Stream.runForEach(() => Effect.never),
         Effect.forkChild({ startImmediately: true }),
       );

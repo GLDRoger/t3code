@@ -1,4 +1,5 @@
 import {
+  KIN_DOC_KINDS,
   KIN_SENSITIVE_FIELDS,
   KinChatError,
   KinFieldValue,
@@ -12,7 +13,7 @@ import * as Schema from "effect/Schema";
 import { formatMoney } from "./money.ts";
 
 /**
- * The built-in lists and what each allows. Code depends on all five, so they are fixed here; the
+ * The built-in lists and what each allows. Code depends on each, so they are fixed here; the
  * lists people define later (slice 5) get the same shape from configuration.
  */
 
@@ -34,8 +35,19 @@ export const LISTS: Record<ListName, List> = {
     prefix: "W",
     noun: "entry",
     states: ["open", "doing", "waiting", "done", "dropped"],
-    categories: ["task", "issue", "obligation"],
-    fields: [],
+    categories: ["task", "issue", "obligation", "meeting"],
+    // The project spine: a milestone's key, S/M/L, why its holder was picked, the doc section it
+    // came from with that section's hash then, and a meeting's people and place.
+    fields: [
+      "milestone",
+      "size",
+      "reason",
+      "fromDoc",
+      "fromSection",
+      "fromHash",
+      "attendees",
+      "where",
+    ],
   },
   clients: {
     name: "Clients",
@@ -44,7 +56,7 @@ export const LISTS: Record<ListName, List> = {
     states: ["open", "dropped"],
     categories: ["client", "vendor"],
     // Tax ids are configuration for invoices; computing tax is not Kin's.
-    fields: ["terms", "gstin", "placeOfSupply"],
+    fields: ["terms", "address", "gstin", "placeOfSupply"],
   },
   contacts: {
     name: "Contacts",
@@ -60,16 +72,36 @@ export const LISTS: Record<ListName, List> = {
     noun: "project",
     states: ["open", "done", "dropped"],
     categories: [],
-    fields: ["repos"],
+    // `members` holds `person:<id>` and `agent:<id>`; days are `YYYY-MM-DD`.
+    fields: ["repos", "billing", "value", "startsOn", "renewsOn", "members"],
+  },
+  milestones: {
+    name: "Milestones",
+    prefix: "M",
+    noun: "milestone",
+    states: ["open", "done", "dropped"],
+    categories: [],
+    fields: [],
+  },
+  // The company's own goals: `measure` is a `KinGoalMeasure`, `target` money or a count as text,
+  // `current` a manual goal's number, `startsOn` a day; due is the target date (`goals.ts`).
+  goals: {
+    name: "Goals",
+    prefix: "G",
+    noun: "goal",
+    states: ["open", "done", "dropped"],
+    categories: [],
+    fields: ["measure", "target", "current", "unit", "startsOn"],
   },
   docs: {
     name: "Docs",
     prefix: "D",
     noun: "doc",
-    // Archived is dropped; a doc is never done.
+    // Archived is dropped; a doc is never done. Its category is its kind.
     states: ["open", "dropped"],
-    categories: [],
-    fields: [],
+    categories: KIN_DOC_KINDS,
+    // `home: "company"` files it as the company's own rather than a client's.
+    fields: ["home"],
   },
 };
 
@@ -87,7 +119,9 @@ export const sensitiveFields = (list: ListName): ReadonlyArray<string> =>
     ? KIN_SENSITIVE_FIELDS.clients
     : list === "contacts"
       ? KIN_SENSITIVE_FIELDS.contacts
-      : [];
+      : list === "projects"
+        ? KIN_SENSITIVE_FIELDS.projects
+        : [];
 
 export type FieldValue = KinFieldValue;
 export type FieldValues = Readonly<Record<string, FieldValue>>;

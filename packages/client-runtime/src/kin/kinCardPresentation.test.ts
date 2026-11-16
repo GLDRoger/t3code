@@ -8,7 +8,11 @@ import {
   kinReminderCardView,
   kinScheduledTaskCardView,
 } from "./kinCardPresentation.ts";
-import { kinChoiceAnswerText, kinChoicePhase } from "./kinChoicePresentation.ts";
+import {
+  kinChoiceAnswerText,
+  kinChoiceFailureNotice,
+  kinChoicePhase,
+} from "./kinChoicePresentation.ts";
 import { kinCardStatusAfter, kinDeferralCountdown } from "./kinDeferralPresentation.ts";
 import { kinMemoryUndoFailureText } from "./kinMemoryChangesPresentation.ts";
 
@@ -256,6 +260,15 @@ describe("choice cards", () => {
     expect(kinChoicePhase(choice({ closedAt: "2026-11-08T10:00:00.000Z" }), posted)).toBe(
       "expired",
     );
+    expect(choice().closedText).toBe("This question expired. Answer in the chat instead.");
+    const replaced = choice({
+      closedAt: "2026-11-08T10:00:00.000Z",
+      state: { ...choiceState(), replaced: true },
+    });
+    expect([kinChoicePhase(replaced, posted), replaced.closedText]).toEqual([
+      "expired",
+      "Replaced by a newer one.",
+    ]);
     expect(
       kinCardView(
         widget({ type: "choice", state: { ...choiceState(), options: [] } }),
@@ -284,6 +297,17 @@ describe("choice cards", () => {
     expect(kinChoiceAnswerText(answer("reaction", "👍").answer!, "owner" as never)).toBe(
       "You chose “Ship it” with 👍",
     );
+  });
+
+  it("says a refused answer in the host's words when its figures changed", () => {
+    const refusal = (reason: "conflict" | "widget_changed" | "not_allowed", message: string) =>
+      kinChoiceFailureNotice(new KinChatError({ reason, message }));
+    expect(refusal("conflict", "The figures changed since this card was made.")).toEqual({
+      kind: "error",
+      text: "The figures changed since this card was made.",
+    });
+    expect(refusal("widget_changed", "This receipt was already answered.").kind).toBe("stale");
+    expect(refusal("not_allowed", "Chat operation not allowed.").text).not.toContain("Chat");
   });
 });
 
@@ -353,6 +377,13 @@ describe("reminder and scheduled task cards", () => {
     expect(kinScheduledTaskCardView(scheduled({}), "UTC")!.lines[0]).toBe(
       "Weekdays at 8:00 (Asia/Kolkata).",
     );
+    // A loose one's stored next run is its window's start (7:55): never shown as a minute.
+    const around = kinScheduledTaskCardView(
+      scheduled({ around: true, nextRunAt: "2026-11-10T02:25:00.000Z" }),
+      zone,
+    )!;
+    expect(around.lines).toEqual(["Weekdays around 8:00."]);
+    expect(around.countdown).toBeNull();
 
     const posted = kinScheduledTaskCardView(
       scheduled({

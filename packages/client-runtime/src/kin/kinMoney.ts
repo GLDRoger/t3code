@@ -33,15 +33,25 @@ export const KIN_MONEY = {
   noClient: "No client",
   nothingOwed: "Nobody owes you anything right now.",
   received: "Received",
+  tdsDeducted: "TDS deducted",
   spent: "Spent",
   byCategory: "Spent by category",
   uncategorised: "No category",
   year: "This financial year",
   months: "The last 12 months",
-  upcoming: "Due in the next 30 days",
+  upcoming: "Coming-up dates",
+  upcomingCount: (count: number) =>
+    count === 1 ? "1 in the next 30 days" : `${count} in the next 30 days`,
+  /** "₹2,50,000 in · ₹1,63,485 out". */
+  monthSummary: (received: ReadonlyArray<string>, spent: ReadonlyArray<string>) =>
+    `${received.join(" and ")} in · ${spent.join(" and ")} out`,
+  add: "Add",
+  newQuote: "Ask for a quote",
+  rates: "Exchange rates",
   nothingUpcoming: "Nothing is due in the next 30 days.",
   allDates: "All dates",
   lists: "Lists",
+  clients: "Clients",
   none: {
     title: "Nothing is tracked here yet",
     detail:
@@ -58,6 +68,10 @@ export const KIN_MONEY = {
 /** The lists the host's summary is built from. Everything else about a list is its definition. */
 const INVOICES = "invoices";
 const EXPENSES = "expenses";
+
+/** The lists Money already opens from its own figures, which Work's Lists leaves out. */
+export const kinInMoney = (def: Pick<KinListDefinition, "list">): boolean =>
+  def.list === INVOICES || def.list === EXPENSES || def.list === "quotes";
 
 /** A list to open, already narrowed to the entries behind a figure. */
 export interface KinListOpen {
@@ -104,6 +118,8 @@ export interface KinMoneyView {
   /** "November 2026". */
   readonly monthLabel: string;
   readonly received: KinMoneyFigure;
+  /** TDS clients deducted this month: it settled invoices, but no money came in. Null with none. */
+  readonly tdsDeducted: KinMoneyFigure | null;
   readonly spent: KinMoneyFigure;
   readonly categories: ReadonlyArray<{
     readonly key: string;
@@ -114,6 +130,7 @@ export interface KinMoneyView {
   /** "FY 2026–27, April to March". */
   readonly yearLabel: string;
   readonly yearReceived: KinMoneyFigure;
+  readonly yearTdsDeducted: KinMoneyFigure | null;
   readonly yearSpent: KinMoneyFigure;
   /** One chart per currency that moved: amounts in different currencies never share an axis. */
   readonly charts: ReadonlyArray<KinChartSpec>;
@@ -211,6 +228,18 @@ export function kinMoneyView(
       late: false,
       open: receivedIn(thisMonth),
     },
+    tdsDeducted:
+      summary.tdsDeducted === undefined ||
+      summary.tdsDeducted.thisMonth.length + summary.tdsDeducted.lastMonth.length === 0
+        ? null
+        : {
+            id: "tds",
+            label: KIN_MONEY.tdsDeducted,
+            lines: lines(summary.tdsDeducted.thisMonth),
+            note: `${kinTotalsText(summary.tdsDeducted.lastMonth)} last month`,
+            late: false,
+            open: null,
+          },
     spent: {
       id: "spent",
       label: KIN_MONEY.spent,
@@ -235,6 +264,18 @@ export function kinMoneyView(
       late: false,
       open: receivedIn(year),
     },
+    yearTdsDeducted:
+      summary.tdsDeductedThisFinancialYear === undefined ||
+      summary.tdsDeductedThisFinancialYear.length === 0
+        ? null
+        : {
+            id: "year-tds",
+            label: KIN_MONEY.tdsDeducted,
+            lines: lines(summary.tdsDeductedThisFinancialYear),
+            note: null,
+            late: false,
+            open: null,
+          },
     yearSpent: {
       id: "year-spent",
       label: KIN_MONEY.spent,

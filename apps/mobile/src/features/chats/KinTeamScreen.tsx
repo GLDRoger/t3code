@@ -22,7 +22,6 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
-import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
@@ -164,7 +163,10 @@ function KinTeamBody(target: KinTeamTarget) {
                     <KinTeamRow
                       row={row}
                       onPress={() =>
-                        navigation.navigate("KinTeammate", { ...target, teammate: row.key })
+                        // Your own row is your profile; there is no access of yours to manage.
+                        row.state === "you" && row.personId !== null
+                          ? navigation.navigate("KinProfile", { ...target, personId: row.personId })
+                          : navigation.navigate("KinTeammate", { ...target, teammate: row.key })
                       }
                     />
                   </View>
@@ -183,14 +185,21 @@ function KinTeamBody(target: KinTeamTarget) {
 
 function KinTeamRow(props: { readonly row: KinTeammate; readonly onPress: () => void }) {
   const { row } = props;
-  const content = {
-    label: row.name,
-    description: row.detail,
-    leading: <KinAvatar avatar={row.avatar} size="small" />,
-  };
-  return row.state === "you" ? (
-    <ListRowLayout {...content} />
-  ) : (
-    <ListRow {...content} onPress={props.onPress} />
+  return (
+    <ListRow
+      label={row.name}
+      description={[
+        row.roles === ""
+          ? row.detail
+          : row.state === "joined"
+            ? row.roles
+            : `${row.roles}. ${row.detail}`,
+        row.load,
+      ]
+        .filter((part) => part !== "")
+        .join(" · ")}
+      leading={<KinAvatar avatar={row.avatar} size="small" />}
+      onPress={props.onPress}
+    />
   );
 }

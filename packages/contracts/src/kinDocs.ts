@@ -1,12 +1,9 @@
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import {
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
-  EnvironmentAuthorizationError,
-} from "./auth.ts";
+import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { KinChartCardState } from "./kinChart.ts";
 import { KinWorkerId } from "./kinLead.ts";
 import {
   KinAgentId,
@@ -15,6 +12,7 @@ import {
   KinDocSectionId,
   KinMessageId,
   KinOrgId,
+  KinPersonId,
   KinText,
   KinTrimmedText,
 } from "./kinChat.ts";
@@ -130,6 +128,21 @@ export const KinDocVersion = Schema.Struct({
 });
 export type KinDocVersion = typeof KinDocVersion.Type;
 
+/** What a doc is, set by the agent that writes it and changed by the owner. */
+export const KIN_DOC_KINDS = [
+  "prd",
+  "proposal",
+  "quote",
+  "spec",
+  "notes",
+  "report",
+  "playbook",
+  "policy",
+  "other",
+] as const;
+export const KinDocKind = Schema.Literals(KIN_DOC_KINDS);
+export type KinDocKind = typeof KinDocKind.Type;
+
 /** One row of the Docs screen. Group by `party`, `project` or `owner` on the client. */
 export const KinDocRow = Schema.Struct({
   recordId: KinRecordId,
@@ -139,9 +152,15 @@ export const KinDocRow = Schema.Struct({
   owner: KinWorkPrincipal,
   party: Schema.optional(KinRecordRef),
   project: Schema.optional(KinRecordRef),
+  /** Absent from hosts before kinds; a doc nobody gave a kind is `other`. */
+  kind: Schema.optional(KinDocKind),
+  /** Filed as the company's own, not a client's: playbooks, policies. Never with a client or project. */
+  company: Schema.optional(Schema.Literal(true)),
   sensitive: Schema.Boolean,
   /** True when its client or project is labelled sensitive, whatever its own label says. */
   sensitiveInherited: Schema.optional(Schema.Literal(true)),
+  /** The owner shared it with the team: members who can see Docs read it. */
+  shared: Schema.optional(Schema.Literal(true)),
   archived: Schema.Boolean,
   bodyKind: KinDocBodyKind,
   /** The latest version, with its "what changed" line. */
@@ -153,6 +172,21 @@ export const KinDocRow = Schema.Struct({
 export type KinDocRow = typeof KinDocRow.Type;
 
 /** A doc at one version, for the reader and its contents sheet. */
+/**
+ * What one `kin_chart` or `kin_visual` block of a doc's body draws, in the order the blocks
+ * appear. `broken` says why a block can't be drawn, so the rest still line up.
+ */
+export const KinDocEmbed = Schema.Union([
+  Schema.TaggedStruct("chart", { chart: KinChartCardState }),
+  Schema.TaggedStruct("visual", {
+    title: KinTrimmedText,
+    attachmentId: TrimmedNonEmptyString,
+    height: PositiveInt,
+  }),
+  Schema.TaggedStruct("broken", { message: KinTrimmedText }),
+]);
+export type KinDocEmbed = typeof KinDocEmbed.Type;
+
 export const KinDocDetail = Schema.Struct({
   ...KinDocRow.fields,
   /** The version shown: the latest unless one was asked for. */
@@ -162,6 +196,8 @@ export const KinDocDetail = Schema.Struct({
   links: Schema.Array(KinRecordLink),
   /** This doc's latest change number: compare with a `changed` event's. */
   seq: NonNegativeInt,
+  /** Absent from servers that draw no blocks. */
+  embeds: Schema.optional(Schema.Array(KinDocEmbed)),
 });
 export type KinDocDetail = typeof KinDocDetail.Type;
 
@@ -181,6 +217,11 @@ export const KinDocsListInput = Schema.Struct({
   archived: Schema.optional(Schema.Boolean),
   /** Case-insensitive match on the title and the latest version's text. */
   text: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  kind: Schema.optional(KinDocKind),
+  /** `company`: the company's own docs. `unfiled`: no client, project or company. */
+  home: Schema.optional(Schema.Literals(["company", "unfiled"])),
+  /** `false` leaves out files made from a recipe, `true` lists only them; absent lists both. */
+  files: Schema.optional(Schema.Boolean),
   cursor: Schema.optional(PageCursor),
   limit: Schema.optional(PageLimit),
 });
@@ -276,11 +317,18 @@ export const KinRecipe = Schema.Struct({
   list: Schema.NullOr(TrimmedNonEmptyString),
   numbered: Schema.Boolean,
   sensitive: Schema.Boolean,
+  /** The one made for its list unless another is picked: the owner's choice, else its own. */
+  default: Schema.optional(Schema.Literal(true)),
+  /** Written in a turn that read something sensitive: its documents are labelled until cleared. */
+  labelled: Schema.optional(Schema.Literal(true)),
+  /** With a label: the recipe's images and PDFs, for the owner to look at before clearing it. */
+  files: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   changedAt: Schema.NullOr(IsoDateTime),
-  /** Kin's starter, or the agent whose worker changed it last. */
+  /** Kin's starter, the agent whose worker changed it last, or the owner who undid a change. */
   changedBy: Schema.Union([
     Schema.TaggedStruct("starter", {}),
     Schema.TaggedStruct("agent", { agentId: KinAgentId, workerId: Schema.NullOr(KinWorkerId) }),
+    Schema.TaggedStruct("owner", { personId: KinPersonId }),
   ]),
   commit: TrimmedNonEmptyString,
 });
@@ -289,6 +337,115 @@ export const KinRecipesInput = Schema.Struct({ orgId: KinOrgId });
 export type KinRecipesInput = typeof KinRecipesInput.Type;
 export const KinRecipesResult = Schema.Struct({ recipes: Schema.Array(KinRecipe) });
 export type KinRecipesResult = typeof KinRecipesResult.Type;
+
+/**
+ * The owner makes a recipe's document from a client, with no agent turn: "Make invoice" on an
+ * entry, "Export month" on Money. Kin gathers the inputs and renders it in the call. `preview`
+ * renders without filing and returns the file itself, at most 5 MB.
+ */
+export const KinDocRenderInput = Schema.Struct({
+  orgId: KinOrgId,
+  recipe: TrimmedNonEmptyString.check(Schema.isPattern(/^[a-z][a-z0-9-]{1,39}$/)),
+  /** The entry it is for, when the recipe reads one. */
+  entry: Schema.optional(KinRecordKey),
+  /** Only the recipe's inputs that aren't read from stored rows, such as `month`. */
+  inputs: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  /** A doc whose text the recipe lays out, such as a PRD as a PDF with `report`. */
+  doc: Schema.optional(KinRecordKey),
+  title: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
+  preview: Schema.optional(Schema.Boolean),
+  /** The same id again returns what that request made. */
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinDocRenderInput = typeof KinDocRenderInput.Type;
+export const KinDocRenderResult = Schema.Struct({
+  /** Each file filed as a version of its doc; empty for a preview. */
+  documents: Schema.Array(
+    Schema.Struct({
+      recordId: KinRecordId,
+      key: KinRecordKey,
+      title: KinTrimmedText,
+      version: PositiveInt,
+    }),
+  ),
+  number: Schema.NullOr(TrimmedNonEmptyString),
+  draft: Schema.Boolean,
+  sensitive: Schema.Boolean,
+  preview: Schema.NullOr(
+    Schema.Array(
+      Schema.Struct({
+        name: TrimmedNonEmptyString,
+        mimeType: TrimmedNonEmptyString,
+        base64: Schema.String,
+      }),
+    ),
+  ),
+});
+export type KinDocRenderResult = typeof KinDocRenderResult.Type;
+
+/** Puts a recipe back as it was before its last change, as a new change: undo it to redo. */
+export const KinRecipeUndoInput = Schema.Struct({
+  orgId: KinOrgId,
+  recipe: TrimmedNonEmptyString.check(Schema.isPattern(/^[a-z][a-z0-9-]{1,39}$/)),
+});
+export type KinRecipeUndoInput = typeof KinRecipeUndoInput.Type;
+export const KinRecipeUndoResult = Schema.Struct({
+  recipe: TrimmedNonEmptyString,
+  commit: TrimmedNonEmptyString,
+  /** True when the change undone made the recipe, so it is gone until undone again. */
+  removed: Schema.Boolean,
+});
+export type KinRecipeUndoResult = typeof KinRecipeUndoResult.Type;
+
+/**
+ * The owner files a doc: its kind, and its home, a client and project or the company. `company`
+ * clears the client and project; a client or project clears `company`. A stale `rev` is a conflict.
+ */
+export const KinDocFileInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  rev: NonNegativeInt,
+  kind: Schema.optional(KinDocKind),
+  party: Schema.optional(Schema.NullOr(KinRecordKey)),
+  project: Schema.optional(Schema.NullOr(KinRecordKey)),
+  company: Schema.optional(Schema.Boolean),
+});
+export type KinDocFileInput = typeof KinDocFileInput.Type;
+
+/** The owner's label on a doc; only a person lowers one, so this is how a doc stops being sensitive. */
+export const KinDocLabelInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  sensitive: Schema.Boolean,
+});
+export type KinDocLabelInput = typeof KinDocLabelInput.Type;
+
+/** Clears the label a recipe got from being written after a sensitive read, as the owner saw it. */
+export const KinRecipeClearLabelInput = Schema.Struct({
+  ...KinRecipeUndoInput.fields,
+  commit: TrimmedNonEmptyString,
+});
+export type KinRecipeClearLabelInput = typeof KinRecipeClearLabelInput.Type;
+export const KinRecipeClearLabelResult = Schema.Struct({
+  recipe: TrimmedNonEmptyString,
+  commit: TrimmedNonEmptyString,
+});
+export type KinRecipeClearLabelResult = typeof KinRecipeClearLabelResult.Type;
+/** The owner raises or lowers a recipe's label as they saw it, as a doc's label is. */
+export const KinRecipeLabelInput = Schema.Struct({
+  ...KinRecipeClearLabelInput.fields,
+  sensitive: Schema.Boolean,
+});
+export type KinRecipeLabelInput = typeof KinRecipeLabelInput.Type;
+
+/** Makes the recipe the one its list uses unless another is picked. */
+export const KinRecipeDefaultInput = KinRecipeUndoInput;
+export type KinRecipeDefaultInput = typeof KinRecipeDefaultInput.Type;
+export const KinRecipeDefaultResult = Schema.Struct({
+  list: TrimmedNonEmptyString,
+  recipe: TrimmedNonEmptyString,
+});
+export type KinRecipeDefaultResult = typeof KinRecipeDefaultResult.Type;
 
 export const KinDocsSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinDocsSubscribeInput = typeof KinDocsSubscribeInput.Type;
@@ -365,6 +522,13 @@ const KIN_DOCS_WS_METHODS = {
   subscribe: "kin.docs.subscribe",
   search: "kin.search",
   recipes: "kin.docs.recipes",
+  render: "kin.docs.render",
+  undoRecipe: "kin.docs.undoRecipe",
+  label: "kin.docs.label",
+  file: "kin.docs.file",
+  clearRecipeLabel: "kin.docs.clearRecipeLabel",
+  labelRecipe: "kin.docs.labelRecipe",
+  setDefaultRecipe: "kin.docs.setDefaultRecipe",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -403,16 +567,54 @@ export const KinDocsRpcs = [
     success: KinRecipesResult,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.render, {
+    payload: KinDocRenderInput,
+    success: KinDocRenderResult,
+    error,
+  }),
+  Rpc.make(KIN_DOCS_WS_METHODS.undoRecipe, {
+    payload: KinRecipeUndoInput,
+    success: KinRecipeUndoResult,
+    error,
+  }),
+  Rpc.make(KIN_DOCS_WS_METHODS.label, { payload: KinDocLabelInput, success: KinDocDetail, error }),
+  Rpc.make(KIN_DOCS_WS_METHODS.file, { payload: KinDocFileInput, success: KinDocDetail, error }),
+  Rpc.make(KIN_DOCS_WS_METHODS.clearRecipeLabel, {
+    payload: KinRecipeClearLabelInput,
+    success: KinRecipeClearLabelResult,
+    error,
+  }),
+  Rpc.make(KIN_DOCS_WS_METHODS.labelRecipe, {
+    payload: KinRecipeLabelInput,
+    success: KinRecipeClearLabelResult,
+    error,
+  }),
+  Rpc.make(KIN_DOCS_WS_METHODS.setDefaultRecipe, {
+    payload: KinRecipeDefaultInput,
+    success: KinRecipeDefaultResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
-  [KIN_DOCS_WS_METHODS.list]: AuthOrchestrationReadScope,
-  [KIN_DOCS_WS_METHODS.get]: AuthOrchestrationReadScope,
-  [KIN_DOCS_WS_METHODS.history]: AuthOrchestrationReadScope,
-  [KIN_DOCS_WS_METHODS.diff]: AuthOrchestrationReadScope,
+  [KIN_DOCS_WS_METHODS.list]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.get]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.history]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.diff]: AuthKinChatScope,
   // Writes a version, as the entry edits beside it do; it starts no agent work.
-  [KIN_DOCS_WS_METHODS.restore]: AuthOrchestrationOperateScope,
-  [KIN_DOCS_WS_METHODS.subscribe]: AuthOrchestrationReadScope,
-  [KIN_DOCS_WS_METHODS.search]: AuthOrchestrationReadScope,
-  [KIN_DOCS_WS_METHODS.recipes]: AuthOrchestrationReadScope,
+  [KIN_DOCS_WS_METHODS.restore]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.subscribe]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.search]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.recipes]: AuthKinChatScope,
+  // Files a version, as restore does; it starts no agent work.
+  [KIN_DOCS_WS_METHODS.render]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.undoRecipe]: AuthKinChatScope,
+  // Lowers what an agent may show others: the owner's call, as the entry labels beside it are.
+  [KIN_DOCS_WS_METHODS.label]: AuthKinChatScope,
+  // Where a doc is filed, as the entry edits beside it are; it starts no agent work.
+  [KIN_DOCS_WS_METHODS.file]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.clearRecipeLabel]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.labelRecipe]: AuthKinChatScope,
+  // Which recipe makes a list's documents, as undoing a recipe's change is.
+  [KIN_DOCS_WS_METHODS.setDefaultRecipe]: AuthKinChatScope,
 } as const;

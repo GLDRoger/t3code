@@ -69,23 +69,15 @@ A lead just works in chats its owner placed it in (its DM, the owner's groups): 
 
 Set up the repo as upstream's [development runbook](../operations/development.md) describes (`vp i`). Then:
 
-1. Make a local bare git repo for memory and commit a `rules.md` to it:
+1. Start the dev server with Kin on:
 
    ```sh
-   git init --bare /path/to/kin-memory.git
-   git clone /path/to/kin-memory.git /tmp/kin-memory && cd /tmp/kin-memory
-   echo "# Rules" > rules.md && git add rules.md && git commit -m "init" && git push
+   KIN_ENABLED=true T3CODE_DEV_SEED=0 vp run dev
    ```
 
-2. Start the dev server with Kin on:
+   With no `KIN_MEMORY_REPOSITORIES`, the dev server makes a local memory repo, `kin-dev-memory.git` in its state directory, seeded with `rules.md`, and pushes to it directly. To use your own repo instead, set `KIN_MEMORY_REPOSITORIES='[{"orgId":"kin-default","repoUrl":"/path/to/kin-memory.git"}]'` and `KIN_MEMORY_DIRECT_PUSH=true`; the repo needs a commit on `main`. An installed host has no such default: without `KIN_MEMORY_REPOSITORIES` its agents don't start, and the server log and each agent chat say why.
 
-   ```sh
-   KIN_ENABLED=true KIN_MEMORY_DIRECT_PUSH=true \
-   KIN_MEMORY_REPOSITORIES='[{"orgId":"kin-default","repoUrl":"/path/to/kin-memory.git"}]' \
-   vp run dev
-   ```
-
-   Memory writes to the default branch go through PRs when the GitHub App is set up. Without it they're refused, unless `KIN_MEMORY_DIRECT_PUSH=true` lets them push directly, which is what a local bare repo needs.
+2. `KIN_DEV_FAKE_MAIL=google:a@x.example,microsoft:b@x.example` connects fake mail accounts that answer in process, so mail can be tested with no vendor.
 
 3. Pair a browser, then create a lead from another shell. Point `--base-dir` at the dev server's home (in a worktree, its `.t3`):
 

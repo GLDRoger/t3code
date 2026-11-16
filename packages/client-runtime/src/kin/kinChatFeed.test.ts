@@ -22,6 +22,7 @@ import {
   kinChatStatusLine,
   kinDayLabel,
   kinBodyMarkdown,
+  kinDocMarkdown,
   kinImageSource,
   kinImageText,
   kinLinkToOpen,
@@ -270,7 +271,7 @@ describe("rows", () => {
     expect(label(new Map([["m-ravi", "Ravi"]]))).toEqual(["Ravi"]);
   });
 
-  it("shows a card tap as the button's label, never its JSON or card", () => {
+  it("shows a card tap as the button's label, never its JSON, card or a choice it answered", () => {
     const tap = (messageId: string, body: string) =>
       ({
         ...all.find((m) => m.author._tag === "human")!,
@@ -282,6 +283,7 @@ describe("rows", () => {
     const rows = messageRows(
       [
         tap("choice", JSON.stringify({ actionId: "choose", text: 'Chose "Ship it" on "Ship?"' })),
+        tap("ship", JSON.stringify({ text: 'Chose "Ship it" on "Ship?"' })),
         tap(
           "reminder",
           JSON.stringify({ text: 'Tapped "Done" on the reminder "Say "hi" to Sam"' }),
@@ -313,6 +315,20 @@ describe("rows", () => {
           author: { _tag: "system" },
           widgetId: "memory-changes:w1" as KinMessage["widgetId"],
         }),
+        agentMessage(6, {
+          kind: "system",
+          author: { _tag: "system" },
+          body: "Screenshots from Test PR 7",
+          attachments: [
+            {
+              type: "image",
+              id: "kin-chat-shot-png",
+              name: "01-home.png",
+              mimeType: "image/png",
+              sizeBytes: 11,
+            },
+          ],
+        }),
       ],
       viewer,
       new Set(),
@@ -322,12 +338,18 @@ describe("rows", () => {
       false,
       true,
       true,
+      false,
     ]);
     expect(rows[1]!.type).toBe("system");
     // A host card is a system message with a widget; it draws as its card, not a line.
     expect(rows[3]).toMatchObject({
       type: "message",
       message: { widgetId: "memory-changes:w1", body: "" },
+    });
+    // A worker's screenshots draw as a message with its words and the images.
+    expect(rows[4]).toMatchObject({
+      type: "message",
+      message: { body: "Screenshots from Test PR 7", attachments: [{ name: "01-home.png" }] },
     });
   });
 
@@ -746,6 +768,20 @@ describe("message images", () => {
     ["a plain link", "[docs](https://example.com)", "[docs](https://example.com)"],
   ])("renders %s as text before parsing", (_name, body, rendered) => {
     expect(kinBodyMarkdown(body)).toBe(rendered);
+  });
+
+  it.each([
+    ["keeps a doc file's image", "a ![Plan](kin-file:Ab_1-c) b", "a ![Plan](kin-file:ab_1-c) b"],
+    ["reads a bracketed source with a title", '![x](<kin-file:ab> "t")', "![x](kin-file:ab)"],
+    ["drops any other image", "![x](https://attacker.example/kin-file:ab)", "Image: x"],
+    ["drops a reference image", "![x][1]\n\n[1]: kin-file:ab", "Image: x\n\n[1]: kin-file:ab"],
+    ["drops an HTML image", '<img src="kin-file:ab">', "Image"],
+  ])("a doc's body %s", (_name, body, rendered) => {
+    expect(kinDocMarkdown(body)).toBe(rendered);
+  });
+
+  it("writes a doc file's image source as the reader asks", () => {
+    expect(kinDocMarkdown("![x](kin-file:ab)", (id) => `#${id}`)).toBe("![x](#ab)");
   });
 
   it("resolves no source, so the renderer requests nothing", () => {

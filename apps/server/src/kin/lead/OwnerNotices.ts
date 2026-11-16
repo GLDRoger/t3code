@@ -13,7 +13,7 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 
 /**
  * Memory's notices for the owner, in one chat: theirs with the Chief of staff, else the first
- * lead's. Only a notice that needs the owner pushes and counts as unread.
+ * lead's. Only a notice with plain words for the owner is posted; its operator reason is logged.
  */
 export const layer = Layer.effect(
   Memory.MemoryRecoveryHooks,
@@ -25,6 +25,7 @@ export const layer = Layer.effect(
       notify: Effect.fn("KinMemoryRecovery.notify")(
         function* (notice) {
           yield* Effect.logWarning("Kin memory recovery requires operator attention", notice);
+          if (notice.owner === undefined) return;
           const lead = yield* liveLead(sql, notice.orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
           if (lead === undefined) return;
           const message = yield* chat.insertMessage({
@@ -34,7 +35,7 @@ export const layer = Layer.effect(
             messageId: KinMessageId.make(`kin-memory:${SecureRandom.uuidV4Unsafe()}`),
             author: { _tag: "system" },
             kind: "text",
-            body: notice.reason,
+            body: notice.owner,
             intent: null,
             mentions: [],
             replyTo: null,
@@ -45,7 +46,6 @@ export const layer = Layer.effect(
             clientMessageId: null,
             createdAt: DateTime.formatIso(yield* DateTime.now),
             editedAt: null,
-            ...(notice.needsOwner === true ? {} : { silent: true as const }),
           });
           if (Option.isSome(hub))
             yield* hub.value.publish({ type: "message.posted", orgId: notice.orgId, message });

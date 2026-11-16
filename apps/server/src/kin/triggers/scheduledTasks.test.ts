@@ -19,6 +19,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Chat from "../chat/KinChatService.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import * as CheckIns from "../pulse/checkIns.ts";
+import { followOwnerZone, seedCheckIns } from "../pulse/checkInSeeds.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Budget from "../lead/KinBudget.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
@@ -50,22 +53,38 @@ const start = Date.parse("2026-11-09T09:00:00.000Z");
 const tuesday = Date.parse("2026-11-10T02:30:00.000Z");
 const wednesday = Date.parse("2026-11-11T02:30:00.000Z");
 const owner = { _tag: "person", orgId, personId: KinPersonId.make("owner-a") } as const;
+const identity = Layer.mock(KinIdentity)({
+  owner,
+  isAgentThread: () => false,
+  isLeadThread: () => false,
+});
 
 /** Kin's consumer over the real native scheduler; `recorded` holds what would be bare threads. */
-const harness = () => {
+const harness = (projects?: Set<string>) => {
   const recorded = {
     launches: [] as ThreadLaunchService.ThreadLaunchInput[],
     sends: [] as string[],
   };
   const workers = new Map<string, Effect.Effect<void>>();
+  const kinTicks = new Map<string, Effect.Effect<void>>();
   const layer = ScheduledTasks.layer.pipe(
     Layer.provideMerge(TriggerService.layer),
     Layer.provideMerge(LeadDelivery.layer),
     Layer.provideMerge(Budget.layer.pipe(Layer.provide(MemoryCache.layer))),
-    Layer.provideMerge(nativeScheduler(orgId, "lead-a", recorded, workers)),
-    Layer.provideMerge(fixture([task])),
+    Layer.provideMerge(nativeScheduler(orgId, "lead-a", recorded, workers, projects)),
+    Layer.provideMerge(
+      fixture([task], {
+        register: Effect.fn("test.registerTick")(function* <E, R>(
+          name: string,
+          work: Effect.Effect<void, E, R>,
+        ) {
+          const context = yield* Effect.context<R>();
+          kinTicks.set(name, work.pipe(Effect.provideContext(context), Effect.orDie));
+        }),
+      }),
+    ),
   );
-  return { recorded, workers, layer };
+  return { recorded, workers, kinTicks, layer };
 };
 const layer = harness().layer;
 
@@ -589,3 +608,107 @@ it.effect("the card's Pause, Run now and Delete act on the native task", () => {
     assert.equal(bareThreads(recorded), 0);
   }).pipe(Effect.provide(layer));
 });
+
+it.effect(
+  "Settings' check-ins show in the owner's time, and a new time, off and remove reach the task",
+  () => {
+    const { layer } = harness();
+    return Effect.gen(function* () {
+      yield* nativeSetup();
+      const tasks = yield* ScheduledTaskService.ScheduledTaskService;
+      const drain = (yield* ScheduledTasks.KinScheduledTasks).drain(orgId);
+      const people = [owner];
+      const added = yield* CheckIns.save(people, {
+        orgId,
+        agentId: KinAgentId.make("lead-a"),
+        title: "Morning check-in",
+        what: "Look over what needs attention.",
+        at: "09:30",
+        days: [1, 2, 3, 4, 5],
+      });
+      // The chat-made schedule is not a check-in, so only the new one is listed.
+      assert.lengthOf(added.checkIns, 1);
+      const [made] = added.checkIns;
+      // J12: it fires somewhere around 09:30, so Settings says "around", never 09:25.
+      assert.include(made, {
+        at: "09:30",
+        around: true,
+        agentName: "Lead",
+        on: true,
+        runNowPending: false,
+      });
+      assert.deepStrictEqual(made!.days, [1, 2, 3, 4, 5]);
+      assert.equal(added.zone, "Asia/Kolkata");
+      const moved = yield* CheckIns.save(people, {
+        orgId,
+        scheduleId: made!.scheduleId,
+        agentId: made!.agentId,
+        title: made!.title,
+        what: made!.what,
+        at: "11:00",
+        days: [1, 3],
+      });
+      assert.include(moved.checkIns[0], { at: "11:00" });
+      assert.lengthOf((yield* tasks.list()).tasks, 2);
+      const act = (action: "run_now" | "turn_off" | "remove") =>
+        CheckIns.act(people, { orgId, scheduleId: made!.scheduleId, action });
+      assert.include((yield* act("turn_off")).checkIns[0], { on: false });
+      assert.include((yield* act("run_now")).checkIns[0], { runNowPending: true });
+      yield* drain;
+      const native = (yield* tasks.list()).tasks.find((row) => row.title === "Morning check-in");
+      assert.isFalse(native!.enabled);
+      assert.include((yield* CheckIns.list(people, orgId)).checkIns[0], { runNowPending: false });
+      assert.lengthOf((yield* act("remove")).checkIns, 0);
+      yield* drain;
+      assert.lengthOf((yield* tasks.list()).tasks, 1);
+      // A default check-in moved here stays put when the owner's zone is followed again.
+      const schedules = yield* KinSchedules.KinSchedules;
+      yield* seedCheckIns(orgId, schedules);
+      const morning = KinMemoryItemId.make("checkin-morning");
+      const seeded = (yield* CheckIns.list(people, orgId)).checkIns.find(
+        (row) => row.scheduleId === morning,
+      )!;
+      yield* CheckIns.save(people, { orgId, ...seeded, at: "08:15" });
+      yield* followOwnerZone(orgId, schedules);
+      const kept = (yield* CheckIns.list(people, orgId)).checkIns.find(
+        (row) => row.scheduleId === morning,
+      );
+      assert.include(kept, { at: "08:15" });
+      // Someone who isn't owner-level is refused.
+      const teammate = { ...owner, personId: KinPersonId.make("teammate-a") };
+      const refused = yield* CheckIns.list([teammate], orgId).pipe(Effect.flip);
+      assert.equal(refused._tag, "KinChatError");
+    }).pipe(Effect.provide(Layer.merge(layer, identity)));
+  },
+);
+
+it.effect(
+  "a lead that has never woken gets its default check-ins, and Settings can add one",
+  () => {
+    const projects = new Set<string>();
+    const { layer, kinTicks } = harness(projects);
+    return Effect.gen(function* () {
+      yield* setup();
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_leads SET models_json = ${MODELS} WHERE org_id = ${orgId}`;
+      yield* kinTicks.get("kin-scheduled-tasks")!;
+      assert.isTrue(projects.has(`kin:${orgId}:lead-a`));
+      const people = [owner];
+      const listed = yield* CheckIns.list(people, orgId);
+      assert.deepStrictEqual(listed.checkIns.map((row) => row.title).toSorted(), [
+        "Afternoon check-in",
+        "Morning check-in",
+        "Weekly brief",
+      ]);
+      const added = yield* CheckIns.save(people, {
+        orgId,
+        agentId: KinAgentId.make("lead-a"),
+        title: "Evening check-in",
+        what: "Look over the day.",
+        at: "18:00",
+        days: [1, 2, 3, 4, 5],
+      });
+      assert.lengthOf(added.checkIns, 4);
+    }).pipe(Effect.provide(Layer.merge(layer, identity)));
+  },
+);

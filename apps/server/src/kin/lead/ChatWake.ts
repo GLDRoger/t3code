@@ -13,7 +13,6 @@ import {
 import * as NodeCrypto from "node:crypto";
 
 import * as Clock from "effect/Clock";
-import * as Config from "effect/Config";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -31,17 +30,45 @@ import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { RETIRED_NOTICE_PREFIX, retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
 import * as LeadAccess from "./LeadAccess.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
     Schema.Struct({ actionId: TrimmedNonEmptyString, handled: Schema.optional(Schema.Boolean) }),
   ),
 );
+/**
+ * The event a person's message or tap wakes a lead with. Every field comes from the stored
+ * message, so a replay, or a writer outside this process, enqueues byte-identical JSON.
+ */
+export const wakeEvent = (
+  message: KinMessage,
+  agentId: KinAgentId,
+  actionId: string | undefined,
+): KinEvent & { readonly dedupeKey: string } => {
+  const prefix = message.kind === "widget_action" ? "widget-action" : "chat-message";
+  const dedupeKey = `${prefix}:${message.messageId}:${agentId}`;
+  // The memory writer accepts only [a-zA-Z0-9_-] in event ids, so hash the readable key.
+  const eventId = KinEventId.make(
+    `${prefix}-${NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32)}`,
+  );
+  const base = {
+    orgId: message.orgId,
+    eventId,
+    agentId,
+    receivedAt: DateTime.makeUnsafe(message.createdAt),
+    dedupeKey,
+    provenance: message.author,
+    chatId: message.chatId,
+    messageId: message.messageId,
+  };
+  return actionId === undefined
+    ? { ...base, _tag: "chat.message" }
+    : { ...base, _tag: "widget.action", actionId };
+};
 // Matches the resume expiry: older unanswered messages are not worth a wake-up after downtime.
 const CATCH_UP_WINDOW = { hours: 24 } as const;
 const CATCH_UP_LIMIT_PER_ORG = 200;
-/** Lead turns one teammate's messages and taps may ask for in any 24 hours, unless configured. */
-const DEFAULT_TEAMMATE_DAILY_TURNS = 50;
 
 /**
  * Turns committed human chat posts and widget taps into `chat.message` and `widget.action`
@@ -55,15 +82,7 @@ const make = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const queue = yield* KinEventQueue;
   const presence = yield* Effect.serviceOption(KinPresence);
-  const dailyTurns = yield* Config.Int("KIN_TEAMMATE_DAILY_TURNS").pipe(
-    Config.withDefault(DEFAULT_TEAMMATE_DAILY_TURNS),
-    Effect.map((value) => Math.max(0, value)),
-    Effect.catch((cause) =>
-      Effect.logWarning("KIN_TEAMMATE_DAILY_TURNS is not a number; using the default", {
-        cause,
-      }).pipe(Effect.as(DEFAULT_TEAMMATE_DAILY_TURNS)),
-    ),
-  );
+  const dailyTurns = yield* LeadAccess.dailyTurns;
   // The working line shows the moment a message is accepted, before any wake-up claims it.
   const showQueued = Effect.fn("KinChatWake.showQueued")(
     function* (orgId: KinOrgId, chatId: KinChatId, agentId: KinAgentId) {
@@ -235,30 +254,16 @@ const make = Effect.gen(function* () {
         });
       for (const target of targets) {
         const agentId = KinAgentId.make(target.agentId);
-        // Every field comes from the stored message, so a replay enqueues byte-identical JSON.
-        const prefix = message.kind === "widget_action" ? "widget-action" : "chat-message";
-        const dedupeKey = `${prefix}:${message.messageId}:${agentId}`;
-        // The memory writer accepts only [a-zA-Z0-9_-] in event ids, so hash the readable key.
-        const eventId = KinEventId.make(
-          `${prefix}-${NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32)}`,
-        );
-        const base = {
-          orgId: message.orgId,
-          eventId,
-          agentId,
-          receivedAt: DateTime.makeUnsafe(message.createdAt),
-          dedupeKey,
-          provenance: message.author,
-          chatId: message.chatId,
-          messageId: message.messageId,
-        };
-        const event: KinEvent = Option.isSome(actionId)
-          ? { ...base, _tag: "widget.action", actionId: actionId.value }
-          : { ...base, _tag: "chat.message" };
-        // The owner is never capped. Anyone else's turn is counted and enqueued in one step.
+        const event = wakeEvent(message, agentId, Option.getOrUndefined(actionId));
+        const dedupeKey = event.dedupeKey;
+        // The owner and co-owners are never capped. Anyone else's turn is counted and enqueued in one step.
         const personId = message.author.personId;
         const queued =
-          personId === target.ownerPersonId
+          personId === target.ownerPersonId ||
+          (yield* ownerLevel(message.orgId, personId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orElseSucceed(() => false),
+          ))
             ? yield* enqueue(event)
             : yield* sql
                 .withTransaction(
@@ -418,3 +423,66 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effectDiscard(make);
+
+/** What a person reads when this host's agents can't run for want of a memory repository. */
+const noMemoryNotice = (lead: string) =>
+  `${lead} can't answer: this server has no memory repository set up for its agents, so none of them can start. Whoever runs the server can set KIN_MEMORY_REPOSITORIES.`;
+
+/**
+ * With no memory repository the runner never starts, so a person's message would meet silence.
+ * Instead each chat with an agent hears why, once.
+ */
+export const unconfiguredLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const hub = yield* KinChatHub;
+    const repo = yield* KinChatRepository;
+    const explain = Effect.fn("KinChatWake.noMemory")(
+      function* (message: KinMessage) {
+        if (message.author._tag !== "human" || message.status !== "posted") return;
+        const [lead] = yield* sql<{ name: string }>`SELECT a.display_name AS name
+          FROM kin_chat_members m
+          JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+            AND a.role = 'lead' AND a.retired_at IS NULL
+          WHERE m.org_id = ${message.orgId} AND m.chat_id = ${message.chatId}
+            AND m.principal_kind = 'agent' AND m.left_at IS NULL
+          ORDER BY a.created_at, a.agent_id LIMIT 1`;
+        if (lead === undefined) return;
+        const messageId = KinMessageId.make(
+          `kin-no-memory-${NodeCrypto.createHash("sha256").update(message.chatId).digest("hex").slice(0, 32)}`,
+        );
+        if (Option.isSome(yield* repo.getMessage({ orgId: message.orgId, messageId }))) return;
+        const notice = yield* repo.insertMessage({
+          orgId: message.orgId,
+          chatId: message.chatId,
+          // Fixed words about this server, said where someone asked.
+          audience: "chat",
+          messageId,
+          author: { _tag: "system" },
+          kind: "system",
+          body: noMemoryNotice(lead.name),
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          clientMessageId: null,
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+          editedAt: null,
+        });
+        yield* hub.publish({ type: "message.posted", orgId: message.orgId, message: notice });
+        yield* Effect.logWarning("Kin agent can't answer: no memory repository is set", {
+          orgId: message.orgId,
+          chatId: message.chatId,
+        });
+      },
+      Effect.catchCause((cause) => Effect.logError("Kin no-memory notice failed", { cause })),
+    );
+    const events = yield* hub.subscribeAll;
+    yield* Stream.runForEach(events, (event) =>
+      event.type === "message.posted" ? explain(event.message) : Effect.void,
+    ).pipe(forkParked);
+  }),
+);

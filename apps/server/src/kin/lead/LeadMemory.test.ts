@@ -53,6 +53,7 @@ import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { recordingSchedules } from "../triggers/kinSchedules.testkit.ts";
 import { KinWorkers } from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
+import * as PullRequestCare from "../github/PullRequestCare.ts";
 import * as Registry from "./KinLeadRegistry.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
 import { handlers } from "./mcp/handlers.ts";
@@ -85,6 +86,7 @@ const registration = McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers)
   Layer.provide(Layer.mock(KinWorkers)({})),
   Layer.provide(Layer.mock(KinHandoff)({})),
   Layer.provide(KinRepoReads.notConnectedLayer),
+  Layer.provide(PullRequestCare.notConnectedLayer),
   Layer.provide(
     Layer.mock(Threads.ThreadManagementService)({
       getThreadShell: (id) => Effect.succeed({ ...liveThreadShell(id), providerInstanceId }),
@@ -368,7 +370,11 @@ it.live(
           "kin_follow_up",
           "kin_worker_stop",
           "kin_leads",
+          "people_read",
+          "people_update",
           "kin_hand_off",
+          "kin_take_private",
+          "kin_relay",
           "kin_ask",
           "kin_chart",
           "kin_visual",
@@ -385,6 +391,8 @@ it.live(
           "kin_github_prs",
           "kin_github_pr",
           "kin_github_runs",
+          "kin_github_review",
+          "kin_github_link",
           "kin_end",
         ]);
         for (const thread of [
@@ -718,6 +726,16 @@ it.live(
           noted("vault-claim", "The deploy key is in the vault under invented/deploy"),
         );
         yield* service.write(scope, noted("status-claim", "Invented launch is on track"));
+        // A turn that was shown something sensitive writes for the owner alone, whatever it says.
+        yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+          VALUES (${orgId}, 'fixture-wakeup', 0)`;
+        yield* service.write(scope, noted("marked-claim", "Invented launch moved a week"));
+        yield* sql`DELETE FROM kin_wakeup_sensitive_reads WHERE wakeup_id = 'fixture-wakeup'`;
+        assert.deepStrictEqual(
+          yield* sql`SELECT item_id FROM kin_memory_labels WHERE org_id = ${orgId}
+            AND item_id IN ('marked-claim', 'status-claim') AND shared_content IS NOT NULL`,
+          [{ item_id: "status-claim" }],
+        );
         // Not the owner's word: written from a routine, "the team can know it" is only a
         // suggestion the owner is asked about, and the team doesn't know it meanwhile.
         yield* service.write(scope, {
@@ -820,10 +838,8 @@ it.live(
         // The reply bridge owns owed replies now, so ending before any post is allowed.
         yield* service.end(scope, { summary: "Finished fixture" });
         yield* service.end(scope, { summary: "Finished fixture" });
-        assert.strictEqual(
-          (yield* service.end(scope, { summary: "Changed" }).pipe(Effect.flip)).reason,
-          "not_allowed",
-        );
+        // F08: a second kin_end, after Claude's "no visible output" nudge, changes nothing.
+        yield* service.end(scope, { summary: "Changed" });
         // After kin_end the refusal is about authority, so it stays unexplained.
         assert.strictEqual(
           (yield* service.write(scope, input).pipe(Effect.flip)).message,
@@ -876,6 +892,7 @@ it.live(
         assert.include(yield* saved("amount-claim"), "sensitive: true");
         assert.include(yield* saved("vault-claim"), "sensitive: true");
         assert.include(yield* saved("status-claim"), "sensitive: false");
+        assert.include(yield* saved("marked-claim"), "sensitive: true");
         assert.notInclude(files, "claims/secret-claim.md");
         assert.include(
           yield* git(remote, ["show", `${committed.commit}:claims/team.md`]),
@@ -889,6 +906,17 @@ it.live(
         assert.include(journal, "Summary: Finished fixture");
         assert.strictEqual(journal.split("Summary: Finished fixture").length, 2);
         const writerService = yield* Writer.MemoryWriter;
+        // F08: after the commit, a late kin_end and the bridge's note on text after it are no
+        // restart, even when the branch they would check no longer shows the commit.
+        yield* sql`UPDATE kin_leads SET level = 'L0' WHERE agent_id = ${agentId}`;
+        yield* sql`INSERT INTO kin_chat_levels (org_id, agent_id, chat_id, level, level_since) VALUES (${orgId}, ${agentId}, ${chat.chatId}, 'L0', 0)`;
+        yield* service.end(scope, { summary: "After the nudge" });
+        yield* writerService.appendJournal(orgId, "fixture-wakeup", [
+          "Dropped after kin_end: Done.",
+        ]);
+        assert.isFalse(notices.some((notice) => notice.includes("lost on restart")));
+        yield* sql`DELETE FROM kin_chat_levels WHERE org_id = ${orgId} AND chat_id = ${chat.chatId}`;
+        yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
         yield* writerService.discard(orgId, "fixture-wakeup");
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'fixture-wakeup'`;
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'restart-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', event_ids, audience FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
@@ -914,7 +942,7 @@ it.live(
         assert.isTrue(notices.some((notice) => notice.includes("lost on restart")));
         assert.include(
           yield* git(remote, ["show", `${recovered.commit}:journal/2026/11-08.md`]),
-          "lost on restart",
+          Writer.RESTART_JOURNAL_LINE,
         );
         assert.notInclude(
           yield* git(remoteB, ["ls-tree", "-r", "--name-only", "main"]),
@@ -934,6 +962,18 @@ it.live(
         // In a chat at L0 the lead writes and reads its shadow branch, and its deferral arms from
         // there. The owner's DM works at L2 from creation, so the owner lowered it here.
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'restart-wakeup'`;
+        // QA Q1: a teammate's turn ends with kin_end, which stages nothing; that is no restart.
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'shared-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', '[]', 'shared' FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'shared-wakeup', 'end', 'fixture-hash')`;
+        const noticesBefore = notices.length;
+        assert.isFalse(yield* writerService.staged(orgId, "shared-wakeup"));
+        assert.strictEqual(notices.length, noticesBefore);
+        yield* writerService.discard(orgId, "shared-wakeup");
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'shared-wakeup', 'item:team-claim', 'fixture-hash')`;
+        assert.isTrue(yield* writerService.staged(orgId, "shared-wakeup"));
+        assert.strictEqual(notices.length, noticesBefore + 1);
+        yield* writerService.discard(orgId, "shared-wakeup");
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'shared-wakeup'`;
         yield* (yield* Orchestrator.OrchestratorV2).dispatch({
           type: "run.interrupt",
           commandId: CommandId.make("interrupt:fixture-wakeup"),

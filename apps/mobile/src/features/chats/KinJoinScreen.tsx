@@ -12,7 +12,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinJoin";
 import { useCameraPermissions } from "expo-camera";
 import * as Haptics from "expo-haptics";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Linking, TextInput, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -86,6 +86,16 @@ function KinJoinForm(props: { readonly openedLink: string }) {
     else setStanding(found);
   };
 
+  // An opened link joins at once: the person already chose it by tapping it.
+  const autoJoined = useRef(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- an opened join link is spent once, on arrival, instead of waiting for a second tap on Join
+  useEffect(() => {
+    if (autoJoined.current || standing !== null) return;
+    const opened = kinJoinTarget(props.openedLink);
+    if (opened === null || readKinJoinStanding(opened)._tag !== "new") return;
+    autoJoined.current = true;
+    queueMicrotask(() => void redeem(opened));
+  });
   const startScanning = async () => {
     const permission = await requestCameraPermission();
     if (permission.granted) return setScanning(true);
@@ -161,7 +171,9 @@ function KinJoinForm(props: { readonly openedLink: string }) {
           ) : (
             <>
               <Text textRole="body" className="px-2 text-foreground-muted">
-                Paste the join link your team sent you, or scan it. It works once.
+                {joining
+                  ? "Joining your team…"
+                  : "Paste the join link your team sent you, or scan it. It works once."}
               </Text>
               {problem === null ? null : <ErrorBanner message={problem} />}
               <View className="gap-2">

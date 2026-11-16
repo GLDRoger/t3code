@@ -37,6 +37,8 @@ export type SettingsPath =
   | "/settings/approvals"
   | "/settings/secrets"
   | "/settings/company"
+  | "/settings/check-ins"
+  | "/settings/kin-connections"
   | "/settings/maintenance"
   | "/settings/labs"
   | "/settings/about"
@@ -116,6 +118,8 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/approvals": "Approvals",
   "/settings/secrets": "Secrets",
   "/settings/company": "Company details",
+  "/settings/check-ins": "Check-ins",
+  "/settings/kin-connections": "Connections",
   "/settings/maintenance": "Maintenance",
   "/settings/labs": "Labs",
   "/settings/about": "About",
@@ -124,7 +128,11 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
 };
 
 /** Pages that exist only while a connected host runs Kin. */
-export const KIN_ONLY_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set(["/settings/approvals"]);
+export const KIN_ONLY_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
+  "/settings/approvals",
+  "/settings/check-ins",
+  "/settings/kin-connections",
+]);
 
 /** Sidebar order. A group without a heading is set apart by space alone. */
 export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
@@ -168,7 +176,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   },
   {
     heading: "Kin",
-    paths: ["/settings/company"],
+    paths: ["/settings/company", "/settings/check-ins", "/settings/kin-connections"],
   },
   {
     heading: null,
@@ -1240,6 +1248,30 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["kin legal name address gstin pan tax bank account ifsc upi invoice"],
   },
   {
+    id: "kin-connections",
+    title: "Connections",
+    to: "/settings/kin-connections",
+    searchTerms: ["kin connected services tools posthog github key agents read"],
+  },
+  {
+    id: "kin-time-zone",
+    title: "Time zone",
+    to: "/settings/company",
+    searchTerms: ["kin timezone zone check-ins due dates hours clock"],
+  },
+  {
+    id: "kin-daily-limit",
+    title: "Daily limit",
+    to: "/settings/company",
+    searchTerms: ["kin budget agents usage spend limit"],
+  },
+  {
+    id: "kin-check-ins",
+    title: "Check-ins",
+    to: "/settings/check-ins",
+    searchTerms: ["kin schedule morning afternoon weekly brief routine time run now"],
+  },
+  {
     id: "network-access",
     title: "Network access",
     to: "/settings/access",
@@ -1383,6 +1415,8 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/approvals": null,
   "/settings/secrets": null,
   "/settings/company": null,
+  "/settings/check-ins": null,
+  "/settings/kin-connections": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
   "/settings/labs": null,

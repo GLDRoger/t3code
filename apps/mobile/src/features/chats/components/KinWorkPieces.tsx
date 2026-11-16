@@ -1,15 +1,17 @@
-import { KIN_WORK_PRIVATE, type KinWorkRowView } from "@t3tools/client-runtime/kin/kinWork";
-import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
-  KIN_WORK_AREAS,
-  type KinWorkArea,
-  type KinWorkTimelineLine,
-} from "@t3tools/client-runtime/kin/kinWorkClients";
+  KIN_WORK_PRIVATE,
+  KIN_WORK_REFRESH_FAILED,
+  KIN_WORK_STALE,
+  type KinWorkRowView,
+} from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
+import type { KinWorkTimelineLine } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_FORM_COPY,
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
-import type { KinRecordKey } from "@t3tools/contracts";
+import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
+import { type ComponentRef, useEffect, useRef, useState } from "react";
 import { Pressable, TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
@@ -17,11 +19,15 @@ import { AppBar } from "../../../components/ui/AppBar";
 import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
+import { ListRowLayout } from "../../../components/ui/ListRowLayout";
+import { ListSection } from "../../../components/ui/ListSection";
+import { RowPressable } from "../../../components/ui/RowPressable";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
-import { SegmentedControl } from "../../../components/ui/SegmentedControl";
+import { useBarOverlap } from "../../../components/ui/useBarInset";
 import { cn } from "../../../lib/cn";
+import { useKinHostAt } from "../state/useKinHost";
 import { KinWorkStateSymbol } from "./KinWorkStateSymbol";
 
 type Bar = React.ComponentProps<typeof AppBar>;
@@ -31,43 +37,47 @@ export function KinWorkFrame(
   props: Pick<Bar, "title" | "onBack" | "onClose" | "confirm" | "actions" | "menus" | "refresh"> & {
     /** A form: taps reach its buttons while the keyboard is up. */
     readonly form?: boolean;
+    /** A problem drawn at the top: the form scrolls up to it whenever it changes. */
+    readonly showTop?: string | null;
     readonly children: React.ReactNode;
   },
 ) {
-  const { form, children, ...bar } = props;
+  const { form, showTop, children, ...bar } = props;
+  const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
+  const barOverlap = useBarOverlap();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- moves the native scroll view so a save's problem, drawn at the top, isn't left under the header
+  useEffect(() => {
+    if (showTop === null || showTop === undefined || showTop === "") return;
+    scroll.current?.scrollTo({ y: 0, animated: true });
+  }, [showTop]);
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar {...bar} />
       <ScreenContent surface="screen">
         <ScreenScrollView
+          ref={scroll}
           className="flex-1"
           {...(form
-            ? { keyboardShouldPersistTaps: "handled", keyboardDismissMode: "interactive" }
+            ? {
+                keyboardShouldPersistTaps: "handled",
+                keyboardDismissMode: "interactive",
+                automaticallyAdjustKeyboardInsets: true,
+              }
             : {})}
-          contentInsetAdjustmentBehavior="automatic"
-          contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
+          // A form insets itself under the bar: React Native clamps a scroll above offset 0, so
+          // with UIKit's automatic inset a problem drawn at the top could never be scrolled to.
+          contentInsetAdjustmentBehavior={form ? "never" : "automatic"}
+          scrollIndicatorInsets={form ? { top: barOverlap } : undefined}
+          contentContainerStyle={{
+            padding: 16,
+            paddingTop: form ? 16 + barOverlap : 16,
+            paddingBottom: 32,
+            gap: 20,
+          }}
         >
           {children}
         </ScreenScrollView>
       </ScreenContent>
-    </View>
-  );
-}
-
-export type KinWorkAreas = {
-  readonly area: KinWorkArea;
-  readonly onArea: (area: KinWorkArea) => void;
-};
-
-/** Tasks, clients or projects: the three parts of Work, at the head of each list. */
-export function KinWorkAreaSwitch(props: KinWorkAreas) {
-  return (
-    <View className="px-4">
-      <SegmentedControl
-        options={KIN_WORK_AREAS.map((held) => ({ value: held.id, label: held.label }))}
-        selected={props.area}
-        onSelect={props.onArea}
-      />
     </View>
   );
 }
@@ -309,5 +319,59 @@ export function KinWorkTextField(props: {
         </Text>
       )}
     </View>
+  );
+}
+
+/** Rows older than the host's: offline says so; a failed read while connected offers a retry. */
+export function KinWorkStaleNotice(props: {
+  readonly environmentId: EnvironmentId;
+  readonly onRetry: () => void;
+}) {
+  const host = useKinHostAt(props.environmentId);
+  if (host._tag !== "host" || !host.connected) return <Notice message={KIN_WORK_STALE} />;
+  return (
+    <Notice
+      message={KIN_WORK_REFRESH_FAILED}
+      action={{ label: "Try again", onPress: props.onRetry }}
+    />
+  );
+}
+
+/**
+ * A secondary block as one row, its title and a summary, that unfolds the block's rows under it in
+ * the same group; with `onOpen` the row opens a screen instead.
+ */
+export function KinFoldSection(props: {
+  readonly title: string;
+  readonly summary: string | null;
+  readonly onOpen?: () => void;
+  readonly children?: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const { onOpen } = props;
+  return (
+    <ListSection>
+      <RowPressable
+        accessibilityRole="button"
+        accessibilityLabel={[props.title, props.summary].filter((part) => part !== null).join(". ")}
+        {...(onOpen === undefined ? { accessibilityState: { expanded: open } } : {})}
+        onPress={onOpen ?? (() => setOpen(!open))}
+        className="bg-grouped-card"
+      >
+        <ListRowLayout
+          label={props.title}
+          {...(props.summary === null ? {} : { description: props.summary })}
+          accessory={
+            <SymbolView
+              name={onOpen !== undefined ? "chevron.right" : open ? "chevron.up" : "chevron.down"}
+              size={13}
+              tintColorClassName="accent-icon-muted"
+              type="monochrome"
+            />
+          }
+        />
+      </RowPressable>
+      {open && onOpen === undefined ? props.children : null}
+    </ListSection>
   );
 }

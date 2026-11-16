@@ -59,7 +59,7 @@ import * as KinLead from "./layer.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as KinStop from "./KinStop.ts";
-import { SHARED_THREAD_PREFIX, abortPrivateTurns } from "./Audience.ts";
+import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -177,6 +177,7 @@ describe("WakeupRunner", () => {
           undoChange: () => Effect.die("unused"),
           relabel: () => Effect.die("unused"),
           retire: () => Effect.die("unused"),
+          restore: () => Effect.die("unused"),
           staged: () => Effect.succeed(false),
           stage: () => Effect.die("unused"),
           appendJournal: () => Effect.void,
@@ -261,7 +262,7 @@ describe("WakeupRunner", () => {
     }).pipe(provideDeterministicTestRuntime),
   );
   it.effect(
-    "runs a turn a teammate can read on its own thread without file tools, then the owner's on a fresh one",
+    "runs a turn a teammate can read on its own thread without file tools, and the owner's back on his",
     () => {
       const memory: Array<string> = [];
       // Whether the running turn saved something for the team (`LeadMemory`).
@@ -317,11 +318,14 @@ describe("WakeupRunner", () => {
         saved = false;
         yield* sql`UPDATE kin_chat_members SET left_at = ${at} WHERE member_id = 'teammate-member'`;
         const again = yield* turn("again");
-        assert.isTrue(again.threadId.startsWith("kin:"));
-        assert.notStrictEqual(again.threadId, alone.threadId);
+        assert.strictEqual(again.threadId, alone.threadId);
         assert.deepStrictEqual(
-          yield* sql`SELECT thread_id FROM kin_agent_threads WHERE ended_at IS NULL`,
-          [{ thread_id: again.threadId }],
+          yield* sql`SELECT thread_id, chat_id FROM kin_agent_threads WHERE ended_at IS NULL
+            ORDER BY chat_id IS NULL`,
+          [
+            { thread_id: shared.threadId, chat_id: "owner-chat" },
+            { thread_id: alone.threadId, chat_id: null },
+          ],
         );
         // The shared turn left no journal entry, not even the line for a turn without kin_end.
         const kept = (wakeupId: string | undefined) =>
@@ -339,6 +343,73 @@ describe("WakeupRunner", () => {
         assert.lengthOf(kept(again.wakeupId), 2);
       }).pipe(Effect.provide(harness({ writer })), provideDeterministicTestRuntime);
     },
+  );
+  it.effect("runs each teammate's chat on its own thread and keeps the owner's", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const at = "2026-11-08T00:00:00.000Z";
+      let seq = 0;
+      for (const person of ["asha", "ravi"]) {
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES (${person}, 'org', ${person}, ${person}, ${at})`;
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+          VALUES (${`dm-${person}`}, 'org', 'direct', ${`${person}:lead`}, 0, ${at})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES (${`${person}-member`}, 'org', ${`dm-${person}`}, 'person', ${person}, 'member', ${at})`;
+      }
+      const says = Effect.fn("test.teammateSays")(function* (id: string, person: string) {
+        seq++;
+        const chatId = `dm-${person}`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id,
+            author_member_id, author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${id}, 'org', ${chatId}, ${seq}, 'human', ${person}, ${`${person}-member`}, 'member',
+            'text', 'Invented question', '[]', 'posted', ${at})`;
+        yield* (yield* KinEventQueue.KinEventQueue).enqueue(
+          decodeEvent({
+            _tag: "chat.message",
+            orgId,
+            agentId,
+            eventId: id,
+            receivedAt: at,
+            dedupeKey: id,
+            provenance: { _tag: "human", personId: person, memberId: `${person}-member` },
+            chatId,
+            messageId: id,
+          }),
+        );
+        yield* Fiber.join(yield* run());
+        const [row] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId"
+          FROM kin_wakeups WHERE event_ids LIKE ${`%"${id}"%`}`;
+        return row!.threadId;
+      });
+      const thread = Effect.fn("test.thread")(function* (id: string) {
+        const [row] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId"
+          FROM kin_wakeups WHERE event_ids LIKE ${`%"${id}"%`}`;
+        return row!.threadId;
+      });
+      yield* wake("owner-first", "owner-chat");
+      const owner = yield* thread("owner-first");
+      const asha = yield* says("asha-1", "asha");
+      const ravi = yield* says("ravi-1", "ravi");
+      assert.isTrue(asha.startsWith(SHARED_THREAD_PREFIX));
+      assert.isTrue(ravi.startsWith(SHARED_THREAD_PREFIX));
+      assert.notStrictEqual(asha, ravi);
+      assert.strictEqual(yield* says("asha-2", "asha"), asha);
+      yield* wake("owner-again", "owner-chat");
+      assert.strictEqual(yield* thread("owner-again"), owner);
+      assert.deepStrictEqual(
+        yield* sql`SELECT thread_id, chat_id FROM kin_agent_threads WHERE ended_at IS NULL
+          ORDER BY thread_id`,
+        [
+          { thread_id: owner, chat_id: null },
+          ...[
+            { thread_id: asha, chat_id: "dm-asha" },
+            { thread_id: ravi, chat_id: "dm-ravi" },
+          ].toSorted((a, b) => a.thread_id.localeCompare(b.thread_id)),
+        ].toSorted((a, b) => a.thread_id.localeCompare(b.thread_id)),
+      );
+    }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
   it.effect(
     "a teammate joining mid-turn aborts it: nothing kept, its events answered shared on a fresh thread",
@@ -364,11 +435,10 @@ describe("WakeupRunner", () => {
             Effect.gen(function* () {
               yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
                 VALUES ('teammate-member', 'org', 'owner-chat', 'person', 'teammate', 'member', ${at})`;
-              yield* abortPrivateTurns({
+              yield* abortChatTurns({
                 orgId,
                 chatId: KinChatId.make("owner-chat"),
                 personId: KinPersonId.make("teammate"),
-                floorRaised: true,
               });
             }),
           )
@@ -478,6 +548,7 @@ describe("WakeupRunner", () => {
           undoChange: () => Effect.die("unused"),
           relabel: () => Effect.die("unused"),
           retire: () => Effect.die("unused"),
+          restore: () => Effect.die("unused"),
           staged: () => Effect.succeed(false),
           stage: (_org, wakeup) =>
             Effect.sync(() => {
@@ -574,6 +645,7 @@ describe("WakeupRunner", () => {
                 undoChange: () => Effect.die("unused"),
                 relabel: () => Effect.die("unused"),
                 retire: () => Effect.die("unused"),
+                restore: () => Effect.die("unused"),
                 staged: () => Effect.succeed(false),
                 discard: () => Effect.void,
                 appendJournal: (_org, _wakeup, lines) =>
@@ -717,19 +789,45 @@ describe("WakeupRunner", () => {
       }).pipe(Effect.provide(harness({ failed: true })), provideDeterministicTestRuntime),
   );
   it.effect.each([
-    { failureCode: undefined, said: ["retrying", "retrying", "gave_up"] },
+    {
+      failureCode: undefined,
+      mode: "reply",
+      owed: true,
+      said: ["retrying", "retrying", "gave_up"],
+    },
     // No retry signs the account in: each try names the fix, and the bridge says it once.
-    { failureCode: "authentication_failed", said: ["signin", "signin", "signin"] },
-  ])(
-    "tells the owner at once why a failed start stopped or retries ($failureCode)",
-    ({ failureCode, said }) =>
+    {
+      failureCode: "authentication_failed",
+      mode: "reply",
+      owed: true,
+      said: ["signin", "signin", "signin"],
+    },
+    // Review 48: an assigned entry or a worker's report owes words too, though nobody wrote.
+    {
+      failureCode: undefined,
+      mode: "notice",
+      owed: true,
+      said: ["retrying", "retrying", "gave_up"],
+    },
+    // A check-in nobody waits on retries quietly, but never ends silent.
+    { failureCode: undefined, mode: "notice", owed: false, said: ["gave_up"] },
+    {
+      failureCode: "authentication_failed",
+      mode: "notice",
+      owed: false,
+      said: ["signin", "signin", "signin"],
+    },
+  ] as const)(
+    "tells the owner at once why a failed start stopped or retries ($failureCode, $mode, owed $owed)",
+    ({ failureCode, mode, owed, said }) =>
       Effect.gen(function* () {
         const outcomes: Array<string> = [];
         const bridge = Layer.mock(KinReplyBridge)({
           lane: () =>
             Effect.succeedSome({
               chatId: KinChatId.make("owner-chat"),
-              mode: "reply" as const,
+              mode,
+              owed,
               leadName: "Lead",
             }),
           preparing: () => Effect.void,
@@ -746,7 +844,7 @@ describe("WakeupRunner", () => {
             yield* Fiber.join(yield* run());
             if (wait !== undefined) yield* TestClock.adjust(wait);
           }
-          assert.deepStrictEqual(outcomes, said);
+          assert.deepStrictEqual(outcomes, [...said]);
           assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
             { state: "failed", attempts: 3 },
           ]);
@@ -1581,6 +1679,7 @@ describe("WakeupRunner", () => {
           Effect.succeedSome({
             chatId: KinChatId.make("owner-chat"),
             mode: "reply" as const,
+            owed: true,
             leadName: "Lead",
           }),
         preparing: () => Effect.void,

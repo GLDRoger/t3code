@@ -120,8 +120,8 @@ export const agentServices = Effect.gen(function* () {
   // Only chat operations cross this boundary; trusted waiting and streaming paths stay private.
   const { send } = Context.get(kin.services.value, KinChatService);
   // Agent posts, reads and card edits go through the lead's gate; WS calls from people never do.
-  const { post, read, upsertWidget } = Context.get(kin.services.value, KinLevelGate);
-  return { agent, post, send, read, upsertWidget };
+  const { post, postTo, read, upsertWidget } = Context.get(kin.services.value, KinLevelGate);
+  return { agent, post, postTo, send, read, upsertWidget };
 }).pipe(
   Effect.mapError((error) =>
     error._tag === "KinChatError"

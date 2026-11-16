@@ -61,6 +61,9 @@ cp -p "$REPO/.env" "$BUILD/.env"
 node_version="$(sed -n '/"engines"/,/}/s/.*"node": *"\([^"]*\)".*/\1/p' "$BUILD/package.json" | head -n1)"
 [ -n "$node_version" ] || { echo "update.sh: no engines.node in package.json." >&2; false; }
 mise install "node@$node_version"
+# Workers run kin's vp read-only from a home of their own, so vp can't use the system Node there
+# and can't download its own; give it the build's Node now.
+mise exec "node@$node_version" -- vp env install "$node_version" </dev/null
 
 cd "$BUILD"
 # Unattended, like scripts/setup-worktree.ts: a stale lockfile must fail, not be rewritten.
@@ -68,6 +71,9 @@ mise exec "node@$node_version" -- vp i --frozen-lockfile -- --yes </dev/null
 (cd apps/server && mise exec "node@$node_version" -- vp test run kin-contract)
 mise exec "node@$node_version" -- vp run build:desktop
 [ -f apps/server/dist/bin.mjs ] || { echo "update.sh: the build wrote no apps/server/dist/bin.mjs." >&2; false; }
+for lib in echarts mermaid d3; do
+  [ -f "apps/server/dist/visual-lib/$lib.js" ] || { echo "update.sh: the build wrote no apps/server/dist/visual-lib/$lib.js, so visuals would draw without it." >&2; false; }
+done
 trap - ERR
 
 mkdir -p "$(dirname "$ENV_FILE")" "$UNIT_DIR"

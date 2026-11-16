@@ -14,6 +14,7 @@ import {
   KinWorkerId,
   OrchestratorMcpFailure,
   type OrchestrationV2RunStatus,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2Subagent,
   ModelSelection,
@@ -57,9 +58,12 @@ import { KinEventQueue } from "./KinEventQueue.ts";
 import { KinLeadRegistry } from "./KinLeadRegistry.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { isOrgPaused, STOP_REASON } from "./orgState.ts";
-import { KinDocCollector } from "../gendocs/DocJobs.ts";
-import { OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
+import { CONTINUED, KinDocCollector } from "../gendocs/DocJobs.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
+import { takeOutputs } from "../gendocs/returnPath.ts";
+import { MAX_SCREENSHOTS, OWNER_DECLINED, parseReport, WAITING_FOR_OWNER } from "./workerBrief.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
+import { failureSentence } from "./workerFailure.ts";
 import * as Publish from "./workerPublish.ts";
 import { releaseHosts, takeBlocked } from "./workNetwork.ts";
 import { localThreadId, workThreadPrefix } from "./workThread.ts";
@@ -191,6 +195,8 @@ const WorkerRow = Schema.Struct({
   kind: Schema.String,
   pullRequestUrl: Schema.NullOr(Schema.String),
   pullRequestNumber: Schema.NullOr(Schema.Number),
+  targetPr: Schema.NullOr(Schema.Number),
+  targetBranch: Schema.NullOr(Schema.String),
 });
 type WorkerRow = typeof WorkerRow.Type & {
   /** Set once its chat was shared after private work began: `chatId` is then the owner chat. */
@@ -198,6 +204,15 @@ type WorkerRow = typeof WorkerRow.Type & {
   readonly audience: WriteAudience;
 };
 const decodeWorker = Schema.decodeUnknownEffect(WorkerRow);
+const onto = (worker: typeof WorkerRow.Type) => {
+  const target = ontoOf(worker);
+  return target === undefined ? {} : { onto: target };
+};
+/** A fix worker's PR, whose own branch its commits are pushed to. */
+const ontoOf = (worker: typeof WorkerRow.Type): Publish.PullRequestTarget | undefined =>
+  worker.targetPr === null || worker.targetBranch === null
+    ? undefined
+    : { number: worker.targetPr, branch: worker.targetBranch };
 const isChatError = Schema.is(KinChatError);
 const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 const STOP_FAILED = "The worker could not be stopped. Retry or tell the owner.";
@@ -304,6 +319,7 @@ const make = Effect.gen(function* () {
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const publisher = yield* Effect.serviceOption(Publish.KinWorkerPublish);
   const documents = yield* Effect.serviceOption(KinDocCollector);
+  const renderer = yield* Effect.serviceOption(KinDocRenderer);
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
   const environment = yield* Effect.serviceOption(ServerEnvironment);
@@ -333,7 +349,8 @@ const make = Effect.gen(function* () {
       repository_key AS "repositoryKey", project_id AS "projectId",
       remote_project_id AS "remoteProjectId", title,
       model_json AS model, kind, pull_request_url AS "pullRequestUrl",
-      pull_request_number AS "pullRequestNumber"
+      pull_request_number AS "pullRequestNumber", target_pr AS "targetPr",
+      target_branch AS "targetBranch"
       FROM kin_workers WHERE org_id = ${orgId} AND worker_id = ${workerId} ORDER BY worker_id`;
     if (raw === undefined) return undefined;
     const worker = yield* decodeWorker(raw);
@@ -628,6 +645,7 @@ const make = Effect.gen(function* () {
   const reconcileWrite = Effect.fn("WorkerTracker.reconcileWrite")(function* (
     key: Attempts.Attempt,
     repositoryKey: string | null,
+    onto: Publish.PullRequestTarget | undefined,
   ) {
     const row = yield* inSql(Attempts.attemptOf(key));
     if (row === undefined || row.intent === null) return;
@@ -638,7 +656,11 @@ const make = Effect.gen(function* () {
           ? yield* new Publish.KinWorkerPublishRefused({
               reason: "this host has no Kin GitHub App to check GitHub with",
             })
-          : yield* publisher.value.inspect({ workerId: key.workerId, repositoryKey });
+          : yield* publisher.value.inspect({
+              workerId: key.workerId,
+              repositoryKey,
+              ...(onto === undefined ? {} : { onto }),
+            });
     yield* inSql(sql.withTransaction(Attempts.recordFound(key, found)));
   });
 
@@ -735,7 +757,9 @@ const make = Effect.gen(function* () {
         Effect.mapError(() => fail("Kin couldn't record what it wrote")),
       );
     // A write an earlier process began and never heard back from is checked before any other.
-    const earlier = yield* reconcileWrite(key, worker.repositoryKey).pipe(Effect.result);
+    const earlier = yield* reconcileWrite(key, worker.repositoryKey, ontoOf(worker)).pipe(
+      Effect.result,
+    );
     if (earlier._tag === "Failure")
       return refused("Kin couldn't reach GitHub to check what an earlier publish left");
     const pull = yield* publisher.value
@@ -744,6 +768,7 @@ const make = Effect.gen(function* () {
         repositoryKey: worker.repositoryKey,
         worktreePath,
         ...(local === undefined ? {} : { local }),
+        ...onto(worker),
         title,
         progress: { review, begin, done },
       })
@@ -759,7 +784,9 @@ const make = Effect.gen(function* () {
       reason: pull.failure.reason,
     });
     // A write whose answer was lost may have landed: GitHub says, not the failure.
-    yield* reconcileWrite(key, worker.repositoryKey).pipe(Effect.ignoreCause({ log: true }));
+    yield* reconcileWrite(key, worker.repositoryKey, ontoOf(worker)).pipe(
+      Effect.ignoreCause({ log: true }),
+    );
     const row = yield* inSql(Attempts.attemptOf(key));
     if (row?.pullRequestUrl != null && row.pullRequestNumber !== null)
       return { url: row.pullRequestUrl, number: row.pullRequestNumber };
@@ -1057,6 +1084,55 @@ const make = Effect.gen(function* () {
   });
 
   /**
+   * The screenshots a finished run named in its report, taken from its worktree's `out/` the way a
+   * document job's files are, and posted in its chat as one Kin message the owner can open.
+   */
+  const postScreenshots = Effect.fn("WorkerTracker.postScreenshots")(
+    function* (worker: WorkerRow, worktree: string | null, runId: string, report: WorkerReport) {
+      const named = report.evidence
+        .filter((item) => item.kind === "screenshot")
+        .map((item) => item.ref);
+      if (worktree === null || named.length === 0 || Option.isNone(renderer)) return;
+      const { taken } = yield* takeOutputs({
+        worktree,
+        named,
+        caps: {
+          files: MAX_SCREENSHOTS,
+          fileBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+          totalBytes: MAX_SCREENSHOTS * PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+        },
+      });
+      const attachments = yield* Effect.forEach(
+        taken.filter((file) => file.mimeType.startsWith("image/")),
+        (file) =>
+          renderer.value.store(worker.orgId, worker.workerId, file).pipe(
+            Effect.map((id) => ({
+              type: "image" as const,
+              id,
+              name: file.name,
+              mimeType: file.mimeType,
+              sizeBytes: file.bytes.length,
+            })),
+          ),
+      );
+      if (attachments.length === 0) return;
+      yield* card(worker, (chatId, audience) =>
+        chat.notice({
+          orgId: worker.orgId,
+          chatId,
+          audience,
+          messageId: KinMessageId.make(`kin-shots:${worker.workerId}:${runId}`),
+          body: `Screenshots from ${worker.title ?? "the worker"}`,
+          attachments,
+        }),
+      );
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't post a worker's screenshots", { cause }),
+    ),
+  );
+
+  /**
    * One wait on a worker's thread on this server; true once its latest run is reported. Kin, not
    * the worker, commits and publishes, and only after the run ended completed.
    */
@@ -1108,9 +1184,22 @@ const make = Effect.gen(function* () {
     const reply = projection.messages
       .findLast((message) => message.role === "assistant" && message.runId === run.id)
       ?.text.slice(-MAX_REPLY_CHARS);
+    const parsed = reply === undefined ? undefined : parseReport(reply);
+    // A run that died before its first turn item, such as one whose provider never started,
+    // leaves its cause only on the thread.
+    const lastError =
+      parsed !== undefined
+        ? null
+        : ((yield* orchestrator
+            .getThreadShell(worker.threadId)
+            .pipe(Effect.orElseSucceed(() => null)))?.lastError ?? null);
     const report = withBlockedHosts(
-      (reply === undefined ? undefined : parseReport(reply)) ??
-        blocked(worker, here, `Worker ended ${status} without a report.`),
+      parsed ??
+        blocked(
+          worker,
+          here,
+          `Worker ended ${status} without a report.${failureSentence(projection, run.id, lastError)}`,
+        ),
       yield* takeBlocked(stateDir, worker.workerId).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.orElseSucceed(() => []),
@@ -1120,6 +1209,10 @@ const make = Effect.gen(function* () {
     const filed = Option.isSome(documents)
       ? yield* documents.value.collect(worker, status === "completed", report)
       : undefined;
+    // Kin sent a recipe writer back to work: that next run's end reports instead.
+    if (filed === CONTINUED) return false;
+    if (filed === undefined)
+      yield* postScreenshots(worker, projection.thread.worktreePath, run.id, report);
     if (filed !== undefined)
       return yield* settleRun(worker, {
         runId: run.id,
@@ -1354,7 +1447,9 @@ const make = Effect.gen(function* () {
     const what = stop.stopLabel ?? `"${worker.title ?? "Worker"}"`;
     const branch = Publish.publishBranch(key.workerId);
     const id = `${key.workerId}:${key.startedAt}`;
-    const checked = yield* reconcileWrite(key, worker.repositoryKey).pipe(Effect.result);
+    const checked = yield* reconcileWrite(key, worker.repositoryKey, ontoOf(worker)).pipe(
+      Effect.result,
+    );
     if (checked._tag === "Failure") {
       yield* noticeOnce(worker, key, "unchecked_at", {
         messageId: `kin-stop-unchecked:${id}`,

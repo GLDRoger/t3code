@@ -1,6 +1,8 @@
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
 import { assert, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { ServerConfig } from "../../config.ts";
 import {
   EnvironmentId,
   KinAgentId,
@@ -15,6 +17,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -27,13 +30,20 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
+import * as LeadClients from "./leadClients.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Clients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import * as Docs from "./docs.ts";
+import * as Search from "./search.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
+import { sectionsOf } from "./docBody.ts";
+import { milestoneRisk } from "./projectSpine.ts";
 import { effectivelySensitive } from "./recordRows.ts";
 import { PRESETS } from "./registers.ts";
+import * as Touches from "./touches.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
 // Invented org, people, clients and work only; nothing here reads a real database.
@@ -45,7 +55,13 @@ const at = "2026-11-11T00:00:00.000Z";
 const owner = { _tag: "person" as const, orgId, personId: ownerId };
 const mate = { _tag: "person" as const, orgId, personId: mateId };
 const DAY = 24 * 60 * 60 * 1000;
-type Services = KinIdentity | KinLevelGate | KinRecords.KinRecords | SqlClient.SqlClient;
+type Services =
+  | KinIdentity
+  | KinLevelGate
+  | KinRecords.KinRecords
+  | SqlClient.SqlClient
+  | FileSystem.FileSystem
+  | ServerConfig;
 
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("fixture"),
@@ -81,6 +97,8 @@ const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-crm-" })),
+  Layer.provideMerge(NodeServices.layer),
 );
 
 /** The owner, a teammate, one lead with its direct chat, and a running turn the owner woke. */
@@ -228,7 +246,13 @@ it.effect(
         kind: "client",
         terms: "Invented retainer, monthly",
       });
-      assert.deepStrictEqual(client.owed, { weOwe: 4, theyOwe: 2, late: 0, overdue: 0 });
+      assert.deepStrictEqual(client.owed, {
+        tasksWeOwe: 4,
+        tasksTheyOwe: 2,
+        tasksWeOweLate: 0,
+        tasksTheyOweLate: 0,
+        money: { unpaid: [], overdue: [], invoices: [] },
+      });
       assert.deepStrictEqual(
         client.contacts!.map((row) => [row.title, row.role ?? row.email]),
         [
@@ -454,11 +478,29 @@ it.effect(
         kind: "vendor",
         clientRequestId: "j",
       });
-      assert.include(created, { key: "C-1", kind: "vendor", active: true, terms: null });
+      assert.include(created, {
+        key: "C-1",
+        kind: "vendor",
+        active: true,
+        terms: null,
+        address: null,
+      });
       // A retry is the same client; another of the same name is refused, naming the one there.
       assert.include(
-        yield* Clients.createParty([owner], { orgId, name: "x", clientRequestId: "j" }),
+        yield* Clients.createParty([owner], {
+          orgId,
+          name: "Invented Juniper",
+          kind: "vendor",
+          clientRequestId: "j",
+        }),
         { key: "C-1" },
+      );
+      // QA Q16: the same request id with other words was taken as saved, as chat refuses.
+      assert.include(
+        yield* Effect.flip(
+          Clients.createParty([owner], { orgId, name: "x", clientRequestId: "j" }),
+        ),
+        { reason: "not_allowed" },
       );
       assert.include(
         yield* Effect.flip(
@@ -472,8 +514,14 @@ it.effect(
         rev: 1,
         kind: "client",
         terms: "Invented net 30",
+        address: "12 Invented Road, Pune 411001",
       });
-      assert.include(edited, { rev: 2, kind: "client", terms: "Invented net 30" });
+      assert.include(edited, {
+        rev: 2,
+        kind: "client",
+        terms: "Invented net 30",
+        address: "12 Invented Road, Pune 411001",
+      });
       assert.include(
         yield* Clients.updateParty([owner], {
           orgId,
@@ -492,9 +540,28 @@ it.effect(
       const history = yield* Clients.history([owner], { orgId, key: "C-1" });
       assert.deepStrictEqual(history.items[0]!.fields, [
         { field: "terms", from: null, to: "Invented net 30" },
+        { field: "address", from: null, to: "12 Invented Road, Pune 411001" },
         { field: "category", from: "vendor", to: "client" },
       ]);
       assert.deepStrictEqual(history.items[0]!.by, { _tag: "person", personId: ownerId });
+      // Its tax details, under the keys an invoice reads them by; null clears one.
+      const taxed = yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: 2,
+        gstin: "27BBBBB2222B1Z5",
+        placeOfSupply: "Maharashtra",
+      });
+      assert.include(taxed, { rev: 3, gstin: "27BBBBB2222B1Z5", placeOfSupply: "Maharashtra" });
+      const stored = yield* (yield* KinRecords.KinRecords).get(orgId, "C-1");
+      assert.deepInclude(JSON.parse(stored!.fieldsJson), {
+        gstin: "27BBBBB2222B1Z5",
+        placeOfSupply: "Maharashtra",
+      });
+      assert.include(
+        yield* Clients.updateParty([owner], { orgId, key: "C-1", rev: 3, gstin: null }),
+        { gstin: null, placeOfSupply: "Maharashtra" },
+      );
       const contact = yield* Clients.createContact([owner], {
         orgId,
         party: "C-1",
@@ -515,7 +582,12 @@ it.effect(
         clientRequestId: "e",
       });
       assert.deepInclude(entry, {
-        party: { recordId: created.recordId, key: "C-1", title: "Invented Juniper" },
+        party: {
+          recordId: created.recordId,
+          key: "C-1",
+          title: "Invented Juniper",
+          kind: "client",
+        },
       });
       const theirs = yield* OwnerWork.update([owner], {
         orgId,
@@ -541,7 +613,7 @@ it.effect(
       const closed = yield* Clients.updateParty([owner], {
         orgId,
         key: "C-1",
-        rev: 2,
+        rev: 4,
         active: false,
       });
       assert.include(closed, { active: false });
@@ -551,7 +623,7 @@ it.effect(
       const reopened = yield* Clients.updateParty([owner], {
         orgId,
         key: "C-1",
-        rev: 3,
+        rev: 5,
         active: true,
       });
       assert.include(reopened, { active: true, closedAt: null });
@@ -559,7 +631,7 @@ it.effect(
       const wrongList: ReadonlyArray<Effect.Effect<unknown, KinChatError, Services>> = [
         Clients.updateParty([owner], { orgId, key: entry.key, rev: 1, name: "x" }),
         Clients.party([owner], { orgId, key: "CT-1" }),
-        OwnerWork.update([owner], { orgId, key: "C-1", rev: 4, title: "x" }),
+        OwnerWork.update([owner], { orgId, key: "C-1", rev: 6, title: "x" }),
         OwnerWork.create([owner], { orgId, title: "x", party: "CT-1", clientRequestId: "z" }),
       ];
       for (const refused of wrongList)
@@ -577,6 +649,27 @@ it.effect(
         ),
         { reason: "not_found" },
       );
+      // QA: a project's or entry's chip couldn't say its client is a vendor.
+      const supplier = yield* Clients.createParty([owner], {
+        orgId,
+        name: "Invented Supplier",
+        kind: "vendor",
+        clientRequestId: "supplier",
+      });
+      const supplyRun = yield* Clients.createProject([owner], {
+        orgId,
+        name: "Invented supply run",
+        party: supplier.key,
+        clientRequestId: "vendor-project",
+      });
+      assert.include(supplyRun.party, { key: supplier.key, kind: "vendor" });
+      const payment = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: pay the supplier",
+        party: supplier.key,
+        clientRequestId: "vendor-entry",
+      });
+      assert.include(payment.party, { key: supplier.key, kind: "vendor" });
     }).pipe(Effect.provide(layer)),
 );
 
@@ -586,10 +679,13 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
     yield* seed;
     yield* setup("ask-event");
     yield* LeadWork.update(scope, { key: "C-1", sourceEventId: "ask-event", sensitive: true });
+    // A task is private only by its own label.
+    yield* LeadWork.update(scope, { key: "W-2", sourceEventId: "ask-event", sensitive: true });
     // An invoices list as if defined, and an invoice for the payment row.
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
         created_at, definition_json)
-      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)})`;
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)}),
+        (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(PRESETS.expenses)})`;
     yield* LeadWork.create(scope, {
       sourceEventId: "ask-event",
       records: [{ list: "invoices", title: "Invented October retainer", amount: "1 lakh" }],
@@ -615,6 +711,18 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         }),
         true,
       ],
+      // Who holds it and why: no entry's content.
+      record_assign: [
+        LeadWork.assign(scope, {
+          sourceEventId: "ask-event",
+          tasks: [{ key: "W-2", to: "me", reason: "Invented: free today" }],
+        }),
+        false,
+      ],
+      record_hand_back: [
+        LeadWork.handBack(scope, { key: "W-2", sourceEventId: "ask-event", note: "Invented" }),
+        false,
+      ],
       list_define: [
         LeadMoney.define(scope, { sourceEventId: "ask-event", name: "Invented leave" }),
         false,
@@ -629,8 +737,24 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
         true,
       ],
       money_summary: [LeadMoney.money(scope, {}), true],
+      money_query: [LeadMoney.moneyQuery(scope, { view: "outlook" }), true],
+      budget_set: [
+        LeadMoney.budget(scope, { sourceEventId: "ask-event", category: "travel", limit: "50k" }),
+        true,
+      ],
       dates_query: [LeadMoney.datesQuery(scope, { from: "1970-01-01", to: "2030-12-31" }), true],
       company_profile: [LeadMoney.profile(scope, {}), true],
+      // Its record part is record_get's; contact and memory show no entry of their own.
+      client_read: [LeadClients.contact(scope, { key: "C-1" }), false],
+      touch_log: [
+        LeadClients.logTouch(scope, {
+          sourceEventId: "ask-event",
+          client: "C-1",
+          kind: "call",
+          note: "Invented call",
+        }),
+        false,
+      ],
     } satisfies Record<
       keyof typeof KinWorkToolkit.tools,
       readonly [Effect.Effect<unknown, unknown, Services>, boolean]
@@ -651,80 +775,128 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("a sensitive client or project labels what points at it; only the owner lowers it", () =>
-  Effect.gen(function* () {
-    yield* seed;
-    yield* setup("ask-event");
-    yield* LeadWork.update(scope, { key: "C-1", sourceEventId: "ask-event", sensitive: true });
-    yield* LeadWork.update(scope, {
-      key: "C-1",
-      sourceEventId: "ask-event",
-      terms: "Invented fee",
-    });
-    const listed = yield* OwnerWork.list([owner], { orgId, party: "C-1" });
-    assert.isTrue(listed.records.every((record) => record.sensitiveInherited === true));
-    assert.isTrue(listed.records.every((record) => !record.sensitive));
-    const page = yield* Clients.party([owner], { orgId, key: "C-1" });
-    assert.isTrue(page.party.sensitive);
-    assert.isTrue(page.contacts.every((contact) => contact.sensitive));
-    assert.isTrue(page.projects.every((project) => project.sensitiveInherited));
-    // The project's own entries inherit through the project too, and the lead reads them so.
-    assert.include(yield* LeadWork.get(scope, { key: "W-6" }), { sensitive: true });
-    // Every lead result says what is sensitive, as the owner's do: the entry and its fields.
-    const client = yield* LeadWork.get(scope, { key: "C-1" });
-    assert.deepInclude(client, { sensitive: true, sensitiveFields: ["terms"] });
-    assert.include(
-      client.history.find((change) => change.change.startsWith("terms")),
-      {
-        sensitive: true,
-      },
-    );
-    assert.isTrue(
-      client.contacts!.every(
-        (row) => row.sensitive === true && row.sensitiveFields?.join() === "email,phone",
-      ),
-    );
-    assert.deepStrictEqual(
-      client.projects!.map((row) => row.sensitive),
-      [true],
-    );
-    const contacts = yield* LeadWork.query(scope, { list: "contacts", groupBy: "client" });
-    assert.isTrue(contacts.records.every((row) => row.sensitive && row.sensitiveFields?.length));
-    assert.deepStrictEqual(contacts.groups, [
-      { group: "Invented Acme (C-1)", count: 2, late: 0, sensitive: true },
-    ]);
-    const byOwner = yield* LeadWork.query(scope, { groupBy: "owner" });
-    assert.isTrue(byOwner.groups!.every((group) => group.sensitive === undefined));
-    const made = yield* LeadWork.create(scope, {
-      sourceEventId: "again-event",
-      records: [
-        { list: "contacts", title: "Invented Mira", client: "C-1" },
-        { title: "Invented kickoff", client: "C-1" },
-        { title: "Invented unrelated chore" },
-      ],
-    });
-    assert.deepStrictEqual(
-      made.records.map((row) => [row.created, row.sensitive, row.sensitiveFields]),
-      [
-        [false, true, ["email", "phone"]],
-        [true, true, undefined],
-        [true, undefined, undefined],
-      ],
-    );
-    assert.include(
-      yield* LeadWork.update(scope, { key: "W-2", sourceEventId: "ask-event", notes: "x" }),
-      { sensitive: true },
-    );
-    const lowered = yield* Clients.updateParty([owner], {
-      orgId,
-      key: "C-1",
-      rev: page.party.rev,
-      sensitive: false,
-    });
-    assert.isFalse(lowered.sensitive);
-    const after = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
-    assert.notProperty(after, "sensitiveInherited");
-  }).pipe(Effect.provide(layer)),
+it.effect(
+  "G03: what a turn writes is private only when marked so, whatever it was shown, and reading it marks a later turn",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const ownLabel = (key: string) =>
+        records.get(orgId, key).pipe(Effect.map((row) => row!.sensitive));
+      const plain = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented plain task" }],
+      });
+      const first = plain.records[0]!.key;
+      yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+      VALUES (${orgId}, 'wake', 0) ON CONFLICT DO NOTHING`;
+      const written = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { title: "Invented follow-up with the client" },
+          { title: "Invented note on the figure", sensitive: true },
+        ],
+      });
+      yield* LeadWork.update(scope, { key: first, sourceEventId: "ask-event", notes: "Invented" });
+      const [follow, marked] = written.records.map((row) => row.key);
+      assert.deepStrictEqual(
+        [yield* ownLabel(follow!), yield* ownLabel(marked!), yield* ownLabel(first)],
+        [0, 1, 0],
+      );
+      // A later turn that reads the private one is marked as any sensitive read marks it.
+      yield* sql`DELETE FROM kin_wakeup_sensitive_reads`;
+      yield* LeadWork.get(scope, { key: marked! });
+      assert.deepStrictEqual(yield* sql`SELECT wakeup_id FROM kin_wakeup_sensitive_reads`, [
+        { wakeup_id: "wake" },
+      ]);
+      // Only the owner lowers it.
+      const entry = yield* OwnerWork.get([owner], { orgId, key: marked! });
+      yield* OwnerWork.update([owner], { orgId, key: marked!, rev: entry.rev, sensitive: false });
+      assert.strictEqual(yield* ownLabel(marked!), 0);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a sensitive client labels its contacts and projects, never a task; only the owner lowers it",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* setup("ask-event");
+      yield* LeadWork.update(scope, { key: "C-1", sourceEventId: "ask-event", sensitive: true });
+      yield* LeadWork.update(scope, {
+        key: "C-1",
+        sourceEventId: "ask-event",
+        terms: "Invented fee",
+      });
+      const listed = yield* OwnerWork.list([owner], { orgId, party: "C-1" });
+      // G03: a task is private only by its own label.
+      for (const record of listed.records) {
+        assert.notProperty(record, "sensitiveInherited");
+        assert.isFalse(record.sensitive);
+      }
+      const page = yield* Clients.party([owner], { orgId, key: "C-1" });
+      assert.isTrue(page.party.sensitive);
+      assert.isTrue(page.contacts.every((contact) => contact.sensitive));
+      assert.isTrue(page.projects.every((project) => project.sensitiveInherited));
+      assert.notProperty(yield* LeadWork.get(scope, { key: "W-6" }), "sensitive");
+      // Every lead result says what is sensitive, as the owner's do: the entry and its fields.
+      const client = yield* LeadWork.get(scope, { key: "C-1" });
+      assert.deepInclude(client, { sensitive: true, sensitiveFields: ["terms"] });
+      assert.include(
+        client.history.find((change) => change.change.startsWith("terms")),
+        {
+          sensitive: true,
+        },
+      );
+      assert.isTrue(
+        client.contacts!.every(
+          (row) => row.sensitive === true && row.sensitiveFields?.join() === "email,phone",
+        ),
+      );
+      assert.deepStrictEqual(
+        client.projects!.map((row) => row.sensitive),
+        [true],
+      );
+      const contacts = yield* LeadWork.query(scope, { list: "contacts", groupBy: "client" });
+      assert.isTrue(contacts.records.every((row) => row.sensitive && row.sensitiveFields?.length));
+      assert.deepStrictEqual(contacts.groups, [
+        { group: "Invented Acme (C-1)", count: 2, late: 0, sensitive: true },
+      ]);
+      const byOwner = yield* LeadWork.query(scope, { groupBy: "owner" });
+      assert.isTrue(byOwner.groups!.every((group) => group.sensitive === undefined));
+      // As a turn shown nothing sensitive: an unrelated entry stays plain.
+      yield* (yield* SqlClient.SqlClient)`DELETE FROM kin_wakeup_sensitive_reads`;
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "again-event",
+        records: [
+          { list: "contacts", title: "Invented Mira", client: "C-1" },
+          { title: "Invented kickoff", client: "C-1" },
+          { title: "Invented unrelated chore" },
+        ],
+      });
+      assert.deepStrictEqual(
+        made.records.map((row) => [row.created, row.sensitive, row.sensitiveFields]),
+        [
+          [false, true, ["email", "phone"]],
+          [true, undefined, undefined],
+          [true, undefined, undefined],
+        ],
+      );
+      assert.notProperty(
+        yield* LeadWork.update(scope, { key: "W-2", sourceEventId: "ask-event", notes: "x" }),
+        "sensitive",
+      );
+      const lowered = yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: page.party.rev,
+        sensitive: false,
+      });
+      assert.isFalse(lowered.sensitive);
+      const after = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
+      assert.notProperty(after, "sensitiveInherited");
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("no lead write makes anything less sensitive; the owner's own may", () =>
@@ -738,39 +910,39 @@ it.effect("no lead write makes anything less sensitive; the owner's own may", ()
         .pipe(Effect.flatMap((row) => effectivelySensitive(orgId, row!.recordId)));
     const ownLabel = (key: string) =>
       records.get(orgId, key).pipe(Effect.map((row) => row!.sensitive));
+    // Each write as a turn shown nothing sensitive, so only Kin's own rules label anything here.
+    const sql = yield* SqlClient.SqlClient;
+    const unmarked = <A, E, R>(write: Effect.Effect<A, E, R>) =>
+      Effect.andThen(sql`DELETE FROM kin_wakeup_sensitive_reads`, write);
     const update = (input: Omit<typeof LeadWork.UpdateInput.Type, "sourceEventId">) =>
-      LeadWork.update(scope, { ...input, sourceEventId: "ask-event" });
+      unmarked(LeadWork.update(scope, { ...input, sourceEventId: "ask-event" }));
     yield* update({ key: "C-1", sensitive: true });
-    // W-6 is sensitive through its project's client; unlinking both keeps it so, as Kin's change.
-    assert.isTrue(yield* sensitive("W-6"));
+    // W-6 is a task: its project's client never labels it, so unlinking labels nothing.
+    assert.isFalse(yield* sensitive("W-6"));
     const unlinked = yield* update({ key: "W-6", client: null, project: null });
-    assert.deepInclude(unlinked, { changed: ["party", "project", "sensitive"], sensitive: true });
-    const w6 = yield* LeadWork.get(scope, { key: "W-6" });
-    assert.notProperty(w6, "client");
-    assert.deepInclude(w6.history[0], { by: "Kin", change: "sensitive: true" });
-    assert.isTrue(yield* sensitive("W-6"));
+    assert.deepInclude(unlinked, { changed: ["party", "project"] });
+    assert.notProperty(unlinked, "sensitive");
     // A project moved to another client, or off any, labels the project: its entries stay sensitive.
-    yield* LeadWork.create(scope, {
-      sourceEventId: "again-event",
-      records: [
-        { list: "clients", title: "Invented Beta" },
-        { list: "projects", title: "Invented app" },
-        { list: "projects", title: "Invented api" },
-        { title: "Invented app login", project: "Invented app" },
-        { title: "Invented api keys", project: "Invented api" },
-      ],
-    });
+    yield* unmarked(
+      LeadWork.create(scope, {
+        sourceEventId: "again-event",
+        records: [
+          { list: "clients", title: "Invented Beta" },
+          { list: "projects", title: "Invented app" },
+          { list: "projects", title: "Invented api" },
+          { title: "Invented app login", project: "Invented app" },
+          { title: "Invented api keys", project: "Invented api" },
+        ],
+      }),
+    );
     yield* update({ key: "P-2", client: "C-1" });
     yield* update({ key: "P-3", client: "C-1" });
-    assert.isTrue(yield* sensitive("W-7"));
+    assert.isTrue(yield* sensitive("P-2"));
     assert.strictEqual(yield* ownLabel("P-2"), 0);
     yield* update({ key: "P-2", client: "Invented Beta" });
     yield* update({ key: "P-3", client: null });
     for (const key of ["P-2", "P-3"]) assert.strictEqual(yield* ownLabel(key), 1);
-    for (const key of ["W-7", "W-8"]) {
-      assert.isTrue(yield* sensitive(key));
-      assert.strictEqual(yield* ownLabel(key), 0);
-    }
+    for (const key of ["W-7", "W-8"]) assert.isFalse(yield* sensitive(key));
     // A contact moved to another client, renames and closes keep it too; a repeat changes nothing.
     yield* update({ key: "CT-2", client: "Invented Beta" });
     assert.isTrue(yield* sensitive("CT-2"));
@@ -789,12 +961,8 @@ it.effect("no lead write makes anything less sensitive; the owner's own may", ()
         sensitiveFields: ["terms"],
       },
     ]);
-    for (const key of ["C-1", "W-7", "P-2"]) assert.isTrue(yield* sensitive(key));
-    // The owner moving an entry off the client lowers it, as before: only they may.
-    const w1 = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
-    yield* OwnerWork.update([owner], { orgId, key: "W-1", rev: w1.rev, party: null });
-    assert.isFalse(yield* sensitive("W-1"));
-    assert.strictEqual(yield* ownLabel("W-1"), 0);
+    for (const key of ["C-1", "P-2"]) assert.isTrue(yield* sensitive(key));
+    assert.isFalse(yield* sensitive("W-7"));
     assert.isUndefined(yield* effectivelySensitive(orgId, "rec_missing"));
   }).pipe(Effect.provide(layer)),
 );
@@ -837,4 +1005,448 @@ it.effect("a teammate gets none of the client calls, and a client change ticks s
     const [, tick] = yield* Fiber.join(ticks);
     assert.strictEqual(tick?.key, "C-1");
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "contact is what people logged and what Kin issued or received, never a draft or a chat",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)}),
+        (${orgId}, 'quotes', 'Quotes', 'QT', 0, 0, ${JSON.stringify(PRESETS.quotes)})`;
+      const senses = (key: string) =>
+        Effect.clockWith((clock) => clock.currentTimeMillis).pipe(
+          Effect.flatMap((now) => Touches.clientSenses(orgId, now)),
+          Effect.map((all) => all.filter((one) => one.key === key).map((one) => one.sense)),
+        );
+      // Its project is open: quiet after the playbook's 14 days with nothing logged, not on day 13.
+      yield* TestClock.adjust(13 * DAY);
+      assert.notInclude(yield* senses("C-1"), "client_quiet");
+      yield* TestClock.adjust(DAY);
+      assert.include(yield* senses("C-1"), "client_quiet");
+      // The chat that set the client up mentions it; a draft quote is not sent. Neither is contact.
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "quotes", title: "Invented redesign quote", client: "C-1", amount: "500" },
+        ],
+      });
+      const quiet = yield* Clients.parties([owner], { orgId });
+      assert.strictEqual(quiet.parties.find((row) => row.key === "C-1")?.lastContactAt, null);
+
+      const call = {
+        sourceEventId: "ask-event",
+        client: "Invented Acme",
+        kind: "call",
+        note: "Invented: wants the revised quote by Friday",
+        at: "1970-01-10",
+      } as const;
+      const logged = yield* LeadClients.logTouch(scope, call);
+      yield* LeadClients.logTouch(scope, call);
+      assert.include(logged.touch, { kind: "call", who: "Owner" });
+      // An issued invoice and a payment against it count by themselves.
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "invoices", title: "Invented November work", client: "C-1", amount: "900" },
+        ],
+      });
+      yield* LeadMoney.payment(scope, {
+        sourceEventId: "ask-event",
+        key: "INV-1",
+        amount: "400",
+        paidOn: "1970-01-10",
+      });
+      const page = yield* Clients.party([owner], { orgId, key: "C-1" });
+      assert.deepStrictEqual(page.touches?.map((touch) => touch.kind).toSorted(), [
+        "call",
+        "invoice",
+        "payment",
+      ]);
+      assert.isNotNull(page.party.lastContactAt);
+      assert.notInclude(yield* senses("C-1"), "client_quiet");
+
+      // The owner takes the logged call back; what Kin knows from its records stays.
+      const touchId = page.touches!.find((touch) => touch.logged)!.id;
+      assert.deepStrictEqual(yield* Clients.removeTouch([owner], { orgId, touchId }), {
+        removed: true,
+      });
+      assert.deepStrictEqual(yield* Clients.removeTouch([owner], { orgId, touchId }), {
+        removed: false,
+      });
+      const after = yield* Clients.party([owner], { orgId, key: "C-1" });
+      assert.deepStrictEqual(after.touches?.map((touch) => touch.kind).toSorted(), [
+        "invoice",
+        "payment",
+      ]);
+
+      // With no open project, cold at the playbook's 30 days: one episode per last contact.
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE register_id = 'projects'`;
+      yield* TestClock.adjust(29 * DAY);
+      assert.notInclude(yield* senses("C-1"), "client_cold");
+      yield* TestClock.adjust(DAY);
+      const now = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      const cold = (yield* Touches.clientSenses(orgId, now)).find(
+        (one) => one.key === "C-1" && one.sense === "client_cold",
+      );
+      const later = (yield* Touches.clientSenses(orgId, now + DAY)).find(
+        (one) => one.key === "C-1" && one.sense === "client_cold",
+      );
+      assert.strictEqual(cold?.episode, later?.episode);
+      assert.strictEqual(cold?.from, "contact");
+      yield* Clients.logTouch([owner], {
+        orgId,
+        party: "C-1",
+        kind: "email",
+        note: "Invented check-in",
+        clientRequestId: "check-in",
+      });
+      assert.notInclude(yield* senses("C-1"), "client_cold");
+
+      // What a client owes counts its unpaid invoices by the rule Money uses, not only its tasks.
+      yield* sql`UPDATE kin_records SET state = 'waiting', due_at = ${3 * DAY} WHERE key = 'INV-1'`;
+      const owes = (yield* LeadWork.get(scope, { key: "C-1" })).owed!;
+      assert.deepStrictEqual(owes.money.overdue, owes.money.unpaid);
+      assert.match(owes.money.invoices[0]!, /^INV-1: .*500.* overdue, \d+ days past due$/);
+
+      // A client added today with work that ended long ago reads cold from that day, and a typed
+      // name finds it: any case, a start of it, or a close spelling.
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          { list: "clients", title: "Invented Harbourline Logistics" },
+          {
+            list: "projects",
+            title: "Invented tracking app",
+            client: "invented harbourline",
+            state: "done",
+            finishedOn: "1970-01-02",
+          },
+        ],
+      });
+      const harbour = (yield* LeadWork.get(scope, { key: "C-2" })).key;
+      assert.include(yield* senses(harbour), "client_cold");
+      // Its fact says what the days count from, as the client page does.
+      const harbourCold = (yield* Touches.clientSenses(
+        orgId,
+        yield* Effect.clockWith((clock) => clock.currentTimeMillis),
+      )).find((one) => one.key === harbour && one.sense === "client_cold");
+      assert.strictEqual(harbourCold?.from, "project");
+      for (const typed of [
+        "INVENTED HARBOURLINE LOGISTICS",
+        "Invented Harbor",
+        "Invnted Harbourline",
+      ])
+        assert.include(
+          yield* LeadWork.get(scope, {
+            key: (yield* LeadWork.create(scope, {
+              sourceEventId: "ask-event",
+              records: [{ title: `Invented call ${typed}`, client: typed }],
+            })).records[0]!.key,
+          }),
+          { client: "Invented Harbourline Logistics (C-2)" },
+        );
+      // No match names the nearest instead of saying there is none.
+      const missed = yield* Effect.flip(
+        LeadWork.create(scope, {
+          sourceEventId: "ask-event",
+          records: [{ title: "Invented call", client: "Invented Harbourlime Freight" }],
+        }),
+      );
+      assert.include(missed.message, "Nearest: Invented Harbourline Logistics (C-2)");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a project's plan: milestones, tasks from spec sections that flag when the section changes",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const spec = [
+        "# Invented spec",
+        "",
+        "## Login",
+        "",
+        "Email and password.",
+        "",
+        "## Billing",
+        "",
+        "Monthly invoices.",
+        "",
+      ].join("\n");
+      const doc = yield* Docs.create(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+        {},
+        {
+          title: "Invented spec",
+          body: spec,
+          owner: { _tag: "agent", agentId: lead },
+          summary: "Created",
+          originKey: "test:spec",
+          kind: "spec",
+        },
+      );
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [
+          {
+            list: "projects",
+            title: "Invented app",
+            due: "1970-03-01",
+            billing: "fixed",
+            value: "6 lakh",
+            members: ["Mate", "me"],
+          },
+          {
+            list: "milestones",
+            title: "Invented beta",
+            project: "Invented app",
+            due: "1970-01-20",
+          },
+          {
+            title: "Invented login form",
+            milestone: "Invented beta",
+            owner: "Mate",
+            size: "M",
+            reason: "Mate: tech, free this week",
+            from: { doc: doc.row.key, section: "login" },
+          },
+          {
+            title: "Invented password reset",
+            milestone: "M-1",
+            size: "S",
+            from: { doc: doc.row.key, section: "login" },
+          },
+          {
+            title: "Invented invoice run",
+            project: "Invented app",
+            from: { doc: doc.row.key, section: "billing" },
+          },
+          {
+            title: "Invented kickoff",
+            project: "Invented app",
+            category: "meeting",
+            at: "1970-01-02T15:00+05:30",
+            attendees: ["Mate"],
+          },
+        ],
+      });
+      assert.deepStrictEqual(
+        made.records.map((row) => row.key),
+        ["P-1", "M-1", "W-1", "W-2", "W-3", "W-4"],
+      );
+      const sql = yield* SqlClient.SqlClient;
+      const [projectRow] = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
+      WHERE key = 'P-1'`;
+      yield* Docs.move(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+        { key: doc.row.key },
+        { projectId: projectRow!.id },
+      );
+      const first = (yield* LeadWork.get(scope, { key: "P-1" })).plan!;
+      // A milestone brings its project; its tasks count towards it.
+      assert.deepStrictEqual(first.milestones, [
+        { key: "M-1", title: "Invented beta", state: "open", due: "1970-01-20", done: 0, total: 2 },
+      ]);
+      assert.include(
+        first.people.find((one) => one.name === "Mate"),
+        { member: true, open: 1 },
+      );
+      assert.deepStrictEqual(first.docs, [
+        { key: doc.row.key, title: "Invented spec", kind: "spec" },
+      ]);
+      assert.deepStrictEqual(
+        first.meetings.map((one) => one.key),
+        ["W-4"],
+      );
+      assert.deepStrictEqual(first.specChanged, []);
+      assert.include(yield* LeadWork.get(scope, { key: "W-1" }), {
+        milestone: "M-1",
+        size: "M",
+        reason: "Mate: tech, free this week",
+        project: "Invented app (P-1)",
+      });
+      // A task's sheet names its milestone; a milestone's lists its tasks.
+      assert.equal((yield* OwnerWork.get([owner], { orgId, key: "W-1" })).milestone?.key, "M-1");
+      assert.deepStrictEqual(
+        (yield* OwnerWork.get([owner], { orgId, key: "M-1" })).tasks?.map((one) => one.key),
+        ["W-1", "W-2"],
+      );
+      assert.isUndefined((yield* OwnerWork.get([owner], { orgId, key: "W-3" })).milestone);
+      // An unknown section is refused, naming the ones there are.
+      const refused = yield* Effect.flip(
+        LeadWork.create(scope, {
+          sourceEventId: "again-event",
+          records: [{ title: "Invented", from: { doc: doc.row.key, section: "nope" } }],
+        }),
+      );
+      assert.include(refused.message, "login, billing");
+
+      // Editing the login section flags exactly the two tasks written from it.
+      yield* Docs.edit(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: ownerId },
+        {},
+        { key: doc.row.key },
+        {
+          operations: [
+            {
+              op: "replace_section",
+              section: "login",
+              hash: sectionsOf(spec).find((one) => one.id === "login")!.hash,
+              text: "Email, password and a magic link.",
+            },
+          ],
+          summary: "Magic link",
+          originKey: "test:magic",
+        },
+      );
+      const changed = (yield* LeadWork.get(scope, { key: "P-1" })).plan!;
+      assert.deepStrictEqual(
+        changed.specChanged.map((one) => one.task),
+        ["W-1", "W-2"],
+      );
+      assert.include(yield* LeadWork.get(scope, { key: "W-1" }), { specChanged: true });
+      const page = yield* Clients.project([owner], { orgId, key: "P-1" });
+      assert.deepStrictEqual(
+        page.specChanged!.map((one) => one.record.key),
+        ["W-1", "W-2"],
+      );
+      assert.deepStrictEqual(page.project.billing, "fixed");
+      assert.deepStrictEqual(page.project.value, { minor: 60_000_000, currency: "INR" });
+
+      // Re-anchoring one clears it; the other stays flagged until it is looked at.
+      yield* LeadWork.update(scope, {
+        key: "W-1",
+        sourceEventId: "again-event",
+        from: { doc: doc.row.key, section: "login" },
+      });
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: "P-1" })).plan!.specChanged.map((one) => one.task),
+        ["W-2"],
+      );
+
+      // The owner marks the agent's W-2 private while it waits: its project's lead, Mate, no
+      // longer finds it anywhere on the project page, nor in the counts.
+      yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${mateId}
+        WHERE key = 'P-1'`;
+      yield* sql`UPDATE kin_records SET sensitive = 1, state = 'waiting' WHERE key = 'W-2'`;
+      const theirs = yield* Clients.project([mate], { orgId, key: "P-1" });
+      const ours = yield* Clients.project([owner], { orgId, key: "P-1" });
+      assert.deepStrictEqual(
+        ours.blocked.map((one) => one.record.key),
+        ["W-2"],
+      );
+      assert.deepStrictEqual(theirs.blocked, []);
+      assert.strictEqual(ours.counts.waiting, 1);
+      assert.strictEqual(theirs.counts.waiting, 0);
+      assert.strictEqual(ours.milestones?.[0]?.total, 2);
+      assert.strictEqual(theirs.milestones?.[0]?.total, 1);
+      assert.notInclude(
+        theirs.changedThisWeek.items.map((one) => one.record.key),
+        "W-2",
+      );
+      assert.notInclude(
+        (yield* Clients.projects([mate], { orgId })).projects.map((one) => one.open),
+        ours.project.open,
+      );
+      // Run 4: one the owner holds, marked private, in Mate's project and milestone. Only the
+      // owner side and its holder see it: not its title, count, search hit or pulse fact.
+      yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${ownerId}, sensitive = 1,
+          due_at = 1 WHERE key = 'W-1'`;
+      const late = DAY;
+      const sees = Effect.fn("test.sees")(function* (viewer: typeof owner) {
+        const view = viewer === owner ? ([owner] as const) : ([mate] as const);
+        const page = yield* Clients.project(view, { orgId, key: "P-1" });
+        const found = yield* Search.search(orgId, {
+          text: "Invented login form",
+          limit: 10,
+          ...(viewer === owner ? { viewer: "owner" } : { viewer: "team", view: [mateId] }),
+        });
+        const pulse = yield* KinPulse.read({
+          orgId,
+          at: late,
+          viewer: viewer === owner ? { _tag: "owner" } : { _tag: "people", people: [mateId] },
+        });
+        return {
+          tasks: (yield* OwnerWork.list(view, { orgId })).records.map((one) => one.key),
+          milestone: (yield* OwnerWork.get(view, { orgId, key: "M-1" })).tasks?.map(
+            (one) => one.key,
+          ),
+          counted: page.milestones?.[0]?.total,
+          open: page.counts.open + page.counts.waiting,
+          search: found.hits.map((hit) => hit.key),
+          pulse: pulse.facts.filter((fact) => fact.key.includes("W-1")).length,
+        };
+      });
+      const ownerSees = yield* sees(owner);
+      assert.include(ownerSees.tasks, "W-1");
+      assert.deepStrictEqual(
+        { milestone: ownerSees.milestone, search: ownerSees.search, counted: ownerSees.counted },
+        { milestone: ["W-1", "W-2"], search: ["W-1"], counted: 2 },
+      );
+      assert.isAbove(ownerSees.pulse, 0);
+      const mateSees = yield* sees(mate);
+      assert.notInclude(mateSees.tasks, "W-1");
+      assert.deepStrictEqual(
+        { ...mateSees, tasks: undefined },
+        {
+          tasks: undefined,
+          milestone: [],
+          counted: 0,
+          open: ownerSees.open - 2,
+          search: [],
+          pulse: 0,
+        },
+      );
+      // J14: the project's lead takes its milestone back and may make it private; only the owner
+      // un-marks it.
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('s-mate', ${orgId}, ${mateId}, 0)`;
+      const taken = yield* OwnerWork.assign([mate], { orgId, key: "M-1", to: null });
+      assert.deepStrictEqual(taken.owner, { _tag: "person", personId: mateId });
+      yield* OwnerWork.update([mate], { orgId, key: "M-1", rev: taken.rev, sensitive: true });
+      const marked = yield* OwnerWork.get([owner], { orgId, key: "M-1" });
+      assert.isTrue(marked.sensitive);
+      yield* OwnerWork.update([owner], { orgId, key: "M-1", rev: marked.rev, sensitive: false });
+      // Run 4: someone who holds a task in a project they don't lead opens its page, with no
+      // Clients place: their task and what they see, never its price, billing or notes.
+      yield* sql`UPDATE kin_records SET owner_kind = 'agent', owner_id = ${lead}, notes = 'Invented 6 lakh fixed'
+        WHERE key = 'P-1'`;
+      yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${mateId}, sensitive = 0
+        WHERE key = 'W-2'`;
+      const inIt = yield* Clients.project([mate], { orgId, key: "P-1" });
+      assert.deepStrictEqual(
+        {
+          blocked: inIt.blocked.map((one) => one.record.key),
+          billing: inIt.project.billing,
+          value: inIt.project.value,
+          notes: inIt.project.notes,
+        },
+        { blocked: ["W-2"], billing: null, value: null, notes: "" },
+      );
+      assert.notMatch(JSON.stringify(inIt), /60000000|6 lakh/u);
+
+      // The milestone rule: late once passed while open; at risk within the heads-up days (3 by
+      // default) with late or later work.
+      const day = (n: number) => n * DAY;
+      for (const [state, dueAt, tasks, late, atRisk] of [
+        ["open", day(4), [{ dueAt: day(8), open: true }], false, false],
+        ["open", day(2), [{ dueAt: day(3), open: true }], false, true],
+        ["open", day(2), [{ dueAt: day(-1), open: true }], false, true],
+        ["open", day(2), [{ dueAt: day(3), open: false }], false, false],
+        ["open", day(-1), [], true, false],
+        ["done", day(-1), [], false, false],
+      ] as const)
+        assert.deepStrictEqual(milestoneRisk({ state, dueAt, now: 0, headsUpDays: 3, tasks }), {
+          late,
+          atRisk,
+        });
+    }).pipe(Effect.provide(layer)),
 );

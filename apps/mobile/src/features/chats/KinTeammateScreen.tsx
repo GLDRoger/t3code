@@ -1,18 +1,32 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_ACCESS_CHOICES,
+  KIN_PLACE_SWITCHES,
+  kinAccessChangeCopy,
   kinRemoveAccessCopy,
   kinTeamView,
   kinTeammateActions,
+  kinTeammateAgentsLine,
+  kinTeammateKindEditable,
   kinTeammateLeadLine,
   type KinMadeInvite,
   type KinTeammate,
 } from "@t3tools/client-runtime/kin/kinTeam";
-import { EnvironmentId, KinOrgId, type KinLeadProfile, type KinPersonId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KinOrgId,
+  type KinLeadProfile,
+  type KinPersonAccess,
+  type KinPersonId,
+  type KinPersonPlaceSwitches,
+  type KinPersonPlaces,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -22,14 +36,18 @@ import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListRow } from "../../components/ui/ListRow";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { kinClient } from "./state/kinClient";
-import { useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
+import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 
 export type KinTeammateParams = {
   readonly environmentId: string;
@@ -125,6 +143,7 @@ function KinTeammateBody(props: KinTeamTarget & { readonly rowKey: string }) {
         target={props}
         teammate={teammate}
         actions={team.actions}
+        viewer={team.viewer}
         problem={team.edits.problem}
         onMade={setMade}
         onClose={close}
@@ -137,12 +156,14 @@ function KinTeammateDetails(props: {
   readonly target: KinTeamTarget;
   readonly teammate: KinTeammate;
   readonly actions: ReturnType<typeof useKinTeam>["actions"];
+  readonly viewer: KinPersonAccess;
   readonly problem: string | null;
   readonly onMade: (invite: KinMadeInvite) => void;
   readonly onClose: () => void;
 }) {
   const { teammate, actions } = props;
-  const offered = kinTeammateActions(teammate);
+  const navigation = useNavigation();
+  const offered = kinTeammateActions(teammate, props.viewer);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -173,6 +194,21 @@ function KinTeammateDetails(props: {
     });
   };
 
+  const askKind = (access: (typeof KIN_ACCESS_CHOICES)[number]["access"]) => {
+    const { personId } = teammate;
+    if (personId === null || access === teammate.access) return;
+    const copy = kinAccessChangeCopy(teammate.name, access);
+    Dialog.confirm({
+      title: copy.title,
+      message: copy.detail,
+      confirmText: copy.confirm,
+      onConfirm: () => {
+        setBusy(true);
+        void actions.setAccess(personId, access).finally(() => setBusy(false));
+      },
+    });
+  };
+
   const shown = problem ?? props.problem;
   return (
     <>
@@ -188,6 +224,42 @@ function KinTeammateDetails(props: {
         </View>
       </View>
       {shown === null ? null : <ErrorBanner message={shown} />}
+      {teammate.personId === null ? null : (
+        <ListSection>
+          <ListRow
+            label="Profile"
+            {...(teammate.roles === "" ? {} : { description: teammate.roles })}
+            icon="person.crop.circle"
+            onPress={() => {
+              const { personId } = teammate;
+              if (personId === null) return;
+              navigation.navigate("KinProfile", { ...props.target, personId });
+            }}
+          />
+        </ListSection>
+      )}
+      {kinTeammateKindEditable(teammate, props.viewer) ? (
+        <ListSection title="What they can do">
+          {KIN_ACCESS_CHOICES.map((choice, index) => (
+            <ListChoiceRow
+              key={choice.access}
+              label={choice.label}
+              description={choice.detail}
+              selected={teammate.access === choice.access}
+              separated={index > 0}
+              disabled={busy}
+              onPress={() => askKind(choice.access)}
+            />
+          ))}
+        </ListSection>
+      ) : null}
+      {teammate.places === null || teammate.personId === null ? null : (
+        <KinTeammatePlaces
+          target={props.target}
+          personId={teammate.personId}
+          places={teammate.places}
+        />
+      )}
       {teammate.personId === null ? (
         <ListSection
           title="Agents"
@@ -196,6 +268,14 @@ function KinTeammateDetails(props: {
           <View className="px-4 py-3">
             <Text textRole="body" className="text-foreground-muted">
               None yet.
+            </Text>
+          </View>
+        </ListSection>
+      ) : kinTeammateAgentsLine(teammate) !== null ? (
+        <ListSection title="Agents">
+          <View className="px-4 py-3">
+            <Text textRole="body" className="text-foreground-muted">
+              {kinTeammateAgentsLine(teammate)}
             </Text>
           </View>
         </ListSection>
@@ -218,10 +298,21 @@ function KinTeammateDetails(props: {
                 icon="xmark"
                 disabled={busy}
                 onPress={() => {
-                  if (teammate.inviteId === null) return;
-                  // Shown at once; the Team page says so if the host refuses.
-                  void actions.cancelInvite(teammate.inviteId);
-                  if (teammate.personId === null) props.onClose();
+                  const { inviteId } = teammate;
+                  const { cancel } = offered;
+                  if (inviteId === null || cancel === null) return;
+                  Dialog.confirm({
+                    title: cancel.title,
+                    message: cancel.detail,
+                    confirmText: cancel.label,
+                    cancelText: cancel.keep,
+                    destructive: true,
+                    onConfirm: () => {
+                      // Shown at once; the Team page says so if the host refuses.
+                      void actions.cancelInvite(inviteId);
+                      if (teammate.personId === null) props.onClose();
+                    },
+                  });
                 }}
               />
             </View>
@@ -314,5 +405,86 @@ function KinTeammateLead(props: {
         })
       }
     />
+  );
+}
+
+/** A member's places beyond Tasks, and the projects they lead (set on each project's page). */
+function KinTeammatePlaces(props: {
+  readonly target: KinTeamTarget;
+  readonly personId: KinPersonId;
+  readonly places: KinPersonPlaces;
+}) {
+  const { target, personId, places } = props;
+  // What the owner just switched, shown until the host's next read agrees or refuses.
+  const [asked, setAsked] = useState<Partial<KinPersonPlaceSwitches>>({});
+  const [problem, setProblem] = useState<string | null>(null);
+  const flip = async (place: keyof KinPersonPlaceSwitches, on: boolean) => {
+    setProblem(null);
+    setAsked((held) => ({ ...held, [place]: on }));
+    const result = await runAtomCommand(
+      appAtomRegistry,
+      kinClient.personSetPlaces,
+      {
+        environmentId: target.environmentId,
+        input: { orgId: target.orgId, personId, [place]: on },
+      },
+      { label: "kin:person:set-places", reportFailure: false, reportDefect: true },
+    );
+    if (AsyncResult.isFailure(result))
+      setProblem("That didn't save. Check your connection and try again.");
+    await refreshKinTeam(target);
+    setAsked((held) => {
+      const rest = { ...held };
+      delete rest[place];
+      return rest;
+    });
+  };
+  return (
+    <>
+      <ListSection
+        title="What they can see"
+        footer={problem ?? "Tasks shared with the team, always."}
+      >
+        {KIN_PLACE_SWITCHES.map((entry, index) => (
+          <View
+            key={entry.place}
+            className={index === 0 ? undefined : "border-t border-border-subtle"}
+          >
+            <ListToggleRow
+              label={entry.label}
+              description={entry.detail}
+              value={asked[entry.place] ?? places[entry.place]}
+              disabled={asked[entry.place] !== undefined}
+              onValueChange={(on) => void flip(entry.place, on)}
+            />
+          </View>
+        ))}
+      </ListSection>
+      <ListSection
+        title="Projects they lead"
+        footer={
+          places.leads.length === 0
+            ? "Make them a project's lead on that project's page."
+            : undefined
+        }
+      >
+        {places.leads.length === 0 ? (
+          <View className="px-4 py-3">
+            <Text textRole="body" className="text-foreground-muted">
+              None.
+            </Text>
+          </View>
+        ) : (
+          places.leads.map((project, index) => (
+            <View
+              key={project.recordId}
+              className={index === 0 ? undefined : "border-t border-border-subtle"}
+            >
+              <ListRowLayout label={project.title} />
+            </View>
+          ))
+        )}
+      </ListSection>
+    </>
   );
 }

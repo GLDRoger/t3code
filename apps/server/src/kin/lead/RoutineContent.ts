@@ -28,6 +28,7 @@ import * as Chat from "../chat/KinChatService.ts";
 import { memoryDateMillis } from "../memory/frontMatter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
+import { buildWeeklySection, renderWeekly } from "../pulse/weekly.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
 import {
   renderRoutine,
@@ -98,6 +99,20 @@ export class KinRoutineContent extends Context.Service<
       event: RoutineEvent,
       note?: string,
     ) => Effect.Effect<KinWidget | null, KinRoutineContentError>;
+    /** The morning brief's sections as JSON, for the morning check-in; null with no live lead. */
+    readonly morningFacts: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+    ) => Effect.Effect<string | null, KinRoutineContentError>;
+    /**
+     * The weekly check-in's figures, posted by Kin in the owner's chat before the lead's turn, so
+     * the lead adds judgement and never retypes a figure. Once per event; false with no live lead.
+     */
+    readonly weeklyFigures: (
+      orgId: KinOrgId,
+      agentId: KinAgentId,
+      eventId: string,
+    ) => Effect.Effect<boolean, KinRoutineContentError>;
   }
 >()("t3/kin/lead/RoutineContent/KinRoutineContent") {}
 
@@ -119,6 +134,7 @@ const decodeTokens = Schema.decodeUnknownOption(
   ),
 );
 const encodeCard = Schema.encodeEffect(KinRoutineCard);
+const encodeFacts = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const isPostable = (routine: KinLeadRoutine): routine is "morning_brief" | "evening_summary" =>
   routine === "morning_brief" || routine === "evening_summary";
 export const isRoutineContent = (event: KinEvent): event is RoutineEvent =>
@@ -153,7 +169,7 @@ const make = Effect.gen(function* () {
 
   const gather = Effect.fn("KinRoutineContent.gather")(function* (
     orgId: KinOrgId,
-    event: RoutineEvent & { readonly routine: "morning_brief" | "evening_summary" },
+    event: { readonly routine: "morning_brief" | "evening_summary"; readonly agentId: KinAgentId },
     owner: { readonly personId: string; readonly login: string | null },
   ) {
     const now = yield* Clock.currentTimeMillis;
@@ -524,7 +540,60 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  return KinRoutineContent.of({ prepare, post });
+  const morningFacts = Effect.fn("KinRoutineContent.morningFacts")(
+    function* (orgId: KinOrgId, agentId: KinAgentId) {
+      const owner = yield* lead(orgId, agentId);
+      if (owner === undefined) return null;
+      const gathered = yield* gather(orgId, { routine: "morning_brief", agentId }, owner);
+      return gathered.facts.routine === "morning_brief" ? yield* encodeFacts(gathered.facts) : null;
+    },
+    (effect, orgId) =>
+      effect.pipe(
+        Effect.mapError(
+          (cause) =>
+            new KinRoutineContentError({
+              orgId,
+              cause: isSqlError(cause)
+                ? toPersistenceSqlError("KinRoutineContent.morningFacts")(cause)
+                : cause,
+            }),
+        ),
+      ),
+  );
+
+  const weeklyFigures = Effect.fn("KinRoutineContent.weeklyFigures")(
+    function* (orgId: KinOrgId, agentId: KinAgentId, eventId: string) {
+      const owner = yield* lead(orgId, agentId);
+      if (owner === undefined) return false;
+      const messageId = KinMessageId.make(`kin-weekly-${eventId}`);
+      if (Option.isSome(yield* repo.getMessage({ orgId, messageId }))) return true;
+      const week = yield* buildWeeklySection({ orgId, now: yield* Clock.currentTimeMillis }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      yield* chat.notice({
+        orgId,
+        chatId: KinChatId.make(owner.chatId),
+        messageId,
+        audience: "owner",
+        body: renderWeekly(week),
+      });
+      return true;
+    },
+    (effect, orgId) =>
+      effect.pipe(
+        Effect.mapError(
+          (cause) =>
+            new KinRoutineContentError({
+              orgId,
+              cause: isSqlError(cause)
+                ? toPersistenceSqlError("KinRoutineContent.weeklyFigures")(cause)
+                : cause,
+            }),
+        ),
+      ),
+  );
+
+  return KinRoutineContent.of({ prepare, post, morningFacts, weeklyFigures });
 });
 
 export const layer = Layer.effect(KinRoutineContent, make).pipe(Layer.provide(MemoryCache.layer));

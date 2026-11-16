@@ -78,7 +78,7 @@ type StopError = KinChatError | PersistenceSqlError;
 const notFound = new KinChatError({ reason: "not_found", message: "Kin organization not found." });
 const notAllowed = new KinChatError({
   reason: "not_allowed",
-  message: "Only the organization owner can stop or resume Kin.",
+  message: "Only the owner or a co-owner can stop or resume Kin.",
 });
 const invalid = new KinChatError({ reason: "invalid_state", message: "Invalid Kin stop data." });
 const unavailable = new KinChatError({
@@ -117,7 +117,7 @@ export class KinStop extends Context.Service<
     ) => Effect.Effect<KinOrgState, StopError>;
     readonly attach: (fanOut: KinStopFanOut) => Effect.Effect<void, never, Scope.Scope>;
     /**
-     * After the commit that marked them (`abortPrivateTurns`): stops each wake-up's run without
+     * After the commit that marked them (`abortChatTurns`): stops each wake-up's run without
      * showing anything. Its events wait for a fresh wake-up; no person's authority is involved.
      */
     readonly abortTurns: (
@@ -366,8 +366,13 @@ const make = Effect.gen(function* () {
       isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
     ),
     view: Effect.fn("KinStop.view")(function* (people, orgId) {
-      yield* member(people, orgId);
-      return yield* state(orgId);
+      const person = yield* member(people, orgId);
+      const current = yield* state(orgId);
+      // Any member sees whether Kin is stopped; why, in the owner's words, is his.
+      const ownsOrg = yield* isOrgOwner(orgId, person.personId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      return ownsOrg || current.reason === null ? current : { ...current, reason: null };
     }, Effect.mapError(mapError)),
     pause,
     resume,
@@ -590,11 +595,12 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
         WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
           AND thread_id IS NOT NULL ORDER BY wakeup_id`.pipe(Effect.mapError(failed));
       if (row === undefined) return false;
-      // The owner chose to stop: the run's failure must not requeue its events.
-      yield* sql`UPDATE kin_events SET state = 'done'
-        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'`.pipe(
-        Effect.mapError(failed),
-      );
+      // The owner chose to stop: the run's failure must not requeue its events. A stop that
+      // finds none left is a repeat of one still winding the run down.
+      const released = yield* sql`UPDATE kin_events SET state = 'done'
+        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
+        RETURNING event_id`.pipe(Effect.mapError(failed));
+      if (released.length === 0) return false;
       const threadId = ThreadId.make(row.threadId);
       const projection = yield* threads.getThreadProjection(threadId).pipe(Effect.mapError(failed));
       const run = projection.runs.at(-1);

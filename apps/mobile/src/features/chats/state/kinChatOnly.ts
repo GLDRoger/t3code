@@ -1,11 +1,14 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessAtom, kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
 import {
   kinAccessEnded,
   kinAppShell,
   kinChatOnlyEnvironments,
+  kinViewerOwnerLevel,
   type KinAppShell,
 } from "@t3tools/client-runtime/kin/kinJoin";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, type KinPersonAccess, type SessionGrantInput } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -168,4 +171,22 @@ export function installKinShellReset(resetToHome: () => void): () => void {
     last = shell;
     if (changed) resetToHome();
   });
+}
+
+const noAccessAtom = Atom.make<KinPersonAccess | null>(null);
+
+/** Whether the viewer is the owner or a co-owner on this host: their own kind, from the host. */
+export function useKinOwnerLevel(
+  environmentId: EnvironmentId | null,
+  session: SessionGrantInput | null,
+): boolean {
+  const access = useAtomValue(
+    environmentId === null ? noAccessAtom : kinAccessAtom(connectionAtomRuntime, environmentId),
+  );
+  return kinViewerOwnerLevel(access, session);
+}
+
+/** The places a member reaches (switched on, or a project they lead); null until the host says. */
+export function useKinPlaceReach(environmentId: EnvironmentId): KinPlaceReach | null {
+  return kinPlaceReach(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)));
 }

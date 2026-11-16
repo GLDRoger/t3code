@@ -11,11 +11,12 @@ import { itemFolders } from "../memory/checkoutPaths.ts";
 import { parseFrontMatter } from "../memory/frontMatter.ts";
 import { SHARED_THREAD_PREFIX } from "../lead/Audience.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
+import { touchesBetween } from "../work/touches.ts";
 
 /** One original the dream may cite. `saidBy` and `trust` come from server records, never the model. */
 export interface MaterialEntry {
   readonly ref: string;
-  readonly kind: "journal" | "chat" | "github" | "worker_report" | "item";
+  readonly kind: "journal" | "chat" | "github" | "worker_report" | "item" | "touch";
   readonly saidBy: string;
   readonly trust: MemoryTrust;
   readonly at: string;
@@ -178,6 +179,24 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
           event._tag === "github"
             ? `${event.eventName} ${event.repo}: ${event.summary}`
             : yield* encodeJson(event.report),
+      });
+    }
+    // Contact with clients, for their relationship files: logged by a person, or Kin's records.
+    const owner = (yield* sql<{ handle: string }>`SELECT p.handle FROM kin_agents a
+      JOIN kin_people p ON p.org_id = a.org_id AND p.person_id = a.owner_person_id
+      WHERE a.org_id = ${orgId} ORDER BY a.agent_id LIMIT 1`)[0]?.handle;
+    for (const touch of yield* touchesBetween(orgId, from, until)) {
+      const by = touch.by;
+      entries.push({
+        ref: `kin:touch:${touch.id}`,
+        kind: "touch",
+        saidBy: by?.name ?? "kin",
+        trust:
+          by === null || by.kind === "agent" ? "agent" : by.name === owner ? "owner" : "member",
+        at: touch.at,
+        text: `${touch.client.name} (${touch.client.key}): ${touch.kind}${
+          touch.who === null ? "" : ` with ${touch.who}`
+        }${touch.note === "" ? "" : `: ${touch.note}`}`,
       });
     }
     for (const [path, text] of [...input.files].toSorted(([a], [b]) => (a < b ? -1 : 1))) {

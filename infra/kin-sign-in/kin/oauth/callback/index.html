@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="robots" content="noindex" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Kin sign-in</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        display: grid;
+        place-items: center;
+        min-height: 90vh;
+        margin: 0;
+        padding: 24px;
+      }
+      main {
+        max-width: 420px;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0 0 8px;
+      }
+      p {
+        line-height: 1.5;
+        opacity: 0.75;
+        margin: 0 0 16px;
+      }
+      textarea {
+        width: 100%;
+        box-sizing: border-box;
+        height: 96px;
+        font:
+          12px ui-monospace,
+          monospace;
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid #8884;
+        background: transparent;
+        color: inherit;
+        resize: none;
+      }
+      button {
+        margin-top: 8px;
+        font: inherit;
+        padding: 8px 14px;
+        border-radius: 8px;
+        border: 1px solid #8886;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 id="title">Finishing sign-in…</h1>
+      <p id="detail"></p>
+      <div id="copy" hidden>
+        <textarea id="address" readonly></textarea>
+        <button id="copy-button" type="button">Copy</button>
+      </div>
+    </main>
+    <script>
+      // Kin's sign-in return page. It never sends anything anywhere but back to Kin: to the Kin app
+      // by its fixed scheme, or to the Kin window that opened it. The code it carries is useless
+      // without the secret only the owner's Kin host holds.
+      (function () {
+        var params = new URLSearchParams(location.search);
+        history.replaceState(null, "", location.pathname);
+        var kept = new URLSearchParams();
+        ["code", "state", "iss", "error"].forEach(function (key) {
+          var value = params.get(key);
+          if (value !== null) kept.set(key, value);
+        });
+        var response = location.origin + location.pathname + "?" + kept.toString();
+        var schemes = { a: "t3code", d: "t3code-dev", p: "t3code-preview" };
+        var scheme = schemes[(kept.get("state") || "").split(".")[0]];
+        var show = function (title, detail, copy) {
+          document.getElementById("title").textContent = title;
+          document.getElementById("detail").textContent = detail;
+          if (!copy) return;
+          document.getElementById("copy").hidden = false;
+          document.getElementById("address").value = response;
+          document.getElementById("copy-button").onclick = function () {
+            navigator.clipboard.writeText(response).then(function () {
+              document.getElementById("copy-button").textContent = "Copied";
+            });
+          };
+        };
+        if (!kept.get("state")) {
+          show("Nothing to finish", "This page only finishes a sign-in started in Kin.", false);
+        } else if (scheme) {
+          show(
+            "Returning to Kin…",
+            "If Kin doesn't open, copy this address and paste it in Kin's sign-in sheet.",
+            true,
+          );
+          location.replace(scheme + "://kin-oauth?" + kept.toString());
+        } else if (window.opener) {
+          window.opener.postMessage({ type: "kin-sign-in", response: response }, "*");
+          show("Signed in", "You can close this window and go back to Kin.", false);
+          setTimeout(function () {
+            window.close();
+          }, 500);
+        } else {
+          show("Copy back to Kin", "Copy this address and paste it in Kin's sign-in sheet.", true);
+        }
+      })();
+    </script>
+  </body>
+</html>

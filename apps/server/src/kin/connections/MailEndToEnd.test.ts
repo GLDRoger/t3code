@@ -1,0 +1,639 @@
+// @effect-diagnostics nodeBuiltinImport:off -- a fixture file's hash.
+import * as NodeCrypto from "node:crypto";
+// Loaded first: the chat and trigger modules import each other.
+import "../chat/KinChatService.ts";
+import { assert, describe, it } from "@effect/vitest";
+import * as PlatformCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import {
+  EnvironmentId,
+  KinAgentId,
+  KinMessageId,
+  KinOrgId,
+  KinPersonId,
+  KinWidgetId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
+
+import { ServerConfig } from "../../config.ts";
+import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { fromConnections, poll } from "../pulse/outside.ts";
+import * as ConnectionSecrets from "./ConnectionSecrets.ts";
+import { ASKED, KinConnections, SHARED_CONNECTIONS } from "./ConnectionsService.ts";
+import * as Connections from "./ConnectionsService.ts";
+import { guarded } from "./EgressGuard.ts";
+import { type FakeMail, makeFakeMail } from "./FakeMail.ts";
+import * as McpGateway from "./McpGateway.ts";
+
+// An invented company with two mail accounts on a local fake; nothing leaves the process.
+const orgId = KinOrgId.make("org");
+const owner = KinPersonId.make("owner");
+const coOwner = KinPersonId.make("asha");
+const member = KinPersonId.make("mate");
+const lead = KinAgentId.make("cos");
+const stamp = "2026-11-01T00:00:00.000Z";
+const NOW = Date.UTC(2026, 10, 16, 9);
+const ACCOUNTS = "accounts@invented-co.example";
+const HELLO = "hello@invented-co.example";
+const CLIENT = "Ravi Menon <ravi@lumen.example>";
+const people = (personId: KinPersonId) => [{ _tag: "person" as const, orgId, personId }];
+
+const scope: McpInvocationScope = {
+  environmentId: EnvironmentId.make("fixture"),
+  requestNamespace: "fixture",
+  issuedAt: 0,
+  capabilities: new Set(),
+  client: undefined,
+  thread: {
+    threadId: ThreadId.make("cos-thread"),
+    providerSessionId: "fixture",
+    providerInstanceId: ProviderInstanceId.make("claude"),
+  },
+};
+
+type Card = Parameters<KinLevelGate["Service"]["ask"]>[1] & { readonly widgetId: string };
+const gateFor = (cards: Array<Card>) =>
+  Layer.mock(KinLevelGate)({
+    ask: (agent, input, bind) =>
+      Effect.gen(function* () {
+        const widgetId = `w-${cards.length + 1}`;
+        cards.push({ ...input, widgetId });
+        const widget = {
+          orgId: agent.orgId,
+          chatId: input.chatId,
+          widgetId: KinWidgetId.make(widgetId),
+          messageId: KinMessageId.make(`m-${widgetId}`),
+          widgetClass: "native" as const,
+          type: "choice",
+          revision: 1,
+          state: {},
+          source: null,
+          feed: null,
+          awaiting: [owner],
+          pinnedAt: null,
+          closedAt: null,
+          updatedAt: stamp,
+        };
+        if (bind !== undefined) yield* bind(widget).pipe(Effect.orDie);
+        return widget;
+      }),
+    closeReplaced: (_agent, widgetIds) =>
+      Effect.sync(() => {
+        for (const widgetId of widgetIds)
+          cards.push({ ...cards[0]!, widgetId: `closed:${widgetId}` });
+      }),
+  });
+
+const layerFor = (fake: FakeMail, cards: Array<Card>) =>
+  Connections.layer.pipe(
+    Layer.provide(gateFor(cards)),
+    Layer.provide(ConnectionSecrets.layer),
+    Layer.provide(McpGateway.layer),
+    Layer.provide(
+      guarded.pipe(
+        Layer.provide(FetchHttpClient.layer),
+        Layer.provide(
+          Layer.succeed(
+            FetchHttpClient.Fetch,
+            fake.handle(() => Promise.reject(new Error("Only the fake mailbox answers here."))),
+          ),
+        ),
+      ),
+    ),
+    Layer.provide(
+      Layer.mock(KinIdentity)({
+        owner: people(owner)[0]!,
+        isAgentThread: () => true,
+        isLeadThread: () => true,
+        resolveAgent: () =>
+          Effect.succeed({
+            _tag: "agent" as const,
+            orgId,
+            agentId: lead,
+            ownerPersonId: owner,
+            threadId: ThreadId.make("cos-thread"),
+          }),
+      }),
+    ),
+    Layer.provide(Layer.succeed(KinRefreshObserver, { touch: () => Effect.void })),
+    Layer.provideMerge(KinEventQueue.layer),
+    Layer.provideMerge(KinPersistence.layer),
+    Layer.provideMerge(Sqlite.layerMemory),
+    Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-mail-e2e-" })),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformCrypto.layer)),
+  );
+
+/** The owner, a co-owner and a member, the Chief of staff with a direct chat with each, a client. */
+const seed = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${stamp})`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+    VALUES (${owner}, ${orgId}, 'owner', 'Arjun', ${stamp}, 'owner'),
+      (${coOwner}, ${orgId}, 'asha', 'Asha', ${stamp}, 'co_owner'),
+      (${member}, ${orgId}, 'mate', 'Meera', ${stamp}, 'member')`;
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+    VALUES (${lead}, ${orgId}, 'Chief of staff', 'lead', ${owner}, ${stamp})`;
+  for (const person of [owner, coOwner, member]) {
+    const chatId = `cos-${person}`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES (${chatId}, ${orgId}, 'direct', ${`${person}:cos`}, 0, ${stamp})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        role, joined_at)
+      VALUES (${`${chatId}-person`}, ${orgId}, ${chatId}, 'person', ${person},
+        ${person === owner ? "owner" : "member"}, ${stamp})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id,
+        role, joined_at)
+      VALUES (${`${chatId}-lead`}, ${orgId}, ${chatId}, 'agent', ${lead}, 'member', ${stamp})`;
+  }
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+      worker_projects_json, owner_chat_id, domain)
+    VALUES (${lead}, ${orgId}, 'Chief of staff', 0, 'cos-thread', '{}', '[]', 'cos-owner',
+      'chief-of-staff')`;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+    VALUES (${orgId}, 'clients', 'Clients', 'C', 0), (${orgId}, 'contacts', 'Contacts', 'CT', 0),
+      (${orgId}, 'invoices', 'Invoices', 'INV', 0), (${orgId}, 'docs', 'Docs', 'DOC', 0)`;
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, origin_key, created_at, updated_at, party_id, fields_json,
+      amount_minor, currency)
+    VALUES (${orgId}, 'rec_lumen', 'clients', 'C-1', 'Lumen Studio', 'person', ${owner}, 'person',
+        'c1', 0, 0, NULL, '{}', NULL, NULL),
+      (${orgId}, 'rec_ravi', 'contacts', 'CT-1', 'Ravi Menon', 'person', ${owner}, 'person',
+        'ct1', 0, 0, 'rec_lumen', '{"email":"Ravi@Lumen.example"}', NULL, NULL),
+      (${orgId}, 'rec_inv', 'invoices', 'INV-1', 'Lumen Studio: November', 'person', ${owner},
+        'person', 'inv', 0, 0, 'rec_lumen', '{}', 5900000, 'INR'),
+      (${orgId}, 'rec_doc', 'docs', 'DOC-1', 'Invoice INV/26-27/001', 'person', ${owner},
+        'person', 'doc', 0, 0, NULL, '{}', NULL, NULL)`;
+  yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode, recipe,
+      recipe_commit, entry_record_id, inputs_sha256, number, sensitive, doc_origin,
+      worktree_path, branch, chat_id, audience, created_at)
+    VALUES (${orgId}, 'job-1', ${lead}, 'boot', 'recipe', 'invoice', 'c0', 'rec_inv', 'in',
+      'INV/26-27/001', 1, 'recipe:invoice', '/nowhere', 'kin-doc', 'cos-owner', 'owner_only', 0)`;
+  const fs = yield* FileSystem.FileSystem;
+  const { attachmentsDir } = yield* ServerConfig;
+  const bytes = new TextEncoder().encode("%PDF-1.4 invented invoice");
+  const attachmentId = "kin-00000000-0000-4000-8000-000000000001-pdf";
+  yield* fs.makeDirectory(attachmentsDir, { recursive: true });
+  yield* fs.writeFile(`${attachmentsDir}/${attachmentId}.pdf`, bytes);
+  const file = {
+    attachmentId,
+    name: "INV-26-27-001.pdf",
+    mimeType: "application/pdf",
+    bytes: bytes.length,
+    sha256: NodeCrypto.createHash("sha256").update(bytes).digest("hex"),
+    pages: 1,
+    recipe: { name: "invoice", commit: "c0" },
+    inputsHash: "in",
+    workerId: "job-1",
+    number: "INV/26-27/001",
+    draft: false,
+  };
+  yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body_kind, file_json,
+      title, kind, summary, operations_json, actor_kind, via, worker_id, origin_key, created_at)
+    VALUES (${orgId}, 'rec_doc', 1, 'file', ${JSON.stringify(file)}, 'Invoice', 'created',
+      'made', '[]', 'system', 'recipe', 'job-1', 'v1', 1)`;
+});
+
+let wakes = 0;
+/** One running turn of the lead: a person's message in their chat, or the pulse event queued. */
+const wake = (from: { readonly person: KinPersonId } | { readonly eventId: string }) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const wakeupId = `wake-${++wakes}`;
+    yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE org_id = ${orgId}`;
+    const eventId = "person" in from ? `msg-${wakeupId}` : from.eventId;
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+        status, event_ids, audience)
+      VALUES (${wakeupId}, ${orgId}, ${lead}, 'cos-thread', 'test', ${NOW}, 'running',
+        ${JSON.stringify([eventId])}, 'owner_only')`;
+    if (!("person" in from)) {
+      yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = ${wakeupId}
+        WHERE org_id = ${orgId} AND event_id = ${eventId}`;
+      return;
+    }
+    const chatId = `cos-${from.person}`;
+    const messageId = `m-${wakeupId}`;
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+        author_person_id, author_member_id, author_role, kind, body, mentions_json, status,
+        created_at)
+      VALUES (${messageId}, ${orgId}, ${chatId}, ${wakes}, 'human', ${from.person},
+        ${`${chatId}-person`}, ${from.person === owner ? "owner" : "member"}, 'text',
+        'Send Ravi the November invoice.', '[]', 'posted', ${stamp})`;
+    const event = {
+      _tag: "chat.message",
+      orgId,
+      agentId: lead,
+      eventId,
+      receivedAt: stamp,
+      dedupeKey: null,
+      provenance: { _tag: "human", personId: from.person, memberId: `${chatId}-person` },
+      chatId,
+      messageId,
+    };
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+        received_at, queued_at, state, wakeup_id)
+      VALUES (${eventId}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)}, 0, 0,
+        'claimed', ${wakeupId})`;
+  });
+
+/** The owner connects an account at the (fake) vendor and marks its mail tools. */
+const connect = (fake: FakeMail, service: "google" | "microsoft", address: string) =>
+  Effect.gen(function* () {
+    const connections = yield* KinConnections;
+    const started = yield* connections.signInStart(people(owner), {
+      orgId,
+      service,
+      returnTo: "web",
+    });
+    const done = yield* connections.signInFinish(people(owner), {
+      orgId,
+      response: fake.approve(started.authorizationUrl, address),
+    });
+    const pin = (tool: string) => done.tools.find((one) => one.name === tool)!.pinDigest;
+    yield* connections.setToolModes(people(owner), {
+      orgId,
+      connectionId: done.connection.connectionId,
+      modes: [
+        ...["mail_list_threads", "mail_search", "mail_read_thread", "calendar_list_events"].map(
+          (tool) => ({ tool, mode: "read" as const, digest: pin(tool) }),
+        ),
+        ...["mail_send", "mail_reply", "calendar_save_event"].map((tool) => ({
+          tool,
+          mode: "ask" as const,
+          digest: pin(tool),
+        })),
+      ],
+    });
+    return done.connection.connectionId;
+  });
+
+const setUp = <E>(body: (fake: FakeMail, cards: Array<Card>) => Effect.Effect<void, E, Env>) =>
+  Effect.gen(function* () {
+    const fake = makeFakeMail();
+    fake.addAccount({
+      provider: "google",
+      address: ACCOUNTS,
+      name: "Invented Co Accounts",
+      aliases: ["billing@invented-co.example"],
+    });
+    fake.addAccount({ provider: "microsoft", address: HELLO, name: "Invented Co" });
+    const cards: Array<Card> = [];
+    yield* Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      yield* seed;
+      const connections = yield* KinConnections;
+      yield* connections.setSignInClient(people(owner), {
+        orgId,
+        service: "google",
+        client: {
+          clientId: "kin-fake.apps.googleusercontent.com",
+          clientSecret: Redacted.make("fake-secret"),
+        },
+      });
+      yield* connections.setSignInClient(people(owner), {
+        orgId,
+        service: "microsoft",
+        client: { clientId: "00000000-0000-4000-8000-000000000000" },
+      });
+      yield* body(fake, cards);
+    }).pipe(Effect.provide(layerFor(fake, cards)));
+  });
+type Env =
+  | KinConnections
+  | KinEventQueue.KinEventQueue
+  | SqlClient.SqlClient
+  | FileSystem.FileSystem
+  | ServerConfig;
+
+const callTool = (connection: string, tool: string, args: Record<string, unknown>) =>
+  Effect.gen(function* () {
+    return yield* (yield* KinConnections).call(scope, { connection, tool, arguments: args });
+  });
+/** A person's tap on a card, in the tap's transaction, then the send once it committed. */
+const tap = (widgetId: string, personId: KinPersonId, confirmed = true) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const connections = yield* KinConnections;
+    const asked = yield* sql.withTransaction(
+      connections.answerAsk({ orgId, widgetId, personId, confirmed, via: "tap", now: NOW }),
+    );
+    return asked?._tag === "send" ? yield* connections.sendAsk(orgId, asked.askId) : asked;
+  });
+const outside = Effect.gen(function* () {
+  return fromConnections(yield* KinConnections, yield* SqlClient.SqlClient);
+});
+
+describe("Kin mail end to end, on a fake mailbox", () => {
+  it.effect("wakes on client mail once, replies in its own account and thread, once", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* connect(fake, "google", ACCOUNTS);
+        yield* connect(fake, "microsoft", HELLO);
+        // Mail that arrives after the accounts were connected is what the poller looks at.
+        yield* TestClock.adjust("2 minutes");
+        const inbound = fake.deliver({
+          to: HELLO,
+          from: CLIENT,
+          subject: "Launch date",
+          body: "Can we move the launch to Friday?\nRavi",
+          at: NOW + 60_000,
+        });
+        fake.deliver({
+          to: ACCOUNTS,
+          from: "News <news@shop.example>",
+          subject: "Weekend sale",
+          body: "Everything half off.",
+          at: NOW + 90_000,
+        });
+
+        const source = yield* outside;
+        assert.lengthOf(yield* poll(orgId, NOW + 120_000, source), 1);
+        yield* TestClock.adjust("3 minutes");
+        assert.lengthOf(yield* poll(orgId, NOW + 300_000, source), 0);
+        const events = yield* sql<{ eventId: string; agentId: string; json: string }>`SELECT
+            event_id AS "eventId", agent_id AS "agentId", json FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'pulse'`;
+        assert.lengthOf(events, 1);
+        assert.strictEqual(events[0]!.agentId, lead);
+        const [line] = JSON.parse(events[0]!.json).outside;
+        assert.deepInclude(line, {
+          source: "mail",
+          account: HELLO,
+          to: HELLO,
+          who: CLIENT,
+          subject: "Launch date",
+          matched: "contact CT-1 Ravi Menon of client C-1 Lumen Studio",
+        });
+        assert.deepStrictEqual(
+          yield* sql`SELECT party_id AS "partyId", kind, note FROM kin_client_touches`,
+          [{ partyId: "rec_lumen", kind: "email", note: "Launch date" }],
+        );
+
+        // Woken by it, the agent names the other account: the reply still goes from the thread's.
+        yield* wake({ eventId: events[0]!.eventId });
+        const asked = yield* callTool(ACCOUNTS, "mail_reply", {
+          threadId: inbound.threadId,
+          body: "Friday works. I'll confirm the time tomorrow.",
+        });
+        assert.strictEqual(asked.note, ASKED);
+        const card = cards.at(-1)!;
+        assert.strictEqual(card.question, "Send this reply from Outlook?");
+        assert.strictEqual(card.chatId, "cos-owner");
+        assert.deepStrictEqual(
+          [card.send?.account, card.send?.from, card.send?.to, card.send?.subject],
+          [HELLO, HELLO, ["ravi@lumen.example"], "Re: Launch date"],
+        );
+        assert.deepInclude(card.send?.thread, { subject: "Launch date", replyingTo: CLIENT });
+        assert.lengthOf(fake.sent(), 0);
+
+        // A corrected reply on the same thread to the same person replaces the first card (H05).
+        yield* callTool(ACCOUNTS, "mail_reply", {
+          threadId: inbound.threadId,
+          body: "Friday works. I'll confirm 11:00 tomorrow.",
+        });
+        const corrected = cards.at(-2)!;
+        assert.strictEqual(cards.at(-1)!.widgetId, `closed:${card.widgetId}`);
+        assert.include(yield* tap(card.widgetId, owner).pipe(Effect.flip), {
+          reason: "widget_changed",
+        });
+        assert.lengthOf(fake.sent(), 0);
+        assert.deepStrictEqual(yield* tap(corrected.widgetId, owner), {
+          state: "sent",
+          reason: null,
+        });
+        const again = yield* tap(corrected.widgetId, owner).pipe(Effect.flip);
+        assert.strictEqual(again.reason, "widget_changed");
+        const sent = fake.sent();
+        assert.lengthOf(sent, 1);
+        assert.deepInclude(sent[0], {
+          account: HELLO,
+          threadId: inbound.threadId,
+          inReplyTo: inbound.messageId,
+          subject: "Re: Launch date",
+          to: ["ravi@lumen.example"],
+        });
+        assert.include(sent[0]!.body, "11:00");
+      }),
+    ),
+  );
+
+  it.effect(
+    "sends an invoice from the account chosen, and lets the agent choose with what it reads",
+    () =>
+      setUp((fake, cards) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const connections = yield* KinConnections;
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* connect(fake, "microsoft", HELLO);
+          fake.deliver({
+            to: ACCOUNTS,
+            from: CLIENT,
+            subject: "Billing contact",
+            body: "Please send invoices here.",
+            at: NOW - 86_400_000,
+          });
+          yield* wake({ person: owner });
+
+          // What the agent decides with: each account, its From addresses and one note for several.
+          const listing = yield* connections.tools(scope, {});
+          assert.sameDeepMembers(
+            (listing.connections ?? []).map((one) => [one.account, one.sendsAs]),
+            [
+              [ACCOUNTS, [ACCOUNTS, "billing@invented-co.example"]],
+              [HELLO, [HELLO]],
+            ],
+          );
+          assert.include(listing.note ?? "", "Connection mail on a mail search");
+          const found = yield* callTool("mail", "mail_search", {
+            query: "from:ravi@lumen.example",
+          });
+          assert.include(found.quoted ?? "", String.raw`\"account\":\"${ACCOUNTS}\"`);
+          assert.include(found.quoted ?? "", "Billing contact");
+
+          yield* callTool(ACCOUNTS, "mail_send", {
+            to: ["ravi@lumen.example"],
+            subject: "Invoice INV/26-27/001",
+            body: "Hi Ravi,\n\nThe November invoice is attached.\n\nArjun",
+            attachments: ["INV-1"],
+          });
+          const card = cards.at(-1)!;
+          assert.strictEqual(card.question, "Send this email from Gmail?");
+          assert.deepStrictEqual(
+            [card.send?.account, card.send?.from, card.send?.to, card.send?.subject],
+            [ACCOUNTS, ACCOUNTS, ["ravi@lumen.example"], "Invoice INV/26-27/001"],
+          );
+          assert.strictEqual(card.send?.attachments[0]?.name, "INV-26-27-001.pdf");
+          assert.deepStrictEqual(yield* tap(card.widgetId, owner), { state: "sent", reason: null });
+          assert.deepInclude(fake.sent()[0], {
+            account: ACCOUNTS,
+            to: ["ravi@lumen.example"],
+            attachments: ["INV-26-27-001.pdf"],
+          });
+          assert.deepStrictEqual(
+            yield* sql`SELECT state FROM kin_connection_asks WHERE entry_record_id = 'rec_inv'`,
+            [{ state: "sent" }],
+          );
+
+          // Every account sends on a Confirm, and what went out reads back: who, which account,
+          // which thread, which document, with the file as the mailbox holds it.
+          const gmailSent = fake.sent()[0]!;
+          const after = yield* connections.tools(scope, {});
+          for (const one of after.connections ?? [])
+            assert.includeMembers([...(one.withConfirm ?? [])], ["mail_send", "mail_reply"]);
+          assert.deepInclude(after.recentlySent?.[0], {
+            account: ACCOUNTS,
+            from: ACCOUNTS,
+            to: ["ravi@lumen.example"],
+            threadId: gmailSent.threadId,
+            reply: false,
+            documents: ["Invoice INV/26-27/001 (INV-26-27-001.pdf)"],
+          });
+          const gmailThread = yield* callTool(ACCOUNTS, "mail_read_thread", {
+            threadId: gmailSent.threadId,
+          });
+          assert.include(gmailThread.quoted ?? "", "INV-26-27-001.pdf");
+          assert.include(gmailThread.quoted ?? "", "application/pdf");
+
+          // From Outlook too, and its reminder later replies in that same thread.
+          yield* callTool(HELLO, "mail_send", {
+            to: ["ravi@lumen.example"],
+            subject: "Invoice INV/26-27/001",
+            body: "Hi Ravi,\n\nThe invoice again, from our other address.\n\nArjun",
+            attachments: ["INV-1"],
+          });
+          assert.deepStrictEqual(yield* tap(cards.at(-1)!.widgetId, owner), {
+            state: "sent",
+            reason: null,
+          });
+          const outlookSent = fake.sent()[1]!;
+          assert.deepInclude(outlookSent, { account: HELLO, attachments: ["INV-26-27-001.pdf"] });
+          const outlookThread = yield* callTool(HELLO, "mail_read_thread", {
+            threadId: outlookSent.threadId,
+          });
+          assert.include(outlookThread.quoted ?? "", "INV-26-27-001.pdf");
+          const searched = yield* callTool(HELLO, "mail_search", { query: "INV/26-27/001" });
+          assert.include(searched.quoted ?? "", outlookSent.threadId);
+          const latest = (yield* connections.tools(scope, {})).recentlySent?.[0];
+          assert.deepInclude(latest, { account: HELLO, threadId: outlookSent.threadId });
+          yield* callTool(HELLO, "mail_reply", {
+            threadId: latest!.threadId,
+            body: "A gentle reminder that this invoice is now due.",
+          });
+          assert.deepStrictEqual(yield* tap(cards.at(-1)!.widgetId, owner), {
+            state: "sent",
+            reason: null,
+          });
+          assert.deepInclude(fake.sent()[2], { account: HELLO, threadId: outlookSent.threadId });
+        }),
+      ),
+  );
+
+  it.effect("a co-owner confirms in her own chat; a member can't", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        yield* connect(fake, "google", ACCOUNTS);
+        yield* wake({ person: coOwner });
+        yield* callTool(ACCOUNTS, "mail_send", {
+          to: ["ravi@lumen.example"],
+          subject: "Kickoff notes",
+          body: "Notes attached below.",
+        });
+        const card = cards.at(-1)!;
+        assert.strictEqual(card.chatId, `cos-${coOwner}`);
+        const refused = yield* tap(card.widgetId, member).pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "not_allowed");
+        assert.lengthOf(fake.sent(), 0);
+        assert.deepStrictEqual(yield* tap(card.widgetId, coOwner), { state: "sent", reason: null });
+        assert.lengthOf(fake.sent(), 1);
+
+        yield* wake({ person: member });
+        const shared = yield* callTool(ACCOUNTS, "mail_send", {
+          to: ["ravi@lumen.example"],
+          subject: "Hi",
+          body: "x",
+        }).pipe(Effect.flip);
+        assert.strictEqual(shared.message, SHARED_CONNECTIONS);
+      }),
+    ),
+  );
+
+  it.effect("an expired account says so on the card, loses nothing, and sends after sign-in", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        yield* connect(fake, "google", ACCOUNTS);
+        const hello = yield* connect(fake, "microsoft", HELLO);
+        const inbound = fake.deliver({
+          to: HELLO,
+          from: CLIENT,
+          subject: "Invoice question",
+          body: "Is GST included?",
+          at: NOW - 60_000,
+        });
+        yield* wake({ person: owner });
+        const reply = (body: string) =>
+          callTool(HELLO, "mail_reply", { threadId: inbound.threadId, body }).pipe(
+            Effect.map(() => cards.at(-1)!),
+          );
+        const signInAgain = Effect.gen(function* () {
+          fake.setExpired(HELLO, false);
+          const started = yield* connections.signInStart(people(owner), {
+            orgId,
+            connectionId: hello,
+            returnTo: "web",
+          });
+          yield* connections.signInFinish(people(owner), {
+            orgId,
+            response: fake.approve(started.authorizationUrl, HELLO),
+          });
+        });
+
+        // Found out before the tap: Confirm says so and the card stays open.
+        const first = yield* reply("Yes, it is.");
+        fake.setExpired(HELLO, true);
+        yield* TestClock.adjust("2 hours");
+        yield* poll(orgId, NOW, yield* outside);
+        const held = yield* tap(first.widgetId, owner).pipe(Effect.flip);
+        assert.include(held.message, `${HELLO} needs signing in again`);
+        assert.include(held.message, "Nothing was sent");
+        yield* signInAgain;
+        assert.deepStrictEqual(yield* tap(first.widgetId, owner), { state: "sent", reason: null });
+
+        // Found out while sending: not sent, and the same mail comes back on a fresh card.
+        const second = yield* reply("Yes, GST is included.");
+        fake.setExpired(HELLO, true);
+        yield* TestClock.adjust("2 hours");
+        const failed = yield* tap(second.widgetId, owner);
+        if (failed === undefined || !("state" in failed) || failed.fresh === undefined)
+          return assert.fail("no fresh card");
+        assert.strictEqual(failed.state, "failed");
+        assert.include(failed.reason ?? "", "needs signing in again");
+        assert.lengthOf(fake.sent(), 1);
+        yield* signInAgain;
+        const fresh = yield* connections.freshAsk(orgId, failed.fresh, NOW);
+        assert.strictEqual(fresh.card.send.account, HELLO);
+        yield* fresh.bind("w-fresh");
+        assert.deepStrictEqual(yield* tap("w-fresh", owner), { state: "sent", reason: null });
+        assert.lengthOf(fake.sent(), 2);
+        assert.strictEqual(fake.sent()[1]!.threadId, inbound.threadId);
+      }),
+    ),
+  );
+});

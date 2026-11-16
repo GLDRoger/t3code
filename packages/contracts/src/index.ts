@@ -76,6 +76,7 @@ export * from "./clientRpcPermissions.ts";
 export * from "./kinChat.ts";
 export * from "./kinChart.ts";
 export * from "./kinVisual.ts";
+export * from "./kinRefresh.ts";
 export * from "./kinLead.ts";
 export * from "./kinTriggers.ts";
 export * from "./kinApprovals.ts";
@@ -84,10 +85,14 @@ export * from "./kinMemory.ts";
 export * from "./kinWork.ts";
 export * from "./kinDocs.ts";
 export * from "./kinMoney.ts";
+export * from "./kinPulse.ts";
 export * from "./kinFinance.ts";
+export * from "./kinMoneyAnswers.ts";
+export * from "./kinStatements.ts";
 export * from "./kinPush.ts";
 
 export * from "./kinRpcs.ts";
 export * from "./kinWorkerNetwork.ts";
+export * from "./kinConnections.ts";
 
 export * from "./kinPeople.ts";

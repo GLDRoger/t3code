@@ -6,37 +6,45 @@ import {
   kinWorkDraftFor,
   type KinWorkDraft,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_PROJECTS,
   KIN_PROJECT_FAILED,
   KIN_PROJECT_GONE,
-  KIN_PROJECT_VIEWS,
+  KIN_PROJECT_LEAD,
+  kinProjectLeadChoices,
   kinProjectPageView,
-  kinProjectRow,
-  kinProjectsNothing,
-  type KinProjectRowView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
-import type { KinProjectPage, KinProjectState, KinRecordKey } from "@t3tools/contracts";
-import { LegendList } from "@legendapp/list/react";
+import type {
+  KinPersonId,
+  KinProjectPage,
+  KinProjectState,
+  KinRecordKey,
+  KinWorkPrincipal,
+} from "@t3tools/contracts";
 import { EllipsisIcon, ExternalLinkIcon, PencilIcon, PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
-import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
+import { Radio, RadioGroup } from "../components/ui/radio-group";
+import {
+  Sheet,
+  SheetDescription,
+  SheetHeader,
+  SheetPopup,
+  SheetTitle,
+} from "../components/ui/sheet";
 import { Switch } from "../components/ui/switch";
-import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
-import { cn } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
-import { KinWorkProjectRow } from "./KinWorkClients";
+import { KinAttentionSection } from "./KinAttention";
 import { KinDocsUnder } from "./KinDocsList";
-import { KinProjectDialog } from "./KinWorkForms";
+import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
 import {
   KinWorkHealthBadge,
   KinWorkNotice,
@@ -53,139 +61,11 @@ import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected } from "./useKinHost";
 import {
   useKinProjectPage,
-  useKinProjectsList,
   type KinWorkChangesHandle,
   type KinWorkChoices,
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
-
-/** Every project with how it is going, as the host works it out. */
-export function KinWorkProjectsList(
-  props: KinWorkTarget & {
-    readonly live: KinWorkLive;
-    readonly stale: boolean;
-    readonly directory: KinWorkDirectory;
-    readonly onOpen: (key: KinRecordKey) => void;
-    readonly onAdd: (() => void) | null;
-  },
-) {
-  const { names } = props.directory;
-  const now = new Date(useNowMinuteMs());
-  const { state, list } = useKinProjectsList(props, props.stale ? null : props.live.seq);
-  const { filter } = state;
-  const rows = state.records.map((row) => kinProjectRow(row, names, now));
-  const nothing = kinProjectsNothing(filter);
-  return (
-    <LegendList<KinProjectRowView>
-      data={rows}
-      keyExtractor={(row) => row.key}
-      extraData={state}
-      recycleItems
-      onEndReached={() => void list.loadMore()}
-      onEndReachedThreshold={0.5}
-      ListHeaderComponent={
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
-          {props.stale || state.stale ? (
-            <p role="status" className="text-xs text-muted-foreground">
-              {KIN_WORK_STALE}
-            </p>
-          ) : null}
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <ToggleGroup
-              variant="pill"
-              size="sm"
-              aria-label="Show"
-              value={[filter.view]}
-              onValueChange={(value) => {
-                const view = KIN_PROJECT_VIEWS.find((held) => held.id === value[0]);
-                if (view !== undefined) list.setFilter({ ...filter, view: view.id });
-              }}
-            >
-              {KIN_PROJECT_VIEWS.map((view) => (
-                <Toggle key={view.id} value={view.id}>
-                  {view.label}
-                </Toggle>
-              ))}
-            </ToggleGroup>
-            <div className="min-w-0 flex-1">
-              <Input
-                type="search"
-                aria-label={KIN_PROJECTS.search}
-                placeholder={KIN_PROJECTS.search}
-                value={filter.text}
-                onChange={(event) => list.setFilter({ ...filter, text: event.currentTarget.value })}
-              />
-            </div>
-          </div>
-        </div>
-      }
-      ListEmptyComponent={
-        <div className="mx-auto w-full max-w-3xl px-4">
-          {state.loading ? (
-            <div role="status" aria-label="Loading projects">
-              <KinWorkRowSkeletons />
-            </div>
-          ) : state.failed !== null ? (
-            <div className="flex flex-col items-start gap-3 py-4">
-              <Alert variant="error">
-                <AlertDescription>
-                  {KIN_PROJECTS.loadFailed}. Check your connection.
-                </AlertDescription>
-              </Alert>
-              <Button size="sm" variant="outline" onClick={list.refresh}>
-                Retry
-              </Button>
-            </div>
-          ) : (
-            <KinWorkNotice
-              title={nothing.title}
-              detail={nothing.detail}
-              {...(nothing.offerNew && props.onAdd !== null
-                ? {
-                    action: (
-                      <Button onClick={props.onAdd}>
-                        <PlusIcon />
-                        {KIN_PROJECTS.add}
-                      </Button>
-                    ),
-                  }
-                : {})}
-            />
-          )}
-        </div>
-      }
-      ListFooterComponent={
-        !state.more ? null : (
-          <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
-            <p className="text-xs text-muted-foreground" role="status">
-              {state.moreFailed
-                ? "Couldn't load more."
-                : `Showing ${rows.length} of ${state.total ?? rows.length}`}
-            </p>
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={state.loadingMore}
-              aria-busy={state.loadingMore}
-              onClick={() => void list.loadMore()}
-            >
-              {state.moreFailed ? "Try again" : "Show more"}
-            </Button>
-          </div>
-        )
-      }
-      renderItem={({ item: row }) => (
-        <div className="mx-auto w-full max-w-3xl border-b border-border/60 px-4 py-1">
-          <KinWorkProjectRow row={row} onOpen={() => props.onOpen(row.key)} />
-        </div>
-      )}
-      estimatedItemSize={56}
-      drawDistance={640}
-      className={cn("min-h-0 flex-1 overscroll-contain pb-6", state.refreshing && "opacity-70")}
-    />
-  );
-}
 
 type PageProps = KinWorkTarget & {
   readonly projectKey: KinRecordKey;
@@ -243,16 +123,19 @@ function ProjectPage(
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const now = new Date(useNowMinuteMs());
   const [editing, setEditing] = useState(false);
+  const [addingMilestone, setAddingMilestone] = useState(false);
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
+  const [choosingLead, setChoosingLead] = useState(false);
   const privateId = useId();
   const view = kinProjectPageView(page, names, now);
   const { party } = view;
   const change = async (input: {
     readonly state?: KinProjectState;
     readonly sensitive?: boolean;
+    readonly owner?: KinWorkPrincipal;
   }) => {
-    if (busy) return;
+    if (busy) return false;
     setBusy(true);
     setProblem(null);
     const outcome = await kinWorkSend({
@@ -269,7 +152,12 @@ function ProjectPage(
       setProblem(outcome.problem);
       if (outcome.problem.kind === "conflict") props.onRefresh();
     }
+    return outcome.ok;
   };
+  // A project's lead adds its milestones too; the host checks they still lead it.
+  const leads =
+    view.lead.personId !== null &&
+    view.lead.personId === kinFeedViewer(props.directory.orgs, orgId).personId;
   const addTask =
     props.onAddTask === null || view.closed !== null
       ? null
@@ -303,6 +191,9 @@ function ProjectPage(
               {view.target}
               {view.ledBy === null ? null : ` · ${view.ledBy}`}
             </p>
+            {view.terms === null ? null : (
+              <p className="text-sm text-muted-foreground">{view.terms}</p>
+            )}
           </div>
           {canChange ? (
             <div className="flex shrink-0 items-center gap-1">
@@ -354,6 +245,97 @@ function ProjectPage(
           <KinWorkProblem problem={problem} onOpenExisting={props.onOpenProject} />
         )}
       </div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <h3 className="text-xs font-medium text-muted-foreground">{KIN_PROJECT_LEAD.title}</h3>
+          <p className="truncate text-sm text-foreground">{view.lead.name}</p>
+        </div>
+        {canChange ? (
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => setChoosingLead(true)}>
+            {KIN_PROJECT_LEAD.change}
+          </Button>
+        ) : null}
+      </div>
+      <KinAttentionSection
+        environmentId={environmentId}
+        orgId={orgId}
+        scope={{ type: "project", key: view.key }}
+        names={names}
+        onOpen={(to) => {
+          if (to.type === "record") props.onOpenTask(to.key);
+        }}
+      />
+      {view.specChanged.length === 0 ? null : (
+        <KinWorkSection title={KIN_PROJECTS.specChanged}>
+          <ul className="-mx-2 flex flex-col">
+            {view.specChanged.map((row) => (
+              <li key={row.key}>
+                <button
+                  type="button"
+                  onClick={() => props.onOpenTask(row.key)}
+                  className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+                >
+                  <span className="line-clamp-2 text-sm text-foreground">{row.title}</span>
+                  <span className="text-xs text-warning-foreground">{row.line}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </KinWorkSection>
+      )}
+      <KinWorkSection
+        title={KIN_PROJECTS.milestones}
+        action={
+          (canChange || leads) && view.closed === null ? (
+            <Button size="xs" variant="ghost" onClick={() => setAddingMilestone(true)}>
+              <PlusIcon />
+              {KIN_PROJECTS.addMilestone}
+            </Button>
+          ) : null
+        }
+      >
+        {view.milestones.length === 0 ? (
+          <p className="text-sm text-muted-foreground">{KIN_PROJECTS.noMilestones}</p>
+        ) : (
+          <ul className="-mx-2 flex flex-col">
+            {view.milestones.map((row) => (
+              <li key={row.key}>
+                <button
+                  type="button"
+                  onClick={() => props.onOpenTask(row.key)}
+                  className="flex w-full flex-col gap-1.5 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+                      {row.title}
+                    </span>
+                    {row.badge === null ? null : (
+                      <span
+                        className={
+                          row.tone === "late"
+                            ? "shrink-0 text-xs font-medium text-destructive-foreground"
+                            : row.tone === "at_risk"
+                              ? "shrink-0 text-xs font-medium text-warning-foreground"
+                              : "shrink-0 text-xs text-muted-foreground"
+                        }
+                      >
+                        {row.badge}
+                      </span>
+                    )}
+                  </span>
+                  <span aria-hidden className="h-1 w-full overflow-hidden rounded-full bg-muted">
+                    <span
+                      className="block h-full rounded-full bg-primary"
+                      style={{ width: `${Math.round(row.progress * 100)}%` }}
+                    />
+                  </span>
+                  <span className="text-xs text-muted-foreground tabular-nums">{row.line}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </KinWorkSection>
       {view.blocked.length === 0 ? null : (
         <KinWorkSection title={KIN_PROJECTS.blocked}>
           <ul className="-mx-2 flex flex-col">
@@ -372,20 +354,26 @@ function ProjectPage(
           </ul>
         </KinWorkSection>
       )}
-      {view.nextDue === null ? null : (
-        <KinWorkSection title={KIN_PROJECTS.nextDue}>
-          <KinWorkRow
-            row={view.nextDue}
-            saving={false}
-            onOpen={() => {
-              if (view.nextDue !== null) props.onOpenTask(view.nextDue.key);
-            }}
-            onAct={null}
-          />
+      {view.money.length === 0 ? null : (
+        <KinWorkSection
+          title={KIN_PROJECTS.money}
+          fold={{ summary: view.money.map((line) => `${line.label} ${line.value}`)[0] ?? null }}
+        >
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+            {view.money.map((line) => (
+              <div key={line.label} className="contents">
+                <dt className="text-muted-foreground">{line.label}</dt>
+                <dd className="text-end text-foreground tabular-nums">{line.value}</dd>
+              </div>
+            ))}
+          </dl>
         </KinWorkSection>
       )}
       {view.pullRequests.length === 0 ? null : (
-        <KinWorkSection title={KIN_PROJECTS.pullRequests}>
+        <KinWorkSection
+          title={KIN_PROJECTS.pullRequests}
+          fold={{ summary: String(view.pullRequests.length) }}
+        >
           <ul className="-mx-2 flex flex-col">
             {view.pullRequests.map((pull) => {
               const content = (
@@ -427,6 +415,42 @@ function ProjectPage(
           </ul>
         </KinWorkSection>
       )}
+      {view.people.length === 0 ? null : (
+        <KinWorkSection
+          title={KIN_PROJECTS.people}
+          fold={{ summary: KIN_PROJECTS.count(view.people.length, "person", "people") }}
+        >
+          <ul className="flex flex-col gap-1">
+            {view.people.map((row) => (
+              <li key={row.key} className="flex min-w-0 items-baseline justify-between gap-3">
+                <span className="truncate text-sm text-foreground">{row.name}</span>
+                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                  {row.line}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </KinWorkSection>
+      )}
+      {view.meetings.length === 0 ? null : (
+        <KinWorkSection
+          title={KIN_PROJECTS.meetings}
+          fold={{ summary: KIN_PROJECTS.count(view.meetings.length, "meeting", "meetings") }}
+        >
+          <ul className="-mx-2 flex flex-col">
+            {view.meetings.map((row) => (
+              <li key={row.key}>
+                <KinWorkRow
+                  row={row}
+                  saving={false}
+                  onOpen={() => props.onOpenTask(row.key)}
+                  onAct={null}
+                />
+              </li>
+            ))}
+          </ul>
+        </KinWorkSection>
+      )}
       <KinDocsUnder
         environmentId={props.environmentId}
         orgId={props.orgId}
@@ -434,7 +458,15 @@ function ProjectPage(
         under={{ project: props.projectKey }}
         onOpen={props.onOpenDoc}
       />
-      <KinWorkSection title={KIN_PROJECTS.changed}>
+      <KinWorkSection
+        title={KIN_PROJECTS.changed}
+        fold={{
+          summary:
+            view.changed.length === 0
+              ? KIN_PROJECTS.nothingChanged
+              : KIN_PROJECTS.count(view.changed.length, "change", "changes"),
+        }}
+      >
         {view.changed.length === 0 ? (
           <p className="text-sm text-muted-foreground">{KIN_PROJECTS.nothingChanged}</p>
         ) : (
@@ -444,29 +476,37 @@ function ProjectPage(
           <p className="text-xs text-muted-foreground">{view.changedMore}</p>
         )}
       </KinWorkSection>
-      {view.repos.length === 0 ? null : (
-        <KinWorkSection title={KIN_PROJECTS.repos}>
-          <p className="text-sm text-foreground">{view.repos.join(", ")}</p>
+      {!canChange && view.repos.length === 0 && view.notes === null ? null : (
+        <KinWorkSection title={KIN_PROJECTS.details} fold={{ summary: null }}>
+          <div className="flex flex-col gap-6">
+            {view.repos.length === 0 ? null : (
+              <KinWorkSection title={KIN_PROJECTS.repos}>
+                <p className="text-sm text-foreground">{view.repos.join(", ")}</p>
+              </KinWorkSection>
+            )}
+            {view.notes === null ? null : (
+              <KinWorkSection title={KIN_PROJECTS.notes}>
+                <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
+              </KinWorkSection>
+            )}
+            {canChange ? (
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <Label htmlFor={privateId}>{KIN_PROJECTS.privateLabel}</Label>
+                  <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
+                </div>
+                <Switch
+                  id={privateId}
+                  checked={view.privacy.private}
+                  // Its client keeps it private whatever its own label says, so there is nothing to change.
+                  disabled={busy || view.privacy.inherited}
+                  onCheckedChange={(checked) => void change({ sensitive: checked })}
+                />
+              </div>
+            ) : null}
+          </div>
         </KinWorkSection>
       )}
-      {view.notes === null ? null : (
-        <KinWorkSection title={KIN_PROJECTS.notes}>
-          <p className="whitespace-pre-wrap text-sm text-foreground">{view.notes}</p>
-        </KinWorkSection>
-      )}
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <Label htmlFor={privateId}>{KIN_PROJECTS.privateLabel}</Label>
-          <p className="text-xs text-muted-foreground">{view.privacy.note}</p>
-        </div>
-        <Switch
-          id={privateId}
-          checked={view.privacy.private}
-          // Its client keeps it private whatever its own label says, so there is nothing to change.
-          disabled={!canChange || busy || view.privacy.inherited}
-          onCheckedChange={(checked) => void change({ sensitive: checked })}
-        />
-      </div>
       <KinWorkPlaceLists
         environmentId={environmentId}
         orgId={orgId}
@@ -504,6 +544,33 @@ function ProjectPage(
         choices={null}
         header={summary}
       />
+      {addingMilestone ? (
+        <KinMilestoneDialog
+          environmentId={environmentId}
+          orgId={orgId}
+          project={view.key}
+          onSaved={() => {
+            setAddingMilestone(false);
+            props.onRefresh();
+          }}
+          onOpenExisting={(key) => {
+            setAddingMilestone(false);
+            props.onOpenTask(key);
+          }}
+          onClose={() => setAddingMilestone(false)}
+        />
+      ) : null}
+      {choosingLead ? (
+        <KinProjectLeadSheet
+          current={view.lead.personId}
+          people={props.directory.people}
+          busy={busy}
+          onSave={async (personId) => {
+            if (await change({ owner: { _tag: "person", personId } })) setChoosingLead(false);
+          }}
+          onClose={() => setChoosingLead(false)}
+        />
+      ) : null}
       {editing ? (
         <KinProjectDialog
           environmentId={environmentId}
@@ -523,5 +590,66 @@ function ProjectPage(
         />
       ) : null}
     </>
+  );
+}
+
+/** The owner picks who leads a project; the host applies it on the lead's next request. */
+function KinProjectLeadSheet(props: {
+  readonly current: KinPersonId | null;
+  readonly people: Parameters<typeof kinProjectLeadChoices>[0];
+  readonly busy: boolean;
+  readonly onSave: (personId: KinPersonId) => Promise<void>;
+  readonly onClose: () => void;
+}) {
+  const choices = kinProjectLeadChoices(props.people);
+  const [picked, setPicked] = useState<KinPersonId | null>(props.current);
+  return (
+    <Sheet
+      open
+      onOpenChange={(open) => {
+        if (!open && !props.busy) props.onClose();
+      }}
+    >
+      <SheetPopup side="right">
+        <SheetHeader>
+          <SheetTitle>{KIN_PROJECT_LEAD.choose}</SheetTitle>
+          <SheetDescription>{KIN_PROJECT_LEAD.detail}</SheetDescription>
+        </SheetHeader>
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pb-6">
+          <RadioGroup
+            value={picked ?? ""}
+            disabled={props.busy}
+            onValueChange={(value) => {
+              const choice = choices.find((held) => held.personId === value);
+              if (choice !== undefined) setPicked(choice.personId);
+            }}
+          >
+            {choices.map((choice) => (
+              <label
+                key={choice.personId}
+                className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md px-2 hover:bg-accent"
+              >
+                <Radio value={choice.personId} />
+                <span className="truncate text-sm text-foreground">{choice.name}</span>
+              </label>
+            ))}
+          </RadioGroup>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-border px-6 py-4">
+          <Button variant="outline" disabled={props.busy} onClick={props.onClose}>
+            Cancel
+          </Button>
+          <Button
+            disabled={props.busy || picked === null || picked === props.current}
+            aria-busy={props.busy}
+            onClick={() => {
+              if (picked !== null) void props.onSave(picked);
+            }}
+          >
+            {KIN_PROJECT_LEAD.save}
+          </Button>
+        </div>
+      </SheetPopup>
+    </Sheet>
   );
 }

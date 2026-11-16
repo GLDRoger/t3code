@@ -16,6 +16,8 @@ import {
   kinJoinOffersApp,
   kinJoinStanding,
   kinJoinTarget,
+  kinPlaceReach,
+  kinViewerOwnerLevel,
 } from "./kinJoin.ts";
 
 const team = EnvironmentId.make("team");
@@ -115,18 +117,54 @@ describe("the app's shell", () => {
   });
 
   it("offers the Kin tabs a session has been allowed, and no others", () => {
-    expect(kinHomeTabs(teammate)).toEqual(["chats", "settings"]);
-    expect(kinHomeTabs(owner)).toEqual(["chats", "work", "team", "memory", "settings"]);
-    expect(
-      kinHomeTabs({ authenticated: true, permissions: ["kin:chat", "orchestration:read"] }),
-    ).toEqual(["chats", "work", "settings"]);
-    expect(kinHomeTabs(null)).toEqual(["chats", "settings"]);
+    expect(kinHomeTabs(teammate, false)).toEqual(["chats", "work", "settings"]);
+    expect(kinHomeTabs(owner, true)).toEqual(["chats", "work", "team", "memory", "settings"]);
+    // A co-owner's session is a teammate's; their kind opens the owner's places.
+    expect(kinHomeTabs(teammate, true)).toEqual(["chats", "work", "team", "memory", "settings"]);
+    expect(kinHomeTabs(null, false)).toEqual(["chats", "settings"]);
   });
 
-  it("docks Chats, Work and Settings for the owner, and no Work for a teammate", () => {
-    expect(kinDockTabs(owner)).toEqual(["chats", "work", "settings"]);
-    expect(kinDockTabs(teammate)).toEqual(["chats", "settings"]);
-    expect(kinDockTabs(null)).toEqual(["chats", "settings"]);
+  it("docks Chats and every place of Work the grant reaches and the host has not refused", () => {
+    const none = { money: false, clients: false, docs: false };
+    expect(kinDockTabs(owner, true, none)).toEqual(["chats", "tasks", "money", "clients", "docs"]);
+    expect(kinDockTabs(teammate, true, none)).toEqual([
+      "chats",
+      "tasks",
+      "money",
+      "clients",
+      "docs",
+    ]);
+    expect(kinDockTabs(owner, true, { ...none, money: true })).toEqual([
+      "chats",
+      "tasks",
+      "clients",
+      "docs",
+    ]);
+    expect(kinDockTabs(teammate, false, none)).toEqual(["chats", "tasks"]);
+    // Anyone else gets the places the host says they reach, and still loses a refused one.
+    const reach = kinPlaceReach({
+      places: { money: false, clients: true, docs: false },
+      leads: [],
+    });
+    expect(kinDockTabs(teammate, false, none, reach)).toEqual(["chats", "tasks", "clients"]);
+    const lead = kinPlaceReach({
+      places: { money: false, clients: false, docs: false },
+      leads: [1],
+    });
+    expect(kinDockTabs(teammate, false, { ...none, docs: true }, lead)).toEqual([
+      "chats",
+      "tasks",
+      "money",
+      "clients",
+    ]);
+    expect(kinDockTabs(null, true, none)).toEqual(["chats"]);
+  });
+
+  it("takes the stored kind once known, and the owner's own session for the owner until then", () => {
+    expect(kinViewerOwnerLevel("co_owner", teammate)).toBe(true);
+    expect(kinViewerOwnerLevel("member", owner)).toBe(false);
+    expect(kinViewerOwnerLevel(null, owner)).toBe(true);
+    expect(kinViewerOwnerLevel(null, teammate)).toBe(false);
   });
 
   it("is only Kin when every saved environment is a teammate's", () => {

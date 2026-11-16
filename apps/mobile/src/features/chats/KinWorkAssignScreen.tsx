@@ -30,7 +30,12 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import type { KinWorkItemParams } from "./KinWorkItemScreen";
 import { kinClient } from "./state/kinClient";
-import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import {
+  kinWorkAnswersOf,
+  useKinWorkAnswer,
+  useKinWorkDirectory,
+  type KinWorkTarget,
+} from "./state/useKinWork";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -92,13 +97,14 @@ function KinWorkAssignBody(props: ItemTarget) {
   const navigation = useNavigation();
   const { environmentId, orgId, itemKey } = props;
   const itemAtom = kinClient.workItem({ environmentId, input: { orgId, key: itemKey } });
-  const state = kinWorkItemState(useAtomValue(itemAtom), null);
-  const { orgs, people, names } = useKinWorkDirectory(props, true);
+  const state = kinWorkItemState(useAtomValue(itemAtom), useKinWorkAnswer(props, itemKey));
+  const { orgs, people, joined, invited, names } = useKinWorkDirectory(props, true);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
   const [actions] = useState(() =>
     createKinWorkActions({
       orgId,
+      answers: kinWorkAnswersOf(props),
       create: (input) => create({ environmentId, input }),
       assign: (input) => assign({ environmentId, input }),
       reread: () => appAtomRegistry.refresh(itemAtom),
@@ -136,7 +142,7 @@ function KinWorkAssignBody(props: ItemTarget) {
   }
 
   const give = async (item: KinRecordDetail, to: KinWorkAssignee) => {
-    if (giving !== null || to.current) return;
+    if (giving !== null || to.current || to.invited) return;
     setGiving(to.key);
     setProblem(null);
     const outcome = await actions.give(item, to.principal);
@@ -145,17 +151,29 @@ function KinWorkAssignBody(props: ItemTarget) {
     appAtomRegistry.refresh(itemAtom);
     navigation.goBack();
   };
-  const assignees = kinWorkAssignees({ orgs, orgId, people, names, current: state.item.owner });
+  const assignees = kinWorkAssignees({
+    orgs,
+    orgId,
+    people,
+    joined,
+    invited,
+    names,
+    current: state.item.owner,
+  });
   const rows = (list: ReadonlyArray<KinWorkAssignee>) =>
     list.map((to, index) => (
       <ListChoiceRow
         key={to.key}
         label={to.name}
         leading={<KinAvatar avatar={to.avatar} size="mini" />}
-        {...(to.current ? { description: "Has it" } : {})}
+        {...(to.current
+          ? { description: "Has it" }
+          : to.invited
+            ? { description: KIN_WORK_ASSIGN.invited }
+            : {})}
         selected={to.current || giving === to.key}
         separated={index > 0}
-        disabled={giving !== null && giving !== to.key}
+        disabled={to.invited === true || (giving !== null && giving !== to.key)}
         onPress={() => void give(state.item, to)}
       />
     ));

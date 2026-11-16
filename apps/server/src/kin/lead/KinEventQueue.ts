@@ -24,6 +24,7 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 
 const EventJson = Schema.fromJsonString(KinEvent);
 const encodeEvent = Schema.encodeEffect(EventJson);
@@ -71,14 +72,13 @@ const SteerInput = Schema.Struct({
 });
 
 /**
- * An event's lane, the chat a wake-up answers: a human message's or card tap's own chat, or
- * the chat a reported worker was asked for in, else the lead's direct chat with its owner. A due
- * deferral asked from another chat gets a lane of its own, so that chat's level never mixes with
- * owner-chat events in one wake-up. Derived from stored rows only, never model text.
+ * An event's lane, the chat a wake-up answers: a message's or tap's chat, a worker's or teammate
+ * task's asking chat, else the lead's direct chat with its owner. A due deferral from another chat
+ * gets its own lane so its level never mixes with owner-chat events. From stored rows, never model text.
  */
 const LANE_OF = `CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
   THEN json_extract(e.json, '$.chatId')
-  WHEN e.tag = 'worker.report' AND json_extract(e.json, '$.chatId') IS NOT NULL
+  WHEN e.tag IN ('worker.report', 'record.changed') AND json_extract(e.json, '$.chatId') IS NOT NULL
   THEN json_extract(e.json, '$.chatId')
   WHEN e.tag IN ('deferral.due', 'worker.report') AND json_extract(e.json, '$.origin.chatId') IS NOT NULL
   THEN 'origin:' || json_extract(e.json, '$.origin.agentId') || ':' || json_extract(e.json, '$.origin.chatId')
@@ -144,8 +144,10 @@ class NoClaimableEvents extends Schema.TaggedError<NoClaimableEvents>()("NoClaim
 export class KinEventQueue extends Context.Service<
   KinEventQueue,
   {
+    /** `notBefore` holds a new event until then (a loose check-in's minute); a duplicate keeps its own. */
     readonly enqueue: (
       event: KinEvent,
+      options?: { readonly notBefore?: number },
     ) => Effect.Effect<
       { readonly event: KinEvent; readonly duplicate: boolean },
       | PersistenceSqlError
@@ -258,7 +260,7 @@ const make = Effect.gen(function* () {
   });
 
   const enqueue = Effect.fn("KinEventQueue.enqueue")(
-    function* (input: KinEvent) {
+    function* (input: KinEvent, options?: { readonly notBefore?: number }) {
       yield* validateEvent(input);
       if (
         input._tag === "github" &&
@@ -312,10 +314,16 @@ const make = Effect.gen(function* () {
             SELECT 1 FROM kin_chat_members
             WHERE org_id = ${event.orgId} AND chat_id = ${event.chatId}
               AND member_id = ${event.provenance.memberId} AND person_id = ${event.provenance.personId}
-              AND principal_kind = 'person' AND role = 'owner' AND left_at IS NULL
+              AND principal_kind = 'person' AND left_at IS NULL
               AND EXISTS (SELECT 1 FROM kin_agents
-                WHERE org_id = ${event.orgId} AND agent_id = ${event.agentId}
-                  AND owner_person_id = ${event.provenance.personId} AND retired_at IS NULL)
+                WHERE org_id = ${event.orgId} AND agent_id = ${event.agentId} AND retired_at IS NULL
+                  AND ((kin_chat_members.role = 'owner'
+                      AND owner_person_id = ${event.provenance.personId})
+                    -- A co-owner's own direct chat is owner-level.
+                    OR (kin_chat_members.role = 'member'
+                      AND ${sql.literal(ownerLevelSql("kin_chat_members.org_id", "kin_chat_members.person_id"))}
+                      AND EXISTS (SELECT 1 FROM kin_chats c WHERE c.org_id = ${event.orgId}
+                        AND c.chat_id = ${event.chatId} AND c.kind = 'direct'))))
               AND EXISTS (SELECT 1 FROM kin_chat_members
                 WHERE org_id = ${event.orgId} AND chat_id = ${event.chatId}
                   AND principal_kind = 'agent' AND agent_id = ${event.agentId} AND left_at IS NULL)
@@ -327,9 +335,10 @@ const make = Effect.gen(function* () {
           const json = yield* encodeEvent(event);
           const now = yield* Clock.currentTimeMillis;
           const inserted = yield* sql`
-      INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at)
+      INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, dedupe_key, received_at, queued_at, not_before)
       VALUES (${event.eventId}, ${event.orgId}, ${event.agentId}, ${event._tag}, ${priority},
-        ${json}, ${event.dedupeKey}, ${DateTime.toEpochMillis(event.receivedAt)}, ${now})
+        ${json}, ${event.dedupeKey}, ${DateTime.toEpochMillis(event.receivedAt)}, ${now},
+        ${options?.notBefore !== undefined && options.notBefore > now ? options.notBefore : null})
       ON CONFLICT DO NOTHING
       RETURNING event_id
     `;
@@ -648,7 +657,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           const none = { failedEventIds: [], stranded: 0, retried: 0 };
-          // Aborted for its audience (`abortPrivateTurns`): whatever it ran to, a fresh
+          // Aborted for its audience (`abortChatTurns`): whatever it ran to, a fresh
           // wake-up answers its events, without spending an attempt or telling anyone.
           const requeued = yield* sql`UPDATE kin_wakeups SET status = 'released', ended_at = ${now}
             WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND status = 'running'

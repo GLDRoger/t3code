@@ -13,13 +13,17 @@ export const KIN_COMPANY = {
   title: "Company details",
   summary: "Legal name, tax ids and bank details",
   private:
-    "Private. Only you see these. Your agents read them only when you ask for something that needs them, like an invoice.",
+    "Private. Only the owner and co-owners see these. Agents read them only when asked for something that needs them, like an invoice.",
   loadFailed: "Couldn't load your company details",
   edit: "Edit",
   save: "Save",
   cancel: "Cancel",
   saved: "Saved.",
   notSet: "Not set",
+  timeZone: "Time zone",
+  timeZoneUse: "Check-ins, due days and your agents' times follow it. Your phone keeps it current.",
+  timeZoneFromHost:
+    "None set yet, so Kin uses the computer's. Open Kin on your phone to set yours.",
   empty: "Nothing here yet. Add what goes on your invoices.",
   changed:
     "These changed while you were editing. What you typed is still here. Check what's new, then save again.",
@@ -41,6 +45,8 @@ export type KinCompanyFieldId =
   | "pan"
   | "placeOfSupply"
   | "sac"
+  | "lutNumber"
+  | "lutDate"
   | "accountName"
   | "accountNumber"
   | "ifsc"
@@ -102,6 +108,19 @@ export const KIN_COMPANY_SECTIONS: ReadonlyArray<{
         placeholder: "998314",
         problem: "A SAC code is 4 to 8 digits.",
       },
+      {
+        id: "lutNumber",
+        label: "LUT ARN, for exports",
+        placeholder: "AD290426001234X",
+        code: true,
+        problem: "An LUT ARN is 8 to 20 letters and digits.",
+      },
+      {
+        id: "lutDate",
+        label: "LUT filed on",
+        placeholder: "2026-04-01",
+        problem: "Write the day as YYYY-MM-DD, like 2026-04-01.",
+      },
     ],
   },
   {
@@ -146,6 +165,8 @@ const valid: Record<KinCompanyFieldId, (value: string | null) => boolean> = {
   pan: Schema.is(KinCompanyProfileData.fields.pan),
   placeOfSupply: Schema.is(KinCompanyProfileData.fields.placeOfSupply),
   sac: Schema.is(KinCompanyProfileData.fields.sac),
+  lutNumber: Schema.is(KinCompanyProfileData.fields.lutNumber),
+  lutDate: Schema.is(KinCompanyProfileData.fields.lutDate),
   accountName: Schema.is(KinCompanyBank.fields.accountName),
   accountNumber: Schema.is(KinCompanyBank.fields.accountNumber),
   ifsc: Schema.is(KinCompanyBank.fields.ifsc),
@@ -155,7 +176,7 @@ const valid: Record<KinCompanyFieldId, (value: string | null) => boolean> = {
 };
 
 const stored = (profile: KinCompanyProfile, id: KinCompanyFieldId): string | null =>
-  isBank(id) ? profile.bank[id] : profile[id];
+  isBank(id) ? profile.bank[id] : (profile[id] ?? null);
 
 export const kinCompanyDraftOf = (profile: KinCompanyProfile): KinCompanyDraft =>
   Object.fromEntries(

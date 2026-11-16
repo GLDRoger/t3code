@@ -41,7 +41,12 @@ import {
   useKinLists,
   useKinWorkFiles,
 } from "./state/useKinMoney";
-import { useKinWorkDirectory, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import {
+  useKinWorkDirectory,
+  useKinWorkItemWatch,
+  type KinWorkDirectory,
+  type KinWorkTarget,
+} from "./state/useKinWork";
 
 const FIELD = "field:";
 
@@ -91,6 +96,7 @@ function KinEntryEditGate(
     null,
   );
   const item = state._tag === "ready" ? state.item : null;
+  useKinWorkItemWatch(props, itemKey, item === null ? null : item.seq);
   const directory = useKinWorkDirectory(props, allowed);
   const lists = useKinLists(props, { enabled: allowed, archived: true, seq: null });
   const context = useKinListContext(props, directory, allowed);

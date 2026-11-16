@@ -289,7 +289,7 @@ export const readKinVisualPage = Effect.fn("AssetAccess.readKinVisualPage")(func
     if (Option.isSome(signature))
       urls[id] = `${ASSET_ROUTE_PREFIX}/${encodedPayload}.${signature.value}/file`;
   }
-  return kinVisualPageDocument(resolveKinVisualFileReferences(html, urls));
+  return kinVisualPageDocument(resolveKinVisualFileReferences(html, urls), visual.hosts);
 });
 
 const readToolOutputImage = Effect.fn("AssetAccess.readToolOutputImage")(function* (input: {

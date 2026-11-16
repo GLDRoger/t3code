@@ -4,6 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import * as Crypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  AuthKinChatScope,
   AuthOrchestrationReadScope,
   AuthSessionId,
   AuthSettingsWriteScope,
@@ -784,7 +785,7 @@ describe("KinGithubWebhooks", () => {
     }).pipe(Effect.provide(services)),
   );
 
-  it.effect("refuses every setup RPC without the settings grant before the handler runs", () =>
+  it.effect("refuses every setup RPC without Kin's grant before the handler runs", () =>
     Effect.gen(function* () {
       const probe = WsRpcGroup.omit(
         ...[...WsRpcGroup.requests.keys()].filter(
@@ -805,7 +806,7 @@ describe("KinGithubWebhooks", () => {
         method: "browser-session-cookie",
         scopes: [AuthSettingsWriteScope],
       });
-      const client = (scope: typeof AuthSettingsWriteScope | typeof AuthOrchestrationReadScope) =>
+      const client = (scope: typeof AuthKinChatScope | typeof AuthOrchestrationReadScope) =>
         RpcTest.makeClient(group).pipe(
           Effect.provide(
             Layer.merge(
@@ -815,7 +816,7 @@ describe("KinGithubWebhooks", () => {
           ),
         );
       const readOnly = yield* client(AuthOrchestrationReadScope);
-      const settings = yield* client(AuthSettingsWriteScope);
+      const kin = yield* client(AuthKinChatScope);
       const calls = [
         (rpc: typeof readOnly) =>
           rpc["kin.webhooks.github.setup"]({ orgId, projectId: project.id }),
@@ -830,7 +831,7 @@ describe("KinGithubWebhooks", () => {
           (yield* Effect.flip(call(readOnly)))._tag,
           "EnvironmentAuthorizationError",
         );
-        assert.include(yield* Effect.flip(call(settings)), {
+        assert.include(yield* Effect.flip(call(kin)), {
           _tag: "KinChatError",
           reason: "disabled",
         });

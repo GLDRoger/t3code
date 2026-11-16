@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinChatListRowLabel, kinChatListRows } from "./kinChatListRows.ts";
+import { kinChatListRowLabel, kinChatListRows, kinRoomLine } from "./kinChatListRows.ts";
 import type { KinInboxRow, KinInboxView } from "./kinInboxModel.ts";
 import type { KinDirectory } from "./kinScreenState.ts";
 
@@ -22,6 +22,7 @@ function row(
     readonly fold?: KinInboxRow["fold"];
     readonly kind?: string;
     readonly agentId?: string;
+    readonly teamId?: string;
   } = {},
 ): KinInboxRow {
   return {
@@ -30,6 +31,7 @@ function row(
       orgId: "org",
       kind: extra.kind ?? "direct",
       title: null,
+      teamId: extra.teamId ?? null,
       createdAt: "2026-11-08T09:00:00.000Z",
       lastMessageAt: lastMessage === null ? null : "2026-11-08T09:30:00.000Z",
       members: [
@@ -70,7 +72,18 @@ describe("kinChatListRows", () => {
       "empty-new",
       "empty-old",
     ]);
-    expect(rows[2]).toMatchObject({ fresh: true, preview: "Say hello to get started" });
+    expect(rows[2]).toMatchObject({ fresh: true, preview: "No messages yet" });
+  });
+
+  it("puts the company chat first, even before what waits on you", () => {
+    const rows = list([
+      row("waiting", null, { fold: "needsYou" }),
+      row("company", null, { kind: "team_group", teamId: "company" }),
+    ]);
+    expect(rows.map((item) => [item.chat.chatId, item.company])).toEqual([
+      ["company", true],
+      ["waiting", false],
+    ]);
   });
 
   it("lists a retired agent's chats last, and a group it is in where it was", () => {
@@ -145,5 +158,23 @@ describe("kinChatListRows", () => {
     expect(list([row("group", { body: "On it." }, { kind: "team_group" })])[0]).toMatchObject({
       author: "Tech lead",
     });
+  });
+});
+
+describe("kinRoomLine", () => {
+  it("names the people, you first, then the agents", () => {
+    const at = (principal: object, displayName: string, leftAt: string | null = null) =>
+      ({ principal, displayName, leftAt }) as never;
+    expect(
+      kinRoomLine(
+        [
+          at({ _tag: "person", personId: "priya" }, "Priya"),
+          at({ _tag: "person", personId: "owner" }, "Owner"),
+          at({ _tag: "agent", agentId: "lead" }, "Tech lead"),
+          at({ _tag: "person", personId: "gone" }, "Gone", "2026-11-08T09:00:00.000Z"),
+        ],
+        directory.me,
+      ),
+    ).toBe("You, Priya · Tech lead");
   });
 });

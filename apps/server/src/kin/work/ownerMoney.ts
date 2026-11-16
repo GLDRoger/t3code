@@ -1,12 +1,16 @@
 import {
+  type KinMakeReceiptInput,
+  type KinReceiptsInput,
   KIN_RECORD_CHANGES_CAP,
   KinChatError,
+  type KinOrgId,
   type KinCompanyProfileInput,
   type KinCompanyProfileSetInput,
   type KinDatesInput,
   type KinIssueInput,
   type KinListsInput,
   type KinListUpdateInput,
+  type KinMoney,
   type KinMoneySummaryInput,
   type KinPaymentInput,
   type KinPaymentVoidInput,
@@ -16,6 +20,8 @@ import {
   type KinWorkFile,
   type KinWorkFilesInput,
   type KinVoidInput,
+  KinRecordKey,
+  calendarTimeMillis,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -25,11 +31,14 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { readableFrom } from "../chat/sharing.ts";
+import { remakeForEntry } from "../gendocs/make.ts";
+import { issueEntry } from "../gendocs/amounts.ts";
 import * as Numbers from "../gendocs/numbering.ts";
+import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts.ts";
 import { readProfile, setProfile } from "./companyProfile.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { dates as datesView, moneySummary } from "./moneyViews.ts";
-import { found, ownerWriter, theOwner } from "./ownerWork.ts";
+import { found, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
 import { iso, workFailure } from "./recordRows.ts";
 import {
   allLists,
@@ -41,12 +50,13 @@ import {
   toDefinition,
   unknownList,
 } from "./registers.ts";
+import { personSees, placesOf } from "./teamView.ts";
 
 /** What the owner's clients read and do with lists, money and the company profile. Owner only. */
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const millis = (value: string, field: string) => {
-  const ms = Date.parse(value);
+  const ms = calendarTimeMillis(value);
   return Number.isFinite(ms) ? Effect.succeed(ms) : Effect.fail(invalid(`${field} is not a time.`));
 };
 
@@ -54,13 +64,19 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinListsInput,
 ) {
-  yield* theOwner(people, input.orgId);
+  const team = yield* moneyReader(people, input.orgId);
+  const sql = yield* SqlClient.SqlClient;
   const all = yield* allLists(input.orgId);
-  const open = yield* openCounts(input.orgId);
+  const open = yield* openCounts(
+    input.orgId,
+    team === undefined ? undefined : personSees(sql, team),
+  );
   return {
     lists: [...all.values()]
       // Docs are a list underneath, with their own screens and RPCs.
       .filter((def) => def.id !== "docs" && (input.archived === true || def.archivedAt === null))
+      // Anyone else gets the lists they see an entry of, never Work's own.
+      .filter((def) => team === undefined || (def.builtIn === null && open.has(def.id)))
       .map((def) => toDefinition(def, open.get(def.id) ?? 0)),
   };
 }, workFailure);
@@ -205,7 +221,8 @@ export const dates = Effect.fn("KinMoney.dates")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinDatesInput,
 ) {
-  yield* theOwner(people, input.orgId);
+  // The same reader and view as Money's count of them, so the list never refuses its count.
+  const team = yield* moneyReader(people, input.orgId);
   const from = yield* millis(input.from, "from");
   const to = yield* millis(input.to, "to");
   if (to <= from) return yield* invalid("to comes after from.");
@@ -213,7 +230,15 @@ export const dates = Effect.fn("KinMoney.dates")(function* (
   const now = yield* Clock.currentTimeMillis;
   const page = yield* datesView(
     input.orgId,
-    { from, to, lists: input.lists, open: input.open, offset, limit: input.limit },
+    {
+      from,
+      to,
+      lists: input.lists,
+      open: input.open,
+      offset,
+      limit: input.limit,
+      ...(team === undefined ? {} : { view: [team] }),
+    },
     now,
   );
   const next = offset + page.rows.length;
@@ -229,9 +254,29 @@ export const money = Effect.fn("KinMoney.summary")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinMoneySummaryInput,
 ) {
-  yield* theOwner(people, input.orgId);
-  return yield* moneySummary(input.orgId, yield* Clock.currentTimeMillis);
+  const team = yield* moneyReader(people, input.orgId);
+  return yield* moneySummary(
+    input.orgId,
+    yield* Clock.currentTimeMillis,
+    team === undefined ? undefined : [team],
+  );
 }, workFailure);
+
+const noMoney = new KinChatError({
+  reason: "not_allowed",
+  message: "Only the owner or a co-owner can open Money for you.",
+});
+/** The caller; for anyone besides the owner, only with the Money place or a project they lead. */
+const moneyReader = Effect.fn("KinMoney.reader")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  orgId: KinOrgId,
+) {
+  const viewer = yield* viewerOf(people, orgId);
+  if (!viewer.teammate) return undefined;
+  const places = yield* placesOf(orgId, viewer.person.personId);
+  if (!places.reaches.money) return yield* noMoney;
+  return viewer.person.personId;
+});
 
 /** The owner's Issue tap: the entry's number from its list's series, the same one if asked twice. */
 export const issue = Effect.fn("KinMoney.issue")(function* (
@@ -239,7 +284,26 @@ export const issue = Effect.fn("KinMoney.issue")(function* (
   input: KinIssueInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  return yield* Numbers.issue(input.orgId, ownerWriter(person), input.key);
+  const writer = ownerWriter(person);
+  const issued = yield* issueEntry(input.orgId, writer, input.key);
+  const remade =
+    issued.number !== null && issued.state !== "dropped"
+      ? yield* remakeForEntry({
+          orgId: input.orgId,
+          entryKey: issued.key,
+          requester: { _tag: "owner", personId: person.personId, writer },
+          admit: Effect.void,
+        })
+      : { documents: [], problems: [] };
+  return {
+    ...issued,
+    documents: remade.documents.map((doc) => ({
+      key: KinRecordKey.make(doc.key),
+      title: doc.title,
+      version: doc.version,
+    })),
+    problems: remade.problems,
+  };
 }, workFailure);
 
 /** The owner's Void tap: kept with its number, so the series stays complete. */
@@ -248,7 +312,33 @@ export const voidEntry = Effect.fn("KinMoney.void")(function* (
   input: KinVoidInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
-  return yield* Numbers.voidEntry(input.orgId, ownerWriter(person), input.key);
+  return {
+    ...(yield* Numbers.voidEntry(input.orgId, ownerWriter(person), input.key)),
+    documents: [],
+    problems: [],
+  };
+}, workFailure);
+
+/** The owner's Undo void: back to owed, or paid, with the number it had. */
+export const unvoidEntry = Effect.fn("KinMoney.unvoid")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinVoidInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  return {
+    ...(yield* Numbers.unvoidEntry(input.orgId, ownerWriter(person), input.key)),
+    documents: [],
+    problems: [],
+  };
+}, workFailure);
+
+/** What Issue's confirmation shows: the number it would give now, which a concurrent issue may take. */
+export const nextNumber = Effect.fn("KinMoney.nextNumber")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinIssueInput,
+) {
+  yield* theOwner(people, input.orgId);
+  return { number: yield* Numbers.nextNumber(input.orgId, input.key) };
 }, workFailure);
 
 export const recordPayment = Effect.fn("KinMoney.recordPayment")(function* (
@@ -257,12 +347,27 @@ export const recordPayment = Effect.fn("KinMoney.recordPayment")(function* (
 ) {
   const person = yield* theOwner(people, input.orgId);
   const records = yield* KinRecords;
-  const { row } = yield* records.pay(input.orgId, ownerWriter(person), input.key, {
-    amount: input.amount,
-    paidOn: input.paidOn,
-    ...(input.note === undefined ? {} : { note: input.note }),
-    originKey: `owner:${person.personId}:${input.clientRequestId}`,
-  });
+  const sql = yield* SqlClient.SqlClient;
+  const originKey = `owner:${person.personId}:${input.clientRequestId}`;
+  const pay = (amount: KinMoney, withheld: boolean) =>
+    records
+      .pay(input.orgId, ownerWriter(person), input.key, {
+        amount,
+        paidOn: input.paidOn,
+        ...(input.note === undefined ? {} : { note: input.note }),
+        ...(withheld ? { withheld: true } : {}),
+        originKey: withheld ? `${originKey}:tds` : originKey,
+      })
+      .pipe(Effect.map(({ row }) => row));
+  const { tds } = input;
+  // The cash and the TDS are recorded together or not at all.
+  const row = yield* sql.withTransaction(
+    tds === undefined
+      ? pay(input.amount, false)
+      : input.amount.minor === 0
+        ? pay(tds, true)
+        : pay(input.amount, false).pipe(Effect.andThen(pay(tds, true))),
+  );
   return yield* records.detail(row, KIN_RECORD_CHANGES_CAP);
 }, workFailure);
 
@@ -362,4 +467,47 @@ export const setCompanyProfile = Effect.fn("KinMoney.setCompanyProfile")(functio
   const person = yield* theOwner(people, input.orgId);
   const { orgId, rev, ...patch } = input;
   return yield* setProfile(orgId, { _tag: "person", personId: person.personId }, patch, rev);
+}, workFailure);
+
+/** Receipts for Money: newest first, each with its number, who it was from and what for. */
+export const receipts = Effect.fn("KinMoney.receipts")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinReceiptsInput,
+) {
+  yield* theOwner(people, input.orgId);
+  return { receipts: yield* listReceipts(input.orgId, { limit: input.limit ?? 100 }) };
+}, workFailure);
+
+/** The owner's tap on a payment or an advance: its receipt, numbered, with its PDF. */
+export const makeReceipt = Effect.fn("KinMoney.makeReceipt")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinMakeReceiptInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const writer = ownerWriter(person);
+  const made = yield* makeReceiptFor({
+    orgId: input.orgId,
+    writer,
+    requester: { _tag: "owner", personId: person.personId, writer },
+    paymentId: input.paymentId,
+    key: input.key,
+    advance:
+      input.advance === undefined
+        ? undefined
+        : {
+            client: input.advance.client,
+            amount: input.advance.amount,
+            receivedOn: input.advance.receivedOn,
+            originKey: `receipt:advance:owner:${input.clientRequestId}`,
+          },
+    against: input.against,
+    extras: { towards: input.towards, mode: input.mode, reference: input.reference },
+    admit: Effect.void,
+  });
+  if (made.receipt === undefined)
+    return yield* new KinChatError({
+      reason: "unavailable",
+      message: "Kin couldn't read the receipt.",
+    });
+  return { receipt: made.receipt, problems: made.problems };
 }, workFailure);

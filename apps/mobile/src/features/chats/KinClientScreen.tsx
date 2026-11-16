@@ -1,10 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import {
-  KIN_WORK_ONLY_OWNER,
-  KIN_WORK_STALE,
-  kinWorkHostEdits,
-} from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_WORK_ONLY_OWNER, kinWorkHostEdits } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkApplied, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   KIN_CLIENTS,
@@ -15,8 +11,13 @@ import {
   kinWorkTimeline,
   type KinContactView,
   type KinOwedView,
+  type KinTouchView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
-import { kinWorkSend, type KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
+import {
+  KIN_WORK_FORM_COPY,
+  kinWorkSend,
+  type KinWorkFormProblem,
+} from "@t3tools/client-runtime/kin/kinWorkForms";
 import {
   EnvironmentId,
   KinOrgId,
@@ -27,7 +28,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { useState } from "react";
-import { View } from "react-native";
+import { Alert, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -42,10 +43,12 @@ import { useNowMinuteMs } from "../../lib/clock";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
+  KinFoldSection,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkPrivateMark,
   KinWorkProblemNotice,
+  KinWorkStaleNotice,
   KinWorkTaskRow,
   KinWorkTimelineLines,
 } from "./components/KinWorkPieces";
@@ -62,6 +65,9 @@ import {
   useKinWorkHistory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { KinAttentionSection } from "./KinAttention";
+import { useKinOpenPlace } from "./state/kinHomeTab";
+import { useKinWorkLink } from "./state/kinWorkLink";
 
 export type KinClientParams = {
   readonly environmentId: string;
@@ -143,8 +149,10 @@ function KinClientBody(
   },
 ) {
   const navigation = useNavigation();
+  const openRecord = useKinWorkLink();
   const { environmentId, orgId, page } = props;
   const target = { environmentId, orgId };
+  const openPlace = useKinOpenPlace(target);
   const work = useKinWork(target);
   const directory = useKinWorkDirectory(target, true);
   const { names } = directory;
@@ -160,6 +168,20 @@ function KinClientBody(
   const [busy, setBusy] = useState(false);
   const [unopened, setUnopened] = useState<string | null>(null);
   const history = useKinWorkHistory(target, props.clientKey, page.seq);
+  const removeTouch = useAtomCommand(kinClient.workTouchRemove, { reportFailure: false });
+  // A logged contact taken back, after a plain confirm; what Kin read from its records stays.
+  const askRemoveTouch = (touch: KinTouchView) =>
+    Alert.alert(KIN_CLIENTS.touchRemoveTitle, `${touch.title}, ${touch.when}`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: KIN_CLIENTS.touchRemove,
+        style: "destructive",
+        onPress: () =>
+          void removeTouch({ environmentId, input: { orgId, touchId: touch.id } }).then(
+            props.onRefresh,
+          ),
+      },
+    ]);
 
   const applied = (records: ReadonlyArray<KinRecord>) =>
     records.map((record) => kinWorkApplied(record, changed));
@@ -208,6 +230,7 @@ function KinClientBody(
     side: KinOwedView,
     empty: string,
     add: { readonly label: string; readonly side: "ours" | "theirs" },
+    also?: { readonly label: string; readonly side: "ours" | "theirs" },
   ) => (
     <ListSection title={side.total === 0 ? title : `${title} · ${side.total}`}>
       {side.rows.length === 0 ? (
@@ -219,9 +242,7 @@ function KinClientBody(
             inset
             row={row}
             saving={changed.pending[row.key] !== undefined}
-            onPress={() =>
-              navigation.navigate("KinWorkItem", { environmentId, orgId, task: row.key })
-            }
+            onPress={() => openRecord("KinWorkItem", { environmentId, orgId, task: row.key })}
             onAct={canChangeTasks ? (action) => act(row.key, action) : null}
           />
         ))
@@ -229,7 +250,9 @@ function KinClientBody(
       {side.more === null ? null : (
         <ListActionRow
           label={side.more}
-          onPress={() => navigation.navigate("KinWork", { environmentId, orgId, ...about })}
+          onPress={() =>
+            openPlace("tasks", { party: { key: view.key, title: view.name }, project: null })
+          }
         />
       )}
       {canAddTask && !view.closed ? (
@@ -240,8 +263,17 @@ function KinClientBody(
           }
         />
       ) : null}
+      {also !== undefined && canAddTask && !view.closed ? (
+        <ListActionRow
+          label={also.label}
+          onPress={() =>
+            navigation.navigate("KinWorkNew", { environmentId, orgId, ...about, side: also.side })
+          }
+        />
+      ) : null}
     </ListSection>
   );
+  const waitingNone = view.theyOwe.total === 0 && view.theyOwe.rows.length === 0;
   return (
     <KinWorkFrame
       title={view.vendor ? "Vendor" : "Client"}
@@ -288,53 +320,67 @@ function KinClientBody(
         </Text>
         {view.privacy.private ? <KinWorkPrivateMark /> : null}
       </View>
-      {props.stale ? <Notice message={KIN_WORK_STALE} /> : null}
+      {props.stale ? (
+        <KinWorkStaleNotice environmentId={environmentId} onRetry={props.onRefresh} />
+      ) : null}
       {problem === null ? null : (
         <KinWorkProblemNotice problem={problem} onDismiss={() => setProblem(null)} />
       )}
-      {owed(KIN_CLIENTS.weOwe, view.weOwe, KIN_CLIENTS.nothingOwed, {
-        label: KIN_CLIENTS.addWeOwe,
-        side: "ours",
-      })}
-      {owed(KIN_CLIENTS.theyOwe, view.theyOwe, KIN_CLIENTS.nothingOwing, {
-        label: KIN_CLIENTS.addTheyOwe,
-        side: "theirs",
-      })}
-      <KinPlaceLists
-        environmentId={environmentId}
-        orgId={orgId}
-        place={{ party: { key: view.key, title: view.name } }}
-        seq={props.stale ? null : page.seq}
-        directory={directory}
+      <KinAttentionSection
+        {...target}
+        scope={{ type: "client", key: view.key }}
+        names={names}
+        onOpen={(to) => {
+          if (to.type === "record")
+            openRecord("KinWorkItem", { environmentId, orgId, task: to.key });
+        }}
       />
-      <ListSection title={KIN_CLIENTS.projects}>
-        {view.projects.length === 0 ? (
-          <ListRowLayout label={KIN_CLIENTS.noProjects} disabled />
-        ) : (
-          view.projects.map((row) => (
-            <KinWorkNamedRow
-              key={row.key}
-              inset
-              row={row}
+      {/* What's owed, the contact log, tax, terms, notes and history are the owner's. */}
+      {!canChange
+        ? null
+        : owed(
+            KIN_CLIENTS.weOwe,
+            view.weOwe,
+            KIN_CLIENTS.nothingOwed,
+            { label: KIN_CLIENTS.addWeOwe, side: "ours" },
+            // With nothing waiting on them, that section is absent and its add sits here.
+            waitingNone ? { label: KIN_CLIENTS.addTheyOwe, side: "theirs" } : undefined,
+          )}
+      {waitingNone || !canChange
+        ? null
+        : owed(KIN_CLIENTS.theyOwe, view.theyOwe, KIN_CLIENTS.nothingOwing, {
+            label: KIN_CLIENTS.addTheyOwe,
+            side: "theirs",
+          })}
+      {!canChange && view.projects.length === 0 ? null : (
+        <ListSection title={KIN_CLIENTS.projects}>
+          {view.projects.length === 0 ? (
+            <ListRowLayout label={KIN_CLIENTS.noProjects} disabled />
+          ) : (
+            view.projects.map((row) => (
+              <KinWorkNamedRow
+                key={row.key}
+                inset
+                row={row}
+                onPress={() => openRecord("KinProject", { environmentId, orgId, project: row.key })}
+              />
+            ))
+          )}
+          {canChange && !view.closed ? (
+            <ListActionRow
+              label={KIN_PROJECTS.add}
               onPress={() =>
-                navigation.navigate("KinProject", { environmentId, orgId, project: row.key })
+                navigation.navigate("KinProjectForm", { environmentId, orgId, ...about })
               }
             />
-          ))
-        )}
-        {canChange && !view.closed ? (
-          <ListActionRow
-            label={KIN_PROJECTS.add}
-            onPress={() =>
-              navigation.navigate("KinProjectForm", { environmentId, orgId, ...about })
-            }
-          />
-        ) : null}
-      </ListSection>
-      <KinDocsUnder {...target} names={names} under={{ party: props.clientKey }} />
+          ) : null}
+        </ListSection>
+      )}
       <ListSection
         title={KIN_CLIENTS.contacts}
-        {...(view.contacts.length === 0 ? {} : { footer: KIN_CLIENTS.detailsPrivate })}
+        {...(view.contacts.length === 0 || !canChange
+          ? {}
+          : { footer: KIN_CLIENTS.detailsPrivate })}
       >
         {view.contacts.length === 0 ? (
           <ListRowLayout label={KIN_CLIENTS.noContacts} disabled />
@@ -367,89 +413,173 @@ function KinClientBody(
           />
         ) : null}
       </ListSection>
+      <KinPlaceLists
+        environmentId={environmentId}
+        orgId={orgId}
+        place={{ party: { key: view.key, title: view.name } }}
+        seq={props.stale ? null : page.seq}
+        directory={directory}
+      />
       {unopened === null ? null : <Notice message={unopened} onDismiss={() => setUnopened(null)} />}
-      <View className="gap-2 px-2">
-        <View className="flex-row items-center justify-between">
-          <Text textRole="footnote" className="text-foreground-muted">
-            {KIN_CLIENTS.terms}
-          </Text>
-          <KinWorkPrivateMark />
-        </View>
-        <Text
-          textRole="body"
-          selectable
-          className={view.terms === null ? "text-foreground-muted" : "text-foreground"}
-        >
-          {view.terms ?? KIN_CLIENTS.noTerms}
-        </Text>
-        <Text textRole="footnote" className="text-foreground-muted">
-          {KIN_CLIENTS.termsPrivate}
-        </Text>
-      </View>
-      <View className="gap-2 px-2">
-        <Text textRole="footnote" className="text-foreground-muted">
-          {KIN_CLIENTS.notes}
-        </Text>
-        <Text
-          textRole="body"
-          selectable
-          className={view.notes === null ? "text-foreground-muted" : "text-foreground"}
-        >
-          {view.notes ?? KIN_CLIENTS.noNotes}
-        </Text>
-      </View>
-      <ListSection>
-        <ListToggleRow
-          icon="lock"
-          label={KIN_CLIENTS.privateLabel}
-          description={view.privacy.note}
-          value={view.privacy.private}
-          disabled={!canChange || busy || view.privacy.inherited}
-          onValueChange={(sensitive) => void change({ sensitive })}
-        />
-      </ListSection>
-      <View className="gap-2 px-2">
-        <Text textRole="footnote" className="text-foreground-muted">
-          {KIN_CLIENTS.history}
-        </Text>
-        {history.state.loading ? (
-          <KinWorkLoading label="Loading history" />
-        ) : history.state.failed !== null ? (
-          <View className="items-start gap-2">
-            <Text textRole="footnote" className="text-foreground-muted">
-              Couldn't load the history.
-            </Text>
-            <Button
-              tone="secondary"
-              size="compact"
-              label="Try again"
-              onPress={history.list.refresh}
-            />
-          </View>
-        ) : history.state.records.length === 0 ? (
-          <Text textRole="footnote" className="text-foreground-muted">
-            {KIN_CLIENTS.noHistory}
-          </Text>
-        ) : (
-          <KinWorkTimelineLines
-            lines={kinWorkTimeline(history.state.records, names, now, view.key)}
-            onOpenTask={(task) =>
-              navigation.navigate("KinWorkItem", { environmentId, orgId, task })
-            }
-          />
+      <KinDocsUnder {...target} names={names} under={{ party: props.clientKey }} />
+      <View className="gap-2">
+        {view.touches === null || !canChange ? null : (
+          <KinFoldSection
+            title={KIN_CLIENTS.recentContact}
+            summary={view.lastContact ?? (view.touches.length === 0 ? "None logged" : null)}
+          >
+            {view.touches.length === 0 ? (
+              <ListRowLayout label={KIN_CLIENTS.noTouches} disabled />
+            ) : (
+              view.touches.map((touch) =>
+                canChange && touch.removable ? (
+                  <ListRow
+                    key={touch.id}
+                    label={touch.title}
+                    {...(touch.note === null ? {} : { description: touch.note })}
+                    detail={touch.when}
+                    onPress={() => askRemoveTouch(touch)}
+                  />
+                ) : (
+                  <ListRowLayout
+                    key={touch.id}
+                    label={touch.title}
+                    {...(touch.note === null ? {} : { description: touch.note })}
+                    detail={touch.when}
+                    disabled
+                  />
+                ),
+              )
+            )}
+            {canChange && !view.closed ? (
+              <ListActionRow
+                label={KIN_CLIENTS.logContact}
+                onPress={() =>
+                  navigation.navigate("KinTouchForm", { environmentId, orgId, party: view.key })
+                }
+              />
+            ) : null}
+          </KinFoldSection>
         )}
-        {history.state.more ? (
-          <View className="items-start">
-            <Button
-              tone="secondary"
-              size="compact"
-              label={history.state.moreFailed ? "Try again" : KIN_CLIENTS.earlier}
-              loading={history.state.loadingMore}
-              disabled={history.state.loadingMore}
-              onPress={() => void history.list.loadMore()}
-            />
-          </View>
-        ) : null}
+        {!canChange && view.address === null ? null : (
+          <KinFoldSection
+            title={KIN_CLIENTS.details}
+            summary={canChange ? KIN_CLIENTS.detailsSummary : null}
+          >
+            <View className="gap-3 bg-grouped-card px-4 py-3">
+              {view.address === null ? null : (
+                <View className="gap-1">
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {KIN_WORK_FORM_COPY.party.address}
+                  </Text>
+                  <Text textRole="body" selectable className="text-foreground">
+                    {view.address}
+                  </Text>
+                </View>
+              )}
+              {!canChange ? null : (
+                <>
+                  {view.vendor && view.tax === null ? null : (
+                    <View className="gap-1">
+                      <Text textRole="footnote" className="text-foreground-muted">
+                        {KIN_CLIENTS.tax}
+                      </Text>
+                      <Text
+                        textRole="body"
+                        selectable
+                        className={view.tax === null ? "text-foreground-muted" : "text-foreground"}
+                      >
+                        {view.tax ?? KIN_CLIENTS.noTax}
+                      </Text>
+                    </View>
+                  )}
+                  <View className="gap-1">
+                    <View className="flex-row items-center justify-between">
+                      <Text textRole="footnote" className="text-foreground-muted">
+                        {KIN_CLIENTS.terms}
+                      </Text>
+                      <KinWorkPrivateMark />
+                    </View>
+                    <Text
+                      textRole="body"
+                      selectable
+                      className={view.terms === null ? "text-foreground-muted" : "text-foreground"}
+                    >
+                      {view.terms ?? KIN_CLIENTS.noTerms}
+                    </Text>
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {KIN_CLIENTS.termsPrivate}
+                    </Text>
+                  </View>
+                  <View className="gap-1">
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {KIN_CLIENTS.notes}
+                    </Text>
+                    <Text
+                      textRole="body"
+                      selectable
+                      className={view.notes === null ? "text-foreground-muted" : "text-foreground"}
+                    >
+                      {view.notes ?? KIN_CLIENTS.noNotes}
+                    </Text>
+                  </View>
+                </>
+              )}
+            </View>
+            {canChange ? (
+              <ListToggleRow
+                icon="lock"
+                label={KIN_CLIENTS.privateLabel}
+                description={view.privacy.note}
+                value={view.privacy.private}
+                disabled={busy || view.privacy.inherited}
+                onValueChange={(sensitive) => void change({ sensitive })}
+              />
+            ) : null}
+          </KinFoldSection>
+        )}
+        {!canChange ? null : (
+          <KinFoldSection title={KIN_CLIENTS.history} summary={null}>
+            <View className="gap-2 bg-grouped-card px-4 py-3">
+              {history.state.loading ? (
+                <KinWorkLoading label="Loading history" />
+              ) : history.state.failed !== null ? (
+                <View className="items-start gap-2">
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    Couldn't load the history.
+                  </Text>
+                  <Button
+                    tone="secondary"
+                    size="compact"
+                    label="Try again"
+                    onPress={history.list.refresh}
+                  />
+                </View>
+              ) : history.state.records.length === 0 ? (
+                <Text textRole="footnote" className="text-foreground-muted">
+                  {KIN_CLIENTS.noHistory}
+                </Text>
+              ) : (
+                <KinWorkTimelineLines
+                  lines={kinWorkTimeline(history.state.records, names, now, view.key)}
+                  onOpenTask={(task) => openRecord("KinWorkItem", { environmentId, orgId, task })}
+                />
+              )}
+              {history.state.more ? (
+                <View className="items-start">
+                  <Button
+                    tone="secondary"
+                    size="compact"
+                    label={history.state.moreFailed ? "Try again" : KIN_CLIENTS.earlier}
+                    loading={history.state.loadingMore}
+                    disabled={history.state.loadingMore}
+                    onPress={() => void history.list.loadMore()}
+                  />
+                </View>
+              ) : null}
+            </View>
+          </KinFoldSection>
+        )}
       </View>
     </KinWorkFrame>
   );

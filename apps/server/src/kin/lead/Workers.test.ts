@@ -91,12 +91,16 @@ import { KinRecords } from "../work/KinRecords.ts";
 import * as LeadWork from "../work/leadWork.ts";
 import * as PublishCard from "../widgets/workerPublishCard.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
-import { pullRequestMerged, WORK_NOT_YOURS } from "../work/workerEntries.ts";
+import { githubClosed, pullRequestMerged, WORK_NOT_YOURS } from "../work/workerEntries.ts";
 import { WITHDRAWN_WORK } from "../work/workPrompt.ts";
 import * as Attempts from "../work/workerAttempts.ts";
 import { eventWithdrawn } from "../work/workerAttempts.ts";
 import * as Retirement from "./Retirement.ts";
 import { runKinMigrations } from "../persistence/KinMigrations.ts";
+import { KinPullRequestCare } from "../github/PullRequestCare.ts";
+import { GitVcsDriver } from "../../vcs/GitVcsDriver.ts";
+import { PreviewBrowser } from "../../preview/PreviewBrowser.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
 
 const leadThread = ThreadId.make("lead-thread");
 const leadId = KinAgentId.make("lead");
@@ -652,6 +656,8 @@ interface LocalRun {
   status: OrchestrationV2RunStatus;
   readonly completedAt: null;
   reply?: string;
+  /** What the provider said ended the run, as its failed error item carries it. */
+  error?: string;
 }
 /**
  * This server's own thread launch and runs, for workers that run here. Threads are created in
@@ -733,10 +739,15 @@ const fakeLocal = () => {
       }),
     getThreadProjection: (threadId: ThreadId) =>
       Effect.succeed({
-        thread: { worktreePath: "/home/user/.t3/worktrees/app/kin-worker" },
+        thread: { worktreePath: worktree.path },
         runs: runs.get(threadId) ?? [],
         messages: (runs.get(threadId) ?? []).flatMap((run) =>
           run.reply === undefined ? [] : [{ role: "assistant", runId: run.id, text: run.reply }],
+        ),
+        turnItems: (runs.get(threadId) ?? []).flatMap((run) =>
+          run.error === undefined
+            ? []
+            : [{ type: "error", status: "failed", runId: run.id, failure: { message: run.error } }],
         ),
       } as never),
     dispatch: (command: unknown) => Effect.sync(() => void dispatched.push(command) as never),
@@ -757,15 +768,34 @@ const fakeLocal = () => {
         return { type: "interrupt_requested", run: last, dispatch: {} } as never;
       }),
   };
+  /** Where the projection says the worker's worktree is; a test may point it at a real folder. */
+  const worktree = { path: "/home/user/.t3/worktrees/app/kin-worker" };
   /** Ends the thread's latest run here, as the worker's last turn or the owner's stop would. */
-  const finish = (threadId: ThreadId, status: OrchestrationV2RunStatus, reply?: string) =>
+  const finish = (
+    threadId: ThreadId,
+    status: OrchestrationV2RunStatus,
+    reply?: string,
+    error?: string,
+  ) =>
     Effect.gen(function* () {
       const last = runs.get(threadId)!.at(-1)!;
       last.status = status;
       if (reply !== undefined) last.reply = reply;
+      if (error !== undefined) last.error = error;
       yield* signal();
     });
-  return { launches, runs, dispatched, interrupted, interrupts, hooks, launcher, threads, finish };
+  return {
+    launches,
+    runs,
+    dispatched,
+    interrupted,
+    interrupts,
+    hooks,
+    launcher,
+    threads,
+    finish,
+    worktree,
+  };
 };
 type FakeLocal = ReturnType<typeof fakeLocal>;
 
@@ -831,6 +861,30 @@ const run = <A, E>(
           // Connected on this host, with no project here: the owner's to reach, no one else's.
           Layer.succeed(KinGithubRepoScope, KinGithubRepoScope.of({ repos: ["GLDRoger/t3code"] })),
           ConfigProvider.layer(ConfigProvider.fromUnknown(hostConfig)),
+          // GitHub's word on PRs #7 (a teammate's branch here) and #8 (from a fork), and the head T3's git fetches.
+          Layer.mock(KinPullRequestCare)({
+            pull: (repo, number) =>
+              Effect.succeed({
+                repo: "acme/app" as never,
+                number,
+                title: `Invented PR ${number} by a teammate`,
+                headSha: `sha-${number}`,
+                headRef: "teammate/feature",
+                baseRef: "main",
+                sameRepo: number === 7 && repo === "acme/app",
+                diff: "diff --git a/src/app.ts b/src/app.ts\n+export const x = 1;\n",
+              }),
+          }),
+          Layer.mock(GitVcsDriver)({
+            fetchRefCommit: (input) =>
+              Effect.succeed({ commitSha: `fetched:${input.ref}` } as never),
+          }),
+          Layer.mock(PreviewBrowser)({
+            executable: Effect.succeed("/invented/chrome-headless-shell"),
+          }),
+          Layer.mock(KinDocRenderer)({
+            store: (_orgId, _jobId, file) => Effect.succeed(`kin-chat-shot-${file.extension}`),
+          }),
           // Document jobs have their own tests (`gendocs/`); these workers never make one.
           Layer.mock(Workspace.KinWorkspace)({}),
           Layer.mock(Toolchain.KinToolchain)({}),
@@ -2408,11 +2462,11 @@ it.effect("a worker's report answers where its work was asked, for everyone who 
       // The group's answer is shared, so its prompt has no notes and it keeps no journal.
       assert.deepStrictEqual(yield* answering(sql, ctx.orgId, fromTeam.eventId, "report-team"), {
         audience: "shared",
-        lane: { chatId: KinChatId.make("team"), mode: "notice", leadName: "Lead" },
+        lane: { chatId: KinChatId.make("team"), mode: "notice", owed: true, leadName: "Lead" },
       });
       assert.deepStrictEqual(yield* answering(sql, ctx.orgId, fromDm.eventId, "report-dm"), {
         audience: "owner_only",
-        lane: { chatId: ctx.chat.chatId, mode: "notice", leadName: "Lead" },
+        lane: { chatId: ctx.chat.chatId, mode: "notice", owed: true, leadName: "Lead" },
       });
     }),
   ),
@@ -2500,7 +2554,7 @@ it.effect(
           yield* answering(sql, ctx.orgId, reported!.event.eventId, "report-dm"),
           {
             audience: "owner_only",
-            lane: { chatId: ctx.chat.chatId, mode: "notice", leadName: "Lead" },
+            lane: { chatId: ctx.chat.chatId, mode: "notice", owed: true, leadName: "Lead" },
           },
         );
         assert.deepStrictEqual(yield* sinceShared(sql, "team"), []);
@@ -2613,7 +2667,7 @@ it.effect(
           yield* answering(sql, ctx.orgId, reported!.event.eventId, "report-team"),
           {
             audience: "shared",
-            lane: { chatId: KinChatId.make("team"), mode: "notice", leadName: "Lead" },
+            lane: { chatId: KinChatId.make("team"), mode: "notice", owed: true, leadName: "Lead" },
           },
         );
         // Shared turns get no notes and keep no journal; the owner's next word there is shared too.
@@ -3118,15 +3172,32 @@ it.effect(
           pullUrl: "https://github.com/acme/app/pull/9",
         });
         const turns = yield* ctx.sql`SELECT wakeup_id FROM kin_wakeups ORDER BY wakeup_id`;
-        assert.strictEqual(
-          yield* pullRequestMerged({ orgId: ctx.orgId, repo: "Acme/App", number: 9 }).pipe(
-            Effect.provideService(KinRecords, records),
-          ),
-          1,
+        // The task was made from an issue: the merge names it for Kin to close on GitHub.
+        const github = { actor: { _tag: "system" }, via: "github" } as const;
+        yield* records.link(ctx.orgId, github, rows[0]!.recordId, {
+          kind: "url",
+          target: "https://github.com/acme/app/issues/3",
+          relation: "relates",
+          label: "Issue #3",
+        });
+        assert.deepStrictEqual(
+          yield* githubClosed({
+            orgId: ctx.orgId,
+            repo: "Acme/App",
+            number: 9,
+            item: "pull_request",
+          }).pipe(Effect.provideService(KinRecords, records)),
+          { entries: 1, issues: [{ repo: "acme/app", number: 3 }] },
         );
         const merged = yield* records.get(ctx.orgId, rows[0]!.key);
         assert.include(merged, { state: "done" });
         assert.isNotNull(merged!.closedAt);
+        // Closing the issue itself closes its task too.
+        yield* records.update(ctx.orgId, github, rows[0]!.key, { state: "open" });
+        yield* githubClosed({ orgId: ctx.orgId, repo: "acme/app", number: 3, item: "issue" }).pipe(
+          Effect.provideService(KinRecords, records),
+        );
+        assert.include(yield* records.get(ctx.orgId, rows[0]!.key), { state: "done" });
         // Code closed it: no turn ran and nothing was queued to wake one.
         assert.deepStrictEqual(
           yield* ctx.sql`SELECT wakeup_id FROM kin_wakeups ORDER BY wakeup_id`,
@@ -3143,6 +3214,120 @@ it.effect(
         );
       }),
     ),
+);
+
+it.effect(
+  "a review or fix of anyone's PR starts at the PR's head; a fork's branch takes no fix",
+  () =>
+    run(({ ctx, remote, local, workers }) =>
+      Effect.gen(function* () {
+        yield* goLocal(ctx, remote);
+        const review = { ...teamDelegate, kind: "review" as const, pullRequest: 7 };
+        const { workerId } = yield* workers.delegate(scope, review);
+        const [launch] = local.launches;
+        assert.deepInclude(launch!.workspaceStrategy as object, {
+          type: "worktree",
+          baseRef: "fetched:refs/pull/7/head",
+          startFromOrigin: false,
+        });
+        assert.include(launch!.initialMessage!.text, "pull request acme/app#7");
+        assert.include(launch!.initialMessage!.text, "export const x = 1;");
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT kind, target_pr AS "targetPr", target_branch AS "targetBranch"
+          FROM kin_workers WHERE worker_id = ${workerId}`,
+          [{ kind: "review", targetPr: 7, targetBranch: null }],
+        );
+        // A fix pushes to the PR's own branch, which Kin records; a fork's it can't push to.
+        const fix = yield* workers.delegate(scope, {
+          ...teamDelegate,
+          title: "Fix PR 7",
+          pullRequest: 7,
+        });
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT kind, target_branch AS "targetBranch" FROM kin_workers
+          WHERE worker_id = ${fix.workerId}`,
+          [{ kind: "build", targetBranch: "teammate/feature" }],
+        );
+        assert.include(
+          yield* Effect.flip(
+            workers.delegate(scope, { ...teamDelegate, title: "Fix PR 8", pullRequest: 8 }),
+          ),
+          { reason: "not_allowed" },
+        );
+        // A UI test is a review that drives the app in T3's own Chrome, and only of a PR.
+        yield* workers.delegate(scope, { ...review, title: "Test PR 7's screens", uiTest: true });
+        const uiBrief = local.launches.at(-1)!.initialMessage!.text;
+        assert.include(uiBrief, `executablePath: "/invented/chrome-headless-shell"`);
+        assert.include(uiBrief, "in one command");
+        assert.notInclude(uiBrief, "Review it:");
+        assert.include(
+          yield* Effect.flip(
+            workers.delegate(scope, { ...teamDelegate, title: "Test screens", uiTest: true }),
+          ),
+          { reason: "not_allowed" },
+        );
+        assert.lengthOf(local.launches, 3);
+      }),
+    ),
+);
+
+it.effect("a UI test's screenshots reach its chat as one Kin message with the images", () =>
+  run(({ ctx, remote, local, workers, tracker }) =>
+    Effect.gen(function* () {
+      yield* goLocal(ctx, remote);
+      const fs = yield* FileSystem.FileSystem;
+      const worktree = yield* fs.makeTempDirectoryScoped({ prefix: "kin-ui-test-" });
+      yield* fs.makeDirectory(`${worktree}/out`);
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+      yield* fs.writeFile(`${worktree}/out/01-home.png`, png);
+      local.worktree.path = worktree;
+      const { workerId } = yield* workers.delegate(scope, {
+        ...teamDelegate,
+        kind: "review",
+        title: "Test PR 7's screens",
+        pullRequest: 7,
+        uiTest: true,
+      });
+      const tested = {
+        ...report,
+        summary: "Sign-in works; the settings page crashes.",
+        evidence: [
+          { kind: "screenshot" as const, ref: "out/01-home.png", note: "Home after sign-in" },
+          { kind: "screenshot" as const, ref: "out/never-saved.png" },
+        ],
+      };
+      yield* local.finish(
+        localThreadId(workerId),
+        "completed",
+        `Done.\n\`\`\`kin-report\n${JSON.stringify(tested)}\n\`\`\``,
+      );
+      yield* settled(tracker, ctx.orgId, workerId);
+      const posted = yield* ctx.sql<{ body: string; attachments: string; author: string }>`
+        SELECT body, attachments_json AS attachments, author_kind AS author FROM kin_messages
+        WHERE org_id = ${ctx.orgId} AND message_id LIKE 'kin-shots:%' ORDER BY message_id`;
+      assert.lengthOf(posted, 1);
+      assert.strictEqual(posted[0]!.body, "Screenshots from Test PR 7's screens");
+      assert.deepStrictEqual(JSON.parse(posted[0]!.attachments), [
+        {
+          type: "image",
+          id: "kin-chat-shot-png",
+          name: "01-home.png",
+          mimeType: "image/png",
+          sizeBytes: png.length,
+        },
+      ]);
+      // Readable through its message, as a member's upload is; the lead still gets the report.
+      assert.lengthOf(
+        yield* ctx.sql`SELECT 1 FROM kin_message_attachments
+          WHERE org_id = ${ctx.orgId} AND attachment_id = 'kin-chat-shot-png'`,
+        1,
+      );
+      assert.strictEqual(
+        (yield* reports(ctx.sql, ctx.orgId))[0]!.event.report.summary,
+        tested.summary,
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  ),
 );
 
 it.effect.each(["failed", "interrupted", "cancelled"] as const)(
@@ -3168,6 +3353,36 @@ it.effect.each(["failed", "interrupted", "cancelled"] as const)(
         );
       }),
     ),
+);
+
+it.effect("a local run that fails without a report tells its lead what ended it", () =>
+  run(({ ctx, remote, local, workers, tracker }) =>
+    Effect.gen(function* () {
+      yield* goLocal(ctx, remote);
+      const { workerId } = yield* workers.delegate(scope, delegateInput);
+      // Review 48: provider text can carry a token and a private path into the lead's prompt.
+      const token = "ghp_ABCDEFabcdef0123456789ABCDEFabcdef01";
+      yield* local.finish(
+        localThreadId(workerId),
+        "failed",
+        undefined,
+        `Usage limit hit with ${token} reading /Users/someone/secret/notes.md. Try again at 3pm.`,
+      );
+      yield* settled(tracker, ctx.orgId, workerId);
+      const [reported] = yield* reports(ctx.sql, ctx.orgId);
+      assert.strictEqual(
+        reported!.event.report.summary,
+        "Worker ended failed without a report. Failure: unknown, during its run. What Kin saw: Usage limit hit with [redacted] reading [path] Try again at 3pm.",
+      );
+      // What the prompt reads: the report event and the worker row.
+      const stored = JSON.stringify([
+        yield* ctx.sql`SELECT json FROM kin_events WHERE org_id = ${ctx.orgId}`,
+        yield* ctx.sql`SELECT report_json FROM kin_workers WHERE org_id = ${ctx.orgId}`,
+      ]);
+      assert.notInclude(stored, token);
+      assert.notInclude(stored, "/Users/someone");
+    }),
+  ),
 );
 
 /** A direct chat between a teammate and the lead, where the owner isn't. */
@@ -3578,7 +3793,10 @@ it.effect("a teammate's change stops nothing, and the owner's reopen restarts no
       const entry = yield* entryOf(ctx);
       yield* ctx.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
         VALUES ('teammate', ${ctx.orgId}, 'teammate', 'Teammate', '1970-01-01T00:00:00.000Z')`;
+      yield* ctx.sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('teammate-session', ${ctx.orgId}, 'teammate', 0)`;
       const teammate = { ...ctx.person, personId: KinPersonId.make("teammate") };
+      // The owner's entry is no entry to a teammate.
       assert.include(
         yield* Effect.flip(
           OwnerWork.update([teammate], {
@@ -3588,7 +3806,7 @@ it.effect("a teammate's change stops nothing, and the owner's reopen restarts no
             state: "done",
           }).pipe(Effect.provideContext(ctx.services)),
         ),
-        { reason: "not_allowed" },
+        { reason: "not_found" },
       );
       // Even a change written as a teammate's, past the owner check, is not the lead's owner's.
       yield* records.update(
@@ -4018,7 +4236,11 @@ const upgradedFromK058 = (sql: SqlClient.SqlClient) =>
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 59`;
     assert.deepStrictEqual(
       (yield* runKinMigrations()).map(([id]) => id),
-      [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74],
+      [
+        59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
+        82, 83, 84, 85, 86, 87, 88, 106, 107, 110, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139,
+        140, 141, 142, 143, 144, 145, 146,
+      ],
     );
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
 const attemptRows = (sql: SqlClient.SqlClient, workerId: KinWorkerId) =>

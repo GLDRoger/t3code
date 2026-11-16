@@ -4,15 +4,27 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { readProfile } from "../work/companyProfile.ts";
+import { logoFile, logoPath } from "./brand.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { type FieldValues, parseFields } from "../work/lists.ts";
 import { dayIn } from "../work/money.ts";
-import { ownerZone, type RecordRow, sensitiveNow } from "../work/recordRows.ts";
+import {
+  countedEntry,
+  countedPayment,
+  fromImport,
+  moneyDay,
+  notedReceiptNumbers,
+  ownerZone,
+  type RecordRow,
+  sensitiveNow,
+} from "../work/recordRows.ts";
 import { type ListDef, listDef, sensitiveKeys, stateLabel } from "../work/registers.ts";
+import { findBankList } from "../work/statements/bankList.ts";
 import { issuedNumber } from "./numbering.ts";
 import {
   type Facts,
   type InputDecl,
+  MAX_ROWS,
   type Money,
   type Recipe,
   type Source,
@@ -26,7 +38,6 @@ import {
  */
 
 type Cell = string | number | boolean | Money | null;
-const MAX_ROWS = 500;
 const DAY_MS = 86_400_000;
 
 const isMoney = (value: unknown): value is Money =>
@@ -50,12 +61,28 @@ export type Gathered = {
   /** Whether what this input reads is confidential, by where it comes from (`jobSensitive`). */
   readonly sensitive: (input: InputDecl) => boolean;
   readonly number: string | null;
+  /** The logo's file, for a recipe that reads `company.logo`; `null` when there is none. */
+  readonly logo: {
+    readonly bytes: Uint8Array;
+    readonly extension: string;
+    readonly sha256: string;
+  } | null;
 };
 
 // Bank details and tax ids; a company's name, address and place of supply print on every invoice.
 const SENSITIVE_COMPANY = /^(?:bank\.|gstin$|pan$)/;
 const SENSITIVE_CLIENT = new Set(["gstin", "terms"]);
-const AMOUNT_COLUMNS = new Set(["amount", "tax"]);
+const AMOUNT_COLUMNS = new Set(["amount", "tax", "taxable"]);
+const BANK_LIST = "bank_transactions";
+const MATCHED_AS: Readonly<Record<string, string>> = {
+  payment: "payment on",
+  tds: "TDS on",
+  expense_paid: "paid",
+  expense_linked: "paid",
+  expense_new: "new expense",
+  transfer: "transfer between own accounts",
+  ignore: "ignored",
+};
 
 /** An entry's own label, one it inherits, or its list's. */
 export const entrySensitive = (entry: RecordRow, def: ListDef | undefined) =>
@@ -72,8 +99,20 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
   const zone = yield* ownerZone(orgId);
   const now = yield* Clock.currentTimeMillis;
   const profile = yield* readProfile(orgId);
+  const wantsLogo = recipe.inputs.some((input) => sourceOf(input.from)?._tag === "logo");
+  const logoBytes = wantsLogo && profile.logo !== null ? yield* logoFile(profile.logo) : null;
+  const logo =
+    logoBytes === null || profile.logo === null
+      ? null
+      : { ...logoBytes, sha256: profile.logo.sha256 };
   const def = entry === undefined ? undefined : yield* listDef(orgId, entry.registerId);
   const fields = entry === undefined ? {} : parseFields(entry.fieldsJson);
+  // A receipt for a payment prints what was paid, whatever its own row says.
+  const [paid] =
+    entry?.registerId === "receipts" && typeof fields.payment === "string"
+      ? yield* sql<Money>`SELECT amount_minor AS minor, currency FROM kin_record_payments
+          WHERE org_id = ${orgId} AND payment_id = ${fields.payment}`
+      : [];
   const client = entry?.partyId == null ? undefined : yield* records.getById(orgId, entry.partyId);
   const clientFields = client === undefined ? {} : parseFields(client.fieldsJson);
   const number =
@@ -93,6 +132,18 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
   const sensitiveTables = new Set<string>();
   for (const input of recipe.inputs) {
     const source = sourceOf(input.from);
+    if (source?._tag === "entryPayments") {
+      if (entry === undefined) continue;
+      sensitiveTables.add(input.name);
+      const paid = yield* entryPayments(orgId, entry, dayIn(entry.dateAt ?? now, zone));
+      tables.set(
+        input.name,
+        paid
+          .filter((row) => !source.advancesOnly || row.kind === "advance")
+          .map((row) => pick(input, row)),
+      );
+      continue;
+    }
     if (source?._tag !== "rows" && source?._tag !== "payments") continue;
     const month = input.period === undefined ? undefined : given[input.period];
     if (typeof month !== "string" || !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)) continue;
@@ -101,19 +152,27 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     if (source._tag === "payments") {
       sensitiveTables.add(input.name);
       const rows = yield* sql<{
-        invoice: string;
+        invoice: string | null;
         client: string | null;
         minor: number;
         currency: string;
         paidOn: string;
-      }>`SELECT COALESCE(n.number, r.key) AS invoice, p2.title AS client, p.amount_minor AS minor,
-          p.currency, p.paid_on AS "paidOn"
+        receipt: string | null;
+      }>`SELECT CASE WHEN r.register_id = 'invoices' THEN COALESCE(n.number, r.key) END AS invoice,
+          p2.title AS client, p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn",
+          CASE WHEN r.register_id = 'receipts' THEN COALESCE(n.number, r.key) ELSE
+          (SELECT COALESCE(rn.number, rc.key) FROM kin_records rc
+            LEFT JOIN kin_issued_numbers rn ON rn.org_id = rc.org_id AND rn.record_id = rc.record_id
+            WHERE rc.org_id = p.org_id AND rc.register_id = 'receipts' AND rc.state <> 'dropped'
+              AND json_extract(rc.fields_json, '$.payment') = p.payment_id
+            ORDER BY rc.created_at DESC, rc.record_id DESC LIMIT 1) END AS receipt
         FROM kin_record_payments p
         JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
         LEFT JOIN kin_records p2 ON p2.org_id = r.org_id AND p2.record_id = r.party_id
         LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
-        WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND r.register_id = 'invoices'
-          AND substr(p.paid_on, 1, 7) = ${month}
+        WHERE p.org_id = ${orgId} AND ${countedPayment(sql)}
+          AND r.register_id IN ('invoices', 'receipts')
+          AND p.withheld = ${source.tds ? 1 : 0} AND substr(p.paid_on, 1, 7) = ${month}
         ORDER BY p.paid_on, p.payment_id LIMIT ${MAX_ROWS}`;
       tables.set(
         input.name,
@@ -123,12 +182,16 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
             client: row.client,
             amount: { minor: row.minor, currency: row.currency },
             paidOn: row.paidOn,
+            receipt: row.receipt,
           }),
         ),
       );
       continue;
     }
-    const list = yield* listDef(orgId, source.list);
+    // Bank transactions may live in a list the owner kept before Kin made its own.
+    const list =
+      (yield* listDef(orgId, source.list)) ??
+      (source.list === BANK_LIST ? yield* findBankList(orgId) : undefined);
     // A list the org doesn't keep has no entries that month: an empty table, not a missing one.
     if (list === undefined) {
       tables.set(input.name, []);
@@ -145,6 +208,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     )
       sensitiveTables.add(input.name);
     const rows = yield* sql<{
+      recordId: string;
       key: string;
       title: string;
       state: string;
@@ -155,31 +219,54 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       category: string | null;
       fieldsJson: string;
       client: string | null;
+      clientFields: string | null;
       number: string | null;
       sensitive: number;
-    }>`SELECT r.key, r.title, r.state, r.amount_minor AS minor, r.currency, r.date_at AS "dateAt",
-        r.due_at AS "dueAt", r.category, r.fields_json AS "fieldsJson", p.title AS client,
+    }>`SELECT r.record_id AS "recordId", r.key, r.title, r.state, r.amount_minor AS minor,
+        r.currency, ${moneyDay(sql)} AS "dateAt", r.due_at AS "dueAt", r.category,
+        r.fields_json AS "fieldsJson", p.title AS client, p.fields_json AS "clientFields",
         n.number, ${sensitiveNow(sql)} AS sensitive
       FROM kin_records r
       LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.party_id
       LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
-      WHERE r.org_id = ${orgId} AND r.register_id = ${list.id} AND r.date_at IS NOT NULL
-        AND r.date_at >= ${start} AND r.date_at < ${end}
-      ORDER BY r.date_at, r.key LIMIT ${MAX_ROWS * 2}`;
+      WHERE r.org_id = ${orgId} AND r.register_id = ${list.id} AND ${countedEntry(sql)}
+        AND ${moneyDay(sql)} >= ${start} AND ${moneyDay(sql)} < ${end}
+        ${input.states === undefined ? sql`` : sql`AND r.state IN ${sql.in([...input.states])}`}
+      ORDER BY "dateAt", r.key LIMIT ${MAX_ROWS * 2}`;
     const inMonth = rows
       .filter((row) => dayIn(row.dateAt, zone).startsWith(month))
       .slice(0, MAX_ROWS);
     if (inMonth.some((row) => row.sensitive === 1)) sensitiveTables.add(input.name);
+    if ("clientGstin" in input.columns) sensitiveTables.add(input.name);
+    const matched =
+      "matched" in input.columns
+        ? yield* matchesOf(
+            orgId,
+            inMonth.map((row) => row.recordId),
+          )
+        : new Map<string, string>();
     tables.set(
       input.name,
       inMonth.map((row) => {
         const own = parseFields(row.fieldsJson);
+        const party = row.clientFields === null ? {} : parseFields(row.clientFields);
+        const amount = amountOf(row.minor, row.currency);
+        const tax = cellOf(own, "tax");
         return pick(input, {
+          clientGstin: cellOf(party, "gstin"),
+          placeOfSupply: cellOf(own, "placeOfSupply") ?? cellOf(party, "placeOfSupply"),
+          // Only what the entry holds: no tax, or another currency's, leaves it blank.
+          taxable:
+            amount !== null && isMoney(tax) && tax.currency === amount.currency
+              ? { minor: amount.minor - tax.minor, currency: amount.currency }
+              : null,
+          matched: matched.get(row.recordId) ?? null,
           key: row.key,
           title: row.title,
           state: stateLabel(list, row.state),
-          amount: amountOf(row.minor, row.currency),
-          tax: cellOf(own, "tax"),
+          stateKey: row.state,
+          amount,
+          tax,
           date: dayIn(row.dateAt, zone),
           due: day(row.dueAt),
           client: row.client,
@@ -203,11 +290,11 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
           case "key":
             return entry.key;
           case "title":
-            return entry.title;
+            return withoutOwnNumber(entry.title, [number, cellOf(fields, "number")]);
           case "state":
             return def === undefined ? entry.state : stateLabel(def, entry.state);
           case "amount":
-            return amountOf(entry.amountMinor, entry.currency);
+            return paid ?? amountOf(entry.amountMinor, entry.currency);
           case "tax":
             return cellOf(fields, "tax");
           case "date":
@@ -232,9 +319,13 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         const value: unknown =
           head === "bank" && tail !== undefined
             ? Reflect.get(profile.bank ?? {}, tail)
-            : Reflect.get(profile, head!);
+            : head === "brand" && tail !== undefined
+              ? Reflect.get(profile.brand, tail)
+              : Reflect.get(profile, head!);
         return typeof value === "string" && value.length > 0 ? value : null;
       }
+      case "logo":
+        return logo === null ? null : logoPath(logo.extension);
       case "system":
         return source.key === "today"
           ? dayIn(now, zone)
@@ -243,6 +334,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
             : recipe.numbered && number === null;
       case "rows":
       case "payments":
+      case "entryPayments":
         return tables.get(input.name);
     }
   };
@@ -251,6 +343,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       case undefined:
       case "agent":
       case "system":
+      case "logo":
         return false;
       case "entry":
         return entryLabelled || AMOUNT_COLUMNS.has(source.key);
@@ -266,6 +359,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         return SENSITIVE_COMPANY.test(source.key);
       case "rows":
       case "payments":
+      case "entryPayments":
         return sensitiveTables.has(input.name);
     }
   };
@@ -273,7 +367,90 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     input.type === "money" ||
     Object.values(input.columns).includes("money") ||
     fromSource(sourceOf(input.from), input);
-  return { facts, currency, sensitive, number } satisfies Gathered;
+  return { facts, currency, sensitive, number, logo } satisfies Gathered;
+});
+
+/**
+ * A title without the entry's own number at its start, as an import writes "QST/2026-27/008
+ * Website build": the document shows the number on its own. The stored title stays as it is.
+ */
+const withoutOwnNumber = (title: string, numbers: ReadonlyArray<unknown>) => {
+  for (const number of numbers) {
+    if (typeof number !== "string" || number === "" || !title.startsWith(number)) continue;
+    const rest = /^(?:\s*[·•|:–—-]\s*|\s+)(.*)$/s.exec(title.slice(number.length))?.[1]?.trim();
+    if (rest !== undefined && rest !== "") return rest;
+  }
+  return title;
+};
+
+/**
+ * An entry's live payments, oldest first, each with its receipt's number and how it settles the
+ * entry: TDS the client deducted, an advance (received before `before`, its issue day, or set
+ * against it from an advance's receipt), or money received.
+ */
+const entryPayments = Effect.fn("KinDocFacts.entryPayments")(function* (
+  orgId: KinOrgId,
+  entry: RecordRow,
+  before: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    minor: number;
+    currency: string;
+    paidOn: string;
+    note: string;
+    originKey: string;
+    withheld: number;
+    receipt: string | null;
+  }>`SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.note,
+      p.origin_key AS "originKey", p.withheld,
+      (SELECT n.number FROM kin_records r
+        JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
+        WHERE r.org_id = p.org_id AND r.register_id = 'receipts' AND r.state <> 'dropped'
+          AND r.origin_key LIKE 'receipt:%'
+          AND json_extract(r.fields_json, '$.payment') = p.payment_id
+        ORDER BY r.created_at DESC, r.record_id DESC LIMIT 1) AS receipt
+    FROM kin_record_payments p
+    WHERE p.org_id = ${orgId} AND p.record_id = ${entry.recordId} AND p.voided_at IS NULL
+    ORDER BY p.paid_on, p.payment_id LIMIT 200`;
+  const noted = yield* notedReceiptNumbers(
+    orgId,
+    rows.filter(fromImport).map((row) => row.note),
+  );
+  return rows.map((row) => ({
+    receipt: row.receipt ?? (fromImport(row) ? noted.get(row.note) : undefined) ?? null,
+    amount: { minor: row.minor, currency: row.currency },
+    paidOn: row.paidOn,
+    kind:
+      row.withheld === 1
+        ? "tds"
+        : row.paidOn < before || row.originKey.startsWith("receipt:")
+          ? "advance"
+          : "received",
+  }));
+});
+
+/** What each bank row became when the owner confirmed its statement, by the statement's entries. */
+const matchesOf = Effect.fn("KinDocFacts.matches")(function* (
+  orgId: KinOrgId,
+  recordIds: ReadonlyArray<string>,
+) {
+  if (recordIds.length === 0) return new Map<string, string>();
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ id: string; action: string; target: string | null }>`
+    SELECT e.bank_record_id AS id, e.action, t.key AS target
+    FROM kin_bank_statement_entries e
+    JOIN kin_bank_statements s ON s.org_id = e.org_id AND s.statement_id = e.statement_id
+    LEFT JOIN kin_records t ON t.org_id = e.org_id AND t.record_id = e.target_record_id
+    WHERE e.org_id = ${orgId} AND s.undone_at IS NULL AND e.action <> 'row'
+      AND e.bank_record_id IN ${sql.in([...new Set(recordIds)])}
+    ORDER BY e.bank_record_id, e.statement_id, e.seq`;
+  const matched = new Map<string, Array<string>>();
+  for (const row of rows) {
+    const said = [MATCHED_AS[row.action] ?? row.action, row.target].filter(Boolean).join(" ");
+    matched.set(row.id, [...(matched.get(row.id) ?? []), said]);
+  }
+  return new Map([...matched].map(([id, said]) => [id, [...new Set(said)].join("; ")]));
 });
 
 /** Only the columns the input declares, so a row carries nothing else Kin stores. */

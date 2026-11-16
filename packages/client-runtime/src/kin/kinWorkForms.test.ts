@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - The target hint is read against a fixed local day.
 import { KinChatError, type KinRecordKey } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -8,9 +9,17 @@ import {
   KIN_WORK_FORM_CHANGED,
   createKinWorkForm,
   createKinWorkPageWatch,
+  kinClientCreateInput,
   kinClientDraftCheck,
   kinClientDraftOf,
+  kinClientDraftWithGstin,
+  kinClientGstinNote,
   kinClientUpdateInput,
+  kinContactDraftCheck,
+  kinContactDraftOf,
+  kinProjectDraftCheck,
+  kinProjectDraftOf,
+  kinProjectTargetHint,
   kinWorkFormMoved,
   kinWorkSend,
   type KinClientDraft,
@@ -75,6 +84,52 @@ describe("createKinWorkForm", () => {
       { rev: 4, terms: "Invented net 30" },
       { rev: 5, terms: "Invented net 30" },
     ]);
+    // A billing address typed away clears it, rather than keeping blank lines.
+    expect(kinClientUpdateInput({ address: " \n " })).toEqual({ address: null });
+  });
+
+  it("takes a client's GSTIN and state, the state from the GSTIN, saying when they disagree", () => {
+    const blank = { ...kinClientDraftOf(), name: "Invented Foods" };
+    const typed = kinClientDraftWithGstin(blank, " 27bbbbb2222b1z5 ");
+    expect([typed.placeOfSupply, kinClientGstinNote(typed), kinClientDraftCheck(typed)]).toEqual([
+      "Maharashtra",
+      null,
+      null,
+    ]);
+    expect(kinClientCreateInput(typed)).toMatchObject({
+      gstin: "27BBBBB2222B1Z5",
+      placeOfSupply: "Maharashtra",
+    });
+    // A state already chosen stays, and the mismatch is said, not refused.
+    const elsewhere = kinClientDraftWithGstin(
+      { ...blank, placeOfSupply: "Karnataka" },
+      "27BBBBB2222B1Z5",
+    );
+    expect([elsewhere.placeOfSupply, kinClientDraftCheck(elsewhere)]).toEqual(["Karnataka", null]);
+    expect(kinClientGstinNote(elsewhere)).toMatch(/registered in Maharashtra, not Karnataka/);
+    expect(kinClientDraftCheck({ ...blank, gstin: "27BBBBB" })).toMatch(/GSTIN isn't right/);
+    // A stored code reads as its state; anything else is a country, an export.
+    const stored = (placeOfSupply: string) =>
+      kinClientDraftOf({
+        name: "Invented Foods",
+        kind: "client",
+        terms: null,
+        address: null,
+        gstin: null,
+        placeOfSupply,
+        notes: "",
+        sensitive: false,
+      });
+    expect(
+      [stored("29"), stored("United States")].map((one) => [one.placeOfSupply, one.abroad]),
+    ).toEqual([
+      ["Karnataka", false],
+      ["United States", true],
+    ]);
+    expect(kinClientUpdateInput({ gstin: " ", placeOfSupply: "" })).toEqual({
+      gstin: null,
+      placeOfSupply: null,
+    });
   });
 
   it("offers the one already there when the name is taken, and keeps the form", async () => {
@@ -175,5 +230,51 @@ describe("createKinWorkPageWatch", () => {
     here.watch.changed({ changed: { "W-77": 11 }, unnamed: 0 }, here.page);
     await Promise.resolve();
     expect([here.rereads(), here.asked()]).toEqual([1, 1]);
+  });
+});
+
+describe("kinProjectDraftCheck", () => {
+  it.each([
+    ["2026-02-30", "Enter a real date."],
+    ["2026-13-01", "Enter a real date."],
+    ["2025-02-29", "Enter a real date."],
+    ["2028-02-29", null],
+    ["2026-12-31", null],
+  ])("target %s", (target, problem) => {
+    expect(kinProjectDraftCheck({ ...kinProjectDraftOf(), name: "Relaunch", target })).toBe(
+      problem,
+    );
+  });
+
+  it("names the year only outside this one, and never labels an impossible day", () => {
+    const now = new Date(2026, 10, 12);
+    expect(kinProjectTargetHint("2026-12-03", now)).not.toMatch(/2026/);
+    expect(kinProjectTargetHint("2027-03-02", now).match(/2027/g)).toHaveLength(1);
+    expect(kinProjectTargetHint("2026-02-30", now)).toBe("Enter a real date.");
+  });
+});
+
+describe("kinContactDraftCheck", () => {
+  const contact = { ...kinContactDraftOf(), name: "Ravi" };
+  it.each([
+    [{ email: "not-an-email" }, "Enter an email like name@example.com."],
+    [{ phone: "call reception" }, "Enter a phone number with digits in it."],
+    [{ phone: "x12" }, null],
+    [{ phone: "+1 (555) 010-0199 ext. 4" }, null],
+    [{ email: "ravi@example.com", phone: "+91 98450 12345" }, null],
+    [{}, null],
+  ])("%o", (details, problem) => {
+    expect(kinContactDraftCheck({ ...contact, ...details })).toBe(problem);
+  });
+
+  it("lets an old email or phone stay as saved, and checks it once retyped", () => {
+    const saved = { ...contact, email: "front desk", phone: "ask Mira" };
+    expect(kinContactDraftCheck({ ...saved, name: "Ravi Rao" }, saved)).toBeNull();
+    expect(kinContactDraftCheck({ ...saved, email: "front desk 2" }, saved)).toBe(
+      "Enter an email like name@example.com.",
+    );
+    expect(kinContactDraftCheck({ ...saved, phone: "ask Ravi" }, saved)).toBe(
+      "Enter a phone number with digits in it.",
+    );
   });
 });

@@ -33,6 +33,40 @@ import OwnerAnswerCards from "./migrations/K071_OwnerAnswerCards.ts";
 import GeneratedDocuments from "./migrations/K072_GeneratedDocuments.ts";
 import KeyPushes from "./migrations/K073_KeyPushes.ts";
 import DocJobCleanup from "./migrations/K074_DocJobCleanup.ts";
+import ServerRenderedDocuments from "./migrations/K075_ServerRenderedDocuments.ts";
+import DocFiles from "./migrations/K076_DocFiles.ts";
+import DocumentLabels from "./migrations/K077_DocumentLabels.ts";
+import RecipeLabelBaselines from "./migrations/K078_RecipeLabelBaselines.ts";
+import ImportRuns from "./migrations/K079_ImportRuns.ts";
+import RecordRequestHash from "./migrations/K080_RecordRequestHash.ts";
+import RecipeJobPasses from "./migrations/K081_RecipeJobPasses.ts";
+import BankStatements from "./migrations/K082_BankStatements.ts";
+import StatementSafety from "./migrations/K083_StatementSafety.ts";
+import RecipeDefaults from "./migrations/K084_RecipeDefaults.ts";
+import StatementReading from "./migrations/K085_StatementReading.ts";
+import StatementChatPasswords from "./migrations/K086_StatementChatPasswords.ts";
+import TeamWork from "./migrations/K087_TeamWork.ts";
+import MoneyRecords from "./migrations/K088_MoneyRecords.ts";
+import ChatThreads from "./migrations/K106_ChatThreads.ts";
+import Connections from "./migrations/K107_Connections.ts";
+import BudgetNotices from "./migrations/K110_BudgetNotices.ts";
+import ConnectionPause from "./migrations/K130_ConnectionPause.ts";
+import ReceiptProposalsPasswordBudget from "./migrations/K131_ReceiptProposalsPasswordBudget.ts";
+import PeopleProfiles from "./migrations/K132_PeopleProfiles.ts";
+import MoneyBudgets from "./migrations/K133_MoneyBudgets.ts";
+import ConnectionSignIn from "./migrations/K134_ConnectionSignIn.ts";
+import PulseFacts from "./migrations/K135_PulseFacts.ts";
+import ConnectionAsks from "./migrations/K136_ConnectionAsks.ts";
+import PersonAccess from "./migrations/K137_PersonAccess.ts";
+import PulseCheckIns from "./migrations/K138_PulseCheckIns.ts";
+import ClientTouches from "./migrations/K139_ClientTouches.ts";
+import AssignedByAgent from "./migrations/K140_AssignedByAgent.ts";
+import ConnectionAccounts from "./migrations/K141_ConnectionAccounts.ts";
+import MicrosoftConnections from "./migrations/K142_MicrosoftConnections.ts";
+import PersonPlaces from "./migrations/K143_PersonPlaces.ts";
+import PullRequestCare from "./migrations/K144_PullRequestCare.ts";
+import RetireRoutines from "./migrations/K145_RetireRoutines.ts";
+import SendDecidedBy from "./migrations/K146_SendDecidedBy.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -146,6 +180,40 @@ const loader = Migrator.fromRecord({
   "72_GeneratedDocuments": GeneratedDocuments,
   "73_KeyPushes": KeyPushes,
   "74_DocJobCleanup": DocJobCleanup,
+  "75_ServerRenderedDocuments": ServerRenderedDocuments,
+  "76_DocFiles": DocFiles,
+  "77_DocumentLabels": DocumentLabels,
+  "78_RecipeLabelBaselines": RecipeLabelBaselines,
+  "79_ImportRuns": ImportRuns,
+  "80_RecordRequestHash": RecordRequestHash,
+  "81_RecipeJobPasses": RecipeJobPasses,
+  "82_BankStatements": BankStatements,
+  "83_StatementSafety": StatementSafety,
+  "84_RecipeDefaults": RecipeDefaults,
+  "85_StatementReading": StatementReading,
+  "86_StatementChatPasswords": StatementChatPasswords,
+  "87_TeamWork": TeamWork,
+  "88_MoneyRecords": MoneyRecords,
+  "106_ChatThreads": ChatThreads,
+  "107_Connections": Connections,
+  "110_BudgetNotices": BudgetNotices,
+  "130_ConnectionPause": ConnectionPause,
+  "131_ReceiptProposalsPasswordBudget": ReceiptProposalsPasswordBudget,
+  "132_PeopleProfiles": PeopleProfiles,
+  "133_MoneyBudgets": MoneyBudgets,
+  "134_ConnectionSignIn": ConnectionSignIn,
+  "135_PulseFacts": PulseFacts,
+  "136_ConnectionAsks": ConnectionAsks,
+  "137_PersonAccess": PersonAccess,
+  "138_PulseCheckIns": PulseCheckIns,
+  "139_ClientTouches": ClientTouches,
+  "140_AssignedByAgent": AssignedByAgent,
+  "141_ConnectionAccounts": ConnectionAccounts,
+  "142_MicrosoftConnections": MicrosoftConnections,
+  "143_PersonPlaces": PersonPlaces,
+  "144_PullRequestCare": PullRequestCare,
+  "145_RetireRoutines": RetireRoutines,
+  "146_SendDecidedBy": SendDecidedBy,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

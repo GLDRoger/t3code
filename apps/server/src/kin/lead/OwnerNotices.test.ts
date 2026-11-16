@@ -15,7 +15,7 @@ const at = "2026-11-11T03:00:00.000Z";
 const database = KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory));
 
 it.effect(
-  "a notice goes to the Chief of staff chat alone, and counts only if it needs the owner",
+  "a notice goes to the Chief of staff chat alone, in its plain words, only if it has some",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -49,11 +49,17 @@ it.effect(
           body: string;
         }>`SELECT body FROM kin_messages WHERE chat_id = ${`chat-${agent}`} ORDER BY seq`;
 
+      // QA Q1: operator reasons reached the owner's chat and its preview word for word.
       yield* hooks.notify({ orgId, branch: "main", reason: "Recovered from remote head" });
-      assert.deepStrictEqual(yield* rows("chief"), [{ body: "Recovered from remote head" }]);
-      assert.strictEqual(yield* unread("chief"), 0);
+      assert.deepStrictEqual(yield* rows("chief"), []);
 
-      yield* hooks.notify({ orgId, branch: "main", reason: "Close the PR", needsOwner: true });
+      yield* hooks.notify({
+        orgId,
+        branch: "main",
+        reason: "Invented operator reason",
+        owner: "Invented plain words",
+      });
+      assert.deepStrictEqual(yield* rows("chief"), [{ body: "Invented plain words" }]);
       assert.strictEqual(yield* unread("chief"), 1);
       assert.deepStrictEqual(yield* rows("tech"), []);
       assert.strictEqual(yield* unread("tech"), 0);

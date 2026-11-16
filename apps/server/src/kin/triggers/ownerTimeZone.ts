@@ -1,6 +1,7 @@
 import {
   KinChatError,
-  KinOwnerTimeZone as OwnerTimeZone,
+  KinOwnerTimeZone as OwnerTimeZoneInput,
+  KinOwnerTimeZoneRead as OwnerTimeZone,
   type KinOrgId,
   type KinOwnerTimeZoneGetInput,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
+import { unsetOwnerZone } from "../work/recordRows.ts";
 import type * as Routines from "./routines.ts";
 
 type TimeZoneError = KinChatError | PersistenceSqlError;
@@ -22,7 +24,7 @@ type TimeZoneError = KinChatError | PersistenceSqlError;
 const notFound = new KinChatError({ reason: "not_found", message: "Kin organization not found." });
 const notAllowed = new KinChatError({
   reason: "not_allowed",
-  message: "Only the organization owner can read or set Kin's time zone.",
+  message: "Only the owner or a co-owner can set Kin's time zone.",
 });
 const invalid = new KinChatError({ reason: "invalid_state", message: "Invalid Kin time zone." });
 const unavailable = new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
@@ -35,6 +37,7 @@ const mapError = (cause: unknown): TimeZoneError =>
       ? cause
       : invalid;
 const decode = Schema.decodeUnknownEffect(OwnerTimeZone);
+const decodeInput = Schema.decodeUnknownEffect(OwnerTimeZoneInput);
 
 /** The owner's zone. Writes go through the lead runtime's routines, which reschedule triggers. */
 export class KinOwnerTimeZone extends Context.Service<
@@ -46,7 +49,7 @@ export class KinOwnerTimeZone extends Context.Service<
     ) => Effect.Effect<OwnerTimeZone, TimeZoneError>;
     readonly set: (
       people: ReadonlyArray<PersonIdentity>,
-      input: OwnerTimeZone,
+      input: OwnerTimeZoneInput,
     ) => Effect.Effect<OwnerTimeZone, TimeZoneError>;
     readonly attach: (
       routines: Routines.KinRoutines["Service"],
@@ -58,15 +61,22 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   let attached: Routines.KinRoutines["Service"] | undefined;
 
-  const owner = Effect.fn("KinOwnerTimeZone.owner")(function* (
+  const member = Effect.fn("KinOwnerTimeZone.member")(function* (
     people: ReadonlyArray<PersonIdentity>,
     orgId: KinOrgId,
   ) {
     const person = people.find((candidate) => candidate.orgId === orgId);
     if (person === undefined) return yield* notFound;
-    const member =
+    const rows =
       yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId} AND person_id = ${person.personId} ORDER BY person_id`;
-    if (member.length === 0) return yield* notFound;
+    if (rows.length === 0) return yield* notFound;
+    return person;
+  });
+  const owner = Effect.fn("KinOwnerTimeZone.owner")(function* (
+    people: ReadonlyArray<PersonIdentity>,
+    orgId: KinOrgId,
+  ) {
+    const person = yield* member(people, orgId);
     const allowed = yield* isOrgOwner(orgId, person.personId).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
@@ -76,16 +86,21 @@ const make = Effect.gen(function* () {
     const [row] = yield* sql<{
       time_zone: string;
     }>`SELECT time_zone FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`;
-    return yield* decode({ orgId, timeZone: row?.time_zone ?? "UTC" });
+    return yield* decode(
+      row === undefined
+        ? { orgId, timeZone: unsetOwnerZone(), fromHost: true }
+        : { orgId, timeZone: row.time_zone },
+    );
   });
 
   return KinOwnerTimeZone.of({
+    // Due times show in this zone for everyone; only the owner changes it.
     get: Effect.fn("KinOwnerTimeZone.get")(function* (people, input) {
-      yield* owner(people, input.orgId);
+      yield* member(people, input.orgId);
       return yield* read(input.orgId);
     }, Effect.mapError(mapError)),
     set: Effect.fn("KinOwnerTimeZone.set")(function* (people, input) {
-      const { orgId, timeZone } = yield* decode(input);
+      const { orgId, timeZone } = yield* decodeInput(input);
       yield* owner(people, orgId);
       if (attached === undefined) return yield* unavailable;
       yield* attached.setTimeZone(orgId, timeZone).pipe(

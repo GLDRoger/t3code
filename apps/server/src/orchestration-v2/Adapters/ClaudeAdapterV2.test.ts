@@ -1349,6 +1349,7 @@ describe("ClaudeAdapterV2 MCP elicitation acceptance", () => {
 const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(function* (
   binaryPath: string,
   environment: ResolvedProviderInstanceEnvironment = [],
+  messages: Stream.Stream<never, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError> = Stream.never,
 ) {
   const executablePaths: Array<string | undefined> = [];
   const taskToolEnvironment: Array<string | undefined> = [];
@@ -1374,7 +1375,7 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
           executablePaths.push(input.options.pathToClaudeCodeExecutable);
           taskToolEnvironment.push(input.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS);
           return {
-            messages: Stream.never,
+            messages,
             offer: () => Effect.void,
             setModel: () => Effect.void,
             applyFlagSettings: () => Effect.void,
@@ -1420,6 +1421,36 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
 });
 
 describe("ClaudeAdapterV2 executable path", () => {
+  it.effect("fails the turn when the CLI exits before the turn attaches, instead of hanging", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const exited = new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+          method: "fromAsyncIterable",
+          cause: new Error("Claude Code process exited with code 127"),
+        });
+        const exit = yield* captureSdkExecutablePaths(
+          "/missing/claude",
+          [],
+          Stream.fail(exited),
+        ).pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(exit));
+        if (Exit.isFailure(exit))
+          assert.strictEqual(
+            makeProviderFailure({ cause: exit.cause, class: "provider_error" }).message,
+            "The provider could not start this turn: the provider program exited before the turn started. Retry the turn; if it keeps failing, check the provider setup and server logs.",
+          );
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
   it.effect("follows a bare claude on Windows to the npm package executable", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -6133,6 +6164,71 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         ),
       ),
+  );
+
+  // Kin run 4: Opus put its answer's gist in a second thinking block, called a tool, then wrote
+  // the answer itself. The gist shows as text, and stays known as thinking for those who need it.
+  it.effect("marks reasoning a Claude 5.1+ update shows as text as a thinking item", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("narration-attempt"),
+          text: "Where did we send the Orbit invoice?",
+          attachments: [],
+        }),
+      );
+      const gist = "The Orbit invoice went out to Anita from hello@.";
+      const answer = "It went to Anita from hello@. On mail, I can search, read and draft replies.";
+      const snapshot = (uuid: string, id: string, content: ReadonlyArray<unknown>) =>
+        claudeSdkFrame({
+          type: "assistant",
+          uuid,
+          session_id: WAKE_NATIVE_SESSION,
+          parent_tool_use_id: null,
+          message: { id, model: "claude-opus-5-5", content },
+        });
+      for (const frame of [
+        snapshot("plan", "gist-message", [
+          { type: "thinking", thinking: "Reading the sent record.", signature: "sig" },
+        ]),
+        snapshot("gist", "gist-message", [{ type: "thinking", thinking: gist, signature: "sig" }]),
+        snapshot("end", "gist-message", [
+          { type: "tool_use", id: "end-1", name: "mcp__kin__kin_end", input: {} },
+        ]),
+        snapshot("answer", "answer-message", [{ type: "text", text: answer }]),
+        makeResultFrame({ uuid: "narration-result", result: answer }),
+      ])
+        yield* Queue.offer(harness.sdkMessages, frame);
+      yield* Queue.take(harness.terminalReceipts);
+      const said = new Map(
+        harness.events.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === "assistant_message"
+            ? [[event.turnItem.id, event.turnItem] as const]
+            : [],
+        ),
+      );
+      assert.deepEqual(
+        [...said.values()].map((item) => [item.text, ClaudeAdapterV2.isClaudeThinkingItem(item)]),
+        [
+          [gist, true],
+          [answer, false],
+        ],
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
   );
 
   it.effect.each(["completed", "interrupted"] as const)(

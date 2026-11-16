@@ -20,10 +20,13 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
+import { devMemoryRepository } from "../memory/devMemory.ts";
+import { ServerConfig } from "../../config.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as MemoryLander from "../memory/MemoryLander.ts";
@@ -44,10 +47,17 @@ import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp.ts";
 import * as DocJobs from "../gendocs/DocJobs.ts";
+import * as Render from "../gendocs/render.ts";
 import * as Toolchain from "../gendocs/toolchain.ts";
 import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
+import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
+import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
+import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import { importWork } from "../work/importWork.ts";
+import { reportIssuedWithoutAmount } from "../gendocs/amounts.ts";
+import { countedEntry } from "../work/recordRows.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
@@ -61,6 +71,7 @@ import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Handoff from "./Handoff.ts";
 import * as Workers from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
+import * as PullRequestCare from "../github/PullRequestCare.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
 import * as WorkerEnvironment from "./workerEnvironment.ts";
 import * as WorkerPublish from "./workerPublish.ts";
@@ -88,12 +99,34 @@ export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
   );
 }
 
+// PR care (reviews, links, closing issues); without the Kin App it answers that GitHub isn't connected.
+const pullRequestCare = Layer.unwrap(
+  Effect.gen(function* () {
+    if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID"))))
+      return PullRequestCare.notConnectedLayer;
+    return PullRequestCare.layer.pipe(
+      Layer.provide(Layer.mergeAll(GithubReaders.appLayer, GithubEvents.repoScopeLayer)),
+      Layer.catchCause((cause) =>
+        PullRequestCare.notConnectedLayer.pipe(
+          Layer.tap(() =>
+            Effect.logWarning(
+              "Kin PR care is off: the Kin GitHub App is unavailable",
+              Cause.pretty(cause),
+            ),
+          ),
+        ),
+      ),
+    );
+  }),
+);
 const routineRuntime = Layer.mergeAll(
   Routines.layer,
   DeferralFlow.layer,
   ScheduledTasks.layer,
-  GithubEvents.consumerLayer,
+  GithubEvents.consumerLayer.pipe(Layer.provide(pullRequestCare)),
+  PullRequestCare.runtimeLayer.pipe(Layer.provide(pullRequestCare)),
   Watchdogs.runtimeLayer,
+  KinPulse.layer,
 ).pipe(
   Layer.provideMerge(LeadDelivery.layer),
   Layer.provideMerge(TriggerScheduler.layer),
@@ -210,6 +243,7 @@ const runner = Layer.effectDiscard(
         undo: writer.value.undoChange,
         relabel: writer.value.relabel,
         retire: writer.value.retire,
+        restore: writer.value.restore,
         items: (orgId) => memory.items(orgId),
       });
     yield* Effect.gen(function* () {
@@ -260,8 +294,11 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
 // KIN_MEMORY_DIRECT_PUSH=true, because the memory repo's ruleset rejects a direct push.
 const memoryPullRequests = Layer.unwrap(
   Effect.gen(function* () {
+    const { directMainPush } = yield* MemoryConfig.MemoryConfig;
     const off =
-      "memory writes to the default branch are refused unless KIN_MEMORY_DIRECT_PUSH=true";
+      directMainPush === true
+        ? "memory writes push straight to the default branch"
+        : "memory writes to the default branch are refused unless KIN_MEMORY_DIRECT_PUSH=true";
     if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID")))) {
       yield* Effect.logWarning(`Kin memory PRs are off: KIN_GITHUB_APP_ID is unset, so ${off}`);
       return Layer.empty;
@@ -284,7 +321,9 @@ const registration = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(KinLeadToolkit, handlers),
   McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
   McpHttpServer.toolkitRegistration(KinDocsToolkit, docHandlers),
+  McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
   McpHttpServer.toolkitRegistration(KinDocumentToolkit, documentHandlers),
+  McpHttpServer.toolkitRegistration(KinPulseToolkit, pulseHandlers),
 );
 const toolkit = LeadMemory.layer.pipe(
   Layer.provide(KinSchedules.layer),
@@ -355,10 +394,12 @@ const workers = Workers.layer.pipe(
   Layer.provideMerge(
     WorkerTracker.layer.pipe(Layer.provide(workerPublish), Layer.provide(DocJobs.collectorLayer)),
   ),
+  Layer.provideMerge(Render.layer),
   Layer.provideMerge(Layer.mergeAll(Workspace.layer, Toolchain.layer)),
   Layer.provideMerge(WorkerEnvironment.layer),
   // The repositories the owner connected are part of where the owner's own work may start.
   Layer.provide(GithubEvents.repoScopeLayer),
+  Layer.provide(pullRequestCare),
 );
 const tracker = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -394,25 +435,85 @@ const workImport = Layer.effectDiscard(
     ).pipe(forkParked);
   }),
 );
+// At every start: each issued invoice left with no amount is named to the owner once; no amount is
+// written (`gendocs/amounts.ts`).
+const issuedAmounts = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    // A startup scan across orgs: only those holding such an invoice not yet named.
+    const orgs = yield* sql<{ orgId: KinOrgId }>`SELECT DISTINCT n.org_id AS "orgId"
+      FROM kin_issued_numbers n
+      JOIN kin_records r ON r.org_id = n.org_id AND r.record_id = n.record_id
+      WHERE n.register_id = 'invoices' AND r.amount_minor IS NULL AND ${countedEntry(sql)}
+        AND NOT EXISTS (SELECT 1 FROM kin_amount_notices a
+          WHERE a.org_id = n.org_id AND a.record_id = n.record_id)
+      ORDER BY n.org_id`;
+    yield* Effect.forEach(
+      orgs,
+      ({ orgId }) =>
+        reportIssuedWithoutAmount(orgId).pipe(
+          Effect.tap((done) =>
+            Effect.logInfo("Kin named issued invoices with no amount to the owner", {
+              orgId,
+              reported: done.reported.length,
+              kept: done.kept.length,
+            }),
+          ),
+        ),
+      { discard: true },
+    );
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning(
+        "Kin couldn't name issued invoices with no amount; the next start tries again",
+        {
+          cause: Cause.pretty(cause),
+        },
+      ),
+    ),
+    forkParked,
+  ),
+);
 const production = withServices(
-  Layer.mergeAll(runner, ChatWake.layer, registration, tracker, workImport).pipe(
+  Layer.mergeAll(runner, ChatWake.layer, registration, tracker, workImport, issuedAmounts).pipe(
     Layer.provideMerge(workers),
     Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),
     Layer.provide(repoReads),
+    Layer.provide(pullRequestCare),
   ),
 );
 
 const configured = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
-  containStartup(
-    Layer.unwrap(
-      Effect.gen(function* () {
-        const repositories = yield* MemoryConfig.configuredRepositories;
-        if (repositories.length === 0) return Layer.empty;
-        return entry.pipe(Layer.provide(MemoryConfig.layer(repositories)));
-      }),
+  Layer.merge(
+    containStartup(
+      Layer.unwrap(
+        Effect.gen(function* () {
+          const repositories = yield* MemoryConfig.configuredRepositories;
+          if (repositories.length > 0)
+            return entry.pipe(Layer.provide(MemoryConfig.layer(repositories)));
+          const dev = yield* devMemoryRepository();
+          if (dev === undefined) return Layer.empty;
+          return entry.pipe(Layer.provide(MemoryConfig.layer(dev, { directMainPush: true })));
+        }),
+      ),
     ),
+    unconfigured,
   );
+
+// An installed host with no memory repository runs no agent; each chat with one hears why.
+const unconfigured = containStartup(
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const repositories = yield* MemoryConfig.configuredRepositories;
+      if (repositories.length > 0 || (yield* ServerConfig).devUrl !== undefined) return Layer.empty;
+      yield* Effect.logError(
+        "Kin agents can't run: no memory repository is set (KIN_MEMORY_REPOSITORIES)",
+      );
+      return ChatWake.unconfiguredLayer.pipe(Layer.provide(KinChatRepository.layer));
+    }),
+  ),
+);
 
 export const layerServer = configured(layer);
 export const layerMcp = configured(production);

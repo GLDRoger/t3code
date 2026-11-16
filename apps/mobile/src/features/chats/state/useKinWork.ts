@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   kinWorkNames,
+  type KinWorkAnswers,
   kinWorkScreenState,
   type KinWorkScreenState,
 } from "@t3tools/client-runtime/kin/kinWork";
@@ -34,6 +35,7 @@ import {
   mapPage,
   type KinPagedListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
+import { kinInvitedPeople } from "@t3tools/client-runtime/kin/kinTeam";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
   EnvironmentId,
@@ -41,6 +43,7 @@ import type {
   KinOwnerTimeZone,
   KinPartyPage,
   KinPartyRow,
+  KinPeopleListInvitesResult,
   KinPeopleListResult,
   KinProjectPage,
   KinProjectRow,
@@ -55,7 +58,7 @@ import { useEffect, useState } from "react";
 import { environmentCatalog } from "../../../connection/catalog";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { useAtomCommand } from "../../../state/use-atom-command";
-import { kinClient } from "./kinClient";
+import { kinClient, retryKinWorkLive } from "./kinClient";
 import { kinHostConnected, useKinHostAt } from "./useKinHost";
 
 export interface KinWorkTarget {
@@ -73,9 +76,21 @@ const noPeopleAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleListResult, unkno
 const noZoneAtom: Atom.Atom<AsyncResult.AsyncResult<KinOwnerTimeZone, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
+const noInvitesAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleListInvitesResult, unknown>> =
+  Atom.make(AsyncResult.initial());
 
 export const kinWorkLiveAtom = ({ environmentId, orgId }: KinWorkTarget) =>
   kinClient.workLive({ environmentId, input: { orgId } });
+
+/**
+ * Reads Work's counts again inside the running stream, keeping what is on screen. A stream that
+ * already ended with an error has nothing to retry in, so it starts over.
+ */
+export const refreshKinWorkLive = (target: KinWorkTarget) => {
+  const live = kinWorkLiveAtom(target);
+  if (AsyncResult.isFailure(appAtomRegistry.get(live))) appAtomRegistry.refresh(live);
+  else retryKinWorkLive(target.environmentId, target.orgId);
+};
 
 /** Work's counts and change number as one screen state, kept current by the host. */
 export function useKinWork(target: KinWorkTarget): KinWorkScreenState {
@@ -89,6 +104,18 @@ export function useKinWork(target: KinWorkTarget): KinWorkScreenState {
   });
 }
 
+/**
+ * Teammates re-invited who haven't opened the new link, for pickers to show as invited. Only a
+ * session that hands out access can read invites; others get none.
+ */
+export function useKinReinvited({ environmentId, orgId }: KinWorkTarget, enabled = true) {
+  const allowed = useAtomValue(kinClient.inviteCreate.permissionAtom(environmentId)) && enabled;
+  const result = useAtomValue(
+    allowed ? kinClient.invites({ environmentId, input: { orgId } }) : noInvitesAtom,
+  );
+  return kinInvitedPeople(Option.getOrNull(AsyncResult.value(result))?.invites ?? null);
+}
+
 /** Who Work can name and be given to. `enabled` is off for a viewer the host would refuse. */
 export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, enabled: boolean) {
   const host = useKinHostAt(environmentId);
@@ -96,7 +123,9 @@ export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, ena
   const result = useAtomValue(
     enabled ? kinClient.people({ environmentId, input: { orgId } }) : noPeopleAtom,
   );
-  const people = Option.getOrNull(AsyncResult.value(result))?.people ?? null;
+  const listed = Option.getOrNull(AsyncResult.value(result));
+  const people = listed?.people ?? null;
+  const invited = useKinReinvited({ environmentId, orgId }, enabled);
   const zone =
     Option.getOrNull(
       AsyncResult.value(
@@ -105,10 +134,40 @@ export function useKinWorkDirectory({ environmentId, orgId }: KinWorkTarget, ena
         ),
       ),
     )?.timeZone ?? null;
-  return { orgs, people, names: kinWorkNames({ orgs, orgId, people, zone }) };
+  return {
+    orgs,
+    people,
+    joined: listed?.joined ?? null,
+    invited,
+    names: kinWorkNames({ orgs, orgId, people, zone }),
+  };
 }
 
 export type KinWorkDirectory = ReturnType<typeof useKinWorkDirectory>;
+
+// The host's answers to the owner's changes, per host and org, read by every screen of a task.
+const kinWorkAnswersAtom = Atom.family((_key: string) =>
+  Atom.make<Readonly<Record<string, KinRecordDetail>>>({}).pipe(Atom.keepAlive),
+);
+const answersAtomOf = ({ environmentId, orgId }: KinWorkTarget) =>
+  kinWorkAnswersAtom(JSON.stringify([environmentId, orgId]));
+
+export function kinWorkAnswersOf(target: KinWorkTarget): KinWorkAnswers {
+  const atom = answersAtomOf(target);
+  return {
+    get: (key) => appAtomRegistry.get(atom)[key],
+    put: (item) => {
+      const held = appAtomRegistry.get(atom);
+      if ((held[item.key]?.rev ?? -1) >= item.rev) return;
+      appAtomRegistry.set(atom, { ...held, [item.key]: item });
+    },
+  };
+}
+
+/** The host's latest answer to a change to this task from any screen; null with none. */
+export function useKinWorkAnswer(target: KinWorkTarget, key: KinRecordKey) {
+  return useAtomValue(answersAtomOf(target))[key] ?? null;
+}
 
 /** The owner's changes to tasks on one host, for a list or a task on screen. */
 export function useKinWorkChanges(
@@ -131,6 +190,7 @@ export function useKinWorkChanges(
       reread: (key) =>
         appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
       online: () => kinHostConnected(environmentId),
+      answers: kinWorkAnswersOf({ environmentId, orgId }),
       ...(editing === undefined ? {} : { editing }),
       onChange: setState,
     }),
@@ -143,6 +203,8 @@ export function useKinWorkItemWatch(
   { environmentId, orgId }: KinWorkTarget,
   key: KinRecordKey,
   heldSeq: number | undefined | null,
+  /** A milestone's tasks: a change to one reads the milestone again. */
+  alsoKeys: ReadonlyArray<KinRecordKey> = [],
 ) {
   const live = Option.getOrNull(
     AsyncResult.value(useAtomValue(kinWorkLiveAtom({ environmentId, orgId }))),
@@ -154,7 +216,10 @@ export function useKinWorkItemWatch(
         appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
     }),
   );
-  const named = live?.changed[key] ?? 0;
+  const named = Math.max(
+    live?.changed[key] ?? 0,
+    ...alsoKeys.map((also) => live?.changed[also] ?? 0),
+  );
   const unnamed = live?.unnamed ?? 0;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the open task from the host again when the host announces a change to it
   useEffect(() => {
@@ -205,12 +270,17 @@ export function useKinPagedList<Filter extends { readonly text: string }, Row>(
 }
 
 /** The clients list: active or closed, by name, a page at a time. */
-export function useKinClientsList({ environmentId, orgId }: KinWorkTarget, seq: number | null) {
+export function useKinClientsList(
+  { environmentId, orgId }: KinWorkTarget,
+  seq: number | null,
+  closed = false,
+) {
+  const initial = { ...KIN_CLIENTS_DEFAULT_FILTER, closed };
   return useKinPagedList<KinClientsFilter, KinPartyRow>(
-    KIN_CLIENTS_DEFAULT_FILTER,
+    initial,
     (onChange) =>
       createKinPagedList({
-        initial: KIN_CLIENTS_DEFAULT_FILTER,
+        initial,
         sameFilter: kinClientsSameFilter,
         idOf: (row) => row.recordId,
         onChange,
@@ -229,12 +299,17 @@ export function useKinClientsList({ environmentId, orgId }: KinWorkTarget, seq: 
 }
 
 /** The projects list: under way, done or dropped, soonest target first. */
-export function useKinProjectsList({ environmentId, orgId }: KinWorkTarget, seq: number | null) {
+export function useKinProjectsList(
+  { environmentId, orgId }: KinWorkTarget,
+  seq: number | null,
+  view: KinProjectsFilter["view"] = "open",
+) {
+  const initial = { ...KIN_PROJECTS_DEFAULT_FILTER, view };
   return useKinPagedList<KinProjectsFilter, KinProjectRow>(
-    KIN_PROJECTS_DEFAULT_FILTER,
+    initial,
     (onChange) =>
       createKinPagedList({
-        initial: KIN_PROJECTS_DEFAULT_FILTER,
+        initial,
         sameFilter: kinProjectsSameFilter,
         idOf: (row) => row.recordId,
         onChange,

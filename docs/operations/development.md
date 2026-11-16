@@ -78,6 +78,10 @@ Read ports from the `[dev-runner]` output. Worktrees derive stable preferences f
 but occupied ports can shift them. `T3CODE_PORT_OFFSET` or `T3CODE_DEV_INSTANCE` can select a
 different preference when needed.
 
+### Kin
+
+`KIN_ENABLED=true T3CODE_DEV_SEED=0 vp run dev` runs Kin with its agents: the dev server makes its own local memory repo in its state directory when `KIN_MEMORY_REPOSITORIES` is unset. [Running Kin locally](../kin/KT.md#running-kin-locally) has the rest.
+
 ### Replay provider
 
 `vp run dev` registers `Replay (dev)`, a local ACP agent at
