@@ -23,7 +23,7 @@ export const isDevServer = Effect.serviceOption(ServerConfig).pipe(
   Effect.map(Option.exists((config) => config.devUrl !== undefined)),
 );
 
-/** Only Claude sessions get LeadIsolation's no-shell tool set, so a lead runs on nothing else. */
+/** Only Claude and confined Codex sessions get a lead's no-shell tool set; a lead runs on no other. */
 export const nonClaudeLeadModel = (
   settings: ServerSettings,
   models: LeadModels,
@@ -35,8 +35,8 @@ export const nonClaudeLeadModel = (
     const driver = instances[instanceId]?.driver;
     if (devServer && instanceId === KIN_VERIFY_SCRIPT_INSTANCE_ID && driver === "acpRegistry")
       continue;
-    if (driver !== "claudeAgent")
-      return `Kin agents run only on Claude, and the ${role} model's instance ${instanceId} is ${driver === undefined ? "not a configured provider" : `a ${driver} instance`}. Workers may still use any provider.`;
+    if (driver === "claudeAgent" || (settings.kinNonClaudeAgents && driver === "codex")) continue;
+    return `Kin agents run only on Claude, and the ${role} model's instance ${instanceId} is ${driver === undefined ? "not a configured provider" : `a ${driver} instance`}. Workers may still use any provider.${driver === "codex" ? " To use Codex, turn on Agents on OpenAI models in Kin's Settings." : ""}`;
   }
   return undefined;
 };
@@ -73,7 +73,8 @@ export const leadModelProblem = (
       provider.models.some(
         (model) => model.slug === selection.model || model.aliases?.includes(selection.model),
       );
-    if (!listed) return `${selection.model} isn't offered by Claude on this server any more.`;
+    if (!listed)
+      return `${selection.model} isn't offered by ${provider.displayName ?? "Claude"} on this server any more.`;
   }
   return undefined;
 };

@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { KIN_AGENT_DRIVER } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { kinAgentDriverAllowed } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import type { EnvironmentId, ModelSelection } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
@@ -11,13 +11,16 @@ import { getCustomModelOptionsByInstance } from "../modelSelection";
 import { providerInstanceEntriesFor } from "../providerInstances";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../state/server";
 
-/** The Claude models this server really offers: agents run on nothing else. */
+/** The models this server really offers that agents may run on: Claude, and Codex when allowed. */
 export function useKinAgentModels(environmentId: EnvironmentId) {
   const settings = useEnvironmentSettings(environmentId);
   const providers =
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
   const instanceEntries = providerInstanceEntriesFor(providers, settings, null).filter(
-    (entry) => entry.driverKind === KIN_AGENT_DRIVER && entry.enabled && entry.isAvailable,
+    (entry) =>
+      kinAgentDriverAllowed(entry.driverKind, settings.kinNonClaudeAgents) &&
+      entry.enabled &&
+      entry.isAvailable,
   );
   const modelOptionsByInstance = getCustomModelOptionsByInstance(settings, providers);
   const offered = instanceEntries.flatMap((entry) =>
@@ -29,7 +32,7 @@ export function useKinAgentModels(environmentId: EnvironmentId) {
   return { providers, instanceEntries, modelOptionsByInstance, offered };
 }
 
-/** T3's own model picker and effort control, limited to the Claude models agents can run on. */
+/** T3's own model picker and effort control, limited to the models agents can run on. */
 export function KinAgentModelPicker(props: {
   readonly environmentId: EnvironmentId;
   readonly label: string;

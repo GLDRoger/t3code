@@ -174,8 +174,20 @@ export const KIN_CHIEF_OF_STAFF: KinLeadDraft = {
   intro: "",
 };
 
-/** Agents run only on Claude (the host refuses any other), so only its models are offered. */
-export const KIN_AGENT_DRIVER = "claudeAgent";
+/**
+ * The providers an agent may run on: Claude, and Codex once the host turns on `kinNonClaudeAgents`
+ * (the host refuses any other).
+ */
+export function kinAgentDriverAllowed(driver: string, nonClaudeAgents: boolean): boolean {
+  return driver === "claudeAgent" || (nonClaudeAgents && driver === "codex");
+}
+
+/** The host's switch for agents on Codex, shown beside the models new agents start on. */
+export const KIN_OPENAI_AGENTS = {
+  title: "Agents on OpenAI models",
+  detail:
+    "An experiment: agents may also run on Codex's models. There they use only their Kin tools, with no shell, files or web, in every chat. Sign in to Codex under Settings, Providers first.",
+};
 
 /** An org's first agent is where the models come from: the host copies them to every later one. */
 export const KIN_LEAD_MODELS = {

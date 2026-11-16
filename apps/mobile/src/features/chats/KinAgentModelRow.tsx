@@ -1,6 +1,6 @@
 import type { EnvironmentId, ModelSelection } from "@t3tools/contracts";
 import {
-  KIN_AGENT_DRIVER,
+  kinAgentDriverAllowed,
   kinLeadModelName,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { Pressable } from "react-native";
@@ -11,16 +11,18 @@ import { Menu } from "../../components/ui/Menu";
 import { buildModelOptions, type ModelOption } from "../../lib/modelOptions";
 import { useEnvironmentServerConfig } from "../../state/entities";
 
-/** The Claude models this server offers, as T3's own model menu lists them: agents run on nothing else. */
+/** The models this server offers that agents may run on, as T3's own model menu lists them. */
 export function useKinAgentModelOptions(environmentId: EnvironmentId): ReadonlyArray<ModelOption> {
   const config = useEnvironmentServerConfig(environmentId);
   return buildModelOptions(config, null, undefined, null).filter(
     (option) =>
-      option.providerDriver === KIN_AGENT_DRIVER && !option.isUnavailable && !option.isHidden,
+      kinAgentDriverAllowed(option.providerDriver, config?.settings.kinNonClaudeAgents === true) &&
+      !option.isUnavailable &&
+      !option.isHidden,
   );
 }
 
-/** One of an agent's models: a row that opens the server's Claude models as a menu. */
+/** One of an agent's models: a row that opens the server's agent models as a menu. */
 export function KinAgentModelRow(props: {
   readonly label: string;
   readonly value: ModelSelection;
@@ -35,7 +37,7 @@ export function KinAgentModelRow(props: {
     option.selection.instanceId === props.value.instanceId &&
     option.selection.model === props.value.model;
   const current = props.options.find(same);
-  // Two Claude accounts list the same models; the account then tells them apart.
+  // With more than one provider or account listed, each name says which.
   const accounts = new Set(props.options.map((option) => option.providerKey)).size > 1;
   const name = (option: ModelOption) =>
     accounts ? `${option.label} · ${option.providerLabel}` : option.label;
