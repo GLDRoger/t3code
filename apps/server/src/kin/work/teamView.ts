@@ -157,6 +157,23 @@ export const viewSees = (sql: SqlClient.SqlClient, people: ReadonlyArray<KinPers
     ? sql`0 = 1`
     : sql`(${sql.and(people.map((person) => personSees(sql, person)))})`;
 
+/**
+ * Who a read is for. Every read model a person reaches takes one (`t3code/kin-viewer-scoped-reads`):
+ * `people` reads what every one of them sees, `ownerLevel` everything.
+ */
+export type KinViewer =
+  | { readonly _tag: "ownerLevel" }
+  | { readonly _tag: "people"; readonly people: ReadonlyArray<KinPersonId> };
+/** The unscoped read: the owner, a co-owner, or Kin's own work for them. */
+export const KIN_OWNER_LEVEL: KinViewer = { _tag: "ownerLevel" };
+export const viewerOfPeople = (people: ReadonlyArray<KinPersonId>): KinViewer => ({
+  _tag: "people",
+  people,
+});
+/** Entries `r` this viewer sees. */
+export const seenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  viewer._tag === "ownerLevel" ? sql`1 = 1` : viewSees(sql, viewer.people);
+
 /** Whether every one of these people may see this entry now. */
 export const viewVisible = Effect.fn("KinTeamView.viewVisible")(function* (
   orgId: KinOrgId,

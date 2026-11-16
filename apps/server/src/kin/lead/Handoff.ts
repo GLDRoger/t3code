@@ -34,7 +34,7 @@ import { resolveLead } from "./LeadMemory.ts";
 import { messageBodyLimit } from "./LeadPrompt.ts";
 import { outsideStamp, stampEvent } from "./OutsideContent.ts";
 import type { KinLevelGate } from "./LevelGate.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { relayPrefix } from "../reply/promises.ts";
@@ -162,7 +162,7 @@ const fromOwnerAlone = (event: KinEvent, self: Colleague) => {
         event.chatId === self.ownerChatId &&
         (event._tag !== "chat.message" || event.origin === undefined) &&
         event.provenance._tag === "human" &&
-        event.provenance.personId === self.ownerPersonId
+        ownsAgent(self, event.provenance.personId)
       );
     case "routine":
       return true;

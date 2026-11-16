@@ -59,6 +59,7 @@ import { jobBranch, jobWorktree, KinWorkspace } from "../gendocs/workspace.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { attemptBegun, noteSensitivity } from "../work/workerAttempts.ts";
 import { WORK_NOT_YOURS, workMayStart, workerStarted } from "../work/workerEntries.ts";
+import { isOwnerHimself } from "../people/KinAccess.ts";
 
 type Lead = Effect.Success<ReturnType<typeof resolveLead>>;
 type Config = {
@@ -149,7 +150,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
       if (
         ctx.orgId !== owner.orgId ||
         config.ownerPersonId !== owner.personId ||
-        (config.createdBy !== null && config.createdBy !== owner.personId)
+        (config.createdBy !== null && !isOwnerHimself(owner, config.createdBy))
       )
         return false;
       // Work the owner gave the lead counts as asked in its direct chat: the stored assigner
@@ -158,7 +159,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
         event._tag === "record.changed" &&
         event.reason === "assigned" &&
         event.provenance._tag === "human" &&
-        event.provenance.personId === owner.personId;
+        isOwnerHimself(owner, event.provenance.personId);
       const checkIn =
         prCare && PR_CARE_EVENTS.has(event._tag) && event.provenance._tag === "system";
       if (

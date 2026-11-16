@@ -43,6 +43,7 @@ import { sectionsOf } from "./docBody.ts";
 import { milestoneRisk } from "./projectSpine.ts";
 import { effectivelySensitive } from "./recordRows.ts";
 import { PRESETS } from "./registers.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as Touches from "./touches.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
@@ -1356,6 +1357,23 @@ it.effect(
         (yield* Clients.projects([mate], { orgId })).projects.map((one) => one.open),
         ours.project.open,
       );
+      // A task Mate holds, written from a doc he can't open: its changed section names no doc.
+      yield* sql`UPDATE kin_records SET sensitive = 0, owner_kind = 'person', owner_id = ${mateId}
+        WHERE key = 'W-2'`;
+      yield* sql`UPDATE kin_records SET sensitive = 1 WHERE key = ${doc.row.key}`;
+      assert.deepStrictEqual(
+        (yield* Clients.project([mate], { orgId, key: "P-1" })).specChanged,
+        [],
+      );
+      assert.deepStrictEqual(
+        (yield* Clients.project([owner], { orgId, key: "P-1" })).specChanged?.map(
+          (one) => one.doc.key,
+        ),
+        [doc.row.key],
+      );
+      yield* sql`UPDATE kin_records SET sensitive = 1, owner_kind = 'agent', owner_id = ${lead}
+        WHERE key = 'W-2'`;
+      yield* sql`UPDATE kin_records SET sensitive = 0 WHERE key = ${doc.row.key}`;
       // Run 4: one the owner holds, marked private, in Mate's project and milestone. Only the
       // owner side and its holder see it: not its title, count, search hit or pulse fact.
       yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${ownerId}, sensitive = 1,
@@ -1367,7 +1385,9 @@ it.effect(
         const found = yield* Search.search(orgId, {
           text: "Invented login form",
           limit: 10,
-          ...(viewer === owner ? { viewer: "owner" } : { viewer: "team", view: [mateId] }),
+          ...(viewer === owner
+            ? { viewer: "owner", scope: KIN_OWNER_LEVEL }
+            : { viewer: "team", scope: viewerOfPeople([mateId]) }),
         });
         const pulse = yield* KinPulse.read({
           orgId,

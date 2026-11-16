@@ -39,7 +39,13 @@ import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity, KinIdentityConfig, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
-import { ownerLevel, ownerLevelSql } from "../people/KinAccess.ts";
+import {
+  isOwnerHimself,
+  mayActAsOwner,
+  ownerLevel,
+  ownerLevelSql,
+  ownsAgent,
+} from "../people/KinAccess.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import * as KinLevels from "./KinLevels.ts";
 import { KinStop } from "./KinStop.ts";
@@ -351,7 +357,7 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
   const sql = yield* SqlClient.SqlClient;
   const live = yield* leadsIn(orgId, { liveOnly: false });
   const lead = live.find((entry) => entry.agentId === agentId);
-  if (lead === undefined || (ownedBy !== undefined && lead.ownerPersonId !== ownedBy))
+  if (lead === undefined || (ownedBy !== undefined && !ownsAgent(lead, ownedBy)))
     return yield* refuse("not_found", `Org ${orgId} has no agent ${agentId}.`);
   if (lead.retiredAt !== null)
     return yield* refuse("retired", `Agent ${agentId} was retired at ${lead.retiredAt}.`);
@@ -531,12 +537,12 @@ export const profiles = Effect.fn("KinLeadProvision.profiles")(function* (
   // A co-owner sees the company's leads as the owner does, each opening their own chat with it.
   const coOwner =
     person.orgId === owner.orgId &&
-    person.personId !== owner.personId &&
+    !isOwnerHimself(owner, person.personId) &&
     (yield* ownerLevel(person.orgId, person.personId).pipe(Effect.orElseSucceed(() => false)));
   const includeRetired =
     options.includeRetired === true &&
     person.orgId === owner.orgId &&
-    (person.personId === owner.personId || coOwner);
+    (isOwnerHimself(owner, person.personId) || coOwner);
   const chatsOf = coOwner
     ? new Map(
         (yield* sql<{ agentId: string; chatId: KinChatId }>`SELECT l.agent_id AS "agentId",
@@ -549,7 +555,7 @@ export const profiles = Effect.fn("KinLeadProvision.profiles")(function* (
       )
     : undefined;
   const own = (yield* leadsIn(person.orgId, { liveOnly: !includeRetired })).flatMap((lead) => {
-    if (chatsOf === undefined) return lead.ownerPersonId === person.personId ? [lead] : [];
+    if (chatsOf === undefined) return ownsAgent(lead, person.personId) ? [lead] : [];
     const chatId = chatsOf.get(lead.agentId);
     return lead.ownerPersonId === owner.personId && chatId !== undefined
       ? [{ ...lead, ownerChatId: chatId }]
@@ -630,10 +636,11 @@ const retirable = Effect.fn("KinLeadProvision.retirable")(function* (input: {
   if (lead === undefined) return yield* missing;
   const ownerTier =
     person === undefined ||
-    person.personId === owner.personId ||
-    (yield* ownerLevel(person.orgId, person.personId).pipe(Effect.orElseSucceed(() => false)));
+    (yield* mayActAsOwner(person.orgId, person.personId, owner).pipe(
+      Effect.orElseSucceed(() => false),
+    ));
   if (person !== undefined && !ownerTier) {
-    if (lead.ownerPersonId !== person.personId) return yield* missing;
+    if (!ownsAgent(lead, person.personId)) return yield* missing;
     yield* mayCreate(person);
   }
   return { lead, by: person?.personId ?? null };
@@ -831,7 +838,7 @@ export const allow = Effect.fn("KinLeadProvision.allow")(function* (
         WHERE org_id = ${lead.orgId} AND person_id = ${input.personId} LIMIT 1`.pipe(
         Effect.mapError(toPersistenceSqlError("KinLeadProvision.allow")),
       );
-      if (known.length === 0 || input.personId === lead.ownerPersonId)
+      if (known.length === 0 || ownsAgent(lead, input.personId))
         return yield* refuse("not_found", `Org ${lead.orgId} has no such person to allow.`);
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       yield* sql`INSERT INTO kin_lead_access

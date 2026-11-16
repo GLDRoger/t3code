@@ -98,7 +98,7 @@ import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { memberReads } from "./sharing.ts";
 
 const decodeChoiceCard = Schema.decodeUnknownEffect(KinChoiceCardState);
@@ -1810,7 +1810,7 @@ const make = Effect.gen(function* () {
       const person = yield* requireRecord(repo.getPerson(identity));
       const agent = yield* requireRecord(repo.getAgent(input));
       if (agent.retiredAt !== null) return yield* notAllowed;
-      const own = agent.ownerPersonId === person.personId;
+      const own = ownsAgent(agent, person.personId);
       // Someone else's lead: a co-owner messages every one, anyone else while its owner allows.
       if (
         !own &&
