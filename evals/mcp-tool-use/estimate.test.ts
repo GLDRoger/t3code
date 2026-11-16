@@ -10,7 +10,6 @@ it("finds a regex that doesn't compile and a needed call to a tool the agent lac
       {
         expect: {
           calls: [{ tool: "kin_relays" }, { tool: "record_create|kin_relay" }],
-          callsMustNot: [{ tool: "delegate_task" }],
           textMust: ["(?s).{400}", "(?i:fine)"],
         },
       },

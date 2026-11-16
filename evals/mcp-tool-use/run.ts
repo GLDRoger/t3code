@@ -2652,8 +2652,8 @@ const main = Effect.gen(function* () {
       const found = [...(sample.base.codex ? [] : caseProblems(testCase, tools)), ...unfilled];
       problems.push(...found.map((problem) => `${testCase.id}: ${problem}`));
       sizes.push({
-        prefixChars: JSON.stringify([sample.base.system, sample.tools]).length,
-        messageChars: JSON.stringify(messages).length,
+        prefixChars: (yield* encodeJson([sample.base.system, sample.tools])).length,
+        messageChars: (yield* encodeJson(messages)).length,
       });
       if (!flags.estimate) process.stdout.write(`${encoded}\n`);
     }
