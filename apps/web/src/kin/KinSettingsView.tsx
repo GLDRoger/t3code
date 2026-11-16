@@ -65,7 +65,7 @@ import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import { KinProfileBody, useKinMe } from "./KinProfileSheet";
 import { KinTeamView } from "./KinTeamView";
 import { useKinHost } from "./useKinHost";
-import { useKinOwnerLevel } from "./useKinOwnerLevel";
+import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
 
 const KIN_SETTINGS_TITLE = "Settings";
 
@@ -318,6 +318,11 @@ export function KinSettingsPageRoute() {
   const groups = useKinSettingsGroups(target.environmentId);
   const { page: raw } = useParams({ from: "/_chat/kin/$environmentId/$orgId/settings/$page" });
   const page = kinSettingsPageOf(raw, groups);
+  // A teammate's session learns from the host whether they run the company; until it has said,
+  // a Company address waits rather than sending a co-owner to their profile.
+  const reach = useKinPlaceReach(target.environmentId);
+  const known = !isChatOnlySession() || reach !== null;
+  if (page !== raw && !known) return null;
   // An address this person can't open lands on their own profile, not on a refusal.
   if (page !== raw)
     return <Navigate to="/kin/$environmentId/$orgId/settings" params={target} replace />;
