@@ -1,6 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off - Drives the runner's real child process against a temporary log.
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { assert, describe, it } from "@effect/vitest";
 
-import { compare, finding, firstError, gates } from "./kin-release-check.ts";
+import { compare, finding, firstError, gates, run } from "./kin-release-check.ts";
 
 describe("kin release check", () => {
   it("gives the same failure the same fingerprint across runs, and a different one elsewhere", () => {
@@ -58,5 +63,16 @@ describe("kin release check", () => {
       firstError(output),
       /^MigrationError: This database's migration history would skip/,
     );
+  });
+
+  it("records a program that can't start as a failed command instead of crashing the check", async () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "kin-release-run-"));
+    try {
+      const ran = await run(NodePath.join(dir, "stage.log"), "kin-release-no-such-program", []);
+      assert.strictEqual(ran.code, 127);
+      assert.include(ran.output, "ENOENT");
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

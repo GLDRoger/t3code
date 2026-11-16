@@ -130,6 +130,65 @@ echo "kept $(sqlite3 "$DB.failed-bbbbbbbbbbbb" "SELECT max(migration_id) FROM ki
     expect(said).toContain("restored the database from");
   });
 
+  it("leaves the server stopped, data intact, when the backup can't be copied back", () => {
+    const { out, said } = onFakeHost(`
+NEW="$(build new 149)"
+SERVER_STATE=failed
+cp() { case "$*" in *.restoring) return 28 ;; esac; command cp "$@"; }
+{ ${deploy}; } 2>"$HOME/said"
+cat "$HOME/said" >&2
+tail -n1 "$HOME/said" | grep -q '^update\\.sh: ROLLBACK STOPPED: ' && echo "ends with the rollback line"
+echo "current $(readlink "$CURRENT" || echo none)"
+echo "database at $(heads): $(sqlite3 "$DB" "SELECT group_concat(body) FROM notes;")"
+echo "starts after rollback stop $(sed -n '/reset-failed/,$p' "$HOME/calls" | grep -c 'start kin-server')"
+ls "$HOME/.t3/userdata" | grep -q 'restoring\\|failed-' && echo "leftovers"
+# Then the recovery the last line prints, once the disk has room again.
+unset -f cp
+export -f mv
+recover="$(tail -n1 "$HOME/said")"
+eval "\${recover#*then run: }" &&
+  echo "recovered: current $(basename "$(readlink "$CURRENT")"), database at $(heads), kept $(sqlite3 "$DB.failed-bbbbbbbbbbbb" "SELECT max(migration_id) FROM kin_sql_migrations;")"
+echo "last call $(tail -n1 "$HOME/calls")"`);
+    expect(out, said).toEqual([
+      "status 1",
+      "ends with the rollback line",
+      "current none",
+      "database at 149: before the update,by the new build",
+      "starts after rollback stop 0",
+      "recovered: current old, database at 148, kept 149",
+      "last call systemctl --user start kin-server",
+    ]);
+    const last = said.split("\n").find((line) => line.includes("ROLLBACK STOPPED")) ?? "";
+    expect(last).toContain("kin-server is NOT running and its data is intact");
+    expect(last).toMatch(
+      /Good copy from before the update: \S+\/statev2-\S+-bbbbbbbbbbbb\.sqlite\./,
+    );
+    expect(last).toContain(`Database ${"b".repeat(40)} migrated: `);
+    expect(said.indexOf("restored the database")).toBeGreaterThan(said.indexOf(last));
+  });
+
+  it("starts the previous build again when the new env file can't be written", () => {
+    const { out, said } = onFakeHost(`
+NEW="$(build new 149)"
+mkdir -p "$(dirname "$ENV_FILE")" && echo "KIN_NODE_VERSION=22" >"$ENV_FILE"
+mktemp() { return 1; }
+${deploy}
+echo "current $(basename "$(readlink "$CURRENT")")"
+echo "env $(cat "$ENV_FILE")"
+echo "database at $(heads)"
+echo "last call $(tail -n1 "$HOME/calls")"`);
+    expect(out, said).toEqual([
+      "status 1",
+      "current old",
+      "env KIN_NODE_VERSION=22",
+      "database at 148",
+      "last call systemctl --user start kin-server",
+    ]);
+    expect(said.trim().split("\n").at(-1)).toMatch(
+      /^update\.sh: the server runs \S+\/old again\.$/,
+    );
+  });
+
   it("rolls back when the server never answers", () => {
     const { out, said } = onFakeHost(`
 NEW="$(build new 149)"
