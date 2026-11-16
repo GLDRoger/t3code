@@ -54,16 +54,21 @@ const screen = extract((state) => {
     url.pathname.endsWith("/tasks") && !url.search && !searched && !/Clear filter/.test(mainText);
   // Rows follow "Filter" directly; a chosen filter ("Late", "Due this week") sits between them.
   const listed = onTasks ? after(/^Filter$/) : null;
+  // A task under "Needs you" is not repeated in the rows below the filter.
+  const keysIn = (ls: string[]) =>
+    new Set(ls.flatMap((l) => [...l.matchAll(/(?:^|· )(W-\d+)\b/g)].map((m) => m[1])));
   const taskRows =
     listed && /· W-\d+$/.test(listed[1] ?? "")
-      ? listed.filter((l) => /· W-\d+$/.test(l)).length
+      ? keysIn([...(after(/^Needs you$/) ?? []), ...listed]).size
       : null;
   const onTeam = url.pathname.endsWith("/team");
   const teamLines = onTeam ? after(/^One chat with everyone/) : null;
   const teamOthers = teamLines ? teamLines.length / 2 - 1 : null;
   const onDates = url.searchParams.has("dates");
   let datesSoon: number | null = null;
-  const agenda = onDates ? after(/^Only what['’]s open$/) : null;
+  const shownAfter = onDates ? after(/^Only what['’]s open$/) : null;
+  // The month grid lists entries by day number only; the count is compared on the agenda.
+  const agenda = shownAfter?.slice(1, 3).join() === "Mon,Tue" ? null : shownAfter;
   if (agenda) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
