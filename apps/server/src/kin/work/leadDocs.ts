@@ -45,6 +45,7 @@ import {
 import { iso, type RecordRow } from "./recordRows.ts";
 import { search } from "./search.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
+import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
 
@@ -59,9 +60,7 @@ const Body = Schema.String.check(Schema.isMaxLength(DOC_BODY_MAX));
 const Text = Schema.String.check(Schema.isMaxLength(50_000));
 const Title = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
 const Section = KinDocSectionId.annotate({ description: "A section id from the outline." });
-const SourceEvent = TrimmedNonEmptyString.annotate({
-  description: "The id of the event in this turn you are acting on.",
-});
+const SourceEvent = TurnEvent;
 const Card = Schema.optional(Schema.Boolean).annotate({
   description: "Also show the doc in this chat as a card the owner can open.",
 });

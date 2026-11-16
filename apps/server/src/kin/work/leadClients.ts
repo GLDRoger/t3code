@@ -24,6 +24,7 @@ import {
 } from "./leadWork.ts";
 import { endOfDay, iso, ownerZone } from "./recordRows.ts";
 import * as Touches from "./touches.ts";
+import { TurnEvent } from "../lead/eventIds.ts";
 
 /** Contact with clients as leads log and read it; the relationship file is memory's. */
 
@@ -46,7 +47,7 @@ export const TouchInput = Schema.Struct({
       description: "Who on our side, by handle or name; default the person who told you.",
     }),
   ),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export const Touch = Schema.Struct({
   at: Schema.String,

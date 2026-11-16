@@ -192,14 +192,17 @@ export const stampEvent = Effect.fn("KinOutsideContent.stampEvent")(function* (
 });
 
 /**
- * A turn starts outside-read when an event it shows, or the event a reminder it shows was asked
- * in, carries a stamp. Run before the prompt is sent; a failure stops the prompt.
+ * A turn starts outside-read when it shows outside text itself, or when an event it shows, or the
+ * event a reminder it shows was asked in, carries a stamp. Run before the prompt is sent; a failure stops the prompt.
  */
 export const inheritOutside = Effect.fn("KinOutsideContent.inherit")(function* (input: {
   readonly orgId: KinOrgId;
   readonly wakeupId: string;
   readonly eventIds: ReadonlyArray<string>;
+  /** The prompt itself shows outside text, such as a check-in's mail lines, from here. */
+  readonly shows?: string | undefined;
 }) {
+  if (input.shows !== undefined) return yield* markOutside(input, input.shows);
   const sql = yield* SqlClient.SqlClient;
   const events =
     input.eventIds.length === 0

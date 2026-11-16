@@ -8,7 +8,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { readProfile } from "../work/companyProfile.ts";
-import { attachmentIdOf, chatFiles, readStoredFile, sniffImage } from "./brand.ts";
+import { chatFiles, fileNamed, readStoredFile, sniffImage } from "./brand.ts";
 import { svgProblem } from "./svgCheck.ts";
 
 /**
@@ -88,7 +88,10 @@ export const checkReferences = Effect.fn("KinDocReferences.check")(function* (
   const taken = new Set<string>();
   const references: Array<Reference> = [];
   for (const [index, id] of ids.entries()) {
-    const file = found.find((one) => one.attachmentId === attachmentIdOf(id));
+    const file = fileNamed(
+      found.map((one) => ({ ...one, id: one.attachmentId })),
+      id,
+    );
     if (file === undefined)
       return yield* invalid(
         `${id} is not a file in this chat. Use the id of a file the owner sent in the chat you are answering. ${NOTHING}`,
