@@ -5,7 +5,7 @@ import type {
   KinRefreshesSubscribeInput,
   KinRefreshTopic,
 } from "@t3tools/contracts";
-import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import * as Stream from "effect/Stream";
 
 import type * as EnvironmentRegistry from "../connection/registry.ts";
@@ -142,4 +142,26 @@ export function createKinDirectoryTrigger<R, ER>(
         moved += get(triggers.moves(topic)({ environmentId, input: { orgId } }));
       return `${get(environmentSessionGenerationAtom(runtime, environmentId))}:${moved}`;
     });
+}
+
+/**
+ * Moves when what the viewer may see could have changed: a person's access, places or projects
+ * (`people`) or whose agents they may reach (`leads`), in any org the directory named.
+ */
+export function kinAccessMoves<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  registry: AtomRegistry.AtomRegistry,
+) {
+  const triggers = createKinRefreshTriggers(runtime);
+  return (environmentId: EnvironmentId) =>
+    AtomRegistry.toStream(
+      registry,
+      Atom.make((get) => {
+        let moved = 0;
+        for (const orgId of get(kinDirectoryOrgsAtom(environmentId)))
+          for (const topic of ["people", "leads"] as const)
+            moved += get(triggers.moves(topic)({ environmentId, input: { orgId } }));
+        return String(moved);
+      }),
+    );
 }

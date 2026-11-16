@@ -57,6 +57,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   people                                  seeded people and agents
   as <person> web open <route>            tasks | money | clients?client=C-1 | chat:<agent> | /path
   as <person> web snapshot [--full]       accessibility tree of the open sheet/dialog, else main
+  as <person> web back                    the browser's Back
   as <person> web click --name "<name>" [--role r] [--nth n] [--within "<card or section name>"]
   as <person> web type [--name "<field>"] "<text>" [--enter]
   as <person> web attach <file> [<file>…]  files in the open chat's composer; then type --enter
@@ -278,6 +279,10 @@ async function web(instance: Instance, person: string, args: Args) {
     }
     case "snapshot":
       console.log(await Web.snapshot(session, args.flags.has("full")));
+      return;
+    case "back":
+      await Web.back(session);
+      console.log(await Web.snapshot(session, false).then((text) => text.split("\n")[0]));
       return;
     case "click": {
       const name = flag(args, "name") ?? rest[0];

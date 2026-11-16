@@ -1,11 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import {
-  AuthOrchestrationOperateScope,
-  type EnvironmentId,
-  type KinAttachment,
-  type KinChatId,
-} from "@t3tools/contracts";
+import { type EnvironmentId, type KinAttachment, type KinChatId } from "@t3tools/contracts";
 import { useNavigation } from "@react-navigation/native";
 import { AsyncResult } from "effect/reactivity";
 import { useImperativeHandle, useState, type Ref, type RefObject } from "react";
@@ -26,7 +21,7 @@ import {
   composerAttachmentsStillUploading,
 } from "../../../state/composer-attachment-uploads";
 import { useServerConfigs } from "../../../state/entities";
-import { useEnvironmentScope } from "../../../state/session";
+import { kinClient } from "../state/kinClient";
 import { useComposerAttachmentActions } from "../../../state/use-composer-attachment-actions";
 import { ComposerAttachmentButton } from "../../threads/ComposerAttachmentButton";
 
@@ -192,10 +187,10 @@ export function KinComposer({
   const controlSize = largeControls ? "large" : "regular";
   const navigation = useNavigation();
   const serverConfig = useServerConfigs().get(props.environmentId) ?? null;
-  // Uploading is the thread composer's permission; a session without it sees no attach control.
+  // Whoever may post in a Kin chat may attach: the upload stays theirs alone until a send the
+  // host checks against the chat claims it.
   const canAttach =
-    useEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope) &&
-    serverConfig !== null;
+    useAtomValue(kinClient.send.permissionAtom(props.environmentId)) && serverConfig !== null;
   const [sending, setSending] = useState(false);
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);

@@ -95,6 +95,13 @@ describe("kinPageView", () => {
     expect(kinMessageGistMarkdown(said("## Plan\nShip on Friday.\n\n## Risks\nNone."))).toBe(
       "Ship on Friday.",
     );
+    // No "Needs you": the brief leads with its first real line; a one-word reply is itself.
+    expect(
+      kinMessageGistMarkdown(
+        said("Good afternoon Rhea.\n\n## Work\nW-2 is due today.", { form: "brief" }),
+      ),
+    ).toMatch(/^Good (morning|afternoon|evening) · W-2 is due today\.$/);
+    expect(kinMessageGistMarkdown(said("Done.", { form: "brief" }))).toBe("Done.");
   });
 });
 

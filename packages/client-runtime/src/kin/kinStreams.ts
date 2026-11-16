@@ -316,7 +316,14 @@ export type KinReadHistory<E, R> = (
   input: KinChatHistoryInput,
 ) => Effect.Effect<KinChatHistoryResult, E, R>;
 
-export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
+/**
+ * `accessMoves` emits when what the viewer may see could have changed (their access, places or
+ * projects); the latest page is read again then, so a link they lost goes from what is on screen.
+ */
+export function makeKinChatStream<E, R>(
+  readHistory: KinReadHistory<E, R>,
+  accessMoves?: (environmentId: EnvironmentId) => Stream.Stream<string>,
+) {
   return (input: { readonly chatId: KinChatId }) =>
     Stream.unwrap(
       Effect.gen(function* () {
@@ -356,6 +363,21 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
           return [{ value: next, live: true, savedAt }];
         };
 
+        const rereadLatest = Effect.suspend(() =>
+          readHistory({
+            chatId: input.chatId,
+            beforeSeq: state.contiguousSeq + 1,
+            limit: KIN_CACHED_MESSAGE_LIMIT,
+          }),
+        ).pipe(
+          Effect.map((page) => step(applyKinChatHistory(state, page))),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin latest page reload failed", cause).pipe(
+              Effect.as<ReadonlyArray<KinSynced<KinChatState>>>([]),
+            ),
+          ),
+        );
+
         const onEvent = Effect.fnUntraced(function* (event: KinChatStreamEvent) {
           // A cleared chat's cached messages go too, even though the feed is empty for now.
           if (event._tag === "reset" && event.cleared === true) savedMessages = false;
@@ -365,21 +387,7 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
             yield* PubSub.publish(leftChats(environmentId), input.chatId);
             return views;
           }
-          if (event._tag === "reset") {
-            const page = yield* readHistory({
-              chatId: input.chatId,
-              beforeSeq: state.contiguousSeq + 1,
-              limit: KIN_CACHED_MESSAGE_LIMIT,
-            }).pipe(
-              Effect.asSome,
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Kin latest page reload after reset failed", cause).pipe(
-                  Effect.as(Option.none<KinChatHistoryResult>()),
-                ),
-              ),
-            );
-            if (Option.isSome(page)) views.push(...step(applyKinChatHistory(state, page.value)));
-          }
+          if (event._tag === "reset") views.push(...(yield* rereadLatest));
           return views;
         });
 
@@ -399,7 +407,22 @@ export function makeKinChatStream<E, R>(readHistory: KinReadHistory<E, R>) {
                   }
                 : { chatId: input.chatId },
             ),
-          ).pipe(Stream.mapEffect(onEvent), Stream.flattenIterable),
+          ).pipe(
+            Stream.mapEffect(onEvent),
+            Stream.merge(
+              accessMoves === undefined
+                ? Stream.empty
+                : accessMoves(environmentId).pipe(
+                    Stream.changes,
+                    Stream.drop(1),
+                    Stream.filter(() => state.contiguousSeq > 0),
+                    Stream.mapEffect(() => rereadLatest),
+                  ),
+              // The chat's own subscription decides when this stream ends.
+              { haltStrategy: "left" },
+            ),
+            Stream.flattenIterable,
+          ),
         );
         const updates = resubscribeWhenKinReturns(
           subscription,
