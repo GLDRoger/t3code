@@ -12,7 +12,7 @@ OWNER_CHAT="$(q "select owner_chat_id from kin_leads where agent_id = '$CHIEF'")
 WHAT="Proof m$RUN: send the Lumen mockups"
 DUE="$(node -e 'process.stdout.write(new Date(Date.now()+60*1000).toISOString().replace("Z","+00:00"))')"
 defer() { kv tool chief kin_defer "{\"what\":\"$1\",\"due\":\"$DUE\",\"onDue\":\"$2\",\"chatId\":\"$3\",\"sourceEventId\":\"\$event\"}" --as-turn-of zoya --say "$4" 2>&1; }
-kv as zoya rpc kin.push.registerDevice "{\"token\":\"$(printf 'd%.0s' {1..64})\",\"platform\":\"ios\",\"apsEnvironment\":\"development\"}" >/dev/null
+kv as zoya rpc kin.push.registerDevice "{\"token\":\"$(printf 'e%.0s' {1..64})\",\"platform\":\"ios\",\"apsEnvironment\":\"development\"}" >/dev/null
 
 set="$(defer "$WHAT" remind "$CHAT" "Remind me in a minute to send the Lumen mockups")"
 expect_in "$set" "kin_defer: ok" "Zoya couldn't set her own reminder"
@@ -31,7 +31,7 @@ done
 [[ "$(q "select count(*) from kin_messages where chat_id = '$OWNER_CHAT' and body like '%$RUN%'")" == 0 ]] ||
   fail "Zoya's reminder reached the owner's chat"
 sleep 2
-expect_in "$(kv push sent | rg "/dddddd" | rg -F "Reminder: $WHAT" || true)" "Reminder:" "Zoya's phone didn't ring for it"
+expect_in "$(kv push sent | rg "/eeeeee" | rg -F "Reminder: $WHAT" || true)" "Reminder:" "Zoya's phone didn't ring for it"
 
 kv as zoya web open chat:chief >/dev/null
 kv as zoya web click --name "Mark this reminder done" >/dev/null || fail "Zoya has no Done on her reminder"
