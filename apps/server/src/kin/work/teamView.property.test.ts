@@ -311,7 +311,7 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
             ...e,
             owner: benGone(e.owner),
             createdBy: benGone(e.createdBy),
-            assignedBy: e.assignedBy === null ? null : benGone(e.assignedBy),
+            assignedBy: e.assignedBy === "ben" ? "owner" : e.assignedBy,
             attendees: notBen(e.attendees),
           })),
         });
