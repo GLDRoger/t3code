@@ -629,7 +629,14 @@ it.effect(
       // The chat-made schedule is not a check-in, so only the new one is listed.
       assert.lengthOf(added.checkIns, 1);
       const [made] = added.checkIns;
-      assert.include(made, { at: "09:30", agentName: "Lead", on: true, runNowPending: false });
+      // J12: it fires somewhere around 09:30, so Settings says "around", never 09:25.
+      assert.include(made, {
+        at: "09:30",
+        around: true,
+        agentName: "Lead",
+        on: true,
+        runNowPending: false,
+      });
       assert.deepStrictEqual(made!.days, [1, 2, 3, 4, 5]);
       assert.equal(added.zone, "Asia/Kolkata");
       const moved = yield* CheckIns.save(people, {

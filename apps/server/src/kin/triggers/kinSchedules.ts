@@ -115,6 +115,10 @@ export const readNativeTask = (sql: SqlClient.SqlClient, taskId: string) =>
       json_extract(schedule_json, '$.weekdays') AS weekdays, next_run_at AS "nextRunAt"
     FROM scheduled_tasks WHERE task_id = ${taskId}`.pipe(Effect.map((rows) => rows[0]));
 
+/** Still loose: changed on T3's screen since, it is exact again at the time shown there. */
+export const isAround = (task: NativeTask, looseAt: string | null) =>
+  looseAt !== null && windowStart(looseAt) === task.timeOfDay;
+
 /** The native schedule as the card shows it; undefined for a shape Kin never saves. */
 export const everyOf = (
   task: NativeTask,
@@ -123,8 +127,7 @@ export const everyOf = (
   if (task.scheduleType !== "fixed_time" || task.timeOfDay === null) return undefined;
   const days: unknown = task.weekdays === null ? null : JSON.parse(task.weekdays);
   return {
-    // Changed on T3's screen since, it is exact again at the time shown there.
-    at: looseAt !== null && windowStart(looseAt) === task.timeOfDay ? looseAt : task.timeOfDay,
+    at: looseAt !== null && isAround(task, looseAt) ? looseAt : task.timeOfDay,
     days: Array.isArray(days) && days.length > 0 ? days.map(Number) : [0, 1, 2, 3, 4, 5, 6],
   };
 };

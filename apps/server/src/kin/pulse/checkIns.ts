@@ -61,6 +61,7 @@ const read = Effect.fn("KinCheckIns.read")(function* (orgId: KinOrgId) {
       agentName: leads.find((lead) => lead.agentId === row.agentId)?.name ?? "A retired agent",
       at: own.at,
       days: own.days,
+      around: KinSchedules.isAround(task, row.looseAt),
       on: (row.pendingEnabled ?? task.enabled) === 1,
       runNowPending: row.runNowAt !== null,
     });

@@ -599,6 +599,7 @@ function KinWorkItemBody(props: ItemTarget) {
             orgId={orgId}
             itemKey={item.key}
             view={view}
+            names={names}
             disabled={saving}
             onMark={act === null ? null : (on) => act({ type: "private", private: on })}
           />

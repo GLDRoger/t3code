@@ -1,10 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import {
   KIN_WORK_AUDIENCE,
   KIN_WORK_SHARE,
   kinWorkAudience,
   kinWorkAudienceMove,
   type KinWorkItemView,
+  type KinWorkNames,
 } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -14,6 +16,7 @@ import { View } from "react-native";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
+import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient } from "./state/kinClient";
@@ -77,6 +80,7 @@ export function KinWorkAudienceRow(
   props: KinWorkTarget & {
     readonly itemKey: KinRecordKey;
     readonly view: Pick<KinWorkItemView, "privacy" | "shared" | "project">;
+    readonly names: KinWorkNames;
     readonly disabled: boolean;
     /** Sets the private mark; null where this viewer can't. */
     readonly onMark: ((on: boolean) => void) | null;
@@ -84,6 +88,10 @@ export function KinWorkAudienceRow(
 ) {
   const { environmentId, orgId, itemKey, view } = props;
   const canShare = useAtomValue(kinClient.workShare.permissionAtom(environmentId));
+  const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, environmentId));
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  // The host lets the owner, co-owners and the project's lead mark it; a holder alone can't.
+  const mark = ownerLevel || (me?.leads ?? []).some((project) => project.key === view.project?.key);
   const share = useAtomCommand(kinClient.workShare, { reportFailure: false });
   const [asked, setAsked] = useState<{ readonly to: boolean; readonly from: boolean } | null>(null);
   const [pending, setPending] = useState(false);
@@ -91,7 +99,8 @@ export function KinWorkAudienceRow(
   const shared = asked !== null && asked.from === view.shared ? asked.to : view.shared;
   const audience = kinWorkAudience(
     { ...view, shared },
-    { mark: props.onMark !== null, share: canShare },
+    { mark: props.onMark !== null && mark, share: canShare },
+    props.names,
   );
   if (props.onMark === null) return null;
   const description = failed ? KIN_WORK_AUDIENCE.failed : audience.answer;

@@ -242,6 +242,8 @@ export const KinCheckIn = Schema.Struct({
   agentName: Schema.String,
   at: KinClockTime,
   days: KinWeekdays,
+  /** Fires somewhere around `at`, not on the minute. */
+  around: Schema.optional(Schema.Boolean),
   on: Schema.Boolean,
   /** A Run now that hasn't started yet. */
   runNowPending: Schema.Boolean,

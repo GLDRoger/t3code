@@ -27,8 +27,13 @@ export interface SenseContext {
   readonly liveAgents: ReadonlySet<string>;
 }
 
-/** A fact before its stored handling is joined on. */
-export type SensedFact = Omit<KinPulseFact, "handled">;
+/**
+ * A fact before its stored handling is joined on. `yours` words it for one person it names
+ * ("Your meeting …"); the read for that person uses it, and it never leaves the server.
+ */
+export type SensedFact = Omit<KinPulseFact, "handled"> & {
+  readonly yours?: (personId: string) => string | undefined;
+};
 
 /** An entry with its project and client, as every record sense selects it (`r`, `p`, `c`). */
 export interface EntryRow {

@@ -376,8 +376,21 @@ describe("kinWorkItemView", () => {
       private: null,
       shared: true,
     });
-    // A project's lead who can't share or mark sees the answer with nothing to pick.
+    // A teammate who can't share or mark sees the answer with nothing to pick.
     expect(kinWorkAudience(at(false, false), { mark: false, share: false }).choices).toEqual([]);
+    // J14: Priya, the project's lead, reads it from her side: "you" is never the owner.
+    const priyas = { ...names, me: priya.personId, owner: me.personId };
+    const lead = { mark: true, share: false };
+    const hers = kinWorkAudience({ ...at(false, false), project }, lead, priyas);
+    expect(hers.answer).toBe("Invented Owner, whoever has it and the people on Invented app");
+    // She may make it private; un-marking and sharing stay the owner's.
+    expect(hers.choices.map((one) => one.id)).toEqual(["people", "me"]);
+    const marked = kinWorkAudience(at(true, false), lead, priyas);
+    expect(marked.answer).toBe("Only Invented Owner, co-owners and whoever has it");
+    expect(marked.choices).toEqual([]);
+    expect(kinWorkAudience(at(true, false), owner, { ...names, owner: me.personId }).answer).toBe(
+      "Only you, co-owners and whoever has it",
+    );
   });
 });
 

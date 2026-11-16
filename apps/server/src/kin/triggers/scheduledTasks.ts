@@ -429,6 +429,7 @@ const make = Effect.gen(function* () {
           timeZone: KinSchedules.hostTimeZone(),
           status: task.enabled === 1 ? "active" : "paused",
           nextRunAt: task.nextRunAt,
+          around: KinSchedules.isAround(task, row.looseAt),
           lastRun: card?.lastRun ?? null,
         };
         const at = fire.dueAt;
@@ -577,6 +578,7 @@ const make = Effect.gen(function* () {
             timeZone: KinSchedules.hostTimeZone(),
             status: enabled ? "active" : "paused",
             nextRunAt: enabled ? task.nextRunAt : null,
+            around: KinSchedules.isAround(task, row.looseAt),
             lastRun: card?.lastRun ?? null,
           },
           closed: false,

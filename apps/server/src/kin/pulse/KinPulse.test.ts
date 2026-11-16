@@ -508,9 +508,13 @@ describe("KinPulse", () => {
         .facts;
       assert.deepStrictEqual([...new Set(both.map((fact) => fact.subject.key))], ["W-9"]);
       // H14: a meeting everyone sees asks only those who were in it how it went, in their words.
-      assert.include(
-        keyed(shown, "meeting_passed", "W-14")[0]!.consequence,
-        "no outcome is noted. How did it go?",
+      const hers = keyed(shown, "meeting_passed", "W-14")[0]!.consequence;
+      assert.include(hers, "no outcome is noted. How did it go?");
+      // J09: Meera reads her own meeting as hers; the owner reads it by her name.
+      assert.match(hers, /^Your meeting (with .+ )?was /);
+      assert.match(
+        keyed((yield* read(at)).facts, "meeting_passed", "W-14")[0]!.consequence,
+        /^Meeting with Meera was /,
       );
       yield* sql`UPDATE kin_records SET team_shared = 1 WHERE record_id = 'r-W-14'`;
       const outside = (yield* read(at, { _tag: "people", people: [KinPersonId.make("other")] }))

@@ -177,8 +177,15 @@ const withStored = (
   at: number,
   reader: { readonly viewer: Viewer; readonly level: ReadonlySet<string> },
 ): KinPulseFact => {
+  const { yours, ...shared } = fact;
+  // One person reading a fact that names them reads it as theirs; a shared view keeps names.
+  const own =
+    reader.viewer._tag === "people" && reader.viewer.people.length === 1
+      ? yours?.(reader.viewer.people[0]!)
+      : undefined;
   return {
-    ...fact,
+    ...shared,
+    ...(own === undefined ? {} : { consequence: own }),
     since:
       row !== undefined && row.firstSeenAt < DateTime.toEpochMillis(fact.since)
         ? iso(row.firstSeenAt)

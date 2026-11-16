@@ -40,7 +40,10 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
-import { CLAUDE_PROVIDER } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import {
+  CLAUDE_PROVIDER,
+  claudeThinkingItemId,
+} from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
@@ -1376,12 +1379,12 @@ const WAKE_KINDS: Record<KinEvent["_tag"] | "hand-over", WakeCase> = {
 const reply = "Phase 2 is about three weeks: booking first, then reports.";
 // Run 4: Claude's summarised reasoning restating the answer, which its adapter shows as an
 // update (`ClaudeAdapterV2.test.ts` makes it from the same blocks). It posted in place of the
-// answer the model wrote after kin_end.
+// answer the model wrote after kin_end. Its id is the adapter's own, so a new format still skips.
 const narration = (ordinal: number, runId: RunId): OrchestrationV2TurnItem => ({
   ...text("narration", ordinal, "The Orbit invoice went out to Anita from hello@.", runId),
   nativeItemRef: {
     driver: CLAUDE_PROVIDER,
-    nativeId: "msg_finance:thinking:1",
+    nativeId: claudeThinkingItemId("msg_finance", 1),
     strength: "strong",
   },
 });
