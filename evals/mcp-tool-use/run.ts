@@ -50,7 +50,10 @@ import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
-import { instructions as kinLeadInstructions } from "../../apps/server/src/kin/lead/instructions.ts";
+import {
+  groupRules as kinGroupRules,
+  instructions as kinLeadInstructions,
+} from "../../apps/server/src/kin/lead/instructions.ts";
 import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
@@ -60,9 +63,15 @@ import { KinDocsToolkit } from "../../apps/server/src/kin/work/mcp/docTools.ts";
 import { KinDocumentToolkit } from "../../apps/server/src/kin/gendocs/mcp.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
 import { KinPulseToolkit } from "../../apps/server/src/kin/pulse/mcp.ts";
-import { WITHDRAWN_WORK, WORK_RULE } from "../../apps/server/src/kin/work/workPrompt.ts";
+import {
+  MONEY_RULE,
+  WITHDRAWN_WORK,
+  WORK_RULE,
+} from "../../apps/server/src/kin/work/workPrompt.ts";
 import { OWNER_DECLINED, WAITING_FOR_OWNER } from "../../apps/server/src/kin/lead/workerBrief.ts";
-import { SHARED_TURN_LINE } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
+import { HANDED_BACK_WORK, SHARED_TURN_LINE } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
+import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
+import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
@@ -84,6 +93,7 @@ import {
   makeClaudeQueryOptions,
 } from "../../apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { proxyConfig } from "../shared/proxy.ts";
+import { ASSUMED_SHAPE, caseProblems, estimate, estimateTable } from "./estimate.ts";
 import { changeRequestsCreatedBy } from "../../apps/server/src/orchestration-v2/PullRequestSyncReactor.ts";
 import { DeviceExpect, gradeDevice } from "./device-grading.ts";
 import {
@@ -107,6 +117,8 @@ import {
 const MODELS = {
   "claude-sonnet-5-5": "Sonnet 5.5",
   "claude-opus-5-5": "Opus 5.5",
+  // Kin's cheap model; leads run on Claude only, so its cases are the ones worth running here.
+  "claude-haiku-5-5": "Haiku 5.5",
   "gpt-6.1-sol": "GPT-6.1 Sol",
   "gpt-6-astra": "GPT-6 Astra",
 } as const;
@@ -528,6 +540,7 @@ const visibleT3Tools = (options: {
               ...Object.keys(KinDocsToolkit.tools),
               ...Object.keys(KinDocumentToolkit.tools),
               ...Object.keys(KinPulseToolkit.tools),
+              ...Object.keys(KinConnectionsToolkit.tools),
             ].some((name) => tool.name === `${T3_PREFIX}${name}`))
         : ![
             ...Object.keys(KinChatToolkit.tools),
@@ -537,6 +550,7 @@ const visibleT3Tools = (options: {
             ...Object.keys(KinDocumentToolkit.tools),
             ...Object.keys(KinPulseToolkit.tools),
             ...Object.keys(KinApprovalsToolkit.tools),
+            ...Object.keys(KinConnectionsToolkit.tools),
           ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
       !(options.subagent === true && hiddenFromSubagents.has(tool.name)),
@@ -1018,6 +1032,25 @@ const loadTools = (tools: Array<ApiTool>, id: string, found: ReadonlyArray<ApiTo
 };
 
 /** Messages for a case: reminders, context, prior turns with real tool blocks, then the prompt. */
+/**
+ * A lead case writes `{{WORK_RULE}}`, `{{SHARED_TURN}}` and Kin's other rule lines where Kin puts
+ * them, in its prompt or a prior turn, so it tests the current text.
+ */
+const fillKinRules = (prompt: string) =>
+  prompt
+    .replaceAll("{{WORK_RULE}}", WORK_RULE)
+    .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
+    .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
+    .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
+    .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
+    .replaceAll("{{GROUP_RULES}}", kinGroupRules)
+    .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
+    .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
+    .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
+    .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
+    .replaceAll("{{WAITING_FOR_OWNER}}", JSON.stringify(WAITING_FOR_OWNER).slice(1, -1))
+    .replaceAll("{{OWNER_DECLINED}}", JSON.stringify(OWNER_DECLINED).slice(1, -1));
+
 export const buildMessages = (sample: Sample) => {
   const { testCase, base, tools } = sample;
   const messages: Array<ApiMessage> = [];
@@ -1084,17 +1117,9 @@ export const buildMessages = (sample: Sample) => {
           : (sample.priorResults.get(prior) ?? result);
       push("user", toolResult(id, replayed));
     }
-    if (turn.text) push(turn.role, text(turn.text));
+    if (turn.text) push(turn.role, text(fillKinRules(turn.text)));
   }
-  // A lead case writes `{{WORK_RULE}}`, `{{STARTED_RULE}}`, `{{WITHDRAWN_WORK}}`, `{{SHARED_TURN}}`
-  // and the publish lines where Kin puts them, so it tests the current text.
-  const casePrompt = testCase.prompt
-    .replaceAll("{{WORK_RULE}}", WORK_RULE)
-    .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
-    .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)
-    .replaceAll("{{WITHDRAWN_WORK}}", WITHDRAWN_WORK)
-    .replaceAll("{{WAITING_FOR_OWNER}}", JSON.stringify(WAITING_FOR_OWNER).slice(1, -1))
-    .replaceAll("{{OWNER_DECLINED}}", JSON.stringify(OWNER_DECLINED).slice(1, -1));
+  const casePrompt = fillKinRules(testCase.prompt);
   const userText =
     testCase.promptContext === undefined
       ? casePrompt
@@ -2410,6 +2435,8 @@ const Flags = Schema.Struct({
   ]),
   "user-instructions": Schema.Literals(["keep", "drop"]),
   "dry-run": Schema.Boolean,
+  estimate: Schema.Boolean,
+  "first-per-area": Schema.Boolean,
   "stop-on-regression": Schema.Boolean,
   "regression-budget": Schema.optional(PositiveIntOrZero),
   context: Schema.Boolean,
@@ -2450,6 +2477,10 @@ const main = Effect.gen(function* () {
       // T3's text must work for every user, so the captured CLAUDE.md is dropped by default.
       "user-instructions": { ...string, default: "drop" },
       "dry-run": { type: "boolean", default: false },
+      // Prices the selected cases from the requests a dry run builds, then exits. No model call.
+      estimate: { type: "boolean", default: false },
+      // Keeps the first case of each area: the smallest run that touches every group.
+      "first-per-area": { type: "boolean", default: false },
       "stop-on-regression": { type: "boolean", default: false },
       "regression-budget": string,
       // Prints the size of T3's text and tool schemas, then exits. Needs no template or key.
@@ -2482,11 +2513,19 @@ const main = Effect.gen(function* () {
   const wanted = flags.case?.flatMap((ids) => ids.split(","));
   const codex = isCodex(flags.model);
   const harness = codex ? "codex" : "claude";
-  const selectedCases = cases.filter(
+  const duplicates = cases.filter((one, i) => cases.findIndex(({ id }) => id === one.id) !== i);
+  if (duplicates.length > 0)
+    return yield* Effect.die(
+      new Error(`Duplicate case ids: ${duplicates.map(({ id }) => id).join(", ")}`),
+    );
+  const matching = cases.filter(
     ({ id, setup }) =>
       (wanted === undefined || wanted.includes(id)) &&
       (setup.harness === undefined || setup.harness === harness),
   );
+  const selectedCases = flags["first-per-area"]
+    ? matching.filter((one, i) => matching.findIndex(({ area }) => area === one.area) === i)
+    : matching;
   if (selectedCases.length === 0) return yield* Effect.die(new Error("No case matches --case."));
   const selected = yield* Effect.forEach(selectedCases, (testCase) =>
     Effect.gen(function* () {
@@ -2590,8 +2629,11 @@ const main = Effect.gen(function* () {
   }
   const baseFor = (testCase: McpToolUseCase) => bases.get(baseKey(testCase)) ?? base;
   const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";
-  if (flags["dry-run"]) {
-    // One JSON line per case. Without --case this also checks that every case builds.
+  if (flags["dry-run"] || flags.estimate) {
+    // One JSON line per case. Without --case this also checks that every case builds, and fails on
+    // a regex that doesn't compile, a tool the agent lacks or a placeholder left unfilled.
+    const problems: Array<string> = [];
+    const sizes: Array<{ prefixChars: number; messageChars: number }> = [];
     for (const testCase of selected) {
       const sample = makeSample(testCase, baseFor(testCase));
       yield* Effect.scoped(withDevices(sample));
@@ -2599,7 +2641,34 @@ const main = Effect.gen(function* () {
       const body = sample.base.codex
         ? codexRequest(sample.base, codexMessages(messages))
         : requestBody(sample, effort, messages);
-      process.stdout.write(`${yield* encodeJson(body)}\n`);
+      const encoded = yield* encodeJson(body);
+      const tools = new Set(
+        [...sample.tools, ...sample.base.deferred].map((tool) => normalizeToolName(tool.name)),
+      );
+      const unfilled = [...new Set(encoded.match(/\{\{[A-Z_]+\}\}/g) ?? [])].map(
+        (placeholder) => `placeholder left unfilled: ${placeholder}`,
+      );
+      // Codex lists its tools differently; only Claude requests are checked for tool names.
+      const found = [...(sample.base.codex ? [] : caseProblems(testCase, tools)), ...unfilled];
+      problems.push(...found.map((problem) => `${testCase.id}: ${problem}`));
+      sizes.push({
+        prefixChars: JSON.stringify([sample.base.system, sample.tools]).length,
+        messageChars: JSON.stringify(messages).length,
+      });
+      if (!flags.estimate) process.stdout.write(`${encoded}\n`);
+    }
+    if (problems.length > 0)
+      return yield* Effect.die(new Error(`Malformed cases:\n${problems.join("\n")}`));
+    if (flags.estimate) {
+      const options = {
+        samples: flags.samples ?? 3,
+        concurrency: flags.concurrency,
+        shape: ASSUMED_SHAPE,
+      };
+      const rows = (["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] as const).map(
+        (model) => estimate(model, PRICES[model], sizes, options),
+      );
+      process.stdout.write(`${estimateTable(rows, ASSUMED_SHAPE)}\n`);
     }
     return;
   }
