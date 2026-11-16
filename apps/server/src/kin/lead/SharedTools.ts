@@ -221,6 +221,21 @@ export const SHARED_TOOLS = {
   ...t3ToolsRefused,
 } satisfies Record<string, SharedToolPolicy>;
 
+/**
+ * Whether a shared thread lists `name`. Its turns are never owner-only (`effectiveAudience`), so a
+ * tool refused there, or one without a line, can't succeed in any of them.
+ */
+export const listedOnSharedThread = (name: string) => {
+  const policy: SharedToolPolicy | undefined = Object.hasOwn(SHARED_TOOLS, name)
+    ? SHARED_TOOLS[name as keyof typeof SHARED_TOOLS]
+    : undefined;
+  return (policy !== undefined && policy !== "refused") || STILL_LISTED_WHEN_SHARED.has(name);
+};
+
+// A teammate asks for reminders (eval kin-owed-teammate-time-from-profile) though the gate refuses
+// them in shared turns; listed as before until that is decided.
+const STILL_LISTED_WHEN_SHARED: ReadonlySet<string> = new Set(["kin_defer"]);
+
 /** Whether `name` may run with these arguments in a turn someone besides the owner reads. */
 export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(
   function* (turn: Turn, name: string, args: unknown) {
