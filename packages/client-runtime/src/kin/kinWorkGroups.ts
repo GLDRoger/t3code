@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers compare due times with the reader's local day, outside an Effect runtime.
 import type { KinRecord, KinWorkPrincipal } from "@t3tools/contracts";
 
 import {
