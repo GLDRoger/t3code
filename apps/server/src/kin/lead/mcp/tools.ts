@@ -15,6 +15,7 @@ import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagem
 import { KIN_VISUAL_PAGE_GUIDE, KIN_VISUAL_TOOL_NAME } from "@t3tools/shared/kinVisual";
 
 import { KinIdentity } from "../../chat/KinIdentity.ts";
+import { KinServer } from "../../KinServer.ts";
 import * as RepoReads from "../../github/KinRepoReads.ts";
 import * as PullRequestCare from "../../github/PullRequestCare.ts";
 import { MEMORY_RULE } from "../../memory/keeping.ts";
@@ -170,9 +171,17 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_ask", {
     ...chat,
     description:
-      "Ask with 2-4 tap-to-answer options in the chat your reply goes to, when the answer is one of a few choices; kind marks a yes/no pair. It is your reply: don't restate it, add at most one short line. The tap arrives later. Never an approval: privileged actions need request_action.",
-    parameters: ChoiceCard.AskInput,
+      "Ask with 2-4 tap-to-answer options in the chat your reply goes to, when the answer is one of a few choices; kind marks a yes/no pair. default: the label you'll take if they don't answer, or \"none\" when nothing is safe without them; by: that day, YYYY-MM-DD (left out: the end of their next working day); about: the record keys it concerns; intent: what you'd do, in a few words. Kin refuses another agent asking the same. It is your reply: don't restate it, add at most one short line. The tap arrives later. Never an approval: privileged actions need request_action.",
+    parameters: ChoiceCard.LeadAskInput,
     success: ChoiceCard.AskResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_ask_close", {
+    ...chat,
+    dependencies: [...chat.dependencies, KinServer],
+    description:
+      "Close an open question your seat lists: answered when the person answered it in words, withdrawn (yours only) when it no longer stands. Its card stops taking taps and Kin won't take its default.",
+    parameters: ChoiceCard.CloseInput,
+    success: ChoiceCard.CloseResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_chart", {
     ...chat,

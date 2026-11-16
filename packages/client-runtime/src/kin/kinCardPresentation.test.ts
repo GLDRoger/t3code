@@ -310,6 +310,24 @@ describe("choice cards", () => {
       "expired",
       "Replaced by a newer one.",
     ]);
+    // An agent's open question takes taps until the host closes it, then says what became of it.
+    const asked = choice({ state: { ...choiceState(), untilAnswered: true } });
+    expect(kinChoicePhase(asked, posted + 30 * 24 * 60 * 60 * 1000)).toBe("open");
+    const taken = choice({
+      closedAt: "2026-11-10T14:00:00.000Z",
+      state: {
+        ...choiceState(),
+        untilAnswered: true,
+        outcome: {
+          title: "Went with “Wait”",
+          text: "No answer by Tuesday, so Finance went with “Wait”.",
+        },
+      },
+    });
+    expect([kinChoicePhase(taken, posted), taken.closedText]).toEqual([
+      "expired",
+      "No answer by Tuesday, so Finance went with “Wait”.",
+    ]);
     expect(
       kinCardView(
         widget({ type: "choice", state: { ...choiceState(), options: [] } }),

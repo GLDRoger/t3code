@@ -14,13 +14,20 @@ import {
   kinWaitingRowView,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { useKinInbox } from "./state/useKinInbox";
+import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
+import { useNowMinuteMs } from "../../lib/clock";
+import { KinWaitingAsk } from "./components/KinWaitingAsk";
 import { KinApprovalCard } from "./widgets/KinApprovalCard";
 
-/** Waiting on you, oldest first: approvals as their full cards, everything else as a row. */
+/**
+ * Waiting on you, oldest first: approvals as their full cards, an agent's open question with its
+ * default, day and answers, everything else as a row.
+ */
 export function KinWaitingScreen() {
   const navigation = useNavigation();
   const { host, state, retry } = useKinInbox();
   const { agentNames } = kinDirectory(host);
+  const nowMs = useNowMinuteMs();
   return (
     <KinInboxPage title="Waiting on you" state={state} onRetry={retry}>
       {(ready) => {
@@ -50,6 +57,14 @@ export function KinWaitingScreen() {
         const rest = view.waiting.filter(
           (item) => !approvals.some((approval) => approval.item.waitingId === item.waitingId),
         );
+        // An agent's open question shows what it will do and when, with its answers to tap.
+        const asks = rest.flatMap((item) => {
+          const ask = kinWaitingAskView(item, nowMs);
+          return ask === null ? [] : [{ item, ask }];
+        });
+        const plain = rest.filter(
+          (item) => !asks.some((one) => one.item.waitingId === item.waitingId),
+        );
         return (
           <>
             {approvals.map(({ item, actionId }) => (
@@ -69,9 +84,24 @@ export function KinWaitingScreen() {
                 </View>
               </View>
             ))}
-            {rest.length === 0 ? null : (
+            {asks.map(({ item, ask }) => {
+              const row = kinWaitingRowView(item, ready.inbox.value.chats, agentNames);
+              return (
+                <ListSection key={item.waitingId}>
+                  <ListRow
+                    icon="questionmark.bubble"
+                    label={`${row.label} · ${row.chatTitle}`}
+                    description={row.text ?? `Open the chat with ${row.chatTitle}`}
+                    detail={formatKinTime(new Date(row.createdAt))}
+                    onPress={() => openChat(item)}
+                  />
+                  <KinWaitingAsk ask={ask} environmentId={ready.environmentId} />
+                </ListSection>
+              );
+            })}
+            {plain.length === 0 ? null : (
               <ListSection>
-                {rest.map((item) => {
+                {plain.map((item) => {
                   const row = kinWaitingRowView(item, ready.inbox.value.chats, agentNames);
                   return (
                     <ListRow

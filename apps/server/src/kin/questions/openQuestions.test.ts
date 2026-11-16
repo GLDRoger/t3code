@@ -1,0 +1,444 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { kinSecretsTest } from "../lead/layer.testkit.ts";
+import { assert, it } from "@effect/vitest";
+import {
+  AuthSessionId,
+  AuthStandardClientScopes,
+  EnvironmentId,
+  KinAgentId,
+  type KinChatId,
+  KinOrgId,
+  KinWidgetId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
+import { McpSchema, McpServer } from "effect/ai";
+
+import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
+import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import { environment } from "../chat/TaskCard.testkit.ts";
+import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
+import { notConnectedLayer as repoReadsOff } from "../github/KinRepoReads.ts";
+import { notConnectedLayer as pullRequestCareOff } from "../github/PullRequestCare.ts";
+import * as Kin from "../layer.ts";
+import * as KinToolGate from "../mcp/KinToolGate.ts";
+import * as Handoff from "../lead/Handoff.ts";
+import { LeadMemory } from "../lead/LeadMemory.ts";
+import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
+import { KinLeadToolkit } from "../lead/mcp/tools.ts";
+import { KinWorkers } from "../lead/Workers.ts";
+import * as Team from "../team/KinTeam.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import * as Questions from "./openQuestions.ts";
+
+const providerInstanceId = ProviderInstanceId.make("codex");
+const at = "2026-10-01T00:00:00.000Z";
+const client = McpSchema.McpServerClient.of({
+  clientId: 1,
+  clientCapabilities: {},
+  clientInfo: { name: "test", version: "1" },
+  protocolVersion: "2025-06-18",
+  initializePayload: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "test", version: "1" },
+  },
+  getClient: Effect.die("unused"),
+});
+const scopeOf = (agent: string): McpInvocationScope => ({
+  environmentId: EnvironmentId.make("environment"),
+  requestNamespace: agent,
+  issuedAt: 0,
+  capabilities: new Set(),
+  client: undefined,
+  thread: {
+    threadId: ThreadId.make(`${agent}-thread`),
+    providerSessionId: agent,
+    providerInstanceId,
+  },
+});
+
+const kinServices = Layer.unwrap(
+  Effect.gen(function* () {
+    const services = Option.getOrThrow((yield* Kin.KinServer).services);
+    return Layer.mergeAll(
+      Handoff.layer,
+      Team.layer,
+      Layer.mock(KinWorkers)({}),
+      Layer.mock(LeadMemory)({}),
+      repoReadsOff,
+      pullRequestCareOff,
+    ).pipe(Layer.provideMerge(Layer.succeedContext(services)));
+  }),
+);
+const layer = Layer.mergeAll(
+  McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers),
+  KinToolGate.layer,
+).pipe(
+  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provideMerge(kinServices),
+  Layer.provideMerge(
+    Layer.mock(ThreadManagement.ThreadManagementService)({
+      getThreadShell: (id) => Effect.succeed({ ...liveThreadShell(id), providerInstanceId }),
+    }),
+  ),
+  Layer.provideMerge(
+    Kin.layer.pipe(
+      Layer.provide(kinSecretsTest),
+      Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+      Layer.provideMerge(environment),
+    ),
+  ),
+  Layer.provideMerge(authorityLayer),
+  Layer.provideMerge(kinSecretsTest),
+);
+
+/** A tool call exactly as an agent's provider sends it: its JSON answer, or its refusal. */
+const callAs = Effect.fn("test.callAs")(function* (
+  agent: string,
+  name: string,
+  args: Record<string, unknown>,
+) {
+  const server = yield* McpServer.McpServer;
+  const identity = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinIdentity);
+  const result = yield* server
+    .callTool({ name, arguments: args })
+    .pipe(
+      Effect.provideService(McpInvocationContext, scopeOf(agent)),
+      Effect.provideService(KinIdentity, identity),
+      Effect.provideService(McpSchema.McpServerClient, client),
+    );
+  const text = result.content.find((item) => item.type === "text")?.text ?? "{}";
+  return { ok: result.isError !== true, value: JSON.parse(text) as Record<string, unknown> };
+});
+
+/**
+ * Ambermill Studio (invented): Rhea owns it, Meera co-owns it, Dev is a member. Two agents, the
+ * Chief of staff and Finance, each with a chat with Rhea; the company keeps India's clock.
+ */
+const ambermill = Effect.gen(function* () {
+  const services = Option.getOrThrow((yield* Kin.KinServer).services);
+  const identity = Context.get(services, KinIdentity);
+  const chats = Context.get(services, KinChatService);
+  const sql = yield* SqlClient.SqlClient;
+  yield* pairSession(AuthSessionId.make("owner"));
+  const [resolved] = yield* identity.resolve({
+    sessionId: AuthSessionId.make("owner"),
+    subject: "browser",
+    method: "browser-session-cookie",
+    scopes: AuthStandardClientScopes,
+  });
+  const owner = resolved!;
+  const { orgId } = owner;
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea Rao' WHERE person_id = ${owner.personId}`;
+  for (const [id, name, access] of [
+    ["meera", "Meera Shah", "co_owner"],
+    ["dev", "Dev Malhotra", "member"],
+  ] as const)
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${id}, ${orgId}, ${id}, ${name}, ${at}, ${access})`;
+  const chatOf = new Map<string, KinChatId>();
+  for (const [id, name, domain] of [
+    ["chief", "Chief of staff", "chief-of-staff"],
+    ["finance", "Finance", "finance"],
+  ] as const) {
+    const agentId = KinAgentId.make(id);
+    const threadId = ThreadId.make(`${id}-thread`);
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      VALUES (${agentId}, ${orgId}, ${name}, 'lead', ${owner.personId}, ${at})`;
+    yield* identity.registerAgentThread({ orgId, agentId, threadId });
+    const chatId = (yield* chats.createDirect(owner, { orgId, agentId })).chatId;
+    chatOf.set(id, chatId);
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+        worker_projects_json, owner_chat_id, domain)
+      VALUES (${agentId}, ${orgId}, ${name}, 0, ${threadId}, '{}', '[]', ${chatId}, ${domain})`;
+  }
+  yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+      dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+    VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')
+    ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
+  yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+    VALUES (${orgId}, 'chief', ${owner.personId}, 0)`;
+  /** A turn of `agent`'s, woken on `message` or, without one, on Kin's own event. */
+  const wake = Effect.fn("test.wake")(function* (
+    agent: string,
+    message?: Effect.Success<ReturnType<typeof chats.send>>,
+  ) {
+    return yield* startAgentWakeup({
+      orgId,
+      agentId: KinAgentId.make(agent),
+      threadId: ThreadId.make(`${agent}-thread`),
+      ...(message === undefined ? {} : { message }),
+    });
+  });
+  return { sql, chats, owner, orgId, services, chatOf: (id: string) => chatOf.get(id)!, wake };
+});
+
+const IST_MON_1130 = Date.UTC(2026, 10, 16, 6);
+const TUE_1930 = Date.UTC(2026, 10, 17, 14);
+const TUE_1930_ISO = "2026-11-17T14:00:00.000Z";
+
+const reminderAsk = {
+  question: "Shall I draft VIOM's payment reminder for INV-8?",
+  options: [{ label: "Draft it" }, { label: "Leave it" }],
+  default: "Draft it",
+  about: ["INV-8"],
+  intent: "draft payment reminder",
+};
+
+const questionRow = (sql: SqlClient.SqlClient, id: string) =>
+  sql<{ state: string; raised: number | null; raiseWidget: string | null; answer: string | null }>`
+    SELECT state, raised_at AS raised, raise_widget_id AS "raiseWidget", answer
+    FROM kin_questions WHERE question_id = ${id}`.pipe(Effect.map((rows) => rows[0]!));
+const dueEvents = (sql: SqlClient.SqlClient, orgId: string) =>
+  sql<{ agent: string; key: string }>`SELECT agent_id AS agent, dedupe_key AS key FROM kin_events
+    WHERE org_id = ${orgId} AND dedupe_key LIKE 'question:%' ORDER BY rowid`;
+
+const settle = Effect.fn("test.settle")(function* (orgId: string, at: number) {
+  yield* TestClock.setTime(at);
+  const services = Option.getOrThrow((yield* Kin.KinServer).services);
+  return yield* Questions.settleDue(KinOrgId.make(orgId), at, {
+    chat: Context.get(services, KinChatService),
+    queue: Context.get(services, KinEventQueue.KinEventQueue),
+  });
+});
+
+// Finance asks the owner with a default; the Chief of staff asking the same is refused; at the
+// day Finance's default is taken once and its card says so; the card takes no tap after.
+it.effect("a question is asked once, and its default is taken once at its day", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+      const repo = Context.get(services, KinChatRepository);
+      yield* wake(
+        "finance",
+        yield* chats.send(owner, {
+          chatId: chatOf("finance"),
+          body: "What about VIOM?",
+          clientMessageId: "m1",
+        }),
+      );
+      const asked = yield* callAs("finance", "kin_ask", reminderAsk);
+      assert.isTrue(asked.ok, JSON.stringify(asked.value));
+      assert.strictEqual(asked.value.by, TUE_1930_ISO);
+      const questionId = asked.value.question as string;
+      // The card keeps taking taps past a day; Waiting on you says what Finance will do, and when.
+      const [waiting] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      assert.deepInclude(waiting!.ask!, { agent: "Finance", default: "Draft it" });
+      assert.strictEqual(waiting!.ask!.by, TUE_1930_ISO);
+      assert.deepStrictEqual(
+        waiting!.ask!.options.map((option) => option.label),
+        ["Draft it", "Leave it"],
+      );
+
+      // The Chief of staff asks the same thing about the same invoice: refused, nothing posted.
+      yield* wake(
+        "chief",
+        yield* chats.send(owner, {
+          chatId: chatOf("chief"),
+          body: "Anything on money?",
+          clientMessageId: "m2",
+        }),
+      );
+      const again = yield* callAs("chief", "kin_ask", {
+        ...reminderAsk,
+        question: "Should Finance draft the payment reminders?",
+        options: [{ label: "Yes" }, { label: "No" }],
+        default: "Yes",
+        about: ["INV-8", "INV-9"],
+        intent: "Draft the payment reminders",
+      });
+      assert.isFalse(again.ok);
+      assert.match(
+        String(again.value.message ?? JSON.stringify(again.value)),
+        /Already asked by Finance today: .*Default “Draft it” tomorrow/,
+      );
+      const cards = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_widgets
+        WHERE chat_id = ${chatOf("chief")} AND type = 'choice'`;
+      assert.strictEqual(cards[0]!.n, 0);
+      // Every agent's turn in a chat with Rhea lists it.
+      const section = yield* Questions.openQuestionsSection({
+        orgId: KinOrgId.make(orgId),
+        chatId: chatOf("chief"),
+        ownerOnly: true,
+        now: IST_MON_1130,
+      });
+      assert.include(section!.body, `${questionId}, Finance, today:`);
+      assert.include(section!.body, "default “Draft it” tomorrow");
+
+      // Never before its day; once at it; never twice.
+      assert.strictEqual(yield* settle(orgId, TUE_1930 - 60_000), 0);
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "open");
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 1);
+      assert.strictEqual(yield* settle(orgId, TUE_1930 + 60_000), 0);
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "default_taken");
+      assert.deepStrictEqual(yield* dueEvents(sql, orgId), [
+        { agent: "finance", key: `question:${questionId}` },
+      ]);
+      const card = Option.getOrThrow(
+        yield* repo.getWidget({
+          orgId,
+          widgetId: KinWidgetId.make(asked.value.widgetId as string),
+        }),
+      );
+      assert.isNotNull(card.closedAt);
+      assert.deepInclude((card.state as { outcome: unknown }).outcome, {
+        title: "Went with “Draft it”",
+      });
+      // A tap after the default was taken changes nothing: the card is closed.
+      const late = yield* chats
+        .act(owner, {
+          widgetId: card.widgetId,
+          revision: card.revision,
+          actionId: "choose",
+          value: "option-2",
+          clientActionId: "late",
+        })
+        .pipe(Effect.flip);
+      assert.include(late, { reason: "invalid_state" });
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "default_taken");
+      // The turn Kin starts tells Finance to do it and say so in one line, with undo.
+      const due = yield* Questions.dueTurnText(KinOrgId.make(orgId), questionId, TUE_1930);
+      assert.include(due!.text, 'Went with “Draft it”; say "undo it" to reverse.');
+      assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// A default that sends mail is never taken: at its day nothing happens, the next working
+// morning it is raised once as a fresh card, and then it waits in Waiting on you until tapped.
+it.effect("a question with no safe default is raised once, then waits for its answer", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+      const repo = Context.get(services, KinChatRepository);
+      yield* wake(
+        "finance",
+        yield* chats.send(owner, {
+          chatId: chatOf("finance"),
+          body: "VIOM is late again.",
+          clientMessageId: "m1",
+        }),
+      );
+      const asked = yield* callAs("finance", "kin_ask", {
+        question: "Send VIOM the reminder mail I drafted?",
+        options: [{ label: "Send it" }, { label: "Hold it" }],
+        default: "Send it",
+        about: ["INV-8"],
+        intent: "send payment reminder",
+      });
+      assert.isTrue(asked.ok, JSON.stringify(asked.value));
+      const questionId = asked.value.question as string;
+      const [waiting] = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      assert.isNull(waiting!.ask!.default);
+
+      // Its day passes with nothing taken and no turn started.
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
+      assert.lengthOf(yield* dueEvents(sql, orgId), 0);
+      // Wednesday 10:30 IST: raised once as a fresh card; the first closes as replaced.
+      const morning = Date.UTC(2026, 10, 18, 5);
+      assert.strictEqual(yield* settle(orgId, morning), 1);
+      assert.strictEqual(yield* settle(orgId, morning + 3 * 86_400_000), 0);
+      const row = yield* questionRow(sql, questionId);
+      assert.strictEqual(row.state, "open");
+      assert.isNotNull(row.raiseWidget);
+      const open = yield* repo.listOpenWaiting({ orgId, personId: owner.personId });
+      assert.deepStrictEqual(
+        open.map((item) => [item.widgetId, item.question, item.ask?.default]),
+        [[row.raiseWidget, "Still open: Send VIOM the reminder mail I drafted?", null]],
+      );
+      assert.lengthOf(yield* dueEvents(sql, orgId), 0);
+
+      // A tap on the raised card, days later, answers it.
+      const raised = Option.getOrThrow(
+        yield* repo.getWidget({ orgId, widgetId: KinWidgetId.make(row.raiseWidget!) }),
+      );
+      yield* chats.act(owner, {
+        widgetId: raised.widgetId,
+        revision: raised.revision,
+        actionId: "choose",
+        value: "option-2",
+        clientActionId: "hold",
+      });
+      assert.deepInclude(yield* questionRow(sql, questionId), {
+        state: "answered",
+        answer: "Hold it",
+      });
+      assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+// A plain-text question stays open for every agent until the person writes back, and an
+// agent closes a carded one the person answered in words.
+it.effect("questions close on the person's words, and only the asker withdraws one", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, chatOf, wake } = yield* ambermill;
+      const text = yield* Questions.recordTextQuestion({
+        orgId: KinOrgId.make(orgId),
+        agentId: KinAgentId.make("chief"),
+        chatId: chatOf("chief"),
+        wakeupId: "w-text",
+        question: "Is P-3 finished?",
+        now: IST_MON_1130,
+      });
+      yield* TestClock.adjust("1 minute");
+      yield* chats.send(owner, {
+        chatId: chatOf("chief"),
+        body: "Yes, it's done.",
+        clientMessageId: "m3",
+      });
+      assert.strictEqual((yield* questionRow(sql, text!)).state, "answered");
+
+      yield* wake(
+        "finance",
+        yield* chats.send(owner, {
+          chatId: chatOf("finance"),
+          body: "VIOM?",
+          clientMessageId: "m4",
+        }),
+      );
+      const asked = yield* callAs("finance", "kin_ask", reminderAsk);
+      const questionId = asked.value.question as string;
+      // The Chief of staff, in a chat with Rhea too, may mark it answered but not withdraw it.
+      yield* wake(
+        "chief",
+        yield* chats.send(owner, {
+          chatId: chatOf("chief"),
+          body: "Tell Finance: draft it.",
+          clientMessageId: "m5",
+        }),
+      );
+      const withdraw = yield* callAs("chief", "kin_ask_close", {
+        question: questionId,
+        outcome: "withdrawn",
+      });
+      assert.isFalse(withdraw.ok);
+      const answered = yield* callAs("chief", "kin_ask_close", {
+        question: questionId,
+        outcome: "answered",
+        answer: "Draft it",
+      });
+      assert.isTrue(answered.ok, JSON.stringify(answered.value));
+      assert.strictEqual((yield* questionRow(sql, questionId)).state, "answered");
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 0);
+      assert.lengthOf(yield* dueEvents(sql, orgId), 0);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
