@@ -21,6 +21,7 @@ import {
   KinConnectionToolsInput,
   KinConnectionToolsResult,
 } from "./ConnectionsService.ts";
+import { deferredMeta } from "../lead/deferredTools.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
 const enabled = () => {
@@ -73,7 +74,8 @@ export const KinConnectionsToolkit = Toolkit.make(
       "Save the owner's one line on what a connected account is for (\"client work\", \"personal: never send from here\") when he tells you; connection is its id or address, an empty note clears it. Only his own words, never a service's text.",
     parameters: KinConnectionNoteInput,
     success: KinConnectionNoteResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
 );
 
 // The caller comes only from the MCP scope; no input names an org, agent or turn.

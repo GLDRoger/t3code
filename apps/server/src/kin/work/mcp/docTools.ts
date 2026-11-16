@@ -11,6 +11,7 @@ import { KinIdentity } from "../../chat/KinIdentity.ts";
 import { KinLevelGate } from "../../lead/LevelGate.ts";
 import { KinRecords } from "../KinRecords.ts";
 import * as Docs from "../leadDocs.ts";
+import { deferredMeta } from "../../lead/deferredTools.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
 const enabled = () => {
@@ -69,7 +70,8 @@ export const KinDocsToolkit = Toolkit.make(
     description: `Replace a doc's whole body only when most of it changes, with baseVersion (the version you read) and summary saying why. Under a third of the lines changed is refused: use doc_edit. ${writes}`,
     parameters: Docs.RewriteInput,
     success: Docs.WriteResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
   Tool.make("doc_move", {
     ...shared,
     description: `Refile a doc under another client or project (null clears) or as the company's own (company true), change its kind or owner, mark it sensitive, or archive it (archived false restores). Rename with doc_edit retitle. ${writes}`,
@@ -81,7 +83,8 @@ export const KinDocsToolkit = Toolkit.make(
     description: `Link a doc to entries (W-12) or docs (D-3), both ways, so each shows the other. ${writes}`,
     parameters: Docs.LinkInput,
     success: Docs.LinkResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
   Tool.make("docs_search", {
     ...shared,
     description: `Search docs, Work entries, clients, contacts and projects by words, best first; a doc hit names its section. Search before writing a new doc. Read-only. ${data} ${marked}`,
@@ -93,11 +96,13 @@ export const KinDocsToolkit = Toolkit.make(
     description: "A doc's versions, newest first: when, by whom, summary and sections touched. Read-only.",
     parameters: Docs.HistoryInput,
     success: Docs.HistoryResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
   Tool.make("doc_restore", {
     ...shared,
     description: `Bring back an earlier version as the new latest, so nothing is lost; latest is the newest version from doc_history, and nothing changes if it moved. ${writes}`,
     parameters: Docs.RestoreInput,
     success: Docs.WriteResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
 );

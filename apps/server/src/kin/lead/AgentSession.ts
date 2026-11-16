@@ -24,7 +24,7 @@ import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { aborted, effectiveAudience, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
-import { SHARED_TOOLS } from "./SharedTools.ts";
+import { listedOnSharedThread } from "./SharedTools.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 
 const leadT3Tools: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
@@ -76,17 +76,6 @@ export const fullSessionAdmitted = Effect.fn("KinAgentSession.fullSessionAdmitte
   ),
 );
 
-/**
- * A shared thread's turns are never owner-only (`effectiveAudience`), so a tool the gate refuses
- * there, or one without a line, can't succeed in any of them: listing it only costs tokens.
- */
-const refusedWhenShared = (name: string) => {
-  const policy: string | undefined = Object.hasOwn(SHARED_TOOLS, name)
-    ? (SHARED_TOOLS[name as keyof typeof SHARED_TOOLS] as string)
-    : undefined;
-  return policy === undefined || policy === "refused";
-};
-
 /** Kin's GitHub tools answer only "not connected" without the Kin App (`layer.ts` `repoReads`). */
 const isKinGitHubTool = (name: string) => name.startsWith("kin_github_");
 const kinAppConfigured = Config.option(Config.String("KIN_GITHUB_APP_ID")).pipe(
@@ -104,7 +93,7 @@ const kinAppConfigured = Config.option(Config.String("KIN_GITHUB_APP_ID")).pipe(
 export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(
   function* (name: string, threadId: ThreadId) {
     const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
-    if (shared && refusedWhenShared(name)) return false;
+    if (shared && !listedOnSharedThread(name)) return false;
     if (isKinGitHubTool(name)) return yield* kinAppConfigured;
     const t3 = isT3Tool(name);
     if (!t3 && name !== "kin_delegate") return true;

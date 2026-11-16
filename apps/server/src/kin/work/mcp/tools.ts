@@ -17,6 +17,7 @@ import * as Clients from "../leadClients.ts";
 import { KinRecords } from "../KinRecords.ts";
 import * as Money from "../leadMoney.ts";
 import * as Work from "../leadWork.ts";
+import { deferredMeta } from "../../lead/deferredTools.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
 const enabled = () => {
@@ -111,7 +112,8 @@ export const KinWorkToolkit = Toolkit.make(
     description: "Start tracking something as a list (\"track expenses\", \"track leave\"): a template (expenses, invoices, dates, receipts), or a name and fields (text, choice with choices, date, person, link to clients or projects, money, file), categories, states and their names, and whether entries carry an amount. Pass list to add fields, choices or categories to one you defined. The first call only proposes: the owner sees a card. Ask in one short line; after their yes (tap or later message) call again with just proposal to create it. Never create a list the owner hasn't agreed to.",
     parameters: Money.DefineInput,
     success: Money.DefineResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
   Tool.make("payment_record", {
     ...shared,
     description: "Record money received against an invoice (INV-4): amount as said in its currency, and paidOn. TDS deducted goes in withheld, never amount. A part payment leaves the rest owed. void with a paymentId from record_get takes a wrong one back. Returns the amount, received total and balance, exact. Reply in one line.",
@@ -134,7 +136,8 @@ export const KinWorkToolkit = Toolkit.make(
     description: "Set a monthly spending limit for an expense category, a project, or both, as the owner said it (\"50k for travel\"); limit null removes it. Only in a turn the owner started with their own message or tap; otherwise propose it. Returns old and new limits and every budget's spending this month. Reply in one line with the old and new limit.",
     parameters: Money.BudgetInput,
     success: Money.BudgetResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
   Tool.make("dates_query", {
     ...shared,
     description: `Everything due or dated between two days (inclusive) across every list (filings, renewals, invoices, Work), soonest first. lists narrows it; open false includes done. Read-only. ${data}`,
@@ -146,5 +149,6 @@ export const KinWorkToolkit = Toolkit.make(
     description: "The company's legal name, address, GSTIN, PAN, place of supply, SAC, bank details, logo and brand. set proposes changes (null clears): the owner sees a card and nothing changes until they tap Confirm. logo is the file name (extension optional) of a PNG, JPEG or SVG the owner sent in this chat. brand: primaryColor and secondaryColor (#RRGGBB), font (Poppins, Mukta, Libertinus Serif, New Computer Modern or DejaVu Sans Mono) and a footer line; every recipe uses them. Confidential: never in a worker brief, pull request or chat others read.",
     parameters: Money.ProfileInput,
     success: Money.ProfileResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
 );

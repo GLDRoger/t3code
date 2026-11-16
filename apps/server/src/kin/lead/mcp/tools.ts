@@ -28,6 +28,7 @@ import * as PeopleUpdate from "../peopleUpdate.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import * as Lead from "../LeadMemory.ts";
 import * as Workers from "../Workers.ts";
+import { deferredMeta } from "../deferredTools.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
 const enabled = () => {
@@ -159,13 +160,15 @@ export const KinLeadToolkit = Toolkit.make(
       "Put a chart in the chat your reply goes to, for a trend, comparison or breakdown of three or more numbers (not one or two, not a list of things). The chart carries the numbers: your reply is one or two sentences, the answer and what to do, never a walk through the points. chart by question: over time line, area (one volume) or stacked_area (parts of a total); this period vs the last: one series with the earlier in comparison; categories: bar, horizontal_bar (long names or many), stacked_bar or stacked_horizontal_bar (parts of each total); shares of one whole: pie or donut; options scored on the same measures: radar; whether two measures move together: scatter. Anything else (sankey, treemap, heatmap, funnel, map, diagram) is a rich visual. unit: {kind: \"count\"}, {kind: \"percent\"} (12.5 is 12.5%) or {kind: \"money\", currency} with values in whole minor units (₹1,299.50 is 129950); never convert or round money. labels: one per point, oldest first (YYYY-MM-DD for day, YYYY-MM for month); send the real points, the chart scrolls. series: 1-12 of {name, values} lined up with labels, null where none; comparison takes the same labels. pie/donut: one series, no negatives. radar: 3-24 labels on one scale from zero (scores out of 10), no negatives. scatter: no labels or series; send scatter: {xName, yName, xUnit (default count), series: [{name, points: [{x, y, label?}]}]}, with unit for y. Optional: color per series or colors per label (accent, green, amber, red, purple, grey) only when colour means something; target {name, value} for a reference line (not pie); valueLabels: true; title says what it shows; caption for source or period. Only numbers you have read or been given. A refusal says what to fix.",
     parameters: ChartCard.ChartInput,
     success: ChartCard.ChartResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
   Tool.make(KIN_VISUAL_TOOL_NAME, {
     ...chat,
     description: `Put a rich visual in the chat your reply goes to: one page of HTML, CSS and JavaScript in a sealed frame under its title. kin_chart first for the kinds it draws; this for the rest: a dashboard, sankey, treemap, heatmap, funnel, gauge, network graph, gantt or timeline, a flow or sequence diagram, a styled or sortable table, an interactive breakdown. Still write the one-line takeaway. title says what it shows; html is the whole page; height is your estimate in pixels at phone width. One visual per call. Only data you have read or been given. A refusal says what to fix.\n${KIN_VISUAL_PAGE_GUIDE}`,
     parameters: VisualCard.VisualInput,
     success: VisualCard.VisualResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
   Tool.make("kin_react", {
     ...chat,
     description:
@@ -258,12 +261,14 @@ export const KinLeadToolkit = Toolkit.make(
       "Post a review on a pull request in a connected repo: body (findings, plainly), event COMMENT (default) or REQUEST_CHANGES, optional line comments (path, line on the new side). Never approves. Posts at once on the company's private repos; elsewhere it is a proposal the owner, a co-owner or the project's lead posts from a card (call again with the proposal to check). Returns posted, proposed, waiting or declined.",
     parameters: PullRequestCare.ReviewInput,
     success: PullRequestCare.ReviewResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
   Tool.make("kin_github_link", {
     ...prCare,
     description:
       "Link a GitHub issue or PR (its URL, in a connected repo) to a Work entry by key. A linked PR closes the task when it merges, and the merge closes the task's linked issues; a closed issue closes its tasks.",
     parameters: PullRequestCare.LinkInput,
     success: PullRequestCare.LinkResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  }).annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(Tool.Meta, deferredMeta),
 );

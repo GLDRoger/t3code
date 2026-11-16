@@ -24,6 +24,7 @@ import { OUTSIDE_REFUSAL, OUTSIDE_TOOLS } from "../lead/OutsideContent.ts";
 import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { visibleOnKinEndpoint } from "../lead/AgentSession.ts";
+import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as TestClock from "effect/testing/TestClock";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
@@ -339,11 +340,33 @@ it.effect.each([true, false])(
         // GitHub isn't connected: the worker path, and none of T3's own tools.
         for (const name of ["delegate_task", "t3_project_clone", "preview_open"])
           assert.notInclude(toolNames, name);
+        // Without the Kin App, its GitHub tools could only say GitHub isn't connected.
+        const kinGitHub = Object.keys(KinLeadToolkit.tools).filter((name) =>
+          name.startsWith("kin_github_"),
+        );
+        for (const name of kinGitHub) assert.notInclude(toolNames, name);
         // Every tool a lead can call says what it may do where others read; a tool added later
         // without a line is refused there, and the table names no tool that isn't served.
-        assert.sameMembers([...toolNames, ...LEAD_T3_TOOLS], Object.keys(SHARED_TOOLS));
+        const served = [...toolNames, ...kinGitHub, ...LEAD_T3_TOOLS];
+        assert.sameMembers(served, Object.keys(SHARED_TOOLS));
         // And once the turn read a connected service's text; connections stay out of shared turns.
-        assert.sameMembers([...toolNames, ...LEAD_T3_TOOLS], Object.keys(OUTSIDE_TOOLS));
+        assert.sameMembers(served, Object.keys(OUTSIDE_TOOLS));
+        // A shared thread lists only what a shared turn may run.
+        const sharedThread = ThreadId.make("kin-shared:lead-group");
+        for (const name of ["kin_chat_post", "records_query", "kin_relay", "kin_defer"])
+          assert.isTrue(
+            yield* visibleOnKinEndpoint(name, sharedThread).pipe(
+              Effect.provideService(Kin.KinServer, kin),
+            ),
+            name,
+          );
+        for (const name of ["team_say", "statement_read", "kin_issue", "kin_tool_added_later"])
+          assert.isFalse(
+            yield* visibleOnKinEndpoint(name, sharedThread).pipe(
+              Effect.provideService(Kin.KinServer, kin),
+            ),
+            name,
+          );
         for (const name of ["kin_connection_tools", "kin_connection_call", "kin_connection_offer"])
           assert.strictEqual(SHARED_TOOLS[name as keyof typeof SHARED_TOOLS], "refused");
         // A page goes where a chart does; the gate checks its figures against every reader.
@@ -475,7 +498,7 @@ it.effect.each([true, false])(
         for (const name of ["kin_delegate", "schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(connected.names, name);
         assert.sameMembers(
-          [...new Set([...connected.names, ...LEAD_T3_TOOLS, "kin_delegate"])],
+          [...new Set([...connected.names, ...kinGitHub, ...LEAD_T3_TOOLS, "kin_delegate"])],
           Object.keys(SHARED_TOOLS),
         );
         // This turn read outside text: a delegated task is work that text could steer.

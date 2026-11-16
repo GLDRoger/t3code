@@ -59,6 +59,8 @@ import {
 import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
+import { KIN_DEFERRED_TOOLS } from "../../apps/server/src/kin/lead/deferredTools.ts";
+import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
 import { KinStatementToolkit } from "../../apps/server/src/kin/work/mcp/statementTools.ts";
 import { KinWorkToolkit } from "../../apps/server/src/kin/work/mcp/tools.ts";
@@ -579,9 +581,12 @@ const visibleT3Tools = (options: {
   readonly kinAgent?: boolean;
   readonly kinLead?: boolean;
   readonly kinGitHub?: boolean;
+  readonly kinShared?: boolean;
 }) =>
   t3Tools.filter(
     (tool) =>
+      // A turn others read runs on a shared thread, which lists only what it may run (AgentSession).
+      !(options.kinShared === true && !listedOnSharedThread(tool.name.slice(T3_PREFIX.length))) &&
       (options.kinAgent === true || options.kinLead === true
         ? // The owner's GitHub connected: T3's lead tools join and kin_delegate goes (AgentSession).
           (options.kinGitHub === true
@@ -726,6 +731,7 @@ export const buildBase = (
     readonly kinAgent?: boolean;
     readonly kinLead?: boolean;
     readonly kinGitHub?: boolean;
+    readonly kinShared?: boolean;
     /** A native subagent starts from its task: T3 appends nothing to its system prompt. */
     readonly nativeSubagent?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
@@ -788,13 +794,21 @@ export const buildBase = (
     date: /Today's date is ([\d-]+)/.exec(reminders.join("\n"))?.[1],
   };
   // LeadIsolation: a lead's instructions are its whole system prompt, its only native tools are
-  // the read-only ones, and every Kin tool loads upfront. With GitHub connected, an owner-only
-  // turn has Claude Code's own tools too.
-  if (options.kinLead === true)
+  // the read-only ones, and Kin tools load upfront except the few deferred behind ToolSearch.
+  // With GitHub connected, an owner-only turn has Claude Code's own tools too.
+  if (options.kinLead === true) {
+    const deferredKin = t3.filter((tool) =>
+      KIN_DEFERRED_TOOLS.has(tool.name.slice(T3_PREFIX.length)),
+    );
+    const header = DEFERRED_LIST.exec(joined)?.[1];
+    const toolSearch = template.tools.filter((tool) => tool.name.endsWith("ToolSearch"));
     return {
       model,
       system: [text(kinLeadInstructions)],
-      reminders: [],
+      reminders:
+        deferredKin.length > 0 && header !== undefined
+          ? [text(`${header}${deferredKin.map((tool) => tool.name).join("\n")}\n`)]
+          : [],
       gitStatusAt: undefined,
       environment,
       nativeTools: [
@@ -806,11 +820,13 @@ export const buildBase = (
               ...nativeDeferred.map((name): ApiTool => ({ name, ...nativeSchema(name) })),
             ]
           : template.tools.filter((tool) => leadTools.includes(tool.name))),
-        ...t3,
+        ...(deferredKin.length > 0 ? toolSearch : []),
+        ...t3.filter((tool) => !deferredKin.includes(tool)),
       ],
       t3,
-      deferred: [],
+      deferred: deferredKin,
     };
+  }
   return {
     model,
     system: system.map(text),
@@ -846,6 +862,7 @@ const buildCodexBase = (
     readonly kinAgent?: boolean;
     readonly kinLead?: boolean;
     readonly kinGitHub?: boolean;
+    readonly kinShared?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
     readonly deviceAccess?: boolean;
   },
@@ -2798,6 +2815,7 @@ const main = Effect.gen(function* () {
     kinAgent = false,
     kinLead = false,
     kinGitHub = false,
+    kinShared = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     codex
       ? decodeCodexCapture(template).pipe(
@@ -2811,6 +2829,7 @@ const main = Effect.gen(function* () {
               kinAgent,
               kinLead,
               kinGitHub,
+              kinShared,
               deviceAccess,
             }),
           ),
@@ -2826,6 +2845,7 @@ const main = Effect.gen(function* () {
               kinAgent,
               kinLead,
               kinGitHub,
+              kinShared,
               deviceAccess,
             });
             return role === "native-subagent"
@@ -2836,21 +2856,17 @@ const main = Effect.gen(function* () {
           }),
         );
   // Codex has no native subagents; its cases with that role run as top-level threads.
-  const baseKey = ({ setup }: McpToolUseCase) =>
-    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinGitHub === true}`;
+  // A Kin turn others read carries Kin's shared-turn line, as the server's prompt does.
+  const baseKey = ({ setup, prompt }: McpToolUseCase) =>
+    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinGitHub === true}:${prompt.includes("{{SHARED_TURN}}")}`;
   const base = yield* buildFor("top", true, false);
-  const bases = new Map<string, Base>([["top:true:false:false:false:false", base]]);
+  const bases = new Map<string, Base>([["top:true:false:false:false:false:false", base]]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
     if (bases.has(key)) continue;
-    const [role = "top", access, links, kinAgent, kinLead, kinGitHub] = key.split(":") as [
-      McpToolUseCase["setup"]["role"],
-      string,
-      string,
-      string,
-      string,
-      string,
-    ];
+    const [role = "top", access, links, kinAgent, kinLead, kinGitHub, kinShared] = key.split(
+      ":",
+    ) as [McpToolUseCase["setup"]["role"], string, string, string, string, string, string];
     bases.set(
       key,
       yield* buildFor(
@@ -2860,6 +2876,7 @@ const main = Effect.gen(function* () {
         kinAgent === "true",
         kinLead === "true",
         kinGitHub === "true",
+        kinShared === "true",
       ),
     );
   }
