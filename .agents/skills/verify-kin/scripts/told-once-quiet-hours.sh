@@ -78,7 +78,7 @@ sleep 5
   fail "the night check-in woke the agent in quiet hours"
 
 # 23:xx on Zoya's clock too: the owner's relay to her is taken and held, and the agent told 07:00.
-ZOYA="$(q "select person_id from kin_people where handle = 'zoya'")"
+ZOYA="$(q "select person_id from kin_people where display_name = 'Zoya Sheikh'")"
 kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"$NIGHT\"}" >/dev/null
 kv as zoya rpc kin.push.registerDevice "{\"token\":\"$(printf 'a%.0s' {1..64})\",\"platform\":\"ios\",\"apsEnvironment\":\"development\"}" >/dev/null
 RELAY="Proof $RUN: the clinic moved the Thursday review to 10:00."
@@ -89,10 +89,13 @@ expect_in "$relayed" "07:00 their time" "the agent wasn't told when it reaches h
   fail "the relay reached Zoya inside her quiet hours"
 [[ "$(q "select count(*) from kin_held_posts where body = '$RELAY' and delivered_at is null")" == 1 ]] ||
   fail "the relay wasn't held"
-relay_pushes() { kv push sent | rg -c "Proof $RUN: the clinic moved" || echo 0; }
+# Zoya's phone: a push that rings shows the text, a silent one only the device.
+relay_pushes() { kv push sent | rg -c "/aaaaaa" || echo 0; }
 [[ "$(relay_pushes)" == 0 ]] || fail "the held relay pushed Zoya at night"
 
-# Quiet hours end (stored times move back; the server restarts): it runs, once.
+# Quiet hours end (stored times move back; the server restarts): it runs, once. The server's own
+# clock doesn't move, so Zoya's moves to 07:00: delivery checks her hours again.
+kv as owner rpc kin.people.updateProfile "{\"personId\":\"$ZOYA\",\"timeZone\":\"$(zone_at 7)\"}" >/dev/null
 kv clock advance "$(((eight - $(date +%s) * 1000) / 60000 + 2))m" >/dev/null
 for _ in $(seq 1 120); do
   [[ "$(q "select state from kin_events where event_id = '$night_event'")" == done ]] && break
