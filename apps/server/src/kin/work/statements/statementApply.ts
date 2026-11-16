@@ -36,6 +36,7 @@ import {
   encodeSelection,
   expenseCategories,
   heldRows,
+  invoiceSeen,
   reviewOf,
   selectionOf,
   statementRow,
@@ -444,6 +445,12 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
             yield* entry(row, "payment", candidate.recordId, null, { bank: prior });
             tally.recorded += 1;
           } else if (candidate.kind === "invoice") {
+            // Paid, taken back or re-priced since the read: the match may be the same money twice.
+            if (
+              candidate.seen !== undefined &&
+              candidate.seen !== (yield* invoiceSeen(input.orgId, input.statementId, targetRow))
+            )
+              return yield* changed;
             const foreign =
               targetRow.currency !== null &&
               targetRow.currency !== currency &&
