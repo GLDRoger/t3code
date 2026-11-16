@@ -70,6 +70,7 @@ import { localThreadId, workThreadPrefix } from "./workThread.ts";
 import { KinRecords, type Withdrawal } from "../work/KinRecords.ts";
 import * as Attempts from "../work/workerAttempts.ts";
 import { workerEnded } from "../work/workerEntries.ts";
+import { ownsAgent } from "../people/KinAccess.ts";
 
 export const endedStatuses = new Set<OrchestrationV2RunStatus>([
   "completed",
@@ -411,7 +412,7 @@ const make = Effect.gen(function* () {
     const personId =
       (yield* KinLevels.askers(started))[0] ??
       origins.find((origin) => origin.personId !== undefined)?.personId ??
-      (row.askedBy !== null && row.askedBy !== row.ownerPersonId ? row.askedBy : undefined);
+      (row.askedBy !== null && !ownsAgent(row, row.askedBy) ? row.askedBy : undefined);
     const chatId =
       worker.chatId !== null && worker.chatId !== row.ownerChatId ? worker.chatId : undefined;
     const first = origins[0];

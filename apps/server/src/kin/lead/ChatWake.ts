@@ -30,7 +30,7 @@ import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { RETIRED_NOTICE_PREFIX, retiredAgentNotice, retiredNoticeId } from "./Retirement.ts";
 import * as LeadAccess from "./LeadAccess.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { mayActAsOwner } from "../people/KinAccess.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -258,25 +258,23 @@ const make = Effect.gen(function* () {
         const dedupeKey = event.dedupeKey;
         // The owner and co-owners are never capped. Anyone else's turn is counted and enqueued in one step.
         const personId = message.author.personId;
-        const queued =
-          personId === target.ownerPersonId ||
-          (yield* ownerLevel(message.orgId, personId).pipe(
-            Effect.provideService(SqlClient.SqlClient, sql),
-            Effect.orElseSucceed(() => false),
-          ))
-            ? yield* enqueue(event)
-            : yield* sql
-                .withTransaction(
-                  admitted(
-                    message,
-                    personId,
-                    { agentId, name: target.name, direct: target.kind === "direct" },
-                    dedupeKey,
-                  ).pipe(
-                    Effect.flatMap((admit) => (admit ? enqueue(event) : Effect.succeed(false))),
-                  ),
-                )
-                .pipe(Effect.mapError(toPersistenceSqlError("KinChatWake.admitted")));
+        const queued = (yield* mayActAsOwner(message.orgId, personId, {
+          personId: target.ownerPersonId,
+        }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.orElseSucceed(() => false),
+        ))
+          ? yield* enqueue(event)
+          : yield* sql
+              .withTransaction(
+                admitted(
+                  message,
+                  personId,
+                  { agentId, name: target.name, direct: target.kind === "direct" },
+                  dedupeKey,
+                ).pipe(Effect.flatMap((admit) => (admit ? enqueue(event) : Effect.succeed(false)))),
+              )
+              .pipe(Effect.mapError(toPersistenceSqlError("KinChatWake.admitted")));
         if (queued) yield* showQueued(message.orgId, message.chatId, agentId);
       }
     },

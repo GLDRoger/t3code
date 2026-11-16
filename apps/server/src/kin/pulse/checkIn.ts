@@ -12,7 +12,11 @@ import * as Schema from "effect/Schema";
 import * as NodeCrypto from "node:crypto";
 
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
-import { LOOSE_AFTER_MINUTES, LOOSE_BEFORE_MINUTES } from "../triggers/kinSchedules.ts";
+import {
+  LOOSE_AFTER_MINUTES,
+  LOOSE_BEFORE_MINUTES,
+  looseSpanMinutes,
+} from "../triggers/kinSchedules.ts";
 import { dayIn } from "../work/money.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { matchLines, type OutsideRead } from "./outside.ts";
@@ -24,10 +28,11 @@ const sha = (text: string) => NodeCrypto.createHash("sha256").update(text).diges
  * How far into its window a loose slot fires: fixed per schedule and day, so a restart that
  * works it out again lands on the same minute, and the next day lands elsewhere.
  */
-export const looseOffsetMs = (scheduleId: string, slot: string) =>
-  (Number.parseInt(sha(`${scheduleId}\0${slot}`).slice(0, 8), 16) %
-    (LOOSE_BEFORE_MINUTES + LOOSE_AFTER_MINUTES + 1)) *
-  MINUTE;
+export const looseOffsetMs = (
+  scheduleId: string,
+  slot: string,
+  spanMinutes = LOOSE_BEFORE_MINUTES + LOOSE_AFTER_MINUTES,
+) => (Number.parseInt(sha(`${scheduleId}\0${slot}`).slice(0, 8), 16) % (spanMinutes + 1)) * MINUTE;
 
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const OUTSIDE_CAP = 60;
@@ -45,7 +50,8 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly what: string;
   /** When the native task's slot was due: the window's start when loose. */
   readonly dueAt: number;
-  readonly loose: boolean;
+  /** The time a loose check-in is around ("09:00"); null when it is exact. */
+  readonly looseAt: string | null;
   /** A Run now tap: its own slot, at once. */
   readonly manualId?: string | undefined;
   readonly zone: string;
@@ -64,8 +70,8 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   if (facts.total === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   const slot = input.manualId ?? dayIn(input.dueAt, input.zone);
   const notBefore =
-    input.loose && input.manualId === undefined
-      ? input.dueAt + looseOffsetMs(input.scheduleId, slot)
+    input.looseAt !== null && input.manualId === undefined
+      ? input.dueAt + looseOffsetMs(input.scheduleId, slot, looseSpanMinutes(input.looseAt))
       : undefined;
   const dedupeKey = `checkin:${input.scheduleId}:${slot}`;
   const queued = yield* queue

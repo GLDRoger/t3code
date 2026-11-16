@@ -251,7 +251,7 @@ export const owedInvoices = Effect.fn("KinRecordRows.owedInvoices")(function* (i
 
 /** Payment days written in a client's terms, such as "Net 30" or "15 days"; undefined if none. */
 export const termsDays = (terms: string | null | undefined) => {
-  const found = /(?:net\s*(\d{1,3}))|(?:(\d{1,3})\s*(?:days?|d)\b)/i.exec(terms ?? "");
+  const found = /(?:net\s*(\d{1,3}))|(?:(\d{1,3})[\s-]*(?:days?|d)\b)/i.exec(terms ?? "");
   const days = Number(found?.[1] ?? found?.[2]);
   return Number.isSafeInteger(days) && days >= 0 && days <= 365 ? days : undefined;
 };
@@ -744,6 +744,7 @@ export const unsetOwnerZone = () => {
 /** The owner's IANA zone, for all-day due dates; the host's until he sets one. */
 export const ownerZone = Effect.fn("KinRecords.ownerZone")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
+  // oxlint-disable-next-line t3code/kin-zoned-time -- this is the one owner-zone read
   const [row] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone
     FROM kin_trigger_settings WHERE org_id = ${orgId} ORDER BY org_id`.pipe(
     Effect.orElseSucceed(() => []),

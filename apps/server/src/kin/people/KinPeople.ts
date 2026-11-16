@@ -57,7 +57,7 @@ import { onPersonRemoved } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { placesOf } from "../work/teamView.ts";
-import { accessOf, accessSql, ownerLevel } from "./KinAccess.ts";
+import { accessOf, accessSql, isOwnerHimself, mayActAsOwner, ownerLevel } from "./KinAccess.ts";
 import { profileSets } from "./profileFields.ts";
 
 const isKinError = Schema.is(KinChatError);
@@ -203,8 +203,8 @@ export const make = Effect.gen(function* () {
     orgId: KinOrgId,
     personId: KinPersonId,
   ) {
-    if (personId === identity.owner.personId) return yield* denied;
-    if (caller.personId === identity.owner.personId || caller.personId === personId) return;
+    if (isOwnerHimself(identity.owner, personId)) return yield* denied;
+    if (isOwnerHimself(identity.owner, caller.personId) || caller.personId === personId) return;
     if (yield* level(orgId, personId)) return yield* ownerOnly;
   });
   const person = Effect.fn("KinPeople.person")(function* (orgId: KinOrgId, personId: KinPersonId) {
@@ -257,7 +257,7 @@ export const make = Effect.gen(function* () {
     yield* sql
       .withTransaction(
         Effect.gen(function* () {
-          if (input.personId === identity.owner.personId) return yield* denied;
+          if (isOwnerHimself(identity.owner, input.personId)) return yield* denied;
           if (input.personId) yield* person(input.orgId, input.personId);
           else handle = yield* uniqueHandle(input.orgId, handle, now);
           yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle, secret_hash, created_at, expires_at)
@@ -297,7 +297,7 @@ export const make = Effect.gen(function* () {
           const row = rows[0];
           if (
             !row ||
-            row.person_id === identity.owner.personId ||
+            isOwnerHimself(identity.owner, row.person_id) ||
             !/^[a-f0-9]{64}$/.test(row.secret_hash) ||
             !NodeCrypto.timingSafeEqual(hash(secret), Buffer.from(row.secret_hash, "hex"))
           )
@@ -640,8 +640,8 @@ export const make = Effect.gen(function* () {
     input: KinPeopleSetAccessInput,
   ) {
     const caller = yield* owner(session, input.orgId);
-    if (caller.personId !== identity.owner.personId) return yield* ownerOnly;
-    if (input.personId === identity.owner.personId) return yield* ownerOnly;
+    if (!isOwnerHimself(identity.owner, caller.personId)) return yield* ownerOnly;
+    if (isOwnerHimself(identity.owner, input.personId)) return yield* ownerOnly;
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
@@ -763,11 +763,14 @@ export const make = Effect.gen(function* () {
     const people = yield* identity.resolve(session);
     if (!people.some((p) => p.orgId === orgId)) return yield* missing;
     const rows = yield* profileRows(orgId);
-    const owner = people.some(
-      (p) => p.orgId === identity.owner.orgId && p.personId === identity.owner.personId,
-    );
-    if (!owner) return { profiles: rows, ownerPersonId: identity.owner.personId };
-    // The Team list's open and late counts: the owner's alone, as people_read's load is.
+    const person = people.find((p) => p.orgId === identity.owner.orgId);
+    const ownerLevelReader =
+      person !== undefined &&
+      (yield* mayActAsOwner(orgId, person.personId, identity.owner).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      ));
+    if (!ownerLevelReader) return { profiles: rows, ownerPersonId: identity.owner.personId };
+    // The Team list's open and late counts: owner-level, as people_read's load is.
     const now = yield* Clock.currentTimeMillis;
     const held = yield* sql<{ personId: string; open: number; late: number }>`SELECT
         owner_id AS "personId", COUNT(*) AS open,
@@ -869,7 +872,7 @@ export const make = Effect.gen(function* () {
   ) {
     const people = yield* identity.resolve(session);
     const owner = people.find(
-      (p) => p.orgId === input.orgId && p.personId === identity.owner.personId,
+      (p) => p.orgId === input.orgId && isOwnerHimself(identity.owner, p.personId),
     );
     if (owner === undefined)
       return yield* people.some((p) => p.orgId === input.orgId) ? denied : missing;

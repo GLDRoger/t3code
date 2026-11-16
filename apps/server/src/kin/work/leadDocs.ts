@@ -43,7 +43,7 @@ import {
 } from "./leadWork.ts";
 import { iso, type RecordRow } from "./recordRows.ts";
 import { search } from "./search.ts";
-import { viewVisible } from "./teamView.ts";
+import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
 
@@ -443,11 +443,12 @@ export const create = leadTool("KinDocTools.create", runCreate);
 
 /** A doc this turn may read: in one others read, only one they all see, else none at all. */
 const readable = Effect.fn("KinDocTools.readable")(function* (lead: Lead, key: string) {
-  const row = yield* Docs.docRow(lead.orgId, { key });
   const team = yield* viewOf(lead);
-  if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, row.recordId)))
-    return yield* Docs.docNotFound(key);
-  return row;
+  return yield* Docs.docRow(
+    lead.orgId,
+    { key },
+    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
+  );
 });
 
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
@@ -573,7 +574,7 @@ const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchI
     closed: input.closed,
     limit: input.limit ?? 10,
     viewer: team === undefined ? "owner" : "team",
-    view: team?.people,
+    scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
   });
   return {
     hits: hits.map((hit) => ({

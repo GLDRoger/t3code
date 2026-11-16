@@ -91,6 +91,9 @@ Set up the repo as upstream's [development runbook](../operations/development.md
 
 Real lead turns cost money. Use the cheapest Claude model while developing.
 
+To verify without a model, `node scripts/kin-verify.ts up` starts an isolated, seeded Kin whose leads run on a scripted no-model agent (allowed only on a dev server); `.agents/skills/verify-kin/SKILL.md` covers it and its lifecycle scripts.
+Every Kin route, pane, phone screen and agent tool belongs to a feature in `apps/server/src/kin/featureMap/feature-map.yaml`; `featureMap.test.ts` fails when one is unlisted, a proof file is missing, or a path breaks the depth rule without a reason, and `node apps/server/scripts/kin-feature-map.ts <out.md>` renders it.
+
 ## The Kin host
 
 Kin runs from a source build on an always-on Linux machine, as a dedicated `kin` user. [ops/kin/host/README.md](../../ops/kin/host/README.md) covers install, updates, creating the first lead, backups and reading reply latency.

@@ -60,6 +60,7 @@ import { STARTER_FILES } from "./starter.ts";
 import { sheetCells } from "./tables.ts";
 import { KinToolchain } from "./toolchain.ts";
 import * as Workspace from "./workspace.ts";
+import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 
 // Invented org, company, client, GSTINs and amounts only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -369,7 +370,7 @@ const invoice = (more: Partial<DocJobs.DocumentInput> = {}): DocJobs.DocumentInp
 });
 const versionsOf = (key: string) =>
   Effect.gen(function* () {
-    const doc = yield* Docs.docRow(orgId, { key });
+    const doc = yield* Docs.docRow(orgId, { key }, KIN_OWNER_LEVEL);
     const history = yield* Docs.history(orgId, doc.recordId, { limit: 10 });
     return { doc, history };
   });
@@ -769,7 +770,11 @@ describe("recipe documents", () => {
       assert.notInclude(expenses, "EXP-1");
       assert.include(expenses, "EXP-2");
       const listed = yield* LeadWork.query(scope, { list: "expenses", groupBy: "month" });
-      const money = yield* moneySummary(orgId, Date.parse("2026-11-12T06:00:00.000Z"));
+      const money = yield* moneySummary(
+        orgId,
+        Date.parse("2026-11-12T06:00:00.000Z"),
+        KIN_OWNER_LEVEL,
+      );
       assert.deepStrictEqual(
         [listed.totals, listed.groups?.[0]?.totals, money.spent.thisMonth.total],
         [["₹13,468.85"], ["₹13,468.85"], [{ minor: 1_346_885, currency: "INR" }]],
@@ -824,7 +829,10 @@ describe("recipe documents", () => {
       );
       // F47: Money, and the figures the morning brief reads, see it owed and overdue.
       const now = Date.parse("2026-11-12T06:00:00.000Z");
-      const section = moneySection(yield* moneySummary(orgId, now), "Asia/Kolkata");
+      const section = moneySection(
+        yield* moneySummary(orgId, now, KIN_OWNER_LEVEL),
+        "Asia/Kolkata",
+      );
       assert.deepStrictEqual(
         [section?.owedToUs, section?.overdue, section?.byClient[0]?.daysOverdue],
         ["₹2,36,000.00", "₹2,36,000.00", 6],
@@ -1045,7 +1053,11 @@ describe("recipe documents", () => {
         ["QT/26-27/001", "open", 23_600_000, "QT/26-27/001"],
       );
       // A quote is no money owed.
-      const money = yield* moneySummary(orgId, Date.parse("2026-11-12T06:00:00.000Z"));
+      const money = yield* moneySummary(
+        orgId,
+        Date.parse("2026-11-12T06:00:00.000Z"),
+        KIN_OWNER_LEVEL,
+      );
       assert.deepStrictEqual(money.owed.total, []);
       // Review 45: its lines and client come from the quote exactly, never alongside it.
       for (const inputs of [
@@ -1116,7 +1128,7 @@ describe("recipe documents", () => {
         [[], ["invoice.pdf"], true],
       );
       assert.isFalse(
-        yield* Docs.docRow(orgId, { key: "D-1" }).pipe(
+        yield* Docs.docRow(orgId, { key: "D-1" }, KIN_OWNER_LEVEL).pipe(
           Effect.as(true),
           Effect.orElseSucceed(() => false),
         ),
@@ -1432,7 +1444,11 @@ describe("the accountant's pack", () => {
             (row[at] as { number: string }).number,
           ]);
       };
-      const money = yield* moneySummary(orgId, Date.parse("2026-11-12T06:00:00.000Z"));
+      const money = yield* moneySummary(
+        orgId,
+        Date.parse("2026-11-12T06:00:00.000Z"),
+        KIN_OWNER_LEVEL,
+      );
       assert.deepStrictEqual(money.spent.thisMonth.total, [{ minor: 151_75, currency: "INR" }]);
       assert.deepStrictEqual(totals("Expenses"), [
         ["Total software", "51.75"],
@@ -1458,7 +1474,9 @@ describe("receipts", () => {
         const agent = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
         const receipt = (input: ReceiptAsk) => agentReceipt(asked, input);
         const received = (now = Date.parse("2026-11-12T06:00:00.000Z")) =>
-          moneySummary(orgId, now).pipe(Effect.map((summary) => summary.received.thisMonth));
+          moneySummary(orgId, now, KIN_OWNER_LEVEL).pipe(
+            Effect.map((summary) => summary.received.thisMonth),
+          );
         // Any first receipt makes the list; an advance stands on its own payment from the start.
         const advance = yield* receipt({ advance: { amount: "500", receivedOn: "2026-11-05" } });
         assert.deepStrictEqual(yield* received(), [{ minor: 50_000, currency: "INR" }]);

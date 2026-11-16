@@ -81,10 +81,12 @@ import {
 } from "./registers.ts";
 import { isSensitiveRefusal, sensitiveShown, showsSensitive } from "./workerAttempts.ts";
 import {
+  KIN_OWNER_LEVEL,
   ledProjects,
   TEAM_REFUSED,
   teamChanges,
   teamPairs,
+  viewerOfPeople,
   viewSees,
   viewVisible,
 } from "./teamView.ts";
@@ -1272,9 +1274,10 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   }
   const list = row.registerId;
   const sensitive = new Set(marksOf(view.lists, row).sensitiveFields ?? []);
-  const page = list === "clients" ? yield* partyPage(row, now, 0) : undefined;
-  const project = list === "projects" ? yield* projectDetail(row, now, team?.people) : undefined;
-  const specChanged = list === "work" && (yield* taskSpecChanged(row));
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const page = list === "clients" ? yield* partyPage(row, now, 0, viewer) : undefined;
+  const project = list === "projects" ? yield* projectDetail(row, now, viewer) : undefined;
+  const specChanged = list === "work" && (yield* taskSpecChanged(row, viewer));
   const goal =
     list === "goals"
       ? (yield* goalsNow(lead.orgId, now, { money: true })).goals.find((one) => one.key === row.key)
@@ -1285,7 +1288,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     ...(mailed.length === 0 ? {} : { mailed }),
     ...(goal === undefined ? {} : { progress: goalLine(goal) }),
     ...(specChanged ? { specChanged: true as const } : {}),
-    ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name, team?.people) }),
+    ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name, viewer) }),
     ...(page === undefined
       ? {}
       : {

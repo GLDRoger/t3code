@@ -157,6 +157,23 @@ export const viewSees = (sql: SqlClient.SqlClient, people: ReadonlyArray<KinPers
     ? sql`0 = 1`
     : sql`(${sql.and(people.map((person) => personSees(sql, person)))})`;
 
+/**
+ * Who a read is for. Every read model a person reaches takes one (`t3code/kin-viewer-scoped-reads`):
+ * `people` reads what every one of them sees, `ownerLevel` everything.
+ */
+export type KinViewer =
+  | { readonly _tag: "ownerLevel" }
+  | { readonly _tag: "people"; readonly people: ReadonlyArray<KinPersonId> };
+/** The unscoped read: the owner, a co-owner, or Kin's own work for them. */
+export const KIN_OWNER_LEVEL: KinViewer = { _tag: "ownerLevel" };
+export const viewerOfPeople = (people: ReadonlyArray<KinPersonId>): KinViewer => ({
+  _tag: "people",
+  people,
+});
+/** Entries `r` this viewer sees. */
+export const seenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  viewer._tag === "ownerLevel" ? sql`1 = 1` : viewSees(sql, viewer.people);
+
 /** Whether every one of these people may see this entry now. */
 export const viewVisible = Effect.fn("KinTeamView.viewVisible")(function* (
   orgId: KinOrgId,
@@ -548,13 +565,17 @@ export const teamDetail = Effect.fn("KinTeamView.detail")(function* (
   return sheet;
 });
 
-const AMOUNT =
-  /[₹$€£]\s?\d|\b(?:rs\.?|inr|usd|eur|gbp)\s?\d|\d[\d,.]*\s?(?:k|lakhs?|lacs?|crores?|cr|rupees|dollars|euros|pounds|bucks|inr|usd|eur|gbp)\b/i;
+const CURRENCY_WORD = "(?:rupees?|dollars?|euros?|pounds?|bucks|rs\\.?|inr|usd|eur|gbp)";
+// A currency's symbol or word on either side of a figure, or "k", lakh and crore after one.
+const AMOUNT = new RegExp(
+  `[₹$€£]\\s?\\d|\\d\\s?[₹$€£]|\\b${CURRENCY_WORD}\\s?\\d|\\d[\\d,.]*\\s?(?:k|lakhs?|lacs?|crores?|cr|${CURRENCY_WORD})\\b`,
+  "i",
+);
 const NUMBER_WORD =
   "(?:a|half|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion)";
-// "forty thousand rupees", "five lakh": an amount in words is an amount.
+// "forty thousand rupees", "five lakh", "Rupees fifty thousand": an amount in words is an amount.
 const AMOUNT_WORDS = new RegExp(
-  `\\b${NUMBER_WORD}(?:[\\s-]+(?:and[\\s-]+)?${NUMBER_WORD})*[\\s-]+(?:lakhs?|lacs?|crores?|rupees|dollars|euros|pounds|bucks)\\b`,
+  `\\b${NUMBER_WORD}(?:[\\s-]+(?:and[\\s-]+)?${NUMBER_WORD})*[\\s-]+(?:lakhs?|lacs?|crores?|${CURRENCY_WORD})\\b|\\b${CURRENCY_WORD}[\\s-]+(?!a\\b)${NUMBER_WORD}\\b`,
   "i",
 );
 const MONEY_NUMBER = /\b[A-Z]{2,5}\/\d{2}-\d{2}\/\d+\b/;

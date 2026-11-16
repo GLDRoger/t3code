@@ -13,6 +13,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRecords, type Writer } from "./KinRecords.ts";
 import { eventWithdrawn, workerMayResume, workerWithdrawn } from "./workerAttempts.ts";
+import { ownsAgent } from "../people/KinAccess.ts";
 
 /**
  * Work entries moved by code from worker and pull request events, never by a model: a worker is an
@@ -81,7 +82,7 @@ export const workMayStart = Effect.fn("KinWorkEntries.workMayStart")(function* (
     if (input.event.reason !== "assigned") return false;
     const [row] = yield* sql<EntryRow>`${entryColumns(sql)}
       WHERE org_id = ${input.orgId} AND record_id = ${input.event.recordId} ORDER BY record_id`;
-    if (!held(row) || row?.assignedBy !== input.ownerPersonId) return false;
+    if (!held(row) || !ownsAgent(input, row?.assignedBy)) return false;
   }
   if (
     input.event._tag === "worker.report" &&

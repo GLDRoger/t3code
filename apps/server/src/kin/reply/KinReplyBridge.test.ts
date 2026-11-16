@@ -1141,6 +1141,35 @@ it.effect.each([
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect.each([
+  { id: (_wakeupId: string) => "pulse-nudge:person:2026-11-16", body: "Did the client pay?" },
+  { id: (wakeupId: string) => `kin-relay:${wakeupId}:abc`, body: "Asha says the deck is Friday." },
+])(
+  "a nudge or relay Kin sends the asker mid-turn is not the reply they are owed (%#)",
+  ({ id, body }) =>
+    Effect.gen(function* () {
+      const { identity, chats, owner, wakeupId, complete, fake, posted, runId, direct } =
+        yield* setup({ ask: "Did the deploy finish?" });
+      const lead = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+      );
+      yield* chats.send(lead, {
+        chatId: direct.chatId,
+        body,
+        clientMessageId: id(wakeupId),
+        intent: "question",
+        forChat: true,
+      });
+      fake.items = [text("a", 1, "NO_REPLY", runId)];
+      yield* complete;
+      assert.strictEqual(fake.rescues, 1);
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => `${row.authorKind}:${row.body}`),
+        [`agent:${body}`, "system:Ada didn't reply."],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect.each(["CI is red on main since 9:00.", "NO_REPLY"])(
   "sends a notice wake-up's text to the owner's chat, or nothing on NO_REPLY (%s)",
   (body) =>

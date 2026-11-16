@@ -47,6 +47,12 @@ const windowStart = (at: string) => {
   return `${String(Math.floor(start / 60)).padStart(2, "0")}:${String(start % 60).padStart(2, "0")}`;
 };
 
+/** Minutes from a loose window's start to its end: fewer when midnight cuts off its start. */
+export const looseSpanMinutes = (at: string) => {
+  const [hours, minutes] = at.split(":").map(Number);
+  return Math.min(LOOSE_BEFORE_MINUTES, hours! * 60 + minutes!) + LOOSE_AFTER_MINUTES;
+};
+
 /** The zone native `fixed_time` schedules are read in: the host's, not the owner's. */
 export const hostTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 

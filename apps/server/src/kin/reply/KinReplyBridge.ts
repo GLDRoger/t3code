@@ -63,7 +63,7 @@ import {
   type SetupFailure,
 } from "./classify.ts";
 import { KinPresence, syncQueued } from "./KinPresence.ts";
-import { unkeptPromise } from "./promises.ts";
+import { NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
 
 /** One rescue turn asks for the reply the run owed; its text is posted like any other. */
 const RESCUE_PROMPT =
@@ -857,10 +857,15 @@ const make = Effect.gen(function* () {
         AND q.message_id = json_extract(e.json, '$.messageId') AND q.chat_id = ${wake.lane.chatId}
       WHERE e.org_id = ${wake.orgId} AND e.wakeup_id = ${wake.wakeupId}
         AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')`;
+    // A relay or nudge this turn sent the asker is someone else's message, not their answer.
+    const relay = `send:${relayPrefix(wake.wakeupId)}`;
+    const nudge = `send:${NUDGE_PREFIX}`;
     const rows = yield* sql`SELECT 1 FROM kin_messages
         WHERE org_id = ${wake.orgId} AND chat_id = ${wake.lane.chatId} AND author_kind = 'agent'
           AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
           AND created_at >= ${iso(wake.startedAt)}
+          AND substr(COALESCE(client_message_id, ''), 1, ${relay.length}) <> ${relay}
+          AND substr(COALESCE(client_message_id, ''), 1, ${nudge.length}) <> ${nudge}
       UNION ALL SELECT 1 FROM kin_reactions r
         JOIN kin_chat_members m ON m.org_id = r.org_id AND m.chat_id = r.chat_id
           AND m.member_id = r.member_id AND m.principal_kind = 'agent' AND m.agent_id = ${wake.agentId}

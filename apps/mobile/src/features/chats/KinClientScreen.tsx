@@ -424,10 +424,7 @@ function KinClientBody(
       <KinDocsUnder {...target} names={names} under={{ party: props.clientKey }} />
       <View className="gap-2">
         {view.touches === null || !canChange ? null : (
-          <KinFoldSection
-            title={KIN_CLIENTS.recentContact}
-            summary={view.lastContact ?? (view.touches.length === 0 ? "None logged" : null)}
-          >
+          <KinFoldSection title={KIN_CLIENTS.recentContact} summary={view.lastContact}>
             {view.touches.length === 0 ? (
               <ListRowLayout label={KIN_CLIENTS.noTouches} disabled />
             ) : (

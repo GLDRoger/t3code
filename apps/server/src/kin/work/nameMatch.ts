@@ -23,8 +23,8 @@ const distance = (a: string, b: string) => {
   return previous[b.length]!;
 };
 
-/** Typos allowed for a name this long: one per five letters, at least one. */
-const slack = (text: string) => Math.max(1, Math.floor(text.length / 5));
+/** Typos allowed for a name this long: one per five letters; none in under three letters. */
+const slack = (text: string) => (text.length < 3 ? 0 : Math.max(1, Math.floor(text.length / 5)));
 
 const NEAREST = 3;
 

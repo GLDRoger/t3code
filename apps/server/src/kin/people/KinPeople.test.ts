@@ -515,6 +515,8 @@ it.effect(
       });
       assert.equal(promoted.access, "co_owner");
       assert.equal(yield* kind(raviSession), "co_owner");
+      // The Team list's load counts are owner-level, so a co-owner gets them too.
+      assert.isDefined((yield* service.profiles(raviSession, orgId)).profiles[0]?.load);
       // A co-owner hands out links and takes a member's access away like the owner...
       const link = yield* service.createInvite(raviSession, {
         orgId,

@@ -5,7 +5,6 @@ import {
   KinRecordKey,
   type KinMoney,
   type KinOrgId,
-  type KinPersonId,
   type KinWorkPrincipal,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
@@ -18,7 +17,8 @@ import { sectionsOf } from "./docBody.ts";
 import { versionOf } from "./docs.ts";
 import { type FieldValue, fieldList, fieldText, isMoney, parseFields } from "./lists.ts";
 import { formatMoney, parseAmount } from "./money.ts";
-import { principalOfText, principalText, seenBy, specChangesOf } from "./projectSpine.ts";
+import { principalOfText, principalText, specChangesOf } from "./projectSpine.ts";
+import { seenBy, type KinViewer } from "./teamView.ts";
 import { matchName } from "./nameMatch.ts";
 import { type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
 
@@ -321,15 +321,14 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
   row: RecordRow,
   now: number,
   name: (who: KinWorkPrincipal | null) => string | undefined,
-  /** The people a turn others read is for; only what all of them see. */
-  viewers?: ReadonlyArray<KinPersonId>,
+  viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const page = yield* projectPage(row, now, 0, viewers);
+  const page = yield* projectPage(row, now, 0, viewer);
   const open = yield* sql<RecordRow>`${selectRecords(sql)}
     WHERE r.org_id = ${row.orgId} AND r.register_id = 'work' AND r.project_id = ${row.recordId}
       AND r.state IN ${sql.in(OPEN)} AND COALESCE(r.category, '') != 'meeting'
-      AND ${seenBy(sql, viewers)}
+      AND ${seenBy(sql, viewer)}
     ORDER BY json_extract(r.fields_json, '$.milestone') IS NULL,
       json_extract(r.fields_json, '$.milestone'), r.due_at IS NULL, r.due_at, r.key LIMIT 60`;
   const ids = (page.meetings ?? []).map((one) => one.recordId);
@@ -340,12 +339,12 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
           WHERE r.org_id = ${row.orgId} AND r.record_id IN ${sql.in(ids)}
           ORDER BY r.date_at IS NULL, r.date_at, r.key`;
   const changed = new Set(
-    (yield* specChangesOf(row.orgId as KinOrgId, open)).map((one) => one.record.key),
+    (yield* specChangesOf(row.orgId as KinOrgId, open, viewer)).map((one) => one.record.key),
   );
   const docs = yield* sql<{ key: string; title: string; kind: string | null }>`SELECT r.key,
       r.title, r.category AS kind FROM kin_records r
     WHERE r.org_id = ${row.orgId} AND r.register_id = 'docs' AND r.project_id = ${row.recordId}
-      AND r.state = 'open' AND ${seenBy(sql, viewers)} ORDER BY r.category, r.key LIMIT 50`;
+      AND r.state = 'open' AND ${seenBy(sql, viewer)} ORDER BY r.category, r.key LIMIT 50`;
   const day = (at: string | null, allDay: boolean) =>
     at === null ? undefined : allDay ? at.slice(0, 10) : at;
   const line = (task: RecordRow) => {
@@ -408,6 +407,7 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
 /** Whether a task's spec section changed since it was written from it. */
 export const taskSpecChanged = Effect.fn("KinLeadSpine.taskSpecChanged")(function* (
   row: RecordRow,
+  viewer: KinViewer,
 ) {
-  return (yield* specChangesOf(row.orgId as KinOrgId, [row])).length > 0;
+  return (yield* specChangesOf(row.orgId as KinOrgId, [row], viewer)).length > 0;
 });

@@ -21,7 +21,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import * as Attempts from "../work/workerAttempts.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { mayActAsOwner } from "../people/KinAccess.ts";
 
 /**
  * The owner's card for a finished worker's commit that Kin holds instead of publishing: one per
@@ -232,10 +232,9 @@ export const applyPublishTap = Effect.fn("KinWorkerPublishCard.apply")(function*
       AND w.started_at = ${attempt.startedAt} AND l.owner_chat_id = ${widget.chatId}`;
   if (
     owner === undefined ||
-    (owner.personId !== personId &&
-      !(yield* ownerLevel(widget.orgId, KinPersonId.make(personId)).pipe(
-        Effect.orElseSucceed(() => false),
-      )))
+    !(yield* mayActAsOwner(widget.orgId, KinPersonId.make(personId), owner).pipe(
+      Effect.orElseSucceed(() => false),
+    ))
   )
     return yield* new KinChatError({
       reason: "not_allowed",

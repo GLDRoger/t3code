@@ -3,6 +3,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { fieldList, parseFields } from "../../work/lists.ts";
 import { milestoneRisk, principalOfText, specChangesOf } from "../../work/projectSpine.ts";
+import { KIN_OWNER_LEVEL } from "../../work/teamView.ts";
 import { countedEntry, type RecordRow, selectRecords } from "../../work/recordRows.ts";
 import { DAY_MS, HOUR_MS, threshold, toMs } from "../thresholds.ts";
 import {
@@ -203,7 +204,7 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state IN ${sql.in(OPEN)}
       AND json_extract(r.fields_json, '$.fromDoc') IS NOT NULL AND r.updated_at <= ${at}
     ORDER BY r.key LIMIT ${SENSE_CAP}`;
-  const changed = yield* specChangesOf(orgId, anchored);
+  const changed = yield* specChangesOf(orgId, anchored, KIN_OWNER_LEVEL);
   if (changed.length > 0) {
     const rows = yield* sql<EntryRow & { hash: string | null }>`SELECT ${entryColumns(sql)},
         json_extract(r.fields_json, '$.fromHash') AS hash

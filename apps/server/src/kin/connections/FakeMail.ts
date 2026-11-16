@@ -224,6 +224,15 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       if (index >= 0) state.accounts[index] = { ...state.accounts[index]!, expired };
     });
 
+  /** A mail service that answers but won't send for now, as during an outage. */
+  const down = new Set<string>();
+  const setDown = (address: string, isDown: boolean) =>
+    isDown ? void down.add(lower(address)) : void down.delete(lower(address));
+  const outage = (account: FakeMailAccount, request: Request) =>
+    request.method === "POST" && down.has(lower(account.address))
+      ? json({ error: { code: 503, message: "The service is unavailable." } }, 503)
+      : undefined;
+
   /** Mail arriving at `to`, one of an account's addresses, in a new thread or an existing one. */
   const deliver = (input: {
     readonly to: string;
@@ -386,6 +395,8 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     return edit((state) => {
       const account = bearer(state, request);
       if (account === undefined) return json({ error: { code: 401 } }, 401);
+      const unavailable = outage(account, request);
+      if (unavailable !== undefined) return unavailable;
       const path = url.pathname;
       const mine = inbox(state, account);
       if (path === `${GMAIL}/profile`) return json({ emailAddress: account.address });
@@ -476,6 +487,8 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       const account = bearer(state, request);
       if (account === undefined)
         return json({ error: { code: "InvalidAuthenticationToken" } }, 401);
+      const unavailable = outage(account, request);
+      if (unavailable !== undefined) return unavailable;
       const path = url.pathname;
       const mine = inbox(state, account).toSorted((a, b) => b.at - a.at);
       const filter = url.searchParams.get("$filter") ?? "";
@@ -576,6 +589,6 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       { preconnect() {} },
     ) satisfies typeof globalThis.fetch;
 
-  return { addAccount, approve, setExpired, deliver, sent, handle, load: store.load };
+  return { addAccount, approve, setExpired, setDown, deliver, sent, handle, load: store.load };
 };
 export type FakeMail = ReturnType<typeof makeFakeMail>;

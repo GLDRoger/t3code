@@ -12,7 +12,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
-import type { KinPersonId } from "@t3tools/contracts";
 
 import { sectionsOf } from "./docBody.ts";
 import { latestOf } from "./docs.ts";
@@ -21,7 +20,7 @@ import { fieldList, fieldText, parseFields } from "./lists.ts";
 import { iso, principal, type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
 import { playbookThreshold } from "./playbooks.ts";
 import { listDef } from "./registers.ts";
-import { viewSees } from "./teamView.ts";
+import { seenBy, type KinViewer } from "./teamView.ts";
 
 /**
  * The project spine on read: milestones and their progress, the people on it, its meetings, the
@@ -49,29 +48,25 @@ const sameWho = (a: KinWorkPrincipal, b: KinWorkPrincipal) => principalText(a) =
 /** A task's milestone, or a milestone's tasks (open first, then by due), for their sheets. */
 export const milestoneLinks = Effect.fn("KinProjectSpine.milestoneLinks")(function* (
   row: Pick<RecordRow, "orgId" | "registerId" | "key" | "fieldsJson">,
+  viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (row.registerId === "work") {
     const key = fieldText(parseFields(row.fieldsJson), "milestone");
     if (key === null) return {};
     const [found] = yield* sql<{ recordId: string; key: string; title: string }>`SELECT
-        record_id AS "recordId", key, title FROM kin_records
-      WHERE org_id = ${row.orgId} AND register_id = 'milestones' AND key = ${key} ORDER BY record_id`;
+        r.record_id AS "recordId", r.key, r.title FROM kin_records r
+      WHERE r.org_id = ${row.orgId} AND r.register_id = 'milestones' AND r.key = ${key}
+        AND ${seenBy(sql, viewer)} ORDER BY r.record_id`;
     return found === undefined ? {} : { milestone: ref(found.recordId, found.key, found.title) };
   }
   if (row.registerId !== "milestones") return {};
   const tasks = yield* sql<RecordRow>`${selectRecords(sql)}
     WHERE r.org_id = ${row.orgId} AND r.register_id = 'work'
-      AND json_extract(r.fields_json, '$.milestone') = ${row.key}
+      AND json_extract(r.fields_json, '$.milestone') = ${row.key} AND ${seenBy(sql, viewer)}
     ORDER BY r.state IN ('done', 'dropped'), r.due_at IS NULL, r.due_at, r.key LIMIT 100`;
   return { tasks };
 });
-
-/** Entries `r` every one of `viewers` sees (`viewSees`); everything for the owner (undefined). */
-export const seenBy = (
-  sql: SqlClient.SqlClient,
-  viewers: ReadonlyArray<KinPersonId> | undefined,
-) => (viewers === undefined ? sql`1 = 1` : viewSees(sql, viewers));
 
 /**
  * The milestone rule: late once its day passed while open; at risk when it is due within the
@@ -104,7 +99,7 @@ export const milestonesOf = Effect.fn("KinProjectSpine.milestones")(function* (
   orgId: KinOrgId,
   projectId: string,
   now: number,
-  viewers?: ReadonlyArray<KinPersonId>,
+  viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
@@ -118,7 +113,7 @@ export const milestonesOf = Effect.fn("KinProjectSpine.milestones")(function* (
   }>`SELECT r.record_id AS "recordId", r.key, r.title, r.state, r.due_at AS "dueAt",
       r.due_all_day AS "dueAllDay", r.rev
     FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'milestones'
-      AND r.project_id = ${projectId} AND ${seenBy(sql, viewers)}
+      AND r.project_id = ${projectId} AND ${seenBy(sql, viewer)}
     ORDER BY r.state = 'dropped', r.due_at IS NULL, r.due_at, r.key LIMIT 50`;
   if (rows.length === 0) return [];
   const headsUpDays = (yield* playbookThreshold(orgId, "milestone_heads_up_days")).value;
@@ -126,7 +121,7 @@ export const milestonesOf = Effect.fn("KinProjectSpine.milestones")(function* (
     SELECT json_extract(r.fields_json, '$.milestone') AS milestone, r.state, r.due_at AS "dueAt"
     FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'work'
       AND json_extract(r.fields_json, '$.milestone') IN ${sql.in(rows.map((row) => row.key))}
-      AND r.state != 'dropped' AND ${seenBy(sql, viewers)}
+      AND r.state != 'dropped' AND ${seenBy(sql, viewer)}
     ORDER BY r.key`;
   return rows.map((row): KinMilestone => {
     const mine = tasks
@@ -152,7 +147,7 @@ export const milestonesOf = Effect.fn("KinProjectSpine.milestones")(function* (
 export const peopleOf = Effect.fn("KinProjectSpine.people")(function* (
   project: RecordRow,
   now: number,
-  viewers?: ReadonlyArray<KinPersonId>,
+  viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const held = yield* sql<{ kind: string; id: string; open: number; late: number }>`
@@ -160,7 +155,7 @@ export const peopleOf = Effect.fn("KinProjectSpine.people")(function* (
       SUM(r.due_at IS NOT NULL AND r.due_at < ${now}) AS late
     FROM kin_records r WHERE r.org_id = ${project.orgId} AND r.register_id = 'work'
       AND r.project_id = ${project.recordId} AND r.state IN ${sql.in(OPEN)}
-      AND ${seenBy(sql, viewers)}
+      AND ${seenBy(sql, viewer)}
     GROUP BY r.owner_kind, r.owner_id ORDER BY COUNT(*) DESC, r.owner_kind, r.owner_id`;
   const lead = principal(project.ownerKind, project.ownerId);
   const members = fieldList(parseFields(project.fieldsJson), "members").flatMap((text) => {
@@ -191,12 +186,12 @@ export const meetingsOf = Effect.fn("KinProjectSpine.meetings")(function* (
   orgId: KinOrgId,
   projectId: string,
   now: number,
-  viewers?: ReadonlyArray<KinPersonId>,
+  viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<RecordRow>`${selectRecords(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.category = 'meeting'
-      AND r.project_id = ${projectId} AND r.state != 'dropped' AND ${seenBy(sql, viewers)}
+      AND r.project_id = ${projectId} AND r.state != 'dropped' AND ${seenBy(sql, viewer)}
       AND (r.state IN ${sql.in(OPEN)} OR r.date_at >= ${now - DAY_MS})
     ORDER BY r.date_at IS NULL, r.date_at, r.key LIMIT 10`;
   return rows.map((row): KinRecord => toRecord(row, now));
@@ -209,6 +204,7 @@ export const meetingsOf = Effect.fn("KinProjectSpine.meetings")(function* (
 export const specChangesOf = Effect.fn("KinProjectSpine.specChanges")(function* (
   orgId: KinOrgId,
   tasks: ReadonlyArray<RecordRow>,
+  viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const anchored = tasks.flatMap((task) => {
@@ -220,10 +216,11 @@ export const specChangesOf = Effect.fn("KinProjectSpine.specChanges")(function* 
   });
   if (anchored.length === 0) return [];
   const docs = yield* sql<{ recordId: string; key: string; title: string }>`
-    SELECT record_id AS "recordId", key, title FROM kin_records
-    WHERE org_id = ${orgId} AND register_id = 'docs'
-      AND key IN ${sql.in([...new Set(anchored.map((one) => one.doc))])}
-    ORDER BY key`;
+    SELECT r.record_id AS "recordId", r.key, r.title FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = 'docs'
+      AND r.key IN ${sql.in([...new Set(anchored.map((one) => one.doc))])}
+      AND ${seenBy(sql, viewer)}
+    ORDER BY r.key`;
   const latest = yield* latestOf(
     orgId,
     docs.map((doc) => doc.recordId),
@@ -256,21 +253,21 @@ export const specChangesOf = Effect.fn("KinProjectSpine.specChanges")(function* 
 export const projectSpecChanges = Effect.fn("KinProjectSpine.projectSpecChanges")(function* (
   orgId: KinOrgId,
   projectId: string,
-  viewers?: ReadonlyArray<KinPersonId>,
+  viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const tasks = yield* sql<RecordRow>`${selectRecords(sql)}
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.project_id = ${projectId}
-      AND r.state IN ${sql.in(OPEN)} AND ${seenBy(sql, viewers)} AND json_extract(r.fields_json, '$.fromDoc') IS NOT NULL
+      AND r.state IN ${sql.in(OPEN)} AND ${seenBy(sql, viewer)} AND json_extract(r.fields_json, '$.fromDoc') IS NOT NULL
     ORDER BY r.key LIMIT 200`;
-  return yield* specChangesOf(orgId, tasks);
+  return yield* specChangesOf(orgId, tasks, viewer);
 });
 
 /** Quotes, invoices and receipts filed under the project, by the counted rule, per currency. */
 export const moneyOf = Effect.fn("KinProjectSpine.money")(function* (
   orgId: KinOrgId,
   projectId: string,
-  viewers?: ReadonlyArray<KinPersonId>,
+  viewer: KinViewer,
 ) {
   const records = yield* KinRecords;
   const sums = Effect.fn("KinProjectSpine.sums")(function* (list: string) {
@@ -278,7 +275,7 @@ export const moneyOf = Effect.fn("KinProjectSpine.money")(function* (
     return yield* records.totals(orgId, {
       list,
       projectId,
-      ...(viewers === undefined ? {} : { view: viewers }),
+      ...(viewer._tag === "ownerLevel" ? {} : { view: viewer.people }),
     });
   });
   const quotes = yield* sums("quotes");
