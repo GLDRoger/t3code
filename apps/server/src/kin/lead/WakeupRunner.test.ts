@@ -865,6 +865,7 @@ describe("WakeupRunner", () => {
     ({ replied, said, state }) =>
       Effect.gen(function* () {
         const outcomes: Array<string> = [];
+        let db: SqlClient.SqlClient | undefined;
         const bridge = Layer.mock(KinReplyBridge)({
           lane: () =>
             Effect.succeedSome({
@@ -878,7 +879,7 @@ describe("WakeupRunner", () => {
           // The run did something visible, and its reply posted, before the failure.
           complete: (input) =>
             Effect.gen(function* () {
-              const sql = yield* SqlClient.SqlClient;
+              const sql = db!;
               yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
                 VALUES (${input.orgId}, ${input.wakeupId}, 'item:note', 'hash')`;
               if (replied)
@@ -890,6 +891,7 @@ describe("WakeupRunner", () => {
         yield* Effect.gen(function* () {
           yield* seed;
           const sql = yield* SqlClient.SqlClient;
+          db = sql;
           yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage("asked"));
           yield* Fiber.join(yield* run());
           assert.deepStrictEqual(outcomes, [...said]);

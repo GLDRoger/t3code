@@ -16,6 +16,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
@@ -46,6 +47,22 @@ const windowStart = (at: string) => {
   const start = Math.max(0, hours! * 60 + minutes! - LOOSE_BEFORE_MINUTES);
   return `${String(Math.floor(start / 60)).padStart(2, "0")}:${String(start % 60).padStart(2, "0")}`;
 };
+
+/** The instant a time of day ("09:55") falls on, on the day `ms` is in `zone`. */
+export const timeOnDayOf = (ms: number, zone: string, time: string) => {
+  const [hour, minute] = time.split(":").map(Number);
+  return DateTime.toEpochMillis(
+    DateTime.setParts(DateTime.makeZonedUnsafe(ms, { timeZone: zone }), {
+      hour: hour!,
+      minute: minute!,
+      second: 0,
+      millisecond: 0,
+    }),
+  );
+};
+/** When a loose slot's window opens on the day `ms` falls on in `zone`. */
+export const looseWindowStartAt = (ms: number, zone: string, looseAt: string) =>
+  timeOnDayOf(ms, zone, windowStart(looseAt));
 
 /** Minutes from a loose window's start to its end: fewer when midnight cuts off its start. */
 export const looseSpanMinutes = (at: string) => {

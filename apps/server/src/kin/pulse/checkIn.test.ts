@@ -16,6 +16,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { looseOffsetMs, queueCheckIn } from "./checkIn.ts";
+import { missedSlot } from "./checkInCatchUp.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { followOwnerZone, onHostClock } from "./checkInSeeds.ts";
 import * as KinPulse from "./KinPulse.ts";
@@ -108,7 +109,7 @@ const source = (lines: ReadonlyArray<KinPulseOutsideLine>): OutsideSource => ({
 });
 const nothingOutside: OutsideRead = { lines: [], seen: [] };
 
-const checkIn = (dueAt: number, outside: OutsideRead = nothingOutside) =>
+const checkIn = (dueAt: number, outside: OutsideRead = nothingOutside, at = dueAt) =>
   queueCheckIn({
     orgId,
     agentId: chief,
@@ -118,7 +119,7 @@ const checkIn = (dueAt: number, outside: OutsideRead = nothingOutside) =>
     dueAt,
     looseAt: "15:30",
     zone: "UTC",
-    at: dueAt,
+    at,
     outside,
   });
 
@@ -161,6 +162,85 @@ describe("pulse check-ins", () => {
       assert.notStrictEqual(looseOffsetMs(afternoon, "2026-11-17"), offset);
       // A late task is a judgement call: the main model.
       assert.isTrue(JSON.parse(events[0]!.json).strong);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a late start picks its minute inside the window; a catch-up after it fires at once",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* record({
+          key: "W-1",
+          list: "work",
+          title: "Invented site copy",
+          dueAt: MONDAY - DAY,
+        });
+        const ends: Array<number> = [];
+        for (let day = 0; day < 7; day++) {
+          const opens = SLOT + day * DAY;
+          // The host woke ten minutes into the window, inside T3's grace: the run starts late.
+          const late = yield* checkIn(opens + 10 * MINUTE);
+          if (late._tag !== "queued") return assert.fail("not queued");
+          assert.isAtLeast(late.notBefore, opens + 10 * MINUTE);
+          ends.push(late.notBefore - opens);
+        }
+        assert.isTrue(ends.every((minute) => minute <= 25 * MINUTE));
+        // Noticed two hours late, after the window closed: at once, not a further offset.
+        const caught = yield* checkIn(SLOT + 7 * DAY, nothingOutside, SLOT + 7 * DAY + 2 * HOUR);
+        assert.strictEqual(
+          caught._tag === "queued" ? caught.notBefore : 0,
+          SLOT + 7 * DAY + 2 * HOUR,
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  // Monday 15:25 UTC opens the window; T3 has moved on to Tuesday unless a row says otherwise.
+  it.each([
+    { name: "twelve minutes in", now: SLOT + 12 * MINUTE, fires: true },
+    { name: "past three hours", now: SLOT + 3 * HOUR, fires: false },
+    { name: "before it opens", now: SLOT - MINUTE, fires: false },
+    { name: "already ran today", now: SLOT + HOUR, lastRunAt: SLOT + MINUTE, fires: false },
+    { name: "T3 still has it due", now: SLOT + 5 * MINUTE, nextRunAt: SLOT, fires: false },
+    { name: "not a day it runs", now: SLOT + HOUR, weekdays: [2, 3], fires: false },
+  ])("a slept-through check-in catches up only that day, once ($name)", (row) => {
+    const opens = missedSlot(
+      {
+        timeOfDay: "15:25",
+        weekdays: row.weekdays ?? [1, 2, 3, 4, 5],
+        nextRunAt: row.nextRunAt ?? SLOT + DAY,
+        lastRunAt: row.lastRunAt ?? SLOT - DAY,
+      },
+      row.now,
+      "UTC",
+    );
+    assert.strictEqual(opens, row.fires ? SLOT : undefined);
+  });
+
+  it.effect("a fact someone has in hand still brings the check-in, never 'nothing new'", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* record({
+        key: "W-2",
+        list: "work",
+        title: "Invented brochure",
+        ownerKind: "person",
+        ownerId: mate,
+        dueAt: MONDAY - DAY,
+      });
+      const [fact] = (yield* KinPulse.read({ orgId, at: SLOT, viewer: { _tag: "owner" } })).facts;
+      if (fact === undefined) return assert.fail("no fact");
+      yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense, subject_record_id, scope_json,
+          first_seen_at, last_seen_at, handled_by_kind, handled_by_id, handled_at, handled_until)
+        VALUES (${orgId}, ${fact.key}, ${fact.sense}, ${fact.subject.recordId ?? null}, '{}',
+          ${SLOT - HOUR}, ${SLOT - HOUR}, 'agent', ${chief}, ${SLOT - HOUR}, ${SLOT + 2 * DAY})`;
+      const held = yield* checkIn(SLOT);
+      assert.strictEqual(held._tag, "queued");
+      assert.strictEqual(held._tag === "queued" ? held.facts : 0, 1);
+      // Marked not a problem, it has no end: on its own it starts no check-in.
+      yield* sql`UPDATE kin_pulse_facts SET handled_until = NULL WHERE fact_key = ${fact.key}`;
+      assert.deepStrictEqual(yield* checkIn(SLOT + DAY), { _tag: "nothing_new" });
     }).pipe(Effect.provide(layer)),
   );
 
