@@ -2634,12 +2634,14 @@ describe("Kin migrations", () => {
       yield* sql`INSERT INTO kin_agent_defaults (org_id, models_json) VALUES ('org', ${old})`;
 
       assert.deepStrictEqual(yield* runKinMigrations(), [[161, "OneModel"]]);
-      assert.deepStrictEqual(yield* sql`SELECT models_json FROM kin_leads`, [
-        { models_json: JSON.stringify(JSON.parse(strong)) },
-      ]);
-      assert.deepStrictEqual(yield* sql`SELECT models_json FROM kin_agent_defaults`, [
-        { models_json: JSON.stringify(JSON.parse(strong)) },
-      ]);
+      const one = JSON.parse(strong);
+      for (const table of ["kin_leads", "kin_agent_defaults"]) {
+        const [row] = yield* sql<{
+          models: string;
+        }>`SELECT models_json AS models FROM ${sql(table)}`;
+        // The model itself, with the old pair kept for Workers.ts until it is deleted.
+        assert.deepStrictEqual(JSON.parse(row!.models), { ...one, ...JSON.parse(old) });
+      }
     }).pipe(Effect.provide(layer)),
   );
 

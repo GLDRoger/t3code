@@ -13,9 +13,13 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 /** `scripts/kin-verify`'s scripted agent: it calls tools it is told to and runs no model. */
 const KIN_VERIFY_SCRIPT_INSTANCE_ID = "kinVerifyScript";
 
-const LeadModelJson = Schema.fromJsonString(KinLead.fields.model);
-const decodeModel = Schema.decodeUnknownOption(LeadModelJson);
-export const encodeLeadModel = Schema.encodeSync(LeadModelJson);
+const decodeModel = Schema.decodeUnknownOption(Schema.fromJsonString(KinLead.fields.model));
+const encodeSelection = Schema.encodeSync(KinLead.fields.model);
+/** The stored model. `strong` and `cheap` are for Workers.ts alone; drop them when it is deleted. */
+export const encodeLeadModel = (model: ModelSelection) => {
+  const selection = encodeSelection(model);
+  return JSON.stringify({ ...selection, strong: selection, cheap: selection });
+};
 
 /** A dev server also runs leads on the scripted agent, so checks drive real turns for free. */
 export const isDevServer = Effect.serviceOption(ServerConfig).pipe(
