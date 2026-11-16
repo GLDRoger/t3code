@@ -129,11 +129,23 @@ export function resolveKinHost(input: {
   readonly savedHostId: EnvironmentId | null | undefined;
   /** The directory saved at a host's last answer, read only while it is offline. */
   readonly cachedOrgs?: (environmentId: EnvironmentId) => KinOrgsListResult | null;
+  /** The last answer. A stand-in stays until the saved host is back, not just retrying. */
+  readonly previous?: KinHost;
 }): KinHost {
   if (input.savedHostId === undefined) return { _tag: "searching" };
   const saved = input.candidates.find((c) => c.environmentId === input.savedHostId);
   let fallback: KinHost | null = null;
   if (saved !== undefined) {
+    const { previous } = input;
+    // Coming to the front, a down host starts over as a first attempt, which looks like a blip.
+    if (
+      !saved.connected &&
+      previous?._tag === "host" &&
+      previous.standInFor === saved.environmentId &&
+      input.candidates.some((c) => c.environmentId === previous.environmentId && c.connected) &&
+      input.probe(previous.environmentId)._tag === "ready"
+    )
+      return { ...previous, probe: input.probe(previous.environmentId) };
     if (!saved.connected) {
       // A live host stands in for one that is down, awaiting earlier probes like the search below
       // so it doesn't pick one and switch; a blip shows the saved host's cache.

@@ -18,6 +18,7 @@ import {
   kinStandInLine,
   resolveKinHost,
   resolveKinHostAt,
+  type KinHost,
   type KinProbe,
 } from "./kinHost.ts";
 
@@ -113,9 +114,11 @@ const resolve = (
     offline?: ReadonlyArray<EnvironmentId>;
     phases?: Record<string, Pick<EnvironmentConnectionPresentation, "phase" | "error">>;
     cached?: Record<string, KinOrgsListResult>;
+    previous?: KinHost;
   } = {},
 ) =>
   resolveKinHost({
+    ...(options.previous === undefined ? {} : { previous: options.previous }),
     candidates: [a, b, c].map((environmentId) =>
       kinHostCandidate(
         environmentId,
@@ -234,6 +237,28 @@ describe("resolveKinHost", () => {
     const flaky: KinProbe = { _tag: "error", message: "socket closed", transient: true };
     expect(
       resolve({ [a]: noIdentity, [b]: flaky }, { savedHostId: c, phases: down }),
+    ).toMatchObject({ environmentId: c, connected: false });
+  });
+
+  it("keeps a stand-in while the saved host retries from scratch, as on coming to the front", () => {
+    const failing = { [c]: { phase: "error", error: "refused" } } as const;
+    const standing = resolve({ [b]: ready }, { savedHostId: c, phases: failing });
+    expect(standing).toMatchObject({ environmentId: b, standInFor: c });
+    // Back in front, the saved host starts over: a first attempt with no failure yet.
+    const retry = { [c]: { phase: "connecting", error: null } } as const;
+    expect(
+      resolve({ [b]: ready }, { savedHostId: c, phases: retry, previous: standing }),
+    ).toMatchObject({ environmentId: b, connected: true, standInFor: c });
+    // Once it answers, Kin goes back to it.
+    expect(
+      resolve({ [b]: ready, [c]: ready }, { savedHostId: c, previous: standing }),
+    ).toMatchObject({ environmentId: c, connected: true });
+    // A stand-in that dropped too leaves the saved host's cache.
+    expect(
+      resolve(
+        { [b]: ready },
+        { savedHostId: c, phases: { ...retry, [b]: retry[c] }, previous: standing },
+      ),
     ).toMatchObject({ environmentId: c, connected: false });
   });
 
