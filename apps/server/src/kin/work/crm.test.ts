@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -56,6 +57,7 @@ const at = "2026-11-11T00:00:00.000Z";
 const owner = { _tag: "person" as const, orgId, personId: ownerId };
 const mate = { _tag: "person" as const, orgId, personId: mateId };
 const DAY = 24 * 60 * 60 * 1000;
+const isChatError = Schema.is(KinChatError);
 type Services =
   | KinIdentity
   | KinLevelGate
@@ -1031,7 +1033,10 @@ it.effect(
           client,
           kind: "call",
           note: "Invented call",
-        }).pipe(Effect.flip);
+        }).pipe(
+          Effect.flip,
+          Effect.map((error) => (isChatError(error) ? error : assert.fail(String(error)))),
+        );
       const hidden = yield* log("C-1");
       const missing = yield* log("C-9");
       assert.strictEqual(hidden.reason, "not_found");

@@ -8,7 +8,7 @@ const cards = (vars: Vars) => list(vars["card"]).map((_, index) => index);
 export const title = "A mail card that leaves the company";
 
 export const guide =
-  "Each box is what the newest card for one mail says, such as an invoice an agent wants to send a client for you. Each arrow is something that happens: you tap, the agent corrects itself, the mail account's sign-in expires, the mail service fails, or Kin restarts. A tap that changes nothing draws no arrow: a member's tap, a second tap, a tap on a closed card, or a tap while the sign-in has expired (the card stays open for after you sign in again). Red boxes are where a rule below breaks. The model allows two cards from the agent (a draft and its correction) and at most two of these, once each: the invoice is re-made, the sign-in expires, the mail service fails, Kin restarts.";
+  "Each box is what the newest card for one mail says, such as an invoice an agent wants to send a client for you. Each arrow is something that happens: you tap, the agent corrects itself, the mail account's sign-in expires, it is signed in again as someone else, the mail service fails, or Kin restarts. A tap that changes nothing draws no arrow: a member's tap, a second tap, a tap on a closed card, or a tap while the sign-in has expired (the card stays open for after you sign in again). Red boxes are where a rule below breaks. The model allows two cards from the agent (a draft and its correction) and at most two of these, once each: the invoice is re-made, the sign-in expires, the mail service fails, Kin restarts.";
 
 export const rules: Record<string, string> = {
   SentAtMostOnce: "A mail you confirmed goes out at most once.",
@@ -17,6 +17,8 @@ export const rules: Record<string, string> = {
   OutdatedNeverSends:
     "An invoice re-made after its card was drawn never goes out in its old version.",
   ReplacedNeverSends: "Once the agent has put up a corrected card, the older card can never send.",
+  SentFromShownAccount:
+    "What goes out goes from the account the card showed, even after the mail account is signed in again as someone else.",
   ModelHasRoom: "The model has room for every card it makes (a check on the model, not on Kin).",
   ConfirmedSettles:
     "After you tap Confirm, the card always ends as Sent or as Failed, never stuck on Sending.",
@@ -71,6 +73,16 @@ export const variants = [
     what: "start-up no longer posts the card a failed mail still owes (the code before this change)",
   },
   {
+    name: "old-reconnect",
+    breaks: "SentFromShownAccount",
+    what: "a sign-in again whose account Kin can't read keeps the new tokens under the old name (the code before this change)",
+  },
+  {
+    name: "no-account-bind",
+    breaks: "SentFromShownAccount",
+    what: "a sign-in Kin can't name moves the connection's generation, but Confirm and the send no longer check it",
+  },
+  {
     name: "no-resume",
     breaks: "ConfirmedSettles",
     what: "nothing settles a send a restart cut off (the code before this change)",
@@ -121,7 +133,9 @@ export const step = (action: string, from: Vars, to: Vars) => {
       if (c === undefined) return null;
       const person = who[String(at(to, "by", c))] ?? "You";
       return at(to, "card", c) === "stale"
-        ? "You tap Confirm, but the invoice was re-made: that card closes"
+        ? at(to, "why", c) === "account"
+          ? "You tap Confirm, but the account was signed in again as someone else: that card closes"
+          : "You tap Confirm, but the invoice was re-made: that card closes"
         : `${person} ${person === "You" ? "tap" : "taps"} Confirm`;
     }
     case "TapCancel":
@@ -131,9 +145,11 @@ export const step = (action: string, from: Vars, to: Vars) => {
       const now = c === undefined ? undefined : at(to, "job", c);
       return now === "went"
         ? "The mail goes out"
-        : now === "signin"
-          ? "The send finds the mail account's sign-in has expired"
-          : "The mail service fails";
+        : now === "moved"
+          ? "The send finds the account signed in as someone else, and sends nothing"
+          : now === "signin"
+            ? "The send finds the mail account's sign-in has expired"
+            : "The mail service fails";
     }
     case "SendRecorded": {
       const [c] = changed(from, to, "card");
@@ -151,6 +167,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "The mail account's sign-in expires";
     case "SignInAgain":
       return "You sign in again";
+    case "SignInAsOther":
+      return "The mail account is signed in again as someone else, and Kin can't read who";
     case "InvoiceRemade":
       return "The invoice is re-made";
     default:
