@@ -11,8 +11,11 @@ import { laneOf } from "../team/stakes.ts";
 export const socialSeatThread = Effect.fn("KinSocial.seatThread")(
   function* (threadId: ThreadId) {
     const sql = yield* SqlClient.SqlClient;
-    const rows = yield* sql<{ domain: string }>`SELECT l.domain FROM kin_leads l
-      WHERE l.thread_id = ${threadId} ORDER BY l.agent_id LIMIT 1`;
+    // The lead's own thread only: a shared chat's turn (chat_id set) never carries them.
+    const rows = yield* sql<{ domain: string }>`SELECT l.domain FROM kin_agent_threads t
+      JOIN kin_leads l ON l.org_id = t.org_id AND l.agent_id = t.agent_id
+      WHERE t.thread_id = ${threadId} AND t.ended_at IS NULL AND t.chat_id IS NULL
+      ORDER BY t.thread_id LIMIT 1`;
     return rows[0] !== undefined && laneOf(rows[0].domain) === "social";
   },
   Effect.orElseSucceed(() => false),

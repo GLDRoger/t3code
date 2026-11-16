@@ -22,6 +22,7 @@ import { KinAgentSessions } from "./layer.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
 import { OUTSIDE_REFUSAL, OUTSIDE_TOOLS } from "../lead/OutsideContent.ts";
 import { SHARED_TOOLS, sharedToolAllowed } from "../lead/SharedTools.ts";
+import { isSocialTool } from "../social/mcp.ts";
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { visibleOnKinEndpoint } from "../lead/AgentSession.ts";
 import * as FileSystem from "effect/FileSystem";
@@ -341,9 +342,24 @@ it.effect.each([true, false])(
           assert.notInclude(toolNames, name);
         // Every tool a lead can call says what it may do where others read; a tool added later
         // without a line is refused there, and the table names no tool that isn't served.
-        assert.sameMembers([...toolNames, ...LEAD_T3_TOOLS], Object.keys(SHARED_TOOLS));
+        assert.notInclude(toolNames, "social_draft");
+        // Social's tools are served only to the lead whose remit is social media.
+        yield* sql`UPDATE kin_leads SET domain = 'social' WHERE agent_id = ${agentId}`;
+        const socialList = yield* request(
+          "/kin/mcp",
+          issued.config.authorizationHeader,
+          "tools/list",
+          {},
+          initialized.headers["mcp-session-id"],
+        );
+        const servedNames = decodeToolList(
+          yield* Effect.promise(() => HttpServerResponse.toWeb(socialList).text()),
+        ).result.tools.map((tool) => tool.name);
+        assert.includeMembers(servedNames, ["social_read", "social_draft", "social_week"]);
+        yield* sql`UPDATE kin_leads SET domain = 'engineering' WHERE agent_id = ${agentId}`;
+        assert.sameMembers([...servedNames, ...LEAD_T3_TOOLS], Object.keys(SHARED_TOOLS));
         // And once the turn read a connected service's text; connections stay out of shared turns.
-        assert.sameMembers([...toolNames, ...LEAD_T3_TOOLS], Object.keys(OUTSIDE_TOOLS));
+        assert.sameMembers([...servedNames, ...LEAD_T3_TOOLS], Object.keys(OUTSIDE_TOOLS));
         for (const name of ["kin_connection_tools", "kin_connection_call", "kin_connection_offer"])
           assert.strictEqual(SHARED_TOOLS[name as keyof typeof SHARED_TOOLS], "refused");
         // A page goes where a chart does; the gate checks its figures against every reader.
@@ -476,7 +492,7 @@ it.effect.each([true, false])(
           assert.notInclude(connected.names, name);
         assert.sameMembers(
           [...new Set([...connected.names, ...LEAD_T3_TOOLS, "kin_delegate"])],
-          Object.keys(SHARED_TOOLS),
+          Object.keys(SHARED_TOOLS).filter((name) => !isSocialTool(name)),
         );
         // This turn read outside text: a delegated task is work that text could steer.
         const steered = yield* request(

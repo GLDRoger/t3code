@@ -13,6 +13,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -69,6 +70,7 @@ const harness = () => {
   });
   const identity = Layer.mock(KinIdentity)({
     owner: { _tag: "person", orgId, personId: owner },
+    isAgentThread: () => true,
     isLeadThread: () => true,
     resolveAgent: () =>
       Effect.succeed({
@@ -206,11 +208,12 @@ const tap = (
 
 const failure = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
+    Effect.asVoid,
     Effect.flip,
     Effect.map((error) => (isKinError(error) ? error.message : String(error))),
   );
 
-const iso = (ms: number) => new Date(ms).toISOString();
+const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 it.effect("connects groups only with a key limited to one profile, owner-level only", () => {
   const { fake, run } = harness();
