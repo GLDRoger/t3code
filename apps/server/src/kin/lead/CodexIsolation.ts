@@ -207,23 +207,24 @@ const decodeConfigRead = Schema.decodeUnknownEffect(ConfigRead);
 
 /**
  * `request` encodes through the stable schema, which drops `environments`; the rewritten calls go
- * raw and their answers decode as the typed client would.
+ * raw and their answers decode as the typed client would. A rewrite of `null` leaves the call as
+ * the adapter made it.
  */
 const rewriting = (
   client: Client,
   rewrite: (
     method: string,
     params: Params,
-  ) => Effect.Effect<Params, CodexErrors.CodexAppServerError>,
-  answered: (method: string, params: Params, answer: unknown) => void = () => {},
+  ) => Effect.Effect<Params | null, CodexErrors.CodexAppServerError>,
+  answered: (method: string, params: Params, answer: unknown) => void,
 ): Client => {
+  const sent = (method: string, params: Params) =>
+    client.raw
+      .request(method, params)
+      .pipe(Effect.tap((answer) => Effect.sync(() => answered(method, params, answer))));
   const raw = (method: string, params: unknown) =>
     rewrite(method, (params ?? {}) as Params).pipe(
-      Effect.flatMap((rewritten) =>
-        client.raw
-          .request(method, rewritten)
-          .pipe(Effect.tap((answer) => Effect.sync(() => answered(method, rewritten, answer)))),
-      ),
+      Effect.flatMap((rewritten) => sent(method, rewritten ?? ((params ?? {}) as Params))),
     );
   return {
     ...client,
@@ -231,17 +232,23 @@ const rewriting = (
     request: ((method: CodexRpc.ClientRequestMethod, payload: unknown) => {
       if (!REWRITTEN.has(method)) return client.request(method, payload as never);
       const schema = CodexRpc.CLIENT_REQUEST_RESPONSES[method] as Schema.Codec<unknown, unknown>;
-      return raw(method, payload).pipe(
-        Effect.flatMap((answer) =>
-          Schema.decodeUnknownEffect(schema)(answer).pipe(
-            Effect.mapError((error) =>
-              CodexErrors.CodexAppServerProtocolParseError.fromSchemaError(
-                "decode-response-payload",
-                error,
-                { method },
+      return rewrite(method, payload as Params).pipe(
+        Effect.flatMap((rewritten) =>
+          rewritten === null
+            ? client.request(method, payload as never)
+            : sent(method, rewritten).pipe(
+                Effect.flatMap((answer) =>
+                  Schema.decodeUnknownEffect(schema)(answer).pipe(
+                    Effect.mapError((error) =>
+                      CodexErrors.CodexAppServerProtocolParseError.fromSchemaError(
+                        "decode-response-payload",
+                        error,
+                        { method },
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            ),
-          ),
         ),
       );
     }) as typeof client.request,
@@ -300,20 +307,41 @@ const kinApprovals = (
   };
 };
 
-const answering = (client: Client, answers: Answers): Client => ({
+/** The native thread an ask comes from: v2 asks name it, legacy ones name the conversation. */
+const askingThread = (payload: unknown) => {
+  const asked = payload as { readonly threadId?: unknown; readonly conversationId?: unknown };
+  return String(asked.threadId ?? asked.conversationId ?? "");
+};
+
+/** Kin answers the asks of its own threads; any other thread's go to T3's handler as before. */
+const answering = (
+  client: Client,
+  answers: Answers,
+  ours: (native: string) => boolean,
+): Client => ({
   ...client,
-  handleServerRequest: ((method: CodexRpc.ServerRequestMethod, handler: unknown) =>
-    client.handleServerRequest(
+  handleServerRequest: ((
+    method: CodexRpc.ServerRequestMethod,
+    handler: (payload: unknown) => Effect.Effect<unknown, CodexErrors.CodexAppServerError>,
+  ) => {
+    const answer = answers[method] as typeof handler | undefined;
+    return client.handleServerRequest(
       method,
-      (answers[method] ?? handler) as never,
-    )) as Client["handleServerRequest"],
+      (answer === undefined
+        ? handler
+        : (payload: unknown) =>
+            ours(askingThread(payload)) ? answer(payload) : handler(payload)) as never,
+    );
+  }) as Client["handleServerRequest"],
 });
+
+type Seat = { readonly thread: ThreadId; readonly full: boolean };
 
 /**
  * Kin's seam on T3's Codex adapter, as `LeadIsolation.claudeQueryRunner` is on Claude's: an agent's
- * owner-only thread gets a full session whose every command and patch Kin decides; a thread others
- * read runs confined; a task delegated from a lead's thread gets the signing `gh`. Every other
- * Codex session passes through untouched.
+ * owner-only thread gets a full session Kin checks per call, a shared one runs confined, a task a
+ * lead delegated gets the signing `gh`. One app-server serves a whole Codex instance, so each thread
+ * is placed when it starts, never by the thread that opened the process.
  */
 export const codexClientFactory = <E, R>(
   base: Layer.Layer<CodexAdapterV2.CodexAppServerClientFactory, E, R>,
@@ -332,6 +360,12 @@ export const codexClientFactory = <E, R>(
         const relative = path.relative(parent, child);
         return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
       };
+      const isKinFolder = Effect.fn("KinCodexIsolation.isKinFolder")(function* (cwd: string) {
+        return (
+          within(kinDirectory, path.resolve(cwd)) ||
+          within(yield* real(kinDirectory), yield* real(cwd))
+        );
+      });
       const kin = yield* Effect.serviceOption(KinServer);
       const policy = Option.flatMap(kin, (server) =>
         Option.flatMap(server.services, (services) =>
@@ -341,13 +375,6 @@ export const codexClientFactory = <E, R>(
       return CodexAdapterV2.CodexAppServerClientFactory.of({
         open: Effect.fn("KinCodexIsolation.open")(function* (input) {
           const client = yield* factory.open(input);
-          const threadId: ThreadId = input.threadId;
-          if (threadId.startsWith(dreamThreadPrefix) || isWorkThread(threadId)) return client;
-          const cwd = input.runtimePolicy.cwd ?? undefined;
-          const isKin =
-            cwd !== undefined &&
-            (within(kinDirectory, path.resolve(cwd)) ||
-              within(yield* real(kinDirectory), yield* real(cwd)));
           const signing = Effect.fn("KinCodexIsolation.signing")(function* (
             sessions: KinAgentSessionPolicy["Service"],
             thread: ThreadId,
@@ -364,82 +391,87 @@ export const codexClientFactory = <E, R>(
             };
             return signed;
           });
-          if (isKin) {
-            let userServers: ReadonlyArray<string> | undefined;
-            const servers = Effect.gen(function* () {
-              if (userServers !== undefined) return userServers;
-              const answer = yield* client.raw.request("config/read", { cwd });
-              const read = yield* decodeConfigRead(answer).pipe(Effect.orDie);
-              userServers = Object.keys(read.config.mcp_servers ?? {});
-              return userServers;
-            });
-            // One app-server serves several of the lead's threads, an owner's and a shared one
-            // among them, so each native thread answers to the T3 thread that started it.
-            const governing = new Map<string, ThreadId>();
-            yield* client.handleServerNotification("thread/started", ({ thread }) =>
-              Effect.sync(() => {
-                const parent = thread.parentThreadId
-                  ? governing.get(thread.parentThreadId)
-                  : undefined;
-                if (parent !== undefined) governing.set(thread.id, parent);
-              }),
-            );
-            const t3Thread = (params: Params) => {
-              const config = params.config as Readonly<Record<string, unknown>> | null | undefined;
-              const id = config?.[`shell_environment_policy.set.${AGENT_THREAD_ENV}`];
-              return typeof id === "string" ? ThreadId.make(id) : threadId;
-            };
-            const full = (thread: ThreadId | undefined): thread is ThreadId =>
-              thread !== undefined &&
-              Option.isSome(policy) &&
-              !thread.startsWith(SHARED_THREAD_PREFIX);
-            const rewritten = rewriting(
-              Option.isNone(policy)
-                ? client
-                : answering(
-                    client,
-                    kinApprovals(client, (native) => {
-                      const thread = governing.get(native);
-                      return thread === undefined
-                        ? Effect.succeed(SESSION_REFUSAL.none)
-                        : policy.value.refusal(thread);
-                    }),
-                  ),
-              (method, params) => {
-                if (method === "turn/start")
-                  return Effect.succeed(
-                    full(governing.get(String(params.threadId)))
+          const userServers = new Map<string, ReadonlyArray<string>>();
+          const servers = Effect.fn("KinCodexIsolation.servers")(function* (cwd: string) {
+            const known = userServers.get(cwd);
+            if (known !== undefined) return known;
+            const answer = yield* client.raw.request("config/read", { cwd });
+            const read = yield* decodeConfigRead(answer).pipe(Effect.orDie);
+            const names = Object.keys(read.config.mcp_servers ?? {});
+            userServers.set(cwd, names);
+            return names;
+          });
+          // Each native thread of an agent, and each Codex sub-agent under one, answers to the T3
+          // thread that started it.
+          const seats = new Map<string, Seat>();
+          const starting = new Map<ThreadId, Seat>();
+          yield* client.handleServerNotification("thread/started", ({ thread }) =>
+            Effect.sync(() => {
+              const parent = thread.parentThreadId ? seats.get(thread.parentThreadId) : undefined;
+              if (parent !== undefined) seats.set(thread.id, parent);
+            }),
+          );
+          const t3Thread = (params: Params) => {
+            const settings = params.config as Readonly<Record<string, unknown>> | null | undefined;
+            const id = settings?.[`shell_environment_policy.set.${AGENT_THREAD_ENV}`];
+            return typeof id === "string" ? ThreadId.make(id) : input.threadId;
+          };
+          const threadParams = Effect.fn("KinCodexIsolation.threadParams")(function* (
+            params: Params,
+          ) {
+            const thread = t3Thread(params);
+            if (thread.startsWith(dreamThreadPrefix) || isWorkThread(thread)) return null;
+            const cwd = typeof params.cwd === "string" ? params.cwd : input.runtimePolicy.cwd;
+            if (cwd != null && (yield* isKinFolder(cwd))) {
+              const seat: Seat = {
+                thread,
+                full: Option.isSome(policy) && !thread.startsWith(SHARED_THREAD_PREFIX),
+              };
+              starting.set(thread, seat);
+              if (typeof params.threadId === "string") seats.set(params.threadId, seat);
+              const names = yield* servers(cwd);
+              return seat.full && Option.isSome(policy)
+                ? fullSessionThreadParams(params, names, yield* signing(policy.value, thread))
+                : confinedThreadParams(params, names);
+            }
+            if (Option.isNone(policy) || !(yield* policy.value.delegated(thread))) return null;
+            return signedShellParams(params, yield* signing(policy.value, thread));
+          });
+          const asked = Option.isNone(policy)
+            ? client
+            : answering(
+                client,
+                kinApprovals(client, (native) => {
+                  const seat = seats.get(native);
+                  return seat === undefined
+                    ? Effect.succeed(SESSION_REFUSAL.none)
+                    : policy.value.refusal(seat.thread);
+                }),
+                (native) => seats.has(native),
+              );
+          return rewriting(
+            asked,
+            (method, params) => {
+              const seat =
+                typeof params.threadId === "string" ? seats.get(params.threadId) : undefined;
+              if (method === "turn/start")
+                return Effect.succeed(
+                  seat === undefined
+                    ? null
+                    : seat.full
                       ? fullSessionTurnParams(params)
                       : confinedTurnParams(params),
-                  );
-                if (method === "thread/inject_items")
-                  return Effect.succeed(withoutT3Guidance(params));
-                if (!THREAD_METHODS.has(method)) return Effect.succeed(params);
-                const thread = t3Thread(params);
-                if (typeof params.threadId === "string") governing.set(params.threadId, thread);
-                return Effect.gen(function* () {
-                  const names = yield* servers;
-                  if (!full(thread) || Option.isNone(policy))
-                    return confinedThreadParams(params, names);
-                  return fullSessionThreadParams(
-                    params,
-                    names,
-                    yield* signing(policy.value, thread),
-                  );
-                });
-              },
-              (method, params, answer) => {
-                const native = (answer as { thread?: { id?: unknown } } | null)?.thread?.id;
-                if (THREAD_METHODS.has(method) && typeof native === "string")
-                  governing.set(native, t3Thread(params));
-              },
-            );
-            return rewritten;
-          }
-          if (Option.isNone(policy) || !(yield* policy.value.delegated(threadId))) return client;
-          const sign = yield* signing(policy.value, threadId);
-          return rewriting(client, (method, params) =>
-            Effect.succeed(THREAD_METHODS.has(method) ? signedShellParams(params, sign) : params),
+                );
+              if (method === "thread/inject_items")
+                return Effect.succeed(seat === undefined ? null : withoutT3Guidance(params));
+              return THREAD_METHODS.has(method) ? threadParams(params) : Effect.succeed(null);
+            },
+            (method, params, answer) => {
+              const native = (answer as { thread?: { id?: unknown } } | null)?.thread?.id;
+              const seat = starting.get(t3Thread(params));
+              if (THREAD_METHODS.has(method) && typeof native === "string" && seat !== undefined)
+                seats.set(native, seat);
+            },
           );
         }),
       });

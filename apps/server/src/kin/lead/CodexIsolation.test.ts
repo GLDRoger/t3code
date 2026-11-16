@@ -231,7 +231,7 @@ it.effect(
 type Asked = (payload: unknown) => Effect.Effect<unknown>;
 
 it.effect(
-  "on one Codex app-server, the owner's thread gets a full session and the shared one stays confined; Kin decides each command, patch, network call and sub-agent's ask from its own thread's turn",
+  "on one Codex app-server, opened by any thread, the owner's thread gets a full session, the shared one stays confined and others are untouched; Kin decides each command, patch, network call and sub-agent's ask from its own thread's turn",
   () =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -268,7 +268,8 @@ it.effect(
                 if (method !== "thread/start") return answer;
                 const config = params.config as Record<string, unknown>;
                 const t3 = config["shell_environment_policy.set.T3CODE_THREAD_ID"];
-                return { thread: { id: t3 === "kin:tech" ? "native-owner" : "native-shared" } };
+                const native = { "kin:tech": "native-owner", "kin-shared:tech": "native-shared" };
+                return { thread: { id: native[t3 as keyof typeof native] ?? "native-plain" } };
               }),
             ),
         },
@@ -281,21 +282,26 @@ it.effect(
         CodexAdapterV2.CodexAppServerClientFactory,
         CodexAdapterV2.CodexAppServerClientFactory.of({ open: () => Effect.succeed(client) }),
       );
-      const shownToAPerson: Asked = () => Effect.die("an ask on a Kin thread reached a person");
+      // T3's own handler: the ask is shown to a person in the thread.
+      const shownToAPerson: Asked = () => Effect.succeed("shown to a person");
       // T3 marks each thread's shell with its own id (`codexThreadRuntimeParams`).
-      const startOf = (t3: string) => ({
+      const startOf = (t3: string, cwd = memory) => ({
         ...t3ThreadStart,
-        cwd: memory,
+        cwd,
         config: { ...t3ThreadStart.config, "shell_environment_policy.set.T3CODE_THREAD_ID": t3 },
       });
       yield* Effect.gen(function* () {
         const factory = yield* CodexAdapterV2.CodexAppServerClientFactory;
-        // The process opens for the owner's thread; the shared thread arrives on it later.
+        // Someone's ordinary T3 thread opens the instance's one process; Kin's threads join it.
         const opened = yield* factory.open({
           instanceId: ProviderInstanceId.make("codex"),
-          threadId: ThreadId.make("kin:tech"),
+          threadId: ThreadId.make("thread-plain"),
           providerSessionId: ProviderSessionId.make("session"),
-          runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: memory },
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: "/work/project",
+          },
           settings: {} as never,
           environment: { PATH: "/usr/bin" },
         });
@@ -309,9 +315,10 @@ it.effect(
           "item/tool/requestUserInput",
         ])
           yield* opened.handleServerRequest(method as never, shownToAPerson as never);
+        yield* opened.raw.request("thread/start", startOf("thread-plain", "/work/project"));
         for (const t3 of ["kin:tech", "kin-shared:tech"])
           yield* opened.raw.request("thread/start", startOf(t3));
-        for (const native of ["native-owner", "native-shared"])
+        for (const native of ["native-plain", "native-owner", "native-shared"])
           yield* opened.raw.request("turn/start", { ...t3TurnStart, threadId: native });
       }).pipe(
         Effect.scoped,
@@ -328,9 +335,10 @@ it.effect(
           ),
         ),
       );
-      const [ownerStart, sharedStart] = sent
+      const [plainStart, ownerStart, sharedStart] = sent
         .filter(({ method }) => method === "thread/start")
         .map(({ params }) => params);
+      assert.deepStrictEqual(plainStart, startOf("thread-plain", "/work/project"));
       assert.notProperty(ownerStart, "environments");
       assert.strictEqual(ownerStart?.approvalPolicy, "untrusted");
       assert.strictEqual(ownerStart?.approvalsReviewer, "user");
@@ -363,6 +371,7 @@ it.effect(
         .filter(({ method }) => method === "turn/start")
         .map(({ params }) => params);
       assert.deepStrictEqual(turns, [
+        { ...t3TurnStart, threadId: "native-plain" },
         {
           threadId: "native-owner",
           input: t3TurnStart.input,
@@ -431,22 +440,28 @@ it.effect(
           decision: "approved",
         },
       );
-      // Meanwhile the shared thread on the same process doesn't borrow the owner's turn, and a
-      // thread Kin can't place is refused too.
+      // Meanwhile the shared thread on the same process doesn't borrow the owner's turn.
       assert.deepStrictEqual(
         yield* ask("item/commandExecution/requestApproval", command("echo hi", "native-shared")),
         { decision: "decline" },
       );
       assert.deepStrictEqual(steers().at(-1), refusedWith(SESSION_REFUSAL.none, "native-shared"));
-      assert.deepStrictEqual(
-        yield* ask("item/commandExecution/requestApproval", command("echo hi", "stranger")),
-        { decision: "decline" },
+
+      // An ordinary thread's asks still reach a person, as T3 shows them.
+      assert.strictEqual(
+        yield* ask(
+          "item/commandExecution/requestApproval",
+          command("rm -rf build", "native-plain"),
+        ),
+        "shown to a person",
       );
-      assert.deepStrictEqual(steers().at(-1), refusedWith(SESSION_REFUSAL.none, "stranger"));
       // Nothing more than the session already has is ever granted.
-      assert.deepStrictEqual(yield* ask("item/permissions/requestApproval", {}), {
-        permissions: {},
-      });
+      assert.deepStrictEqual(
+        yield* ask("item/permissions/requestApproval", { threadId: "native-owner" }),
+        {
+          permissions: {},
+        },
+      );
       // Within the same turn the next call is decided again: outside text read, so refused.
       yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
         VALUES (${orgId}, 'wake-codex', 0, 'conn_mail')`;
