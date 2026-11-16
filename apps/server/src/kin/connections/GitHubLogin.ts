@@ -125,6 +125,10 @@ export class KinGitHubLogin extends Context.Service<
     ) => Effect.Effect<KinGitHubStatus, KinChatError>;
     /** The connected login, for Kin's own use; no person is checked. */
     readonly account: () => Effect.Effect<KinGitHubAccount | null>;
+    /** The folder with the `gh` Kin signs in with, for an agent session's PATH. */
+    readonly ghDirectory: string;
+    /** Whether gh holds a login; never fetches gh, so a host that never connected stays quiet. */
+    readonly connected: () => Effect.Effect<boolean>;
   }
 >()("t3/kin/connections/GitHubLogin/KinGitHubLogin") {}
 
@@ -268,6 +272,18 @@ export const make = Effect.fn("KinGitHubLogin.make")(function* (
     },
   );
   const forget = Ref.set(cached, null);
+  const connected: KinGitHubLogin["Service"]["connected"] = Effect.fn("KinGitHubLogin.connected")(
+    function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const last = yield* Ref.get(cached);
+      if (last !== null && now - last.at < ACCOUNT_TTL_MS) return last.account !== null;
+      if ((yield* tool.find()) === undefined) {
+        yield* Ref.set(cached, { at: now, account: null });
+        return false;
+      }
+      return (yield* account()) !== null;
+    },
+  );
 
   const view = Effect.fn("KinGitHubLogin.view")(function* () {
     const waiting = yield* Ref.get(pending);
@@ -479,7 +495,15 @@ export const make = Effect.fn("KinGitHubLogin.make")(function* (
     return yield* view();
   }, settle);
 
-  return KinGitHubLogin.of({ status, start, cancel, disconnect, account });
+  return KinGitHubLogin.of({
+    status,
+    start,
+    cancel,
+    disconnect,
+    account,
+    connected,
+    ghDirectory: tool.directory,
+  });
 });
 
 /**
@@ -502,7 +526,11 @@ export const layer = Layer.effect(
     }).pipe(
       Effect.provideService(
         KinGhTool,
-        KinGhTool.of({ ensure: Effect.fn("KinGhTool.devStandIn")(() => Effect.succeed(stand)) }),
+        KinGhTool.of({
+          ensure: Effect.fn("KinGhTool.devStandIn")(() => Effect.succeed(stand)),
+          find: Effect.fn("KinGhTool.devStandInFind")(() => Effect.succeed(stand)),
+          directory: fake,
+        }),
       ),
     );
   }),

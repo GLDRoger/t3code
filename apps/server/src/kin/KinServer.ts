@@ -2,21 +2,21 @@ import type * as Layer from "effect/Layer";
 import type { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import * as Context from "effect/Context";
 import * as Option from "effect/Option";
-import { KinIdentity } from "./chat/KinIdentity.ts";
-import { KinChatService } from "./chat/KinChatService.ts";
-import { KinChatHub } from "./chat/KinChatHub.ts";
+import type { KinIdentity } from "./chat/KinIdentity.ts";
+import type { KinChatService } from "./chat/KinChatService.ts";
+import type { KinChatHub } from "./chat/KinChatHub.ts";
 import type { KinGroups } from "./chat/KinGroups.ts";
 import type { KinRefreshHub } from "./chat/KinRefreshHub.ts";
 import type { KinFloor } from "./floor/KinFloor.ts";
 import type { KinVisualHosts } from "./chat/KinVisualHosts.ts";
-import { KinBudget } from "./lead/KinBudget.ts";
+import type { KinBudget } from "./lead/KinBudget.ts";
 import type { KinChatRepository } from "./chat/KinChatRepository.ts";
 import type * as SqlClient from "effect/sql/SqlClient";
-import { KinEventQueue } from "./lead/KinEventQueue.ts";
-import { ApproverKeys } from "./approvals/ApproverKeys.ts";
-import { GrantVerifier } from "./approvals/GrantVerifier.ts";
+import type { KinEventQueue } from "./lead/KinEventQueue.ts";
+import type { ApproverKeys } from "./approvals/ApproverKeys.ts";
+import type { GrantVerifier } from "./approvals/GrantVerifier.ts";
 import type { KinRetiredActions } from "./lead/Retirement.ts";
-import { KinStop } from "./lead/KinStop.ts";
+import type { KinStop } from "./lead/KinStop.ts";
 import type { KinLevelGate } from "./lead/LevelGate.ts";
 import type { KinLevelControl } from "./levels/LevelControl.ts";
 import type { KinMemoryChanges } from "./memory/MemoryChanges.ts";
@@ -31,6 +31,7 @@ import type { KinWorkspace } from "./gendocs/workspace.ts";
 import type { KinRecords } from "./work/KinRecords.ts";
 import type { KinConnections } from "./connections/ConnectionsService.ts";
 import type { KinGitHubLogin } from "./connections/GitHubLogin.ts";
+import type { KinAgentSessionPolicy } from "./lead/sessionPolicy.ts";
 
 export type Services =
   | KinIdentity
@@ -61,7 +62,8 @@ export type Services =
   | KinWorkspace
   | KinDocRenderer
   | KinConnections
-  | KinGitHubLogin;
+  | KinGitHubLogin
+  | KinAgentSessionPolicy;
 
 export class KinServer extends Context.Service<
   KinServer,

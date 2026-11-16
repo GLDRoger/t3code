@@ -6,6 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { resolveConnection } from "../connections/ConnectionRows.ts";
+import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -138,6 +139,11 @@ export const OUTSIDE_TOOLS = {
   kin_connection_offer: "allowed",
   // Outside text could relabel which account is for what.
   kin_connection_note: "refused",
+  // A delegated task, clone or browser is work outside text could steer, as a worker was.
+  ...(Object.fromEntries(LEAD_T3_TOOLS.map((name) => [name, "refused" as const])) as Record<
+    (typeof LEAD_T3_TOOLS)[number],
+    "refused"
+  >),
 } satisfies Record<string, OutsideToolPolicy>;
 
 /**

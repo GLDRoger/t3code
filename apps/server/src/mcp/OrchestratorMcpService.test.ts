@@ -1949,6 +1949,126 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
+  it.effect("a local task in another project starts from that project's default branch", () =>
+    Effect.gen(function* () {
+      const otherProjectId = ProjectId.make("project:mcp-providers-other");
+      const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        runId: parentRunId,
+        parentNodeId,
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: null,
+        prompt: "Fix the README.",
+        title: null,
+        model: "gpt-5.4",
+        status: "running",
+        result: null,
+        startedAt: null,
+        completedAt: null,
+      };
+      const layerDependencies = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          getThreadRecords: (threadId) =>
+            Ref.get(dispatched).pipe(
+              Effect.map((commands) =>
+                threadId === parentThreadId
+                  ? parentProjection(commands.length > 0 ? [task] : [])
+                  : childProjection,
+              ),
+            ),
+          isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+          assertProviderInstanceEnabled: () => Effect.void,
+          dispatch: (command) =>
+            Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+              Effect.as({
+                sequence: 1,
+                storedEvents: [
+                  {
+                    sequence: 1,
+                    commandId: null,
+                    event: { type: "subagent.updated", payload: task },
+                  },
+                ],
+              } as never),
+            ),
+        }),
+        providerRegistryLayer([
+          providerSnapshot({
+            instanceId: codexInstanceId,
+            driver: ProviderDriverKind.make("codex"),
+            model: "gpt-5.4",
+          }),
+        ]),
+        adapterRegistryLayer([codexInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({
+          getById: (id) =>
+            Effect.succeedSome({ id, title: "Other", workspaceRoot: "/repo/other" } as never),
+        }),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        ServerSettings.layerTest(),
+      );
+      const layer = OrchestratorMcpService.layer.pipe(
+        Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+        Layer.provide(
+          Layer.mock(GitVcsDriver.GitVcsDriver)({
+            resolvePrimaryRemoteName: () => Effect.succeed("origin"),
+            resolveDefaultBranchName: (cwd) =>
+              Effect.succeed(cwd === "/repo/other" ? "trunk" : null),
+            resolveCommit: ({ revision }) =>
+              revision === "refs/remotes/origin/trunk"
+                ? Effect.succeed({ commitSha: "def456" })
+                : Effect.fail(new Error("unknown revision") as never),
+          }),
+        ),
+        Layer.provide(layerDependencies),
+      );
+
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const shared = yield* service
+          .delegateTask(scope, {
+            task: "Fix the README.",
+            target: { projectId: otherProjectId },
+            mode: "async",
+            clientRequestId: "delegate-other-project-shared",
+          })
+          .pipe(Effect.flip);
+        assert.equal(shared.code, "invalid_request");
+        assert.equal((yield* Ref.get(dispatched)).length, 0);
+
+        yield* service.delegateTask(scope, {
+          task: "Fix the README.",
+          target: { projectId: otherProjectId },
+          isolation: "worktree",
+          mode: "async",
+          clientRequestId: "delegate-other-project",
+        });
+        const [request] = (yield* Ref.get(dispatched)) as ReadonlyArray<{
+          readonly projectId?: string;
+          readonly workspaceStrategy?: unknown;
+        }>;
+        assert.equal(request?.projectId, otherProjectId);
+        assert.deepEqual(request?.workspaceStrategy, {
+          type: "worktree",
+          baseRef: "origin/trunk",
+          startFromOrigin: true,
+        });
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
   it.effect(
     "retrying an accepted driver-only delegation replays even after the project disables every candidate",
     () =>

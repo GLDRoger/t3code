@@ -782,7 +782,8 @@ export class KinLeadPrompt extends Context.Service<
                 event._tag === "widget.action" ||
                 event._tag === "chat.reaction" ||
                 event._tag === "worker.report" ||
-                event._tag === "record.changed") &&
+                event._tag === "record.changed" ||
+                event._tag === "task.finished") &&
               event.chatId === input.lane?.chatId,
           )
             ? input.lane
