@@ -380,6 +380,7 @@ it.live(
           "team_open",
           "team_say",
           "kin_ask",
+          "kin_ask_close",
           "kin_chart",
           "kin_visual",
           "kin_react",
