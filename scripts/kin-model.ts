@@ -54,6 +54,9 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/triggers/KinTriggerSink.ts",
     "apps/server/src/kin/triggers/kinSchedules.ts",
     "apps/server/src/kin/lead/KinEventQueue.ts",
+    "apps/server/src/kin/pulse/told.ts",
+    "apps/server/src/kin/triggers/quietHold.ts",
+    "apps/server/src/kin/triggers/heldDelivery.ts",
   ],
   money: [
     "apps/server/src/kin/gendocs/receiptProposals.ts",

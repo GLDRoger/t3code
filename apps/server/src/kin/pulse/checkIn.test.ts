@@ -405,6 +405,14 @@ describe("pulse check-ins", () => {
         posted.map((one) => one.body),
         ["Invented first night line.\n\nInvented second night line."],
       );
+      // Kin asleep all day wakes in the next night: the line waits for that night's end.
+      yield* TestClock.setTime(MONDAY + DAY + 23 * HOUR);
+      assert.isTrue(yield* line("Invented third night line."));
+      yield* TestClock.setTime(MONDAY + 2 * DAY + 23 * HOUR);
+      assert.strictEqual(yield* deliverHeld(orgId, chat), 0);
+      yield* TestClock.setTime(MONDAY + 3 * DAY + 8 * HOUR);
+      assert.strictEqual(yield* deliverHeld(orgId, chat), 1);
+      assert.lengthOf(posted, 2);
     }).pipe(Effect.provide(layer)),
   );
 
