@@ -1105,6 +1105,12 @@ it.effect(
       const logged = yield* LeadClients.logTouch(scope, call);
       yield* LeadClients.logTouch(scope, call);
       assert.include(logged.touch, { kind: "call", who: "Owner" });
+      // Logged today for an earlier day: new to the dream that runs next, though it happened before.
+      const loggedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      assert.deepStrictEqual(
+        (yield* Touches.touchesBetween(orgId, loggedAt - 1, loggedAt)).map((one) => one.note),
+        [call.note],
+      );
       // An issued invoice and a payment against it count by themselves.
       yield* LeadWork.create(scope, {
         sourceEventId: "ask-event",
@@ -1140,6 +1146,16 @@ it.effect(
         "invoice",
         "payment",
       ]);
+      // The agent's retry of that call answers, and leaves it removed.
+      assert.include((yield* LeadClients.logTouch(scope, call)).touch, { kind: "call" });
+      // An edit to the invoice later, such as a payment, is no new contact.
+      const invoiceAt = after.touches!.find((touch) => touch.kind === "invoice")!.at;
+      yield* sql`UPDATE kin_records SET updated_at = updated_at + ${5 * DAY} WHERE key = 'INV-1'`;
+      const edited = yield* Clients.party([owner], { orgId, key: "C-1" });
+      assert.deepStrictEqual(
+        edited.touches?.map((touch) => [touch.kind, touch.kind === "invoice" ? touch.at : ""]),
+        after.touches?.map((touch) => [touch.kind, touch.kind === "invoice" ? invoiceAt : ""]),
+      );
 
       // With no open project, cold at the playbook's 30 days: one episode per last contact.
       yield* sql`UPDATE kin_records SET state = 'done' WHERE register_id = 'projects'`;
