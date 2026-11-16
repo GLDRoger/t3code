@@ -34,7 +34,9 @@ Kin's agent cases live in `mcp-tool-use`: `cases/kin.ndjson`, `cases/kin-owed.nd
 | `pnpm kin:baseline --model <id> --out runs/kin-<id>`         | yes           | Every Kin case, 3 samples each, on one model.                                                                                                              |
 | `pnpm kin:baseline:all`                                      | yes           | The same on Opus, Sonnet and Haiku, into `runs/kin-baseline-<model>`.                                                                                      |
 
-`summary.md` gives the pass rate per case and per pattern. The `mcp-tool-use` README covers the case format.
+`summary.md` gives the pass rate per case and per pattern, and counts cases and samples as pass, pass within margin, and fail. The `mcp-tool-use` README covers the case format.
+
+Agent voices pass within a margin. We stopped chasing exact lengths: the word ceilings stay in the characters as targets, and a reply up to 50% over its length cap, or one over a count such as emoji, `!` or questions, passes within margin. A voice case passes when 2 of its 3 samples pass. Checks of substance stay strict: the agent's own seat, a position, no claim of work it did not do, money only for people who may see it, Confirm before anything leaves the company, names instead of keys. Watch the within-margin count from run to run: a move from pass to within margin is drift, not a regression; a move to fail is.
 
 A case's `{{CHARACTER:<domain>}}` and `{{COLLEAGUES:<domain>}}` are a standard agent's default character and the others' one-liners, as Kin builds them. Where no regex can judge a reply (does it sound like this character?), `expect.rubric` asks the shell model yes/no questions about the visible reply and its calls; each answer is one check. A rubric costs one small call per sample.
 
