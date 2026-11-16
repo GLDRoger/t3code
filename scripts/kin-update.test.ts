@@ -137,11 +137,11 @@ SERVER_STATE=failed
 cp() { case "$*" in *.restoring) return 28 ;; esac; command cp "$@"; }
 { ${deploy}; } 2>"$HOME/said"
 cat "$HOME/said" >&2
-tail -n1 "$HOME/said" | grep -q '^update\.sh: ROLLBACK STOPPED: ' && echo "ends with the rollback line"
+tail -n1 "$HOME/said" | grep -q '^update\\.sh: ROLLBACK STOPPED: ' && echo "ends with the rollback line"
 echo "current $(readlink "$CURRENT" || echo none)"
 echo "database at $(heads): $(sqlite3 "$DB" "SELECT group_concat(body) FROM notes;")"
 echo "starts after rollback stop $(sed -n '/reset-failed/,$p' "$HOME/calls" | grep -c 'start kin-server')"
-ls "$HOME/.t3/userdata" | grep -q 'restoring\|failed-' && echo "leftovers"
+ls "$HOME/.t3/userdata" | grep -q 'restoring\\|failed-' && echo "leftovers"
 # Then the recovery the last line prints, once the disk has room again.
 unset -f cp
 export -f mv

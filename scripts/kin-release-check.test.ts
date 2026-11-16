@@ -1,3 +1,4 @@
+// @effect-diagnostics nodeBuiltinImport:off - Drives the runner's real child process against a temporary log.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
