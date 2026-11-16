@@ -92,6 +92,7 @@ import {
 } from "./teamView.ts";
 import { type AssignNotice, movedNotices, tellPeople } from "./assignNotices.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
+import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -356,7 +357,7 @@ const CreateRow = Schema.Struct({
   ...GoalInputs,
 });
 export const CreateInput = Schema.Struct({
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
   records: Schema.Array(CreateRow).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
 });
 /** The people Kin told, in their own chat, what this call gave them or took from them. */
@@ -376,7 +377,7 @@ export const CreateResult = Schema.Struct({
 });
 export const UpdateInput = Schema.Struct({
   key: KinRecordKey,
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
   title: Schema.optional(Title),
   state: Schema.optional(KinRecordState),
   waitingOn: Schema.optional(Who),
@@ -422,7 +423,7 @@ const Why = TrimmedNonEmptyString.check(Schema.isMaxLength(200)).annotate({
     'One line on why them, from what people_read shows, such as "iOS, 2 open, free Thursday". Kin shows it on the task and tells them.',
 });
 export const AssignInput = Schema.Struct({
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
   tasks: Schema.Array(
     Schema.Struct({ key: KinRecordKey, to: Who, reason: Why, due: Schema.optional(Due) }),
   ).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
@@ -439,7 +440,7 @@ export const AssignResult = Schema.Struct({
 });
 export const HandBackInput = Schema.Struct({
   key: KinRecordKey,
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
   note: TrimmedNonEmptyString.check(Schema.isMaxLength(280)).annotate({
     description:
       'What blocks it and what would unblock it ("needs the repo URL and hosting choice"); a person\'s own words when they hand it back.',

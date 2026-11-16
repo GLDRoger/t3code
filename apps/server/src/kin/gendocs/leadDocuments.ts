@@ -34,6 +34,7 @@ import { createsMoney, makeReceipt } from "./receipts.ts";
 import { defaultRecipes } from "./recipeDefaults.ts";
 import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
 import { KinWorkspace } from "./workspace.ts";
+import { TurnEvent } from "../lead/eventIds.ts";
 
 /**
  * `kin_recipes`, `kin_issue`, `kin_recipe_undo`, `kin_receipt`, and `kin_document` with a recipe,
@@ -222,7 +223,7 @@ export const IssueInput = Schema.Struct({
     description:
       "Take a void back: it is owed again with the number it had, or paid if its payments cover it.",
   }),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export const IssueResult = Schema.Struct({
   entry: Schema.String,
@@ -289,7 +290,7 @@ export const UndoInput = Schema.Struct({
   recipe: TrimmedNonEmptyString.check(Schema.isPattern(/^[a-z][a-z0-9-]{1,39}$/)).annotate({
     description: "The recipe whose last change to undo. Undo again to redo it.",
   }),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export const UndoResult = Schema.Struct({
   recipe: Schema.String,
@@ -346,7 +347,7 @@ export const ReceiptInput = Schema.Struct({
   towards: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(300))),
   mode: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(40))),
   reference: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 const ReceiptMade = Schema.Struct({
   status: Schema.Literal("made"),

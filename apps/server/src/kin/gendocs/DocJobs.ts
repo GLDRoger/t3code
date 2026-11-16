@@ -67,6 +67,7 @@ import {
   type StoredRecipe,
   type VerifyChange,
 } from "./workspace.ts";
+import { TurnEvent } from "../lead/eventIds.ts";
 
 // A worker's document job: a one-off file from the agent's brief, or writing a recipe. A recipe's
 // document is made in the call instead (`make.ts`). When the run ends Kin takes back only the files
@@ -111,7 +112,7 @@ export const DocumentInput = Schema.Struct({
     description:
       "With writeRecipe: attachment ids (each the file's name without its extension) of files the owner sent in this chat that show the look to copy, such as an invoice in the company's existing format (PDF, PNG, JPEG, WebP or SVG). The worker looks at them; their data never goes in the recipe.",
   }),
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
 });
 export type DocumentInput = typeof DocumentInput.Type;
 export const DocumentResult = Schema.Struct({

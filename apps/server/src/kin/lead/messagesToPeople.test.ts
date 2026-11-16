@@ -39,6 +39,7 @@ import { agentServices } from "../mcp/KinChatToolkit.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
+import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "./Handoff.ts";
 import { LeadMemory } from "./LeadMemory.ts";
 import { handlers as leadHandlers } from "./mcp/handlers.ts";
@@ -88,6 +89,7 @@ const layer = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers),
   McpHttpServer.toolkitRegistration(KinPulseToolkit, pulseHandlers),
   McpHttpServer.toolkitRegistration(KinWorkToolkit, workHandlers),
+  KinToolGate.layer,
 ).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provide(kinServices),
@@ -210,8 +212,8 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
 
       // The owner's setup turn: a project Dev leads and two late tasks of Zoya's.
       const setup = yield* says(owner, ownerChat, "Set up the Lumen Grove work.");
+      // Haiku 5.5 evals: 10 writes refused for a message id passed as the event. Kin fills it in.
       const created = yield* call("record_create", {
-        sourceEventId: setup,
         records: [
           { list: "projects", title: "Lumen Grove booking app", owner: "Dev Kulkarni" },
           { title: "Booking flow copy", owner: "Zoya Sheikh", due: "2026-11-10" },
@@ -220,6 +222,9 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
       });
       assert.isTrue(created.ok, JSON.stringify(created.value));
       const task = (created.value.records as ReadonlyArray<{ key: string }>)[1]!.key;
+      const [made] = yield* sql<{ origin: string }>`SELECT origin_key AS origin
+        FROM kin_records WHERE org_id = ${orgId} AND key = ${task}`;
+      assert.include(made?.origin, `:${setup}:`);
       const devsChat = yield* direct("dev");
 
       const outcomes: Array<readonly [string, string]> = [];
@@ -248,7 +253,8 @@ it.effect("every route a message to a person takes arrives in their chat", () =>
         yield* call("kin_relay", {
           to: "Dev",
           text: "Is the Lumen Grove booking app on track for the 30 Nov review?",
-          sourceEventId: ask,
+          sourceEventId: (yield* sql<{ messageId: string }>`SELECT json_extract(json, '$.messageId')
+            AS "messageId" FROM kin_events WHERE event_id = ${ask}`)[0]!.messageId,
         }),
         devsChat,
         { author: "agent", body: "on track for the 30 Nov review" },

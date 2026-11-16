@@ -1676,7 +1676,7 @@ it.effect("a check-in that shows outside lines marks its turn outside-read", () 
       yield* stored(wakeupId, [event]);
       yield* prompt.build({
         ...input,
-        wakeupId,
+        wakeupId: KinWakeupId.make(wakeupId),
         lane: { chatId, mode: "notice" },
         events: [event],
       });

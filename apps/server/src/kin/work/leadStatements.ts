@@ -43,6 +43,7 @@ import {
   statementRow,
 } from "./statements/statementReview.ts";
 import { type Review, reviewHash } from "./statements/statementCard.ts";
+import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The lead tools for statements. Kin reads and matches; the owner confirms on Kin's card. */
 
@@ -64,7 +65,7 @@ const Row = Schema.Struct({
   balance: Schema.optional(Amount),
 });
 export const ReadInput = Schema.Struct({
-  sourceEventId: TrimmedNonEmptyString,
+  sourceEventId: TurnEvent,
   attachment: TrimmedNonEmptyString.check(Schema.isMaxLength(255)).annotate({
     description:
       "The statement file's id or name, as this turn's message or an earlier one in this chat shows it.",

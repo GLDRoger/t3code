@@ -1265,6 +1265,24 @@ export const toolCallGate = <R>(
     { global: true },
   );
 
+/**
+ * Runs `prepare` on every tool call's raw arguments before they are decoded, whichever toolkit
+ * registered the tool; it may fill in a field the server knows better than the caller.
+ */
+export const toolCallPrepare = <R>(
+  prepare: (name: string, args: Record<string, unknown>) => Effect.Effect<void, never, R>,
+) =>
+  McpServer.middleware()(
+    (effect, { method, target, payload }) => {
+      const args = Predicate.hasProperty(payload, "arguments") ? payload.arguments : undefined;
+      return method !== "tools/call" || !Predicate.isObject(args)
+        ? effect
+        : // The call's arguments are decoded only when `effect` runs, after this.
+          prepare(target, args as Record<string, unknown>).pipe(Effect.andThen(effect));
+    },
+    { global: true },
+  );
+
 export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE, RR>) =>
   McpServer.layerHttp({
     name: "T3 Code",
