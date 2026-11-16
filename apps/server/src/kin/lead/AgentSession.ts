@@ -128,13 +128,11 @@ export const delegatedFromLead = Effect.fn("KinAgentSession.delegatedFromLead")(
 /** Social's tools show only in the own thread of the lead whose remit is social media. */
 const onSocialSeat = Effect.fn("KinAgentSession.onSocialSeat")(
   function* (threadId: ThreadId) {
-    const kin = yield* KinServer;
-    if (Option.isNone(kin.services)) return false;
+    // Optional, so the endpoint's list needs no Kin server where Kin is off.
+    const services = Option.flatMap(yield* Effect.serviceOption(KinServer), (kin) => kin.services);
+    if (Option.isNone(services)) return false;
     return yield* socialSeatThread(threadId).pipe(
-      Effect.provideService(
-        SqlClient.SqlClient,
-        Context.get(kin.services.value, SqlClient.SqlClient),
-      ),
+      Effect.provideService(SqlClient.SqlClient, Context.get(services.value, SqlClient.SqlClient)),
     );
   },
   Effect.catchCause((cause) =>
