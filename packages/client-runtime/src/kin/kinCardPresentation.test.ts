@@ -15,6 +15,7 @@ import {
   kinChoiceFailureNotice,
   kinChoicePhase,
   kinQuotedInZone,
+  kinAddressPieces,
   kinThreadDate,
 } from "./kinChoicePresentation.ts";
 import { formatKinTime } from "./kinScreenState.ts";
@@ -254,6 +255,21 @@ describe("choice cards", () => {
     expect(quoted).not.toContain("+0000");
     expect(quoted).toMatch(/^On .*2026 at .*, Anita <anita@orbitdental\.example> wrote:\n> Paid$/);
     expect(kinQuotedInZone("On someday, Anita wrote:", "someday")).toBe("On someday, Anita wrote:");
+    // A long address may break after "@" or a dot, never mid-word; other words stay whole.
+    const line = "Rhea <accounts.payable@orbitdental.example>, Ambermill Ltd.";
+    expect(kinAddressPieces(line)).toEqual([
+      "Rhea",
+      " ",
+      "<accounts.",
+      "payable@",
+      "orbitdental.",
+      "example>,",
+      " ",
+      "Ambermill",
+      " ",
+      "Ltd.",
+    ]);
+    expect(kinAddressPieces(line).join("")).toBe(line);
   });
 
   const posted = Date.parse("2026-11-08T09:00:00.000Z");

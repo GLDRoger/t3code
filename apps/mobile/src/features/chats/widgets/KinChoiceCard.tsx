@@ -18,6 +18,7 @@ import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import { kinConnectionChange } from "@t3tools/client-runtime/kin/kinConnections";
 import {
+  kinAddressPieces,
   kinChoiceAccessibilityLabel,
   kinChoiceActInput,
   kinChoiceAnswered,
@@ -75,7 +76,7 @@ function SendDetail(props: {
               <Text textRole="footnote" className="text-foreground-muted">
                 {line.label}{" "}
               </Text>
-              {line.value}
+              {kinAddressPieces(line.value).join("\u200B")}
             </Text>
             {line.label === "From" && pickFrom !== null ? (
               <Button

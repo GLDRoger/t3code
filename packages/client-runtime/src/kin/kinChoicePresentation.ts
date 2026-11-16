@@ -98,6 +98,16 @@ export function kinThreadDate(raw: string | null, now: Date = new Date()): strin
  * The quote's "On <date>, <who> wrote:" line as a person reads it, in the reader's zone: the
  * provider gives the raw header date, the same one as the thread box's.
  */
+/**
+ * An address line in pieces that may each start a new line: after "@" and each dot of an email,
+ * so a long address breaks there rather than mid-word. Joined back, it is the line unchanged.
+ */
+export function kinAddressPieces(value: string): ReadonlyArray<string> {
+  return value
+    .split(/(\s+)/u)
+    .flatMap((word) => (word.includes("@") ? word.split(/(?<=[@.])(?=[^.])/u) : [word]));
+}
+
 export function kinQuotedInZone(quoted: string, raw: string | null): string {
   if (raw === null || !quoted.startsWith(`On ${raw}, `)) return quoted;
   const at = new Date(raw.trim());

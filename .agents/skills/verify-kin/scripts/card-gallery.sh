@@ -46,6 +46,8 @@ if $owner_level; then
 fi
 # A turn that fails, as a model error would: the chat's "couldn't start" line, then its give-up.
 make "couldn't start" chief people_read '{}' --fail
+# Failing after something visible posted: "stopped partway" instead of a silent retry.
+make "stopped partway" chief kin_ask '{"question":"Should W-4 move to Monday?","options":[{"label":"Yes"},{"label":"No"}]}' --fail
 # Several pictures in one message, as the person sends them.
 PICS="$(mktemp -d)"
 node -e '
