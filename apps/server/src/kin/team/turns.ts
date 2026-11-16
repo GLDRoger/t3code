@@ -8,12 +8,12 @@ export const TEAM_MAX_MESSAGES = 16;
 export const TEAM_UNITS_CAP = 150_000;
 export const TEAM_IDLE_MS = 24 * 60 * 60 * 1000;
 /** The Chief of staff's chair check comes once, at this many messages. */
-export const TEAM_CHAIR_AT = 10;
-export const TEAM_MAX_NAMED = 2;
+const TEAM_CHAIR_AT = 10;
+const TEAM_MAX_NAMED = 2;
 /** How often one agent may be offered a pitch-in in one discussion, unless it is named. */
-export const TEAM_PITCH_OFFERS = 2;
+const TEAM_PITCH_OFFERS = 2;
 /** Messages after an objection before the Chief of staff closes it. */
-export const TEAM_AFTER_OBJECTION = 2;
+const TEAM_AFTER_OBJECTION = 2;
 export const TEAM_AGENT_STARTED_PER_DAY = 6;
 export const TEAM_OPEN_AT_ONCE = 2;
 /** The share of the agents' daily budget Team-room turns may spend. */
