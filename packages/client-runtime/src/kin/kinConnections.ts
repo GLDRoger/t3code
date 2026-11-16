@@ -250,7 +250,9 @@ export function kinConnectionStatus(connection: KinConnection): KinConnectionSta
     detail:
       connection.readTools === 0
         ? "Turn on the tools agents may use."
-        : `Agents can use ${plural(connection.readTools, "tool", "tools")}.`,
+        : (connection.sendAs?.length ?? 0) > 0 && connection.needsSignInToSend !== true
+          ? "Read, and send on your Confirm."
+          : `Agents can use ${plural(connection.readTools, "tool", "tools")}.`,
   };
 }
 

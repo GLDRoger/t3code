@@ -753,7 +753,7 @@ it.effect(
         assert.strictEqual(relayed.to, me!.name);
         assert.deepStrictEqual(yield* systemRows(sql, orgId, ctx.chiefChat), [
           {
-            body: 'Zoya Sheikh asked, in their chat with Chief of staff:\n"Can W-7 move to 1 Feb? I\'m on leave 20 to 29 January."',
+            body: 'Zoya Sheikh asked Chief of staff:\n"Can W-7 move to 1 Feb? I\'m on leave 20 to 29 January."',
           },
         ]);
         assert.lengthOf(

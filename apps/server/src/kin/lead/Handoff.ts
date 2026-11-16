@@ -510,7 +510,7 @@ const make = Effect.gen(function* () {
       audience: "chat",
       messageId,
       waitingFor: to.personId,
-      body: `${who?.name ?? "A teammate"} asked, in their chat with ${self.name}:\n"${input.text.replace(/\s+/g, " ")}"`,
+      body: `${who?.name ?? "A teammate"} asked ${self.name}:\n"${input.text.replace(/\s+/g, " ").replace(/"/g, "'")}"`,
     });
     return {
       to: to.name,

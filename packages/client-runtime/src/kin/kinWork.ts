@@ -887,8 +887,11 @@ export function kinWorkChangeText(
   const who = kinWorkActorName(change.by, names);
   const field = (name: string) => change.fields.find((held) => held.field === name);
   if (change.kind === "created") {
+    // The system brought agents' notes over; a person's import is a sheet they brought in.
     return change.via === "import"
-      ? "Brought over from your agents' notes"
+      ? change.by._tag === "system"
+        ? "Brought over from your agents' notes"
+        : "Brought over in an import"
       : `${who} ${ADDED[list]}`;
   }
   if (change.kind === "linked") {
