@@ -556,7 +556,9 @@ export const chartOf = (
   }
   // A start is s0; one a lens gives no step of its own is left out, unless nothing moves at all.
   const used = new Set(drawn.flatMap((one) => [one.a, one.b]));
-  const starts = [...startLabels].filter((label) => used.has(label) || drawn.length === 0).map(idOf);
+  const starts = [...startLabels]
+    .filter((label) => used.has(label) || drawn.length === 0)
+    .map(idOf);
   const arrows = new Map<string, Set<string>>();
   for (const { a, b, label } of drawn) {
     const key = `${idOf(a)} ${idOf(b)}`;
@@ -711,7 +713,9 @@ const main = async (args: ReadonlyArray<string>) => {
       ].join("\n"),
     );
     for (const { lens, chart } of charts)
-      console.log(`\nChart: ${chartPath}: ${lens.title} (${chart.states} states, ${chart.arrows} arrows)`);
+      console.log(
+        `\nChart: ${chartPath}: ${lens.title} (${chart.states} states, ${chart.arrows} arrows)`,
+      );
   }
   console.log(
     `\n${failed.length === 0 ? "All rules hold" : `${failed.length} rule(s) break`} (${Math.round(performance.now() - started)} ms).`,

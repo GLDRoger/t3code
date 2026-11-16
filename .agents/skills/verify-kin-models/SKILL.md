@@ -1,17 +1,20 @@
 ---
 name: verify-kin-models
-description: Model-check Kin's riskiest flows (the send card, a turn's reply, the loose check-in) with TLA+ and draw them as statecharts the owner can read. Use when changing the code a model covers, when a model or property test fails, or when asked for a chart of one of these flows.
+description: Model-check Kin's riskiest flows (the send card, a turn's reply, the loose check-in, money recorded on a Confirm, changing who a person is, a task's hand-offs) with TLA+ and draw them as statecharts the owner can read. Use when changing the code a model covers, when a model or property test fails, or when asked for a chart of one of these flows.
 ---
 
 # Verify Kin's models
 
-Three small TLA+ models live in `verification/kin/<name>/`. Each has a `README.md` with its rules, bound, what it leaves out, and the files it covers.
+Six small TLA+ models live in `verification/kin/<name>/`. Each has a `README.md` with its rules, bound, what it leaves out, and the files it covers.
 
 | Model     | Run it when you change                                                                                                                                         |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `send`    | `connections/ConnectionsService.ts` asks and sends, `connections/Sending.ts`, `work/cardAnswers.ts`, start-up resume in `layer.ts`                             |
 | `reply`   | `reply/KinReplyBridge.ts`, `lead/WakeupRunner.ts` finish and cleanup, `lead/KinEventQueue.ts` claim, steer and requeue, `floor/KinFloor.ts`, relays and nudges |
 | `checkin` | `scheduledTasks/Schedule.ts` or `ScheduledTaskService.ts` timing, `pulse/checkIn*.ts`, `pulse/KinPulse.ts` holds, `triggers/kinSchedules.ts`                   |
+| `money`   | `gendocs/receiptProposals.ts`, `gendocs/receipts.ts`, `work/statements/statementApply.ts`, `statementReview.ts`, `statementMatch.ts`, `KinRecords.ts` payments |
+| `people`  | `people/KinPeople.ts`, `KinAccess.ts`, `personNamed.ts`, `work/teamView.ts`, `lead/Audience.ts`, `lead/ChatSharing.ts`                                         |
+| `tasks`   | `work/KinRecords.ts` hand-offs, `leadWork.ts` assign and hand back, `ownerWork.ts`, `assignNotices.ts`, `teamView.ts`, `pulse/senses/work.ts`                  |
 
 Paths are under `apps/server/src` and `apps/server/src/kin`. `MODEL_COVERS` in `scripts/kin-model.ts` lists the same files; `vp run check:changed` runs a model when one of them, its folder or the runner changes, and skips it with "skipped: Java not found" when no Java is installed.
 
@@ -23,7 +26,7 @@ node scripts/kin-model.ts <name> --variants   # each deliberately broken variant
 node scripts/kin-model.ts <name> --chart /path/outside/the/repo.md
 ```
 
-The script downloads TLC 1.7.4 once into `~/.cache/kin-model` (`KIN_MODEL_CACHE` overrides it) and checks its SHA-256. It needs Java 11 or later, and falls back to `mise exec java@temurin-21`. Each model runs in under a minute. Never commit the jar or a chart.
+The script downloads TLC 1.7.4 once into `~/.cache/kin-model` (`KIN_MODEL_CACHE` overrides it) and checks its SHA-256. It needs Java 11 or later, and falls back to `mise exec java@temurin-21`. Each model runs in under a minute; `money` is the slowest, about 25 s. A view may draw several charts (`charts`), each a lens on the same graph, when one would carry more than about 20 arrows. Never commit the jar or a chart.
 
 ## Read a counterexample
 

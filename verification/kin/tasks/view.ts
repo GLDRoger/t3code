@@ -70,7 +70,9 @@ export const step = (action: string, from: Vars, to: Vars) => {
   switch (action) {
     case "Give": {
       const receiver =
-        to["holder"] === "agent" ? "the agent" : (names[String(to["holder"])] ?? String(to["holder"]));
+        to["holder"] === "agent"
+          ? "the agent"
+          : (names[String(to["holder"])] ?? String(to["holder"]));
       if (to["holder"] === "owner") return "You take it back";
       if (to["byAgent"] === true) return `The agent gives it to ${receiver}`;
       if (to["holder"] === "agent" && to["byPerson"] === "owner")
