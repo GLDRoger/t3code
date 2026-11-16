@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures read a thread date against a fixed now.
 import { KinChatError, type EnvironmentId, type KinWidget } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 

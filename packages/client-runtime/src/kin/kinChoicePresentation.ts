@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format a mail thread's date for React render, outside an Effect runtime.
 import {
   KIN_CHOICE_CARD_ACTION,
   type KinChatError,
