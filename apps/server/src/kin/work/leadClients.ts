@@ -12,7 +12,16 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { turnPeople } from "../lead/Audience.ts";
 import { KinRecords } from "./KinRecords.ts";
-import { askedBy, Client, type Lead, leadTool, refOrNull, retryKey, sourceOf } from "./leadWork.ts";
+import {
+  askedBy,
+  Client,
+  type Lead,
+  leadTool,
+  ownerTurn,
+  refRecord,
+  retryKey,
+  sourceOf,
+} from "./leadWork.ts";
 import { endOfDay, iso, ownerZone } from "./recordRows.ts";
 import * as Touches from "./touches.ts";
 
@@ -94,13 +103,11 @@ const atOf = Effect.fn("KinClientTools.at")(function* (
 
 const runLog = Effect.fnUntraced(function* (lead: Lead, input: typeof TouchInput.Type) {
   yield* sourceOf(lead, input.sourceEventId);
-  const partyId = yield* refOrNull(lead, input.client, "clients");
-  const sql = yield* SqlClient.SqlClient;
-  const [client] = yield* sql<{ key: string; title: string }>`SELECT key, title FROM kin_records
-    WHERE org_id = ${lead.orgId} AND record_id = ${partyId!} ORDER BY key`;
+  const client = yield* refRecord(lead, input.client, "clients");
+  const partyId = client.recordId;
   const now = yield* Clock.currentTimeMillis;
   const touch = yield* Touches.logTouch(lead.orgId, {
-    partyId: partyId!,
+    partyId,
     kind: input.kind,
     at: yield* atOf(lead, input.at, now),
     note: input.note,
@@ -112,20 +119,18 @@ const runLog = Effect.fnUntraced(function* (lead: Lead, input: typeof TouchInput
     now,
   });
   yield* (yield* KinRecords).announce(lead.orgId);
-  return { client: `${client!.title} (${client!.key})`, touch: toShown(touch) };
+  return { client: `${client.name} (${client.key})`, touch: toShown(touch) };
 });
 export const logTouch = leadTool("KinClientTools.logTouch", runLog);
 
 /** Last contact and the recent touches, for `client_read`. */
 const runContact = Effect.fnUntraced(function* (lead: Lead, input: typeof ContactInput.Type) {
-  const partyId = yield* refOrNull(lead, input.key, "clients");
-  const sql = yield* SqlClient.SqlClient;
-  const [client] = yield* sql<{ createdAt: number }>`SELECT created_at AS "createdAt"
-    FROM kin_records WHERE org_id = ${lead.orgId} AND record_id = ${partyId!} ORDER BY key`;
+  yield* ownerTurn(lead);
+  const client = yield* refRecord(lead, input.key, "clients");
   const now = yield* Clock.currentTimeMillis;
-  const touches = yield* Touches.touchesOf(lead.orgId, partyId!, now, TOUCHES_READ);
+  const touches = yield* Touches.touchesOf(lead.orgId, client.recordId, now, TOUCHES_READ);
   const last = touches[0] === undefined ? null : Date.parse(touches[0].at);
-  const quiet = Touches.quietLine(last, client!.createdAt, now);
+  const quiet = Touches.quietLine(last, client.createdAt, now);
   return {
     lastContact: last === null ? null : { at: iso(last), days: Touches.daysSince(last, now) },
     ...(quiet === null ? {} : { quiet }),

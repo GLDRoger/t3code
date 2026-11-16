@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -56,6 +57,7 @@ const at = "2026-11-11T00:00:00.000Z";
 const owner = { _tag: "person" as const, orgId, personId: ownerId };
 const mate = { _tag: "person" as const, orgId, personId: mateId };
 const DAY = 24 * 60 * 60 * 1000;
+const isChatError = Schema.is(KinChatError);
 type Services =
   | KinIdentity
   | KinLevelGate
@@ -1009,6 +1011,66 @@ it.effect("a teammate gets none of the client calls, and a client change ticks s
 );
 
 it.effect(
+  "in a teammate's turn a client they can't see answers like no client, and no name comes back",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* setup("ask-event");
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ list: "clients", title: "Invented Open Co" }],
+      });
+      yield* LeadWork.update(scope, { key: "C-1", sourceEventId: "ask-event", sensitive: true });
+      // The teammate sees clients, joins the chat, and the turn becomes one they read.
+      yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('lead-chat-mate', ${orgId}, 'lead-chat', 'person', ${mateId}, 'member', ${at})`;
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = 'wake'`;
+      const log = (client: string) =>
+        LeadClients.logTouch(scope, {
+          sourceEventId: "ask-event",
+          client,
+          kind: "call",
+          note: "Invented call",
+        }).pipe(
+          Effect.flip,
+          Effect.map((error) => (isChatError(error) ? error : assert.fail(String(error)))),
+        );
+      const hidden = yield* log("C-1");
+      const missing = yield* log("C-9");
+      assert.strictEqual(hidden.reason, "not_found");
+      assert.strictEqual(hidden.message, missing.message.replace("C-9", "C-1"));
+      assert.notInclude((yield* log("Invented Acme")).message, "C-1");
+      for (const error of [hidden, missing]) assert.notInclude(error.message, "Invented Acme");
+      assert.deepStrictEqual(
+        yield* sql`SELECT party_id FROM kin_client_touches WHERE org_id = ${orgId}`,
+        [],
+      );
+      // A client everyone there sees still takes the teammate's contact, by name.
+      assert.strictEqual(
+        (yield* LeadClients.logTouch(scope, {
+          sourceEventId: "ask-event",
+          client: "C-2",
+          kind: "call",
+          note: "Invented call",
+        })).client,
+        "Invented Open Co (C-2)",
+      );
+      // Setting up a client by a hidden one's name finds nothing to show: it isn't there for them.
+      const again = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ list: "clients", title: "Invented Acme" }],
+      }).pipe(Effect.flip);
+      assert.notInclude(String(again.message), "C-1");
+      // The whole client stays the owner's, even past the gate.
+      assert.include(yield* Effect.flip(LeadClients.contact(scope, { key: "C-2" })), {
+        reason: "not_allowed",
+      });
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "contact is what people logged and what Kin issued or received, never a draft or a chat",
   () =>
     Effect.gen(function* () {
@@ -1049,6 +1111,12 @@ it.effect(
       const logged = yield* LeadClients.logTouch(scope, call);
       yield* LeadClients.logTouch(scope, call);
       assert.include(logged.touch, { kind: "call", who: "Owner" });
+      // Logged today for an earlier day: new to the dream that runs next, though it happened before.
+      const loggedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis);
+      assert.deepStrictEqual(
+        (yield* Touches.touchesBetween(orgId, loggedAt - 1, loggedAt)).map((one) => one.note),
+        [call.note],
+      );
       // An issued invoice and a payment against it count by themselves.
       yield* LeadWork.create(scope, {
         sourceEventId: "ask-event",
@@ -1084,6 +1152,16 @@ it.effect(
         "invoice",
         "payment",
       ]);
+      // The agent's retry of that call answers, and leaves it removed.
+      assert.include((yield* LeadClients.logTouch(scope, call)).touch, { kind: "call" });
+      // An edit to the invoice later, such as a payment, is no new contact.
+      const invoiceAt = after.touches!.find((touch) => touch.kind === "invoice")!.at;
+      yield* sql`UPDATE kin_records SET updated_at = updated_at + ${5 * DAY} WHERE key = 'INV-1'`;
+      const edited = yield* Clients.party([owner], { orgId, key: "C-1" });
+      assert.deepStrictEqual(
+        edited.touches?.map((touch) => [touch.kind, touch.kind === "invoice" ? touch.at : ""]),
+        after.touches?.map((touch) => [touch.kind, touch.kind === "invoice" ? invoiceAt : ""]),
+      );
 
       // With no open project, cold at the playbook's 30 days: one episode per last contact.
       yield* sql`UPDATE kin_records SET state = 'done' WHERE register_id = 'projects'`;

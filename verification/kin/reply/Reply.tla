@@ -61,8 +61,8 @@ Steer(m) ==
                  worked, floor, presence, restarts>>
 
 (* reply/KinReplyBridge.ts deliver: an answer segment posts once per slot (reply:<item>), extends
-   after; isAnswer keeps Claude thinking items out (only the variant posts them). markReplied sets
-   replied_at on the events the model had read before the segment (`heard`); Steer here is the
+   after; isAnswer keeps Claude thinking items out (only the variant posts them). The post's own
+   transaction sets replied_at on the events the model had read before the segment (`heard`); Steer here is the
    claim and the model reading it in one step. The reply may promise a card or a hand-over that
    later work in the turn has to do. *)
 LeadReplies ==

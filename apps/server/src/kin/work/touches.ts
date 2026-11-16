@@ -37,6 +37,8 @@ type TouchSql = {
   readonly recordId: string | null;
   readonly key: string | null;
   readonly title: string | null;
+  /** When Kin learned of it: a contact logged for yesterday today is new to the dream today. */
+  readonly recorded: number;
 };
 
 // `paid_on` is a day; noon UTC keeps it on that day in every zone a day count cares about.
@@ -44,7 +46,18 @@ const paidAt = (sql: Sql) =>
   sql`CAST((julianday(p.paid_on) - 2440587.5) * 86400000 AS INTEGER) + 43200000`;
 
 const touchColumns = (sql: Sql) =>
-  sql`"partyId", id, at, kind, note, who, logged, "byKind", "byName", "recordId", key, title`;
+  sql`"partyId", id, at, kind, note, who, logged, "byKind", "byName", "recordId", key, title,
+    recorded`;
+
+/** One logged contact as a row of the union; removed ones only when `removed` is asked. */
+const loggedRows = (sql: Sql) => sql`SELECT t.party_id AS "partyId", t.touch_id AS id, t.at,
+      t.kind, t.note, COALESCE(wp.display_name, lp.display_name) AS who, 1 AS logged,
+      t.logged_by_kind AS "byKind", COALESCE(lp.handle, t.logged_by_id) AS "byName",
+      NULL AS "recordId", NULL AS key, NULL AS title, t.created_at AS recorded
+    FROM kin_client_touches t
+    LEFT JOIN kin_people wp ON wp.org_id = t.org_id AND wp.person_id = t.person_id
+    LEFT JOIN kin_people lp ON t.logged_by_kind = 'person' AND lp.org_id = t.org_id
+      AND lp.person_id = t.logged_by_id`;
 
 /** Every contact with these clients, or all of them, up to `now`, one row each, unordered. */
 const touchUnion = (
@@ -55,28 +68,24 @@ const touchUnion = (
 ) => {
   const of = (column: Statement.Fragment) =>
     partyIds === "all" ? sql`${column} IS NOT NULL` : sql`${column} IN ${sql.in(partyIds)}`;
+  // An invoice or quote with no date was sent when it was issued; later edits are not contact.
+  const issued = sql`COALESCE(r.date_at, (SELECT n.issued_at FROM kin_issued_numbers n
+      WHERE n.org_id = r.org_id AND n.record_id = r.record_id), r.created_at)`;
   return sql`SELECT ${touchColumns(sql)} FROM (
-    SELECT t.party_id AS "partyId", t.touch_id AS id, t.at, t.kind, t.note,
-      COALESCE(wp.display_name, lp.display_name) AS who, 1 AS logged,
-      t.logged_by_kind AS "byKind", COALESCE(lp.handle, t.logged_by_id) AS "byName",
-      NULL AS "recordId", NULL AS key, NULL AS title
-    FROM kin_client_touches t
-    LEFT JOIN kin_people wp ON wp.org_id = t.org_id AND wp.person_id = t.person_id
-    LEFT JOIN kin_people lp ON t.logged_by_kind = 'person' AND lp.org_id = t.org_id
-      AND lp.person_id = t.logged_by_id
+    ${loggedRows(sql)}
     WHERE t.org_id = ${orgId} AND t.removed_at IS NULL AND ${of(sql`t.party_id`)}
     UNION ALL
-    SELECT r.party_id, 'record:' || r.key, COALESCE(r.date_at, r.updated_at),
+    SELECT r.party_id, 'record:' || r.key, ${issued},
       CASE r.register_id WHEN 'invoices' THEN 'invoice' WHEN 'quotes' THEN 'quote'
         ELSE 'meeting' END,
-      r.title, NULL, 0, NULL, NULL, r.record_id, r.key, r.title
+      r.title, NULL, 0, NULL, NULL, r.record_id, r.key, r.title, ${issued}
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND ${of(sql`r.party_id`)} AND (
       (r.register_id IN ('invoices', 'quotes') AND r.state IN ('waiting', 'done'))
       OR (r.category = 'meeting' AND r.state != 'dropped' AND r.date_at IS NOT NULL))
     UNION ALL
     SELECT r.party_id, 'payment:' || p.payment_id, ${paidAt(sql)}, 'payment', r.title, NULL, 0,
-      NULL, NULL, r.record_id, r.key, r.title
+      NULL, NULL, r.record_id, r.key, r.title, p.created_at
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND p.withheld = 0
@@ -172,9 +181,9 @@ export const logTouch = Effect.fn("KinTouches.log")(function* (
       reason: "not_allowed",
       message: "That retry names a different client.",
     });
-  const [row] =
-    yield* sql<TouchSql>`SELECT ${touchColumns(sql)} FROM (${touchUnion(sql, orgId, [input.partyId], input.now + DAY_MS)})
-    WHERE id = ${stored.touchId}`;
+  // Read apart from the visible union: a retry after the owner removed it answers, and stays removed.
+  const [row] = yield* sql<TouchSql>`${loggedRows(sql)}
+    WHERE t.org_id = ${orgId} AND t.touch_id = ${stored.touchId}`;
   return toTouch(row!);
 });
 
@@ -313,8 +322,8 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
 });
 
 /**
- * Every contact that happened in `(from, until]`, with its client, for the dream. Who logged it
- * by hand says who stated it; what Kin read from its own records is Kin's.
+ * Every contact that happened, or that Kin learned of, in `(from, until]`, with its client, for
+ * the dream. Who logged it by hand says who stated it; what Kin read from its records is Kin's.
  */
 export const touchesBetween = Effect.fn("KinTouches.between")(function* (
   orgId: KinOrgId,
@@ -327,7 +336,8 @@ export const touchesBetween = Effect.fn("KinTouches.between")(function* (
       u."recordId", u.key, u.title, c.key AS "clientKey", c.title AS "clientName"
     FROM (${touchUnion(sql, orgId, "all", until)}) u
     JOIN kin_records c ON c.org_id = ${orgId} AND c.record_id = u."partyId"
-    WHERE u.at > ${from} ORDER BY u.at, u.id`;
+    WHERE (u.at > ${from} OR u.recorded > ${from}) AND u.recorded <= ${until}
+    ORDER BY u.at, u.id`;
   return rows.map((row) => ({
     ...toTouch(row),
     client: { key: row.clientKey, name: row.clientName },
