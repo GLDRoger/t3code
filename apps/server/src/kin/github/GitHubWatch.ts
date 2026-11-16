@@ -698,10 +698,8 @@ export const make = Effect.gen(function* () {
           VALUES (${orgId}, ${seenKey(comment)}, ${current.repo.toLowerCase()}, ${current.number}, NULL, 'seen', ${now})
           ON CONFLICT DO NOTHING`;
     }
-    const interval = Math.max(
-      DEFAULT_INTERVAL_MS,
-      Number(notifications.headers["x-poll-interval"] ?? 60) * 1000 || DEFAULT_INTERVAL_MS,
-    );
+    const asked = Number(notifications.headers["x-poll-interval"]);
+    const interval = asked > 0 ? asked * 1000 : DEFAULT_INTERVAL_MS;
     // With work left over, the cursors stay put: the next look reads the same and handles the rest.
     yield* later
       ? sql`UPDATE kin_github_watch SET problem = NULL, checked_at = ${now}, next_at = ${now + interval}

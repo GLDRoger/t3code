@@ -50,6 +50,8 @@ export interface FakeWorld {
   seq: number;
   /** A failure every call answers with, such as 401, to show a signed-out login. */
   down: number | null;
+  /** The seconds GitHub asks between looks; real GitHub says 60. */
+  pollInterval?: number;
   repos: FakeRepo[];
   items: FakeItem[];
   comments: FakeComment[];
@@ -137,6 +139,10 @@ export class FakeGitHub {
       if (reason === "review_requested") existing.reason = reason;
     }
     this.world.modified = Math.max(this.world.modified + 1000, at);
+  }
+
+  private interval() {
+    return String(this.world.pollInterval ?? 60);
   }
 
   tick(ms: number) {
@@ -296,7 +302,7 @@ export class FakeGitHub {
       if (asked !== undefined && Date.parse(asked) >= Date.parse(lastModified))
         return {
           status: 304,
-          headers: { "last-modified": lastModified, "x-poll-interval": "60" },
+          headers: { "last-modified": lastModified, "x-poll-interval": this.interval() },
           body: null,
         };
       return ok(
@@ -316,13 +322,13 @@ export class FakeGitHub {
               },
             };
           }),
-        { "last-modified": lastModified, "x-poll-interval": "60" },
+        { "last-modified": lastModified, "x-poll-interval": this.interval() },
       );
     }
     if (method === "GET" && path === `users/${this.world.user}/events`) {
       const etag = `"v${this.world.eventsVersion}"`;
       if (headers["if-none-match"] === etag)
-        return { status: 304, headers: { etag, "x-poll-interval": "60" }, body: null };
+        return { status: 304, headers: { etag, "x-poll-interval": this.interval() }, body: null };
       return ok(
         this.world.events.slice(0, 100).map((event) => ({
           id: event.id,
@@ -336,7 +342,7 @@ export class FakeGitHub {
             number: event.number,
           },
         })),
-        { etag, "x-poll-interval": "60" },
+        { etag, "x-poll-interval": this.interval() },
       );
     }
     if (method === "GET" && path === "user/repos")
@@ -561,6 +567,18 @@ const main = async () => {
   const fs = await import("node:fs");
   const state = `${process.env.KIN_FAKE_GH ?? "."}/github.json`;
   const userFile = `${process.env.KIN_FAKE_GH ?? "."}/user`;
+  // The server and a driver script both write the world: one at a time, or a write is lost.
+  const lock = `${state}.lock`;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (let tries = 0; ; tries++) {
+    try {
+      fs.mkdirSync(lock);
+      break;
+    } catch {
+      if (tries > 1000) fs.rmSync(lock, { recursive: true, force: true });
+      Atomics.wait(pause, 0, 0, 5);
+    }
+  }
   const user = fs.existsSync(userFile)
     ? fs.readFileSync(userFile, "utf8").trim()
     : "invented-owner";
@@ -595,15 +613,18 @@ const main = async () => {
                       ? world.merge(input)
                       : op === "down"
                         ? (world.world.down = input.status ?? null)
-                        : op === "show"
-                          ? world.world
-                          : undefined;
+                        : op === "interval"
+                          ? (world.world.pollInterval = input.seconds)
+                          : op === "show"
+                            ? world.world
+                            : undefined;
     out = JSON.stringify(result ?? null);
   } else {
     const stdin = args.includes("--input") ? fs.readFileSync(0, "utf8") : "";
     ({ code, out } = runGh(world, args, stdin));
   }
   fs.writeFileSync(state, JSON.stringify(world.world));
+  fs.rmSync(lock, { recursive: true, force: true });
   process.stdout.write(out.endsWith("\n") || out === "" ? out : `${out}\n`);
   process.exit(code);
 };
