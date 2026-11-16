@@ -14,6 +14,7 @@ import * as NodeCrypto from "node:crypto";
 
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
+import { agentQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { logTouch } from "../work/touches.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
@@ -333,6 +334,7 @@ export const poll = Effect.fn("KinPulseOutside.poll")(function* (
           outside: [line],
           strong: true,
         }),
+        yield* heldUntil(orgId, agentId, at),
       )
       .pipe(
         Effect.map((result) => !result.duplicate),
@@ -346,3 +348,9 @@ export const poll = Effect.fn("KinPulseOutside.poll")(function* (
   }
   return woke;
 });
+
+/** A watch match nobody asked for waits out the owner's quiet hours. */
+const heldUntil = (orgId: KinOrgId, agentId: KinAgentId, at: number) =>
+  Effect.map(agentQuietUntil(orgId, agentId, at), (notBefore) =>
+    notBefore === undefined ? undefined : { notBefore },
+  );

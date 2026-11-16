@@ -115,6 +115,11 @@ const writeCard = Effect.fn("KinScheduledTasks.writeCard")(function* (input: {
     return yield* cards.update(existing.value, state, input.now, input.closed);
   }
   if (input.chatId === null || input.closed) return undefined;
+  // A check-in is listed in Settings › Check-ins; a card for it in the chat is only noise.
+  const sql = yield* SqlClient.SqlClient;
+  const [checkIn] = yield* sql`SELECT 1 FROM kin_schedules WHERE org_id = ${input.orgId}
+    AND schedule_id = ${input.itemId} AND check_in = 1 LIMIT 1`;
+  if (checkIn !== undefined) return undefined;
   return yield* cards.post(
     input.orgId,
     input.chatId,
@@ -441,9 +446,12 @@ const make = Effect.gen(function* () {
         const title = task.title;
         const skip = Effect.fn("KinScheduledTasks.skipNative")(function* (why: string) {
           yield* settleCard({ at, status: "skipped", note: why });
-          const chatId = yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
-          if (chatId !== null)
-            yield* notice(orgId, chatId, fire.fireId, `Skipped "${title}": ${why}`, now);
+          const chatId =
+            row.checkIn === 1
+              ? null
+              : yield* cardChatFor(sql, orgId, row.chatId, lead?.ownerChatId ?? null);
+          if (chatId === null) yield* Effect.logInfo("Kin check-in skipped", { title, why });
+          else yield* notice(orgId, chatId, fire.fireId, `Skipped "${title}": ${why}`, now);
           yield* consume;
         });
         if (paused) return yield* skip("Kin is paused.");
@@ -467,8 +475,15 @@ const make = Effect.gen(function* () {
           );
           checkedIn = true;
           yield* settleCard(
-            result._tag === "nothing_new"
-              ? { at, status: "skipped", note: "Nothing new since the last check-in." }
+            result._tag === "nothing_new" || result._tag === "folded"
+              ? {
+                  at,
+                  status: "skipped",
+                  note:
+                    result._tag === "folded"
+                      ? "The weekly brief covers it today."
+                      : "Nothing untold since the last check-in.",
+                }
               : {
                   at,
                   status: "posted",

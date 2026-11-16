@@ -1,0 +1,53 @@
+import { KinChatId, KinMessageId, type KinOrgId } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import type { WriteAudience } from "../chat/KinChatRepository.ts";
+import type { KinChatService } from "../chat/KinChatService.ts";
+
+/**
+ * Posts every held line now due, oldest first, one message per chat and kind. The message id
+ * comes from the first line held, so a run repeated after a crash finds its own post.
+ */
+export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
+  orgId: KinOrgId,
+  chat: Pick<KinChatService["Service"], "notice">,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  const rows = yield* sql<{
+    holdId: string;
+    chatId: string;
+    kind: string;
+    body: string;
+    audience: WriteAudience;
+  }>`SELECT hold_id AS "holdId", chat_id AS "chatId", kind, body, audience FROM kin_held_posts
+    WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
+    ORDER BY held_at, hold_id`;
+  const groups = new Map<string, Array<(typeof rows)[number]>>();
+  for (const row of rows)
+    groups.set(`${row.chatId}\0${row.kind}`, [
+      ...(groups.get(`${row.chatId}\0${row.kind}`) ?? []),
+      row,
+    ]);
+  let posted = 0;
+  for (const group of groups.values()) {
+    const first = group[0]!;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* chat.notice({
+          orgId,
+          chatId: KinChatId.make(first.chatId),
+          messageId: KinMessageId.make(`kin-held:${first.holdId}`),
+          audience: first.audience,
+          body: [...new Set(group.map((row) => row.body))].join("\n\n"),
+        });
+        yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
+          WHERE org_id = ${orgId} AND hold_id IN ${sql.in(group.map((row) => row.holdId))}`;
+      }),
+    );
+    posted += 1;
+  }
+  return posted;
+});

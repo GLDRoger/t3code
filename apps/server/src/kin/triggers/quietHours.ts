@@ -2,8 +2,8 @@ import * as DateTime from "effect/DateTime";
 
 export type KinQuietHours = { readonly from: string; readonly to: string };
 
-/** Used until the owner sets their own in Kin's settings. */
-export const KIN_DEFAULT_QUIET_HOURS: KinQuietHours = { from: "21:00", to: "08:00" };
+/** Used until the owner sets their own in Kin's settings: nothing unprompted from 22:00 to 08:00. */
+export const KIN_DEFAULT_QUIET_HOURS: KinQuietHours = { from: "22:00", to: "08:00" };
 
 /** Whether `now` falls in `hours` on the wall clock of `zone`; `from` after `to` spans midnight. */
 export function isQuiet(now: number, zone: string, hours: KinQuietHours) {

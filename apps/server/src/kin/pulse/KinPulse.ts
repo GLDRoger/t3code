@@ -27,6 +27,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { agentQuietUntil } from "../triggers/quietHold.ts";
 import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -376,6 +377,10 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
               factKeys: [fact.key],
               ...(needsJudgement([fact]) ? { strong: true } : {}),
             }),
+            // Nobody asked: it waits out the owner's quiet hours.
+            yield* agentQuietUntil(orgId, fact.actor.agentId, at).pipe(
+              Effect.map((notBefore) => (notBefore === undefined ? undefined : { notBefore })),
+            ),
           )
           .pipe(
             Effect.as(true),
