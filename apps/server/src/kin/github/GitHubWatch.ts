@@ -427,12 +427,13 @@ export const make = Effect.gen(function* () {
         const [recent] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
           FROM kin_github_handled WHERE org_id = ${orgId} AND repo = ${repo}
             AND number = ${thread.number} AND outcome = 'woke' AND at > ${now - HOUR}`;
+        // Past the look's cap, it waits for the next look, which reads from the same point.
+        if (now - input.happenedAt <= STALE_MS && input.woken >= WAKES_PER_LOOK)
+          return "later" as const;
         const outcome =
           now - input.happenedAt > STALE_MS
             ? "stale"
-            : input.woken >= WAKES_PER_LOOK
-              ? "skipped"
-              : (recent?.count ?? 0) >= PER_THREAD_HOURLY
+            : (recent?.count ?? 0) >= PER_THREAD_HOURLY
                 ? "capped"
                 : "woke";
         yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id,
@@ -575,6 +576,8 @@ export const make = Effect.gen(function* () {
     const agents = yield* agentsOf(orgId);
     const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN });
     let woken = 0;
+    let later = false;
+    const held = new Set<number>();
     for (const thread of [...threads.values()].slice(0, THREADS_PER_LOOK)) {
       const read = yield* snapshot(thread, since);
       if (read === undefined) continue;
@@ -600,6 +603,19 @@ export const make = Effect.gen(function* () {
         yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
           VALUES (${orgId}, ${`draft:${at}`}, ${current.repo.toLowerCase()}, ${current.number}, NULL, 'seen', ${now})
           ON CONFLICT DO NOTHING`;
+      // A comment is weighed once: a later look, or a switch turned on since, never re-reads it.
+      const seenKey = (comment: ThreadComment) => `seen:${at}:${comment.kind === "review" ? "r" : "c"}${comment.id}`;
+      const seen =
+        current.comments.length === 0
+          ? new Set<string>()
+          : new Set(
+              (yield* sql<{ key: string }>`SELECT trigger_key AS key FROM kin_github_handled
+                WHERE org_id = ${orgId} AND trigger_key IN ${sql.in(current.comments.map(seenKey))}`).map(
+                (found) => found.key,
+              ),
+            );
+      const fresh = current.comments.filter((comment) => !seen.has(seenKey(comment)));
+      current = { ...current, comments: fresh };
       const triggers = decideTriggers(current, {
         ownerLogin: account.login,
         agents,
@@ -644,6 +660,10 @@ export const make = Effect.gen(function* () {
           happenedAt,
           diff,
         });
+        if (outcome === "later") {
+          later = true;
+          if (trigger.reactTo.type === "comment") held.add(trigger.reactTo.id);
+        }
         if (outcome === "woke") {
           woken += 1;
           yield* react(current.repo, current.number, trigger);
@@ -656,16 +676,24 @@ export const make = Effect.gen(function* () {
             now,
           );
       }
+      for (const comment of fresh.filter((comment) => !held.has(comment.id)))
+        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
+          VALUES (${orgId}, ${seenKey(comment)}, ${current.repo.toLowerCase()}, ${current.number}, NULL, 'seen', ${now})
+          ON CONFLICT DO NOTHING`;
     }
     const interval = Math.max(
       DEFAULT_INTERVAL_MS,
       Number(notifications.headers["x-poll-interval"] ?? 60) * 1000 || DEFAULT_INTERVAL_MS,
     );
-    yield* sql`UPDATE kin_github_watch SET problem = NULL, checked_at = ${now}, since_at = ${now},
-        next_at = ${now + interval},
-        notifications_modified = ${notifications.headers["last-modified"] ?? row.notificationsModified},
-        events_etag = ${events.status === 200 || events.status === 304 ? (events.headers.etag ?? row.eventsEtag) : row.eventsEtag}
-      WHERE org_id = ${orgId}`;
+    // With work left over, the cursors stay put: the next look reads the same and handles the rest.
+    yield* later
+      ? sql`UPDATE kin_github_watch SET problem = NULL, checked_at = ${now}, next_at = ${now + interval}
+          WHERE org_id = ${orgId}`
+      : sql`UPDATE kin_github_watch SET problem = NULL, checked_at = ${now}, since_at = ${now},
+          next_at = ${now + interval},
+          notifications_modified = ${notifications.headers["last-modified"] ?? row.notificationsModified},
+          events_etag = ${events.status === 200 || events.status === 304 ? (events.headers.etag ?? row.eventsEtag) : row.eventsEtag}
+        WHERE org_id = ${orgId}`;
   });
 
   return KinGitHubWatch.of({

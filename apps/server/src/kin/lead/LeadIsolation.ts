@@ -19,6 +19,7 @@ import {
   withConfinementHook,
 } from "../claudeConfinement.ts";
 import { KinServer } from "../KinServer.ts";
+import { ghSignScript } from "../github/ghSign.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../KinEnabled.ts";
 import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts";
@@ -121,6 +122,25 @@ const leadOptions = (
 };
 
 /**
+ * Claude Code's own "Generated with Claude Code" PR footer and co-author trailer stay off in a Kin
+ * agent's sessions: what it posts ends with its own signature (`ghSign.ts`), and its commits carry
+ * only the `Co-authored-by` line its instructions give.
+ */
+export const NO_PROVIDER_FOOTER = {
+  attribution: { commit: "", pr: "", sessionUrl: false },
+  includeCoAuthoredBy: false,
+} as const;
+
+/** What a Kin agent's session, or a task it delegated, posts with: the signing `gh` and its name. */
+const signingPath = (
+  environment: NodeJS.ProcessEnv,
+  sign: { readonly directory: string; readonly ghDirectory: string; readonly agentName: string | undefined },
+) => ({
+  PATH: [sign.directory, sign.ghDirectory, environment.PATH].filter(Boolean).join(":"),
+  ...(sign.agentName === undefined ? {} : { KIN_AGENT_NAME: sign.agentName }),
+});
+
+/**
  * An owner-only turn with GitHub connected (repos-rethink slice 3): Claude Code's own tools, as any
  * T3 thread has, with the pinned `gh` first on PATH. Its hook still asks per call: a turn others
  * can read, one that read outside text, or a run Kin hasn't adopted gets only the confined tools.
@@ -132,6 +152,8 @@ const fullOptions = (
     readonly auth: AuthSettings;
     readonly environment: NodeJS.ProcessEnv;
     readonly ghDirectory: string;
+    readonly signDirectory: string;
+    readonly agentName: string | undefined;
   },
 ) => {
   const { settings, env } = options;
@@ -146,6 +168,7 @@ const fullOptions = (
           settings: {
             ...session.auth,
             ...settings,
+            ...NO_PROVIDER_FOOTER,
             autoMemoryEnabled: false,
             autoDreamEnabled: false,
             env: { ...session.auth.env, ...settings?.env, ENABLE_TOOL_SEARCH: "false" },
@@ -153,7 +176,11 @@ const fullOptions = (
         }),
     env: {
       ...environment,
-      PATH: [session.ghDirectory, environment.PATH].filter(Boolean).join(":"),
+      ...signingPath(environment, {
+        directory: session.signDirectory,
+        ghDirectory: session.ghDirectory,
+        agentName: session.agentName,
+      }),
       ENABLE_TOOL_SEARCH: "false",
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     },
@@ -191,6 +218,17 @@ export const claudeQueryRunner = <E, R>(
           Context.getOption(services, KinAgentSessionPolicy),
         ),
       );
+      // The signing gh, in front of the pinned one; a failed write leaves agents with the plain gh.
+      const signDirectory = path.join(kinDirectory, "gh-sign");
+      if (Option.isSome(policy))
+        yield* Effect.gen(function* () {
+          yield* fs.makeDirectory(signDirectory, { recursive: true });
+          const shim = path.join(signDirectory, "gh");
+          yield* fs.writeFileString(shim, ghSignScript(path.join(policy.value.ghDirectory, "gh")));
+          yield* fs.chmod(shim, 0o755);
+        }).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("Kin couldn't write its signing gh", { cause })),
+        );
       const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
       const run = Effect.runPromiseWith(context);
       /** The full session's hook: built-ins while the turn admits them, else the confined set. */
@@ -220,7 +258,31 @@ export const claudeQueryRunner = <E, R>(
             (within(kinDirectory, path.resolve(cwd)) ||
               within(yield* real(kinDirectory), yield* real(cwd)));
           const isDream = input.threadId.startsWith(dreamThreadPrefix);
-          if (!isKin) return yield* runner.open(input);
+          if (!isKin) {
+            // A task an agent delegated: its own T3 session, posting as the agent too.
+            const agentName = Option.isSome(policy)
+              ? yield* policy.value.agentName(input.threadId)
+              : undefined;
+            if (agentName === undefined || Option.isNone(policy)) return yield* runner.open(input);
+            const environment = input.options.env ?? (yield* HostProcess.Environment);
+            return yield* runner.open({
+              ...input,
+              options: {
+                ...input.options,
+                ...(typeof input.options.settings === "string"
+                  ? {}
+                  : { settings: { ...input.options.settings, ...NO_PROVIDER_FOOTER } }),
+                env: {
+                  ...environment,
+                  ...signingPath(environment, {
+                    directory: signDirectory,
+                    ghDirectory: policy.value.ghDirectory,
+                    agentName,
+                  }),
+                },
+              },
+            });
+          }
           // Narrow, never widen: a dream's `[]` stays `[]` whichever wrapper runs first.
           const settingSources: Array<never> = [];
           // Dreams edit their own checkout; DreamIsolation confines them.
@@ -248,6 +310,8 @@ export const claudeQueryRunner = <E, R>(
                   auth: yield* confiner.ownerAuth(input.options.env),
                   environment: yield* HostProcess.Environment,
                   ghDirectory: policy.value.ghDirectory,
+                  signDirectory,
+                  agentName: yield* policy.value.agentName(input.threadId),
                 }),
               },
             });

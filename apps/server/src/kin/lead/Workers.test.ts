@@ -895,6 +895,7 @@ const run = <A, E>(
           Layer.mock(KinAgentSessionPolicy)({
             connected: () => Effect.sync(() => github.connected),
             ghDirectory: "/invented/gh",
+            agentName: () => Effect.succeed(undefined),
           }),
         ),
       ),

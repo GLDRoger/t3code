@@ -237,6 +237,9 @@ it.effect(
           admitted: (threadId) =>
             fullSessionAdmitted(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           ghDirectory: "/kin-home/kin-tools/gh-pinned",
+          // A lead's thread, and a task it delegated, work for the Tech lead.
+          agentName: (threadId) =>
+            Effect.succeed(["kin:tech", "child-of-tech"].includes(threadId) ? "Tech lead" : undefined),
         }),
       ) as Context.Context<KinServices>;
       const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
@@ -254,14 +257,14 @@ it.effect(
         }),
       );
       const lead = optionsAt(memory, { PATH: "/usr/bin", HOME: "/home/kin" });
-      const open = (threadId: string) =>
+      const open = (threadId: string, options = lead) =>
         Effect.gen(function* () {
           const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
           yield* runner
             .open({
               threadId: ThreadId.make(threadId),
               providerSessionId: ProviderSessionId.make("session"),
-              options: lead,
+              options,
             })
             .pipe(Effect.exit);
           return opened.at(-1);
@@ -285,7 +288,25 @@ it.effect(
       // Claude Code's own tools, no deny rules, the pinned gh first on PATH.
       assert.strictEqual(full?.tools, lead.tools);
       assert.deepStrictEqual(full?.disallowedTools ?? [], lead.disallowedTools ?? []);
-      assert.strictEqual(full?.env?.PATH, "/kin-home/kin-tools/gh-pinned:/usr/bin");
+      // The signing gh first, then the pinned one; Claude Code's own PR footer and trailer off.
+      const signing = `${stateDir}/kin/gh-sign`;
+      assert.strictEqual(full?.env?.PATH, `${signing}:/kin-home/kin-tools/gh-pinned:/usr/bin`);
+      assert.strictEqual(full?.env?.KIN_AGENT_NAME, "Tech lead");
+      assert.include(yield* fs.readFileString(`${signing}/gh`), "REAL='/kin-home/kin-tools/gh-pinned/gh'");
+      const footerOff = (options: typeof full) =>
+        typeof options?.settings === "object" &&
+        options.settings.includeCoAuthoredBy === false &&
+        JSON.stringify(options.settings.attribution) ===
+          JSON.stringify({ commit: "", pr: "", sessionUrl: false });
+      assert.isTrue(footerOff(full));
+      // A task the agent delegated runs in its own worktree, posting as the agent too.
+      const work = optionsAt("/work/acme/app", { PATH: "/usr/bin" });
+      const child = yield* open("child-of-tech", work);
+      assert.isTrue(footerOff(child));
+      assert.strictEqual(child?.env?.PATH, `${signing}:/kin-home/kin-tools/gh-pinned:/usr/bin`);
+      assert.strictEqual(child?.env?.KIN_AGENT_NAME, "Tech lead");
+      // Any other T3 thread is left exactly as it was.
+      assert.strictEqual(yield* open("someone-elses-thread", work), work);
       assert.deepStrictEqual(full?.settingSources, []);
       assert.deepStrictEqual(full?.systemPrompt, {
         type: "custom",

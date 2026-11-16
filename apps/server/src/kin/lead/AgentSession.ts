@@ -115,6 +115,17 @@ export const sessionPolicyLayer = Layer.effect(
         fullSessionAdmitted(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ),
       ghDirectory: login.ghDirectory,
+      agentName: Effect.fn("KinAgentSessionPolicy.agentName")(
+        function* (threadId: ThreadId) {
+          const [row] = yield* sql<{ name: string }>`SELECT l.name FROM orchestration_v2_projection_threads t
+            JOIN orchestration_v2_projection_threads r ON r.thread_id =
+              COALESCE(json_extract(t.payload_json, '$.lineage.rootThreadId'), t.thread_id)
+            JOIN kin_leads l ON r.project_id = 'kin:' || l.org_id || ':' || l.agent_id
+            WHERE t.thread_id = ${threadId} ORDER BY l.agent_id LIMIT 1`;
+          return row?.name;
+        },
+        Effect.orElseSucceed(() => undefined),
+      ),
     });
   }),
 );
