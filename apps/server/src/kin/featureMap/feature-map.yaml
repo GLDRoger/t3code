@@ -682,6 +682,19 @@ features:
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof: [apps/server/src/kin/connections/ConnectionsService.test.ts]
 
+  - id: github-login
+    name: Connect GitHub as the owner
+    tab: settings
+    web: [settings/kin-connections, dialog:Connect GitHub]
+    phone: [SettingsKin, KinConnections, KinGitHubConnect]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [kin_connection_offer]
+    proof:
+      - apps/server/src/kin/connections/GitHubLogin.test.ts
+      - apps/server/src/kin/connections/ghTool.test.ts
+      - packages/client-runtime/src/kin/kinGitHub.test.ts
+
   - id: team
     name: The team
     tab: settings
