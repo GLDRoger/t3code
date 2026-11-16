@@ -474,7 +474,9 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
             const def = yield* listDef(orgId, row.registerId);
             // `canOf` offers nothing on an entry whose list can't be read, such as this fake one.
             if (def === undefined) continue;
-            const can = yield* teamCan(orgId, personId, detail, def.states);
+            const can = (yield* teamCan(orgId, personId, [{ ...detail, states: def.states }])).get(
+              detail.recordId,
+            )!;
             const led = rowsOf(w).find((r) => r.list === "projects" && r.owner === viewer);
             const other = viewer === "ana" ? "ben" : "ana";
             const writes: ReadonlyArray<readonly [boolean, KinRecords.Patch]> = [
@@ -488,13 +490,18 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
             for (const [offered, patch] of writes) {
               if (!offered) continue;
               // Rolled back, so each write starts from the same world.
-              const exit = yield* sql
+              let exit: Exit.Exit<unknown, unknown> = Exit.void;
+              yield* sql
                 .withTransaction(
-                  records
-                    .update(orgId, writer, row.key, patch)
-                    .pipe(Effect.exit, Effect.flatMap(Effect.fail)),
+                  records.update(orgId, writer, row.key, patch).pipe(
+                    Effect.exit,
+                    Effect.flatMap((out) => {
+                      exit = out;
+                      return Effect.fail("rolled back");
+                    }),
+                  ),
                 )
-                .pipe(Effect.flip);
+                .pipe(Effect.ignore);
               // Closing a project with open work is refused for what it holds, not who asks.
               const held = Exit.isFailure(exit) && /still has \d+ open entries/.test(String(exit));
               assert.isTrue(

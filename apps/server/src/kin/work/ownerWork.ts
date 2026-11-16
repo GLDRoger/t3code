@@ -4,7 +4,6 @@ import {
   type KinOrgId,
   type KinRecord,
   type KinRecordCan,
-  type KinRecordDetail,
   type KinWorkAssignInput,
   type KinWorkConfirmInput,
   type KinWorkCreateInput,
@@ -180,40 +179,53 @@ const NOTHING: KinRecordCan = {
   confirm: false,
 };
 
+type CanEntry = Pick<KinRecord, "recordId" | "key" | "state" | "owner" | "confirmed"> &
+  Pick<RecordRow, "registerId">;
+
 /**
- * What this viewer may do to this entry from its sheet: for a teammate `teamCan` asks the rule
- * their write runs; owner-level, the same checks `update`, `assign` and `share` make.
+ * What this viewer may do to each entry: for a teammate `teamCan` asks the rule their write runs;
+ * owner-level, the same checks `update`, `assign` and `share` make. Nothing on an entry whose
+ * list can't be read.
  */
-const canOf = Effect.fn("KinWork.canOf")(function* (
+const cansOf = Effect.fn("KinWork.cansOf")(function* (
   viewer: Viewer,
   orgId: KinOrgId,
-  detail: Pick<KinRecordDetail, "recordId" | "key" | "state" | "owner" | "confirmed">,
-  row: Pick<RecordRow, "registerId">,
+  entries: ReadonlyArray<CanEntry>,
 ) {
-  const def = yield* listDef(orgId, row.registerId).pipe(workFailure);
-  const states = def?.states ?? [];
-  if (viewer.teammate)
-    return yield* teamCan(orgId, viewer.person.personId, detail, states).pipe(
-      workFailure,
-      Effect.map((can) => (def === undefined ? NOTHING : can)),
-    );
-  const edits = def !== undefined && workEdits(row);
-  const open = !isClosed(detail.state);
-  return {
-    states: edits ? states.filter((state) => state !== detail.state) : [],
-    edit: edits,
-    party: edits,
-    project: edits,
-    give: edits && open,
-    takeBack:
-      edits &&
-      open &&
-      !samePrincipal(detail.owner, { _tag: "person", personId: viewer.person.personId }),
-    mark: edits,
-    unmark: edits,
-    share: !UNSHARED.has(row.registerId),
-    confirm: edits && !detail.confirmed && open,
-  } satisfies KinRecordCan;
+  const defs = new Map<string, Effect.Success<ReturnType<typeof listDef>>>();
+  for (const registerId of new Set(entries.map((entry) => entry.registerId)))
+    defs.set(registerId, yield* listDef(orgId, registerId).pipe(workFailure));
+  const known = entries.flatMap((entry) => {
+    const def = defs.get(entry.registerId);
+    return def === undefined ? [] : [{ ...entry, states: def.states }];
+  });
+  if (viewer.teammate) {
+    const cans = yield* teamCan(orgId, viewer.person.personId, known).pipe(workFailure);
+    return (recordId: string) => cans.get(recordId) ?? NOTHING;
+  }
+  const cans = new Map<string, KinRecordCan>(
+    known.map((entry) => {
+      const edits = workEdits(entry);
+      const open = !isClosed(entry.state);
+      const can: KinRecordCan = {
+        states: edits ? entry.states.filter((state) => state !== entry.state) : [],
+        edit: edits,
+        party: edits,
+        project: edits,
+        give: edits && open,
+        takeBack:
+          edits &&
+          open &&
+          !samePrincipal(entry.owner, { _tag: "person", personId: viewer.person.personId }),
+        mark: edits,
+        unmark: edits,
+        share: !UNSHARED.has(entry.registerId),
+        confirm: edits && !entry.confirmed && open,
+      };
+      return [entry.recordId, can] as const;
+    }),
+  );
+  return (recordId: string) => cans.get(recordId) ?? NOTHING;
 });
 
 /**
@@ -355,9 +367,15 @@ export const list = Effect.fn("KinWork.list")(function* (
           true,
         );
   const next = cursor.offset + page.rows.length;
+  const shown = page.rows.map((row) => ({ row, record: toRecord(row, at) }));
+  const can = yield* cansOf(
+    viewer,
+    input.orgId,
+    shown.map(({ row, record }) => ({ ...record, registerId: row.registerId })),
+  );
   return {
-    records: page.rows.map((row): KinRecord => {
-      const record = toRecord(row, at);
+    records: shown.map(({ row, record: whole }): KinRecord => {
+      const record = { ...whole, can: can(whole.recordId) };
       if (viewer.teammate && plainTask(row, led)) return teamRecord(record);
       const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
       return Object.keys(fields).length === 0 ? record : { ...record, fields };
@@ -454,7 +472,9 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
   /** Their own write just made it private: they saw it until then, so the answer still reads. */
   justHidden = false,
 ) {
-  const can = yield* canOf(viewer, detail.orgId, detail, row);
+  const can = (yield* cansOf(viewer, detail.orgId, [{ ...detail, registerId: row.registerId }]))(
+    detail.recordId,
+  );
   if (!viewer.teammate) return { ...detail, can };
   const { personId } = viewer.person;
   const seen = yield* teamVisible(detail.orgId, personId, [detail.recordId]).pipe(workFailure);

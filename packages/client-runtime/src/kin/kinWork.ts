@@ -10,6 +10,7 @@ import {
   type KinPersonId,
   type KinRecord,
   type KinRecordChange,
+  type KinRecordCan,
   type KinRecordDetail,
   type KinRecordKey,
   type KinRecordLink,
@@ -472,7 +473,7 @@ export interface KinWorkRowView {
   /** "Due Fri 14 Nov"; null with no date or once it is closed. */
   readonly due: string | null;
   readonly late: boolean;
-  /** A lead picked it up on its own and nobody has confirmed it. */
+  /** A lead picked it up on its own, nobody has confirmed it, and this reader may. */
   readonly suggested: boolean;
   /**
    * What one tap on the row's mark does, where a tap changes nothing but the task: finish one a
@@ -539,13 +540,18 @@ export function kinWorkRow(
     ownerAvatar: kinWorkAvatar(record.owner),
     due,
     late: record.late,
-    suggested: !record.confirmed && !kinWorkClosed(record.state),
+    // Keep and decline only where the host takes them, on hosts that say (`can`).
+    suggested: !record.confirmed && !kinWorkClosed(record.state) && (record.can?.confirm ?? true),
     tick:
       record.owner._tag === "agent" || !record.confirmed
         ? null
         : kinWorkClosed(record.state)
-          ? "reopen"
-          : "done",
+          ? (record.can?.states.includes("open") ?? true)
+            ? "reopen"
+            : null
+          : (record.can?.states.includes("done") ?? true)
+            ? "done"
+            : null,
     working: record.working,
     ownerRetired,
     about,
@@ -726,6 +732,8 @@ export interface KinWorkItemView {
   readonly privacy: KinWorkPrivacy;
   /** The owner shared it with the team. */
   readonly shared: boolean;
+  /** What the host lets this reader do to it: a control shows only when it is here. */
+  readonly can: KinRecordCan;
 }
 
 /** How private something is, and what to say about it beside the label. */
@@ -795,8 +803,8 @@ export const KIN_WORK_AUDIENCE = {
  */
 export function kinWorkAudience(
   view: Pick<KinWorkItemView, "privacy" | "shared" | "project">,
-  /** `share` is owner-level: without it only marking private is the reader's (a project lead). */
-  can: { readonly mark: boolean; readonly share: boolean },
+  /** What the host lets this reader change (`KinRecordDetail.can`). */
+  can: Pick<KinRecordCan, "mark" | "unmark" | "share">,
   names?: Pick<KinWorkNames, "me" | "owner" | "people">,
 ) {
   const people = view.project === null ? "People on it" : "People on it and the project";
@@ -815,16 +823,17 @@ export function kinWorkAudience(
     team: "The whole team",
     me: owner === null ? "Only me" : `Only ${owner} and co-owners`,
   };
-  const ids: ReadonlyArray<KinWorkAudience> = can.share
-    ? [
-        ...(can.mark || current === "people" ? ["people" as const] : []),
-        ...(can.mark || current !== "me" ? ["team" as const] : []),
-        ...(can.mark ? ["me" as const] : []),
-      ]
-    : // Un-marking and sharing are the owner's: a lead may only make it more private.
-      can.mark && current !== "me"
-      ? [current, "me"]
-      : [];
+  const now = { private: view.privacy.private && !view.privacy.inherited, shared: view.shared };
+  // A choice is offered only when the host takes every change it makes.
+  const reachable = (to: KinWorkAudience) => {
+    const move = kinWorkAudienceMove(now, to);
+    return (
+      to === current ||
+      ((move.private === null || (move.private ? can.mark : can.unmark)) &&
+        (move.shared === null || can.share))
+    );
+  };
+  const ids = (["people", "team", "me"] as const).filter(reachable);
   const choices = ids.map((id) => ({ id, label: label[id] }));
   return { current, answer, choices: choices.length > 1 ? choices : [] };
 }
@@ -1130,6 +1139,7 @@ export function kinWorkItemView(
   // Only a host that takes changes sends a task's own change number.
   const editable = item.seq !== undefined;
   const isClosed = kinWorkClosed(item.state);
+  const can = item.can ?? olderHostCan(item, editable, isClosed, names);
   const suggested = !item.confirmed && !isClosed;
   const lead = item.owner._tag === "agent";
   return {
@@ -1176,13 +1186,13 @@ export function kinWorkItemView(
       ),
     })),
     historyNote: item.changes.length >= changesCap ? "Earlier history isn't shown." : null,
-    assignLabel: isClosed ? null : "Give to someone else",
+    assignLabel: can.give ? "Give to someone else" : null,
     editable,
     closed: isClosed,
     suggestion: suggested
       ? `${item.createdBy._tag === "agent" ? kinWorkActorName(item.createdBy, names) : "An agent"} suggested this task.`
       : null,
-    takeBack: !isClosed && !isMe(item.owner, names),
+    takeBack: can.takeBack,
     leadNote: !lead
       ? null
       : row.ownerRetired
@@ -1211,8 +1221,32 @@ export function kinWorkItemView(
       privateNote: `Only ${ownerWord(names) ?? "you"}, co-owners and whoever holds it see this.`,
     }),
     shared: item.shared === true,
+    can,
   };
 }
+
+/** A host from before `can`: it took what its sheet offered then, and checked on the write. */
+const olderHostCan = (
+  item: KinRecordDetail,
+  editable: boolean,
+  closed: boolean,
+  names: KinWorkNames,
+): KinRecordCan => ({
+  states: editable
+    ? (["open", "doing", "waiting", "done", "dropped"] as const).filter(
+        (state) => state !== item.state,
+      )
+    : [],
+  edit: editable,
+  party: editable,
+  project: editable,
+  give: !closed,
+  takeBack: !closed && !isMe(item.owner, names),
+  mark: editable,
+  unmark: editable,
+  share: editable,
+  confirm: editable && !item.confirmed && !closed,
+});
 
 /** An all-day date as `YYYY-MM-DD` where the owner is; null with no date or a timed one. */
 export function kinWorkAllDay(at: string | null, allDay: boolean, names: KinWorkNames) {

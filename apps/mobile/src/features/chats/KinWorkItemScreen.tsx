@@ -21,6 +21,7 @@ import {
   KIN_WORK_COPY,
   kinWorkApplied,
   kinWorkEditMoved,
+  kinWorkStatusOffer,
   kinWorkItemNotice,
   type KinWorkNotice,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
@@ -273,11 +274,12 @@ function KinWorkItemBody(props: ItemTarget) {
   );
   const saving = changed.pending[itemKey] !== undefined;
   const notice = kinWorkItemNotice(changed, item);
-  // An older host reads and hands over; everything else needs one that takes changes.
-  const act =
-    canChange && view.editable
-      ? (action: Parameters<typeof changes.run>[1]) => void changes.run(item, action, names)
-      : null;
+  // Each control shows only where the host said it takes it (`view.can`).
+  const act = canChange
+    ? (action: Parameters<typeof changes.run>[1]) => void changes.run(item, action, names)
+    : null;
+  const reword = view.can.edit ? act : null;
+  const offer = kinWorkStatusOffer(view);
   const waitingOn = kinWorkAssignees({
     orgs,
     orgId,
@@ -406,7 +408,7 @@ function KinWorkItemBody(props: ItemTarget) {
             ),
         )}
       </View>
-      {act === null || view.suggestion === null ? null : (
+      {act === null || view.suggestion === null || !view.can.confirm ? null : (
         <View className="gap-3 px-2">
           <Text textRole="body" className="text-foreground">
             {view.suggestion} Keep it?
@@ -429,9 +431,9 @@ function KinWorkItemBody(props: ItemTarget) {
           </View>
         </View>
       )}
-      {act === null ? null : (
+      {act === null || !(offer.done || offer.reopen) ? null : (
         <View className="gap-2">
-          {view.closed ? (
+          {offer.reopen ? (
             <Button
               tone="secondary"
               fullWidth
@@ -471,16 +473,17 @@ function KinWorkItemBody(props: ItemTarget) {
           label={view.owner.name}
           detail={view.owner.retired ? "Has it · Retired" : "Has it"}
         />
-        {act === null || view.closed ? null : (
+        {act === null || !offer.menu ? null : (
           <KinWorkStatusRow
             view={view}
+            offer={offer}
             people={[...waitingOn.people, ...waitingOn.leads]}
             disabled={saving}
             onAct={act}
           />
         )}
-        {act !== null && !view.closed ? (
-          <KinWorkDueRow view={view} now={now} disabled={saving} onAct={act} />
+        {reword !== null && !view.closed ? (
+          <KinWorkDueRow view={view} now={now} disabled={saving} onAct={reword} />
         ) : view.due === null ? null : (
           <ListRowLayout
             icon="clock"
@@ -526,7 +529,7 @@ function KinWorkItemBody(props: ItemTarget) {
             onOpen={openChat}
           />
         ) : null}
-        {act === null || edit !== null ? null : (
+        {reword === null || edit !== null ? null : (
           <ListActionRow
             label="Edit title and notes"
             disabled={saving}
@@ -536,7 +539,7 @@ function KinWorkItemBody(props: ItemTarget) {
       </ListSection>
       {!hostClients ? null : (
         <ListSection>
-          {act === null ? (
+          {act === null || !view.can.party ? (
             view.party === null ? null : (
               <ListRow
                 icon="person.2"
@@ -559,7 +562,7 @@ function KinWorkItemBody(props: ItemTarget) {
               side={{ value: view.side, onPick: (side) => act({ type: "place", side }) }}
             />
           )}
-          {act === null ? (
+          {act === null || !view.can.project ? (
             view.project === null ? null : (
               <ListRow
                 icon="folder"

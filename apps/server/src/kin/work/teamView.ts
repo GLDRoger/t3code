@@ -339,26 +339,35 @@ type TeamWrite = {
   readonly input: Readonly<Partial<Record<(typeof OWNERS_FIELDS)[number] | "state", unknown>>>;
 };
 
-/** What `teamRule` decides a teammate's write on: read once, inside the write's transaction. */
-const teamFacts = Effect.fn("KinTeamView.facts")(function* (
+/** What `teamRule` decides these entries' writes on: read once, inside the write's transaction. */
+const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
-  row: { readonly recordId: string } | undefined,
+  recordIds: ReadonlyArray<string>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const member = yield* sql`SELECT 1 FROM kin_session_bindings b
     JOIN kin_people p ON p.org_id = b.org_id AND p.person_id = b.person_id
     WHERE b.org_id = ${orgId} AND b.person_id = ${personId} AND b.revoked_at IS NULL LIMIT 1`;
   const led = new Set((yield* ledProjects(orgId, personId)).map((project) => project.recordId));
-  if (row === undefined) return { member: member.length > 0, led, seen: undefined };
-  const [seen] = yield* sql<{ writes: number; leads: number; registerId: string }>`SELECT
-      ${teamWrites(sql, personId)} AS writes, ${leadWrites(sql, personId)} AS leads,
-      r.register_id AS "registerId"
-    FROM kin_records r WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId}
-      AND ${personSees(sql, personId)}`;
-  return { member: member.length > 0, led, seen: seen ?? null };
+  const seen =
+    recordIds.length === 0
+      ? []
+      : yield* sql<{ recordId: string; writes: number; leads: number; registerId: string }>`SELECT
+          r.record_id AS "recordId", ${teamWrites(sql, personId)} AS writes,
+          ${leadWrites(sql, personId)} AS leads, r.register_id AS "registerId"
+        FROM kin_records r WHERE r.org_id = ${orgId}
+          AND r.record_id IN ${sql.in([...new Set(recordIds)])} AND ${personSees(sql, personId)}
+        ORDER BY r.record_id`;
+  const byId = new Map(seen.map((row) => [row.recordId, row]));
+  /** One entry's facts; `undefined` for a write that makes one. */
+  return (recordId: string | undefined) => ({
+    member: member.length > 0,
+    led,
+    seen: recordId === undefined ? undefined : (byId.get(recordId) ?? null),
+  });
 });
-type TeamFacts = Effect.Success<ReturnType<typeof teamFacts>>;
+type TeamFacts = ReturnType<Effect.Success<ReturnType<typeof teamFactsOf>>>;
 
 /**
  * Whether a teammate's write goes through, and the refusal when it doesn't: they are still let in,
@@ -411,43 +420,61 @@ export const teamGuard = Effect.fn("KinTeamView.guard")(function* (
   personId: KinPersonId,
   write: TeamWrite,
 ) {
-  const refused = teamRule(yield* teamFacts(orgId, personId, write.row), write);
+  const facts = yield* teamFactsOf(
+    orgId,
+    personId,
+    write.row === undefined ? [] : [write.row.recordId],
+  );
+  const refused = teamRule(facts(write.row?.recordId), write);
   if (refused !== undefined) return yield* refused;
 });
 
+type CanRow = {
+  readonly recordId: string;
+  readonly key: string;
+  readonly state: KinRecordState;
+  readonly owner: KinWorkPrincipal;
+  /** Its list's states (`checkInput` refuses any other). */
+  readonly states: ReadonlyArray<KinRecordState>;
+};
+
 /**
- * What a teammate may do to this entry, as `teamRule` would answer each write: the same facts,
- * one probe per control. `states` are its list's (`checkInput` refuses any other).
+ * What a teammate may do to each of these entries, as `teamRule` would answer each write: the
+ * same facts, one probe per control, read once for them all.
  */
 export const teamCan = Effect.fn("KinTeamView.can")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
-  row: {
-    readonly recordId: string;
-    readonly key: string;
-    readonly state: KinRecordState;
-    readonly owner: KinWorkPrincipal;
-  },
-  states: ReadonlyArray<KinRecordState>,
+  rows: ReadonlyArray<CanRow>,
 ) {
-  const facts = yield* teamFacts(orgId, personId, row);
-  const takes = (input: TeamWrite["input"]) =>
-    teamRule(facts, { row, changes: true, input }) === undefined;
-  const open = row.state !== "done" && row.state !== "dropped";
-  const led = [...facts.led][0];
-  const moves = takes({});
-  return {
-    states: states.filter((state) => state !== row.state && takes({ state })),
-    edit: moves,
-    party: takes({ partyId: "" }),
-    project: led !== undefined && takes({ projectId: led }),
-    give: open && moves,
-    takeBack: open && moves && !samePrincipal(row.owner, { _tag: "person", personId }),
-    mark: takes({ sensitive: true }),
-    unmark: takes({ sensitive: false }),
-    share: false,
-    confirm: false,
-  } satisfies KinRecordCan;
+  const factsOf = yield* teamFactsOf(
+    orgId,
+    personId,
+    rows.map((row) => row.recordId),
+  );
+  return new Map(
+    rows.map((row) => {
+      const facts = factsOf(row.recordId);
+      const takes = (input: TeamWrite["input"]) =>
+        teamRule(facts, { row, changes: true, input }) === undefined;
+      const open = row.state !== "done" && row.state !== "dropped";
+      const led = [...facts.led][0];
+      const moves = takes({});
+      const can: KinRecordCan = {
+        states: row.states.filter((state) => state !== row.state && takes({ state })),
+        edit: moves,
+        party: takes({ partyId: "" }),
+        project: led !== undefined && takes({ projectId: led }),
+        give: open && moves,
+        takeBack: open && moves && !samePrincipal(row.owner, { _tag: "person", personId }),
+        mark: takes({ sensitive: true }),
+        unmark: takes({ sensitive: false }),
+        share: false,
+        confirm: false,
+      };
+      return [row.recordId, can] as const;
+    }),
+  );
 });
 
 /** `p` is a teammate who sees `r`: a person let in by an invite, never the owner's own session. */
