@@ -291,7 +291,11 @@ function Reach(props: {
             <View key={index} className={row(index)}>
               <ListRowLayout
                 label={connection.label}
-                description={connection.account ?? undefined}
+                description={
+                  connection.account === connection.label
+                    ? undefined
+                    : (connection.account ?? undefined)
+                }
                 detail={connection.paused ? "Paused" : undefined}
               />
             </View>

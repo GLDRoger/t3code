@@ -21,6 +21,7 @@ describe("kinAgentUsageLine", () => {
   it.each([
     [{ turns: 0, tokens: 0 }, "No replies yet this month."],
     [{ turns: 1, tokens: 900 }, "1 reply this month, about 900 tokens."],
+    [{ turns: 3, tokens: 0 }, "3 replies this month."],
     [{ turns: 12, tokens: 1_240_000 }, "12 replies this month, about 1.2M tokens."],
   ])("%j", (used, line) => {
     expect(kinAgentUsageLine(used as never)).toBe(line);

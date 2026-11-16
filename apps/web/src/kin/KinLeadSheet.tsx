@@ -122,7 +122,7 @@ export function KinLeadSheet(props: {
           <div className="flex items-center gap-3 pe-8">
             <KinAvatar avatar={props.avatar} />
             <div className="flex min-w-0 flex-col">
-              <SheetTitle>{about.kind === "own" ? about.lead.name : null}</SheetTitle>
+              <SheetTitle>{about.kind === "own" ? about.lead.name : about.contact.name}</SheetTitle>
               {about.kind === "own" ? (
                 <SheetDescription>
                   {kinDomainLabel(about.lead.domain)}

@@ -91,13 +91,15 @@ export function kinAgentModelLine(
 /** This month's use in a line: replies and a rounded token count, or that it hasn't run. */
 export function kinAgentUsageLine(used: KinAgentPage["usedThisMonth"]): string {
   if (used.turns === 0) return "No replies yet this month.";
+  const replies = `${used.turns} ${used.turns === 1 ? "reply" : "replies"} this month`;
+  if (used.tokens === 0) return `${replies}.`;
   const tokens =
     used.tokens >= 1_000_000
       ? `${(used.tokens / 1_000_000).toFixed(1)}M`
       : used.tokens >= 1_000
         ? `${Math.round(used.tokens / 1_000)}k`
         : String(used.tokens);
-  return `${used.turns} ${used.turns === 1 ? "reply" : "replies"} this month, about ${tokens} tokens.`;
+  return `${replies}, about ${tokens} tokens.`;
 }
 
 /** When its unprompted messages wait: the company's quiet hours. */

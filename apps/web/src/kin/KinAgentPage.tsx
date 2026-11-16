@@ -343,7 +343,9 @@ function AgentPageBody(props: {
               // oxlint-disable-next-line react/no-array-index-key
               <li key={index} className="text-sm text-foreground">
                 {connection.label}
-                {connection.account === null ? "" : ` · ${connection.account}`}
+                {connection.account === null || connection.account === connection.label
+                  ? ""
+                  : ` · ${connection.account}`}
                 {connection.paused ? " · paused" : ""}
               </li>
             ))}
