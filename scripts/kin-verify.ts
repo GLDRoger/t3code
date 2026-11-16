@@ -40,6 +40,7 @@ import {
   mailDeliver,
   mailExpire,
   mailSentLines,
+  pushSentLines,
   parseDuration,
   query,
   shiftKinTimes,
@@ -64,6 +65,7 @@ const HELP = `kin-verify [--instance <name>] <command>
                                           one real turn, no model: the agent calls the tool
   mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
   mail expire <address> [--back]          the account's sign-in stops working (or works again)
+  push sent                               what Kin would have pushed, per person's device (no APNs)
   clock advance <90m|12h|3d|2w> | clock set-date <YYYY-MM-DD>
   db "<select …>"                         read-only SQL on this instance's database
   phone pair [--android] [--as <person>]  deep link that pairs the dev client to this instance
@@ -508,6 +510,10 @@ async function main() {
       throw new VerifyError(
         "mail sent | mail deliver --to --from --subject --body [--thread] | mail expire <address> [--back]",
       );
+    }
+    case "push": {
+      if (args.positional[0] === "sent") return console.log(pushSentLines(instance));
+      throw new VerifyError("push sent");
     }
     case "clock":
       return clock(instance, args);

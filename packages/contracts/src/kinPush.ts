@@ -45,6 +45,8 @@ export const KinPushData = Schema.Struct({
   widgetId: Schema.optional(KinWidgetId),
   revision: Schema.optional(NonNegativeInt),
   pendingActionId: Schema.optional(KinActionId),
+  /** On a read's badge push: nothing in `chatId` is unread for this person any more. */
+  cleared: Schema.optional(Schema.Literal(true)),
   deepLink: Schema.String.check(
     Schema.makeFilter((value: string) => /^\/kin\/[A-Za-z0-9._~%/-]+$/.test(value), {
       expected: "a /kin/ app path",

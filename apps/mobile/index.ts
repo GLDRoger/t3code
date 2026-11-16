@@ -9,6 +9,10 @@ import { LogBox } from "react-native";
 import { featureFlags } from "react-native-screens";
 
 import App from "./src/App";
+import { defineKinBackgroundClear } from "./src/features/chats/notifications/kinBackgroundClear";
+
+// Module scope, as expo-task-manager needs: a background push may start the app for this task alone.
+defineKinBackgroundClear();
 
 // Enables iOS FormSheet sizing for nested native stacks in non-fitToContents sheets.
 featureFlags.experiment.synchronousScreenUpdatesEnabled = true;

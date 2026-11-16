@@ -174,19 +174,26 @@ describe("kin inbox", () => {
     expect(state.chats.map((c) => c.chatId)).toEqual(["a", "b"]);
 
     state = applyKinInboxEvent(state, { _tag: "waiting", item: waiting("w2", "b") });
-    // The badge: unread across chats plus what waits on the viewer.
-    expect(kinBadgeCount(state)).toBe(4);
-    // Read but still waiting on the viewer, unread, and a chat no longer listed.
+    // The badge is the list's unread: what waits on the viewer is shown, not counted.
+    expect(kinBadgeCount(state)).toBe(2);
+    // Read (its card still waiting), unread, and a chat no longer listed.
     expect(
       (["a", "b", "gone"] as const).map((id) => kinChatSettled(state, id as KinChatId)),
-    ).toEqual([false, false, true]);
+    ).toEqual([true, false, true]);
     state = applyKinInboxEvent(state, {
       _tag: "waiting",
       item: waiting("w1", "a", { resolvedAt: at(3), resolution: "answered" }),
     });
     expect(state.waiting.map((w) => w.waitingId)).toEqual(["w2"]);
-    expect(kinBadgeCount(state)).toBe(3);
-    expect(kinChatSettled(state, "a" as KinChatId)).toBe(true);
+    // An archived chat leaves the list, so its unread leaves the badge.
+    state = applyKinInboxEvent(state, { _tag: "chat", chat: chat("c", { unread: 5 }) });
+    expect(kinBadgeCount(state)).toBe(7);
+    state = {
+      ...state,
+      chats: state.chats.map((c) => (c.chatId === "c" ? { ...c, archivedAt: at(4) } : c)),
+    };
+    expect(kinBadgeCount(state)).toBe(selectKinInboxView(state).unreadCount);
+    expect(kinBadgeCount(state)).toBe(2);
   });
 
   it("drops a chat the viewer left, with its waiting rows", () => {

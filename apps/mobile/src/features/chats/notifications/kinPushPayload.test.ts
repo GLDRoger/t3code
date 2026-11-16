@@ -6,6 +6,7 @@ import {
   KIN_DEFAULT_ACTION_IDENTIFIER,
   kinActionDelivery,
   kinNotificationRoute,
+  kinClearedChat,
   kinSettledNotificationIds,
 } from "./kinPushPayload";
 
@@ -218,6 +219,24 @@ describe("kinActionDelivery", () => {
     ["waits while the same tap is in flight", { ...ready, inFlight: true }, "wait"],
   ] as const)("%s", (_name, input, delivery) => {
     expect(kinActionDelivery(input)).toBe(delivery);
+  });
+});
+
+describe("kinClearedChat", () => {
+  const read = {
+    kin: 1,
+    orgId: "kin-default",
+    chatId: "chat-1",
+    deepLink: "/kin/env-1/kin-default/chats/chat-1",
+  };
+  it.each([
+    ["a read that left the chat with nothing unread", { ...read, cleared: true }, "chat-1"],
+    ["a read with something still unread", read, null],
+    ["a link to another chat than it names", { ...read, cleared: true, chatId: "chat-2" }, null],
+  ] as const)("%s", (_name, body, chatId) => {
+    const cleared = kinClearedChat({ data: { dataString: JSON.stringify(body) }, aps: {} });
+    expect(cleared?.chatId ?? null).toBe(chatId);
+    if (chatId !== null) expect(cleared?.environmentId).toBe("env-1");
   });
 });
 

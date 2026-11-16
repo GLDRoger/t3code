@@ -26,7 +26,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import { ApproverKeys } from "../approvals/ApproverKeys.ts";
 import { KinPendingActions } from "../approvals/PendingActions.ts";
-import { memberReads, readableFrom } from "../chat/sharing.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { memberReads } from "../chat/sharing.ts";
 import { MemoryCache } from "../memory/MemoryCache.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
 import { KinApnsTransport } from "./Apns.ts";
@@ -40,7 +41,13 @@ import { KinPushPresence } from "./KinPushPresence.ts";
 export type KinPushNotification =
   | { readonly _tag: "approval"; readonly orgId: KinOrgId; readonly actionId: KinActionId }
   | { readonly _tag: "message"; readonly orgId: KinOrgId; readonly messageId: KinMessageId }
-  | { readonly _tag: "widget"; readonly orgId: KinOrgId; readonly widgetId: KinWidgetId }
+  | {
+      readonly _tag: "widget";
+      readonly orgId: KinOrgId;
+      readonly widgetId: KinWidgetId;
+      /** The turn's own messages that posted the card: whoever they rang already heard of it. */
+      readonly covered?: ReadonlyArray<KinMessageId>;
+    }
   /** A member's read mark moved: their other devices get the new badge, with no banner. */
   | {
       readonly _tag: "read";
@@ -92,6 +99,28 @@ const kinPushBody = (text: string) => {
   return `${(space > KIN_PUSH_BODY_MAX / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 };
 
+/** What a card asks, in its own words: its message, else its question or title. */
+const kinCardWords = (body: string, state: unknown) => {
+  const said = kinPushBody(body);
+  if (said !== "") return said;
+  const field = (key: string) =>
+    typeof state === "object" && state !== null && key in state
+      ? (state as Record<string, unknown>)[key]
+      : undefined;
+  for (const key of ["question", "title"]) {
+    const value = field(key);
+    if (typeof value === "string" && value.trim() !== "") return kinPushBody(value);
+  }
+  return undefined;
+};
+
+/** A banner's title: who wrote it, and in a group the group's name before them. */
+const kinBannerTitle = (
+  chat: { readonly direct: boolean; readonly name: string },
+  author: string | null,
+) =>
+  chat.direct ? (author ?? chat.name) : author === null ? chat.name : `${chat.name} · ${author}`;
+
 // APNs docs, "Handling notification responses". A 410 is handled by its timestamp instead.
 const DEAD_TOKEN_REASONS = new Set(["BadDeviceToken"]);
 // The token is fine; our `KIN_APNS_TOPIC` doesn't match the app that registered it.
@@ -106,6 +135,7 @@ export const kinPushChatLink = (environmentId: EnvironmentId, orgId: KinOrgId, c
 const kinPushCollapseId = (orgId: KinOrgId, chatId: KinChatId) =>
   `kin:${kinPushDeviceId(`${orgId}\u0000${chatId}`)}`;
 const decodeIds = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+const decodeState = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const decodeQuietHours = Schema.decodeUnknownOption(
   Schema.fromJsonString(KinTriggerSettings.fields.quietHours),
 );
@@ -163,6 +193,7 @@ const make = Effect.gen(function* () {
   const keys = yield* ApproverKeys;
   const cache = yield* MemoryCache;
   const actions = yield* KinPendingActions;
+  const chats = yield* KinChatRepository;
   const environmentId = yield* (yield* ServerEnvironment.ServerEnvironment).getEnvironmentId;
   const host = segment(environmentId);
   const chatLink = (orgId: KinOrgId, chatId: KinChatId) =>
@@ -221,33 +252,9 @@ const make = Effect.gen(function* () {
     return isQuiet(yield* Clock.currentTimeMillis, yield* cache.ownerTimeZone(orgId), hours);
   });
 
-  /** Unread messages plus open waiting items, across every chat the person is still in. */
-  const badgeFor = Effect.fn("KinPushSender.badgeFor")(function* (
-    orgId: KinOrgId,
-    personId: KinPersonId,
-  ) {
-    // Counted as the inbox counts each chat's `unread`, so the app sets the same number.
-    const [row] = yield* sql<{ unread: number; waiting: number }>`
-      SELECT (
-          SELECT COUNT(*) FROM kin_chat_members cm
-          JOIN kin_messages ON kin_messages.org_id = cm.org_id
-            AND kin_messages.chat_id = cm.chat_id
-          WHERE cm.org_id = ${orgId} AND cm.person_id = ${personId}
-            AND cm.principal_kind = 'person' AND cm.left_at IS NULL
-            AND kin_messages.status = 'posted' AND kin_messages.silent = 0
-            AND ${readableFrom(sql, orgId, sql`cm.joined_seq`)}
-            AND (kin_messages.author_member_id IS NULL
-              OR kin_messages.author_member_id != cm.member_id)
-            AND kin_messages.seq > COALESCE((SELECT r.last_read_seq FROM kin_read_state r
-              WHERE r.chat_id = cm.chat_id AND r.member_id = cm.member_id), 0)
-        ) AS unread, (
-          SELECT COUNT(*) FROM kin_waiting w
-          WHERE w.org_id = ${orgId} AND w.person_id = ${personId} AND w.resolved_at IS NULL
-            AND EXISTS (SELECT 1 FROM kin_chat_members cm WHERE cm.org_id = w.org_id
-              AND cm.chat_id = w.chat_id AND cm.person_id = w.person_id AND cm.left_at IS NULL)
-        ) AS waiting`;
-    return (row?.unread ?? 0) + (row?.waiting ?? 0);
-  });
+  /** The Chats list's unread total, from the same read, so the icon and the list agree. */
+  const badgeFor = (orgId: KinOrgId, personId: KinPersonId) =>
+    chats.unreadTotal({ orgId, personId });
 
   const approvalPush = Effect.fn("KinPushSender.approvalPush")(function* (
     orgId: KinOrgId,
@@ -288,6 +295,7 @@ const make = Effect.gen(function* () {
       reply_author: KinPersonId | null;
       asked_json: string;
       awaits_card: number;
+      is_card: number;
       owner_timed: number;
       seq: number;
     }>`
@@ -312,6 +320,8 @@ const make = Effect.gen(function* () {
         EXISTS (SELECT 1 FROM kin_widgets w WHERE w.org_id = m.org_id
           AND w.message_id = m.message_id AND w.closed_at IS NULL
           AND w.awaiting_json != '[]') AS awaits_card,
+        EXISTS (SELECT 1 FROM kin_widgets w WHERE w.org_id = m.org_id
+          AND w.message_id = m.message_id) AS is_card,
         (EXISTS (SELECT 1 FROM kin_widgets w WHERE w.org_id = m.org_id
             AND w.message_id = m.message_id AND w.type IN ('reminder', 'scheduled_task'))
           OR EXISTS (SELECT 1 FROM kin_lead_deliveries d
@@ -326,23 +336,21 @@ const make = Effect.gen(function* () {
         -- A key change's notice rings as that change's own push instead.
         AND NOT EXISTS (SELECT 1 FROM kin_key_pushes p
           WHERE p.org_id = m.org_id AND p.message_id = m.message_id)`;
-    // A card that waits on someone announces itself through its widget push.
+    // A card that waits on someone announces itself through its widget push; one with no words of
+    // its own (a chart, a doc) is seen in the chat and rings nobody.
     if (row === undefined || row.awaits_card === 1) return undefined;
+    const body = kinPushBody(row.body);
+    if (row.is_card === 1 && body === "") return undefined;
     const chat = yield* chatName(orgId, row.chat_id);
     const mentions = new Set<string>(yield* decodeIds(row.mentions_json));
     const asked = new Set<string>(yield* decodeIds(row.asked_json));
     // Reminders and scheduled runs come at the time the owner chose, so quiet hours let them ring.
     const quiet = row.owner_timed === 1 ? false : yield* quietNow(orgId);
     const people = yield* chatPeople(orgId, row.chat_id);
-    const author = row.author_name;
     return {
       category: "kin.message",
-      title: chat.direct
-        ? (author ?? chat.name)
-        : author === null
-          ? chat.name
-          : `${chat.name} · ${author}`,
-      body: kinPushBody(row.body) || "New message",
+      title: kinBannerTitle(chat, row.author_name),
+      body: body || "New message",
       chatId: row.chat_id,
       source: messageId,
       collapseId: kinPushCollapseId(orgId, row.chat_id),
@@ -371,17 +379,27 @@ const make = Effect.gen(function* () {
   const widgetPush = Effect.fn("KinPushSender.widgetPush")(function* (
     orgId: KinOrgId,
     widgetId: KinWidgetId,
+    covered: ReadonlyArray<KinMessageId>,
   ) {
     const [row] = yield* sql<{
       chat_id: KinChatId;
       type: string;
       revision: number;
       phase: unknown;
+      state_json: string;
       awaiting_json: string;
       seq: number;
       message_id: KinMessageId;
+      body: string;
+      author_name: string | null;
     }>`SELECT w.chat_id, w.type, w.revision, json_extract(w.state_json, '$.phase') AS phase,
-        w.awaiting_json, m.seq, m.message_id
+        w.state_json, w.awaiting_json, m.seq, m.message_id, m.body,
+        COALESCE(
+          (SELECT display_name FROM kin_agents a
+            WHERE a.org_id = m.org_id AND a.agent_id = m.author_agent_id),
+          (SELECT display_name FROM kin_people p
+            WHERE p.org_id = m.org_id AND p.person_id = m.author_person_id)
+        ) AS author_name
       FROM kin_widgets w JOIN kin_messages m ON m.message_id = w.message_id
       WHERE w.org_id = ${orgId} AND w.widget_id = ${widgetId} AND w.closed_at IS NULL
         AND m.status = 'posted'`;
@@ -391,7 +409,12 @@ const make = Effect.gen(function* () {
     if (row.type === "approval") return undefined;
     const kind =
       row.type !== "deferral"
-        ? ({ category: "kin.message", body: "A card is waiting on you" } as const)
+        ? ({
+            category: "kin.message",
+            body:
+              kinCardWords(row.body, Option.getOrNull(decodeState(row.state_json))) ??
+              "A card is waiting on you",
+          } as const)
         : row.phase === "confirmed" || row.phase === null
           ? ({ category: "kin.deferral.confirmed", body: "A deferral needs a look" } as const)
           : row.phase === "heads_up"
@@ -399,15 +422,24 @@ const make = Effect.gen(function* () {
             : undefined;
     if (kind === undefined) return undefined;
     const awaiting = new Set<string>(yield* decodeIds(row.awaiting_json));
+    // Whoever the turn's own words rang heard of the card with them: one event, one banner.
+    for (const messageId of covered) {
+      const said = yield* messagePush(orgId, messageId);
+      for (const recipient of said?.recipients ?? []) awaiting.delete(recipient.personId);
+    }
     const chat = yield* chatName(orgId, row.chat_id);
     // A heads-up comes at the time the owner deferred the task to.
     const quiet = row.phase === "heads_up" ? false : yield* quietNow(orgId);
     const people = yield* chatPeople(orgId, row.chat_id);
     return {
       ...kind,
-      title: chat.name,
+      title: kinBannerTitle(chat, row.author_name),
       chatId: row.chat_id,
       source: row.message_id,
+      // A deferral keeps its own banner, which carries its buttons.
+      ...(kind.category === "kin.message"
+        ? { collapseId: kinPushCollapseId(orgId, row.chat_id) }
+        : {}),
       data: {
         kin: 1,
         orgId,
@@ -545,7 +577,10 @@ const make = Effect.gen(function* () {
     return { sent: count("sent"), suppressed: count("suppressed"), failed: count("failed") };
   });
 
-  /** A badge-only push to the reader's other devices; the one reading watches the chat. */
+  /**
+   * A badge-only push to the reader's other devices; the one reading watches the chat. It wakes
+   * the app too, which takes the chat's banners off the pane once nothing in it is unread.
+   */
   const readBadge = Effect.fn("KinPushSender.readBadge")(function* (
     orgId: KinOrgId,
     chatId: KinChatId,
@@ -557,8 +592,15 @@ const make = Effect.gen(function* () {
         AND principal_kind = 'person' AND left_at IS NULL`;
     if (row === undefined) return { sent: 0, suppressed: 0, failed: 0 };
     const badge = yield* badgeFor(orgId, row.person_id);
+    const cleared = (yield* chats.unreadCount({ orgId, chatId, memberId })) === 0;
     const targets = yield* devices.forPeople(orgId, [row.person_id]);
-    const data: KinPushData = { kin: 1, orgId, chatId, deepLink: chatLink(orgId, chatId) };
+    const data: KinPushData = {
+      kin: 1,
+      orgId,
+      chatId,
+      deepLink: chatLink(orgId, chatId),
+      ...(cleared ? { cleared: true } : {}),
+    };
     const results = yield* Effect.forEach(
       targets,
       Effect.fnUntraced(function* (device) {
@@ -567,7 +609,7 @@ const make = Effect.gen(function* () {
         const result = yield* apns.send({
           token: device.token,
           environment: device.apsEnvironment,
-          payload: { aps: { badge }, body: data },
+          payload: { aps: { badge, "content-available": 1 }, body: data },
         });
         if (result.status !== 200) return "failed" as const;
         shownBadge.set(device.token, badge);
@@ -597,7 +639,11 @@ const make = Effect.gen(function* () {
           ? yield* approvalPush(notification.orgId, notification.actionId)
           : notification._tag === "message"
             ? yield* messagePush(notification.orgId, notification.messageId)
-            : yield* widgetPush(notification.orgId, notification.widgetId);
+            : yield* widgetPush(
+                notification.orgId,
+                notification.widgetId,
+                notification.covered ?? [],
+              );
       if (push === undefined || push.recipients.length === 0) return nothing;
       const outcome: KinPushOutcome = {
         status: apns.status,
