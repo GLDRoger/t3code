@@ -459,7 +459,7 @@ describe("Kin chat contracts", () => {
     { schema: Kin.KinChoiceCardState, value: { ...choice, options: choiceOptions.slice(0, 1) } },
     {
       schema: Kin.KinChoiceCardState,
-      value: { ...choice, options: [...choiceOptions, ...choiceOptions, ...choiceOptions] },
+      value: { ...choice, options: Array.from({ length: 5 }, () => choiceOptions).flat() },
     },
     { schema: Kin.KinChoiceCardState, value: { ...choice, question: "x".repeat(241) } },
     { schema: Kin.KinPresence, value: { ...presence, label: "x".repeat(61) } },

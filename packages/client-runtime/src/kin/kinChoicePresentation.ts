@@ -33,6 +33,8 @@ export interface KinChoiceCardView {
     readonly personId: KinPersonId;
     readonly emoji: string | null;
   } | null;
+  /** What the answer did, in the owner's words, on a card Kin asked itself. */
+  readonly outcome: { readonly title: string; readonly text: string } | null;
   /** What a send card would send, in full: shown instead of `detail`. */
   readonly send: KinSendView | null;
   /** When an unanswered card stops taking taps; the host refuses later ones. */
@@ -92,6 +94,34 @@ export function kinThreadDate(raw: string | null, now: Date = new Date()): strin
     : formatKinTime(at, now);
 }
 
+/**
+ * The quote's "On <date>, <who> wrote:" line as a person reads it, in the reader's zone: the
+ * provider gives the raw header date, the same one as the thread box's.
+ */
+/**
+ * An address line in pieces that may each start a new line: after "@" and each dot of an email,
+ * so a long address breaks there rather than mid-word. Joined back, it is the line unchanged.
+ */
+export function kinAddressPieces(value: string): ReadonlyArray<string> {
+  return value
+    .split(/(\s+)/u)
+    .flatMap((word) => (word.includes("@") ? word.split(/(?<=[@.])(?=[^.])/u) : [word]));
+}
+
+export function kinQuotedInZone(quoted: string, raw: string | null): string {
+  if (raw === null || !quoted.startsWith(`On ${raw}, `)) return quoted;
+  const at = new Date(raw.trim());
+  if (Number.isNaN(at.getTime()) || at.getTime() < Date.UTC(1995, 0, 1)) return quoted;
+  const day = at.toLocaleDateString(undefined, {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  const time = at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return `On ${day} at ${time}, ${quoted.slice(`On ${raw}, `.length)}`;
+}
+
 function kinSendView(send: KinSendCard, now: Date): KinSendView {
   // Cards from before accounts carry only the account, in `from`.
   const account = send.account === undefined ? send.from : send.account;
@@ -137,7 +167,7 @@ function kinSendView(send: KinSendCard, now: Date): KinSendView {
         ? null
         : { ...send.thread, date: kinThreadDate(send.thread.date, now) },
     body: send.body,
-    quoted: send.quoted ?? null,
+    quoted: send.quoted == null ? null : kinQuotedInZone(send.quoted, send.thread?.date ?? null),
     fromChoices: choices.map((choice) => ({
       id: choice.id,
       label: fromLabel(choice.address, choice.name),
@@ -163,6 +193,17 @@ function kinSendView(send: KinSendCard, now: Date): KinSendView {
 }
 
 const decode = Schema.decodeUnknownOption(KinChoiceCardState);
+
+const sentTitle = (send: KinSendCard) =>
+  send.outcome?.state === "failed"
+    ? "Not sent"
+    : send.action === "event"
+      ? "Event saved"
+      : send.action === "call"
+        ? `Done in ${send.service}`
+        : send.action === "reply"
+          ? "Reply sent"
+          : "Email sent";
 // The lead writes these, so they are shown as plain text on one line.
 const line = (text: string) => text.replace(/\s+/g, " ").trim();
 
@@ -181,15 +222,26 @@ export function kinChoiceCardView(
     card.answer === null
       ? undefined
       : options.find((option) => option.id === card.answer?.optionId);
+  const send = card.send === undefined ? null : kinSendView(card.send, now);
   return {
     orgId: widget.orgId,
     widgetId: widget.widgetId,
     revision: widget.revision,
-    question: line(card.question),
+    // Answered, the title says what happened, never the question it asked.
+    question:
+      card.answer !== null && card.outcome !== undefined
+        ? line(card.outcome.title)
+        : card.send?.outcome != null && card.send.outcome.state !== "sending"
+          ? sentTitle(card.send)
+          : line(card.question),
+    outcome:
+      card.answer === null || card.outcome === undefined
+        ? null
+        : { title: line(card.outcome.title), text: card.outcome.text.trim() },
     detail: card.detail === null || card.detail.trim() === "" ? null : card.detail.trim(),
     options,
     image: card.image === undefined ? null : card.image,
-    send: card.send === undefined ? null : kinSendView(card.send, now),
+    send,
     answer:
       card.answer === null
         ? null
@@ -232,11 +284,13 @@ export function kinChoiceAnswered(
   tappedLabel: string | null,
 ): { readonly text: string | null } | null {
   const text =
-    view.answer !== null
-      ? kinChoiceAnswerText(view.answer, viewerPersonId)
-      : tappedLabel !== null
-        ? `You chose “${tappedLabel}”`
-        : null;
+    view.outcome !== null
+      ? view.outcome.text
+      : view.answer !== null
+        ? kinChoiceAnswerText(view.answer, viewerPersonId)
+        : tappedLabel !== null
+          ? `You chose “${tappedLabel}”`
+          : null;
   if (text === null) return null;
   return { text: view.send?.outcome == null ? text : null };
 }
@@ -250,7 +304,12 @@ export function kinChoiceAccessibilityLabel(view: KinChoiceCardView, status: str
       view.send.outcome?.text ?? null,
       status,
     ]);
-  return kinSentences(["Question", view.question, view.detail, status]);
+  return kinSentences([
+    view.outcome === null ? "Question" : null,
+    view.question,
+    view.detail,
+    status,
+  ]);
 }
 
 export function kinChoiceActInput(

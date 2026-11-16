@@ -14,6 +14,8 @@ import {
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinQuotedInZone,
+  kinAddressPieces,
   kinThreadDate,
 } from "./kinChoicePresentation.ts";
 import { formatKinTime } from "./kinScreenState.ts";
@@ -244,6 +246,30 @@ describe("choice cards", () => {
     expect(kinThreadDate("1970-01-01T00:00:00.001Z", now)).toBeNull();
     expect(kinThreadDate("sometime last week", now)).toBeNull();
     expect(kinThreadDate(null, now)).toBeNull();
+    // The quote under a reply names the same date the way a person reads it, not the header.
+    const raw = "Mon, 16 Nov 2026 06:49:41 +0000";
+    const quoted = kinQuotedInZone(
+      `On ${raw}, Anita <anita@orbitdental.example> wrote:\n> Paid`,
+      raw,
+    );
+    expect(quoted).not.toContain("+0000");
+    expect(quoted).toMatch(/^On .*2026 at .*, Anita <anita@orbitdental\.example> wrote:\n> Paid$/);
+    expect(kinQuotedInZone("On someday, Anita wrote:", "someday")).toBe("On someday, Anita wrote:");
+    // A long address may break after "@" or a dot, never mid-word; other words stay whole.
+    const line = "Rhea <accounts.payable@orbitdental.example>, Ambermill Ltd.";
+    expect(kinAddressPieces(line)).toEqual([
+      "Rhea",
+      " ",
+      "<accounts.",
+      "payable@",
+      "orbitdental.",
+      "example>,",
+      " ",
+      "Ambermill",
+      " ",
+      "Ltd.",
+    ]);
+    expect(kinAddressPieces(line).join("")).toBe(line);
   });
 
   const posted = Date.parse("2026-11-08T09:00:00.000Z");
@@ -322,6 +348,51 @@ describe("choice cards", () => {
     expect(kinChoiceAnswered({ ...open, answer: null }, null, null)).toBeNull();
     const sent = { ...tapped, send: { outcome: { tone: "ok", text: "Sent" } } } as never;
     expect(kinChoiceAnswered(sent, "owner" as never, null)).toEqual({ text: null });
+  });
+
+  it("says what an answered card of Kin's own did, in a past-tense title, not the button", () => {
+    const answered = {
+      optionId: "option-1",
+      personId: "owner",
+      via: "tap",
+      emoji: null,
+      answeredAt: "2026-11-08T09:05:00.000Z",
+    };
+    const made = choice({
+      revision: 2,
+      state: {
+        ...choiceState(answered),
+        outcome: { title: "Money recorded", text: "₹25,000.00 from Lumen is recorded." },
+      },
+    });
+    expect([made.question, kinChoiceAnswered(made, "owner" as never, null)]).toEqual([
+      "Money recorded",
+      { text: "₹25,000.00 from Lumen is recorded." },
+    ]);
+    const send = (state: "sent" | "failed", action: "email" | "reply") =>
+      choice({
+        revision: 3,
+        state: {
+          ...choiceState(answered),
+          question: "Send this email from Outlook?",
+          send: {
+            service: "Outlook",
+            action,
+            from: "rhea@ambermill.example",
+            to: ["anita@orbitdental.example"],
+            cc: [],
+            subject: "Invoice",
+            body: "Hi",
+            attachments: [],
+            outcome: { state, reason: null, at: "2026-11-08T09:06:00.000Z" },
+          },
+        },
+      }).question;
+    expect([send("sent", "email"), send("sent", "reply"), send("failed", "email")]).toEqual([
+      "Email sent",
+      "Reply sent",
+      "Not sent",
+    ]);
   });
 
   it("says a refused answer in the host's words when its figures changed", () => {
