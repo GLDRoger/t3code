@@ -63,6 +63,8 @@ export interface WireRow {
   readonly largest: number;
   /** The reads the client sent during the action, by RPC name. */
   readonly methods?: Record<string, number>;
+  /** Bytes in, by the RPC each frame answers. */
+  readonly bytesInByMethod?: Record<string, number>;
 }
 
 export interface BenchResult {

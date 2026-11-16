@@ -769,7 +769,8 @@ async function main() {
         });
       const mark = probe.mark();
       await offline(true);
-      await sleep(3000);
+      // Past the client's 3 s probe timeout after an offline report, so the socket really drops.
+      await sleep(6000);
       await offline(false);
       await sleep(8000);
       const row = probe.wire("reconnectIdle", mark);
@@ -783,7 +784,12 @@ async function main() {
           "Reconnect with nothing changed: KB in, owner",
           "bytes",
           [row.bytesIn],
-          resubscribed ? undefined : "no resubscribe seen",
+          resubscribed
+            ? Object.entries(row.bytesInByMethod ?? {})
+                .toSorted((a, b) => b[1] - a[1])
+                .map(([method, bytes]) => `${method} ${(bytes / 1024).toFixed(1)} KB`)
+                .join(", ")
+            : "no resubscribe seen",
         ),
         metric("wire", "reconnect.deflated", "Reconnect with nothing changed: deflated", "bytes", [
           row.deflatedIn ?? 0,
