@@ -905,8 +905,10 @@ it.effect(
         skills: "  SwiftUI, App Store releases  ",
         timeZone: "Asia/Kolkata",
         workHours: hours,
+        talkStyle: " Short, numbers first ",
       });
       assert.deepInclude(mine, {
+        talkStyle: "Short, numbers first",
         displayName: "Asha",
         roleTags: ["tech", "ios"],
         skills: "SwiftUI, App Store releases",
@@ -918,6 +920,18 @@ it.effect(
       assert.propertyVal(
         yield* service
           .updateProfile(ravi.session, { orgId, personId: asha.person.personId, skills: "x" })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      // How someone likes to be spoken to is theirs to say, even against the owner.
+      assert.propertyVal(
+        yield* service
+          .updateProfile(ownerSession, {
+            orgId,
+            personId: asha.person.personId,
+            talkStyle: "Long and formal",
+          })
           .pipe(Effect.flip),
         "reason",
         "not_allowed",

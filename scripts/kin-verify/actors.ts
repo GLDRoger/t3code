@@ -161,6 +161,8 @@ export async function runTurn(
     readonly person: string;
     readonly calls: ReadonlyArray<ToolCall>;
     readonly reply?: string;
+    /** What the person says with the marker, such as "undo it", for rules that read their words. */
+    readonly say?: string;
     /** Seconds the agent stays working before it replies, to watch the turn run. */
     readonly holdSeconds?: number;
     /** The turn fails after its calls instead of replying, as a model error would. */
@@ -189,7 +191,7 @@ export async function runTurn(
     const sent = (await rpc.call("kin.messages.send", {
       chatId,
       clientMessageId: `kin-verify-${id}`,
-      body: `[kv:${id}] ${input.calls.map((call) => call.name).join(", ") || "reply"}`,
+      body: `[kv:${id}] ${input.say ?? (input.calls.map((call) => call.name).join(", ") || "reply")}`,
     })) as { seq: number };
     seq = sent.seq;
   } finally {

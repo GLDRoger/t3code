@@ -89,7 +89,7 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
 instance.
 
 ```bash
-.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, all thirteen, down; ~16 min
+.agents/skills/verify-kin/scripts/run-all.sh          # up --fresh, every script, down; ~17 min
 .agents/skills/verify-kin/scripts/run-all.sh send-card-once private-task-hidden
 bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the running instance
 ```
@@ -109,6 +109,7 @@ bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the 
 | `private-client-unnamed`   | C-3 marked private: in Zoya's turn touch_log, record_get, records_query answer as for no client                                                                                                                                                                                                           |
 | `told-once-quiet-hours`    | a late task is told once, an unchanged one starts no turn, a change is told; at 23:00 a check-in waits for quiet hours to end, survives a restart, runs once                                                                                                                                              |
 | `team-room-discussion`     | the brochure discussion: Growth pitches in, Finance widens once and decides, Social objects once; one "Finance replied" line with a link in Social's chat, "Sent by Social" in Finance's; Meera has the room with no count, Dev can't read it; "undo it" drops the task; a disagreement comes as one card |
+| `character-and-undo`       | Finance's character changes by chat, carries into the next turn and restores from history; Zoya can't read it; "undo it" puts back a linked move                                                                                                                                                          |
 
 `node scripts/kin-release-check.ts` runs all ten with the models, property tests and UI fuzz before a release ([Releasing Kin](../../../docs/operations/kin-release.md)).
 
