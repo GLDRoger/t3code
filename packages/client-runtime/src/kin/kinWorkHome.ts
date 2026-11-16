@@ -57,7 +57,7 @@ export const KIN_WORK_HOME = {
 export const kinNeedsPane = (ownerLevel: boolean) =>
   ownerLevel
     ? { title: "Needs attention", empty: "Nothing needs attention right now." }
-    : { title: "On me", empty: "Nothing is on you right now." };
+    : { title: "On me", empty: "Nothing on you needs action today." };
 
 /** Rows the pane shows before "See all", so the first tasks stay on the first screen. */
 export const KIN_NEEDS_YOU_SHOWN = 4;
