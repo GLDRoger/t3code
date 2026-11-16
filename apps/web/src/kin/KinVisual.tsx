@@ -1,3 +1,5 @@
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, KinOrgId, KinVisualCardState } from "@t3tools/contracts";
 import {
@@ -234,17 +236,17 @@ function KinVisualBlockedHost(props: {
 }) {
   const allow = useAtomCommand(kinClient.visualHostAllow, { reportFailure: false });
   const [state, setState] = useState<"idle" | "confirm" | "saving">("idle");
-  const [problem, setProblem] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
   const run = async () => {
     setState("saving");
-    setProblem(false);
+    setProblem(null);
     const result = await allow({
       environmentId: props.environmentId,
       input: { orgId: props.orgId, host: props.host },
     });
     setState("idle");
     if (AsyncResult.isSuccess(result)) props.onAllowed();
-    else setProblem(true);
+    else setProblem(kinFailureText(squashAtomCommandFailure(result), "Couldn't allow it."));
   };
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -264,7 +266,7 @@ function KinVisualBlockedHost(props: {
       </Button>
       {problem ? (
         <span role="alert" className="text-destructive-foreground">
-          Couldn't allow it. Try again.
+          {problem}
         </span>
       ) : null}
       <AlertDialog
@@ -390,7 +392,7 @@ export function KinVisual(props: {
               <>
                 <p>Couldn't load this visual.</p>
                 <Button size="xs" variant="outline" onClick={() => void retry()}>
-                  Try again
+                  {KIN_RETRY}
                 </Button>
               </>
             )}

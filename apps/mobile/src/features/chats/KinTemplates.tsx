@@ -13,7 +13,6 @@ import { useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
-import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { FilePreviewModal } from "../../components/ui/FilePreviewModal";
 import { ListActionRow } from "../../components/ui/ListActionRow";
@@ -21,6 +20,7 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
 
 import { Notice } from "../../components/ui/Notice";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 import { appAtomRegistry } from "../../state/atom-registry";
 
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -137,10 +137,11 @@ export function KinTemplateRows(props: KinWorkTarget) {
       {state._tag === "loading" ? (
         <KinWorkLoading label="Loading templates" />
       ) : state._tag !== "ready" ? (
-        <View className="items-start gap-2 px-2">
-          <Notice message="Couldn't load your templates. Check your connection." tone="danger" />
-          <Button tone="secondary" label="Try again" onPress={recipes.refresh} />
-        </View>
+        <KinLoadFailed
+          title="Couldn't load your templates"
+          cause={state._tag === "failed" ? state.cause : null}
+          onRetry={recipes.refresh}
+        />
       ) : state.value.recipes.length === 0 ? (
         <Text textRole="footnote" className="px-2 text-foreground-muted">
           {KIN_TEMPLATES.empty}

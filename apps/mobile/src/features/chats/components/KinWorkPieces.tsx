@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_WORK_PRIVATE,
   KIN_WORK_REFRESH_FAILED,
@@ -332,7 +333,7 @@ export function KinWorkStaleNotice(props: {
   return (
     <Notice
       message={KIN_WORK_REFRESH_FAILED}
-      action={{ label: "Try again", onPress: props.onRetry }}
+      action={{ label: KIN_RETRY, onPress: props.onRetry }}
     />
   );
 }

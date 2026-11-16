@@ -16,7 +16,7 @@ export const KIN_PROFILE_COPY = {
   edit: "Edit profile",
   save: "Save",
   saving: "Saving…",
-  failed: "Couldn't save. Check your connection and try again.",
+  failed: "Couldn't save.",
   loadFailed: "Couldn't load this profile.",
   nameLabel: "Name",
   tagsLabel: "Roles",
@@ -40,7 +40,7 @@ export const KIN_TEAM_AGENT_COPY = {
   off: "Off",
   detail: "Everyone on your team can chat with this agent. It sees only what each person may see.",
   suggested: "Suggested",
-  failed: "Couldn't change the team agent. Try again.",
+  failed: "Couldn't change the team agent.",
 } as const;
 
 export const KIN_DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
@@ -205,7 +205,7 @@ export const KIN_COMPANY_CHAT_COPY = {
   label: "Company chat",
   detail:
     "One chat with everyone on the team and your agents. The one you pick answers when nobody is named.",
-  failed: "Couldn't change the company chat. Try again.",
+  failed: "Couldn't change the company chat.",
 } as const;
 
 /** "Chief of staff", or "Off" when there is none or it was retired. */

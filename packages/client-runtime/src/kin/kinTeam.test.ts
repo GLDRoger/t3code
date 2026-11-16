@@ -1,3 +1,4 @@
+import { KIN_BUSY } from "./kinAnswers.ts";
 import { describe, expect, it } from "@effect/vitest";
 import {
   KinChatError,
@@ -218,9 +219,7 @@ describe("createKinTeamActions", () => {
     expect(offline.calls).not.toContain("create:Anouk:new");
     // The row comes back: the old link still works.
     expect(states(offline.edits())).toContainEqual(["Anouk", "invited", "i-new"]);
-    expect(offline.edits().problem).toBe(
-      "Couldn't cancel this invite right now. Try again in a moment.",
-    );
+    expect(offline.edits().problem).toBe(`Couldn't cancel this invite. ${KIN_BUSY}`);
   });
 
   it("says the earlier link is gone when the replacement could not be made", async () => {
@@ -232,8 +231,7 @@ describe("createKinTeamActions", () => {
     });
     expect(result).toEqual({
       ok: false,
-      problem:
-        "Couldn't make this link right now. Try again in a moment. The earlier link was stopped.",
+      problem: `Couldn't make this link. ${KIN_BUSY} The earlier link was stopped.`,
     });
   });
 

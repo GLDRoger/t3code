@@ -35,7 +35,18 @@ export const KIN_OFFLINE_NOT_SENT = "You're offline. Try again when you're back.
 const isChatError = Schema.is(KinChatError);
 const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 
-const errorOf = (cause: unknown) => (Cause.isCause(cause) ? Cause.squash(cause) : cause);
+/** The error in a Cause, a failed AsyncResult or a bare error. */
+const errorOf = (cause: unknown): unknown =>
+  Cause.isCause(cause)
+    ? Cause.squash(cause)
+    : typeof cause === "object" &&
+        cause !== null &&
+        "_tag" in cause &&
+        cause._tag === "Failure" &&
+        "cause" in cause &&
+        Cause.isCause(cause.cause)
+      ? Cause.squash(cause.cause)
+      : cause;
 
 /**
  * What to say about a failed request. `what` says what didn't happen, as a sentence ("Couldn't
@@ -46,6 +57,8 @@ export interface KinFailureWords {
   readonly gone?: string;
   /** For a refusal, where the host's own words aren't meant for a person. */
   readonly refused?: string;
+  /** For Kin answering that it can't right now, where this screen knows why. */
+  readonly busy?: string;
   /** For this device's session lacking the scope: "This device isn't allowed to change Work." */
   readonly device?: string;
 }
@@ -76,7 +89,7 @@ export function kinFailure(cause: unknown, what: string, words: KinFailureWords 
       return { kind: "changed", text: KIN_CHANGED, retry: false };
     case "unavailable":
     case "disabled":
-      return { kind: "busy", text: KIN_BUSY, retry: true };
+      return { kind: "busy", text: words.busy ?? `${what} ${KIN_BUSY}`.trim(), retry: true };
     default:
       return { kind: "invalid", text: own ?? `${what} Check the details.`, retry: false };
   }

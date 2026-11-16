@@ -644,7 +644,8 @@ export type KinWorkReadState<A> =
   | { readonly _tag: "loading" }
   | { readonly _tag: "gone" }
   | { readonly _tag: "refused" }
-  | { readonly _tag: "failed" }
+  /** `cause` says whether to offer Retry (`kinFailure`). */
+  | { readonly _tag: "failed"; readonly cause: unknown }
   | {
       readonly _tag: "ready";
       readonly value: A;
@@ -661,7 +662,9 @@ export function kinWorkReadState<A>(
     return { _tag: "gone" };
   const value = Option.getOrNull(AsyncResult.value(result));
   if (value !== null) return { _tag: "ready", value, stale: AsyncResult.isFailure(result) };
-  return AsyncResult.isFailure(result) ? { _tag: "failed" } : { _tag: "loading" };
+  return AsyncResult.isFailure(result)
+    ? { _tag: "failed", cause: result.cause }
+    : { _tag: "loading" };
 }
 
 /** The letters a key starts with, which every entry of one kind shares: `C` of `C-12`. */

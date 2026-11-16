@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_WORK_LOAD_FAILED,
@@ -49,7 +50,13 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { KinFilter, KinWorkNotice, KinWorkRowSkeletons, type KinFilterGroup } from "./KinWorkParts";
+import {
+  KinFilter,
+  KinWorkNotice,
+  KinWorkRowSkeletons,
+  type KinFilterGroup,
+  KinLoadFailed,
+} from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
@@ -206,16 +213,12 @@ export function KinWorkTaskList(
                 <KinWorkRowSkeletons />
               </div>
             ) : listState.failed !== null ? (
-              <div className="flex flex-col items-start gap-3 py-4">
-                <Alert variant="error">
-                  <AlertDescription>
-                    {KIN_WORK_LOAD_FAILED}. Check your connection.
-                  </AlertDescription>
-                </Alert>
-                <Button size="sm" variant="outline" onClick={list.refresh}>
-                  Retry
-                </Button>
-              </div>
+              <KinLoadFailed
+                what={KIN_WORK_LOAD_FAILED}
+                cause={listState.failed}
+                onRetry={list.refresh}
+                className="py-4"
+              />
             ) : (
               <KinWorkNotice
                 title={nothing.title}
@@ -248,7 +251,7 @@ export function KinWorkTaskList(
               aria-busy={listState.loadingMore}
               onClick={() => void list.loadMore()}
             >
-              {listState.moreFailed ? "Try again" : "Show more"}
+              {listState.moreFailed ? KIN_RETRY : "Show more"}
             </Button>
           </div>
         )

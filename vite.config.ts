@@ -478,7 +478,14 @@ export default defineConfig({
           "apps/web/src/components/settings/Kin*.tsx",
           "apps/mobile/src/features/chats/**",
         ],
-        excludeFiles: ["**/*.test.{ts,tsx}", "packages/client-runtime/src/kin/kinAnswers.ts"],
+        // Approvals (Face ID, keychain) and joining (before any Kin answers) fail on the device.
+        excludeFiles: [
+          "**/*.test.{ts,tsx}",
+          "packages/client-runtime/src/kin/kinAnswers.ts",
+          "packages/client-runtime/src/kin/kinApprovalPresentation.ts",
+          "packages/client-runtime/src/kin/kinJoin.ts",
+          "apps/mobile/src/features/chats/approvals/**",
+        ],
         rules: { "t3code/kin-failure-words": "error" },
       },
       {

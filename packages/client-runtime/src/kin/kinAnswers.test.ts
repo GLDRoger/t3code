@@ -16,7 +16,14 @@ describe("kinFailure", () => {
       [refusal("disabled", "Off."), "busy", true],
       // #2: a refusal is said plainly, never as the connection.
       [refusal("not_allowed", "Only the owner filters by that client."), "refused", false],
-      [new EnvironmentAuthorizationError({ message: "no scope", requiredScope: "orchestration:read" }), "refused", false],
+      [
+        new EnvironmentAuthorizationError({
+          message: "no scope",
+          requiredScope: "orchestration:read",
+        }),
+        "refused",
+        false,
+      ],
       // #4: an attention item no longer current is gone, not a failure to save.
       [refusal("not_found", "No such fact."), "gone", false],
       // #3: the host's own reason, so it can be fixed.
@@ -27,9 +34,9 @@ describe("kinFailure", () => {
       expect([failure.kind, failure.retry], String(error)).toEqual([kind, retry]);
       expect(/connection/i.test(failure.text), String(error)).toBe(kind === "offline");
     }
-    expect(kinFailure(refusal("invalid_state", "A milestone is open, done or dropped."), what).text).toBe(
-      "A milestone is open, done or dropped.",
-    );
+    expect(
+      kinFailure(refusal("invalid_state", "A milestone is open, done or dropped."), what).text,
+    ).toBe("A milestone is open, done or dropped.");
     expect(kinFailure(refusal("not_found", "x"), what, { gone: "Already handled." }).text).toBe(
       "Already handled.",
     );

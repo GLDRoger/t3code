@@ -51,6 +51,8 @@ import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { useKinProfiles } from "./kinPictures";
 import { useKinHostAt } from "./useKinHost";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 export interface KinProfileTarget {
   readonly environmentId: EnvironmentId;
@@ -293,7 +295,7 @@ function KinProfileForm(props: {
     const outcome = await update({ environmentId, input });
     setBusy(null);
     if (AsyncResult.isSuccess(outcome)) props.onDone();
-    else setProblem(KIN_PROFILE_COPY.failed);
+    else setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_PROFILE_COPY.failed));
   };
 
   const choosePicture = async (file: File | undefined) => {

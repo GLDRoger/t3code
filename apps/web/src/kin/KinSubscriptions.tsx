@@ -20,7 +20,7 @@ import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinEstimateText, KinSetRateButton } from "./KinMoneyEstimate";
-import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection } from "./KinWorkParts";
+import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected } from "./useKinHost";
@@ -225,14 +225,12 @@ export function KinSubscriptionsPage(
         <KinWorkRowSkeletons />
       </div>
     ) : (
-      <div className="mx-auto flex w-full max-w-3xl flex-col items-start gap-3 p-4">
-        <Alert variant="error">
-          <AlertDescription>Couldn't load subscriptions. Check your connection.</AlertDescription>
-        </Alert>
-        <Button size="sm" variant="outline" onClick={lists.refresh}>
-          Retry
-        </Button>
-      </div>
+      <KinLoadFailed
+        what={"Couldn't load subscriptions"}
+        cause={lists.state._tag === "failed" ? lists.state.cause : null}
+        onRetry={lists.refresh}
+        className="mx-auto w-full max-w-3xl p-4"
+      />
     );
   if (def === null) return <KinWorkNotice {...KIN_SUBSCRIPTIONS.none} />;
   return <KinSubscriptionsBody {...props} def={def} seq={seq} rates={rates} />;

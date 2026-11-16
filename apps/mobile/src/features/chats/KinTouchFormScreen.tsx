@@ -1,3 +1,5 @@
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CLIENTS,
@@ -45,7 +47,7 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
   const [daysAgo, setDaysAgo] = useState(0);
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   if (environmentId === null || orgId === null || party === null)
     return (
       <KinWorkFrame form title={KIN_CLIENTS.logContact} onClose={() => navigation.goBack()}>
@@ -59,7 +61,7 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
   const save = async () => {
     if (saving || note.trim() === "") return;
     setSaving(true);
-    setFailed(false);
+    setFailed(null);
     const now = new Date();
     const at = kinTouchAt(kinLocalDay(new Date(now.getTime() - daysAgo * DAY_MS)), now);
     const result = await log({
@@ -74,7 +76,8 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
       },
     });
     setSaving(false);
-    if (result._tag !== "Success") return setFailed(true);
+    if (result._tag !== "Success")
+      return setFailed(kinFailureText(squashAtomCommandFailure(result), KIN_CLIENTS.touchFailed));
     appAtomRegistry.refresh(kinClient.workClient({ environmentId, input: { orgId, key: party } }));
     navigation.goBack();
   };
@@ -90,9 +93,7 @@ export function KinTouchFormScreen({ route }: StaticScreenProps<KinTouchFormPara
         disabled: saving || note.trim() === "",
       }}
     >
-      {failed ? (
-        <Notice message={KIN_CLIENTS.touchFailed} onDismiss={() => setFailed(false)} />
-      ) : null}
+      {failed ? <Notice message={failed} onDismiss={() => setFailed(null)} /> : null}
       <View className="gap-2">
         <Text className="px-2 text-sm text-foreground-muted">{KIN_CLIENTS.touchKind}</Text>
         <View className="flex-row flex-wrap gap-2">

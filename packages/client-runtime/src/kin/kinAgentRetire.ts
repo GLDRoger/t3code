@@ -107,7 +107,9 @@ export function kinRetireProblem(error: unknown, name: string): string {
     case "not_found":
       return "This agent is no longer here.";
     default:
-      return kinFailureText(error, `Couldn't retire ${name}.`);
+      return kinFailureText(error, `Couldn't retire ${name}.`, {
+        busy: "Agents aren't running on this server right now.",
+      });
   }
 }
 

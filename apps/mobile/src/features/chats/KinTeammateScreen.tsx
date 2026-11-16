@@ -27,7 +27,8 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import { KIN_PROFILE_COPY } from "@t3tools/client-runtime/kin/kinProfiles";
-import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -450,7 +451,7 @@ function KinTeammatePlaces(props: {
       { label: "kin:person:set-places", reportFailure: false, reportDefect: true },
     );
     if (AsyncResult.isFailure(result))
-      setProblem("That didn't save. Check your connection and try again.");
+      setProblem(kinFailureText(squashAtomCommandFailure(result), "That didn't save."));
     await refreshKinTeam(target);
     setAsked((held) => {
       const rest = { ...held };

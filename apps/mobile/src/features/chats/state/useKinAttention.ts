@@ -1,9 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
-import {
-  kinAttentionProblem,
-  kinAttentionShown,
-} from "@t3tools/client-runtime/kin/kinAttention";
+import { kinAttentionProblem, kinAttentionShown } from "@t3tools/client-runtime/kin/kinAttention";
 import { kinWorkAgent } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -30,8 +27,9 @@ import { kinWorkLiveAtom, type KinWorkTarget } from "./useKinWork";
 const noAttentionAtom: Atom.Atom<AsyncResult.AsyncResult<KinPulseRead, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
-const noLiveAtom: Atom.Atom<AsyncResult.AsyncResult<{ readonly seq: number }, unknown>> =
-  Atom.make(AsyncResult.initial());
+const noLiveAtom: Atom.Atom<AsyncResult.AsyncResult<{ readonly seq: number }, unknown>> = Atom.make(
+  AsyncResult.initial(),
+);
 const noGoalsAtom: Atom.Atom<AsyncResult.AsyncResult<KinGoalsResult, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
