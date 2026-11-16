@@ -22,6 +22,19 @@ Each eval's README lists its models, flags, and cost. Start with one case and on
 
 Evals call paid models, so CI does not run them. CI typechecks this package and runs the graders' unit tests.
 
+## Kin baseline
+
+Kin's agent cases live in `mcp-tool-use`: `cases/kin.ndjson` and `cases/kin-owed.ndjson`, one area per group of behaviours (`kin/owner-chat`, `kin/mail` and the rest). Run them once per model before changing Kin's instructions or tool descriptions, and compare later runs against that baseline. From `evals/`:
+
+| Command                                              | Calls a model | What it does                                                                       |
+| ---------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------- |
+| `pnpm kin:dry`                                       | no            | Builds every Kin request, fails on a malformed case, and prints the cost estimate. |
+| `pnpm kin:subset --model <id> --out runs/kin-subset` | yes           | The first case of each group, 3 samples each.                                      |
+| `pnpm kin:baseline --model <id> --out runs/kin-<id>` | yes           | Every Kin case, 3 samples each, on one model.                                      |
+| `pnpm kin:baseline:all`                              | yes           | The same on Opus, Sonnet and Haiku, into `runs/kin-baseline-<model>`.              |
+
+`summary.md` gives the pass rate per case and per pattern. The `mcp-tool-use` README covers the case format.
+
 ## The shape of an eval
 
 Every eval follows the same shape, so a new one is easy to write and an old one is easy to run.

@@ -1,3 +1,4 @@
+import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
 import {
   EnvironmentId,
   KinChatError,
@@ -284,6 +285,8 @@ describe("statement review card", () => {
         new KinChatError({ reason: "conflict", message: "Something changed." }),
       ),
     ).toBe("Something changed.");
-    expect(kinStatementFailureText(new Error("socket"))).toBe("Couldn't send that. Try again.");
+    expect(kinStatementFailureText(new Error("socket"))).toBe(
+      `Couldn't send that. ${KIN_CHECK_CONNECTION}`,
+    );
   });
 });

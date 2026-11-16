@@ -15,6 +15,8 @@ import { Button } from "../components/ui/button";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../components/ui/menu";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 const OFF = "off";
 
@@ -46,7 +48,8 @@ export function KinTeamAgentRow(props: {
       input: { orgId, agentId: value === OFF ? null : KinAgentId.make(value) },
     });
     setPending(null);
-    if (!AsyncResult.isSuccess(outcome)) setProblem(KIN_TEAM_AGENT_COPY.failed);
+    if (!AsyncResult.isSuccess(outcome))
+      setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_TEAM_AGENT_COPY.failed));
   };
   return (
     <section className="flex flex-col gap-1.5 rounded-lg border border-border/60 p-3">
@@ -120,7 +123,8 @@ export function KinCompanyChatRow(props: {
     });
     refresh();
     setPending(null);
-    if (!AsyncResult.isSuccess(outcome)) setProblem(KIN_COMPANY_CHAT_COPY.failed);
+    if (!AsyncResult.isSuccess(outcome))
+      setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_COMPANY_CHAT_COPY.failed));
   };
   return (
     <section className="flex flex-col gap-1.5 rounded-lg border border-border/60 p-3">

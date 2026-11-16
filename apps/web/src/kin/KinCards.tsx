@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_MISSING_CARD_TEXT,
@@ -757,7 +758,7 @@ function KinMemoryChangesCard(props: {
                     disabled={pending !== null}
                     onClick={() => void undo(item)}
                   >
-                    {failure === null ? "Undo" : "Try again"}
+                    {failure === null ? "Undo" : KIN_RETRY}
                   </Button>
                 ) : null}
               </div>

@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
 import type {
   KinClientTouch,
   KinContact,
@@ -42,7 +43,7 @@ export const KIN_PROJECT_LEAD = {
   detail:
     "The lead and their agent run this project without asking: its tasks, milestones, docs, the client's contacts, and draft quotes and invoices. Issuing, payments and anything sent out stay with the owner and co-owners.",
   save: "Make lead",
-  failed: "The lead didn't change. Check your connection and try again.",
+  failed: "The lead didn't change.",
 } as const;
 
 /** Everyone who can lead a project, by name. */
@@ -89,7 +90,7 @@ export const KIN_CLIENTS = {
   touchRemoveTitle: "Remove this logged contact?",
   details: "Details",
   detailsSummary: "Address, tax, terms and notes",
-  touchFailed: "Couldn't log that. Check your connection and try again.",
+  touchFailed: "Couldn't log that.",
   history: "History",
   noHistory: "Nothing has happened yet.",
   earlier: "Show earlier",
@@ -108,7 +109,7 @@ export const KIN_CLIENT_GONE = {
 };
 export const KIN_CLIENT_FAILED = {
   title: "Couldn't load this client",
-  detail: "Check your connection to the server and try again.",
+  detail: KIN_CHECK_CONNECTION,
 };
 
 export const KIN_PROJECTS = {
@@ -154,7 +155,7 @@ export const KIN_PROJECT_GONE = {
 };
 export const KIN_PROJECT_FAILED = {
   title: "Couldn't load this project",
-  detail: "Check your connection to the server and try again.",
+  detail: KIN_CHECK_CONNECTION,
 };
 
 /** What a server from before clients and projects is told, instead of an error. */

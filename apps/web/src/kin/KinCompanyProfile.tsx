@@ -35,6 +35,7 @@ import { kinClient } from "./kinClient";
 import { kinHostConnected, useKinHost } from "./useKinHost";
 import { useKinCompanyProfile } from "./useKinMoney";
 import type { KinWorkTarget } from "./useKinWork";
+import { KinLoadFailed } from "./KinWorkParts";
 
 function Notice(props: {
   readonly title: string;
@@ -74,14 +75,12 @@ function Permitted(props: KinWorkTarget) {
   }
   if (state._tag !== "ready") {
     return (
-      <div className="flex flex-col items-start gap-3 p-4">
-        <Alert variant="error">
-          <AlertDescription>{KIN_COMPANY.loadFailed}. Check your connection.</AlertDescription>
-        </Alert>
-        <Button size="sm" variant="outline" onClick={refresh}>
-          Retry
-        </Button>
-      </div>
+      <KinLoadFailed
+        what={KIN_COMPANY.loadFailed}
+        cause={state._tag === "failed" ? state.cause : null}
+        onRetry={refresh}
+        className="p-4"
+      />
     );
   }
   return <Profile {...props} profile={state.value} onRefresh={refresh} />;

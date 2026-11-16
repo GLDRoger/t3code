@@ -206,6 +206,8 @@ export const KinPersonProfile = Schema.Struct({
   workHours: Schema.NullOr(KinWorkHours),
   /** The tasks they hold now; only the owner reads it. */
   load: Schema.optional(Schema.Struct({ open: NonNegativeInt, late: NonNegativeInt })),
+  /** The reader may change this profile (the check `kin.people.updateProfile` runs); absent from older hosts. */
+  canEdit: Schema.optional(Schema.Boolean),
 });
 export type KinPersonProfile = typeof KinPersonProfile.Type;
 export const KinPeopleProfilesResult = Schema.Struct({

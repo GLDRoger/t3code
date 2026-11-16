@@ -1,3 +1,4 @@
+import { useRouter } from "@tanstack/react-router";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DAY_LABELS,
@@ -21,7 +22,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -51,6 +52,8 @@ import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
 import { useKinProfiles } from "./kinPictures";
 import { useKinHostAt } from "./useKinHost";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 export interface KinProfileTarget {
   readonly environmentId: EnvironmentId;
@@ -69,6 +72,12 @@ export const openKinProfile = (target: KinProfileTarget) =>
 
 export function KinProfileSheetHost() {
   const target = useAtomValue(kinProfileSheetAtom);
+  const router = useRouter();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the sheet isn't in the address, so any navigation, Back included, closes it rather than leaving it over another screen
+  useEffect(
+    () => router.history.subscribe(() => appAtomRegistry.set(kinProfileSheetAtom, null)),
+    [router],
+  );
   if (target === null) return null;
   return (
     <KinProfileSheet
@@ -150,6 +159,7 @@ function KinProfileSheet(props: {
     viewerPersonId: viewer,
     ownerPersonId: held?.ownerPersonId ?? null,
     personId,
+    canEdit: profile?.canEdit,
   });
   const [editing, setEditing] = useState(false);
   const mine = viewer === personId;
@@ -292,7 +302,7 @@ function KinProfileForm(props: {
     const outcome = await update({ environmentId, input });
     setBusy(null);
     if (AsyncResult.isSuccess(outcome)) props.onDone();
-    else setProblem(KIN_PROFILE_COPY.failed);
+    else setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_PROFILE_COPY.failed));
   };
 
   const choosePicture = async (file: File | undefined) => {

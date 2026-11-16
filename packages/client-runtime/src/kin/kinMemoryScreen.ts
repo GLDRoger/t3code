@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { kinFailureText } from "./kinAnswers.ts";
 import {
   KIN_MEMORY_CONFIRM_MAX,
   KinChatError,
@@ -26,17 +27,13 @@ export const KIN_MEMORY_EMPTY = {
   title: "Nothing remembered yet",
   detail: "What your agents learn while working with you shows up here.",
 };
-const KIN_MEMORY_CHANGE_FAILED = "Couldn't change that. Try again.";
+const KIN_MEMORY_CHANGE_FAILED = "Couldn't change that.";
 const isKinChatError = Schema.is(KinChatError);
 /** Why a tap didn't go through; the host's own words only where it wrote them for the owner. */
 const problemOf = (cause: unknown) =>
-  !isKinChatError(cause)
-    ? KIN_MEMORY_CHANGE_FAILED
-    : cause.reason === "not_found"
-      ? "Your agents no longer remember that, so nothing changed."
-      : cause.reason === "not_allowed"
-        ? cause.message
-        : KIN_MEMORY_CHANGE_FAILED;
+  isKinChatError(cause) && cause.reason === "not_found"
+    ? "Your agents no longer remember that, so nothing changed."
+    : kinFailureText(cause, KIN_MEMORY_CHANGE_FAILED);
 /** Forgetting is asked once more first: the page has no way to bring an item back. */
 export const KIN_MEMORY_FORGET = {
   action: "Forget",
@@ -48,7 +45,7 @@ export const KIN_MEMORY_FORGOTTEN = {
   title: "Forgotten",
   count: (n: number) => (n === 0 ? "None" : String(n)),
   restore: "Restore",
-  failed: "Couldn't bring that back. Try again.",
+  failed: "Couldn't bring that back.",
 };
 const SHARE = "Let the team know";
 const KEEP = "Keep to myself";

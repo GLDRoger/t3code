@@ -769,7 +769,23 @@ export const make = Effect.gen(function* () {
       (yield* mayActAsOwner(orgId, person.personId, identity.owner).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
       ));
-    if (!ownerLevelReader) return { profiles: rows, ownerPersonId: identity.owner.personId };
+    const reader = people.find((p) => p.orgId === orgId);
+    // Whose profile the reader may change: the same check `updateProfile` runs.
+    const editable = new Set<string>();
+    for (const row of rows)
+      if (
+        reader !== undefined &&
+        (reader.personId === row.personId ||
+          (ownerLevelReader &&
+            (yield* mayActOn(reader, orgId, row.personId).pipe(Effect.isSuccess))))
+      )
+        editable.add(row.personId);
+    const withEdit = <A extends { readonly personId: string }>(profile: A) => ({
+      ...profile,
+      canEdit: editable.has(profile.personId),
+    });
+    if (!ownerLevelReader)
+      return { profiles: rows.map(withEdit), ownerPersonId: identity.owner.personId };
     // The Team list's open and late counts: owner-level, as people_read's load is.
     const now = yield* Clock.currentTimeMillis;
     const held = yield* sql<{ personId: string; open: number; late: number }>`SELECT
@@ -783,7 +799,7 @@ export const make = Effect.gen(function* () {
     const load = new Map(held.map((row) => [row.personId, row]));
     return {
       profiles: rows.map((profile) => ({
-        ...profile,
+        ...withEdit(profile),
         load: {
           open: load.get(profile.personId)?.open ?? 0,
           late: load.get(profile.personId)?.late ?? 0,

@@ -46,6 +46,8 @@ import { kinClient } from "./state/kinClient";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { useKinReconnect } from "./state/useKinReconnect";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 const noSessionAtom = Atom.make(null);
 
@@ -348,7 +350,10 @@ function KinDailyLimitSection(props: {
               environmentId: props.environmentId,
               input: { orgId: props.orgId, limits: picked.limits },
             }).then((outcome) => {
-              if (AsyncResult.isFailure(outcome)) Dialog.alert(KIN_DAILY_LIMIT.failed);
+              if (AsyncResult.isFailure(outcome))
+                Dialog.alert(
+                  kinFailureText(squashAtomCommandFailure(outcome), KIN_DAILY_LIMIT.failed),
+                );
               refresh();
             });
           }}
@@ -411,7 +416,10 @@ function KinTeamAgentRow(props: {
           environmentId: props.environmentId,
           input: { orgId: props.orgId, agentId: picked.agentId },
         }).then((outcome) => {
-          if (AsyncResult.isFailure(outcome)) Dialog.alert(KIN_TEAM_AGENT_COPY.failed);
+          if (AsyncResult.isFailure(outcome))
+            Dialog.alert(
+              kinFailureText(squashAtomCommandFailure(outcome), KIN_TEAM_AGENT_COPY.failed),
+            );
           refresh();
         });
       }}
@@ -460,7 +468,10 @@ function KinCompanyChatRow(props: {
           environmentId: props.environmentId,
           input: { orgId: props.orgId, leadAgentId: picked.agentId },
         }).then((outcome) => {
-          if (AsyncResult.isFailure(outcome)) Dialog.alert(KIN_COMPANY_CHAT_COPY.failed);
+          if (AsyncResult.isFailure(outcome))
+            Dialog.alert(
+              kinFailureText(squashAtomCommandFailure(outcome), KIN_COMPANY_CHAT_COPY.failed),
+            );
           refresh();
         });
       }}

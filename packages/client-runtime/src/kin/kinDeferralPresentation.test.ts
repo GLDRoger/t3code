@@ -1,3 +1,4 @@
+import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
 import { KinChatError, type KinWidget, type KinWidgetsActInput } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -343,7 +344,7 @@ describe("createKinCardActions", () => {
     const lost = setup(dropped);
     expect(await lost.act(view(deferral()), "remind")).toEqual({
       status: "failed",
-      notice: { kind: "error", text: KIN_SEND_FAILED_TEXT },
+      notice: { kind: "error", text: `${KIN_SEND_FAILED_TEXT} ${KIN_CHECK_CONNECTION}` },
     });
     expect((await lost.act(view(deferral()), "remind")).status).toBe("failed");
     expect(lost.posted).toHaveLength(2);

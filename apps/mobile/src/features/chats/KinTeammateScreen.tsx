@@ -27,7 +27,8 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import { KIN_PROFILE_COPY } from "@t3tools/client-runtime/kin/kinProfiles";
-import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
+import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -49,6 +50,7 @@ import { KinAvatar } from "./components/KinAvatar";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { kinClient } from "./state/kinClient";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
+import { useKinProfiles } from "./state/useKinProfiles";
 
 export type KinTeammateParams = {
   readonly environmentId: string;
@@ -165,6 +167,11 @@ function KinTeammateDetails(props: {
   const { teammate, actions } = props;
   const navigation = useNavigation();
   const offered = kinTeammateActions(teammate, props.viewer);
+  // The host says whose profile this reader may change: the owner's and a co-owner's alike.
+  const profiles = useKinProfiles(props.target.environmentId, props.target.orgId).held;
+  const mayEdit =
+    profiles?.profiles.find((profile) => profile.personId === teammate.personId)?.canEdit ??
+    props.viewer === "owner";
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -237,8 +244,8 @@ function KinTeammateDetails(props: {
               navigation.navigate("KinProfile", { ...props.target, personId });
             }}
           />
-          {/* Their page is the record: the owner edits their profile in a sheet on it. */}
-          {props.viewer === "owner" ? (
+          {/* Their page is the record: their profile is edited in a sheet on it. */}
+          {mayEdit ? (
             <ListActionRow
               icon="pencil"
               label={KIN_PROFILE_COPY.edit}
@@ -444,7 +451,7 @@ function KinTeammatePlaces(props: {
       { label: "kin:person:set-places", reportFailure: false, reportDefect: true },
     );
     if (AsyncResult.isFailure(result))
-      setProblem("That didn't save. Check your connection and try again.");
+      setProblem(kinFailureText(squashAtomCommandFailure(result), "That didn't save."));
     await refreshKinTeam(target);
     setAsked((held) => {
       const rest = { ...held };

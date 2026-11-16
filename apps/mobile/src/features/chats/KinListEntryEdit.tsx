@@ -47,6 +47,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { KinLoadFailed } from "./components/KinLoadFailed";
 
 const FIELD = "field:";
 
@@ -320,11 +321,10 @@ function FileEdit(props: Shared & { readonly field: KinListFieldView }) {
       ) : state._tag === "loading" ? (
         <KinWorkLoading label="Loading files" />
       ) : state._tag === "failed" ? (
-        <EmptyState
-          variant="plain"
+        <KinLoadFailed
           title={KIN_LISTS.entry.filesFailed}
-          detail="Check your connection to the server and try again."
-          action={<Button tone="secondary" label="Try again" onPress={retry} />}
+          cause={"cause" in state ? state.cause : null}
+          onRetry={retry}
         />
       ) : files.length === 0 ? (
         <Text textRole="body" className="px-2 text-foreground-muted">

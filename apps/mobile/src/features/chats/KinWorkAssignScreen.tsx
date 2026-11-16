@@ -1,3 +1,4 @@
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -131,7 +132,7 @@ function KinWorkAssignBody(props: ItemTarget) {
             action={
               <Button
                 tone="secondary"
-                label="Try again"
+                label={KIN_RETRY}
                 onPress={() => appAtomRegistry.refresh(itemAtom)}
               />
             }

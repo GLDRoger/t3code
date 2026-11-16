@@ -1,3 +1,4 @@
+import { kinFailureText } from "./kinAnswers.ts";
 import {
   KinChatError,
   KinMemoryChangeCard,
@@ -64,7 +65,7 @@ export function kinMemoryChangesView(widget: KinWidget): KinMemoryChangesCardVie
 
 /** The server writes Undo refusals for the owner ("This changed again since…"), so they show. */
 export function kinMemoryUndoFailureText(cause: unknown): string {
-  if (!isKinChatError(cause)) return KIN_SEND_FAILED_TEXT;
+  if (!isKinChatError(cause)) return kinFailureText(cause, KIN_SEND_FAILED_TEXT);
   switch (cause.reason) {
     case "conflict":
     case "invalid_state":
@@ -73,6 +74,6 @@ export function kinMemoryUndoFailureText(cause: unknown): string {
     case "unavailable":
       return cause.message.trim().slice(0, 280) || KIN_SEND_FAILED_TEXT;
     default:
-      return KIN_SEND_FAILED_TEXT;
+      return kinFailureText(cause, KIN_SEND_FAILED_TEXT);
   }
 }
