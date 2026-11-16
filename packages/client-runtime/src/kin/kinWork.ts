@@ -557,10 +557,18 @@ export function kinWorkRow(
   const due = day === null ? null : `Due ${day}`;
   const ownerRetired = kinWorkRetired(record.owner, names);
   const holder = ownerRetired ? `${owner} (retired)` : owner;
-  const handedBack =
+  const handedBy =
     record.handedBack === undefined || kinWorkClosed(record.state)
       ? null
-      : `Handed back by ${kinWorkName(record.handedBack.by, names, "you")}`;
+      : { principal: record.handedBack.by, name: kinWorkName(record.handedBack.by, names, "you") };
+  const handedBack = handedBy === null ? null : `Handed back by ${handedBy.name}`;
+  // The row's mark keeps a person to their first name, so a phone-width title isn't squeezed.
+  const handedBackMark =
+    handedBy === null
+      ? null
+      : handedBy.principal._tag === "person"
+        ? `Handed back by ${handedBy.name.split(/\s+/)[0]}`
+        : handedBack;
   // What a narrow row keeps when it cuts the end off: who has it always (the row sets it apart),
   // then when it is due and where it stands, then its client or project. "Not started" is what
   // the empty circle already says.
@@ -606,7 +614,7 @@ export function kinWorkRow(
       .filter((part) => part !== null)
       .join(". "),
     mark: record.late ? "late" : handedBack === null ? null : "handed_back",
-    markText: record.late ? KIN_WORK_MARKS.late : handedBack,
+    markText: record.late ? KIN_WORK_MARKS.late : handedBackMark,
   };
 }
 
