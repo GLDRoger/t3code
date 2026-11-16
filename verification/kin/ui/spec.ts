@@ -46,10 +46,18 @@ const screen = extract((state) => {
     const m = re.exec(text);
     return m ? Number(m[1]) : null;
   };
-  const onTasks = url.pathname.endsWith("/tasks") && !url.search;
-  const taskRows = onTasks
-    ? (after(/^Filter$/)?.filter((l) => /· W-\d+$/.test(l)).length ?? null)
-    : null;
+  // A filter or a search narrows the list on purpose, so the tasks count is compared without one.
+  const searched = [...doc.querySelectorAll("main input")].some(
+    (i) => (i as HTMLInputElement).value !== "",
+  );
+  const onTasks =
+    url.pathname.endsWith("/tasks") && !url.search && !searched && !/Clear filter/.test(mainText);
+  // Rows follow "Filter" directly; a chosen filter ("Late", "Due this week") sits between them.
+  const listed = onTasks ? after(/^Filter$/) : null;
+  const taskRows =
+    listed && /· W-\d+$/.test(listed[1] ?? "")
+      ? listed.filter((l) => /· W-\d+$/.test(l)).length
+      : null;
   const onTeam = url.pathname.endsWith("/team");
   const teamLines = onTeam ? after(/^One chat with everyone/) : null;
   const teamOthers = teamLines ? teamLines.length / 2 - 1 : null;
@@ -71,7 +79,7 @@ const screen = extract((state) => {
         day = new Date(/\d{4}$/.test(bare) ? bare : `${bare}, ${today.getFullYear()}`).getTime();
       } else if (
         day !== null &&
-        / · (?:Due|Dated|Renews|Starts|Ends) · /.test(l) &&
+        / · (?:Due|Dated|Renews|Starts|Ends|Received on) · /.test(l) &&
         !/ · (?:Done|Paid|Dropped|Declined|Accepted|Void)\b/.test(l)
       )
         if (day >= today.getTime() && day <= limit) datesSoon++;
@@ -118,7 +126,9 @@ const never = (pattern: RegExp) => always(() => !pattern.test(shown()));
 export const noCouldntLoad = never(/Couldn['’]t load|Failed to load|Try again/i);
 export const noGoneRecord = never(/isn['’]t here any ?more|no longer exists|not found/i);
 export const noSomethingWrong = never(/Something went wrong|Unexpected error/i);
-export const noNotAvailable = never(/Not available|You don['’]t have access|not allowed/i);
+export const noNotAvailable = never(
+  /Not available|You don['’]t have access|not allowed|Only whoever holds|or gave it to them, can/i,
+);
 export const noBlankScreen = always(
   now(() => screen.current?.mainBlank === true).implies(
     eventually(() => screen.current?.mainBlank !== true).within(6, "seconds"),
@@ -192,9 +202,14 @@ const countsAgree = () => {
     agree(c.datesClaim, c.datesSoon)
   );
 };
-export const countMatchesList = always(
-  now(countsAgree).or(eventually(countsAgree).within(5, "seconds")),
-);
+// Rows arrive a moment after a count, so a mismatch counts once it has held for three captured
+// states on the same address.
+export const countMatchesList = always(() => {
+  if (countsAgree()) return true;
+  const at = href.current;
+  const settled = () => href.current !== at || countsAgree();
+  return next(() => settled() || next(settled));
+});
 
 // Going back closes what a tap opened. Kin keeps what is open in the address, and closing or
 // switching a record replaces the entry, so the rule is: open something (the address gains a
