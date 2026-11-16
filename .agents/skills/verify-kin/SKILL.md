@@ -156,8 +156,10 @@ check the same facts through `as <person> rpc` while you do.
 `bash .agents/skills/verify-kin/scripts/card-gallery.sh <person>` makes every chat card in that
 person's chats with real scripted turns, about a minute: a long reply with a list, table, code and
 link, a question, a plan, a chart, a visual, a relay, a working line, a reaction, and for the owner
-and co-owner a check-in, a money chart, an invoice PDF, a send card and a receipt. It is a gallery to
-look at, not a pass/fail check; each line says what was made or why Kin refused it.
+and co-owner a check-in, a money chart, an invoice PDF, a send card and a receipt. It also makes a
+turn that couldn't start and one that stopped partway, three pictures in one message, and for the
+owner level a profile change, a nudge to Dev, a bank statement and a group with a mention. It is a
+gallery to look at, not a pass/fail check; each line says what was made or why Kin refused it.
 
 ## When it goes wrong
 
