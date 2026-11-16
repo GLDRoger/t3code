@@ -251,10 +251,20 @@ export function kinChoiceCardView(
             personId: card.answer.personId,
             emoji: card.answer.via === "reaction" ? card.answer.emoji : null,
           },
-    // Unanswered cards are never rewritten, so `updatedAt` is still the time it was posted.
-    expiresAtMs: Date.parse(widget.updatedAt) + KIN_CHOICE_CARD_TTL_MS,
+    // Unanswered cards are never rewritten, so `updatedAt` is still the time it was posted. An
+    // agent's open question takes taps until the host closes it.
+    expiresAtMs:
+      card.untilAnswered === true
+        ? Number.POSITIVE_INFINITY
+        : Date.parse(widget.updatedAt) + KIN_CHOICE_CARD_TTL_MS,
     closed: widget.closedAt !== null,
-    closedText: card.replaced === true ? KIN_CHOICE_REPLACED_TEXT : KIN_CHOICE_EXPIRED_TEXT,
+    // A question closed unanswered says what became of it ("No answer by Tuesday, so…").
+    closedText:
+      card.replaced === true
+        ? KIN_CHOICE_REPLACED_TEXT
+        : card.outcome !== undefined
+          ? card.outcome.text
+          : KIN_CHOICE_EXPIRED_TEXT,
   };
 }
 
