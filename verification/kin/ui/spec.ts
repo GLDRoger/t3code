@@ -54,6 +54,12 @@ const screen = extract((state) => {
     url.pathname.endsWith("/tasks") && !url.search && !searched && !/Clear filter/.test(mainText);
   // Rows follow "Filter" directly; a chosen filter ("Late", "Due this week") sits between them.
   const listed = onTasks ? after(/^Filter$/) : null;
+  // "Handled (n)" folds away nudges set aside with "I've got it"; some may be open tasks.
+  const handledAt = lines.findIndex((l) => /^Handled \(\d+\)$/.test(l));
+  const handledHidden =
+    handledAt !== -1 && lines[handledAt + 1] === "Filter"
+      ? Number(/\d+/.exec(lines[handledAt])![0])
+      : 0;
   // A task under "Needs you" is not repeated in the rows below the filter.
   const keysIn = (ls: string[]) =>
     new Set(ls.flatMap((l) => [...l.matchAll(/(?:^|· )(W-\d+)\b/g)].map((m) => m[1])));
@@ -84,7 +90,7 @@ const screen = extract((state) => {
         day = new Date(/\d{4}$/.test(bare) ? bare : `${bare}, ${today.getFullYear()}`).getTime();
       } else if (
         day !== null &&
-        / · (?:Due|Dated|Renews|Starts|Ends|Received on) · /.test(l) &&
+        /^[A-Z][a-z]+ · /.test(l) &&
         !/ · (?:Done|Paid|Dropped|Declined|Accepted|Void)\b/.test(l)
       )
         if (day >= today.getTime() && day <= limit) datesSoon++;
@@ -93,6 +99,7 @@ const screen = extract((state) => {
   const counts = {
     tasksClaim: onTasks ? num(/\nTasks\n(\d+) open/) : null,
     taskRows,
+    handledHidden,
     teamClaim: onTeam ? num(/\nTeam\n(\d+) teammates?/) : null,
     teamOthers,
     datesClaim: onDates ? num(/Coming-up dates\n(\d+) in the next 30 days/) : null,
@@ -202,7 +209,11 @@ const countsAgree = () => {
   const agree = (claim: number | null, shown: number | null) =>
     claim === null || shown === null || claim === shown;
   return (
-    agree(c.tasksClaim, c.taskRows) &&
+    (agree(c.tasksClaim, c.taskRows) ||
+      (c.taskRows !== null &&
+        c.tasksClaim !== null &&
+        c.tasksClaim > c.taskRows &&
+        c.tasksClaim <= c.taskRows + c.handledHidden)) &&
     agree(c.teamClaim, c.teamOthers) &&
     agree(c.datesClaim, c.datesSoon)
   );
