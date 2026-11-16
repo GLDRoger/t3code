@@ -529,7 +529,7 @@ const attentionMove = Effect.fn("KinWireBudget.attentionMove")(function* () {
   yield* KinPulse.tick(orgId, NOW);
   const about = (people: ReadonlyArray<PersonIdentity>) =>
     Pulse.read(people, { orgId, includeHandled: true, limit: 8 }).pipe(
-      Effect.map((page) => page.outline?.records ?? []),
+      Effect.map((page) => ("outline" in page ? (page.outline?.records ?? []) : [])),
     );
   // A task the member holds that needs attention, so every viewer's page moves.
   const named = new Set(yield* about(as(memberId)));
