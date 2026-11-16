@@ -17,6 +17,7 @@ import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
 import { KinDocCard } from "./KinDocCard";
 import { KinMemoryChangesCard } from "./KinMemoryChangesCard";
+import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
 import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinTaskCard } from "./KinTaskCard";
 import { KinVisual } from "./KinVisual";
@@ -96,6 +97,10 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
       return (
         <KinStatementPasswordCard password={view.password} environmentId={props.environmentId} />
       );
+    case "social_week":
+      return <KinSocialWeekCard week={view.week} environmentId={props.environmentId} />;
+    case "social_pack":
+      return <KinSocialPackCard pack={view.pack} environmentId={props.environmentId} />;
     case "missing":
       return (
         <View className="rounded-[20px] border border-border bg-card-alt px-4 py-3">

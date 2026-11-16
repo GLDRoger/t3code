@@ -39,6 +39,7 @@ import {
 import {
   mailDeliver,
   mailExpire,
+  fakeSocial,
   mailSentLines,
   pushSentLines,
   parseDuration,
@@ -74,6 +75,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
   mail expire <address> [--back]          the account's sign-in stops working (or works again)
   push sent                               what Kin would have pushed, per person's device (no APNs)
+  social profile <name> <platform:handle>... [all-profiles] | social past <profileId> '<json>' | social fail-next <accountId> <reason> | social posts
   clock advance <90m|12h|3d|2w> | clock set-date <YYYY-MM-DD>
   db "<select …>"                         read-only SQL on this instance's database
   phone pair [--android] [--as <person>]  deep link that pairs the dev client to this instance
@@ -478,6 +480,7 @@ async function clock(instance: Instance, args: Args) {
   let shifted: ReturnType<typeof shiftKinTimes>;
   try {
     shifted = shiftKinTimes(instance, ms);
+    fakeSocial(instance, ["shift", String(ms)]);
   } finally {
     // A refused shift rolls back; the server comes back either way.
     if (wasRunning) await startServer(instance);
@@ -627,6 +630,9 @@ async function main() {
         "mail sent | mail deliver --to --from --subject --body [--thread] | mail expire <address> [--back]",
       );
     }
+    case "social":
+      // The fake Zernio: profile, past, fail-next, posts, accounts (see kin-fake-social.ts).
+      return console.log(fakeSocial(instance, rest));
     case "push": {
       if (args.positional[0] === "sent") return console.log(pushSentLines(instance));
       throw new VerifyError("push sent");

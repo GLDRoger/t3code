@@ -64,6 +64,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { Button } from "../components/ui/button";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { KinChart } from "./KinChart";
+import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
 import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
@@ -177,6 +178,10 @@ export const KinCard = memo(function KinCard(props: {
       return (
         <KinStatementPasswordCard password={view.password} environmentId={props.environmentId} />
       );
+    case "social_week":
+      return <KinSocialWeekCard week={view.week} environmentId={props.environmentId} />;
+    case "social_pack":
+      return <KinSocialPackCard pack={view.pack} environmentId={props.environmentId} />;
     case "missing":
       return (
         <CardFrame>

@@ -19,6 +19,8 @@ import {
   KIN_DOC_CARD,
   type KinMessageRefInput,
   KIN_WORKER_PUBLISH_CARD,
+  KIN_SOCIAL_PACK_CARD,
+  KIN_SOCIAL_WEEK_CARD,
   KinMessagesReactInput,
   KinMessagesSendInput,
   KinWidgetsActInput,
@@ -87,6 +89,7 @@ import { answerByReply } from "../questions/openQuestions.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
+import * as SocialCards from "../social/cards.ts";
 import * as PublishCard from "../widgets/workerPublishCard.ts";
 import { answerChange } from "../work/companyProfile.ts";
 import { KinRefreshObserver } from "./KinRefreshHub.ts";
@@ -875,7 +878,15 @@ const make = Effect.gen(function* () {
       widget.type === KIN_WORKER_PUBLISH_CARD
         ? yield* PublishCard.describePublishTap(widget, request.actionId, request.value)
         : null;
-    const tap = choice ?? reminder ?? scheduled ?? publishTap;
+    const socialTap =
+      widget.type === KIN_SOCIAL_WEEK_CARD
+        ? yield* SocialCards.describeWeekTap(widget, request.actionId, request.value)
+        : null;
+    const packTap =
+      widget.type === KIN_SOCIAL_PACK_CARD
+        ? yield* SocialCards.describePackTap(widget, request.actionId)
+        : null;
+    const tap = choice ?? reminder ?? scheduled ?? publishTap ?? socialTap ?? packTap;
     const body = yield* encodeAction({
       widgetId: request.widgetId,
       revision: request.revision,
@@ -883,7 +894,9 @@ const make = Effect.gen(function* () {
       ...(request.value === undefined ? {} : { value: request.value }),
       ...(tap === null ? {} : { text: tap.text }),
       // The server finished this tap itself, so it doesn't wake the lead.
-      ...((reminder ?? scheduled ?? publishTap)?.wake === false ? { handled: true } : {}),
+      ...((reminder ?? scheduled ?? publishTap ?? socialTap ?? packTap)?.wake === false
+        ? { handled: true }
+        : {}),
     }).pipe(Effect.mapError(() => invalidState));
     const previous = yield* repo.findClientMessage({
       ...member,
@@ -938,12 +951,26 @@ const make = Effect.gen(function* () {
         hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
       );
     }
-    if (reminder !== null || scheduled !== null || publishTap !== null) {
+    const ownerCard = publishTap !== null || socialTap !== null || packTap !== null;
+    if (reminder !== null || scheduled !== null || ownerCard) {
       const nowMs = yield* Clock.currentTimeMillis;
       let applied: { readonly state: unknown; readonly closed: boolean } | null = null;
       // The owner's decision binds to the commit and title the card shows; the follower publishes.
       if (publishTap !== null)
         applied = yield* PublishCard.applyPublishTap(widget, publishTap, identity.personId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(cardTapError),
+        );
+      // The owner's Confirm binds to the posts the card shows; the scheduler hands them over.
+      if (socialTap !== null)
+        applied = yield* SocialCards.applyWeekTap(widget, socialTap, identity.personId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(Repository.KinChatRepository, repo),
+          Effect.provideService(Hub.KinChatHub, hub),
+          Effect.mapError(cardTapError),
+        );
+      if (packTap !== null)
+        applied = yield* SocialCards.applyPackTap(widget, packTap, identity.personId).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(cardTapError),
         );
@@ -963,9 +990,9 @@ const make = Effect.gen(function* () {
         const updated = yield* repo.updateWidget({
           ...widget,
           // A publish card quotes the lead's title, so only the owner's chat may hold it.
-          audience: publishTap === null ? "chat" : "owner",
+          audience: ownerCard ? "owner" : "chat",
           state: applied.state,
-          ...(publishTap === null ? {} : { awaiting: [] }),
+          ...(publishTap === null && socialTap?.action !== "confirm" ? {} : { awaiting: [] }),
           expectedRevision: widget.revision,
           closedAt: applied.closed ? at : widget.closedAt,
           updatedAt: at,
@@ -2426,6 +2453,9 @@ const make = Effect.gen(function* () {
         input.type === "deferral" ||
         // Only Kin's publish gate writes one, from its own git and GitHub.
         input.type === KIN_WORKER_PUBLISH_CARD ||
+        // Only Kin draws Social's cards, from its stored drafts and the service's own names.
+        input.type === KIN_SOCIAL_WEEK_CARD ||
+        input.type === KIN_SOCIAL_PACK_CARD ||
         // Only kin_ask posts one, and only a tap answers it.
         input.type === "choice" ||
         // Only the doc tools post one, from the stored doc.
@@ -2584,7 +2614,9 @@ const make = Effect.gen(function* () {
       if (
         (widget.type === "reminder" ||
           widget.type === "scheduled_task" ||
-          widget.type === KIN_WORKER_PUBLISH_CARD) &&
+          widget.type === KIN_WORKER_PUBLISH_CARD ||
+          widget.type === KIN_SOCIAL_WEEK_CARD ||
+          widget.type === KIN_SOCIAL_PACK_CARD) &&
         !owning
       )
         return yield* notAllowed;

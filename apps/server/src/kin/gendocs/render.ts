@@ -86,6 +86,16 @@ export class KinDocRenderer extends Context.Service<
       jobId: string,
       file: { readonly sha256: string; readonly extension: string; readonly bytes: Uint8Array },
     ) => Effect.Effect<string, KinChatError>;
+    /**
+     * A PDF from one of Kin's own templates (never an agent's), with its data and files, and its
+     * first page as a PNG. Nothing it reads is fetched.
+     */
+    readonly sheet: (input: {
+      readonly template: string;
+      readonly data: unknown;
+      readonly files: ReadonlyArray<{ readonly name: string; readonly bytes: Uint8Array }>;
+      readonly day: string;
+    }) => Effect.Effect<Rendered, KinChatError>;
   }
 >()("t3/kin/gendocs/render/KinDocRenderer") {}
 
@@ -537,7 +547,60 @@ export const makeLayer = (limits: typeof RENDER_LIMITS = RENDER_LIMITS) =>
             ),
         ),
       );
-      return KinDocRenderer.of({ render, drawable, store });
+      const sheet: KinDocRenderer["Service"]["sheet"] = Effect.fn("KinDocRenderer.sheet")(
+        function* (input) {
+          yield* fs.makeDirectory(rendersDir, { recursive: true, mode: 0o700 });
+          return yield* Effect.acquireUseRelease(
+            fs.makeTempDirectory({ directory: rendersDir, prefix: "s-" }),
+            (scratch) =>
+              Effect.gen(function* () {
+                const root = yield* fs.realPath(scratch);
+                yield* fs.makeDirectory(path.join(root, "recipe", "files"), { recursive: true });
+                yield* fs.writeFileString(
+                  path.join(root, "recipe", "template.typ"),
+                  input.template,
+                );
+                yield* fs.writeFileString(
+                  path.join(root, "inputs.json"),
+                  yield* encodeJson(input.data),
+                );
+                for (const file of input.files)
+                  yield* fs.writeFile(path.join(root, "recipe", "files", file.name), file.bytes);
+                const binary = yield* toolchain.ensure();
+                const fonts = yield* toolchain.fonts();
+                const made: Array<Taken> = [];
+                for (const asPage of [false, true]) {
+                  const run = yield* compile(
+                    binary,
+                    root,
+                    typstArgs({
+                      root,
+                      output: "sheet.pdf",
+                      creationTimestamp: Math.floor(Date.parse(`${input.day}T00:00:00Z`) / 1000),
+                      fonts,
+                      page: asPage,
+                    }),
+                  );
+                  if (run._tag !== "exited" || run.code !== 0)
+                    return failed(
+                      run._tag === "exited" ? plainError(run.stderr, root) : "Typst didn't finish",
+                    );
+                  made.push(taken(asPage ? "sheet-page-1.png" : "sheet.pdf", run.stdout));
+                }
+                return yield* checked([made[0]!], made[1]);
+              }),
+            (scratch) => fs.remove(scratch, { recursive: true, force: true }).pipe(Effect.ignore),
+          );
+        },
+        Effect.catchIf(
+          (cause) => !isChatError(cause),
+          (cause) =>
+            Effect.logWarning("Kin couldn't make a sheet", { cause }).pipe(
+              Effect.andThen(Effect.fail(unavailable)),
+            ),
+        ),
+      );
+      return KinDocRenderer.of({ render, drawable, store, sheet });
     }),
   );
 

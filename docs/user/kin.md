@@ -351,6 +351,32 @@ agents.
 
 To try pull requests in a browser on Ubuntu 23.10 or later, run `t3 browser setup` once as root.
 
+### Social media
+
+An agent whose domain is social media (Social) runs your company's accounts and each client's
+through one posting service, [Zernio](https://zernio.com). Each group (your own accounts, or one
+client's) is one Zernio profile with its own key, so one client's posts can never reach another's
+accounts.
+
+To connect a group: in Zernio, make a profile for it and connect its accounts (or connect them later
+with **Send a connect link**), then make an API key limited to that profile. In Kin, open **Settings →
+Connections → Social accounts → Connect accounts**, pick **Our own accounts** or the client, paste the
+key, tap **Check the key**, look over the accounts it lists, and tap **Connect these accounts**. A key
+that reaches more than one profile is refused. If an account needs reconnecting or the key stops
+working, the row says so; **New key** and **Remove** are beside it. Only you and co-owners see this.
+
+Social reads last week's numbers and drafts the week, checking each caption and picture against the
+platform's limits. It puts each group's week on one card in your chat: a preview of every post, a
+**Remove** per post, and one **Confirm**. Nothing is scheduled until you confirm; afterwards each post
+shows Scheduled, then Posted with its link, or Failed with the reason and **Retry**. **Undo** cancels a
+post until 5 minutes before it goes out. A client's card also has a switch for the client's OK, which
+Confirm needs, and **Make a preview to send the client** makes a PDF you send them yourself.
+
+With nothing connected, or for what Kin can't post (a WhatsApp channel, a personal account, a Story
+sticker), Social makes a ready-to-post pack: the caption to copy, the picture to save, and a reminder
+at the time to post it. Ask "how did last week go?" and it answers from the numbers; its Monday
+check-in opens with what worked.
+
 ## Check-ins and the weekly brief
 
 A check-in is an agent's regular round: it looks over what needs attention and tells you what

@@ -14,7 +14,7 @@ SCRIPTS=("$@")
   team-room-discussion character-and-undo github-delegated-task work-change-five-people
   member-attaches-file agent-page project-people-loop member-sees-agent-name lead-undoes-only-me
   open-questions github-events member-messages-teammate member-refused-client
-  member-suggests-playbook quote-invoice-loop)
+  member-suggests-playbook quote-invoice-loop social-week)
 trap 'kv down >/dev/null' EXIT
 started=$SECONDS
 kv up --fresh || exit 1
