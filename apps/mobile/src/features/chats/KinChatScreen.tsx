@@ -381,7 +381,7 @@ function KinLiveChat(props: {
           environmentId === null || summary === undefined || pairWith === null
             ? null
             : {
-                privacy: KIN_PEOPLE_CHAT.privacy(kinChatTitle(summary, viewer.agentNames)),
+                privacy: KIN_PEOPLE_CHAT.privacy,
                 open: () =>
                   navigation.navigate("KinProfile", {
                     environmentId,

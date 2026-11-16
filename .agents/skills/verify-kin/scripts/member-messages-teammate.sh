@@ -20,6 +20,6 @@ kv as zoya web click --name "New chat, group, agent or teammate" >/dev/null
 kv as zoya web click --name "Message a teammate" >/dev/null
 kv as zoya web wait "Only you and they can read it." >/dev/null || fail "the picker doesn't say who reads the chat"
 kv as zoya web click --name "Arjun Rao" >/dev/null
-kv as zoya web wait "Only you and Arjun Rao can read this." >/dev/null || fail "the chat doesn't say only the two of them read it"
+kv as zoya web wait "Only you two can read this." >/dev/null || fail "the chat doesn't say only the two of them read it"
 expect_in "$(kv as zoya web snapshot --full)" "Lunch at one? $RUN" "the picker opened another chat"
 pass "Zoya and Arjun share one chat; owner, Meera and Dev can't read it; the chat says so"

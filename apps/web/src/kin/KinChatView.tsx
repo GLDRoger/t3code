@@ -355,7 +355,7 @@ export function KinChatView(props: {
       <KinChatHeader
         title={title}
         avatar={avatar}
-        tasks={tasks ?? (pairWith === null ? null : KIN_PEOPLE_CHAT.privacy(title))}
+        tasks={tasks ?? (pairWith === null ? null : KIN_PEOPLE_CHAT.privacy)}
         muted={muted}
         onOpenProfile={
           pairWith !== null && environmentId !== null && summary !== undefined
@@ -493,7 +493,9 @@ function KinChatHeader(props: {
       )}
       {props.muted ? <span className="sr-only">Muted</span> : null}
       {subtitle === null ? null : (
-        <p className="min-w-0 flex-1 truncate text-sm text-muted-foreground">{subtitle}</p>
+        <p className="line-clamp-2 min-w-0 flex-1 text-xs leading-tight text-muted-foreground sm:truncate sm:text-sm sm:leading-normal">
+          {subtitle}
+        </p>
       )}
     </WorkspacePageHeader>
   );

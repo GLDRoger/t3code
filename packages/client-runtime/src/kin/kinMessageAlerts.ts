@@ -8,7 +8,7 @@ export const KIN_MESSAGE_ALERTS = {
   title: "Notifications",
   detail:
     "Alerts on this computer when someone writes to you while Kin is open but you're in another window. Your phone's notifications are set on the phone.",
-  label: "Kin notifications",
+  label: "Message alerts",
 };
 
 export type KinUnreadSeen = ReadonlyMap<string, number>;

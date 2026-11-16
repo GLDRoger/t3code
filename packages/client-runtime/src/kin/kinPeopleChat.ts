@@ -14,8 +14,8 @@ export const KIN_PEOPLE_CHAT = {
   noOne: "Nobody else is on the team yet.",
   noOneDetail: "The owner or a co-owner adds teammates from Settings.",
   loadFailed: KIN_CHECK_CONNECTION,
-  /** Said where the chat is made and at its top: the host's rule, not a promise of ours. */
-  privacy: (name: string) => `Only you and ${name} can read this.`,
+  /** At the chat's top, beside the other person's name: the host's rule, not a promise of ours. */
+  privacy: "Only you two can read this.",
 };
 
 /** Why a teammate's chat didn't open, in Kin's words for each kind of failure. */

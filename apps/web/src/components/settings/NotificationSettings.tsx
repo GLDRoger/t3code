@@ -14,6 +14,7 @@ import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings"
 
 /** This device's system alerts and sound; Kin shows the same choice in its own words. */
 export function NotificationSettings(props: {
+  readonly title?: string;
   readonly description?: string;
   readonly label?: string;
 }) {
@@ -25,6 +26,7 @@ export function NotificationSettings(props: {
   return (
     <SettingsRow
       {...searchableSetting("thread-notifications")}
+      {...(props.title === undefined ? {} : { title: props.title })}
       description={
         permissionMessage ??
         props.description ??

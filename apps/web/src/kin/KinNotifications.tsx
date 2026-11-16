@@ -12,7 +12,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 
 import { NotificationSettings } from "../components/settings/NotificationSettings";
-import { SettingsPageContainer, SettingsSection } from "../components/settings/settingsLayout";
+import { SettingsSection } from "../components/settings/settingsLayout";
 import { SettingsScopeProvider } from "../components/settings/SettingsScopeContext";
 import { useClientSettings } from "../hooks/useSettings";
 import {
@@ -27,14 +27,15 @@ export function KinSettingsNotifications() {
   return (
     // This device's own setting: the app-wide scope, which the Kin modal doesn't otherwise hold.
     <SettingsScopeProvider search={{}} onChange={() => {}}>
-      <SettingsPageContainer>
-        <SettingsSection title={KIN_MESSAGE_ALERTS.title}>
+      <div className="mx-auto flex w-full max-w-xl flex-col gap-2 p-4 sm:p-6">
+        <SettingsSection title={KIN_MESSAGE_ALERTS.title} hideTitle>
           <NotificationSettings
+            title={KIN_MESSAGE_ALERTS.label}
             description={KIN_MESSAGE_ALERTS.detail}
             label={KIN_MESSAGE_ALERTS.label}
           />
         </SettingsSection>
-      </SettingsPageContainer>
+      </div>
     </SettingsScopeProvider>
   );
 }
