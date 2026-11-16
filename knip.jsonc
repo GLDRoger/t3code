@@ -58,6 +58,7 @@
         "scripts/cli.ts",
         "scripts/fetch-expo-schema.ts",
         "scripts/kin-fake-mail.ts",
+        "scripts/kin-fake-social.ts",
         "scripts/kin-feature-map.ts",
         "scripts/kin-push-test.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",

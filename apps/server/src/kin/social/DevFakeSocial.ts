@@ -23,7 +23,10 @@ export const layer = Layer.unwrap(
       return Social.layer.pipe(Layer.provide(EgressGuard.layer));
     const path = (yield* Path.Path).join(config.stateDir, "kin-fake-social.json");
     yield* Effect.logWarning(`Kin social posts go to the fake Zernio at ${path}`);
-    const fetch = makeFakeZernio(fileStore(path)).handle(globalThis.fetch);
+    // Nothing else is reachable: a request the fake doesn't own fails instead of leaving the machine.
+    const fetch = makeFakeZernio(fileStore(path)).handle(() =>
+      Promise.reject(new Error("Only the fake Zernio answers with KIN_DEV_FAKE_SOCIAL.")),
+    );
     // `Fetch` is read from each request's own fiber, so it is set per request, not on the layer.
     const fake = Layer.effect(
       HttpClient.HttpClient,
@@ -33,6 +36,9 @@ export const layer = Layer.unwrap(
         ),
       ),
     ).pipe(Layer.provide(FetchHttpClient.layer));
-    return Social.layer.pipe(Layer.provide(EgressGuard.guarded.pipe(Layer.provide(fake))));
+    // Fresh: layers are shared by reference, and the fake mailbox builds `guarded` over its own fetch.
+    return Social.layer.pipe(
+      Layer.provide(Layer.fresh(EgressGuard.guarded).pipe(Layer.provide(fake))),
+    );
   }),
 );

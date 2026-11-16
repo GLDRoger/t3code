@@ -196,6 +196,7 @@ export async function startServer(instance: Instance): Promise<InstanceState> {
     KIN_DEV_PUSH_CAPTURE: "1",
     KIN_VERIFY_DIR: instance.meta,
     KIN_DEV_FAKE_GITHUB: fakeGitHub,
+    KIN_DEV_FAKE_SOCIAL: "1",
   };
   // Dev is single-origin; baking an origin in breaks remote browsers (AGENTS.md).
   delete env.VITE_HTTP_URL;

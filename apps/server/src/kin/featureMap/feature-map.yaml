@@ -206,6 +206,32 @@ features:
       - packages/client-runtime/src/kin/kinCardPresentation.test.ts
       - .agents/skills/verify-kin/scripts/card-gallery.sh
 
+  - id: social-week
+    name: Plan a week of social posts, confirmed on one card
+    tab: chats
+    web: [chat, card:Social week]
+    phone: [tab:chats, KinChat, card:Social week]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: The Social agent drafts from last week's numbers; one card per group, nothing scheduled before Confirm, Undo until it goes out, and a client's week needs the client's OK.
+    tools: [social_read, social_lookup, social_draft, social_week]
+    proof:
+      - apps/server/src/kin/social/Social.test.ts
+      - packages/client-runtime/src/kin/kinSocial.test.ts
+      - .agents/skills/verify-kin/scripts/social-week.sh
+      - verification/kin/social/Social.tla
+
+  - id: social-pack
+    name: A ready-to-post pack, with a reminder at its time
+    tab: chats
+    web: [chat, card:Social pack]
+    phone: [tab:chats, KinChat, card:Social pack]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: For what Kin can't post itself, connected or not.
+    tools: [social_pack]
+    proof:
+      - apps/server/src/kin/social/Social.test.ts
+      - .agents/skills/verify-kin/scripts/social-week.sh
+
   - id: statements
     name: Read a bank statement and match its rows
     tab: chats
@@ -726,6 +752,38 @@ features:
     proof:
       - apps/server/src/kin/connections/ConnectionsService.test.ts
       - packages/client-runtime/src/kin/kinConnections.test.ts
+
+  - id: social-accounts
+    name: Social accounts, our own and each client's
+    tab: settings
+    web: [settings, section:Connections, section:Social accounts]
+    phone: [SettingsKin, KinConnections]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: One key per group, limited to one profile at the service; a broken connection says why.
+    proof:
+      - apps/server/src/kin/social/Social.test.ts
+      - packages/client-runtime/src/kin/kinSocial.test.ts
+      - .agents/skills/verify-kin/scripts/social-week.sh
+
+  - id: social-connect
+    name: Connect social accounts with a profile key
+    tab: settings
+    web: [settings, section:Connections, section:Social accounts, dialog:Connect social accounts]
+    phone: [SettingsKin, KinConnections, KinSocialConnect]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof:
+      - apps/server/src/kin/social/Social.test.ts
+      - .agents/skills/verify-kin/scripts/social-week.sh
+
+  - id: social-link
+    name: Send a connect link for an account
+    tab: settings
+    web: [settings, section:Connections, section:Social accounts, dialog:A connect link]
+    phone: [SettingsKin, KinConnections, KinSocialLink]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [apps/server/src/kin/social/Social.test.ts]
 
   - id: connection-add
     name: Add a connection
