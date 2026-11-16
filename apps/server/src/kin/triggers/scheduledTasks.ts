@@ -45,6 +45,7 @@ import {
 } from "../widgets/scheduledTaskCard.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { queueCheckIn } from "../pulse/checkIn.ts";
+import { missedCheckIns } from "../pulse/checkInCatchUp.ts";
 import { followOwnerZone, seedCheckIns } from "../pulse/checkInSeeds.ts";
 import { fromConnections, noOutside } from "../pulse/outside.ts";
 import { cardChatFor, firingOrigin } from "./deferralOrigin.ts";
@@ -878,6 +879,18 @@ const make = Effect.gen(function* () {
               }),
             ),
           );
+        // A check-in the host slept through fires now, in this pass's drain.
+        yield* missedCheckIns(KinOrgId.make(orgId), yield* Clock.currentTimeMillis).pipe(
+          Effect.flatMap((fires) =>
+            Effect.forEach(fires, (fire) => inbox.put(fire, Date.parse(fire.firedAt)), {
+              discard: true,
+            }),
+          ),
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.catch((cause) =>
+            Effect.logWarning("Kin missed check-ins not caught up", { orgId, cause }),
+          ),
+        );
         yield* drain(KinOrgId.make(orgId)).pipe(
           Effect.catch((cause) =>
             Effect.logWarning("Kin scheduled tasks tick failed", { orgId, cause }),

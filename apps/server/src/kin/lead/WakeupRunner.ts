@@ -172,16 +172,19 @@ const make = Effect.gen(function* () {
     // Something visible already happened, so a silent retry could repeat it; say so instead.
     // Otherwise the person waiting hears at once that it is retrying, or has stopped. A run
     // nobody waits on (a check-in, a reminder) retries quietly, but never fails silently.
+    // Every message already replied to: one message, one answer, unless the reply's promise broke.
     const outcome =
       finished.stranded > 0
         ? "partway"
-        : setup !== null
-          ? setup
-          : finished.failedEventIds.length > 0
-            ? "gave_up"
-            : finished.retried > 0 && lane.value.owed
-              ? "retrying"
-              : undefined;
+        : finished.replied > 0
+          ? "replied"
+          : setup !== null
+            ? setup
+            : finished.failedEventIds.length > 0
+              ? "gave_up"
+              : finished.retried > 0 && lane.value.owed
+                ? "retrying"
+                : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({
         orgId: row.orgId,
@@ -415,7 +418,11 @@ const make = Effect.gen(function* () {
             until: deadline(),
             messageIds: claimed.map((event) => KinMessageId.make(event.messageId)),
           });
-          if (Option.isSome(bridge)) yield* bridge.value.steered(orgId, wakeupId);
+          if (Option.isSome(bridge))
+            yield* bridge.value.steered(orgId, wakeupId, {
+              n,
+              eventIds: events.map((event) => event.eventId),
+            });
           const send = (mode: "steer" | "queue") =>
             threads.sendToThread({
               commandId: CommandId.make(`kin-steer:${wakeupId}:${n}:${mode}`),

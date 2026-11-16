@@ -15,6 +15,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -657,9 +658,15 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.strictEqual(broke.state, "failed");
         assert.include(broke.reason ?? "", "The same mail is below");
         fake.setDown(HELLO, false);
-        const retry = yield* connections.freshAsk(orgId, broke.fresh, NOW);
+        // Kin restarts before that card posts: at start the mail still comes back.
+        const later = (yield* Clock.currentTimeMillis) + 1;
+        const [owed] = yield* connections.interruptedSends(orgId, later);
+        if (owed?.fresh === undefined) return assert.fail("the failed mail is on no card");
+        assert.deepInclude(owed, { widgetId: third.widgetId, state: "failed" });
+        const retry = yield* connections.freshAsk(orgId, owed.fresh, NOW);
         if (retry === undefined) return assert.fail("no fresh card");
         yield* retry.bind("w-retry");
+        assert.lengthOf(yield* connections.interruptedSends(orgId, later), 0);
         assert.deepStrictEqual(yield* tap("w-retry", owner), { state: "sent", reason: null });
         assert.lengthOf(fake.sent(), 3);
 

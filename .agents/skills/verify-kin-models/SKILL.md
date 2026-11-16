@@ -13,7 +13,7 @@ Three small TLA+ models live in `verification/kin/<name>/`. Each has a `README.m
 | `reply`   | `reply/KinReplyBridge.ts`, `lead/WakeupRunner.ts` finish and cleanup, `lead/KinEventQueue.ts` claim, steer and requeue, `floor/KinFloor.ts`, relays and nudges |
 | `checkin` | `scheduledTasks/Schedule.ts` or `ScheduledTaskService.ts` timing, `pulse/checkIn*.ts`, `pulse/KinPulse.ts` holds, `triggers/kinSchedules.ts`                   |
 
-Paths are under `apps/server/src` and `apps/server/src/kin`.
+Paths are under `apps/server/src` and `apps/server/src/kin`. `MODEL_COVERS` in `scripts/kin-model.ts` lists the same files; `vp run check:changed` runs a model when one of them, its folder or the runner changes, and skips it with "skipped: Java not found" when no Java is installed.
 
 ## Run
 
@@ -29,17 +29,11 @@ The script downloads TLC 1.7.4 once into `~/.cache/kin-model` (`KIN_MODEL_CACHE`
 
 A broken rule prints numbered steps in the owner's words: the shortest path from a calm start to the break. Read it as a bug report. Find the action in the `.tla` file; its comment names the code it stands for. Then check that the code really allows that path. If it does, it is a product bug: fix it in the product, with a test that fails first. If the model allows something the code never does, the model is wrong: fix the model and say why in the commit.
 
-Rules that break today, each a listed finding in its README:
-
-- `send`: `FailureComesBack`. A restart between a failed send and its new card leaves the mail on no card.
-- `reply`: `NeverTwo`. A partway failure after a reply, or a restart after a reply.
-- `checkin`: `FiresWhenUp`, `InsideWindow`, `FactNeverAbsent`.
-
-Any other broken rule is new: treat it as a regression.
+Every rule holds today. Any broken rule is new: treat it as a regression.
 
 ## Keep a model true
 
-When a covered file changes, first read the action that stands for it, then make the model do what the code now does. Run the model and `--variants`. Update the README's covered files and the commit it was confirmed at. A new behaviour that can go wrong gets a rule and a broken variant that the rule catches.
+When a covered file changes, first read the action that stands for it, then make the model do what the code now does. Run the model and `--variants`. Update the README's covered files, `MODEL_COVERS`, and the commit it was confirmed at. A new behaviour that can go wrong gets a rule and a broken variant that the rule catches.
 
 Never weaken, narrow or drop a rule to make a run pass. A rule only changes when the owner changes what the product promises. Say so in the commit.
 

@@ -16,6 +16,7 @@ import {
   LOOSE_AFTER_MINUTES,
   LOOSE_BEFORE_MINUTES,
   looseSpanMinutes,
+  looseWindowStartAt,
 } from "../triggers/kinSchedules.ts";
 import { dayIn } from "../work/money.ts";
 import * as KinPulse from "./KinPulse.ts";
@@ -38,9 +39,9 @@ const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const OUTSIDE_CAP = 60;
 
 /**
- * One check-in: the open facts and what is new outside, handed to the agent as one pulse event
- * at the slot's minute. With neither, nothing is queued and no model runs. `slot` keys the event,
- * so one slot queues once however often it is fired.
+ * One check-in: the open facts, held ones too, and what is new outside, handed to the agent as
+ * one pulse event at the slot's minute. With neither, nothing is queued and no model runs. `slot`
+ * keys the event, so one slot queues once however often it is fired.
  */
 export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly orgId: KinOrgId;
@@ -48,7 +49,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly scheduleId: KinMemoryItemId;
   readonly title: string;
   readonly what: string;
-  /** When the native task's slot was due: the window's start when loose. */
+  /** When the native task's run started: the window's start when on time, or a catch-up. */
   readonly dueAt: number;
   /** The time a loose check-in is around ("09:00"); null when it is exact. */
   readonly looseAt: string | null;
@@ -60,18 +61,33 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
 }) {
   const queue = yield* KinEventQueue.KinEventQueue;
   const { orgId, at } = input;
-  const facts = yield* KinPulse.read({ orgId, at, viewer: { _tag: "owner" }, limit: 200 });
+  // A fact someone has in hand is still open: the check-in names it with who holds it and until
+  // when (`buildPulseSection`). One marked not a problem has no end and starts none.
+  const read = yield* KinPulse.read({
+    orgId,
+    at,
+    viewer: { _tag: "owner" },
+    includeHandled: true,
+    limit: 200,
+  });
+  const facts = read.facts.filter((fact) => fact.handled === null || fact.handled.until !== null);
   const matched = yield* matchLines(orgId, input.outside.lines);
   const byId = new Map(matched.map(({ line }) => [`${line.source}\0${line.id}`, line]));
   const lines = input.outside.lines
     .map((line) => byId.get(`${line.source}\0${line.id}`) ?? line)
     .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
     .slice(0, OUTSIDE_CAP);
-  if (facts.total === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
+  if (facts.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   const slot = input.manualId ?? dayIn(input.dueAt, input.zone);
+  // The minute is picked in the window as it stands that day, never from a late start: a run
+  // that starts after its minute fires at once.
   const notBefore =
     input.looseAt !== null && input.manualId === undefined
-      ? input.dueAt + looseOffsetMs(input.scheduleId, slot, looseSpanMinutes(input.looseAt))
+      ? Math.max(
+          at,
+          looseWindowStartAt(input.dueAt, input.zone, input.looseAt) +
+            looseOffsetMs(input.scheduleId, slot, looseSpanMinutes(input.looseAt)),
+        )
       : undefined;
   const dedupeKey = `checkin:${input.scheduleId}:${slot}`;
   const queued = yield* queue
@@ -106,7 +122,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
     );
   return {
     _tag: queued,
-    facts: facts.total,
+    facts: facts.length,
     outside: lines.length,
     notBefore: notBefore ?? at,
   } as const;

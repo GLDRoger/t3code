@@ -11,6 +11,8 @@ export const guide =
 
 export const rules: Record<string, string> = {
   NeverTwo: "Each message you send gets at most one reply or one plain failure line, never two.",
+  NoteOnlyForBrokenPromise:
+    "After a reply, a failure adds at most one short line, and only to name something the reply promised that did not happen.",
   NeverReasoning: "The agent's private reasoning never shows up as its reply.",
   RelayLands: "A nudge or relay the agent sends you always lands in your chat, whatever the floor.",
   EveryMessageAnswered:
@@ -33,6 +35,16 @@ export const variants = [
     name: "relay-counts",
     breaks: "EveryMessageAnswered",
     what: "a nudge or relay to the asker counts as their reply (the code before this change)",
+  },
+  {
+    name: "partway-after-reply",
+    breaks: "NeverTwo",
+    what: "a turn that fails after its reply still says it stopped partway (the code before this change)",
+  },
+  {
+    name: "requeue-replied",
+    breaks: "NeverTwo",
+    what: "a restart puts a message that already has its reply back in the queue (the code before this change)",
   },
   {
     name: "line-stays",
@@ -72,6 +84,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "The agent sends you a nudge or a relay";
     case "LeadWorks":
       return "The agent uses a tool";
+    case "LeadKeepsPromise":
+      return "The agent posts the card or hand-over its reply promised";
     case "FloorCloses":
       return "The floor closes";
     case "RunCompletes":
@@ -81,6 +95,10 @@ export const step = (action: string, from: Vars, to: Vars) => {
           ? "The turn ends; asked once more, the agent replies"
           : "The turn ends";
     case "RunFails":
+      if (Number(first(to, "notes")) > Number(first(from, "notes")))
+        return "The turn fails before what the reply promised: one line names it";
+      if (first(to, "ev") === "done")
+        return "The turn fails after the reply: logged, nothing posted";
       return Number(first(to, "fails")) > Number(first(from, "fails"))
         ? Number(first(to, "tries")) >= 3
           ? "It fails a third time: “won't try again”"

@@ -58,6 +58,7 @@ import {
 } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { draftReplyText, SILENCE_MARKERS, stripTrailingSilenceMarker } from "./classify.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
@@ -562,6 +563,83 @@ it.effect.each([
     );
     assert.strictEqual(fake.rescues, 0);
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a posted reply answers what the lead had read: a restart asks again only for the rest",
+  () =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, posted, wakeupId, owner, bridge, sql, services } =
+        yield* setup({
+          ask: "Apples?",
+        });
+      // A second message steered in, whose answer the restart cuts off.
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+        queued_at, state, wakeup_id)
+      VALUES ('pears', ${owner.orgId}, ${agentId}, 'chat.message', 'P1', '{}', 0, 0, 'claimed',
+        ${wakeupId})`;
+      yield* bridge.steered(owner.orgId, wakeupId, { n: 1, eventIds: ["pears"] });
+      fake.items = [
+        text("a", 1, "Apples, red and round.", runId),
+        steered("s", 2, wakeupId, runId),
+      ];
+      yield* complete;
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => row.body),
+        ["Apples, red and round."],
+      );
+      assert.strictEqual(
+        yield* Context.get(services, KinEventQueue.KinEventQueue).requeueUnfinished(
+          owner.orgId,
+          wakeupId,
+        ),
+        1,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT event_id AS "eventId", state FROM kin_events ORDER BY event_id`,
+        [
+          { eventId: `event:${wakeupId}`, state: "done" },
+          { eventId: "pears", state: "queued" },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { reply: "Here is the invoice. I've put up a card to send it.", after: ["kin-no-card"] },
+  { reply: "The invoice total is 59,000.", after: [] },
+])(
+  "a turn that fails after its reply adds a line only for a card it named ($after)",
+  ({ reply, after }) =>
+    Effect.gen(function* () {
+      const { fake, runId, posted, wakeupId, owner, bridge, sql, projectId } = yield* setup({
+        ask: "Send the invoice?",
+      });
+      fake.items = [text("a", 1, reply, runId)];
+      yield* bridge.complete({
+        orgId: owner.orgId,
+        wakeupId,
+        projectId,
+        rootRunId: runId,
+        rescueUntil: null,
+      });
+      const lane = Option.getOrThrow(yield* bridge.lane({ orgId: owner.orgId, agentId, wakeupId }));
+      yield* bridge.failed({ orgId: owner.orgId, wakeupId, lane, outcome: "replied" });
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => row.body),
+        [
+          reply,
+          ...(after.length > 0
+            ? ["Ada stopped before posting the card it mentioned. Ask again for it."]
+            : []),
+        ],
+      );
+      assert.deepStrictEqual(
+        (yield* sql<{ id: string }>`SELECT message_id AS id FROM kin_messages
+        WHERE author_kind = 'system' ORDER BY seq`).map((row) => row.id.split(":")[0]),
+        after,
+      );
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("never streams a message the lead starts after its reply and kin_end", () =>

@@ -1,0 +1,16 @@
+{"format":"kin-import","version":1,"batch":"uifuzz","source":"Ambermill sheet (invented)","lists":[{"list":"invoices","template":"invoices"},{"list":"quotes","name":"Quotes","noun":"Quote","amount":true,"currency":"INR","sensitive":true,"states":["open","waiting","done","dropped"]}]}
+{"client":{"source":"c-lumen","name":"Lumen Grove Clinics","placeOfSupply":"Tamil Nadu","createdAt":"2026-10-28"}}
+{"client":{"source":"c-orbit","name":"Orbit Dental Care","placeOfSupply":"Karnataka","terms":"Monthly retainer, net 15, renews yearly on 25 Nov","createdAt":"2025-11-20"}}
+{"client":{"source":"c-harbour","name":"Harbourline Logistics","placeOfSupply":"Maharashtra","createdAt":"2026-03-02"}}
+{"project":{"source":"p-lumen","name":"Lumen Grove patient booking app","client":"c-lumen","state":"open","target":"2027-02-15","createdAt":"2026-11-02"}}
+{"project":{"source":"p-orbit","name":"Orbit Dental care retainer","client":"c-orbit","state":"open","createdAt":"2025-11-25"}}
+{"project":{"source":"p-harbour","name":"Harbourline driver app redesign","client":"c-harbour","state":"done","createdAt":"2026-03-10","closedAt":"2026-09-15"}}
+{"entry":{"source":"w1","list":"work","title":"Design the booking flow screens","project":"p-lumen","due":"2026-11-27","createdAt":"2026-11-03"}}
+{"entry":{"source":"w2","list":"work","title":"Patient onboarding copy and walkthrough","project":"p-lumen","due":"2026-12-04","createdAt":"2026-11-03"}}
+{"entry":{"source":"w3","list":"work","title":"Clinic staff training deck","project":"p-lumen","due":"2026-12-11","createdAt":"2026-11-03"}}
+{"entry":{"source":"w4","list":"work","title":"Set up the appointments API","project":"p-lumen","due":"2026-11-30","createdAt":"2026-11-03"}}
+{"entry":{"source":"w5","list":"work","title":"SMS reminder integration","project":"p-lumen","due":"2026-12-09","createdAt":"2026-11-03"}}
+{"entry":{"source":"w6","list":"work","title":"Orbit monthly report","project":"p-orbit","due":"2026-11-20","createdAt":"2026-11-03"}}
+{"entry":{"source":"inv-orbit-oct","list":"invoices","title":"October retainer, Orbit Dental Care","state":"waiting","client":"c-orbit","project":"p-orbit","date":"2026-10-20","due":"2026-11-04","amount":"731941.00","number":"INV/26-27/731","createdAt":"2026-10-20"}}
+{"entry":{"source":"q-lumen","list":"quotes","title":"Lumen Grove booking app, fixed price","state":"done","client":"c-lumen","project":"p-lumen","date":"2026-10-30","amount":"418777.00","createdAt":"2026-10-30"}}
+{"entry":{"source":"q-harbour","list":"quotes","title":"Harbourline tracking dashboard","state":"waiting","client":"c-harbour","date":"2026-11-10","amount":"354000.00","createdAt":"2026-11-10"}}
