@@ -106,6 +106,15 @@ const eventSamples = {
     reason: "assigned",
     provenance: { _tag: "human", personId: "person-1", memberId: "member-1" },
   },
+  "task.finished": {
+    ...event,
+    _tag: "task.finished",
+    provenance: { _tag: "system" },
+    threadId: "kin:agent-1",
+    messageId: "delegated-completion:1",
+    taskIds: ["task-1"],
+    chatId: "chat-1",
+  },
   "action.resolved": {
     ...event,
     _tag: "action.resolved",
