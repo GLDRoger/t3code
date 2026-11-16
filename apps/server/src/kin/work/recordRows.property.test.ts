@@ -12,6 +12,7 @@ import { ServerConfig } from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { moneySummary } from "./moneyViews.ts";
+import { KIN_OWNER_LEVEL } from "./teamView.ts";
 import { owedInvoices, termsDays } from "./recordRows.ts";
 
 // Invented org, clients, invoices and payments only.
@@ -21,8 +22,10 @@ const DAY = 86_400_000;
 
 const int = (min: number, max: number) =>
   Arbitrary.schema(Schema.Int.check(Schema.isBetween({ minimum: min, maximum: max })));
-const pick = <const L extends ReadonlyArray<string | null>>(literals: L) =>
+const pick = <const L extends ReadonlyArray<string>>(literals: L) =>
   Arbitrary.schema(Schema.Literals(literals));
+const pickOrNull = <const L extends ReadonlyArray<string>>(literals: L) =>
+  Arbitrary.schema(Schema.NullOr(Schema.Literals(literals)));
 const flag = Arbitrary.schema(Schema.Boolean);
 const maybe = <A>(arb: Arbitrary.Arbitrary<A>) =>
   Arbitrary.all([flag, arb]).pipe(Arbitrary.map(([some, value]) => (some ? value : null)));
@@ -38,7 +41,7 @@ const invoice = Arbitrary.all({
   state: pick(["open", "waiting", "done", "dropped"]),
   amount: maybe(int(1, 5_000_000)),
   currency: pick(["INR", "USD"]),
-  party: pick([null, "c1", "c2"]),
+  party: pickOrNull(["c1", "c2"]),
   dueAt: when,
   dateAt: when,
   payments: Arbitrary.array(Arbitrary.all({ share: int(1, 100), voided: flag }), {
@@ -168,7 +171,7 @@ layer(testLayer)("money owed", (it) => {
     ([all]) =>
       Effect.gen(function* () {
         yield* install(all);
-        const summary = yield* moneySummary(orgId, NOW);
+        const summary = yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL);
         const want = expected(all);
         assert.deepStrictEqual(asSums(summary.owed.total), sums(want));
         assert.deepStrictEqual(asSums(summary.owed.overdue), sums(want.filter((w) => w.overdue)));

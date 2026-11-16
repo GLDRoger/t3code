@@ -18,7 +18,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { search } from "./search.ts";
-import { personSees, unreadableBy } from "./teamView.ts";
+import { personSees, unreadableBy, viewerOfPeople } from "./teamView.ts";
 
 // Invented org, people and entries only.
 const orgId = KinOrgId.make("org");
@@ -27,8 +27,10 @@ const MEMBERS = ["ana", "ben"] as const;
 type Member = (typeof MEMBERS)[number];
 type Who = "owner" | Member | "agent";
 
-const pick = <const L extends ReadonlyArray<string | null>>(literals: L) =>
+const pick = <const L extends ReadonlyArray<string>>(literals: L) =>
   Arbitrary.schema(Schema.Literals(literals));
+const pickOrNull = <const L extends ReadonlyArray<string>>(literals: L) =>
+  Arbitrary.schema(Schema.NullOr(Schema.Literals(literals)));
 const flag = Arbitrary.schema(Schema.Boolean);
 const someOf = Arbitrary.all([flag, flag]).pipe(
   Arbitrary.map(([ana, ben]) => MEMBERS.filter((_, i) => [ana, ben][i])),
@@ -42,11 +44,11 @@ const entry = Arbitrary.all({
   list: pick(LISTS),
   owner: pick(["owner", "ana", "ben", "agent"]),
   createdBy: pick(["owner", "ana", "ben", "agent"]),
-  assignedBy: pick([null, "owner", "ana", "ben"]),
+  assignedBy: pickOrNull(["owner", "ana", "ben"]),
   sensitive: flag,
   shared: flag,
-  project: pick([null, "p1", "p2"]),
-  party: pick([null, "c1", "c2"]),
+  project: pickOrNull(["p1", "p2"]),
+  party: pickOrNull(["c1", "c2"]),
   attendees: someOf,
   company: flag,
   title: pick(["Plan launch", "Fix login", "Call vendor"]),
@@ -55,7 +57,7 @@ type Entry = typeof entry extends Arbitrary.Arbitrary<infer A> ? A : never;
 
 const project = Arbitrary.all({
   lead: pick(["owner", "ana", "ben", "agent"]),
-  party: pick([null, "c1", "c2"]),
+  party: pickOrNull(["c1", "c2"]),
   members: someOf,
   sensitive: flag,
   shared: flag,
@@ -261,7 +263,7 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
       createdBy: pick(["owner", "agent"]),
       sensitive: flag,
       shared: flag,
-      party: pick([null, "c1", "c2"]),
+      party: pickOrNull(["c1", "c2"]),
     }),
     { minLength: 1, maxLength: 4 },
   );
@@ -345,7 +347,7 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
               text: word,
               limit: 50,
               viewer: "team",
-              view: [team],
+              scope: viewerOfPeople([team]),
               closed: true,
             });
             for (const hit of hits)
