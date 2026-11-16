@@ -6197,7 +6197,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ]),
         snapshot("gist", "gist-message", [{ type: "thinking", thinking: gist, signature: "sig" }]),
         snapshot("end", "gist-message", [
-          { type: "tool_use", id: "end-1", name: "mcp__kin__kin_end", input: {} },
+          { type: "tool_use", id: "end-1", name: "mcp__kin__kin_journal", input: {} },
         ]),
         snapshot("answer", "answer-message", [{ type: "text", text: answer }]),
         makeResultFrame({ uuid: "narration-result", result: answer }),

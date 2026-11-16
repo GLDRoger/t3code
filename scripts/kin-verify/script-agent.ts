@@ -106,10 +106,7 @@ function promptText(params: Record<string, unknown>): string {
 
 interface Turn {
   readonly reply: string;
-  /** Ends the turn the way a real agent does, after its reply: kin_end saves what it staged. */
-  readonly end: () => Promise<void>;
 }
-const noEnd = async () => {};
 
 /** kin-bench measures every prompt: with `<verify dir>/capture-prompts` present, each is kept with its tool list. */
 async function capture(server: McpServer | undefined, prompt: string) {
@@ -125,16 +122,16 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<T
   await capture(server, prompt).catch(() => undefined);
   // The prompt may quote earlier messages; the newest marker is this turn's.
   const id = [...prompt.matchAll(MARKER)].at(-1)?.[1];
-  if (id === undefined) return { reply: "Noted.", end: noEnd };
+  if (id === undefined) return { reply: "Noted." };
   const scriptPath = NodePath.join(verifyDir, "turns", `${id}.json`);
   const resultPath = NodePath.join(verifyDir, "turns", `${id}.result.json`);
   // A turn re-run after a restart must not repeat its tool calls.
-  if (NodeFS.existsSync(resultPath)) return { reply: "Done.", end: noEnd };
+  if (NodeFS.existsSync(resultPath)) return { reply: "Done." };
   let script: TurnScript;
   try {
     script = JSON.parse(NodeFS.readFileSync(scriptPath, "utf8")) as TurnScript;
   } catch {
-    return { reply: `No script for ${id}.`, end: noEnd };
+    return { reply: `No script for ${id}.` };
   }
   NodeFS.writeFileSync(NodePath.join(verifyDir, "turns", `${id}.prompt.txt`), prompt);
   // A real agent copies the event it answers and the chat it replies to from its prompt;
@@ -153,11 +150,9 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<T
             ? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, fill(entry)]))
             : value;
   const results: Array<unknown> = [];
-  let mcp: Awaited<ReturnType<typeof mcpClient>> | undefined;
   try {
     if (server === undefined) throw new Error("no MCP server in this session");
     const client = await mcpClient(server);
-    mcp = client;
     const listed = (await client.list()) as {
       result?: { tools?: ReadonlyArray<{ name: string; inputSchema?: { properties?: object } }> };
     };
@@ -184,13 +179,7 @@ async function runTurn(server: McpServer | undefined, prompt: string): Promise<T
   }
   if (script.holdMs !== undefined) await new Promise((done) => setTimeout(done, script.holdMs));
   NodeFS.writeFileSync(resultPath, JSON.stringify({ results }, null, 2));
-  const ends = (script.calls ?? []).some((call) => call.name === "kin_end");
-  return {
-    reply: script.reply ?? "Done.",
-    end: async () => {
-      if (mcp !== undefined && !ends) await mcp.call("kin_end", { summary: `kin-verify ${id}` });
-    },
-  };
+  return { reply: script.reply ?? "Done." };
 }
 
 function main(): void {
@@ -238,7 +227,6 @@ function main(): void {
             },
           },
         });
-        await turn.end().catch(() => undefined);
         return { stopReason: "end_turn" };
       }
       case "session/close":

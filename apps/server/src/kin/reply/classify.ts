@@ -100,11 +100,70 @@ export function draftReplyText(text: string): string {
   return stripped;
 }
 
-/** What a kin_end that would leave the person waiting in silence answers (`silentEnd`). */
-export const SILENT_END_REFUSAL =
-  "Nothing reached the chat: your thinking is never shown. Write your reply now as a plain text block outside your thinking, then call kin_end.";
+/** Kin asks this once when a turn owed words and ended with none (`KinReplyBridge.complete`). */
+export const RESCUE_PROMPT =
+  "You ended without a reply anyone can see: your thinking is never shown. Write your reply now as plain text.";
+/** The same, when the turn's only answer was a chart, visual or file with no words beside it. */
+export const CAPTION_PROMPT =
+  "What you posted is in the chat with no words beside it. Say in one line what it shows.";
 
-/** What follows a segment in its run: decides whether a short segment was a status note. */
+export const normalized = (text: string) => text.trim().replace(/\s+/g, " ");
+// Only case, spacing and the closing ? or . differ: "$1.00?" and "$100." stay different.
+const comparable = (text: string) =>
+  normalized(text)
+    .toLowerCase()
+    .replace(/[?.]+$/u, "")
+    .trimEnd();
+// Words that carry a sentence's meaning: three letters or more, or any with a digit.
+const meaningful = (text: string) =>
+  new Set(
+    normalized(text)
+      .toLowerCase()
+      .split(/[\s,;:!?()"“”]+/u)
+      .map((word) => word.replace(/^[.'’]+|[.'’]+$/gu, ""))
+      .filter((word) => word.length >= 3 || /\d/.test(word)),
+  );
+/** Most of what the sentence says, the question already says: a restatement, not news. */
+const restates = (sentence: string, earlier: ReadonlySet<string>) => {
+  const words = [...meaningful(sentence)];
+  return (
+    words.length >= 3 && words.filter((word) => earlier.has(word)).length / words.length >= 0.6
+  );
+};
+// Odd entries are the separators, kept so a shortened text reads as it was written.
+const SENTENCE_BREAK = /((?<=[.?!])[ \t]+|\n+)/;
+const sentencesOf = (text: string) =>
+  text.split(SENTENCE_BREAK).filter((part, index) => index % 2 === 0 && part.trim() !== "");
+/**
+ * The segment says again, word for word, what the reply already said: nearly all of its text is
+ * sentences the reply has. A model that repeats its answer at the end of a turn sends this.
+ */
+export const repeats = (text: string, said: string) => {
+  const earlier = new Set(sentencesOf(said).map(comparable));
+  const parts = sentencesOf(text);
+  const length = (list: ReadonlyArray<string>) => list.reduce((sum, one) => sum + one.length, 0);
+  const repeated = length(parts.filter((part) => earlier.has(comparable(part))));
+  return parts.length > 0 && repeated >= 0.8 * length(parts);
+};
+/** A reply less the sentences that repeat or restate a card's question, which the card asks. */
+export const withoutAsked = (text: string, questions: ReadonlyArray<string>) => {
+  const wanted = new Set(questions.map(comparable).filter((one) => one !== ""));
+  if (wanted.size === 0) return text;
+  const earlier = questions.map(meaningful);
+  const parts = text.split(SENTENCE_BREAK);
+  const kept: Array<string> = [];
+  let dropped = false;
+  for (let index = 0; index < parts.length; index += 2) {
+    const sentence = parts[index]!;
+    if (wanted.has(comparable(sentence)) || earlier.some((words) => restates(sentence, words)))
+      dropped = true;
+    else if (sentence.trim() !== "")
+      kept.push(`${kept.length === 0 ? "" : (parts[index - 1] ?? "")}${sentence}`);
+  }
+  return dropped ? kept.join("").trim() : text;
+};
+
+/** What follows a segment in its run (`end`: nothing, the run ended): a short one before a tool is status. */
 export type SegmentNext = "tool" | "text" | "end";
 export type SegmentClass = "post" | "note" | "silent" | "empty";
 
@@ -145,9 +204,6 @@ const TOOL_TYPES: ReadonlySet<OrchestrationV2TurnItem["type"]> = new Set([
   "subagent",
 ]);
 export const isToolItem = (item: OrchestrationV2TurnItem) => TOOL_TYPES.has(item.type);
-/** The lead's `kin_end` call: the text before it is its reply, and it has nothing more to say. */
-export const isEndCall = (item: OrchestrationV2TurnItem) =>
-  item.type === "dynamic_tool" && /(?:^|__|\.)kin_end$/.test(item.toolName ?? "");
 
 // The presence line's only words, as a colleague would say them: fixed text, never tool
 // arguments or model text, and never a tool's name or how Kin works inside.
@@ -192,7 +248,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)kin_chat_read$/, "Reading the chat"],
   [/(?:^|__|\.)kin_chat_post$/, "Writing"],
   [/(?:^|__|\.)request_action$/, "Asking for your approval"],
-  [/(?:^|__|\.)(?:kin_react|kin_journal|kin_end)$/, null],
+  [/(?:^|__|\.)(?:kin_react|kin_journal)$/, null],
 ];
 export function toolLabel(item: OrchestrationV2TurnItem): string | null {
   if (item.type === "file_search") return "Checking my notes";
