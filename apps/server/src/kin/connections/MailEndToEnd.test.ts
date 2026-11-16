@@ -641,6 +641,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.lengthOf(fake.sent(), 1);
         yield* signInAgain;
         const fresh = yield* connections.freshAsk(orgId, failed.fresh, NOW);
+        if (fresh === undefined) return assert.fail("no fresh card");
         assert.strictEqual(fresh.card.send.account, HELLO);
         yield* fresh.bind("w-fresh");
         assert.deepStrictEqual(yield* tap("w-fresh", owner), { state: "sent", reason: null });
@@ -657,6 +658,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.include(broke.reason ?? "", "The same mail is below");
         fake.setDown(HELLO, false);
         const retry = yield* connections.freshAsk(orgId, broke.fresh, NOW);
+        if (retry === undefined) return assert.fail("no fresh card");
         yield* retry.bind("w-retry");
         assert.deepStrictEqual(yield* tap("w-retry", owner), { state: "sent", reason: null });
         assert.lengthOf(fake.sent(), 3);
@@ -681,9 +683,38 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         assert.include(cut.reason ?? "", "may or may not have gone");
         assert.lengthOf(yield* connections.interruptedSends(orgId, NOW + 1), 0);
         const resumed = yield* connections.freshAsk(orgId, cut.fresh, NOW);
+        if (resumed === undefined) return assert.fail("no fresh card");
         yield* resumed.bind("w-resumed");
         assert.deepStrictEqual(yield* tap("w-resumed", owner), { state: "sent", reason: null });
         assert.lengthOf(fake.sent(), 4);
+
+        // The agent corrects itself while the first is sending, and that send fails: the
+        // correction stands, and the outdated mail does not come back beside it.
+        const draft = yield* reply("Yes, the total is 59,000.");
+        const sending = yield* sql.withTransaction(
+          connections.answerAsk({
+            orgId,
+            widgetId: draft.widgetId,
+            personId: owner,
+            confirmed: true,
+            via: "tap",
+            now: NOW,
+          }),
+        );
+        if (sending?._tag !== "send") return assert.fail("not sending");
+        const correction = yield* reply("Yes, the total is 59,000 including GST.");
+        fake.setDown(HELLO, true);
+        const lost = yield* connections.sendAsk(orgId, sending.askId);
+        fake.setDown(HELLO, false);
+        assert.strictEqual(lost.state, "failed");
+        assert.isUndefined(lost.fresh);
+        assert.include(lost.reason ?? "", "newer card");
+        assert.deepStrictEqual(yield* tap(correction.widgetId, owner), {
+          state: "sent",
+          reason: null,
+        });
+        assert.lengthOf(fake.sent(), 5);
+        assert.include(fake.sent()[4]!.body, "including GST");
       }),
     ),
   );

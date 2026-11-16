@@ -88,6 +88,7 @@ const showOutcome = Effect.fn("KinCardAnswers.outcome")(function* (
   });
   if (fresh === undefined) return;
   const again = yield* connections.freshAsk(orgId, fresh, now);
+  if (again === undefined) return;
   const card = yield* chat.ask(again.agent, {
     chatId: again.chatId,
     clientMessageId: `kin-connection-ask:${again.askId}`,
