@@ -30,8 +30,8 @@ export interface SentMail {
   readonly from: string;
   readonly to: ReadonlyArray<string> | string;
   readonly subject: string;
-  readonly inReplyTo?: string;
-  readonly attachments?: ReadonlyArray<{ readonly name?: string; readonly filename?: string }>;
+  readonly inReplyTo?: string | null;
+  readonly attachments?: ReadonlyArray<string>;
 }
 
 export const mailSent = (instance: Instance) =>
@@ -48,10 +48,8 @@ export function mailSentLines(instance: Instance): string {
         `from ${mail.from}`,
         `to ${[mail.to].flat().join(",")}`,
         JSON.stringify(mail.subject),
-        mail.inReplyTo === undefined ? "" : `inReplyTo ${mail.inReplyTo}`,
-        (mail.attachments ?? []).length > 0
-          ? `files ${(mail.attachments ?? []).map((file) => file.filename ?? file.name).join(",")}`
-          : "",
+        mail.inReplyTo == null ? "" : `inReplyTo ${mail.inReplyTo}`,
+        (mail.attachments ?? []).length > 0 ? `files ${(mail.attachments ?? []).join(",")}` : "",
       ]
         .filter(Boolean)
         .join(" · "),

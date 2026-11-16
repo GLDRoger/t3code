@@ -54,7 +54,7 @@ const HELP = `kin-verify [--instance <name>] <command>
   people                                  seeded people and agents
   as <person> web open <route>            tasks | money | clients?client=C-1 | chat:<agent> | /path
   as <person> web snapshot [--full]       accessibility tree of the open sheet/dialog, else main
-  as <person> web click --name "<name>" [--role r] [--nth n]
+  as <person> web click --name "<name>" [--role r] [--nth n] [--within "<card or section name>"]
   as <person> web type [--name "<field>"] "<text>" [--enter]
   as <person> web wait "<text>" [--gone] [--timeout <s>]
   as <person> web screenshot <path> [--full]   (refuses paths under ~/.t3)
@@ -264,6 +264,7 @@ async function web(instance: Instance, person: string, args: Args) {
       const role = await Web.click(session, name, {
         ...(flag(args, "role") === undefined ? {} : { role: flag(args, "role")! }),
         ...(nth === undefined ? {} : { nth: Number(nth) }),
+        ...(flag(args, "within") === undefined ? {} : { within: flag(args, "within")! }),
       });
       console.log(`clicked ${role} "${name}"`);
       return;
@@ -524,7 +525,8 @@ main().then(
     const message =
       error instanceof VerifyError || error instanceof RpcFailure
         ? error.message
-        : `${(error as Error).stack ?? String(error)}`;
+        : // Playwright's call logs run to dozens of lines; the first says what failed.
+          ((error as Error).message.split("\n")[0] ?? String(error));
     console.error(`kin-verify: ${message}`);
     process.exit(1);
   },

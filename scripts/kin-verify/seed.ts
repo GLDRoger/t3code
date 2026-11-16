@@ -299,11 +299,6 @@ export async function seed(
     ] as const;
     for (const [title, to] of give)
       await owner.call("kin.work.assign", { orgId: ORG, key: await keyOf(title), to: person(to) });
-    await owner.call("kin.work.share", {
-      orgId: ORG,
-      keys: [await keyOf("Beta release to two pilot clinics")],
-      shared: false,
-    });
     const projectKey = await keyOf("Lumen Grove patient booking app");
     const project = (await owner.call("kin.work.project", { orgId: ORG, key: projectKey })) as {
       project?: WorkRecord;
@@ -316,6 +311,7 @@ export async function seed(
       key: projectKey,
       rev,
       owner: person("dev"),
+      members: [person("zoya"), person("arjun")],
     });
     await owner.call("kin.work.create", {
       orgId: ORG,

@@ -15,6 +15,7 @@ import {
   readSeed,
   readState,
   sleep,
+  stopTree,
   writeState,
 } from "./instance.ts";
 import { VerifyError } from "./rpc.ts";
@@ -76,6 +77,7 @@ async function chromeFor(
     return { port: Number(NodeFS.readFileSync(portFile, "utf8").split("\n")[0]), fresh: false };
   NodeFS.mkdirSync(profile, { recursive: true });
   NodeFS.rmSync(portFile, { force: true });
+  const log = NodeFS.openSync(NodePath.join(instance.meta, "chrome", `${person}.log`), "a");
   const child = NodeChildProcess.spawn(
     chromePath(),
     [
@@ -86,7 +88,7 @@ async function chromeFor(
       "--window-size=1280,900",
       "about:blank",
     ],
-    { detached: true, stdio: "ignore" },
+    { detached: true, stdio: ["ignore", log, log] },
   );
   child.unref();
   const next: InstanceState = { ...state, chrome: { ...state.chrome, [person]: child.pid! } };
@@ -101,6 +103,17 @@ async function chromeFor(
   throw new VerifyError(`Chrome for ${person} did not start; try \`kin-verify down\` then again`);
 }
 
+/** Polls the URL: a client-side redirect aborts the navigation `waitForURL` would wait on. */
+async function untilUrl(page: Page, done: (url: URL) => boolean, timeoutMs: number) {
+  for (let waited = 0; waited < timeoutMs; waited += 100) {
+    if (done(new URL(page.url()))) return;
+    await sleep(100);
+  }
+  throw new VerifyError(
+    `sign-in stuck on ${new URL(page.url()).pathname}; try \`kin-verify down\` then again`,
+  );
+}
+
 /** Settles after navigation or a click: network quiet, then a beat for React to paint. */
 async function settle(page: Page) {
   await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => undefined);
@@ -111,6 +124,19 @@ export interface WebSession {
   readonly page: Page;
   readonly web: string;
   readonly base: string;
+}
+
+async function livePage(instance: Instance, person: string): Promise<Page> {
+  const { port } = await chromeFor(instance, person);
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 8000 });
+  const context = browser.contexts()[0]!;
+  const page = context.pages().find((one) => !one.isClosed()) ?? (await context.newPage());
+  const alive = await Promise.race([
+    page.evaluate(() => true).catch(() => false),
+    sleep(3000).then(() => false),
+  ]);
+  if (!alive) throw new VerifyError(`${person}'s browser page is not answering`);
+  return page;
 }
 
 /**
@@ -126,24 +152,22 @@ export async function openWeb(
   const seed = readSeed(instance);
   if (state?.web === undefined || seed === undefined)
     throw new VerifyError("no ready instance; run `kin-verify up`");
-  const { port } = await chromeFor(instance, person);
-  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
-  const context = browser.contexts()[0]!;
-  const page = context.pages().find((one) => !one.isClosed()) ?? (await context.newPage());
+  const page = await livePage(instance, person).catch(async () => {
+    // A page whose renderer died hangs every CDP call; a new Chrome on the same profile keeps the sign-in.
+    await stopTree(readState(instance)?.chrome?.[person]);
+    return livePage(instance, person);
+  });
   const base = `${state.web}/kin/${seed.environmentId}/${ORG}`;
   const signedIn = NodePath.join(profileOf(instance, person), "kin-verify-signed-in");
   if (!NodeFS.existsSync(signedIn) || NodeFS.readFileSync(signedIn, "utf8") !== state.web) {
     if (person === "owner") {
       await page.goto(signIn.pairingUrl());
-      await page.waitForURL((url) => !url.pathname.startsWith("/pair"), { timeout: 30_000 });
+      await untilUrl(page, (url) => !url.pathname.startsWith("/pair"), 30_000);
     } else {
       await page.goto(`${state.web}/kin/invite#${await signIn.inviteSecret()}`);
       const browserButton = page.getByRole("button", { name: "Continue in the browser" });
-      await Promise.race([
-        browserButton.click({ timeout: 15_000 }).catch(() => undefined),
-        page.waitForURL((url) => !url.pathname.startsWith("/kin/invite"), { timeout: 15_000 }),
-      ]);
-      await page.waitForURL((url) => !url.pathname.startsWith("/kin/invite"), { timeout: 30_000 });
+      await browserButton.click({ timeout: 15_000 }).catch(() => undefined);
+      await untilUrl(page, (url) => !url.pathname.startsWith("/kin/invite"), 30_000);
     }
     await settle(page);
     NodeFS.writeFileSync(signedIn, state.web);
@@ -165,12 +189,12 @@ export async function open(session: WebSession, route: string) {
 /** The screen as an accessibility tree: an open dialog or sheet if any, else the main area. */
 export async function snapshot(session: WebSession, full: boolean): Promise<string> {
   const { page } = session;
-  const dialogs = page.locator("[role=dialog]:visible, [role=alertdialog]:visible");
   const main = page.locator("main:visible").first();
+  const front = await reachable(page);
   const root: Locator = full
     ? page.locator("body")
-    : (await dialogs.count()) > 0
-      ? dialogs.last()
+    : front !== page
+      ? (front as Locator)
       : (await main.count()) > 0
         ? main
         : page.locator("body");
@@ -195,28 +219,72 @@ const CLICKABLE = [
   "combobox",
 ] as const;
 
-async function byName(page: Page, name: string, roles: ReadonlyArray<string>, exact: boolean) {
-  const found: Array<{ role: string; locator: Locator }> = [];
-  for (const role of roles) {
-    const all = page.getByRole(role as (typeof CLICKABLE)[number], { name, exact });
-    const count = await all.count();
-    for (let index = 0; index < count; index++) {
-      const one = all.nth(index);
-      if (await one.isVisible()) found.push({ role, locator: one });
-    }
+/** Where a person can act: the topmost open dialog or sheet (it blocks the rest), else the page. */
+async function reachable(page: Page): Promise<Page | Locator> {
+  // A dialog behind another is inert or aria-hidden; the one left is the one in front.
+  const top = await page.evaluate(() => {
+    for (const marked of document.querySelectorAll("[data-kin-verify-top]"))
+      marked.removeAttribute("data-kin-verify-top");
+    const open = [...document.querySelectorAll("[role=dialog], [role=alertdialog]")].filter(
+      (element) =>
+        (element as HTMLElement).offsetParent !== null &&
+        element.closest('[aria-hidden="true"], [inert], [data-base-ui-inert]') === null,
+    );
+    open.at(-1)?.setAttribute("data-kin-verify-top", "");
+    return open.length > 0;
+  });
+  return top ? page.locator("[data-kin-verify-top]") : page;
+}
+
+const CONTAINERS = ["region", "article", "listitem", "group", "dialog", "form", "row"] as const;
+
+/** The last visible card, row or section whose accessible name contains `text`. */
+async function within(page: Page, text: string): Promise<Locator> {
+  const root = await reachable(page);
+  for (const role of CONTAINERS) {
+    const all = root.getByRole(role, { name: text });
+    for (let index = (await all.count()) - 1; index >= 0; index--)
+      if (await all.nth(index).isVisible()) return all.nth(index);
   }
-  return found;
+  throw new VerifyError(`no card or section named like "${text}"; run \`snapshot\``);
+}
+
+async function byName(
+  page: Page,
+  name: string,
+  roles: ReadonlyArray<string>,
+  exact: boolean,
+  inside?: string,
+) {
+  // An open menu or listbox renders in a portal outside the dialog, in front of it.
+  const popups = page.locator("[role=menu]:visible, [role=listbox]:visible");
+  const root = inside === undefined ? await reachable(page) : await within(page, inside);
+  const scopes: Array<Page | Locator> =
+    (await popups.count()) > 0 && inside === undefined ? [popups.last(), root] : [root];
+  for (const scope of scopes) {
+    const found: Array<{ role: string; locator: Locator }> = [];
+    for (const role of roles) {
+      const all = scope.getByRole(role as (typeof CLICKABLE)[number], { name, exact });
+      const count = await all.count();
+      for (let index = 0; index < count; index++) {
+        const one = all.nth(index);
+        if (await one.isVisible()) found.push({ role, locator: one });
+      }
+    }
+    if (found.length > 0) return found;
+  }
+  return [];
 }
 
 /** Clicks the one visible control with this accessible name (`--role`/`--nth` when several). */
 export async function click(
   session: WebSession,
   name: string,
-  options: { readonly role?: string; readonly nth?: number },
+  options: { readonly role?: string; readonly nth?: number; readonly within?: string },
 ) {
   const roles = options.role === undefined ? CLICKABLE : [options.role];
-  let found = await byName(session.page, name, roles, true);
-  if (found.length === 0) found = await byName(session.page, name, roles, false);
+  let found = await byName(session.page, name, roles, true, options.within);
+  if (found.length === 0) found = await byName(session.page, name, roles, false, options.within);
   if (found.length === 0)
     throw new VerifyError(`nothing clickable named "${name}"; run \`snapshot\` to see the names`);
   if (found.length > 1 && options.nth === undefined)
@@ -225,7 +293,7 @@ export async function click(
     );
   const target = found[(options.nth ?? 1) - 1];
   if (target === undefined) throw new VerifyError(`--nth ${options.nth} is past ${found.length}`);
-  await target.locator.click();
+  await target.locator.click({ timeout: 10_000 });
   await settle(session.page);
   return target.role;
 }
@@ -289,24 +357,4 @@ export async function screenshot(session: WebSession, path: string, full: boolea
   NodeFS.mkdirSync(NodePath.dirname(target), { recursive: true });
   await session.page.screenshot({ path: target, fullPage: full });
   return target;
-}
-
-export async function stopChrome(instance: Instance, state: InstanceState) {
-  for (const pid of Object.values(state.chrome ?? {}))
-    if (isAlive(pid)) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {}
-    }
-  for (let waited = 0; waited < 3000; waited += 100) {
-    if (!Object.values(state.chrome ?? {}).some(isAlive)) break;
-    await sleep(100);
-  }
-  for (const pid of Object.values(state.chrome ?? {}))
-    if (isAlive(pid)) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {}
-    }
-  void instance;
 }
