@@ -265,6 +265,7 @@ export function kinSubscriptionsView(
   const runRate = new Map<string, number>();
   const thisMonth = new Map<string, number>();
   const yearSoFar = new Map<string, number>();
+  const averaged = new Set<string>();
   let uncounted = 0;
   const rows: Array<KinSubscriptionRow & { readonly sortDay: string }> = [];
   for (const record of records) {
@@ -298,6 +299,7 @@ export function kinSubscriptionsView(
       else {
         add(runRate, amount, perYear(cycle));
         add(monthly, amount, perYear(cycle) / 12);
+        if (!Number.isInteger((amount.minor * perYear(cycle)) / 12)) averaged.add(amount.currency);
       }
     }
     const next =
@@ -369,8 +371,9 @@ export function kinSubscriptionsView(
     a.sortDay.localeCompare(b.sortDay);
   const strip = ({ sortDay: _sortDay, ...row }: (typeof rows)[number]): KinSubscriptionRow => row;
   const active = rows.filter((row) => !row.cancelled).sort(bySoonest);
-  // A yearly plan averaged over twelve months is an estimate; it shows in whole units.
+  // A plan that doesn't divide evenly into months is averaged, so its currency shows in whole units.
   const monthlyTotals = totalsOf(monthly).map((money) => {
+    if (!averaged.has(money.currency)) return money;
     const unit = 10 ** kinMinorDigits(money.currency);
     return { ...money, minor: Math.round(money.minor / unit) * unit };
   });

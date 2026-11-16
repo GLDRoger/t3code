@@ -1,5 +1,6 @@
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinSameTimeZone } from "@t3tools/client-runtime/kin/kinTimeZone";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -50,7 +51,9 @@ function CompanyTimeZone(props: KinWorkTarget) {
       : zone.fromHost === true
         ? `None set yet, so Kin uses this computer's: ${zone.timeZone}. Check-ins, due days and times follow it.`
         : `${zone.timeZone}. Check-ins, due days and times follow it.`;
-  const offer = browserZone !== null && (zone.fromHost === true || browserZone !== zone.timeZone);
+  const offer =
+    browserZone !== null &&
+    (zone.fromHost === true || !kinSameTimeZone(browserZone, zone.timeZone));
   return (
     <SettingsRow
       title="Time zone"

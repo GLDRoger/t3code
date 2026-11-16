@@ -41,14 +41,16 @@ export type KinInboxEvent =
 
 export const emptyKinInbox: KinInboxState = { chats: [], waiting: [] };
 
-/** The app badge, as the host counts it on every push: unread messages plus Waiting on you. */
+/**
+ * The app badge: the Chats list's unread total, which the host sends with every push. Waiting on
+ * you has its own place in the list and isn't unread.
+ */
 export const kinBadgeCount = (state: KinInboxState) =>
-  state.chats.reduce((total, chat) => total + chat.unread, 0) + state.waiting.length;
+  state.chats.reduce((total, chat) => total + (chat.archivedAt === null ? chat.unread : 0), 0);
 
-/** Nothing left in this chat for the viewer: no unread, nothing waiting, or they left it. */
+/** Nothing in this chat is unread for the viewer, or they left it: its banners can go. */
 export const kinChatSettled = (state: KinInboxState, chatId: KinChatId) =>
-  (state.chats.find((chat) => chat.chatId === chatId)?.unread ?? 0) === 0 &&
-  !state.waiting.some((item) => item.chatId === chatId);
+  (state.chats.find((chat) => chat.chatId === chatId)?.unread ?? 0) === 0;
 
 export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): KinInboxState {
   switch (event._tag) {
@@ -148,7 +150,7 @@ export function selectKinInboxView(state: KinInboxState): KinInboxView {
     waiting: [...state.waiting].sort(
       (a, b) => a.createdAt.localeCompare(b.createdAt) || a.waitingId.localeCompare(b.waitingId),
     ),
-    unreadCount: rows.reduce((sum, row) => sum + row.chat.unread, 0),
+    unreadCount: kinBadgeCount(state),
     waitingCount: state.waiting.length,
   };
 }

@@ -12,6 +12,7 @@ import {
   type KinPushError,
   type KinPushToken,
 } from "@t3tools/contracts";
+import * as Arbitrary from "effect/Arbitrary";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -35,6 +36,7 @@ import { KinKeyNotices } from "../approvals/ExecutionNotices.ts";
 import * as GrantPorts from "../approvals/GrantPorts.ts";
 import * as PendingActions from "../approvals/PendingActions.ts";
 import { layerKinAuthTest, repairProofKey } from "../auth/ProofKeySessions.testkit.ts";
+import * as Repository from "../chat/KinChatRepository.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinApnsTransport, type KinApnsPush, type KinApnsResult } from "./Apns.ts";
@@ -94,6 +96,7 @@ const buildOn = <A, E, R>(apns: ReturnType<typeof makeApns>, database: Layer.Lay
     Layer.provideMerge(Layer.mergeAll(Devices.layer, layerTrusting, apns.layer)),
     Layer.provideMerge(ApproverKeys.layer),
     Layer.provide(MemoryCache.layer),
+    Layer.provideMerge(Repository.layer),
     Layer.provideMerge(PendingActions.layer),
     Layer.provideMerge(Audit.layer),
     Layer.provide(Layer.succeed(KinAttestationTrust, { load: () => Effect.die("unused") })),
@@ -238,9 +241,15 @@ const postWidget = (
   type: string,
   state: object,
   awaiting: ReadonlyArray<KinPersonId>,
+  body?: string,
 ) =>
   Effect.gen(function* () {
-    const messageId = yield* postMessage(sql, "system");
+    const messageId = yield* postMessage(
+      sql,
+      "system",
+      "posted",
+      body === undefined ? {} : { body },
+    );
     const widgetId = KinWidgetId.make(`w_${messageId}`);
     yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
         revision, state_json, awaiting_json, updated_at)
@@ -404,18 +413,38 @@ describe("KinPushSender", () => {
       });
       assert.isUndefined(apns.sent[0]?.collapseId);
 
-      // Kin's publish card rings with fixed words only, never the lead's title or the files.
+      // Kin's publish card rings with Kin's own words, never the lead's title or the files.
       apns.sent.length = 0;
       const held = yield* postWidget(
         sql,
         "worker_publish",
         { pullRequestTitle: "Invented client terms", files: [{ path: "acme-terms.md" }] },
         [member],
+        "Kin is holding a worker's changes until you choose to publish them.",
       );
       yield* notify({ _tag: "widget", orgId, widgetId: held });
       assert.lengthOf(apns.sent, 1);
       assert.deepStrictEqual(alerts(apns.sent), [
-        { title: "Payments team", body: "A card is waiting on you" },
+        {
+          title: "Payments team",
+          body: "Kin is holding a worker's changes until you choose to publish them.",
+        },
+      ]);
+      // It stacks under the chat like its messages do.
+      assert.match(apns.sent[0]?.collapseId ?? "", /^kin:/);
+
+      // A question card with no message of its own says what it asks, in the card's words.
+      apns.sent.length = 0;
+      const asked = yield* postWidget(
+        sql,
+        "choice",
+        { question: "Confirm receipt R-12 from Harbourline?", options: [] },
+        [member],
+        "",
+      );
+      yield* notify({ _tag: "widget", orgId, widgetId: asked });
+      assert.deepStrictEqual(alerts(apns.sent), [
+        { title: "Payments team", body: "Confirm receipt R-12 from Harbourline?" },
       ]);
       assert.notInclude(JSON.stringify(apns.sent), "Invented client terms");
       assert.notInclude(JSON.stringify(apns.sent), "acme-terms");
@@ -430,6 +459,47 @@ describe("KinPushSender", () => {
       // A suggestion only the owner can see isn't announced to anyone.
       const suggested = yield* postMessage(sql, "system", "suggested");
       assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: suggested })).sent, 0);
+    }).pipe(Effect.provide(build(apns)));
+  });
+
+  it.effect("a card its turn's reply already rang for rings only those the reply didn't", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      // The lead asks both people in the group; its reply goes on to name only Priya.
+      const card = yield* postWidget(
+        sql,
+        "choice",
+        { question: "Which projects are finished?", options: [] },
+        [owner, member],
+        "",
+      );
+      const reply = yield* postMessage(sql, { agentMemberId: "m_fin" }, "posted", {
+        body: "PR #87 isn't ready to merge.",
+        mentions: ["m_priya"],
+      });
+      apns.sent.length = 0;
+      yield* notify({ _tag: "widget", orgId, widgetId: card, covered: [reply] });
+      assert.deepStrictEqual(
+        apns.sent.map((push) => push.token),
+        [ownerPhone, ownerTablet],
+      );
+      // In the owner's DM the reply reaches him, so the card adds no second banner.
+      yield* sql`UPDATE kin_widgets SET chat_id = 'chat_dm' WHERE widget_id = ${card}`;
+      yield* sql`UPDATE kin_messages SET chat_id = 'chat_dm' WHERE message_id IN (${reply},
+        (SELECT message_id FROM kin_widgets WHERE widget_id = ${card}))`;
+      apns.sent.length = 0;
+      assert.strictEqual(
+        (yield* notify({ _tag: "widget", orgId, widgetId: card, covered: [reply] })).sent,
+        0,
+      );
+      // The card's own message has no words, so it never rings as a message either.
+      const [{ messageId: anchor }] = (yield* sql<{ messageId: KinMessageId }>`
+        SELECT message_id AS "messageId" FROM kin_widgets WHERE widget_id = ${card}`) as [
+        { messageId: KinMessageId },
+      ];
+      yield* sql`UPDATE kin_widgets SET awaiting_json = '[]' WHERE widget_id = ${card}`;
+      assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: anchor })).sent, 0);
     }).pipe(Effect.provide(build(apns)));
   });
 
@@ -522,7 +592,7 @@ describe("KinPushSender", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
-  it.effect("counts unread and waiting across chats in the badge", () => {
+  it.effect("counts the Chats list's unread across chats in the badge, and nothing else", () => {
     const apns = makeApns();
     return Effect.gen(function* () {
       const { notify, sql } = yield* seed;
@@ -553,13 +623,87 @@ describe("KinPushSender", () => {
       assert.deepStrictEqual(apns.sent, []);
       const messageId = yield* postMessage(sql, dm, "posted", { chatId: "chat_dm" });
       yield* notify({ _tag: "message", orgId, messageId });
-      // Two unread in the group, one in the DM, one open waiting item.
+      // One unread in the group and one in the DM; Waiting on you isn't unread, so it isn't counted.
       assert.deepStrictEqual(
         apns.sent.map((push) => (push.payload as { aps: { badge: number } }).aps.badge),
-        [3, 3],
+        [2, 2],
       );
     }).pipe(Effect.provide(build(apns)));
   });
+
+  // Generated chats, readers and waiting items: the icon says what the Chats list adds up.
+  const said = Arbitrary.all({
+    inTeam: Arbitrary.schema(Schema.Boolean),
+    by: Arbitrary.schema(Schema.Literals(["owner", "priya", "lead", "system"])),
+    silent: Arbitrary.schema(Schema.Boolean),
+  });
+  const state = Arbitrary.all({
+    messages: Arbitrary.array(said, { maxLength: 12 }),
+    teamRead: Arbitrary.schema(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 14 }))),
+    dmRead: Arbitrary.schema(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 14 }))),
+    waiting: Arbitrary.schema(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3 }))),
+    teamArchived: Arbitrary.schema(Schema.Boolean),
+    leftTeam: Arbitrary.schema(Schema.Boolean),
+  });
+  it.effect.prop(
+    "the badge is the unread total of the chats the Chats list shows",
+    [state],
+    ([world]) => {
+      const apns = makeApns();
+      return Effect.gen(function* () {
+        const { notify, sql } = yield* seed;
+        const chats = yield* Repository.KinChatRepository;
+        for (const message of world.messages) {
+          const chatId = message.inTeam ? "chat_team" : "chat_dm";
+          const author: Author =
+            message.by === "owner"
+              ? { personId: owner, memberId: message.inTeam ? "m_owner" : "m_owner_dm" }
+              : message.by === "priya" && message.inTeam
+                ? { personId: member, memberId: "m_priya" }
+                : message.by === "lead"
+                  ? { agentMemberId: message.inTeam ? "m_fin" : "m_fin_dm" }
+                  : "system";
+          yield* postMessage(sql, author, "posted", { chatId, silent: message.silent });
+        }
+        for (const [chatId, memberId, seq] of [
+          ["chat_team", "m_owner", world.teamRead],
+          ["chat_dm", "m_owner_dm", world.dmRead],
+        ] as const)
+          yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq,
+              updated_at) VALUES ('org_01', ${chatId}, ${memberId}, ${seq}, ${T})`;
+        for (let index = 0; index < world.waiting; index++)
+          yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, reason,
+              created_at) VALUES (${`wait_${index}`}, 'org_01', ${owner}, 'chat_dm', 'question', ${T})`;
+        if (world.teamArchived)
+          yield* sql`UPDATE kin_chats SET archived_at = ${T} WHERE chat_id = 'chat_team'`;
+        if (world.leftTeam)
+          yield* sql`UPDATE kin_chat_members SET left_at = ${T} WHERE member_id = 'm_owner'`;
+        const ring = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+          chatId: "chat_dm",
+        });
+        // What the Chats list shows: each chat's own unread, for the chats it lists.
+        let listed = 0;
+        for (const [chatId, memberId] of [
+          ["chat_team", "m_owner"],
+          ["chat_dm", "m_owner_dm"],
+        ] as const) {
+          if (chatId === "chat_team" && (world.teamArchived || world.leftTeam)) continue;
+          listed += yield* chats.unreadCount({
+            orgId,
+            chatId: KinChatId.make(chatId),
+            memberId: KinMemberId.make(memberId),
+          });
+        }
+        yield* notify({ _tag: "message", orgId, messageId: ring });
+        const badges = apns.sent.map(
+          (push) => (push.payload as { aps: { badge: number } }).aps.badge,
+        );
+        // The DM rings both of the owner's devices with the same number.
+        assert.deepStrictEqual(badges, [listed, listed]);
+      }).pipe(Effect.provide(build(apns)));
+    },
+    { arbitrary: { runs: 30 } },
+  );
 
   it.effect("sends a read's new badge, with no banner, to the reader's other devices", () => {
     const apns = makeApns();
@@ -594,8 +738,15 @@ describe("KinPushSender", () => {
             ownerTablet,
             undefined,
             {
-              aps: { badge: 1 },
-              body: { kin: 1, orgId, chatId: dm, deepLink: "/kin/env_kin/org_01/chats/chat_dm" },
+              // It wakes the app, which takes the DM's banners off the pane: nothing there is unread.
+              aps: { badge: 1, "content-available": 1 },
+              body: {
+                kin: 1,
+                orgId,
+                chatId: dm,
+                deepLink: "/kin/env_kin/org_01/chats/chat_dm",
+                cleared: true,
+              },
             },
           ],
         ],

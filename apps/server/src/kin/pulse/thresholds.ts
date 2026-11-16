@@ -1,7 +1,7 @@
 import type { KinOrgId, KinPulseThresholdSource } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-import { type PlaybookKey, playbookThreshold } from "../work/playbooks.ts";
+import { type PlaybookKey, playbookThresholds } from "../work/playbooks.ts";
 
 /** Pulse thresholds playbooks don't declare: their unit and code default. */
 const PULSE_ONLY = {
@@ -35,14 +35,24 @@ export const threshold = Effect.fn("KinPulse.threshold")(function* (
   key: ThresholdKey,
   clientId?: string,
 ) {
-  if (key === "late_grace_hours" || key === "retainer_heads_up_days")
-    return {
-      value: PULSE_ONLY[key].default,
-      unit: PULSE_ONLY[key].unit,
-      from: { _tag: "default" },
-    } satisfies Threshold;
-  const found = yield* playbookThreshold(orgId, key, clientId);
-  return { value: found.value, unit: PLAYBOOK_UNITS[key], from: found.from } satisfies Threshold;
+  if (key === "late_grace_hours" || key === "retainer_heads_up_days") return pulseOnly(key);
+  return (yield* thresholds(orgId))(key, clientId);
+});
+
+const pulseOnly = (key: keyof typeof PULSE_ONLY): Threshold => ({
+  value: PULSE_ONLY[key].default,
+  unit: PULSE_ONLY[key].unit,
+  from: { _tag: "default" },
+});
+
+/** `threshold` for many keys and clients over one read of the playbooks. */
+export const thresholds = Effect.fn("KinPulse.thresholds")(function* (orgId: KinOrgId) {
+  const playbooks = yield* playbookThresholds(orgId);
+  return (key: ThresholdKey, clientId?: string): Threshold => {
+    if (key === "late_grace_hours" || key === "retainer_heads_up_days") return pulseOnly(key);
+    const found = playbooks(key, clientId);
+    return { value: found.value, unit: PLAYBOOK_UNITS[key], from: found.from };
+  };
 });
 
 export const HOUR_MS = 60 * 60 * 1000;

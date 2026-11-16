@@ -17,7 +17,6 @@ import { appAtomRegistry } from "../../../state/atom-registry";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "./kinClient";
 import { kinHostConnected } from "./useKinHost";
-import { useRereadOnChange } from "./useKinMoney";
 import type { KinWorkTarget } from "./useKinWork";
 
 const none = <A>(): Atom.Atom<AsyncResult.AsyncResult<A, unknown>> =>
@@ -38,19 +37,17 @@ function useAnswer<A>(
   atom: Atom.Atom<AsyncResult.AsyncResult<A, unknown>>,
   fallback: Atom.Atom<AsyncResult.AsyncResult<A, unknown>>,
   enabled: boolean,
-  seq: number | null,
 ) {
   const state = kinWorkReadState(useAtomValue(enabled ? atom : fallback));
-  useRereadOnChange(seq, () => appAtomRegistry.refresh(atom));
   return { state, refresh: () => appAtomRegistry.refresh(atom) };
 }
 
-export const useKinCash = (target: KinWorkTarget, enabled: boolean, seq: number | null) =>
-  useAnswer(cashAtom(target), noCash, enabled, seq);
-export const useKinOutlook = (target: KinWorkTarget, enabled: boolean, seq: number | null) =>
-  useAnswer(outlookAtom(target), noOutlook, enabled, seq);
-export const useKinBudgets = (target: KinWorkTarget, enabled: boolean, seq: number | null) =>
-  useAnswer(budgetsAtom(target), noBudgets, enabled, seq);
+export const useKinCash = (target: KinWorkTarget, enabled: boolean) =>
+  useAnswer(cashAtom(target), noCash, enabled);
+export const useKinOutlook = (target: KinWorkTarget, enabled: boolean) =>
+  useAnswer(outlookAtom(target), noOutlook, enabled);
+export const useKinBudgets = (target: KinWorkTarget, enabled: boolean) =>
+  useAnswer(budgetsAtom(target), noBudgets, enabled);
 
 /** The owner's set, change and removal of a budget; says why when the host refuses. */
 export function useKinBudgetSet(target: KinWorkTarget) {

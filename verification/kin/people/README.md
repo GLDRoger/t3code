@@ -1,0 +1,13 @@
+# Changing who a person is (`node scripts/kin-model.ts people`)
+
+**Rules.** Once Ana is made a member again or removed, nothing owner-level reaches her: no read, no tap on a card she could confirm a minute ago, no turn that started while she was a co-owner. Made a co-owner, she gets a co-owner's view on her next request without joining again. With her Money place off and no project she leads, her next read and her running turn show no money. Removed, a task she held goes back to whoever gave it. A co-owner never changes anyone's kind, and there is always exactly one owner. Removed and let back in, she comes back as a member with a new joiner's places, unless the owner made her a co-owner since.
+**Harm guarded.** A demoted or removed person keeps seeing or confirming owner-level things; their work silently stays with someone who can never do it; an old level comes back by itself.
+**Bound.** One person (Ana) beside the owner and a co-owner; one removal, two joins; one owner-level card in her chat, one turn, one task an agent gives her. About 1,000 states, under 1 s. `--variants`: 9/9 caught.
+**Fixed.**
+
+1. `TasksGoBack`: (1) You invite Ana and she joins. (2) An agent gives her a task. (3) You remove her. The task stayed with her, where no one can do it and nothing nudges. `removeAccess` now hands every open task she holds back to whoever gave it (the owner when no one else did), which wakes the agent. Variant `removal-keeps-tasks`.
+2. `TasksGoBack`: (1) You remove Ana. (2) An agent gives her a task by name: Kin accepted it. `personNamed` now names no one removed: `kin_people.removed_at` (K149) marks a removed person until a link lets them back in. Variant `give-to-gone`.
+3. `RejoinsAsMember`: (1) You make Ana a co-owner. (2) You remove her. (3) You or a co-owner send her a link again and she joins: she was a co-owner again. Removal now leaves her row a member's with a new joiner's places. Variant `rejoin-keeps-level`.
+
+**Left out.** What a client already shows on screen until it refetches (the server refreshes `people` and `leads` on every change), notices already composed before a change, scheduled nudges (they read the person when they run), several people at once, devices revoked one by one, groups.
+**Covers** (confirmed at kin `8fa064135c` plus this change): `apps/server/src/kin/people/{KinPeople.ts,KinAccess.ts,personNamed.ts}` (`removeAccess`, `handTasksBack`, `setAccess`, `setPlaces`, `accept`, `mayActOn`, `ownerLevel`), `apps/server/src/kin/work/teamView.ts` (`personSees`, `placesOf`), `apps/server/src/kin/lead/Audience.ts` (`abortChatTurns`), `apps/server/src/kin/lead/ChatSharing.ts` (`onPersonRemoved`).

@@ -22,6 +22,7 @@ import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlStatement from "effect/sql/Statement";
 
 import { resolveAttachmentPathById } from "../../../attachmentStore.ts";
 import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
@@ -38,7 +39,7 @@ import { listDef } from "../registers.ts";
 import { bankStates, directionOf, findBankList, type KnownRow, knownRows } from "./bankList.ts";
 import type { FileOutcome } from "./statementFiles.ts";
 import { readIsolated } from "./statementReader.ts";
-import { matchRows, type RowMatch, SALARIES } from "./statementMatch.ts";
+import { matchRows, type RowMatch, SALARIES, seenOf } from "./statementMatch.ts";
 import {
   defaultSelection,
   type Held,
@@ -159,6 +160,36 @@ export const attachmentBytes = Effect.fn("KinStatements.attachmentBytes")(functi
     );
 });
 
+/** Live payments on the entries `where` picks (over `r`), but for those this statement recorded. */
+const livePayments = Effect.fn("KinStatements.livePayments")(function* (
+  orgId: KinOrgId,
+  statementId: string | undefined,
+  where: SqlStatement.Fragment,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ recordId: string; paymentId: string }>`SELECT p.record_id AS "recordId",
+      p.payment_id AS "paymentId"
+    FROM kin_record_payments p JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+    WHERE p.org_id = ${orgId} AND p.voided_at IS NULL AND ${where}
+      AND NOT EXISTS (SELECT 1 FROM kin_bank_statement_entries e WHERE e.org_id = p.org_id
+        AND e.statement_id = ${statementId ?? ""} AND e.payment_id = p.payment_id)
+    ORDER BY p.payment_id`;
+});
+
+/** What an invoice stands on now for this statement's match: its amount and others' payments. */
+export const invoiceSeen = Effect.fn("KinStatements.invoiceSeen")(function* (
+  orgId: KinOrgId,
+  statementId: string,
+  invoice: { readonly recordId: string; readonly amountMinor: number | null },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const ids = yield* livePayments(orgId, statementId, sql`r.record_id = ${invoice.recordId}`);
+  return seenOf(
+    invoice.amountMinor ?? 0,
+    ids.map((one) => one.paymentId),
+  );
+});
+
 /** Open invoices and expenses the rows may be, with the owner's own accounts and vendors. */
 const candidates = Effect.fn("KinStatements.candidates")(function* (
   orgId: KinOrgId,
@@ -193,6 +224,14 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         WHERE e.org_id = r.org_id AND e.statement_id = ${statementId ?? ""}
           AND e.target_record_id = r.record_id)
     ORDER BY r.key`;
+  const received = new Map<string, Array<string>>();
+  for (const one of yield* livePayments(
+    orgId,
+    statementId,
+    sql`r.register_id = 'invoices'
+      AND r.state = 'waiting'`,
+  ))
+    received.set(one.recordId, [...(received.get(one.recordId) ?? []), one.paymentId]);
   const expenseRows = yield* sql<{
     recordId: string;
     key: string;
@@ -256,6 +295,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         currency: row.currency ?? "INR",
         amountMinor: row.amountMinor ?? 0,
         paidMinor: row.paid,
+        seen: seenOf(row.amountMinor ?? 0, received.get(row.recordId) ?? []),
         taxMinor:
           typeof tax === "object" && tax !== null && !Array.isArray(tax) && "minor" in tax
             ? tax.minor

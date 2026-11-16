@@ -377,7 +377,9 @@ export const authority = Layer.effect(
             sources,
             stagedReceipts:
               (yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
-                AND (call_key <> 'end' OR ${ownerOnly ? 1 : 0} = 1) LIMIT 1`).length > 0,
+                AND (call_key <> 'end' OR ${ownerOnly ? 1 : 0} = 1)
+                -- A schedule is saved when its call runs; nothing of it waits for kin_end.
+                AND call_key NOT LIKE 'schedule:%' LIMIT 1`).length > 0,
           };
         },
         Effect.mapError((error) =>
@@ -1207,7 +1209,7 @@ const make = Effect.gen(function* () {
             yield* ownSchedule(ctx, replaced, input.sourceEventId);
             yield* receipt(
               ctx,
-              `item:${replaced.scheduleId}`,
+              `schedule:${replaced.scheduleId}`,
               { ...input, itemId: replaced.scheduleId },
               save(replaced.scheduleId, true, replaced),
             );
@@ -1215,7 +1217,7 @@ const make = Effect.gen(function* () {
           }
           if (input.replaces !== undefined)
             yield* cancelOwn(ctx, input.replaces, input.sourceEventId);
-          yield* receipt(ctx, `item:${id}`, { ...input, itemId: id }, save(id, false));
+          yield* receipt(ctx, `schedule:${id}`, { ...input, itemId: id }, save(id, false));
           return { itemId: id };
         }),
       );

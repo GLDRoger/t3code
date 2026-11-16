@@ -374,6 +374,8 @@ const config: ExpoConfig = {
         icon: variant.assets.androidNotificationIcon,
         color: variant.assets.androidNotificationColor,
         mode: APP_VARIANT === "development" ? "development" : "production",
+        // A Kin chat read elsewhere wakes the app to take its banners off the pane.
+        enableBackgroundRemoteNotifications: true,
       },
     ],
     // Gate Clerk here: withoutIosPersonalTeamCapabilities runs too early to strip its entitlement.

@@ -56,6 +56,31 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/triggers/kinSchedules.ts",
     "apps/server/src/kin/lead/KinEventQueue.ts",
   ],
+  money: [
+    "apps/server/src/kin/gendocs/receiptProposals.ts",
+    "apps/server/src/kin/gendocs/receipts.ts",
+    "apps/server/src/kin/work/cardAnswers.ts",
+    "apps/server/src/kin/work/KinRecords.ts",
+    "apps/server/src/kin/work/statements/statementApply.ts",
+    "apps/server/src/kin/work/statements/statementReview.ts",
+    "apps/server/src/kin/work/statements/statementMatch.ts",
+  ],
+  people: [
+    "apps/server/src/kin/people/KinPeople.ts",
+    "apps/server/src/kin/people/KinAccess.ts",
+    "apps/server/src/kin/people/personNamed.ts",
+    "apps/server/src/kin/work/teamView.ts",
+    "apps/server/src/kin/lead/Audience.ts",
+    "apps/server/src/kin/lead/ChatSharing.ts",
+  ],
+  tasks: [
+    "apps/server/src/kin/work/KinRecords.ts",
+    "apps/server/src/kin/work/leadWork.ts",
+    "apps/server/src/kin/work/ownerWork.ts",
+    "apps/server/src/kin/work/assignNotices.ts",
+    "apps/server/src/kin/work/teamView.ts",
+    "apps/server/src/kin/pulse/senses/work.ts",
+  ],
 };
 /** The models a change touches: a covered file, the model's own folder, or this runner. */
 export const modelsFor = (files: ReadonlyArray<string>) =>
@@ -85,6 +110,8 @@ export interface View {
   readonly step: (action: string, from: Vars, to: Vars) => string | null;
   /** Smaller constants for drawing a chart whose full graph is too large to draw. */
   readonly chartConstants?: Readonly<Record<string, string>>;
+  /** Several smaller charts in place of one, each its own lens on the same graph. */
+  readonly charts?: ReadonlyArray<Pick<View, "title" | "guide" | "state" | "step">>;
 }
 
 export const parseValue = (text: string): Value => {
@@ -516,9 +543,9 @@ export const chartOf = (
     if (id === undefined) ids.set(label, (id = `s${ids.size}`));
     return id;
   };
-  const starts = new Set<string>();
-  for (const [id, state] of graph.states) if (state.start) starts.add(idOf(labelOf.get(id) ?? ""));
-  const arrows = new Map<string, Set<string>>();
+  const startLabels = new Set<string>();
+  for (const [id, state] of graph.states) if (state.start) startLabels.add(labelOf.get(id) ?? "");
+  const drawn: Array<{ readonly a: string; readonly b: string; readonly label: string }> = [];
   for (const step of graph.steps) {
     const from = graph.states.get(step.from);
     const to = graph.states.get(step.to);
@@ -527,7 +554,15 @@ export const chartOf = (
     const b = labelOf.get(step.to) ?? "";
     if (a === b) continue;
     const label = view.step(step.action, from.vars, to.vars);
-    if (label === null) continue;
+    if (label !== null) drawn.push({ a, b, label });
+  }
+  // A start is s0; one a lens gives no step of its own is left out, unless nothing moves at all.
+  const used = new Set(drawn.flatMap((one) => [one.a, one.b]));
+  const starts = [...startLabels]
+    .filter((label) => used.has(label) || drawn.length === 0)
+    .map(idOf);
+  const arrows = new Map<string, Set<string>>();
+  for (const { a, b, label } of drawn) {
     const key = `${idOf(a)} ${idOf(b)}`;
     const set = arrows.get(key) ?? new Set<string>();
     set.add(label);
@@ -630,7 +665,11 @@ const main = async (args: ReadonlyArray<string>) => {
     const breaking = failed.flatMap((one) =>
       "trace" in one.verdict ? [{ rule: one.rule, trace: one.verdict.trace }] : [],
     );
-    const chart = chartOf(view, parseDot(dot), breaking);
+    const graph = parseDot(dot);
+    const charts = (view.charts ?? [view]).map((lens) => ({
+      lens,
+      chart: chartOf({ ...view, ...lens }, graph, breaking),
+    }));
     const findings = failed.flatMap((one) => [
       "",
       `**${view.rules[one.rule] ?? one.rule}** does not hold:`,
@@ -643,12 +682,16 @@ const main = async (args: ReadonlyArray<string>) => {
       [
         `# ${view.title}`,
         "",
-        view.guide,
-        "",
-        "```mermaid",
-        chart.mermaid,
-        "```",
-        "",
+        ...(view.charts === undefined ? [] : [view.guide, ""]),
+        ...charts.flatMap(({ lens, chart }) => [
+          ...(view.charts === undefined ? [] : [`## ${lens.title}`, ""]),
+          lens.guide,
+          "",
+          "```mermaid",
+          chart.mermaid,
+          "```",
+          "",
+        ]),
         "## Rules",
         "",
         ...results.map(
@@ -659,7 +702,9 @@ const main = async (args: ReadonlyArray<string>) => {
         "",
         `Checked by \`node scripts/kin-model.ts ${name}\` with TLC ${TLC_VERSION}: ${
           results[0]?.verdict._tag === "pass" ? results[0].verdict.distinct : "?"
-        } model states, drawn as ${chart.states} chart states and ${chart.arrows} arrows${
+        } model states, drawn as ${charts
+          .map(({ chart }) => `${chart.states} chart states and ${chart.arrows} arrows`)
+          .join(", then ")}${
           view.chartConstants === undefined
             ? ""
             : ` (drawn with ${Object.entries(view.chartConstants)
@@ -669,7 +714,10 @@ const main = async (args: ReadonlyArray<string>) => {
         "",
       ].join("\n"),
     );
-    console.log(`\nChart: ${chartPath} (${chart.states} states, ${chart.arrows} arrows)`);
+    for (const { lens, chart } of charts)
+      console.log(
+        `\nChart: ${chartPath}: ${lens.title} (${chart.states} states, ${chart.arrows} arrows)`,
+      );
   }
   console.log(
     `\n${failed.length === 0 ? "All rules hold" : `${failed.length} rule(s) break`} (${Math.round(performance.now() - started)} ms).`,

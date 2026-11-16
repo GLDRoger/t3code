@@ -1619,18 +1619,26 @@ const explainedHonestly = Effect.fn("KinWorkTools.explainedHonestly")(function* 
       `${before.key} stays unexplained: no invoice payment or expense records its money yet. Record that first (payment_record, or an expense with record_create), or ask the owner to confirm it on the statement's card; a transfer, bank charges or interest may be marked so with its category. Don't say it is explained.`,
     );
 });
+/** What a hand-off itself writes: none of it addresses why the task was handed back. */
+const HAND_OFF_FIELDS = new Set(["owner", "handedBack", "reason", "state"]);
 /**
  * G13: a task handed back goes to the same holder again only once something on it changed since,
- * or the owner says so in this turn; otherwise ask the owner or give it to someone else.
+ * or the owner says so in this turn; otherwise ask the owner or give it to someone else. Other
+ * hand-offs since, to anyone, are no change.
  */
 const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
   lead: Lead,
   before: RecordRow,
   to: KinWorkPrincipal,
 ) {
-  const [last] = (yield* (yield* KinRecords).detail(before, 1)).changes;
-  const back = last?.fields.find((field) => field.field === "handedBack");
-  if (back === undefined || back.from !== `${to._tag}:${principalId(to)}`) return;
+  const who = `${to._tag}:${principalId(to)}`;
+  let back: { readonly to: string | null } | undefined;
+  for (const change of (yield* (yield* KinRecords).detail(before, 50)).changes) {
+    back = change.fields.find((field) => field.field === "handedBack" && field.from === who);
+    if (back !== undefined) break;
+    if (change.fields.some((field) => !HAND_OFF_FIELDS.has(field.field))) return;
+  }
+  if (back === undefined) return;
   const sql = yield* SqlClient.SqlClient;
   const owners = [...(yield* ownerLevelPeople(lead.orgId))];
   const said = yield* sql`SELECT 1 FROM kin_events e

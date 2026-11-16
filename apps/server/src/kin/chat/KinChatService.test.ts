@@ -826,8 +826,28 @@ describe("KinChatService", () => {
         };
         const card = yield* service.ask(agent, ask);
         assert.deepStrictEqual(card.awaiting, [person.personId]);
+        // Writing something else in the chat leaves a card that still takes taps waiting.
+        yield* service.send(person, {
+          chatId: chat.chatId,
+          body: "Later",
+          clientMessageId: "typed",
+        });
+        assert.include(
+          (yield* repo.listOpenWaiting(person)).map((item) => item.widgetId),
+          card.widgetId,
+        );
         assert.deepStrictEqual(yield* service.ask(agent, ask), card);
         const later = yield* service.ask(agent, { ...ask, clientMessageId: "ask-2" });
+        // Outside a turn only Kin itself posts for the agent: a failed send's mail coming back.
+        const { caller: _caller, wakeupId: _wakeupId, ...outsideTurn } = agent;
+        const again = { ...ask, clientMessageId: "ask-again" };
+        assert.include(yield* service.ask(outsideTurn, again).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+        assert.deepStrictEqual(
+          (yield* service.ask({ ...outsideTurn, hostPosted: true }, again)).awaiting,
+          [person.personId],
+        );
         assert.include(
           yield* service
             .upsertWidget(agent, {

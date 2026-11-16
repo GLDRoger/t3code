@@ -130,7 +130,6 @@ function KinListGate(
   const lists = useKinLists(props, {
     enabled: ready,
     archived: true,
-    seq: ready && !work.stale ? work.live.seq : null,
   });
   const back = () => navigation.goBack();
   if (work._tag === "refused" || lists.state._tag === "refused") {

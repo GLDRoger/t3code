@@ -20,9 +20,10 @@ export const personNamed = Effect.fn("KinPeople.personNamed")(function* (
   typed: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  // Someone removed from the company is no one here until a link lets them back in.
   const rows = yield* sql<{ id: string; name: string; handle: string | null; tags: string }>`
     SELECT person_id AS id, display_name AS name, handle, role_tags_json AS tags
-    FROM kin_people WHERE org_id = ${orgId} ORDER BY person_id`;
+    FROM kin_people WHERE org_id = ${orgId} AND removed_at IS NULL ORDER BY person_id`;
   const people = rows.map((row) => ({ ...row, id: KinPersonId.make(row.id) }));
   const wanted = typed.trim();
   const handle = wanted.replace(/^@/, "").toLowerCase();

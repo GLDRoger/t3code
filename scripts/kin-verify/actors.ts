@@ -150,6 +150,8 @@ export async function runTurn(
     readonly person: string;
     readonly calls: ReadonlyArray<ToolCall>;
     readonly reply?: string;
+    /** Seconds the agent stays working before it replies, to watch the turn run. */
+    readonly holdSeconds?: number;
     readonly timeoutMs?: number;
   },
 ): Promise<ReadonlyArray<{ name: string; response?: unknown; error?: string }>> {
@@ -159,7 +161,11 @@ export async function runTurn(
   NodeFS.mkdirSync(turns, { recursive: true });
   NodeFS.writeFileSync(
     NodePath.join(turns, `${id}.json`),
-    JSON.stringify({ calls: input.calls, reply: input.reply ?? "Done." }),
+    JSON.stringify({
+      calls: input.calls,
+      reply: input.reply ?? "Done.",
+      ...(input.holdSeconds === undefined ? {} : { holdMs: input.holdSeconds * 1000 }),
+    }),
   );
   const rpc = await rpcAs(instance, input.person);
   let chatId: string;

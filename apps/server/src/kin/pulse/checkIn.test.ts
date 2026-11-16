@@ -244,6 +244,48 @@ describe("pulse check-ins", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("facts the last check-in already had start no other; a new one or Run now does", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const store = Effect.fn("test.store")(function* (firstSeenAt: number) {
+        for (const fact of (yield* KinPulse.read({ orgId, at: SLOT, viewer: { _tag: "owner" } }))
+          .facts)
+          yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense, subject_record_id,
+              scope_json, first_seen_at, last_seen_at)
+            VALUES (${orgId}, ${fact.key}, ${fact.sense}, ${fact.subject.recordId ?? null}, '{}',
+              ${firstSeenAt}, ${firstSeenAt})
+            ON CONFLICT (org_id, fact_key) DO NOTHING`;
+      });
+      yield* record({ key: "W-1", list: "work", title: "Invented site copy", dueAt: MONDAY - DAY });
+      yield* store(SLOT - HOUR);
+      assert.strictEqual((yield* checkIn(SLOT))._tag, "queued");
+      // The next day W-1 is still open and nothing else is: no turn, so no "nothing new" message.
+      assert.deepStrictEqual(yield* checkIn(SLOT + DAY), { _tag: "nothing_new" });
+      // The first slot fired again after a restart is still that slot's own event.
+      assert.strictEqual((yield* checkIn(SLOT))._tag, "duplicate");
+      // Run now is someone asking: it runs.
+      const asked = yield* queueCheckIn({
+        orgId,
+        agentId: chief,
+        scheduleId: afternoon,
+        title: "Afternoon check-in",
+        what: "Afternoon check-in.",
+        dueAt: SLOT + DAY,
+        looseAt: null,
+        manualId: "run-now-1",
+        zone: "UTC",
+        at: SLOT + DAY,
+        outside: nothingOutside,
+      });
+      assert.strictEqual(asked._tag, "queued");
+      // A task that went late since then is news.
+      yield* record({ key: "W-3", list: "work", title: "Invented menu", dueAt: MONDAY });
+      yield* store(SLOT + DAY + HOUR);
+      assert.strictEqual((yield* checkIn(SLOT + 2 * DAY))._tag, "queued");
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("a check-in carries new outside lines, matched ones first, as metadata", () =>
     Effect.gen(function* () {
       yield* seed;

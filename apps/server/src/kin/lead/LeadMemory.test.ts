@@ -921,6 +921,12 @@ it.live(
         yield* sql`UPDATE kin_leads SET level = 'L1' WHERE agent_id = ${agentId}`;
         yield* writerService.discard(orgId, "fixture-wakeup");
         yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'fixture-wakeup'`;
+        // A turn that only set up a schedule saved it at once: its end is no restart.
+        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'schedule-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', event_ids, audience FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
+        yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES (${orgId}, 'schedule-wakeup', 'schedule:sch-fixture', 'fixture-hash')`;
+        yield* writerService.commitWakeup(orgId, "schedule-wakeup", "completed");
+        assert.isFalse(notices.some((notice) => notice.includes("lost on restart")));
+        yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'schedule-wakeup'`;
         yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids, audience) SELECT 'restart-wakeup', org_id, agent_id, thread_id, run_id, model, started_at, 'running', event_ids, audience FROM kin_wakeups WHERE wakeup_id = 'fixture-wakeup'`;
         yield* sql`UPDATE kin_events SET wakeup_id = 'restart-wakeup' WHERE wakeup_id = 'fixture-wakeup'`;
         yield* writerService.stage(orgId, "restart-wakeup", {

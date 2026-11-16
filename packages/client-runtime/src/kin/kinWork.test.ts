@@ -221,6 +221,8 @@ describe("kinWorkScreenState", () => {
           failed: true,
           changed: {},
           unnamed: 0,
+          lists: {},
+          unlisted: 0,
         }),
       },
       "failed",
@@ -364,7 +366,9 @@ describe("kinWorkItemView", () => {
     const owner = { mark: true, unmark: true, share: true };
     const plain = kinWorkAudience({ ...at(false, false), project }, owner);
     expect(plain.current).toBe("people");
-    expect(plain.answer).toBe("You, whoever has it and the people on Invented app");
+    expect(plain.answer).toBe(
+      "You, co-owners, whoever has it or gave it, and the people on Invented app",
+    );
     expect(plain.choices.map((one) => one.id)).toEqual(["people", "team", "me"]);
     // Marked private wins over an old share, so it reads as only you.
     expect(kinWorkAudience(at(true, true), owner).current).toBe("me");
@@ -390,7 +394,9 @@ describe("kinWorkItemView", () => {
     const priyas = { ...names, me: priya.personId, owner: me.personId };
     const lead = { mark: true, unmark: false, share: false };
     const hers = kinWorkAudience({ ...at(false, false), project }, lead, priyas);
-    expect(hers.answer).toBe("Invented Owner, whoever has it and the people on Invented app");
+    expect(hers.answer).toBe(
+      "Invented Owner, co-owners, whoever has it or gave it, and the people on Invented app",
+    );
     // She may make it private; un-marking and sharing stay the owner's.
     expect(hers.choices.map((one) => one.id)).toEqual(["people", "me"]);
     const marked = kinWorkAudience(at(true, false), lead, priyas);

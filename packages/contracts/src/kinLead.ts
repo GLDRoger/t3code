@@ -199,6 +199,8 @@ export const KinLeadAccessChangeInput = Schema.Struct({
 });
 export type KinLeadAccessChangeInput = typeof KinLeadAccessChangeInput.Type;
 export const KinLeadAccessResult = Schema.Struct({
+  /** The team agent: everyone in the company may message it, whoever `people` names. */
+  everyone: Schema.optional(Schema.Boolean),
   people: Schema.Array(
     Schema.Struct({
       personId: KinPersonId,

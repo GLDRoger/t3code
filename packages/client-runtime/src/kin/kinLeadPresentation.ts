@@ -252,6 +252,18 @@ export function kinLeadAccessCandidates(
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
+/** The team agent's "Who can message": everyone, so no one is added or removed there. */
+export const KIN_LEAD_EVERYONE = "Everyone on the team. This is the team agent.";
+
+/** Whether this person may message the lead, by the server's answer; null while it loads. */
+export function kinLeadMessageable(
+  access: KinLeadAccessResult | null,
+  personId: string,
+): boolean | null {
+  if (access === null) return null;
+  return access.everyone === true || access.people.some((one) => one.personId === personId);
+}
+
 /** Told to a teammate in their chat with a lead's details: the owner can read that chat. */
 export function kinLeadOwnerSeesLine(ownerName: string | undefined): string {
   return ownerName === undefined

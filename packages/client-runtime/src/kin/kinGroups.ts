@@ -16,6 +16,10 @@ const NO_AGENTS: ReadonlySet<string> = new Set();
 
 export const KIN_GROUP_NAME_MAX = KIN_GROUP_TITLE_MAX_LENGTH;
 
+/** Under the people picker: what they may ask of the group's agents, and of an agent by a task. */
+export const KIN_GROUP_PEOPLE_NOTE =
+  "People in a group can ask its agents to talk things through; only you can have one start work there. Anyone can give an agent a task, and it then works with that person's access, never more.";
+
 type GroupMember = KinChatMembersResult["members"][number];
 
 /** A group's name as the host will store it, or what to fix. */

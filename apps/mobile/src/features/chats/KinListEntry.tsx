@@ -245,7 +245,7 @@ export function KinListEntryBody(
   const navigation = useNavigation();
   const openRecord = useKinWorkLink();
   const { item, view, environmentId, orgId } = props;
-  const lists = useKinLists(props, { enabled: true, archived: true, seq: null });
+  const lists = useKinLists(props, { enabled: true, archived: true });
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
@@ -864,7 +864,7 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
   const item = state._tag === "ready" ? state.item : null;
   useKinWorkItemWatch(props, itemKey, item === null ? null : item.seq);
   const directory = useKinWorkDirectory(props, allowed);
-  const lists = useKinLists(props, { enabled: allowed, archived: true, seq: null });
+  const lists = useKinLists(props, { enabled: allowed, archived: true });
   const context = useKinListContext(props, directory, allowed);
   const changes = useKinEntryChanges(props, itemKey);
   const now = new Date(useNowMinuteMs());
@@ -1058,7 +1058,7 @@ export function KinListSettingsScreen({ route }: StaticScreenProps<KinListSettin
 function KinListSettingsGate(props: KinWorkTarget & { readonly list: KinListId }) {
   const navigation = useNavigation();
   const allowed = useAtomValue(kinClient.workListUpdate.permissionAtom(props.environmentId));
-  const lists = useKinLists(props, { enabled: allowed, archived: true, seq: null });
+  const lists = useKinLists(props, { enabled: allowed, archived: true });
   const def = kinListsOf(lists).find((one) => one.list === props.list);
   const close = () => navigation.goBack();
   if (!allowed || lists.state._tag === "refused") {

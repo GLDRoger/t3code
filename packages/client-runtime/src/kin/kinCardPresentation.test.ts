@@ -11,6 +11,7 @@ import {
 } from "./kinCardPresentation.ts";
 import {
   kinChoiceAnswerText,
+  kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
   kinThreadDate,
@@ -311,6 +312,16 @@ describe("choice cards", () => {
     expect(kinChoiceAnswerText(answer("reaction", "👍").answer!, "owner" as never)).toBe(
       "You chose “Ship it” with 👍",
     );
+    expect(kinChoiceAnswered(tapped, "owner" as never, null)).toEqual({
+      text: "You chose “Ship it”",
+    });
+    const open = answer("tap", null);
+    expect(kinChoiceAnswered({ ...open, answer: null }, null, "Ship it")).toEqual({
+      text: "You chose “Ship it”",
+    });
+    expect(kinChoiceAnswered({ ...open, answer: null }, null, null)).toBeNull();
+    const sent = { ...tapped, send: { outcome: { tone: "ok", text: "Sent" } } } as never;
+    expect(kinChoiceAnswered(sent, "owner" as never, null)).toEqual({ text: null });
   });
 
   it("says a refused answer in the host's words when its figures changed", () => {
@@ -390,6 +401,9 @@ describe("reminder and scheduled task cards", () => {
     ]);
     expect(kinScheduledTaskCardView(scheduled({}), "UTC")!.lines[0]).toBe(
       "Weekdays at 8:00 (Asia/Kolkata).",
+    );
+    expect(kinScheduledTaskCardView(scheduled({}), "Asia/Calcutta")!.lines[0]).toBe(
+      "Weekdays at 8:00.",
     );
     // A loose one's stored next run is its window's start (7:55): never shown as a minute.
     const around = kinScheduledTaskCardView(

@@ -117,10 +117,10 @@ describe("kinDocChangeLine", () => {
 
 describe("kinSearchHit", () => {
   it("reads a snippet of markdown source as prose", () => {
-    const hit = kinSearchHit({
+    const hitInput = {
       recordId: KinRecordId.make("d1"),
       key: "D-1",
-      kind: "docs",
+      kind: "docs" as const,
       title: "Launch plan",
       snippet:
         "…to everyone ## Risks - [x] Tins **late** | Box | Price | | :-- | --: | see [the brief](https://example.invalid)…",
@@ -128,8 +128,13 @@ describe("kinSearchHit", () => {
       sensitive: false,
       closed: false,
       updatedAt: version().at,
-    });
+    };
+    const hit = kinSearchHit(hitInput);
     expect(hit.snippet).toBe("…to everyone Risks · Tins late Box Price see the brief…");
+    // A hit on the title alone has no words to add.
+    expect(
+      kinSearchHit({ ...hitInput, title: "Booking app", snippet: "Booking app" }).snippet,
+    ).toBeNull();
   });
 });
 

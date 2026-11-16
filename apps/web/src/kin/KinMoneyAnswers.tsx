@@ -134,7 +134,7 @@ function Row(props: {
 /** Bank balances of record, one line each; why a figure is held back sits behind Why. */
 export function KinCashSection(props: Section) {
   const now = new Date(useNowMinuteMs());
-  const { state, refresh } = useKinCash(props, true, props.seq);
+  const { state, refresh } = useKinCash(props, true);
   const [why, setWhy] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
   if (state._tag === "refused" || state._tag === "gone") return null;
@@ -295,7 +295,7 @@ export function KinOutlookSection(
   props: Section & { readonly onOpenKey: (key: KinRecordKey) => void },
 ) {
   const now = new Date(useNowMinuteMs());
-  const { state, refresh } = useKinOutlook(props, true, props.seq);
+  const { state, refresh } = useKinOutlook(props, true);
   const [all, setAll] = useState(false);
   if (state._tag === "refused" || state._tag === "gone") return null;
   const view = state._tag === "ready" ? kinOutlookView(state.value, props.rates, now) : null;
@@ -512,7 +512,7 @@ function BudgetRow(props: {
 
 /** This month's budgets, over and near first; the owner sets, changes and removes them here. */
 export function KinBudgetsSection(props: Section & { readonly lists: KinListsHandle }) {
-  const { state, refresh } = useKinBudgets(props, true, props.seq);
+  const { state, refresh } = useKinBudgets(props, true);
   const canChange = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const [editing, setEditing] = useState<KinMoneyBudget | "new" | null>(null);
   const [all, setAll] = useState(false);

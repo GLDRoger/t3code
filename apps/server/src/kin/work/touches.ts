@@ -11,7 +11,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 
-import { playbookThreshold } from "./playbooks.ts";
+import { type playbookThreshold, playbookThresholds } from "./playbooks.ts";
 import { iso } from "./recordRows.ts";
 
 /**
@@ -257,6 +257,7 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
     WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.state = 'open'
       AND COALESCE(c.category, 'client') = 'client'
     ORDER BY c.key`;
+  const lookup = yield* playbookThresholds(orgId);
   const last = yield* lastContacts(
     orgId,
     clients.map((client) => client.partyId),
@@ -287,8 +288,8 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
             : ("contact" as const),
       episode: `${client.key}:${lastAt ?? "never"}`,
     };
-    const limit = (key: ClientLimitKey) => playbookThreshold(orgId, key, client.partyId);
-    const quiet = client.openProjects > 0 ? yield* limit("client_checkin_days") : undefined;
+    const limit = (key: ClientLimitKey) => lookup(key, client.partyId);
+    const quiet = client.openProjects > 0 ? limit("client_checkin_days") : undefined;
     if (quiet !== undefined && days >= quiet.value)
       senses.push({
         ...base,
@@ -296,7 +297,7 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
         since: from + quiet.value * DAY_MS,
         limit: quiet,
       });
-    const cold = client.openProjects === 0 ? yield* limit("client_cold_after_days") : undefined;
+    const cold = client.openProjects === 0 ? limit("client_cold_after_days") : undefined;
     if (cold !== undefined && days >= cold.value)
       senses.push({
         ...base,
@@ -305,7 +306,7 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
         limit: cold,
       });
     if (client.dueAt === null) continue;
-    const owed = yield* limit("reply_owed_hours");
+    const owed = limit("reply_owed_hours");
     const since = client.dueAt + owed.value * HOUR_MS;
     if (now >= since)
       senses.push({

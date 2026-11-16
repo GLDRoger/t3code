@@ -38,7 +38,9 @@ import {
 } from "./kin-verify/instance.ts";
 import {
   mailDeliver,
+  mailExpire,
   mailSentLines,
+  pushSentLines,
   parseDuration,
   query,
   shiftKinTimes,
@@ -59,13 +61,15 @@ const HELP = `kin-verify [--instance <name>] <command>
   as <person> web wait "<text>" [--gone] [--timeout <s>]
   as <person> web screenshot <path> [--full]   (refuses paths under ~/.t3)
   as <person> rpc <method> ['<json>']     a client RPC as that person (orgId is filled in)
-  tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--reply "<text>"] [--raw]
+  tool <agent> <tool> ['<json>'] [--as-turn-of <person>] [--reply "<text>"] [--hold <s>] [--raw]
                                           one real turn, no model: the agent calls the tool
   mail sent | mail deliver --to a --from "N <b>" --subject s --body t [--thread id]
+  mail expire <address> [--back]          the account's sign-in stops working (or works again)
+  push sent                               what Kin would have pushed, per person's device (no APNs)
   clock advance <90m|12h|3d|2w> | clock set-date <YYYY-MM-DD>
   db "<select …>"                         read-only SQL on this instance's database
   phone pair [--android] [--as <person>]  deep link that pairs the dev client to this instance
-  phone metro                             start Metro for this checkout (stopped by down)`;
+  phone metro [--full-app]                Metro for this checkout, as the Kin app (stopped by down)`;
 
 interface Args {
   readonly positional: Array<string>;
@@ -346,6 +350,7 @@ async function tool(instance: Instance, args: Args) {
     person: flag(args, "as-turn-of") ?? "owner",
     calls: [{ name, arguments: json === undefined ? {} : JSON.parse(json) }],
     ...(flag(args, "reply") === undefined ? {} : { reply: flag(args, "reply")! }),
+    ...(flag(args, "hold") === undefined ? {} : { holdSeconds: Number(flag(args, "hold")) }),
   });
   for (const result of results)
     console.log(args.flags.has("raw") ? JSON.stringify(result) : describeResult(result));
@@ -421,6 +426,8 @@ async function phone(instance: Instance, args: Args) {
     const log = NodeFS.openSync(logFile, "a");
     const child = NodeChildProcess.spawn("vp", ["run", "dev:client"], {
       cwd: NodePath.join(ROOT, "apps", "mobile"),
+      // The owner's phone runs the Kin-only build; --full-app shows Kin inside the T3 Code shell.
+      env: args.flags.has("full-app") ? process.env : { ...process.env, EXPO_PUBLIC_KIN_ONLY: "1" },
       detached: true,
       stdio: ["ignore", log, log],
     });
@@ -446,7 +453,7 @@ async function phone(instance: Instance, args: Args) {
     }
     throw new VerifyError(`Metro did not start; see ${logFile}`);
   }
-  throw new VerifyError("phone pair [--android] [--as <person>] | phone metro");
+  throw new VerifyError("phone pair [--android] [--as <person>] | phone metro [--full-app]");
 }
 
 async function main() {
@@ -499,7 +506,14 @@ async function main() {
             rest.slice(1).filter((arg) => arg !== "deliver"),
           ),
         );
-      throw new VerifyError("mail sent | mail deliver --to --from --subject --body [--thread]");
+      if (action === "expire") return console.log(mailExpire(instance, rest.slice(1)));
+      throw new VerifyError(
+        "mail sent | mail deliver --to --from --subject --body [--thread] | mail expire <address> [--back]",
+      );
+    }
+    case "push": {
+      if (args.positional[0] === "sent") return console.log(pushSentLines(instance));
+      throw new VerifyError("push sent");
     }
     case "clock":
       return clock(instance, args);
