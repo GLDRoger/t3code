@@ -144,7 +144,7 @@ export function KinTeamView(props: KinTeamTarget) {
   return (
     <>
       {allowed ? (
-        <div className="flex justify-end px-4 pt-4 sm:px-6">
+        <div className="mx-auto flex w-full max-w-3xl justify-end px-4 pt-4">
           <Button size="sm" onClick={() => setAdding(true)}>
             <UserPlusIcon />
             {KIN_TEAM_ADD}

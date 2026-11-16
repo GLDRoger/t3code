@@ -7,6 +7,8 @@ import {
 } from "@t3tools/client-runtime/kin/kinNavigation";
 import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { Atom } from "effect/reactivity";
+import { useEffect } from "react";
 import {
   BanknoteIcon,
   BriefcaseBusinessIcon,
@@ -27,12 +29,13 @@ import {
   useSidebar,
 } from "../components/ui/sidebar";
 import { isChatOnlySession } from "../environments/primary";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { cn } from "../lib/utils";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import {
   kinDestinationAt,
   kinInboxUnreadAtom,
-  kinLastChatHref,
+  kinLastChatId,
   kinListShownAt,
   noAttentionAtom,
   threadsAttentionAtom,
@@ -52,6 +55,17 @@ const ICON: Record<KinDestination, LucideIcon> = {
   clients: BriefcaseBusinessIcon,
   docs: FileTextIcon,
 };
+
+/** The destinations the nav last showed, and for which company; null before it has shown any. */
+export const kinShownDestinationsAtom = Atom.make<{
+  readonly target: KinWorkTarget;
+  readonly destinations: ReadonlyArray<KinDestination>;
+} | null>(null).pipe(Atom.keepAlive, Atom.withLabel("kin:shown-destinations"));
+
+/** Opens a destination the way the nav does, for the command palette. */
+export function kinDestinationLink(destination: KinDestination, target: KinWorkTarget) {
+  return destinationLink(destination, target, false);
+}
 
 interface KinNavEntry {
   readonly destination: KinDestination;
@@ -79,6 +93,14 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
     },
     reaches,
   });
+  const key = destinations.join(",");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes the destinations this person has, so the command palette lists the same ones the nav shows
+  useEffect(() => {
+    appAtomRegistry.set(kinShownDestinationsAtom, {
+      target: { environmentId: target.environmentId, orgId: target.orgId },
+      destinations: key.split(",") as ReadonlyArray<KinDestination>,
+    });
+  }, [key, target.environmentId, target.orgId]);
   return destinations.map((destination) => ({
     destination,
     badge:
@@ -90,14 +112,13 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
   }));
 }
 
-function destinationHref(
-  destination: KinDestination,
-  target: KinWorkTarget,
-  narrow: boolean,
-): { readonly href: string } | { readonly to: string; readonly params: KinWorkTarget } {
-  if (destination !== "chats") return { to: KIN_PLACE_PATH[destination], params: target };
+function destinationLink(destination: KinDestination, target: KinWorkTarget, narrow: boolean) {
+  if (destination !== "chats") return { to: KIN_PLACE_PATH[destination], params: target } as const;
   // A wide window shows the list beside the chat, so Chats comes back to the chat you left.
-  return { href: narrow ? "/kin" : (kinLastChatHref() ?? "/kin") };
+  const chatId = narrow ? null : kinLastChatId();
+  return chatId === null
+    ? ({ to: "/kin" } as const)
+    : ({ to: "/kin/$environmentId/$orgId/$chatId", params: { ...target, chatId } } as const);
 }
 
 const badgeLabel = (destination: KinDestination, badge: string) =>
@@ -133,7 +154,7 @@ function KinNavList(props: KinWorkTarget) {
                   aria-current={active ? "page" : undefined}
                   data-kin-destination={destination}
                   onClick={close}
-                  render={<Link {...destinationHref(destination, props, isMobile)} />}
+                  render={<Link {...destinationLink(destination, props, isMobile)} />}
                 >
                   <Icon />
                   <span className="min-w-0 flex-1 truncate">
@@ -214,7 +235,7 @@ export function KinDock(props: KinWorkTarget) {
         return (
           <Link
             key={destination}
-            {...destinationHref(destination, props, true)}
+            {...destinationLink(destination, props, true)}
             aria-current={active ? "page" : undefined}
             data-kin-destination={destination}
             className={cn(

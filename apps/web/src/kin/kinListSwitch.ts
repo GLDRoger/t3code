@@ -40,7 +40,7 @@ function readLastList(): KinList | null {
 let lastUsed: KinList | null = typeof window === "undefined" ? null : readLastList();
 let lastKinHref: string | null = null;
 let listBehindModal: KinList = "threads";
-let lastKinChatHref: string | null = null;
+let lastKinChatId: string | null = null;
 
 // Pages under a company that aren't a chat; anything else there is a chat id.
 const KIN_NOT_CHAT = new Set([
@@ -63,8 +63,8 @@ export function kinDestinationAt(pathname: string): KinDestination | null {
 }
 
 /** The chat last open, for Chats on a wide window; null before one has been. */
-export function kinLastChatHref(): string | null {
-  return lastKinChatHref;
+export function kinLastChatId(): string | null {
+  return lastKinChatId;
 }
 
 /**
@@ -121,7 +121,7 @@ export function startKinListTracking(
     if (list === "kin") lastKinHref = href;
     const page = pathname.split("/")[4];
     if (page !== undefined && !KIN_NOT_CHAT.has(page) && pathname.split("/").length === 5)
-      lastKinChatHref = href;
+      lastKinChatId = page;
     recordList(list);
   };
   record();

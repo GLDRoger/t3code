@@ -34,7 +34,11 @@ import { useState } from "react";
 import { ApprovalsSettings } from "../components/settings/ApprovalsSettings";
 import { SettingsPageContainer, SettingsSection } from "../components/settings/settingsLayout";
 import { searchableSetting } from "../components/settings/settingsSearch";
-import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
+import {
+  WorkspaceBreadcrumb,
+  WorkspaceBreadcrumbItem,
+  WorkspaceBreadcrumbSeparator,
+} from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
@@ -211,6 +215,7 @@ export function KinSettingsLayout() {
           <WorkspaceBreadcrumbItem current={atIndex}>
             <h1 className="truncate">{KIN_SETTINGS_TITLE}</h1>
           </WorkspaceBreadcrumbItem>
+          {atIndex ? null : <WorkspaceBreadcrumbSeparator />}
           {atIndex ? null : (
             <WorkspaceBreadcrumbItem current>
               <span className="truncate">{KIN_SETTINGS_PAGE_TITLES[page]}</span>
