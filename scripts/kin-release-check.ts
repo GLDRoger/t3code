@@ -17,6 +17,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
 
 import { html, markdown } from "./kin-release-check/report.ts";
@@ -390,7 +391,65 @@ const keepFixture = (ctx: Context, instance: string) => {
       ),
   });
   NodeFS.writeFileSync(NodePath.join(fixture, "commit"), `${ctx.sha}\n`);
+  NodeFS.writeFileSync(NodePath.join(fixture, "home"), `${instanceHome(instance)}\n`);
 };
+
+/**
+ * The server stores absolute paths into its home (thread workspaces, memory repos). A fixture
+ * restored elsewhere gets them rewritten to its new home, in the database and in small text files.
+ */
+const relocate = (home: string, from: string) => {
+  if (from === "" || from === home) return;
+  const db = new NodeSqlite.DatabaseSync(NodePath.join(home, "userdata", "statev2.sqlite"));
+  try {
+    const tables = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%'",
+      )
+      .all() as Array<{ name: string }>;
+    for (const { name } of tables)
+      for (const { name: column } of db.prepare(`PRAGMA table_info("${name}")`).all() as Array<{
+        name: string;
+      }>)
+        try {
+          db.prepare(
+            `UPDATE "${name}" SET "${column}" = replace("${column}", ?, ?) WHERE typeof("${column}") = 'text' AND instr("${column}", ?) > 0`,
+          ).run(from, home, from);
+        } catch {
+          // FTS shadow tables and generated columns refuse updates; they hold no paths a turn reads.
+        }
+  } finally {
+    db.close();
+  }
+  const walk = (dir: string) => {
+    for (const entry of NodeFS.readdirSync(dir, { withFileTypes: true })) {
+      const path = NodePath.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (path !== NodePath.join(home, "verify", "chrome")) walk(path);
+      } else if (
+        entry.isFile() &&
+        !/\.sqlite(-wal|-shm)?$/.test(entry.name) &&
+        NodeFS.statSync(path).size < 1_000_000
+      ) {
+        const text = NodeFS.readFileSync(path, "utf8");
+        if (!text.includes("\u0000") && text.includes(from))
+          NodeFS.writeFileSync(path, text.replaceAll(from, home));
+      }
+    }
+  };
+  walk(home);
+};
+
+/** The first "SomethingError: why" line of a failed start; a stack frame changes with every path. */
+export const firstError = (output: string) =>
+  /\b([A-Z]\w*Error\b:?.*)$/m.exec(
+    output
+      .split("\n")
+      .filter((line) => !/^\s*at /.test(line))
+      .join("\n"),
+  )?.[1] ??
+  output.trim().split("\n").at(-1) ??
+  "failed";
 
 const buildKinMigrationHead = () =>
   Math.max(
@@ -411,6 +470,7 @@ const migrate = async (ctx: Context): Promise<Finding[] | string> => {
   try {
     await kv(ctx, "migrate", instance, "down", "--wipe");
     NodeFS.cpSync(fixture, home, { recursive: true });
+    relocate(home, NodeFS.readFileSync(NodePath.join(fixture, "home"), "utf8").trim());
     NodeFS.rmSync(NodePath.join(home, "verify", "instance.json"), { force: true });
     // People sign in again through the new build rather than trusting cookies an older one set.
     const chrome = NodePath.join(home, "verify", "chrome");
@@ -424,7 +484,7 @@ const migrate = async (ctx: Context): Promise<Finding[] | string> => {
           "up",
           "start on previous release's database",
           "-",
-          started.output.trim().split("\n").slice(-3).join(" "),
+          firstError(started.output),
         ),
       ];
     const found: Finding[] = [];

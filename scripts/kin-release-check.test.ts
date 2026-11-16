@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { compare, finding, gates } from "./kin-release-check.ts";
+import { compare, finding, firstError, gates } from "./kin-release-check.ts";
 
 describe("kin release check", () => {
   it("gives the same failure the same fingerprint across runs, and a different one elsewhere", () => {
@@ -46,5 +46,17 @@ describe("kin release check", () => {
     assert.isTrue(gates(model, false));
     assert.isTrue(gates(fuzz, true));
     assert.isFalse(gates(fuzz, false));
+  });
+
+  it("names a refused start by its error, not by a stack frame that moves with the checkout", () => {
+    const output = [
+      "[12:48:55.321] ERROR (#2): MigrationError: This database's migration history would skip required schema migrations: 70_PeerLinks (recorded: SiteLocalMigration).",
+      "    at server.runDefaultServerCommand (file:///Users/a/worktrees/x/node_modules/effect/dist/cli/internal/command.js:12:9)",
+      "kin-verify: dev server exited during start.",
+    ].join("\n");
+    assert.match(
+      firstError(output),
+      /^MigrationError: This database's migration history would skip/,
+    );
   });
 });
