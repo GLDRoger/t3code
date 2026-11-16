@@ -1,6 +1,6 @@
 import { kinIsPeopleChat, type KinChatSummary, type KinPersonId } from "@t3tools/contracts";
 
-import { kinFailureText } from "./kinAnswers.ts";
+import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
 
 /**
  * A chat between two people. Anyone starts one with anyone on the team, and starting it again
@@ -12,6 +12,8 @@ export const KIN_PEOPLE_CHAT = {
   pickTitle: "Message a teammate",
   pickDetail: "A chat between the two of you. Only you and they can read it.",
   noOne: "Nobody else is on the team yet.",
+  noOneDetail: "The owner or a co-owner adds teammates from Settings.",
+  loadFailed: KIN_CHECK_CONNECTION,
   /** Said where the chat is made and at its top: the host's rule, not a promise of ours. */
   privacy: (name: string) => `Only you and ${name} can read this.`,
 };

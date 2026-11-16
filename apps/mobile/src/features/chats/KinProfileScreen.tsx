@@ -1,3 +1,5 @@
+import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
+import { useOpenKinPeopleChat } from "./KinPeoplePickScreen";
 import { useNavigation, usePreventRemove, type StaticScreenProps } from "@react-navigation/native";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
@@ -125,6 +127,34 @@ function Missing(props: { readonly loading: boolean; readonly failed: boolean })
   );
 }
 
+/** A teammate's profile opens your chat with them, made the first time. */
+function KinMessageButton(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly personId: KinPersonId;
+}) {
+  const open = useOpenKinPeopleChat();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  return (
+    <View className="items-center gap-2">
+      <Button
+        tone="primary"
+        icon="bubble.left"
+        label={KIN_PEOPLE_CHAT.message}
+        disabled={busy}
+        onPress={async () => {
+          setBusy(true);
+          setProblem(null);
+          setProblem(await open(props));
+          setBusy(false);
+        }}
+      />
+      {problem === null ? null : <ErrorBanner message={problem} />}
+    </View>
+  );
+}
+
 /** Someone's profile: their face, roles, skills and hours. Theirs, or the owner's, to edit. */
 export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>) {
   const navigation = useNavigation();
@@ -162,6 +192,13 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
               <Chip key={tag} label={tag} size="small" />
             ))}
           </View>
+        )}
+        {target.mine ? null : (
+          <KinMessageButton
+            environmentId={target.environmentId}
+            orgId={target.orgId}
+            personId={profile.personId}
+          />
         )}
       </View>
       <ListSection title={KIN_PROFILE_COPY.skillsLabel}>
