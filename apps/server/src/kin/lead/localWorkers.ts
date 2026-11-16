@@ -4,11 +4,9 @@ import {
   KinChatError,
   type KinEvent,
   type KinMemoryItemId,
-  type KinOrgId,
   KinWorkerId,
   MessageId,
   type ModelSelection,
-  ProjectId,
 } from "@t3tools/contracts";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import * as Clock from "effect/Clock";
@@ -47,15 +45,6 @@ import { grantHosts } from "./workNetwork.ts";
 import type { DelegateInput } from "./Workers.ts";
 import { STOPPED_BEFORE_START, WorkerTracker } from "./WorkerTracker.ts";
 import { localThreadId } from "./workThread.ts";
-import {
-  cleanupJob,
-  docBrief,
-  type DocumentInput,
-  planJob,
-  workerJobSensitive,
-} from "../gendocs/DocJobs.ts";
-import { copyReferences } from "../gendocs/references.ts";
-import { jobBranch, jobWorktree, KinWorkspace } from "../gendocs/workspace.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { attemptBegun, noteSensitivity } from "../work/workerAttempts.ts";
 import { WORK_NOT_YOURS, workMayStart, workerStarted } from "../work/workerEntries.ts";
@@ -130,8 +119,7 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
   const settings = yield* ServerSettings.ServerSettingsService;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig;
-  const { stateDir, worktreesDir } = serverConfig;
-  const workspace = yield* KinWorkspace;
+  const { stateDir } = serverConfig;
   const projects = yield* ProjectService.ProjectService;
   const kinDirectory = path.join(stateDir, "kin");
   const fs = yield* FileSystem.FileSystem;
@@ -529,254 +517,5 @@ export const makeLocalDelegate = Effect.fn("KinLocalWorkers.make")(function* (sh
     };
   });
 
-  const documentProjects = new Map<string, ProjectId>();
-  /** The project a document job's thread belongs to, rooted at the org's workspace. */
-  const documentsProject = Effect.fn("KinLocalWorkers.documentsProject")(function* (
-    orgId: KinOrgId,
-  ) {
-    const known = documentProjects.get(orgId);
-    if (known !== undefined) return known;
-    const root = yield* workspace.root(orgId);
-    // A deleted project's id replays its deletion, so each deletion moves on to the next id.
-    for (let attempt = 1; attempt <= 20; attempt += 1) {
-      const suffix = attempt === 1 ? "" : `:${attempt}`;
-      const { project } = yield* projects
-        .bootstrap({
-          commandId: CommandId.make(`kin-documents-project:${orgId}${suffix}`),
-          projectId: ProjectId.make(`kin-documents:${orgId}${suffix}`),
-          workspaceRoot: root,
-          title: "Kin documents",
-        })
-        .pipe(
-          Effect.mapError(
-            () => new KinChatError({ reason: "unavailable", message: LAUNCH_FAILED }),
-          ),
-        );
-      if (project.deletedAt !== null) continue;
-      documentProjects.set(orgId, project.id);
-      return project.id;
-    }
-    return yield* new KinChatError({ reason: "unavailable", message: LAUNCH_FAILED });
-  });
-
-  /**
-   * `kin_document` without a recipe to run: a worker on this server makes a one-off file, or
-   * writes a recipe, in a worktree of the org's workspace. The same rules as `delegate`: the
-   * host owner's lead, in its direct chat with the owner, in an owner-only turn. No network.
-   */
-  const document = Effect.fn("KinLocalWorkers.document")(function* (
-    scope: McpInvocationScope,
-    input: DocumentInput,
-  ) {
-    const ctx = yield* shared.lead(scope);
-    const plan = yield* sql.withTransaction(
-      Effect.gen(function* () {
-        const config = yield* shared.leadConfig(ctx);
-        const event = yield* shared.sourceEvent(ctx, input.sourceEventId);
-        if (!(yield* ownersDirectChat(ctx, config, event))) return yield* denied(LOCAL_DIRECT_ONLY);
-        return { config, event, open: yield* shared.open(ctx, [config.ownerChatId]) };
-      }),
-    );
-    if (!plan.open)
-      return yield* denied(
-        "Starting work isn't open to you in this chat. Nothing started; tell the owner what you would do.",
-      );
-    if (yield* isOrgPaused(ctx.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
-      return yield* denied(
-        `Kin is paused by the owner, so no new work starts until they resume it. ${STILL}`,
-      );
-    if (!(yield* budget.admitWorker(ctx.orgId)))
-      return yield* new KinChatError({
-        reason: "limit",
-        message: `Today's budget for worker tasks is used up, so this waits for the daily reset or a higher limit. ${STILL}`,
-      });
-    const job = yield* planJob(ctx.orgId, input, plan.config.ownerChatId).pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(ServerConfig, serverConfig),
-      Effect.provideService(KinWorkspace, workspace),
-      Effect.provideService(KinRecords, records),
-      Effect.provideService(SqlClient.SqlClient, sql),
-    );
-    const modelSelection = yield* shared.pick("strong", plan.config.models);
-    yield* claudeOnly(modelSelection);
-    const workerId = KinWorkerId.make(
-      `wk-${(yield* shared.hash({ wakeupId: ctx.wakeupId, document: input })).slice(0, 32)}`,
-    );
-    const threadId = localThreadId(workerId);
-    const chatId = plan.config.ownerChatId;
-    const worktreePath = jobWorktree(worktreesDir, workerId);
-    const answered =
-      plan.event._tag === "chat.message" || plan.event._tag === "widget.action"
-        ? plan.event.messageId
-        : null;
-    const projectId = yield* documentsProject(ctx.orgId);
-    // A job that never ran still owes its prepared worktree, inputs included.
-    const discardJob = cleanupJob(ctx.orgId, workerId).pipe(
-      Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(Path.Path, path),
-      Effect.provideService(ServerConfig, serverConfig),
-      Effect.provideService(KinWorkspace, workspace),
-    );
-    const started = yield* sql.withTransaction(
-      Effect.gen(function* () {
-        yield* shared.lead(scope);
-        const config = yield* shared.leadConfig(ctx);
-        if (
-          !(yield* toolAdmitted(ctx, "kin_document", input).pipe(
-            Effect.provideService(SqlClient.SqlClient, sql),
-          )) ||
-          !(yield* ownersDirectChat(ctx, config, plan.event))
-        )
-          return yield* denied(LOCAL_DIRECT_ONLY);
-        const startedAt = yield* Clock.currentTimeMillis;
-        const inserted = yield* sql`INSERT INTO kin_workers (worker_id, org_id, agent_id, wakeup_id,
-          kind, thread_id, review_of, model_json, provenance_json, status, report_json, started_at,
-          ended_at, title, chat_id, project_id, environment_id, remote_project_id, repository_key,
-          context)
-          VALUES (${workerId}, ${ctx.orgId}, ${ctx.agentId}, ${ctx.wakeupId}, 'build', ${threadId},
-          NULL, ${yield* encodeJson(modelSelection)}, ${yield* encodeJson(plan.event.provenance)},
-          'queued', NULL, ${startedAt}, NULL, ${input.title}, ${chatId}, ${projectId}, NULL, NULL,
-          NULL, 'private')
-          ON CONFLICT (worker_id) DO NOTHING RETURNING worker_id`;
-        if (inserted.length === 0) {
-          const [stored] = yield* sql<{ wakeupId: string; startedAt: number }>`SELECT
-              wakeup_id AS "wakeupId", started_at AS "startedAt"
-            FROM kin_workers WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId}
-              AND worker_id = ${workerId} ORDER BY worker_id`;
-          if (stored === undefined || stored.wakeupId !== ctx.wakeupId)
-            return yield* denied(LOCAL_DIRECT_ONLY);
-          return { startedAt: stored.startedAt, fresh: false };
-        }
-        const sensitive = yield* workerJobSensitive(ctx.orgId, job).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.provideService(KinRecords, records),
-        );
-        yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode, recipe,
-            recipe_commit, entry_record_id, inputs_sha256, number, sensitive, doc_origin,
-            worktree_path, branch, chat_id, audience, answered_message_id, answered_author_kind,
-            answered_author_id, created_at, references_json)
-          VALUES (${ctx.orgId}, ${workerId}, ${ctx.agentId}, ${ctx.wakeupId}, ${job.mode},
-            ${job.recipeName}, ${job.recipe?.commit ?? ""}, ${job.entry?.recordId ?? null},
-            ${job.inputsHash}, ${job.number}, ${sensitive ? 1 : 0}, ${job.docOrigin},
-            ${worktreePath}, ${jobBranch(workerId)}, ${chatId}, 'owner_only', ${answered},
-            ${answered === null ? null : "person"}, ${answered === null ? null : config.ownerPersonId},
-            ${startedAt}, ${job.references.length === 0 ? null : yield* encodeJson(job.references)})`;
-        yield* attemptBegun({
-          orgId: ctx.orgId,
-          workerId,
-          startedAt,
-          agentId: ctx.agentId,
-          sourceEventId: input.sourceEventId,
-        }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-        return { startedAt, fresh: true };
-      }),
-    );
-    if (started.fresh) {
-      const prepared = yield* workspace.prepare(ctx.orgId, workerId, {}).pipe(
-        // The owner's references, read-only where the writer looks; never in the recipe.
-        Effect.tap((ready) =>
-          copyReferences(ready.worktree, job.references).pipe(
-            Effect.provideService(FileSystem.FileSystem, fs),
-            Effect.provideService(Path.Path, path),
-            Effect.provideService(ServerConfig, serverConfig),
-            Effect.mapError(
-              (error) =>
-                new KinChatError({
-                  reason: isChatError(error) ? error.reason : "unavailable",
-                  message: isChatError(error) ? error.message : LAUNCH_FAILED,
-                }),
-            ),
-          ),
-        ),
-        Effect.tapError(() =>
-          Effect.gen(function* () {
-            yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${yield* Clock.currentTimeMillis}
-                WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
-            yield* discardJob;
-          }).pipe(Effect.ignore),
-        ),
-      );
-      // The commit the worktree holds: the recipe exactly as the worker ran it.
-      yield* sql`UPDATE kin_doc_jobs SET recipe_commit = ${prepared.base}
-        WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId}`;
-    }
-    const launch = launcher
-      .launch({
-        commandId: CommandId.make(`kin-work:${workerId}`),
-        threadId,
-        projectId,
-        title: input.title,
-        modelSelection,
-        runtimeMode: "auto-accept-edits",
-        interactionMode: "default",
-        workspaceStrategy: { type: "existing_worktree", worktreePath, branch: jobBranch(workerId) },
-        initialMessage: {
-          messageId: MessageId.make(`kin-work-msg:${workerId}`),
-          text: docBrief(job, input),
-          attachments: [],
-        },
-        createdBy: "system",
-        creationSource: "server",
-      })
-      .pipe(
-        Effect.tapError((cause) =>
-          Effect.gen(function* () {
-            yield* Effect.logWarning("Kin document worker launch failed", { workerId, cause });
-            yield* sql`UPDATE kin_workers SET status = 'failed', ended_at = ${yield* Clock.currentTimeMillis}
-              WHERE org_id = ${ctx.orgId} AND worker_id = ${workerId} AND status = 'queued'`;
-            yield* discardJob;
-          }).pipe(Effect.ignore),
-        ),
-        Effect.mapError((error) =>
-          isChatError(error)
-            ? error
-            : new KinChatError({ reason: "unavailable", message: LAUNCH_FAILED }),
-        ),
-      );
-    const launched = yield* tracker
-      .launch({ orgId: ctx.orgId, workerId, startedAt: started.startedAt }, launch)
-      .pipe(
-        Effect.mapError((error) =>
-          isChatError(error)
-            ? error
-            : new KinChatError({ reason: "unavailable", message: LAUNCH_FAILED }),
-        ),
-      );
-    if (Option.isNone(launched)) {
-      yield* discardJob;
-      return yield* denied(STOPPED_BEFORE_START);
-    }
-    yield* chat
-      .createTaskCard({
-        orgId: ctx.orgId,
-        chatId,
-        audience: "owner",
-        authorAgentId: ctx.agentId,
-        threadId,
-        title: input.title,
-        model: modelSelection.model,
-      })
-      .pipe(
-        Effect.provideService(OrchestratorV2, orchestrator),
-        Effect.provideService(ServerEnvironment, environment),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Kin document task card unavailable", { cause }),
-        ),
-      );
-    yield* tracker.track(ctx.orgId, workerId);
-    return {
-      workerId,
-      threadLink: formatThreadLink({
-        environmentId: yield* environment.getEnvironmentId,
-        threadId,
-      }),
-      recipe: job.recipeName,
-      number: job.number,
-      draft: job.draft,
-      documents: [],
-    };
-  });
-
-  return { delegate, document };
+  return { delegate };
 });

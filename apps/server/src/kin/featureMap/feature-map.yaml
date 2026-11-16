@@ -409,7 +409,7 @@ features:
     tools: [kin_document, kin_recipes, kin_issue, kin_recipe_undo]
     proof:
       - apps/server/src/kin/gendocs/render.test.ts
-      - apps/server/src/kin/gendocs/DocJobs.test.ts
+      - apps/server/src/kin/gendocs/documents.test.ts
       - packages/client-runtime/src/kin/kinInvoices.test.ts
 
   - id: receipt
@@ -430,7 +430,7 @@ features:
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof:
-      - apps/server/src/kin/gendocs/DocJobs.test.ts
+      - apps/server/src/kin/gendocs/documents.test.ts
       - .agents/skills/verify-kin/scripts/owner-money-forms.sh
 
   - id: budget

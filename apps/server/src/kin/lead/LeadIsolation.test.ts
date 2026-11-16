@@ -217,7 +217,7 @@ it.effect.each([
 );
 
 it.effect(
-  "with GitHub connected, the owner's own turns get Claude Code's tools while the turn admits them",
+  "the owner's own turns get Claude Code's tools while the turn admits them, GitHub or not",
   () =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -229,17 +229,15 @@ it.effect(
       const orgId = KinOrgId.make("org-full");
       const agentId = KinAgentId.make("tech");
       yield* ownerOnlyWakeup({ orgId, agentId, wakeupId: "wake-full" });
-      let connected = true;
-      // The policy Kin builds (`AgentSession.sessionPolicyLayer`), with GitHub's login stood in.
+      // The policy Kin builds (`AgentSession.sessionPolicyLayer`), with its tool folders stood in.
       const services = Context.make(
         KinAgentSessionPolicy,
         KinAgentSessionPolicy.of({
-          connected: () => Effect.sync(() => connected),
           refusal: (threadId) =>
             fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           delegated: (threadId) =>
             delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-          ghDirectory: "/kin-home/kin-tools/gh-pinned",
+          toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
         }),
       ) as Context.Context<KinServices>;
       const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
@@ -320,14 +318,9 @@ it.effect(
       yield* sql`UPDATE kin_wakeups SET aborted_at = NULL, audience = 'shared'
         WHERE wakeup_id = 'wake-full'`;
       assert.isFalse(yield* allows("Bash", shell));
-      // A turn others read never gets the full session, connected or not.
+      // A turn others read never gets the full session.
       const shared = yield* open("kin-shared:tech");
       assert.deepStrictEqual(shared?.tools, []);
-      // GitHub not connected: the old confined session.
-      connected = false;
-      const confined = yield* open("kin:tech");
-      assert.deepStrictEqual(confined?.tools, LeadIsolation.leadTools);
-      assert.include(confined?.disallowedTools ?? [], "Bash");
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -399,12 +392,11 @@ it.effect(
       const services = Context.make(
         KinAgentSessionPolicy,
         KinAgentSessionPolicy.of({
-          connected: () => Effect.succeed(true),
           refusal: (threadId) =>
             fullSessionRefusal(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           delegated: (threadId) =>
             delegatedFromLead(threadId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-          ghDirectory: "/kin-home/kin-tools/gh-pinned",
+          toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
         }),
       ) as Context.Context<KinServices>;
       const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];

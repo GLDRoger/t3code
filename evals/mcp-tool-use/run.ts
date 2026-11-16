@@ -578,13 +578,13 @@ const visibleT3Tools = (options: {
   readonly links?: boolean;
   readonly kinAgent?: boolean;
   readonly kinLead?: boolean;
-  readonly kinGitHub?: boolean;
+  readonly kinSession?: boolean;
 }) =>
   t3Tools.filter(
     (tool) =>
       (options.kinAgent === true || options.kinLead === true
-        ? // The owner's GitHub connected: T3's lead tools join and kin_delegate goes (AgentSession).
-          (options.kinGitHub === true
+        ? // An owner-only turn's session: T3's lead tools join and kin_delegate goes (AgentSession).
+          (options.kinSession === true
             ? tool.name !== `${T3_PREFIX}kin_delegate` &&
               (LEAD_T3_TOOLS as ReadonlyArray<string>).some(
                 (name) => tool.name === `${T3_PREFIX}${name}`,
@@ -594,7 +594,7 @@ const visibleT3Tools = (options: {
             (name) => tool.name === `${T3_PREFIX}${name}`,
           ) ||
           (options.kinLead === true &&
-            !(options.kinGitHub === true && tool.name === `${T3_PREFIX}kin_delegate`) &&
+            !(options.kinSession === true && tool.name === `${T3_PREFIX}kin_delegate`) &&
             [
               ...Object.keys(KinLeadToolkit.tools),
               ...Object.keys(KinWorkToolkit.tools),
@@ -725,7 +725,7 @@ export const buildBase = (
     readonly links?: boolean;
     readonly kinAgent?: boolean;
     readonly kinLead?: boolean;
-    readonly kinGitHub?: boolean;
+    readonly kinSession?: boolean;
     /** A native subagent starts from its task: T3 appends nothing to its system prompt. */
     readonly nativeSubagent?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
@@ -787,9 +787,9 @@ export const buildBase = (
     platform: /Platform: (\w+)/.exec(joined)?.[1] ?? "linux",
     date: /Today's date is ([\d-]+)/.exec(reminders.join("\n"))?.[1],
   };
-  // LeadIsolation: a lead's instructions are its whole system prompt, its only native tools are
-  // the read-only ones, and every Kin tool loads upfront. With GitHub connected, an owner-only
-  // turn has Claude Code's own tools too.
+  // LeadIsolation: a lead's instructions are its whole system prompt and every Kin tool loads
+  // upfront. A turn with the owner's session (kinSession) has Claude Code's own tools too; one
+  // without it, such as a turn a teammate reads, has only the read-only ones.
   if (options.kinLead === true)
     return {
       model,
@@ -798,7 +798,7 @@ export const buildBase = (
       gitStatusAt: undefined,
       environment,
       nativeTools: [
-        ...(options.kinGitHub === true
+        ...(options.kinSession === true
           ? [
               ...template.tools.filter(
                 (tool) => !isT3Name(tool.name) && !tool.name.endsWith("ToolSearch"),
@@ -845,7 +845,7 @@ const buildCodexBase = (
     readonly links?: boolean;
     readonly kinAgent?: boolean;
     readonly kinLead?: boolean;
-    readonly kinGitHub?: boolean;
+    readonly kinSession?: boolean;
     /** false: the thread has no agent device access, so T3's text leaves devices out. */
     readonly deviceAccess?: boolean;
   },
@@ -2797,7 +2797,7 @@ const main = Effect.gen(function* () {
     links: boolean,
     kinAgent = false,
     kinLead = false,
-    kinGitHub = false,
+    kinSession = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     codex
       ? decodeCodexCapture(template).pipe(
@@ -2810,7 +2810,7 @@ const main = Effect.gen(function* () {
               links,
               kinAgent,
               kinLead,
-              kinGitHub,
+              kinSession,
               deviceAccess,
             }),
           ),
@@ -2825,7 +2825,7 @@ const main = Effect.gen(function* () {
               links,
               kinAgent,
               kinLead,
-              kinGitHub,
+              kinSession,
               deviceAccess,
             });
             return role === "native-subagent"
@@ -2837,13 +2837,13 @@ const main = Effect.gen(function* () {
         );
   // Codex has no native subagents; its cases with that role run as top-level threads.
   const baseKey = ({ setup }: McpToolUseCase) =>
-    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinGitHub === true}`;
+    `${codex && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinSession === true}`;
   const base = yield* buildFor("top", true, false);
   const bases = new Map<string, Base>([["top:true:false:false:false:false", base]]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
     if (bases.has(key)) continue;
-    const [role = "top", access, links, kinAgent, kinLead, kinGitHub] = key.split(":") as [
+    const [role = "top", access, links, kinAgent, kinLead, kinSession] = key.split(":") as [
       McpToolUseCase["setup"]["role"],
       string,
       string,
@@ -2859,7 +2859,7 @@ const main = Effect.gen(function* () {
         links === "true",
         kinAgent === "true",
         kinLead === "true",
-        kinGitHub === "true",
+        kinSession === "true",
       ),
     );
   }
