@@ -557,6 +557,49 @@ export const KinPulseOutsideLine = Schema.Struct({
 });
 export type KinPulseOutsideLine = typeof KinPulseOutsideLine.Type;
 
+/**
+ * What on GitHub starts an agent's work, decided by Kin's code from GitHub's own data: a PR to
+ * review, a call in a comment or body, the `kin` label, a review asked of the owner, or failing
+ * checks on a PR an agent opened. `inside` is GitHub's author association (owner, member or
+ * collaborator); text from anyone else is outside content.
+ */
+export const KinGithubTrigger = Schema.Struct({
+  key: TrimmedNonEmptyString,
+  kind: Schema.Literals(["review", "call", "label", "review_request", "checks"]),
+  item: Schema.Literals(["issue", "pull"]),
+  number: Schema.Int,
+  url: Schema.String,
+  title: Schema.String,
+  /** Who caused it: the comment's, body's or PR's author on GitHub. */
+  author: Schema.String,
+  association: Schema.String,
+  inside: Schema.Boolean,
+  /** The words that called the agent, or the PR's body; clipped. */
+  text: Schema.String,
+  /** A line comment's place on the PR. */
+  path: Schema.optional(Schema.String),
+  line: Schema.optional(Schema.Int),
+  /** A PR's size and branch, so the turn needn't fetch them again. */
+  pull: Schema.optional(
+    Schema.Struct({
+      files: Schema.Int,
+      additions: Schema.Int,
+      deletions: Schema.Int,
+      headRef: Schema.String,
+      baseRef: Schema.String,
+      /** The head branch is in another repo (a fork): the agent may not be able to push there. */
+      fork: Schema.Boolean,
+      /** The owner's own account opened it: GitHub allows only a comment review. */
+      ownersOwn: Schema.Boolean,
+      /** For an outside PR, whose turn gets no shell: the diff as the server read it, clipped. */
+      diff: Schema.optional(Schema.String),
+    }),
+  ),
+  /** Failing check names, for `checks`. */
+  failing: Schema.optional(Schema.Array(Schema.String)),
+});
+export type KinGithubTrigger = typeof KinGithubTrigger.Type;
+
 export const KinEvent = Schema.Union([
   Schema.TaggedStruct("chat.message", {
     ...EventBase,
@@ -588,8 +631,10 @@ export const KinEvent = Schema.Union([
     eventName: TrimmedNonEmptyString,
     repo: TrimmedNonEmptyString,
     summary: Schema.String,
-    scheduledTaskId: ScheduledTaskId,
-    webhookDeliveryId: ScheduledTaskWebhookDeliveryId,
+    /** The App webhook's delivery; absent on what the owner's own GitHub poll found. */
+    scheduledTaskId: Schema.optional(ScheduledTaskId),
+    webhookDeliveryId: Schema.optional(ScheduledTaskWebhookDeliveryId),
+    trigger: Schema.optional(KinGithubTrigger),
   }),
   Schema.TaggedStruct("deferral.due", {
     ...EventBase,

@@ -72,6 +72,7 @@ import * as Handoff from "./Handoff.ts";
 import * as Team from "../team/KinTeam.ts";
 import * as Workers from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
+import * as GitHubWatch from "../github/GitHubWatch.ts";
 import * as PullRequestCare from "../github/PullRequestCare.ts";
 import * as TaskWake from "./TaskWake.ts";
 import * as WorkerTracker from "./WorkerTracker.ts";
@@ -126,6 +127,7 @@ const routineRuntime = Layer.mergeAll(
   DeferralFlow.layer,
   ScheduledTasks.layer,
   GithubEvents.consumerLayer.pipe(Layer.provide(pullRequestCare)),
+  GitHubWatch.liveLayer,
   PullRequestCare.runtimeLayer.pipe(Layer.provide(pullRequestCare)),
   Watchdogs.runtimeLayer,
   KinPulse.layer,

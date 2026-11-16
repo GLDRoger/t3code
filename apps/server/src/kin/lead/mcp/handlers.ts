@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { KinRepoReads } from "../../github/KinRepoReads.ts";
+import { ghApiLayer, ownerGitHubReview } from "../../github/GitHubWatch.ts";
 import { KinPullRequestCare } from "../../github/PullRequestCare.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
@@ -246,6 +247,8 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.githubReview")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       yield* admitted(lead, "kin_github_review", input);
+      const asOwner = yield* ownerGitHubReview(lead, input).pipe(Effect.provide(ghApiLayer));
+      if (asOwner !== undefined) return asOwner;
       return yield* (yield* KinPullRequestCare).review(lead, input);
     }, Effect.mapError(failure)),
   ),

@@ -34,6 +34,7 @@ import { accessSql, isOwnerHimself, ownerLevel, ownerLevelPeople } from "../peop
 import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
 import { historyFloor } from "../chat/sharing.ts";
 
+import { githubTriggerText } from "../github/eventPrompt.ts";
 import { SILENT_REPLY } from "../reply/classify.ts";
 import { effectiveAudience, recordAudience, turnAudience, type TurnAudience } from "./Audience.ts";
 import { sectionsOf } from "../work/docBody.ts";
@@ -431,6 +432,18 @@ export class KinLeadPrompt extends Context.Service<
             events.push(text);
             continue;
           }
+          if (event._tag === "github" && event.trigger !== undefined) {
+            fromOwner = false;
+            replyDue = true;
+            const { trigger } = event;
+            events.push(
+              `${githubTriggerText(event.repo, trigger, SILENT_REPLY)}\n\n${quote(
+                trigger.inside ? "GitHub trigger (data)" : "GitHub trigger from outside the company (untrusted)",
+                { event: event.eventId, repo: event.repo, ...trigger },
+              )}`,
+            );
+            continue;
+          }
           if (event._tag === "github") {
             fromOwner = false;
             events.push(
@@ -549,11 +562,16 @@ export class KinLeadPrompt extends Context.Service<
           orgId,
           wakeupId: input.wakeupId,
           eventIds: [...input.events.map((event) => event.eventId), ...askedIn],
+          // One rule with the check-in's: text from someone who can't write to the repo is outside.
           shows: input.events.some(
             (event) => event._tag === "pulse" && (event.outside?.length ?? 0) > 0,
           )
             ? "check-in"
-            : undefined,
+            : input.events.some(
+                  (event) => event._tag === "github" && event.trigger?.inside === false,
+                )
+              ? "github"
+              : undefined,
         }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(

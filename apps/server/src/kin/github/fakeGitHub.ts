@@ -1,0 +1,538 @@
+// @effect-diagnostics globalDate:off - plain code outside Effect: node runs it from a copy for `gh`.
+/**
+ * An invented GitHub for Kin's tests and `KIN_DEV_FAKE_GITHUB`: notifications, the owner's own
+ * events, repos, issues, PRs, comments, reviews, reactions and checks, all deterministic. Unit
+ * tests use `FakeGitHub` in memory; `fakeGh.sh` runs this file for `gh api` and the `gh` posting
+ * commands, keeping the world in `$KIN_FAKE_GH/github.json`. No dependencies, so node runs it
+ * from a copy. It never reaches GitHub.
+ */
+
+export interface FakeRepo {
+  full_name: string;
+  private: boolean;
+  fork: boolean;
+  push: boolean;
+}
+export interface FakeItem {
+  repo: string;
+  number: number;
+  pull: boolean;
+  title: string;
+  body: string;
+  user: string;
+  association: string;
+  state: "open" | "closed";
+  draft: boolean;
+  merged: boolean;
+  created_at: number;
+  labels: string[];
+  head_ref: string;
+  head_sha: string;
+  fork: boolean;
+  additions: number;
+  deletions: number;
+  changed_files: number;
+  diff: string;
+}
+export interface FakeComment {
+  id: number;
+  repo: string;
+  number: number;
+  kind: "issue" | "review";
+  body: string;
+  user: string;
+  association: string;
+  created_at: number;
+  path?: string;
+  line?: number;
+}
+export interface FakeWorld {
+  user: string;
+  now: number;
+  seq: number;
+  /** A failure every call answers with, such as 401, to show a signed-out login. */
+  down: number | null;
+  repos: FakeRepo[];
+  items: FakeItem[];
+  comments: FakeComment[];
+  reviews: { id: number; repo: string; number: number; user: string; event: string; body: string }[];
+  reactions: { on: string; content: string }[];
+  checks: Record<string, string[]>;
+  notifications: { id: string; repo: string; number: number; reason: string; updated_at: number }[];
+  events: { id: string; type: string; repo: string; number: number; created_at: number }[];
+  modified: number;
+  eventsVersion: number;
+  calls: string[];
+}
+
+export interface FakeAnswer {
+  status: number;
+  headers: Record<string, string>;
+  body: unknown;
+}
+
+export const emptyWorld = (user = "invented-owner", now = 0): FakeWorld => ({
+  user,
+  now,
+  seq: 100,
+  down: null,
+  repos: [],
+  items: [],
+  comments: [],
+  reviews: [],
+  reactions: [],
+  checks: {},
+  notifications: [],
+  events: [],
+  modified: now,
+  eventsVersion: 0,
+  calls: [],
+});
+
+const iso = (ms: number) => new Date(ms).toISOString();
+const httpDate = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).toUTCString();
+
+export class FakeGitHub {
+  readonly world: FakeWorld;
+  constructor(world: FakeWorld) {
+    this.world = world;
+  }
+
+  private next() {
+    this.world.seq += 1;
+    return this.world.seq;
+  }
+  private item(repo: string, number: number) {
+    const found = this.world.items.find(
+      (item) => item.repo.toLowerCase() === repo.toLowerCase() && item.number === number,
+    );
+    if (found === undefined) throw new Error(`no ${repo}#${number}`);
+    return found;
+  }
+  /** What the owner's account does shows in his events; anyone else's in his notifications. */
+  private happened(repo: string, number: number, actor: string, type: string, reason = "subscribed") {
+    const at = this.world.now;
+    if (actor.toLowerCase() === this.world.user.toLowerCase()) {
+      this.world.events.unshift({ id: String(this.next()), type, repo, number, created_at: at });
+      this.world.eventsVersion += 1;
+      return;
+    }
+    const id = `${repo.toLowerCase()}#${number}`;
+    const existing = this.world.notifications.find((thread) => thread.id === id);
+    if (existing === undefined)
+      this.world.notifications.push({ id, repo, number, reason, updated_at: at });
+    else {
+      existing.updated_at = at;
+      if (reason === "review_requested") existing.reason = reason;
+    }
+    this.world.modified = Math.max(this.world.modified + 1000, at);
+  }
+
+  tick(ms: number) {
+    this.world.now += ms;
+  }
+  addRepo(repo: Partial<FakeRepo> & { full_name: string }) {
+    this.world.repos.push({ private: true, fork: false, push: true, ...repo });
+  }
+  openItem(input: {
+    repo: string;
+    pull: boolean;
+    author: string;
+    association: string;
+    title: string;
+    body?: string;
+    draft?: boolean;
+    labels?: string[];
+    fork?: boolean;
+    headRef?: string;
+    diff?: string;
+  }) {
+    const number = this.world.items.filter((item) => item.repo === input.repo).length + 1;
+    const item: FakeItem = {
+      repo: input.repo,
+      number,
+      pull: input.pull,
+      title: input.title,
+      body: input.body ?? "",
+      user: input.author,
+      association: input.association,
+      state: "open",
+      draft: input.draft ?? false,
+      merged: false,
+      created_at: this.world.now,
+      labels: input.labels ?? [],
+      head_ref: input.headRef ?? `change-${number}`,
+      head_sha: `sha${this.next()}`,
+      fork: input.fork ?? false,
+      additions: 12,
+      deletions: 3,
+      changed_files: 2,
+      diff: input.diff ?? "diff --git a/README.md b/README.md\n+an invented line\n",
+    };
+    this.world.items.push(item);
+    this.happened(input.repo, number, input.author, input.pull ? "PullRequestEvent" : "IssuesEvent");
+    return number;
+  }
+  comment(input: {
+    repo: string;
+    number: number;
+    author: string;
+    association: string;
+    body: string;
+    path?: string;
+    line?: number;
+  }) {
+    this.item(input.repo, input.number);
+    const id = this.next();
+    this.world.comments.push({
+      id,
+      repo: input.repo,
+      number: input.number,
+      kind: input.path === undefined ? "issue" : "review",
+      body: input.body,
+      user: input.author,
+      association: input.association,
+      created_at: this.world.now,
+      ...(input.path === undefined ? {} : { path: input.path, line: input.line ?? 1 }),
+    });
+    this.happened(
+      input.repo,
+      input.number,
+      input.author,
+      input.path === undefined ? "IssueCommentEvent" : "PullRequestReviewCommentEvent",
+    );
+    return id;
+  }
+  label(input: { repo: string; number: number; label: string; actor: string }) {
+    this.item(input.repo, input.number).labels.push(input.label);
+    this.happened(input.repo, input.number, input.actor, "IssuesEvent");
+  }
+  ready(input: { repo: string; number: number; actor: string }) {
+    this.item(input.repo, input.number).draft = false;
+    this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
+  }
+  requestReview(input: { repo: string; number: number; actor: string }) {
+    this.happened(input.repo, input.number, input.actor, "PullRequestEvent", "review_requested");
+  }
+  setChecks(input: { repo: string; number: number; failing: string[] }) {
+    const item = this.item(input.repo, input.number);
+    this.world.checks[`${item.repo.toLowerCase()}@${item.head_sha}`] = input.failing;
+  }
+  merge(input: { repo: string; number: number; actor: string }) {
+    const item = this.item(input.repo, input.number);
+    item.state = "closed";
+    item.merged = true;
+    this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
+  }
+  push(input: { repo: string; number: number }) {
+    this.item(input.repo, input.number).head_sha = `sha${this.next()}`;
+  }
+
+  private issueJson(item: FakeItem) {
+    return {
+      number: item.number,
+      title: item.title,
+      body: item.body,
+      user: { login: item.user },
+      author_association: item.association,
+      state: item.state,
+      labels: item.labels.map((name) => ({ name })),
+      created_at: iso(item.created_at),
+      html_url: `https://github.com/${item.repo}/${item.pull ? "pull" : "issues"}/${item.number}`,
+      ...(item.pull ? { pull_request: { url: "" } } : {}),
+    };
+  }
+  private commentJson(comment: FakeComment) {
+    return {
+      id: comment.id,
+      body: comment.body,
+      user: { login: comment.user },
+      author_association: comment.association,
+      created_at: iso(comment.created_at),
+      ...(comment.path === undefined ? {} : { path: comment.path, line: comment.line }),
+    };
+  }
+
+  /** One REST call, as `gh api` makes it. */
+  handle(
+    method: string,
+    rawPath: string,
+    headers: Record<string, string> = {},
+    body: Record<string, unknown> = {},
+  ): FakeAnswer {
+    const url = new URL(rawPath.replace(/^\/?/, "/"), "https://api.github.com");
+    const path = url.pathname.replace(/^\//, "");
+    this.world.calls.push(`${method} ${path}`);
+    const ok = (value: unknown, extra: Record<string, string> = {}): FakeAnswer => ({
+      status: method === "POST" ? 201 : 200,
+      headers: extra,
+      body: value,
+    });
+    const missing: FakeAnswer = { status: 404, headers: {}, body: { message: "Not Found" } };
+    if (this.world.down !== null)
+      return { status: this.world.down, headers: {}, body: { message: "Bad credentials" } };
+    const since = url.searchParams.get("since");
+    const sinceMs = since === null ? 0 : Date.parse(since);
+    if (method === "GET" && path === "user") return ok({ login: this.world.user });
+    if (method === "GET" && path === "notifications") {
+      const lastModified = httpDate(this.world.modified);
+      const asked = headers["if-modified-since"];
+      if (asked !== undefined && Date.parse(asked) >= Date.parse(lastModified))
+        return { status: 304, headers: { "last-modified": lastModified, "x-poll-interval": "60" }, body: null };
+      return ok(
+        this.world.notifications
+          .filter((thread) => thread.updated_at >= sinceMs)
+          .map((thread) => {
+            const item = this.item(thread.repo, thread.number);
+            return {
+              id: thread.id,
+              reason: thread.reason,
+              updated_at: iso(thread.updated_at),
+              repository: { full_name: thread.repo },
+              subject: {
+                title: item.title,
+                type: item.pull ? "PullRequest" : "Issue",
+                url: `https://api.github.com/repos/${thread.repo}/${item.pull ? "pulls" : "issues"}/${thread.number}`,
+              },
+            };
+          }),
+        { "last-modified": lastModified, "x-poll-interval": "60" },
+      );
+    }
+    if (method === "GET" && path === `users/${this.world.user}/events`) {
+      const etag = `"v${this.world.eventsVersion}"`;
+      if (headers["if-none-match"] === etag)
+        return { status: 304, headers: { etag, "x-poll-interval": "60" }, body: null };
+      return ok(
+        this.world.events.slice(0, 100).map((event) => ({
+          id: event.id,
+          type: event.type,
+          actor: { login: this.world.user },
+          repo: { name: event.repo },
+          created_at: iso(event.created_at),
+          payload: { issue: { number: event.number }, pull_request: { number: event.number }, number: event.number },
+        })),
+        { etag, "x-poll-interval": "60" },
+      );
+    }
+    if (method === "GET" && path === "user/repos")
+      return ok(
+        this.world.repos.map((repo) => ({
+          full_name: repo.full_name,
+          private: repo.private,
+          fork: repo.fork,
+          owner: { login: repo.full_name.split("/")[0] },
+          permissions: { push: repo.push },
+        })),
+      );
+    const match = /^repos\/([^/]+\/[^/]+)\/(.*)$/.exec(path);
+    if (match === null) return missing;
+    const repo = match[1]!;
+    const rest = match[2]!;
+    let found: RegExpExecArray | null;
+    try {
+      if (method === "GET" && (found = /^issues\/(\d+)$/.exec(rest)))
+        return ok(this.issueJson(this.item(repo, Number(found[1]))));
+      if (method === "GET" && (found = /^pulls\/(\d+)$/.exec(rest))) {
+        const item = this.item(repo, Number(found[1]));
+        if (!item.pull) return missing;
+        if ((headers.accept ?? "").includes("diff")) return ok(item.diff);
+        return ok({
+          ...this.issueJson(item),
+          draft: item.draft,
+          merged: item.merged,
+          head: { ref: item.head_ref, sha: item.head_sha, repo: { full_name: item.fork ? `someone/${repo.split("/")[1]}` : repo } },
+          base: { ref: "main" },
+          additions: item.additions,
+          deletions: item.deletions,
+          changed_files: item.changed_files,
+        });
+      }
+      if (method === "GET" && (found = /^(issues|pulls)\/(\d+)\/comments$/.exec(rest))) {
+        const kind = found[1] === "issues" ? "issue" : "review";
+        return ok(
+          this.world.comments
+            .filter(
+              (comment) =>
+                comment.repo.toLowerCase() === repo.toLowerCase() &&
+                comment.number === Number(found![2]) &&
+                comment.kind === kind &&
+                comment.created_at >= sinceMs,
+            )
+            .map((comment) => this.commentJson(comment)),
+        );
+      }
+      if (method === "GET" && (found = /^commits\/([^/]+)\/check-runs$/.exec(rest))) {
+        const failing = this.world.checks[`${repo.toLowerCase()}@${found[1]}`] ?? [];
+        const etag = `"c${failing.length}-${found[1]}"`;
+        if (headers["if-none-match"] === etag) return { status: 304, headers: { etag }, body: null };
+        return ok(
+          { check_runs: failing.map((name) => ({ name, status: "completed", conclusion: "failure" })) },
+          { etag },
+        );
+      }
+      if (method === "POST" && /reactions$/.test(rest)) {
+        this.world.reactions.push({ on: `${repo}/${rest}`, content: String(body.content) });
+        return ok({ content: body.content });
+      }
+      if (method === "POST" && (found = /^issues\/(\d+)\/comments$/.exec(rest))) {
+        const id = this.comment({
+          repo,
+          number: Number(found[1]),
+          author: this.world.user,
+          association: "OWNER",
+          body: String(body.body ?? ""),
+        });
+        return ok({ id, html_url: `https://github.com/${repo}/issues/${found[1]}#issuecomment-${id}` });
+      }
+      if (method === "POST" && (found = /^pulls\/(\d+)\/reviews$/.exec(rest))) {
+        const id = this.next();
+        this.world.reviews.push({
+          id,
+          repo,
+          number: Number(found[1]),
+          user: this.world.user,
+          event: String(body.event ?? "COMMENT"),
+          body: String(body.body ?? ""),
+        });
+        return ok({ id, html_url: `https://github.com/${repo}/pull/${found[1]}#pullrequestreview-${id}` });
+      }
+      if (method === "POST" && rest === "issues") {
+        const number = this.openItem({
+          repo,
+          pull: false,
+          author: this.world.user,
+          association: "OWNER",
+          title: String(body.title ?? ""),
+          body: String(body.body ?? ""),
+        });
+        return ok({ number, html_url: `https://github.com/${repo}/issues/${number}` });
+      }
+    } catch {
+      return missing;
+    }
+    return missing;
+  }
+}
+
+/** `gh api` output with `-i`: the status line, headers, a blank line, then the body. */
+export const ghApiOutput = (answer: FakeAnswer) =>
+  [
+    `HTTP/2.0 ${answer.status} ${answer.status < 300 ? "OK" : answer.status === 304 ? "Not Modified" : "Error"}`,
+    ...Object.entries(answer.headers).map(([name, value]) => `${name}: ${value}`),
+    "",
+    answer.body === null ? "" : typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body),
+  ].join("\r\n");
+
+/** The value after `flag` in gh's arguments. */
+const flagValue = (args: ReadonlyArray<string>, ...flags: string[]) => {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    for (const flag of flags) {
+      if (arg === flag) return args[i + 1];
+      if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
+    }
+  }
+  return undefined;
+};
+
+/** Runs one `gh` command against the world; returns its exit code and output. */
+export const runGh = (world: FakeGitHub, args: ReadonlyArray<string>, stdin: string) => {
+  const repo = flagValue(args, "--repo", "-R") ?? world.world.repos[0]?.full_name ?? "";
+  const body = flagValue(args, "--body", "-b") ?? "";
+  if (args[0] === "api") {
+    const headers: Record<string, string> = {};
+    const fields: Record<string, unknown> = {};
+    let method = "GET";
+    let path = "";
+    for (let i = 1; i < args.length; i++) {
+      const arg = args[i]!;
+      if (arg === "-i" || arg === "--include") continue;
+      if (arg === "-X" || arg === "--method") method = args[++i]!;
+      else if (arg === "-H" || arg === "--header") {
+        const [name, ...value] = args[++i]!.split(":");
+        headers[name!.trim().toLowerCase()] = value.join(":").trim();
+      } else if (arg === "-f" || arg === "-F" || arg === "--field" || arg === "--raw-field") {
+        const [name, ...value] = args[++i]!.split("=");
+        fields[name!] = value.join("=");
+        if (method === "GET") method = "POST";
+      } else if (arg === "--input") {
+        i++;
+        Object.assign(fields, JSON.parse(stdin || "{}"));
+        if (method === "GET") method = "POST";
+      } else if (!arg.startsWith("-")) path = arg;
+    }
+    const answer = world.handle(method, path, headers, fields);
+    const output = args.includes("-i") || args.includes("--include")
+      ? ghApiOutput(answer)
+      : answer.body === null ? "" : JSON.stringify(answer.body);
+    return { code: answer.status >= 300 ? 1 : 0, out: output };
+  }
+  const sub = `${args[0]} ${args[1]}`;
+  const number = Number(args[2]);
+  if (sub === "pr review") {
+    const event = args.includes("--request-changes")
+      ? "REQUEST_CHANGES"
+      : args.includes("--approve")
+        ? "APPROVE"
+        : "COMMENT";
+    const answer = world.handle("POST", `repos/${repo}/pulls/${number}/reviews`, {}, { body, event });
+    return { code: answer.status < 300 ? 0 : 1, out: "" };
+  }
+  if (sub === "pr comment" || sub === "issue comment") {
+    const answer = world.handle("POST", `repos/${repo}/issues/${number}/comments`, {}, { body });
+    return { code: answer.status < 300 ? 0 : 1, out: `https://github.com/${repo}/issues/${number}\n` };
+  }
+  if (sub === "issue create") {
+    const answer = world.handle("POST", `repos/${repo}/issues`, {}, {
+      title: flagValue(args, "--title", "-t") ?? "",
+      body,
+    });
+    const created = answer.body as { html_url: string };
+    return { code: 0, out: `${created.html_url}\n` };
+  }
+  return { code: 2, out: `fake gh: unexpected ${args.join(" ")}` };
+};
+
+// `node fakeGitHub.ts <gh args>` from fakeGh.sh, or `node fakeGitHub.ts world <op> '<json>'`
+// from a driver script; the world lives in $KIN_FAKE_GH/github.json.
+const main = async () => {
+  const fs = await import("node:fs");
+  const state = `${process.env.KIN_FAKE_GH ?? "."}/github.json`;
+  const userFile = `${process.env.KIN_FAKE_GH ?? "."}/user`;
+  const user = fs.existsSync(userFile) ? fs.readFileSync(userFile, "utf8").trim() : "invented-owner";
+  const world = new FakeGitHub(
+    fs.existsSync(state)
+      ? (JSON.parse(fs.readFileSync(state, "utf8")) as FakeWorld)
+      : emptyWorld(user, Date.now()),
+  );
+  world.world.now = Math.max(world.world.now, Date.now());
+  const args = process.argv.slice(2);
+  let code = 0;
+  let out = "";
+  if (args[0] === "world") {
+    const input = JSON.parse(args[2] ?? "{}");
+    const op = args[1];
+    const result =
+      op === "repo" ? world.addRepo(input)
+      : op === "open" ? world.openItem(input)
+      : op === "comment" ? world.comment(input)
+      : op === "label" ? world.label(input)
+      : op === "ready" ? world.ready(input)
+      : op === "request-review" ? world.requestReview(input)
+      : op === "checks" ? world.setChecks(input)
+      : op === "merge" ? world.merge(input)
+      : op === "down" ? (world.world.down = input.status ?? null)
+      : op === "show" ? world.world
+      : undefined;
+    out = JSON.stringify(result ?? null);
+  } else {
+    const stdin = args.includes("--input") ? fs.readFileSync(0, "utf8") : "";
+    ({ code, out } = runGh(world, args, stdin));
+  }
+  fs.writeFileSync(state, JSON.stringify(world.world));
+  process.stdout.write(out.endsWith("\n") || out === "" ? out : `${out}\n`);
+  process.exit(code);
+};
+
+if (process.argv[1]?.endsWith("fakeGitHub.ts")) void main();

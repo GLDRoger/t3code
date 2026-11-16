@@ -1,0 +1,806 @@
+import {
+  KinChatError,
+  KinEvent,
+  KinEventId,
+  KinOrgId,
+  type KinGithubTrigger,
+} from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
+import { KinServer } from "../KinServer.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import { githubClosed } from "../work/workerEntries.ts";
+import { isAgentText, signed } from "./agentMark.ts";
+import { decideTriggers, type ThreadComment, type ThreadSnapshot, type Trigger } from "./githubTriggers.ts";
+import { companyRepo, repoList, watchRow } from "./githubWatchStore.ts";
+
+/**
+ * Kin watches GitHub with the owner's own login: no App, no webhook, no public URL. Each look asks
+ * GitHub for his notifications (If-Modified-Since) and his own events (If-None-Match), which cost
+ * nothing while unchanged, then reads each issue or PR that changed. `githubTriggers.ts` decides
+ * what starts work; each trigger is stored once, in the same transaction as the event it wakes an
+ * agent with, so a restart or a re-read never handles it twice.
+ */
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DEFAULT_INTERVAL_MS = MINUTE;
+const RETRY_MS = 5 * MINUTE;
+const REPOS_EVERY_MS = 6 * HOUR;
+/** Re-read a little before the last look, so a comment GitHub lists late is still seen. */
+const OVERLAP_MS = 5 * MINUTE;
+/** After downtime: older triggers are stored as stale, and one look wakes at most this many. */
+const STALE_MS = 24 * HOUR;
+export const WAKES_PER_LOOK = 10;
+const THREADS_PER_LOOK = 30;
+/** Replies an agent makes in one issue or PR in an hour before it stops and says so. */
+export const PER_THREAD_HOURLY = 5;
+const DIFF_CAP = 30_000;
+
+export const capNote = (count: number) =>
+  `I've replied ${count} times here in an hour, so I'm stopping for now; say /kin again to continue.`;
+
+export interface ApiAnswer {
+  /** 0 when gh couldn't reach GitHub or holds no login. */
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body: unknown;
+  readonly text: string;
+}
+
+/** `gh api -i` output: status line, headers, a blank line, then the body. */
+export const parseGhApi = (out: string): ApiAnswer => {
+  const split = /\r?\n\r?\n/.exec(out);
+  const head = split === null ? out : out.slice(0, split.index);
+  const text = split === null ? "" : out.slice(split.index + split[0].length);
+  const status = /^HTTP\/\S+\s+(\d{3})/.exec(head);
+  if (status === null) return { status: 0, headers: {}, body: null, text: out };
+  const headers: Record<string, string> = {};
+  for (const line of head.split(/\r?\n/).slice(1)) {
+    const at = line.indexOf(":");
+    if (at > 0) headers[line.slice(0, at).trim().toLowerCase()] = line.slice(at + 1).trim();
+  }
+  let body: unknown = null;
+  try {
+    body = text.trim() === "" ? null : JSON.parse(text);
+  } catch {
+    body = null;
+  }
+  return { status: Number(status[1]), headers, body, text };
+};
+
+export interface ApiRequest {
+  readonly method?: "GET" | "POST";
+  readonly path: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly body?: unknown;
+}
+
+/** GitHub's REST API as the connected owner. Tests give it `fakeGitHub.ts`. */
+export class KinGitHubApi extends Context.Service<
+  KinGitHubApi,
+  {
+    readonly connected: () => Effect.Effect<{ readonly login: string; readonly orgs: ReadonlyArray<string> } | null>;
+    readonly call: (request: ApiRequest) => Effect.Effect<ApiAnswer>;
+  }
+>()("t3/kin/github/GitHubWatch/KinGitHubApi") {}
+
+/** Through the owner's `gh` login, reached through Kin's services as the MCP tools reach it. */
+export const ghApiLayer = Layer.effect(
+  KinGitHubApi,
+  Effect.gen(function* () {
+    const direct = yield* Effect.serviceOption(KinGitHubLogin);
+    const kin = yield* Effect.serviceOption(KinServer);
+    const login = Option.orElse(direct, () =>
+      Option.flatMap(kin, (server) =>
+        Option.flatMap(server.services, (services) => Context.getOption(services, KinGitHubLogin)),
+      ),
+    );
+    return KinGitHubApi.of({
+      connected: Effect.fn("KinGitHubApi.connected")(function* () {
+        if (Option.isNone(login) || !(yield* login.value.connected())) return null;
+        const account = yield* login.value.account();
+        return account === null ? null : { login: account.login, orgs: account.orgs };
+      }),
+      call: Effect.fn("KinGitHubApi.call")(function* (request) {
+        if (Option.isNone(login)) return { status: 0, headers: {}, body: null, text: "" };
+        const args = ["api", "-i", "--method", request.method ?? "GET"];
+        for (const [name, value] of Object.entries(request.headers ?? {}))
+          args.push("-H", `${name}: ${value}`);
+        args.push(request.path);
+        if (request.body !== undefined) args.push("--input", "-");
+        const run = yield* login.value.gh(
+          args,
+          request.body === undefined ? undefined : toJson(request.body),
+        );
+        return parseGhApi(run.out);
+      }),
+    });
+  }),
+);
+
+/** The plain words for a failed look, and how to fix it. */
+export const problemOf = (answer: ApiAnswer) => {
+  if (answer.status === 401 || /bad credentials|HTTP 401/i.test(answer.text))
+    return "GitHub signed Kin out. Reconnect GitHub in Settings → Connections.";
+  if (answer.status === 403 || answer.status === 404)
+    return "This GitHub login can't read notifications. Reconnect GitHub, or use a token with the repo and notifications scopes.";
+  if (answer.status === 0)
+    return "Kin couldn't reach GitHub just now. It tries again in a few minutes.";
+  return `GitHub answered ${answer.status}. Kin tries again in a few minutes.`;
+};
+
+const Login = Schema.Struct({ login: Schema.String });
+const Notification = Schema.Struct({
+  reason: Schema.String,
+  repository: Schema.Struct({ full_name: Schema.String }),
+  subject: Schema.Struct({ type: Schema.String, url: Schema.NullOr(Schema.String) }),
+});
+const OwnEvent = Schema.Struct({
+  type: Schema.String,
+  repo: Schema.Struct({ name: Schema.String }),
+  created_at: Schema.String,
+  payload: Schema.Struct({
+    issue: Schema.optional(Schema.Struct({ number: Schema.Int })),
+    pull_request: Schema.optional(Schema.Struct({ number: Schema.Int })),
+    number: Schema.optional(Schema.Int),
+  }),
+});
+const RepoEntry = Schema.Struct({
+  full_name: Schema.String,
+  fork: Schema.Boolean,
+  owner: Login,
+  permissions: Schema.optional(Schema.Struct({ push: Schema.Boolean })),
+});
+const Issue = Schema.Struct({
+  number: Schema.Int,
+  title: Schema.String,
+  body: Schema.NullOr(Schema.String),
+  user: Schema.NullOr(Login),
+  author_association: Schema.String,
+  state: Schema.String,
+  labels: Schema.Array(Schema.Struct({ name: Schema.String })),
+  created_at: Schema.String,
+  html_url: Schema.String,
+  pull_request: Schema.optional(Schema.Unknown),
+});
+const Pull = Schema.Struct({
+  draft: Schema.optional(Schema.Boolean),
+  merged: Schema.optional(Schema.NullOr(Schema.Boolean)),
+  head: Schema.Struct({
+    ref: Schema.String,
+    sha: Schema.String,
+    repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
+  }),
+  base: Schema.Struct({ ref: Schema.String }),
+  additions: Schema.optional(Schema.Int),
+  deletions: Schema.optional(Schema.Int),
+  changed_files: Schema.optional(Schema.Int),
+});
+const Comment = Schema.Struct({
+  id: Schema.Int,
+  body: Schema.NullOr(Schema.String),
+  user: Schema.NullOr(Login),
+  author_association: Schema.String,
+  created_at: Schema.String,
+  path: Schema.optional(Schema.String),
+  line: Schema.optional(Schema.NullOr(Schema.Int)),
+});
+const CheckRuns = Schema.Struct({
+  check_runs: Schema.Array(
+    Schema.Struct({ name: Schema.String, conclusion: Schema.NullOr(Schema.String) }),
+  ),
+});
+const decodeNotifications = Schema.decodeUnknownOption(Schema.Array(Notification));
+const decodeEvents = Schema.decodeUnknownOption(Schema.Array(OwnEvent));
+const decodeRepos = Schema.decodeUnknownOption(Schema.Array(RepoEntry));
+const decodeIssue = Schema.decodeUnknownOption(Issue);
+const decodePull = Schema.decodeUnknownOption(Pull);
+const decodeComments = Schema.decodeUnknownOption(Schema.Array(Comment));
+const decodeChecks = Schema.decodeUnknownOption(CheckRuns);
+const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
+
+const FAILED = new Set(["failure", "timed_out", "cancelled", "action_required", "startup_failure"]);
+const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+const parsed = (text: string) => {
+  const at = Date.parse(text);
+  return Number.isFinite(at) ? at : 0;
+};
+
+export const eventIdOf = (orgId: string, key: string) =>
+  KinEventId.make(
+    `github_${Array.from(new TextEncoder().encode(`${orgId.length}:${orgId}${key}`), (byte) => byte.toString(16).padStart(2, "0")).join("")}`,
+  );
+
+interface Thread {
+  readonly repo: string;
+  readonly number: number;
+  reviewRequested: boolean;
+}
+
+export class KinGitHubWatch extends Context.Service<
+  KinGitHubWatch,
+  {
+    /** One look at GitHub for the org, when it is due. */
+    readonly poll: (orgId: KinOrgId, options?: { readonly force?: boolean }) => Effect.Effect<void>;
+  }
+>()("t3/kin/github/GitHubWatch/KinGitHubWatch") {}
+
+export const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const api = yield* KinGitHubApi;
+  const queue = yield* KinEventQueue.KinEventQueue;
+  const records = yield* Effect.serviceOption(KinRecords);
+
+  const get = (path: string, headers?: Record<string, string>) =>
+    api.call({ path, ...(headers === undefined ? {} : { headers }) });
+
+  /** The repos his login can push to, owned by him or his organisations. */
+  const refreshRepos = Effect.fn("KinGitHubWatch.refreshRepos")(function* (
+    orgId: KinOrgId,
+    account: { readonly login: string; readonly orgs: ReadonlyArray<string> },
+    now: number,
+  ) {
+    const owners = new Set([account.login, ...account.orgs].map((name) => name.toLowerCase()));
+    const found: Array<{ repo: string; fork: boolean }> = [];
+    for (let page = 1; page <= 5; page++) {
+      const answer = yield* get(
+        `user/repos?per_page=100&page=${page}&affiliation=owner,organization_member&sort=pushed`,
+      );
+      const repos = answer.status === 200 ? decodeRepos(answer.body) : Option.none();
+      if (Option.isNone(repos)) return answer;
+      for (const repo of repos.value)
+        if (repo.permissions?.push !== false && owners.has(repo.owner.login.toLowerCase()))
+          found.push({ repo: repo.full_name, fork: repo.fork });
+      if (repos.value.length < 100) break;
+    }
+    yield* sql`UPDATE kin_github_watch SET repos_json = ${toJson(found)},
+      repos_at = ${now} WHERE org_id = ${orgId}`;
+    return undefined;
+  });
+
+  /** Reads one issue or PR and what is new on it since `since`. */
+  const snapshot = Effect.fn("KinGitHubWatch.snapshot")(function* (
+    thread: Thread,
+    since: number,
+  ) {
+    const base = `repos/${thread.repo}`;
+    const issueAnswer = yield* get(`${base}/issues/${thread.number}`);
+    const issue = issueAnswer.status === 200 ? decodeIssue(issueAnswer.body) : Option.none();
+    if (Option.isNone(issue)) return undefined;
+    const pull = issue.value.pull_request !== undefined;
+    let pullFacts: Option.Option<typeof Pull.Type> = Option.none();
+    if (pull) {
+      const answer = yield* get(`${base}/pulls/${thread.number}`);
+      pullFacts = answer.status === 200 ? decodePull(answer.body) : Option.none();
+    }
+    const comments: ThreadComment[] = [];
+    for (const kind of pull ? (["issue", "review"] as const) : (["issue"] as const)) {
+      const answer = yield* get(
+        `${base}/${kind === "issue" ? "issues" : "pulls"}/${thread.number}/comments?per_page=100&since=${iso(since)}`,
+      );
+      const list = answer.status === 200 ? decodeComments(answer.body) : Option.none();
+      for (const comment of Option.getOrElse(list, () => []))
+        comments.push({
+          id: comment.id,
+          kind,
+          body: comment.body ?? "",
+          author: comment.user?.login ?? "ghost",
+          association: comment.author_association,
+          createdAt: parsed(comment.created_at),
+          ...(comment.path === undefined ? {} : { path: comment.path }),
+          ...(comment.line === undefined || comment.line === null ? {} : { line: comment.line }),
+        });
+    }
+    const facts = Option.getOrUndefined(pullFacts);
+    return {
+      merged: facts?.merged === true,
+      thread: {
+        repo: thread.repo,
+        number: thread.number,
+        item: pull ? "pull" : "issue",
+        url: issue.value.html_url,
+        title: issue.value.title,
+        body: issue.value.body ?? "",
+        author: issue.value.user?.login ?? "ghost",
+        association: issue.value.author_association,
+        open: issue.value.state === "open",
+        draft: facts?.draft === true,
+        createdAt: parsed(issue.value.created_at),
+        labels: issue.value.labels.map((label) => label.name),
+        ...(facts === undefined
+          ? {}
+          : {
+              pull: {
+                files: facts.changed_files ?? 0,
+                additions: facts.additions ?? 0,
+                deletions: facts.deletions ?? 0,
+                headRef: facts.head.ref,
+                baseRef: facts.base.ref,
+                headSha: facts.head.sha,
+                fork: (facts.head.repo?.full_name ?? "").toLowerCase() !== thread.repo.toLowerCase(),
+              },
+            }),
+        comments,
+        reviewRequested: thread.reviewRequested,
+      } satisfies ThreadSnapshot,
+    };
+  });
+
+  /** Failing check names on an agent's open PR, read only when GitHub says they changed. */
+  const failingChecks = Effect.fn("KinGitHubWatch.failingChecks")(function* (
+    orgId: KinOrgId,
+    thread: ThreadSnapshot,
+  ) {
+    if (thread.pull === undefined) return undefined;
+    const [row] = yield* sql<{ headSha: string; etag: string | null }>`SELECT head_sha AS "headSha",
+      checks_etag AS etag FROM kin_github_agent_pulls
+      WHERE org_id = ${orgId} AND repo = ${thread.repo.toLowerCase()} AND number = ${thread.number}`;
+    const etag = row?.headSha === thread.pull.headSha ? row.etag : null;
+    const answer = yield* get(
+      `repos/${thread.repo}/commits/${thread.pull.headSha}/check-runs?per_page=100`,
+      etag === null ? undefined : { "If-None-Match": etag },
+    );
+    yield* sql`INSERT INTO kin_github_agent_pulls (org_id, repo, number, head_sha, checks_etag, open)
+      VALUES (${orgId}, ${thread.repo.toLowerCase()}, ${thread.number}, ${thread.pull.headSha},
+        ${answer.headers.etag ?? etag}, ${thread.open ? 1 : 0})
+      ON CONFLICT (org_id, repo, number) DO UPDATE SET head_sha = excluded.head_sha,
+        checks_etag = excluded.checks_etag, open = excluded.open`;
+    const runs = answer.status === 200 ? decodeChecks(answer.body) : Option.none();
+    return Option.map(runs, (found) =>
+      found.check_runs.filter((run) => FAILED.has(run.conclusion ?? "")).map((run) => run.name),
+    ).pipe(Option.getOrUndefined);
+  });
+
+  const agentsOf = (orgId: KinOrgId) =>
+    sql<{ agentId: string; name: string }>`SELECT l.agent_id AS "agentId", l.name FROM kin_leads l
+      JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+        AND a.role = 'lead' AND a.retired_at IS NULL
+      WHERE l.org_id = ${orgId} ORDER BY l.agent_id`;
+
+  const triggerFacts = (
+    thread: ThreadSnapshot,
+    trigger: Trigger,
+    ownerLogin: string,
+    diff: string | undefined,
+  ): KinGithubTrigger => ({
+    key: trigger.key,
+    kind: trigger.kind,
+    item: thread.item,
+    number: thread.number,
+    url: thread.url,
+    title: thread.title,
+    author: trigger.author,
+    association: trigger.association,
+    inside: trigger.inside,
+    text: trigger.text,
+    ...(trigger.path === undefined ? {} : { path: trigger.path }),
+    ...(trigger.line === undefined ? {} : { line: trigger.line }),
+    ...(thread.pull === undefined
+      ? {}
+      : {
+          pull: {
+            files: thread.pull.files,
+            additions: thread.pull.additions,
+            deletions: thread.pull.deletions,
+            headRef: thread.pull.headRef,
+            baseRef: thread.pull.baseRef,
+            fork: thread.pull.fork,
+            ownersOwn: thread.author.toLowerCase() === ownerLogin.toLowerCase(),
+            ...(diff === undefined ? {} : { diff }),
+          },
+        }),
+    ...(trigger.kind === "checks" ? { failing: trigger.text.split(", ") } : {}),
+  });
+
+  /** Stores the trigger once and, when it may, wakes its agent in the same transaction. */
+  const handle = Effect.fn("KinGitHubWatch.handle")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly thread: ThreadSnapshot;
+    readonly trigger: Trigger;
+    readonly ownerLogin: string;
+    readonly agentId: string;
+    readonly now: number;
+    readonly woken: number;
+    readonly happenedAt: number;
+    readonly diff: string | undefined;
+  }) {
+    const { orgId, thread, trigger, now } = input;
+    const repo = thread.repo.toLowerCase();
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const [already] = yield* sql`SELECT 1 AS present FROM kin_github_handled
+          WHERE org_id = ${orgId} AND trigger_key = ${trigger.key}`;
+        if (already !== undefined) return "seen" as const;
+        const [recent] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
+          FROM kin_github_handled WHERE org_id = ${orgId} AND repo = ${repo}
+            AND number = ${thread.number} AND outcome = 'woke' AND at > ${now - HOUR}`;
+        const outcome =
+          now - input.happenedAt > STALE_MS
+            ? "stale"
+            : input.woken >= WAKES_PER_LOOK
+              ? "skipped"
+              : (recent?.count ?? 0) >= PER_THREAD_HOURLY
+                ? "capped"
+                : "woke";
+        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id,
+            outcome, at)
+          VALUES (${orgId}, ${trigger.key}, ${repo}, ${thread.number}, ${input.agentId},
+            ${outcome}, ${now})`;
+        if (outcome !== "woke") return outcome;
+        const facts = triggerFacts(thread, trigger, input.ownerLogin, input.diff);
+        yield* queue.enqueue(
+          yield* decodeEvent({
+            _tag: "github",
+            orgId,
+            agentId: input.agentId,
+            eventId: eventIdOf(orgId, trigger.key),
+            receivedAt: iso(now),
+            dedupeKey: `poll:${trigger.key}`,
+            deliveryId: `poll:${trigger.key}`,
+            eventName: trigger.kind,
+            repo: thread.repo,
+            summary: `${trigger.kind} on ${thread.repo}#${thread.number} by ${trigger.author}`,
+            // GitHub text is outside input unless its author can write to the repo.
+            provenance: { _tag: "system" },
+            trigger: facts,
+          }),
+        );
+        return outcome;
+      }),
+    );
+  });
+
+  const react = (repo: string, number: number, trigger: Trigger) =>
+    api
+      .call({
+        method: "POST",
+        path:
+          trigger.reactTo.type === "issue"
+            ? `repos/${repo}/issues/${number}/reactions`
+            : `repos/${repo}/${trigger.reactTo.kind === "issue" ? "issues" : "pulls"}/comments/${trigger.reactTo.id}/reactions`,
+        body: { content: "eyes" },
+      })
+      .pipe(Effect.asVoid);
+
+  /** One plain comment when a thread's hourly cap stops an agent; at most one an hour. */
+  const capComment = Effect.fn("KinGitHubWatch.capComment")(function* (
+    orgId: KinOrgId,
+    thread: ThreadSnapshot,
+    agentName: string,
+    now: number,
+  ) {
+    const key = `capnote:${thread.repo.toLowerCase()}#${thread.number}:${Math.floor(now / HOUR)}`;
+    const inserted = yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number,
+        agent_id, outcome, at)
+      VALUES (${orgId}, ${key}, ${thread.repo.toLowerCase()}, ${thread.number}, NULL, 'note', ${now})
+      ON CONFLICT DO NOTHING RETURNING trigger_key`;
+    if (inserted.length === 0) return;
+    yield* api.call({
+      method: "POST",
+      path: `repos/${thread.repo}/issues/${thread.number}/comments`,
+      body: { body: signed(capNote(PER_THREAD_HOURLY), agentName) },
+    });
+  });
+
+  const poll = Effect.fn("KinGitHubWatch.poll")(function* (
+    orgId: KinOrgId,
+    options?: { readonly force?: boolean },
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const account = yield* api.connected();
+    // Signed out: the App's webhook, where set up, is the source again.
+    if (account === null)
+      return yield* sql`UPDATE kin_github_watch SET checked_at = NULL
+        WHERE org_id = ${orgId} AND checked_at IS NOT NULL`;
+    let row = yield* watchRow(orgId);
+    if (row === undefined || row.login?.toLowerCase() !== account.login.toLowerCase()) {
+      // A new login starts watching from now: nothing from before is new work.
+      yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at)
+        VALUES (${orgId}, ${account.login}, ${now}, ${now}, 0)
+        ON CONFLICT (org_id) DO UPDATE SET login = excluded.login, started_at = excluded.started_at,
+          since_at = excluded.since_at, notifications_modified = NULL, events_etag = NULL,
+          repos_at = NULL, next_at = 0`;
+      row = yield* watchRow(orgId);
+    }
+    if (row === undefined || (options?.force !== true && now < row.nextAt)) return;
+    const fail = (answer: ApiAnswer) =>
+      sql`UPDATE kin_github_watch SET problem = ${problemOf(answer)}, next_at = ${now + RETRY_MS}
+        WHERE org_id = ${orgId}`;
+    if (row.reposAt === null || now - row.reposAt > REPOS_EVERY_MS) {
+      const failed = yield* refreshRepos(orgId, account, now);
+      if (failed !== undefined) return yield* fail(failed);
+    }
+    const repos = yield* repoList(orgId);
+    const watched = new Map(
+      repos.filter((repo) => repo.watched).map((repo) => [repo.repo.toLowerCase(), repo]),
+    );
+    const threads = new Map<string, Thread>();
+    const note = (repo: string, number: number, reviewRequested = false) => {
+      const entry = watched.get(repo.toLowerCase());
+      if (entry === undefined) return;
+      const key = `${entry.repo.toLowerCase()}#${number}`;
+      const existing = threads.get(key);
+      if (existing === undefined) threads.set(key, { repo: entry.repo, number, reviewRequested });
+      else existing.reviewRequested ||= reviewRequested;
+    };
+    const since = row.sinceAt - OVERLAP_MS;
+
+    const notifications = yield* get(
+      `notifications?all=true&per_page=50&since=${iso(since)}`,
+      row.notificationsModified === null ? undefined : { "If-Modified-Since": row.notificationsModified },
+    );
+    if (notifications.status !== 200 && notifications.status !== 304) return yield* fail(notifications);
+    for (const thread of Option.getOrElse(
+      notifications.status === 200 ? decodeNotifications(notifications.body) : Option.none(),
+      () => [],
+    )) {
+      const number = /\/(?:issues|pulls)\/(\d+)$/.exec(thread.subject.url ?? "")?.[1];
+      if (number !== undefined)
+        note(thread.repository.full_name, Number(number), thread.reason === "review_requested");
+    }
+
+    // His own comments and labels never notify him, so his events carry what he does himself.
+    const events = yield* get(
+      `users/${account.login}/events?per_page=100`,
+      row.eventsEtag === null ? undefined : { "If-None-Match": row.eventsEtag },
+    );
+    for (const event of Option.getOrElse(
+      events.status === 200 ? decodeEvents(events.body) : Option.none(),
+      () => [],
+    )) {
+      if (parsed(event.created_at) < since) continue;
+      const number =
+        event.payload.issue?.number ?? event.payload.pull_request?.number ?? event.payload.number;
+      if (number !== undefined) note(event.repo.name, number);
+    }
+
+    // An agent's open PRs, for checks that fail with nothing else changing on the PR.
+    for (const pull of yield* sql<{ repo: string; number: number }>`SELECT repo, number
+      FROM kin_github_agent_pulls WHERE org_id = ${orgId} AND open = 1 ORDER BY repo, number LIMIT 20`)
+      note(pull.repo, pull.number);
+
+    const agents = yield* agentsOf(orgId);
+    const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN });
+    let woken = 0;
+    for (const thread of [...threads.values()].slice(0, THREADS_PER_LOOK)) {
+      const read = yield* snapshot(thread, since);
+      if (read === undefined) continue;
+      let current: ThreadSnapshot = read.thread;
+      const at = `${current.repo.toLowerCase()}#${current.number}`;
+      if (current.item === "pull" && read.merged && Option.isSome(records))
+        yield* githubClosed({ orgId, repo: current.repo, number: current.number, item: "pull_request" }).pipe(
+          Effect.provideService(KinRecords, records.value),
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.catchCause((cause) => Effect.logWarning("Kin couldn't close Work entries for a merge", { cause })),
+        );
+      if (current.item === "pull" && isAgentText(current.body)) {
+        const failing = current.open ? yield* failingChecks(orgId, current) : undefined;
+        if (!current.open)
+          yield* sql`UPDATE kin_github_agent_pulls SET open = 0
+            WHERE org_id = ${orgId} AND repo = ${current.repo.toLowerCase()} AND number = ${current.number}`;
+        current = { ...current, failing };
+      }
+      if (lead === undefined) continue;
+      const [draft] = yield* sql`SELECT 1 AS present FROM kin_github_handled
+        WHERE org_id = ${orgId} AND trigger_key = ${`draft:${at}`}`;
+      if (current.item === "pull" && current.draft && draft === undefined)
+        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
+          VALUES (${orgId}, ${`draft:${at}`}, ${current.repo.toLowerCase()}, ${current.number}, NULL, 'seen', ${now})
+          ON CONFLICT DO NOTHING`;
+      const triggers = decideTriggers(current, {
+        ownerLogin: account.login,
+        agents,
+        defaultAgentId: lead.agentId,
+        mentions: watched.get(current.repo.toLowerCase())?.mentions ?? false,
+        since: row.startedAt,
+        draftSeen: draft !== undefined,
+      });
+      for (const trigger of triggers) {
+        const agentId = agents.some((agent) => agent.agentId === trigger.agentId)
+          ? trigger.agentId
+          : lead.agentId;
+        const happenedAt =
+          trigger.reactTo.type === "comment"
+            ? (current.comments.find((comment) => comment.id === (trigger.reactTo as { id: number }).id)?.createdAt ?? now)
+            : trigger.kind === "review"
+              ? current.createdAt
+              : now;
+        // A stranger's PR is read for them: their turn gets no shell to fetch it.
+        const diff =
+          !trigger.inside && current.item === "pull"
+            ? yield* get(`repos/${current.repo}/pulls/${current.number}`, {
+                Accept: "application/vnd.github.diff",
+              }).pipe(
+                Effect.map((answer) =>
+                  answer.status === 200
+                    ? answer.text.length <= DIFF_CAP
+                      ? answer.text
+                      : `${answer.text.slice(0, DIFF_CAP)}\n…[diff cut at ${DIFF_CAP} characters]`
+                    : undefined,
+                ),
+              )
+            : undefined;
+        const outcome = yield* handle({
+          orgId,
+          thread: current,
+          trigger,
+          ownerLogin: account.login,
+          agentId,
+          now,
+          woken,
+          happenedAt,
+          diff,
+        });
+        if (outcome === "woke") {
+          woken += 1;
+          yield* react(current.repo, current.number, trigger);
+        }
+        if (outcome === "capped")
+          yield* capComment(
+            orgId,
+            current,
+            agents.find((agent) => agent.agentId === agentId)?.name ?? lead.name,
+            now,
+          );
+      }
+    }
+    const interval = Math.max(
+      DEFAULT_INTERVAL_MS,
+      Number(notifications.headers["x-poll-interval"] ?? 60) * 1000 || DEFAULT_INTERVAL_MS,
+    );
+    yield* sql`UPDATE kin_github_watch SET problem = NULL, checked_at = ${now}, since_at = ${now},
+        next_at = ${now + interval},
+        notifications_modified = ${notifications.headers["last-modified"] ?? row.notificationsModified},
+        events_etag = ${events.status === 200 || events.status === 304 ? (events.headers.etag ?? row.eventsEtag) : row.eventsEtag}
+      WHERE org_id = ${orgId}`;
+  });
+
+  return KinGitHubWatch.of({
+    poll: Effect.fn("KinGitHubWatch.look")(
+      (orgId: KinOrgId, options?: { readonly force?: boolean }) => poll(orgId, options),
+      Effect.asVoid,
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.catchCause((cause) => Effect.logWarning("Kin's GitHub look failed", { cause })),
+    ),
+  });
+});
+
+/**
+ * Posts a review as the owner on one of the company's repos, signed by the agent: what
+ * `kin_github_review` does once the owner's GitHub is connected. Other people's repos are asked first.
+ */
+export const ownerReview = Effect.fn("KinGitHubWatch.review")(
+    function* (input: {
+      readonly orgId: KinOrgId;
+      readonly agentName: string;
+      readonly repo: string;
+      readonly number: number;
+      readonly body: string;
+      readonly event: "COMMENT" | "REQUEST_CHANGES";
+      readonly comments: ReadonlyArray<{ readonly path: string; readonly line: number; readonly body: string }>;
+    }) {
+      const api = yield* KinGitHubApi;
+      const get = (path: string) => api.call({ path });
+      const ours = yield* companyRepo(input.orgId, input.repo);
+      if (ours === undefined)
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message:
+            "That repo isn't the company's. Ask the owner in chat before posting there, then post with gh in a turn he started.",
+        });
+      const pullAnswer = yield* get(`repos/${ours.repo}/issues/${input.number}`);
+      const issue = pullAnswer.status === 200 ? decodeIssue(pullAnswer.body) : Option.none();
+      const account = yield* api.connected();
+      // GitHub refuses changes requested on one's own PR: the owner's own PRs get a comment.
+      const event =
+        Option.isSome(issue) &&
+        account !== null &&
+        issue.value.user?.login.toLowerCase() === account.login.toLowerCase()
+          ? "COMMENT"
+          : input.event;
+      const body = signed(input.body, input.agentName);
+      const send = (comments: typeof input.comments) =>
+        api.call({
+          method: "POST",
+          path: `repos/${ours.repo}/pulls/${input.number}/reviews`,
+          body: { body, event, comments: comments.map((comment) => ({ ...comment, side: "RIGHT" })) },
+        });
+      let answer = yield* send(input.comments);
+      if (answer.status === 422 && input.comments.length > 0)
+        answer = yield* api.call({
+          method: "POST",
+          path: `repos/${ours.repo}/pulls/${input.number}/reviews`,
+          body: {
+            body: signed(
+              [input.body, ...input.comments.map((c) => `**${c.path}:${c.line}**\n${c.body}`)].join("\n\n"),
+              input.agentName,
+            ),
+            event,
+          },
+        });
+      const url =
+        typeof answer.body === "object" && answer.body !== null
+          ? Reflect.get(answer.body, "html_url")
+          : undefined;
+      if (answer.status >= 300 || typeof url !== "string")
+        return yield* new KinChatError({
+          reason: "unavailable",
+          message: `GitHub didn't post the review (${problemOf(answer)})`,
+        });
+      return url;
+    },
+    Effect.catchTag("SqlError", () =>
+      Effect.fail(new KinChatError({ reason: "unavailable", message: "Kin couldn't read its repo list." })),
+    ),
+);
+
+/** Every five seconds the scheduler asks; each org is looked at only when its next look is due. */
+export const runtimeLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const watch = yield* KinGitHubWatch;
+    const sql = yield* SqlClient.SqlClient;
+    const ticks = yield* Scheduler.Scheduler;
+    yield* ticks.register(
+      "kin-github-watch",
+      sql<{ orgId: string }>`SELECT DISTINCT org_id AS "orgId" FROM kin_leads ORDER BY org_id`.pipe(
+        Effect.flatMap((orgs) =>
+          Effect.forEach(orgs, (org) => watch.poll(KinOrgId.make(org.orgId)), { discard: true }),
+        ),
+        Effect.catchCause((cause) => Effect.logWarning("Kin's GitHub watch scan failed", { cause })),
+      ),
+    );
+  }),
+);
+
+export const layer = Layer.effect(KinGitHubWatch, make);
+export const liveLayer = runtimeLayer.pipe(Layer.provideMerge(layer), Layer.provide(ghApiLayer));
+
+/**
+ * `kin_github_review` with the owner's GitHub connected: posted at once on the company's repos and
+ * then told, never a card. Undefined while GitHub isn't connected, for the App's path.
+ */
+export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(function* (
+  lead: { readonly orgId: KinOrgId; readonly agentId: string },
+  input: {
+    readonly repo: string;
+    readonly number: number;
+    readonly body?: string | undefined;
+    readonly event?: "COMMENT" | "REQUEST_CHANGES" | undefined;
+    readonly comments?: ReadonlyArray<{ readonly path: string; readonly line: number; readonly body: string }> | undefined;
+  },
+) {
+  const api = yield* KinGitHubApi;
+  if ((yield* api.connected()) === null) return undefined;
+  if (input.body === undefined)
+    return yield* new KinChatError({ reason: "invalid_state", message: "A review needs a body." });
+  const sql = yield* SqlClient.SqlClient;
+  const [named] = yield* sql<{ name: string }>`SELECT name FROM kin_leads
+    WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`.pipe(Effect.orElseSucceed(() => []));
+  const url = yield* ownerReview({
+    orgId: lead.orgId,
+    agentName: named?.name ?? "Agent",
+    repo: input.repo,
+    number: input.number,
+    body: input.body,
+    event: input.event ?? "COMMENT",
+    comments: input.comments ?? [],
+  });
+  return {
+    status: "posted" as const,
+    url,
+    next: "Posted on the PR. Tell the owner in one line with the link.",
+  };
+});

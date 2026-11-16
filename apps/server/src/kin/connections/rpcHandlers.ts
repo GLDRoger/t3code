@@ -1,4 +1,13 @@
-import { KinChatError, KinConnectionRpcs, KinWidgetId } from "@t3tools/contracts";
+import {
+  KinChatError,
+  KinConnectionRpcs,
+  type KinGitHubStatus,
+  type KinOrgId,
+  KinWidgetId,
+} from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -11,6 +20,7 @@ import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinConnections } from "./ConnectionsService.ts";
+import { repoList, setRepo, watchSummary } from "../github/githubWatchStore.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
 
 const group = RpcGroup.make(...KinConnectionRpcs);
@@ -57,8 +67,42 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       ? call.pipe(Effect.provideService(ServerSettingsService, settings.value))
       : call;
   });
+  /** What Kin watches on GitHub: after the owner check `status` makes, read from Kin's own rows. */
+  const watching = Effect.fn("KinGitHubWatch.rpc")(function* <A>(
+    orgId: KinOrgId,
+    run: Effect.Effect<A, SqlError | KinChatError, SqlClient.SqlClient>,
+  ) {
+    yield* github((g, people) => g.status(people, { orgId }));
+    if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
+    return yield* run.pipe(
+      Effect.provideService(SqlClient.SqlClient, Context.get(kin.value.services.value, SqlClient.SqlClient)),
+      Effect.catchTag("SqlError", () =>
+        Effect.fail(new KinChatError({ reason: "unavailable", message: "Kin couldn't read its GitHub watch." })),
+      ),
+    );
+  });
+  const withWatch = (status: KinGitHubStatus) =>
+    status.account === null || Option.isNone(kin) || Option.isNone(kin.value.services)
+      ? Effect.succeed(status)
+      : Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) => watchSummary(status.orgId, now)),
+          Effect.provideService(SqlClient.SqlClient, Context.get(kin.value.services.value, SqlClient.SqlClient)),
+          Effect.map((watch) => (watch === undefined ? status : { ...status, watch })),
+          Effect.orElseSucceed(() => status),
+        );
   return group.of({
-    "kin.github.connect.status": (input) => github((g, people) => g.status(people, input)),
+    "kin.github.connect.status": (input) =>
+      github((g, people) => g.status(people, input)).pipe(Effect.flatMap(withWatch)),
+    "kin.github.repos": (input) =>
+      watching(input.orgId, repoList(input.orgId).pipe(Effect.map((repos) => ({ repos })))),
+    "kin.github.repos.set": (input) =>
+      watching(
+        input.orgId,
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) => setRepo(input, now)),
+          Effect.map((repos) => ({ repos })),
+        ),
+      ),
     "kin.github.connect.start": (input) => github((g, people) => g.start(people, input)),
     "kin.github.connect.cancel": (input) => github((g, people) => g.cancel(people, input)),
     "kin.github.disconnect": (input) => github((g, people) => g.disconnect(people, input)),

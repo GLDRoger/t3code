@@ -79,6 +79,8 @@ const route = (request: RecordedRequest) => {
     return { status: 200, body: { private: false, owner: { login: "Acme" } } };
   if (request.path === "/repos/client/portal")
     return { status: 200, body: { private: true, owner: { login: "client" } } };
+  if (request.path === "/repos/client/site")
+    return { status: 200, body: { private: false, owner: { login: "client" } } };
   const pull = /^\/repos\/([^/]+\/[^/]+)\/pulls\/7(\/reviews)?$/.exec(request.path);
   if (pull !== null && pull[2] === undefined)
     return {
@@ -136,7 +138,7 @@ const setup = () => {
       Layer.provide(
         ConfigProvider.layer(
           ConfigProvider.fromUnknown({
-            KIN_GITHUB_REPOS: "acme/app, acme/site, client/portal",
+            KIN_GITHUB_REPOS: "acme/app, acme/site, client/site, client/portal",
             KIN_MEMORY_REPOSITORIES: JSON.stringify([
               { orgId: "org-1", repoUrl: "https://github.com/acme/kin-memory.git" },
             ]),
@@ -159,39 +161,41 @@ const review = (repo: string, extra: Partial<typeof PullRequestCare.ReviewInput.
 
 describe("KinPullRequestCare.review", () => {
   it.effect(
-    "posts at once only on the company's private repos; elsewhere on the owner's tap",
+    "posts at once on the company's repos, public or private, signed; elsewhere on the owner's tap",
     () => {
       const { requests, cards, layer } = setup();
       return Effect.gen(function* () {
-        const posted = yield* review("acme/app", { body: "Looks right; one nit." });
-        assert.strictEqual(posted.status, "posted");
-        assert.deepStrictEqual(posts(requests), ["/repos/acme/app/pulls/7/reviews"]);
-        assert.deepStrictEqual(requests.at(-1)?.body, {
-          body: "Looks right; one nit.",
-          event: "COMMENT",
-          commit_id: "sha-7",
-          comments: [],
-        });
+        for (const repo of ["acme/app", "acme/site"]) {
+          const posted = yield* review(repo, { body: "Looks right; one nit." });
+          assert.strictEqual(posted.status, "posted");
+        }
+        assert.deepStrictEqual(posts(requests), [
+          "/repos/acme/app/pulls/7/reviews",
+          "/repos/acme/site/pulls/7/reviews",
+        ]);
+        const sent = requests.at(-1)?.body as { body: string; event: string };
+        assert.match(sent.body, /^Looks right; one nit\.\n\n— .+, via Kin\n<!-- kin-agent: .+ -->$/);
+        assert.strictEqual(sent.event, "COMMENT");
 
-        // Public, and private but a client's: a proposal and a card, nothing posted.
-        for (const repo of ["acme/site", "client/portal"]) {
+        // Anyone else's repo, public or private: a proposal and a card, nothing posted.
+        for (const repo of ["client/site", "client/portal"]) {
           const proposed = yield* review(repo, {
             body: `Findings for ${repo}`,
             event: "REQUEST_CHANGES",
           });
           assert.strictEqual(proposed.status, "proposed");
         }
-        assert.lengthOf(posts(requests), 1);
+        assert.lengthOf(posts(requests), 2);
         assert.deepStrictEqual(cards, [
-          "Post this review on acme/site#7?",
+          "Post this review on client/site#7?",
           "Post this review on client/portal#7?",
         ]);
 
         const sql = yield* SqlClient.SqlClient;
         const [site] = yield* sql<{ postId: string }>`SELECT post_id AS "postId"
-        FROM kin_pr_review_posts WHERE repo = 'acme/site'`;
+        FROM kin_pr_review_posts WHERE repo = 'client/site'`;
         const again = (repo: string, proposal: string) => review(repo, { proposal });
-        assert.strictEqual((yield* again("acme/site", site!.postId)).status, "waiting");
+        assert.strictEqual((yield* again("client/site", site!.postId)).status, "waiting");
 
         // A teammate's tap is no answer; the owner's posts exactly what the card showed, once,
         // from Kin itself (the PR care tick), with no call from the agent.
@@ -206,19 +210,16 @@ describe("KinPullRequestCare.review", () => {
         const care = yield* PullRequestCare.KinPullRequestCare;
         assert.strictEqual(
           yield* care.postConfirmed(orgId, site!.postId),
-          "https://github.com/acme/site/pull/7#review",
+          "https://github.com/client/site/pull/7#review",
         );
         assert.isUndefined(yield* care.postConfirmed(orgId, site!.postId));
-        const done = yield* again("acme/site", site!.postId);
+        const done = yield* again("client/site", site!.postId);
         assert.strictEqual(done.status, "posted");
-        assert.deepStrictEqual(requests.at(-1)?.body, {
-          body: "Findings for acme/site",
-          event: "REQUEST_CHANGES",
-          commit_id: "sha-7",
-          comments: [],
-        });
-        assert.strictEqual((yield* again("acme/site", site!.postId)).status, "posted");
-        assert.lengthOf(posts(requests), 2);
+        const confirmed = requests.at(-1)?.body as { body: string; event: string };
+        assert.match(confirmed.body, /^Findings for client\/site\n\n— .+, via Kin/);
+        assert.strictEqual(confirmed.event, "REQUEST_CHANGES");
+        assert.strictEqual((yield* again("client/site", site!.postId)).status, "posted");
+        assert.lengthOf(posts(requests), 3);
 
         yield* PullRequestCare.answerReviewCard({
           orgId,
@@ -230,7 +231,7 @@ describe("KinPullRequestCare.review", () => {
         const [portal] = yield* sql<{ postId: string }>`SELECT post_id AS "postId"
         FROM kin_pr_review_posts WHERE repo = 'client/portal'`;
         assert.strictEqual((yield* again("client/portal", portal!.postId)).status, "declined");
-        assert.lengthOf(posts(requests), 2);
+        assert.lengthOf(posts(requests), 3);
       }).pipe(Effect.provide(layer));
     },
   );
