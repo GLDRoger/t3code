@@ -74,6 +74,7 @@ import { HANDED_BACK_WORK, SHARED_TURN_LINE } from "../../apps/server/src/kin/le
 import { CHECK_IN_PULSE_RULE, PULSE_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { WEEKLY_RULE } from "../../apps/server/src/kin/pulse/weekly.ts";
 import { STARTED_RULE } from "../../apps/server/src/kin/lead/startedSection.ts";
+import { classifySegment } from "../../apps/server/src/kin/reply/classify.ts";
 import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
@@ -433,6 +434,31 @@ const CODEX_NAMES: Readonly<Record<string, string>> = {
   request_user_input_async: "AskUserQuestion",
   write_stdin: "write_stdin",
   web__run: "WebFetch",
+};
+/**
+ * The text a chat shows from a turn's responses. Once a lead has posted a reply and called
+ * kin_end, Kin drops any later text (KinReplyBridge `afterReply`), so a repeat is never seen.
+ */
+export const shownText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) => {
+  const said: Array<string> = [];
+  let replied = false;
+  let ended = false;
+  for (const content of responses)
+    content.forEach((block, i) => {
+      if (isToolUse(block) && normalizeToolName(block.name) === "kin_end") ended = true;
+      if (!isText(block) || (ended && replied)) return;
+      said.push(block.text);
+      const following = content.slice(i + 1).find((next) => isText(next) || isToolUse(next));
+      const next = isToolUse(following)
+        ? normalizeToolName(following.name) === "kin_end"
+          ? "end"
+          : "tool"
+        : following === undefined
+          ? "end"
+          : "text";
+      if (classifySegment(block.text, next) === "post") replied = true;
+    });
+  return said.join("\n\n");
 };
 export const normalizeToolName = (name: string) => {
   const bare = name.slice(name.lastIndexOf(".") + 1);
@@ -2229,7 +2255,8 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   const transcript: Array<unknown> = [];
   const start = messages.length;
   const calls: Array<Call> = [];
-  const said: Array<string> = [];
+  const responses: Array<ReadonlyArray<unknown>> = [];
+  let shown = "";
   const { usage } = spent;
   let stopReason = "max_steps";
   let finalText = "";
@@ -2250,8 +2277,9 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
       transcript.push(...response.raw);
     }
     messages.push({ role: "assistant", content: response.content });
+    responses.push(response.content);
+    shown = shownText(responses);
     const texts = response.content.filter(isText).map((block) => block.text);
-    said.push(...texts);
     const uses = response.content.filter(isToolUse);
     calls.push(...ranCalls(sample, step, uses));
     if (response.stop_reason !== "tool_use") {
@@ -2259,13 +2287,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
       finalText = texts.join("\n\n");
       break;
     }
-    if (
-      failedEarly(
-        testCase.expect,
-        { calls, text: said.join("\n\n"), stopReason },
-        pastedText(testCase),
-      )
-    ) {
+    if (failedEarly(testCase.expect, { calls, text: shown, stopReason }, pastedText(testCase))) {
       stopReason = "failed_early";
       break;
     }
@@ -2334,13 +2356,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     // Claude Code adds this text after a ToolSearch that loaded tools.
     const loaded = results.some((result) => Array.isArray(result.content));
     messages.push({ role: "user", content: [...results, ...(loaded ? [text(TOOL_LOADED)] : [])] });
-    if (
-      failedEarly(
-        testCase.expect,
-        { calls, text: said.join("\n\n"), stopReason },
-        pastedText(testCase),
-      )
-    ) {
+    if (failedEarly(testCase.expect, { calls, text: shown, stopReason }, pastedText(testCase))) {
       stopReason = "failed_early";
       break;
     }
@@ -2348,7 +2364,7 @@ const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   // The transcript (model turns and tool results) shows what the agent saw when a case fails.
   return {
     calls,
-    text: said.join("\n\n"),
+    text: shown,
     stopReason,
     finalText,
     linked: [...sample.linked],
