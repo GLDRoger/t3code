@@ -477,6 +477,8 @@ const KIN_RPC_ACCESS = {
   "kin.github.connect.start": "owner_level",
   "kin.github.connect.cancel": "owner_level",
   "kin.github.disconnect": "owner_level",
+  "kin.github.repos": "owner_level",
+  "kin.github.repos.set": "owner_level",
 } as const satisfies Record<(typeof KinRpcs)[number]["_tag"], KinRpcAccess>;
 export const kinRpcAccess = (method: string): KinRpcAccess | undefined =>
   (KIN_RPC_ACCESS as Record<string, KinRpcAccess>)[method];
@@ -672,4 +674,6 @@ export const KIN_RPC_AGGREGATES = {
   "kin.github.connect.start": "kin-connections",
   "kin.github.connect.cancel": "kin-connections",
   "kin.github.disconnect": "kin-connections",
+  "kin.github.repos": "kin-connections",
+  "kin.github.repos.set": "kin-connections",
 } as const;

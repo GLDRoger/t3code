@@ -2,9 +2,12 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   createKinGitHubActions,
+  createKinGitHubRepoActions,
   KIN_GITHUB_COPY as COPY,
+  KIN_GITHUB_WATCH_COPY as WATCH,
   kinGitHubRow,
   kinGitHubSheet,
+  kinGitHubWatchLine,
 } from "@t3tools/client-runtime/kin/kinGitHub";
 import type { EnvironmentId, KinGitHubStatus, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -26,9 +29,11 @@ import {
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
+import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { kinClient } from "./kinClient";
+import { useNowMinuteMs } from "./useKinClock";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 
 const TONE_BADGE = {
@@ -116,6 +121,11 @@ function GitHubSection(props: { readonly environmentId: EnvironmentId; readonly 
             }
           />
         )}
+        {status?.account != null &&
+        status.account.problem === null &&
+        status.watch !== undefined ? (
+          <WatchedRepos environmentId={environmentId} orgId={orgId} status={status} />
+        ) : null}
         {problem === null ? null : (
           <div className="px-4 pb-3">
             <Alert variant="error">
@@ -147,6 +157,115 @@ function GitHubSection(props: { readonly environmentId: EnvironmentId; readonly 
         onClose={() => setConfirming(false)}
       />
     </>
+  );
+}
+
+/** What Kin watches with the login: one line, why a look failed, and a switch per repo. */
+function WatchedRepos(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly status: KinGitHubStatus;
+}) {
+  const now = useNowMinuteMs();
+  const { environmentId, orgId, status } = props;
+  const [open, setOpen] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const watch = status.watch;
+  if (watch === undefined) return null;
+  return (
+    <div className="flex flex-col gap-2 border-t px-4 py-3">
+      <p className="text-sm text-muted-foreground">{kinGitHubWatchLine(watch, now)}</p>
+      {watch.problem === null ? null : (
+        <Alert variant="warning">
+          <AlertDescription>{watch.problem}</AlertDescription>
+        </Alert>
+      )}
+      <div>
+        <Button size="xs" variant="outline" onClick={() => setOpen(!open)} aria-expanded={open}>
+          {open ? WATCH.hideRepos : WATCH.showRepos(watch.repos)}
+        </Button>
+      </div>
+      {open ? (
+        <RepoList environmentId={environmentId} orgId={orgId} onProblem={setProblem} />
+      ) : null}
+      {problem === null ? null : (
+        <Alert variant="error">
+          <AlertDescription>{problem}</AlertDescription>
+        </Alert>
+      )}
+    </div>
+  );
+}
+
+function RepoList(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly onProblem: (problem: string | null) => void;
+}) {
+  const { environmentId, orgId, onProblem } = props;
+  const reposAtom = kinClient.githubRepos({ environmentId, input: { orgId } });
+  const result = useAtomValue(reposAtom);
+  const reload = useAtomRefresh(reposAtom);
+  const set = useAtomCommand(kinClient.githubReposSet, { reportFailure: false });
+  const actions = createKinGitHubRepoActions({
+    orgId,
+    set: (input) => set({ environmentId, input }),
+    refresh: reload,
+  });
+  const repos = Option.getOrNull(AsyncResult.value(result))?.repos ?? null;
+  const settle = (outcome: Awaited<ReturnType<typeof actions.everything>>) =>
+    onProblem(outcome.ok ? null : outcome.problem);
+  if (repos === null)
+    return AsyncResult.isFailure(result) ? (
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-destructive-foreground">{WATCH.loadFailed}</p>
+        <Button size="xs" variant="outline" onClick={reload}>
+          {KIN_RETRY}
+        </Button>
+      </div>
+    ) : (
+      <p className="text-sm text-muted-foreground">Loading…</p>
+    );
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-sm text-muted-foreground">{WATCH.reposHint}</p>
+      {repos.length === 0 ? <p className="text-sm text-muted-foreground">{WATCH.noRepos}</p> : null}
+      <ul className="flex flex-col divide-y rounded-md border">
+        {repos.map((repo) => (
+          <li
+            key={repo.repo}
+            className="flex min-h-11 items-center justify-between gap-3 px-3 py-2"
+          >
+            <div className="flex min-w-0 flex-col">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-sm">{repo.repo}</span>
+                {repo.fork ? <Badge variant="outline">{WATCH.fork}</Badge> : null}
+              </div>
+              {repo.mentions ? (
+                <span className="text-xs text-muted-foreground">{WATCH.mentions}</span>
+              ) : null}
+            </div>
+            <Switch
+              size="sm"
+              checked={repo.watched}
+              aria-label={`Watch ${repo.repo}`}
+              onCheckedChange={(checked) => void actions.watch(repo, checked).then(settle)}
+            />
+          </li>
+        ))}
+      </ul>
+      {repos.some((repo) => !repo.watched && !repo.fork) ? (
+        <div>
+          <Button
+            size="xs"
+            variant="outline"
+            onClick={() => void actions.everything().then(settle)}
+          >
+            {WATCH.watchEverything}
+          </Button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

@@ -19,6 +19,7 @@ import {
   withConfinementHook,
 } from "../claudeConfinement.ts";
 import { KinServer } from "../KinServer.ts";
+import { ghSignScript } from "../github/ghSign.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../KinEnabled.ts";
 import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts";
@@ -146,6 +147,29 @@ const leadOptions = (
 };
 
 /**
+ * Claude Code's own "Generated with Claude Code" PR footer and co-author trailer stay off in a Kin
+ * agent's sessions: what it posts ends with its own signature (`ghSign.ts`), and its commits carry
+ * only the `Co-authored-by` line its instructions give.
+ */
+const NO_PROVIDER_FOOTER = {
+  attribution: { commit: "", pr: "", sessionUrl: false },
+  includeCoAuthoredBy: false,
+} as const;
+
+/** What a Kin agent's session, or a task it delegated, posts with: the signing `gh` and its name. */
+const signingPath = (
+  environment: NodeJS.ProcessEnv,
+  sign: {
+    readonly directory: string;
+    readonly toolDirectories: ReadonlyArray<string>;
+    readonly agentName: string | undefined;
+  },
+) => ({
+  PATH: [sign.directory, ...sign.toolDirectories, environment.PATH].filter(Boolean).join(":"),
+  ...(sign.agentName === undefined ? {} : { KIN_AGENT_NAME: sign.agentName }),
+});
+
+/**
  * An owner-only turn: Claude Code's own tools, as any T3 thread has, with Kin's pinned `gh` and
  * Typst first on PATH. Its hook still asks per call: a turn others
  * can read, one that read outside text, or a run Kin hasn't adopted gets only the confined tools.
@@ -158,6 +182,8 @@ const fullOptions = (
     readonly auth: AuthSettings;
     readonly environment: NodeJS.ProcessEnv;
     readonly toolDirectories: ReadonlyArray<string>;
+    readonly signDirectory: string;
+    readonly agentName: string | undefined;
     readonly lead: boolean;
   },
 ) => {
@@ -175,6 +201,7 @@ const fullOptions = (
           settings: {
             ...session.auth,
             ...settings,
+            ...NO_PROVIDER_FOOTER,
             autoMemoryEnabled: false,
             autoDreamEnabled: false,
             env: { ...session.auth.env, ...settings?.env, ENABLE_TOOL_SEARCH: loading.search },
@@ -182,7 +209,11 @@ const fullOptions = (
         }),
     env: {
       ...environment,
-      PATH: [...session.toolDirectories, environment.PATH].filter(Boolean).join(":"),
+      ...signingPath(environment, {
+        directory: session.signDirectory,
+        toolDirectories: session.toolDirectories,
+        agentName: session.agentName,
+      }),
       ENABLE_TOOL_SEARCH: loading.search,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     },
@@ -220,6 +251,21 @@ export const claudeQueryRunner = <E, R>(
           Context.getOption(services, KinAgentSessionPolicy),
         ),
       );
+      // The signing gh, in front of the pinned one; a failed write leaves agents with the plain gh.
+      const signDirectory = path.join(kinDirectory, "gh-sign");
+      if (Option.isSome(policy))
+        yield* Effect.gen(function* () {
+          yield* fs.makeDirectory(signDirectory, { recursive: true });
+          const shim = path.join(signDirectory, "gh");
+          // The pinned gh's folder comes first (AgentSession.sessionPolicyLayer).
+          const pinned = policy.value.toolDirectories[0] ?? "";
+          yield* fs.writeFileString(shim, ghSignScript(path.join(pinned, "gh")));
+          yield* fs.chmod(shim, 0o755);
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't write its signing gh", { cause }),
+          ),
+        );
       const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
       const run = Effect.runPromiseWith(context);
       /**
@@ -283,6 +329,8 @@ export const claudeQueryRunner = <E, R>(
                   auth: yield* confiner.ownerAuth(input.options.env),
                   environment: yield* HostProcess.Environment,
                   toolDirectories: policy.value.toolDirectories,
+                  signDirectory,
+                  agentName: yield* policy.value.agentName(input.threadId),
                   lead: false,
                 }),
               },
@@ -313,6 +361,8 @@ export const claudeQueryRunner = <E, R>(
                   auth: yield* confiner.ownerAuth(input.options.env),
                   environment: yield* HostProcess.Environment,
                   toolDirectories: policy.value.toolDirectories,
+                  signDirectory,
+                  agentName: yield* policy.value.agentName(input.threadId),
                   lead: true,
                 }),
               },

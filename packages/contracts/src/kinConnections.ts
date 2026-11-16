@@ -372,17 +372,54 @@ export const KinGitHubSignIn = Schema.Struct({
 });
 export type KinGitHubSignIn = typeof KinGitHubSignIn.Type;
 
+/** What Kin watches on GitHub with the owner's login, and how the last look went. */
+export const KinGitHubWatch = Schema.Struct({
+  repos: NonNegativeInt,
+  /** When Kin last asked GitHub what changed; null before the first time. */
+  checkedAt: Schema.NullOr(NonNegativeInt),
+  /** Pieces of work GitHub started for an agent since midnight on the owner's clock. */
+  handledToday: NonNegativeInt,
+  /** Why the last look failed and how to fix it, in plain words; null when it worked. */
+  problem: Schema.NullOr(Schema.String),
+});
+export type KinGitHubWatch = typeof KinGitHubWatch.Type;
+
 export const KinGitHubStatus = Schema.Struct({
   orgId: KinOrgId,
   account: Schema.NullOr(KinGitHubAccount),
   signIn: Schema.NullOr(KinGitHubSignIn),
   /** Why the last sign-in didn't finish, until the next one starts. */
   failed: Schema.NullOr(Schema.String),
+  /** Present while connected; an older server sends none. */
+  watch: Schema.optional(KinGitHubWatch),
 });
 export type KinGitHubStatus = typeof KinGitHubStatus.Type;
 
 export const KinGitHubInput = Schema.Struct({ orgId: KinOrgId });
 export type KinGitHubInput = typeof KinGitHubInput.Type;
+
+/** A repo Kin may watch: the owner's or his organisations', where his login can push. */
+export const KinGitHubRepo = Schema.Struct({
+  repo: TrimmedNonEmptyString,
+  /** Off when the owner said to leave it alone; forks of other people's repos start off. */
+  watched: Schema.Boolean,
+  fork: Schema.Boolean,
+  /** An @-mention of the owner's own login here calls an agent too. */
+  mentions: Schema.Boolean,
+});
+export type KinGitHubRepo = typeof KinGitHubRepo.Type;
+
+export const KinGitHubRepos = Schema.Struct({ repos: Schema.Array(KinGitHubRepo) });
+export type KinGitHubRepos = typeof KinGitHubRepos.Type;
+
+/** One repo's switch; `repo` null sets every repo back to the default (watch everything). */
+export const KinGitHubRepoSetInput = Schema.Struct({
+  orgId: KinOrgId,
+  repo: Schema.NullOr(TrimmedNonEmptyString),
+  watched: Schema.optional(Schema.Boolean),
+  mentions: Schema.optional(Schema.Boolean),
+});
+export type KinGitHubRepoSetInput = typeof KinGitHubRepoSetInput.Type;
 
 /** Starts a sign-in with a code, or, given `token`, signs in with a token the owner made. */
 export const KinGitHubConnectInput = Schema.Struct({
@@ -488,6 +525,16 @@ export const KinConnectionRpcs = [
     success: KinGitHubStatus,
     error: KinError,
   }),
+  Rpc.make("kin.github.repos", {
+    payload: KinGitHubInput,
+    success: KinGitHubRepos,
+    error: KinError,
+  }),
+  Rpc.make("kin.github.repos.set", {
+    payload: KinGitHubRepoSetInput,
+    success: KinGitHubRepos,
+    error: KinError,
+  }),
 ] as const;
 
 // Owner-level settings (`KIN_RPC_ACCESS`): what outside services agents reach, and with what key.
@@ -511,4 +558,6 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.github.connect.start": AuthKinChatScope,
   "kin.github.connect.cancel": AuthKinChatScope,
   "kin.github.disconnect": AuthKinChatScope,
+  "kin.github.repos": AuthKinChatScope,
+  "kin.github.repos.set": AuthKinChatScope,
 } as const;

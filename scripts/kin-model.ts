@@ -113,6 +113,13 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/lead/Handoff.ts",
     "apps/server/src/kin/lead/WakeupRunner.ts",
   ],
+  "github-events": [
+    "apps/server/src/kin/github/GitHubWatch.ts",
+    "apps/server/src/kin/github/githubTriggers.ts",
+    "apps/server/src/kin/github/agentMark.ts",
+    "apps/server/src/kin/github/ghSign.ts",
+    "apps/server/src/kin/triggers/githubEvents.ts",
+  ],
 };
 /** The models a change touches: a covered file, the model's own folder, or this runner. */
 export const modelsFor = (files: ReadonlyArray<string>) =>
