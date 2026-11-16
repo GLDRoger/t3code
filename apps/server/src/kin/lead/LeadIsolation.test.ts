@@ -239,7 +239,9 @@ it.effect(
           ghDirectory: "/kin-home/kin-tools/gh-pinned",
           // A lead's thread, and a task it delegated, work for the Tech lead.
           agentName: (threadId) =>
-            Effect.succeed(["kin:tech", "child-of-tech"].includes(threadId) ? "Tech lead" : undefined),
+            Effect.succeed(
+              ["kin:tech", "child-of-tech"].includes(threadId) ? "Tech lead" : undefined,
+            ),
         }),
       ) as Context.Context<KinServices>;
       const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
@@ -292,7 +294,10 @@ it.effect(
       const signing = `${stateDir}/kin/gh-sign`;
       assert.strictEqual(full?.env?.PATH, `${signing}:/kin-home/kin-tools/gh-pinned:/usr/bin`);
       assert.strictEqual(full?.env?.KIN_AGENT_NAME, "Tech lead");
-      assert.include(yield* fs.readFileString(`${signing}/gh`), "REAL='/kin-home/kin-tools/gh-pinned/gh'");
+      assert.include(
+        yield* fs.readFileString(`${signing}/gh`),
+        "REAL='/kin-home/kin-tools/gh-pinned/gh'",
+      );
       const footerOff = (options: typeof full) =>
         typeof options?.settings === "object" &&
         options.settings.includeCoAuthoredBy === false &&

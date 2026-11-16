@@ -126,7 +126,7 @@ const leadOptions = (
  * agent's sessions: what it posts ends with its own signature (`ghSign.ts`), and its commits carry
  * only the `Co-authored-by` line its instructions give.
  */
-export const NO_PROVIDER_FOOTER = {
+const NO_PROVIDER_FOOTER = {
   attribution: { commit: "", pr: "", sessionUrl: false },
   includeCoAuthoredBy: false,
 } as const;
@@ -134,7 +134,11 @@ export const NO_PROVIDER_FOOTER = {
 /** What a Kin agent's session, or a task it delegated, posts with: the signing `gh` and its name. */
 const signingPath = (
   environment: NodeJS.ProcessEnv,
-  sign: { readonly directory: string; readonly ghDirectory: string; readonly agentName: string | undefined },
+  sign: {
+    readonly directory: string;
+    readonly ghDirectory: string;
+    readonly agentName: string | undefined;
+  },
 ) => ({
   PATH: [sign.directory, sign.ghDirectory, environment.PATH].filter(Boolean).join(":"),
   ...(sign.agentName === undefined ? {} : { KIN_AGENT_NAME: sign.agentName }),
@@ -227,7 +231,9 @@ export const claudeQueryRunner = <E, R>(
           yield* fs.writeFileString(shim, ghSignScript(path.join(policy.value.ghDirectory, "gh")));
           yield* fs.chmod(shim, 0o755);
         }).pipe(
-          Effect.catchCause((cause) => Effect.logWarning("Kin couldn't write its signing gh", { cause })),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't write its signing gh", { cause }),
+          ),
         );
       const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
       const run = Effect.runPromiseWith(context);

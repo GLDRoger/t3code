@@ -3,11 +3,14 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   createKinGitHubActions,
+  createKinGitHubRepoActions,
   KIN_GITHUB_COPY as COPY,
+  KIN_GITHUB_WATCH_COPY as WATCH,
   kinGitHubRow,
   kinGitHubSheet,
+  kinGitHubWatchLine,
 } from "@t3tools/client-runtime/kin/kinGitHub";
-import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import type { EnvironmentId, KinGitHubWatch, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -21,10 +24,12 @@ import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { ListRow } from "../../../components/ui/ListRow";
 import { ListSection } from "../../../components/ui/ListSection";
+import { ListToggleRow } from "../../../components/ui/ListToggleRow";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { SecretTextInput } from "../../../components/ui/SecretTextInput";
+import { useNowMinuteMs } from "../../../lib/clock";
 import { tryCopyTextWithHaptic } from "../../../lib/copyTextWithHaptic";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
@@ -128,7 +133,89 @@ export function KinGitHubSection(props: {
           <ListActionRow label={COPY.disconnect} tone="danger" onPress={confirmDisconnect} />
         )}
       </ListSection>
+      {status.account?.problem === null && status.watch !== undefined ? (
+        <WatchedRepos target={props.target} watch={status.watch} />
+      ) : null}
     </View>
+  );
+}
+
+/** What Kin watches with the login: one line, why a look failed, and a switch per repo. */
+function WatchedRepos(props: {
+  readonly target: KinConnectionsTarget;
+  readonly watch: KinGitHubWatch;
+}) {
+  const { target, watch } = props;
+  const [open, setOpen] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const line = kinGitHubWatchLine(watch, useNowMinuteMs());
+  return (
+    <>
+      {watch.problem === null ? null : <Notice tone="danger" message={watch.problem} />}
+      {problem === null ? null : <ErrorBanner message={problem} />}
+      <ListSection title={WATCH.reposTitle} footer={open ? `${line}\n\n${WATCH.reposHint}` : line}>
+        {open ? <RepoRows target={target} onProblem={setProblem} /> : null}
+        <ListActionRow
+          label={open ? WATCH.hideRepos : WATCH.showRepos(watch.repos)}
+          onPress={() => setOpen(!open)}
+        />
+      </ListSection>
+    </>
+  );
+}
+
+function RepoRows(props: {
+  readonly target: KinConnectionsTarget;
+  readonly onProblem: (problem: string | null) => void;
+}) {
+  const { environmentId, orgId } = props.target;
+  const reposAtom = kinClient.githubRepos({ environmentId, input: { orgId } });
+  const result = useAtomValue(reposAtom);
+  const reload = useAtomRefresh(reposAtom);
+  const set = useAtomCommand(kinClient.githubReposSet, { reportFailure: false });
+  const actions = createKinGitHubRepoActions({
+    orgId,
+    set: (input) => set({ environmentId, input }),
+    refresh: reload,
+  });
+  const settle = (outcome: Awaited<ReturnType<typeof actions.everything>>) =>
+    props.onProblem(outcome.ok ? null : outcome.problem);
+  const repos = Option.getOrNull(AsyncResult.value(result))?.repos ?? null;
+  if (repos === null)
+    return AsyncResult.isFailure(result) ? (
+      <ListActionRow label={KIN_RETRY} description={WATCH.loadFailed} onPress={reload} />
+    ) : (
+      <View className="items-center py-3">
+        <AppActivityIndicator />
+      </View>
+    );
+  return (
+    <>
+      {repos.length === 0 ? (
+        <View className="px-4 py-3">
+          <Text className="text-foreground-muted">{WATCH.noRepos}</Text>
+        </View>
+      ) : null}
+      {repos.map((repo) => (
+        <ListToggleRow
+          key={repo.repo}
+          label={repo.repo}
+          description={
+            [repo.fork ? WATCH.fork : null, repo.mentions ? WATCH.mentions : null]
+              .filter((part) => part !== null)
+              .join(" · ") || undefined
+          }
+          value={repo.watched}
+          onValueChange={(watched) => void actions.watch(repo, watched).then(settle)}
+        />
+      ))}
+      {repos.some((repo) => !repo.watched && !repo.fork) ? (
+        <ListActionRow
+          label={WATCH.watchEverything}
+          onPress={() => void actions.everything().then(settle)}
+        />
+      ) : null}
+    </>
   );
 }
 

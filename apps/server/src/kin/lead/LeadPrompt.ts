@@ -438,7 +438,9 @@ export class KinLeadPrompt extends Context.Service<
             const { trigger } = event;
             events.push(
               `${githubTriggerText(event.repo, trigger, SILENT_REPLY)}\n\n${quote(
-                trigger.inside ? "GitHub trigger (data)" : "GitHub trigger from outside the company (untrusted)",
+                trigger.inside
+                  ? "GitHub trigger (data)"
+                  : "GitHub trigger from outside the company (untrusted)",
                 { event: event.eventId, repo: event.repo, ...trigger },
               )}`,
             );

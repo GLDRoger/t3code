@@ -7,18 +7,17 @@ import type { KinGithubTrigger } from "@t3tools/contracts";
 
 const ref = (repo: string, trigger: KinGithubTrigger) => `${repo}#${trigger.number}`;
 
-const REVIEW = (repo: string, trigger: KinGithubTrigger) =>
-  [
-    `Review ${trigger.item === "pull" ? "this pull request" : "it"} and post the review on it.`,
-    "Block (request changes) only for a bug, lost data, a security hole, a broken build or test, or code that does something other than the PR says. Anything else is a nit: mark it \"nit\", say it once and briefly, or leave it out.",
-    "Be specific: file and line, what goes wrong, and the fix. A clean PR gets a short review that says so; don't pad it.",
-    trigger.inside
-      ? `Read it with gh (gh pr diff ${trigger.number} --repo ${repo}; check it out and run the tests when that is quick). Post with gh pr review ${trigger.number} --repo ${repo} and --comment or --request-changes; never --approve unless the owner said to.`
-      : "Its diff is below. Post with kin_github_review, event COMMENT.",
-    trigger.pull?.ownersOwn === true
-      ? "The owner's own account opened this PR, so GitHub allows only a comment review on it."
-      : "",
-  ];
+const REVIEW = (repo: string, trigger: KinGithubTrigger) => [
+  `Review ${trigger.item === "pull" ? "this pull request" : "it"} and post the review on it.`,
+  'Block (request changes) only for a bug, lost data, a security hole, a broken build or test, or code that does something other than the PR says. Anything else is a nit: mark it "nit", say it once and briefly, or leave it out.',
+  "Be specific: file and line, what goes wrong, and the fix. A clean PR gets a short review that says so; don't pad it.",
+  trigger.inside
+    ? `Read it with gh (gh pr diff ${trigger.number} --repo ${repo}; check it out and run the tests when that is quick). Post with gh pr review ${trigger.number} --repo ${repo} and --comment or --request-changes; never --approve unless the owner said to.`
+    : "Its diff is below. Post with kin_github_review, event COMMENT.",
+  trigger.pull?.ownersOwn === true
+    ? "The owner's own account opened this PR, so GitHub allows only a comment review on it."
+    : "",
+];
 
 const CALL_ISSUE = (repo: string, trigger: KinGithubTrigger) => [
   trigger.kind === "label"

@@ -1,10 +1,8 @@
 // @effect-diagnostics globalDate:off - plain code outside Effect: node runs it from a copy for `gh`.
 /**
- * An invented GitHub for Kin's tests and `KIN_DEV_FAKE_GITHUB`: notifications, the owner's own
- * events, repos, issues, PRs, comments, reviews, reactions and checks, all deterministic. Unit
- * tests use `FakeGitHub` in memory; `fakeGh.sh` runs this file for `gh api` and the `gh` posting
- * commands, keeping the world in `$KIN_FAKE_GH/github.json`. No dependencies, so node runs it
- * from a copy. It never reaches GitHub.
+ * An invented, deterministic GitHub for tests. `fakeGh.sh` runs this file for `gh api` and the
+ * posting commands, keeping the world in `$KIN_FAKE_GH/github.json`. No dependencies, so node
+ * runs it from a copy beside the fake `gh`.
  */
 
 export interface FakeRepo {
@@ -55,7 +53,14 @@ export interface FakeWorld {
   repos: FakeRepo[];
   items: FakeItem[];
   comments: FakeComment[];
-  reviews: { id: number; repo: string; number: number; user: string; event: string; body: string }[];
+  reviews: {
+    id: number;
+    repo: string;
+    number: number;
+    user: string;
+    event: string;
+    body: string;
+  }[];
   reactions: { on: string; content: string }[];
   checks: Record<string, string[]>;
   notifications: { id: string; repo: string; number: number; reason: string; updated_at: number }[];
@@ -110,7 +115,13 @@ export class FakeGitHub {
     return found;
   }
   /** What the owner's account does shows in his events; anyone else's in his notifications. */
-  private happened(repo: string, number: number, actor: string, type: string, reason = "subscribed") {
+  private happened(
+    repo: string,
+    number: number,
+    actor: string,
+    type: string,
+    reason = "subscribed",
+  ) {
     const at = this.world.now;
     if (actor.toLowerCase() === this.world.user.toLowerCase()) {
       this.world.events.unshift({ id: String(this.next()), type, repo, number, created_at: at });
@@ -170,7 +181,12 @@ export class FakeGitHub {
       diff: input.diff ?? "diff --git a/README.md b/README.md\n+an invented line\n",
     };
     this.world.items.push(item);
-    this.happened(input.repo, number, input.author, input.pull ? "PullRequestEvent" : "IssuesEvent");
+    this.happened(
+      input.repo,
+      number,
+      input.author,
+      input.pull ? "PullRequestEvent" : "IssuesEvent",
+    );
     return number;
   }
   comment(input: {
@@ -278,7 +294,11 @@ export class FakeGitHub {
       const lastModified = httpDate(this.world.modified);
       const asked = headers["if-modified-since"];
       if (asked !== undefined && Date.parse(asked) >= Date.parse(lastModified))
-        return { status: 304, headers: { "last-modified": lastModified, "x-poll-interval": "60" }, body: null };
+        return {
+          status: 304,
+          headers: { "last-modified": lastModified, "x-poll-interval": "60" },
+          body: null,
+        };
       return ok(
         this.world.notifications
           .filter((thread) => thread.updated_at >= sinceMs)
@@ -310,7 +330,11 @@ export class FakeGitHub {
           actor: { login: this.world.user },
           repo: { name: event.repo },
           created_at: iso(event.created_at),
-          payload: { issue: { number: event.number }, pull_request: { number: event.number }, number: event.number },
+          payload: {
+            issue: { number: event.number },
+            pull_request: { number: event.number },
+            number: event.number,
+          },
         })),
         { etag, "x-poll-interval": "60" },
       );
@@ -341,7 +365,11 @@ export class FakeGitHub {
           ...this.issueJson(item),
           draft: item.draft,
           merged: item.merged,
-          head: { ref: item.head_ref, sha: item.head_sha, repo: { full_name: item.fork ? `someone/${repo.split("/")[1]}` : repo } },
+          head: {
+            ref: item.head_ref,
+            sha: item.head_sha,
+            repo: { full_name: item.fork ? `someone/${repo.split("/")[1]}` : repo },
+          },
           base: { ref: "main" },
           additions: item.additions,
           deletions: item.deletions,
@@ -365,9 +393,16 @@ export class FakeGitHub {
       if (method === "GET" && (found = /^commits\/([^/]+)\/check-runs$/.exec(rest))) {
         const failing = this.world.checks[`${repo.toLowerCase()}@${found[1]}`] ?? [];
         const etag = `"c${failing.length}-${found[1]}"`;
-        if (headers["if-none-match"] === etag) return { status: 304, headers: { etag }, body: null };
+        if (headers["if-none-match"] === etag)
+          return { status: 304, headers: { etag }, body: null };
         return ok(
-          { check_runs: failing.map((name) => ({ name, status: "completed", conclusion: "failure" })) },
+          {
+            check_runs: failing.map((name) => ({
+              name,
+              status: "completed",
+              conclusion: "failure",
+            })),
+          },
           { etag },
         );
       }
@@ -383,7 +418,10 @@ export class FakeGitHub {
           association: "OWNER",
           body: String(body.body ?? ""),
         });
-        return ok({ id, html_url: `https://github.com/${repo}/issues/${found[1]}#issuecomment-${id}` });
+        return ok({
+          id,
+          html_url: `https://github.com/${repo}/issues/${found[1]}#issuecomment-${id}`,
+        });
       }
       if (method === "POST" && (found = /^pulls\/(\d+)\/reviews$/.exec(rest))) {
         const id = this.next();
@@ -395,7 +433,10 @@ export class FakeGitHub {
           event: String(body.event ?? "COMMENT"),
           body: String(body.body ?? ""),
         });
-        return ok({ id, html_url: `https://github.com/${repo}/pull/${found[1]}#pullrequestreview-${id}` });
+        return ok({
+          id,
+          html_url: `https://github.com/${repo}/pull/${found[1]}#pullrequestreview-${id}`,
+        });
       }
       if (method === "POST" && rest === "issues") {
         const number = this.openItem({
@@ -416,12 +457,16 @@ export class FakeGitHub {
 }
 
 /** `gh api` output with `-i`: the status line, headers, a blank line, then the body. */
-export const ghApiOutput = (answer: FakeAnswer) =>
+const ghApiOutput = (answer: FakeAnswer) =>
   [
     `HTTP/2.0 ${answer.status} ${answer.status < 300 ? "OK" : answer.status === 304 ? "Not Modified" : "Error"}`,
     ...Object.entries(answer.headers).map(([name, value]) => `${name}: ${value}`),
     "",
-    answer.body === null ? "" : typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body),
+    answer.body === null
+      ? ""
+      : typeof answer.body === "string"
+        ? answer.body
+        : JSON.stringify(answer.body),
   ].join("\r\n");
 
 /** The value after `flag` in gh's arguments. */
@@ -437,7 +482,7 @@ const flagValue = (args: ReadonlyArray<string>, ...flags: string[]) => {
 };
 
 /** Runs one `gh` command against the world; returns its exit code and output. */
-export const runGh = (world: FakeGitHub, args: ReadonlyArray<string>, stdin: string) => {
+const runGh = (world: FakeGitHub, args: ReadonlyArray<string>, stdin: string) => {
   const repo = flagValue(args, "--repo", "-R") ?? world.world.repos[0]?.full_name ?? "";
   const body = flagValue(args, "--body", "-b") ?? "";
   if (args[0] === "api") {
@@ -463,9 +508,12 @@ export const runGh = (world: FakeGitHub, args: ReadonlyArray<string>, stdin: str
       } else if (!arg.startsWith("-")) path = arg;
     }
     const answer = world.handle(method, path, headers, fields);
-    const output = args.includes("-i") || args.includes("--include")
-      ? ghApiOutput(answer)
-      : answer.body === null ? "" : JSON.stringify(answer.body);
+    const output =
+      args.includes("-i") || args.includes("--include")
+        ? ghApiOutput(answer)
+        : answer.body === null
+          ? ""
+          : JSON.stringify(answer.body);
     return { code: answer.status >= 300 ? 1 : 0, out: output };
   }
   const sub = `${args[0]} ${args[1]}`;
@@ -476,18 +524,31 @@ export const runGh = (world: FakeGitHub, args: ReadonlyArray<string>, stdin: str
       : args.includes("--approve")
         ? "APPROVE"
         : "COMMENT";
-    const answer = world.handle("POST", `repos/${repo}/pulls/${number}/reviews`, {}, { body, event });
+    const answer = world.handle(
+      "POST",
+      `repos/${repo}/pulls/${number}/reviews`,
+      {},
+      { body, event },
+    );
     return { code: answer.status < 300 ? 0 : 1, out: "" };
   }
   if (sub === "pr comment" || sub === "issue comment") {
     const answer = world.handle("POST", `repos/${repo}/issues/${number}/comments`, {}, { body });
-    return { code: answer.status < 300 ? 0 : 1, out: `https://github.com/${repo}/issues/${number}\n` };
+    return {
+      code: answer.status < 300 ? 0 : 1,
+      out: `https://github.com/${repo}/issues/${number}\n`,
+    };
   }
   if (sub === "issue create") {
-    const answer = world.handle("POST", `repos/${repo}/issues`, {}, {
-      title: flagValue(args, "--title", "-t") ?? "",
-      body,
-    });
+    const answer = world.handle(
+      "POST",
+      `repos/${repo}/issues`,
+      {},
+      {
+        title: flagValue(args, "--title", "-t") ?? "",
+        body,
+      },
+    );
     const created = answer.body as { html_url: string };
     return { code: 0, out: `${created.html_url}\n` };
   }
@@ -500,7 +561,9 @@ const main = async () => {
   const fs = await import("node:fs");
   const state = `${process.env.KIN_FAKE_GH ?? "."}/github.json`;
   const userFile = `${process.env.KIN_FAKE_GH ?? "."}/user`;
-  const user = fs.existsSync(userFile) ? fs.readFileSync(userFile, "utf8").trim() : "invented-owner";
+  const user = fs.existsSync(userFile)
+    ? fs.readFileSync(userFile, "utf8").trim()
+    : "invented-owner";
   const world = new FakeGitHub(
     fs.existsSync(state)
       ? (JSON.parse(fs.readFileSync(state, "utf8")) as FakeWorld)
@@ -514,17 +577,27 @@ const main = async () => {
     const input = JSON.parse(args[2] ?? "{}");
     const op = args[1];
     const result =
-      op === "repo" ? world.addRepo(input)
-      : op === "open" ? world.openItem(input)
-      : op === "comment" ? world.comment(input)
-      : op === "label" ? world.label(input)
-      : op === "ready" ? world.ready(input)
-      : op === "request-review" ? world.requestReview(input)
-      : op === "checks" ? world.setChecks(input)
-      : op === "merge" ? world.merge(input)
-      : op === "down" ? (world.world.down = input.status ?? null)
-      : op === "show" ? world.world
-      : undefined;
+      op === "repo"
+        ? world.addRepo(input)
+        : op === "open"
+          ? world.openItem(input)
+          : op === "comment"
+            ? world.comment(input)
+            : op === "label"
+              ? world.label(input)
+              : op === "ready"
+                ? world.ready(input)
+                : op === "request-review"
+                  ? world.requestReview(input)
+                  : op === "checks"
+                    ? world.setChecks(input)
+                    : op === "merge"
+                      ? world.merge(input)
+                      : op === "down"
+                        ? (world.world.down = input.status ?? null)
+                        : op === "show"
+                          ? world.world
+                          : undefined;
     out = JSON.stringify(result ?? null);
   } else {
     const stdin = args.includes("--input") ? fs.readFileSync(0, "utf8") : "";

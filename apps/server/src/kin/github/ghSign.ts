@@ -11,7 +11,7 @@ NAME="$KIN_AGENT_NAME"
 [ -n "$NAME" ] || exec "$REAL" "$@"
 SLUG=$(printf '%s' "$NAME" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-//; s/-$//')
 [ -n "$SLUG" ] || SLUG=agent
-SIGN="— $NAME, via Kin
+SIGN="_$NAME, via Kin_
 <!-- kin-agent: $SLUG -->"
 sign() {
   case "$1" in

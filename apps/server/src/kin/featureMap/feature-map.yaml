@@ -139,10 +139,13 @@ features:
         kin_github_runs,
         kin_github_review,
         kin_github_link,
+        kin_github_watch,
       ]
     proof:
       - apps/server/src/kin/github/KinRepoReads.test.ts
       - apps/server/src/kin/github/PullRequestCare.test.ts
+      - apps/server/src/kin/github/GitHubWatch.test.ts
+      - .agents/skills/verify-kin/scripts/github-events.sh
 
   - id: come-back-later
     name: An agent comes back later or on a schedule

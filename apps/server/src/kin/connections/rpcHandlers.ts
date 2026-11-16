@@ -75,10 +75,19 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
     yield* github((g, people) => g.status(people, { orgId }));
     if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
     return yield* run.pipe(
-      Effect.provideService(SqlClient.SqlClient, Context.get(kin.value.services.value, SqlClient.SqlClient)),
-      Effect.catchTag("SqlError", () =>
-        Effect.fail(new KinChatError({ reason: "unavailable", message: "Kin couldn't read its GitHub watch." })),
+      Effect.provideService(
+        SqlClient.SqlClient,
+        Context.get(kin.value.services.value, SqlClient.SqlClient),
       ),
+      Effect.catchTags({
+        SqlError: () =>
+          Effect.fail(
+            new KinChatError({
+              reason: "unavailable",
+              message: "Kin couldn't read its GitHub watch.",
+            }),
+          ),
+      }),
     );
   });
   const withWatch = (status: KinGitHubStatus) =>
@@ -86,7 +95,10 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       ? Effect.succeed(status)
       : Clock.currentTimeMillis.pipe(
           Effect.flatMap((now) => watchSummary(status.orgId, now)),
-          Effect.provideService(SqlClient.SqlClient, Context.get(kin.value.services.value, SqlClient.SqlClient)),
+          Effect.provideService(
+            SqlClient.SqlClient,
+            Context.get(kin.value.services.value, SqlClient.SqlClient),
+          ),
           Effect.map((watch) => (watch === undefined ? status : { ...status, watch })),
           Effect.orElseSucceed(() => status),
         );

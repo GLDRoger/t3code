@@ -6,10 +6,10 @@ import { isAgentText } from "./agentMark.ts";
  */
 
 /** GitHub's author associations for people who can write to the repo: inside the company. */
-export const INSIDE_ASSOCIATIONS: ReadonlySet<string> = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-export const isInside = (association: string) => INSIDE_ASSOCIATIONS.has(association.toUpperCase());
+const INSIDE_ASSOCIATIONS: ReadonlySet<string> = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+const isInside = (association: string) => INSIDE_ASSOCIATIONS.has(association.toUpperCase());
 
-export const KIN_LABEL = "kin";
+const KIN_LABEL = "kin";
 const TEXT_CAP = 4_000;
 
 export interface ThreadComment {
@@ -88,8 +88,7 @@ export interface Trigger {
     | { readonly type: "comment"; readonly kind: "issue" | "review"; readonly id: number };
 }
 
-const clip = (text: string) =>
-  text.length <= TEXT_CAP ? text : `${text.slice(0, TEXT_CAP - 1)}…`;
+const clip = (text: string) => (text.length <= TEXT_CAP ? text : `${text.slice(0, TEXT_CAP - 1)}…`);
 
 /** Lines a person wrote here: no quoted replies and no code, so a quoted call never re-calls. */
 const ownLines = (text: string) => {
@@ -111,7 +110,7 @@ const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  * The agent a text calls, or undefined: a line starting with `/kin`, or with a Kin agent's name
  * followed by a comma or colon ("Tech lead, …"); with `mentions` on, the owner's @login too.
  */
-export const calledAgent = (
+const calledAgent = (
   text: string,
   context: Pick<DecideContext, "agents" | "defaultAgentId" | "mentions" | "ownerLogin">,
 ): string | undefined => {

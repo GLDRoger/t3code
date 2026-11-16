@@ -1,4 +1,9 @@
-import type { KinGitHubRepo, KinGitHubRepoSetInput, KinGitHubWatch, KinOrgId } from "@t3tools/contracts";
+import type {
+  KinGitHubRepo,
+  KinGitHubRepoSetInput,
+  KinGitHubWatch,
+  KinOrgId,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -14,9 +19,7 @@ import { ownerZone } from "../work/recordRows.ts";
  */
 
 const KnownRepo = Schema.Struct({ repo: Schema.String, fork: Schema.Boolean });
-const decodeKnown = Schema.decodeUnknownOption(
-  Schema.fromJsonString(Schema.Array(KnownRepo)),
-);
+const decodeKnown = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(KnownRepo)));
 
 export interface WatchRow {
   readonly login: string | null;
@@ -56,7 +59,8 @@ export const repoList = Effect.fn("KinGitHubWatchStore.repos")(function* (orgId:
       return {
         repo: entry.repo,
         fork: entry.fork,
-        watched: pref?.watched === null || pref?.watched === undefined ? !entry.fork : pref.watched === 1,
+        watched:
+          pref?.watched === null || pref?.watched === undefined ? !entry.fork : pref.watched === 1,
         mentions: pref?.mentions === 1,
       };
     })
@@ -68,7 +72,9 @@ export const companyRepo = Effect.fn("KinGitHubWatchStore.companyRepo")(function
   orgId: KinOrgId,
   repo: string,
 ) {
-  return (yield* repoList(orgId)).find((entry) => entry.repo.toLowerCase() === repo.trim().toLowerCase());
+  return (yield* repoList(orgId)).find(
+    (entry) => entry.repo.toLowerCase() === repo.trim().toLowerCase(),
+  );
 });
 
 export const setRepo = Effect.fn("KinGitHubWatchStore.setRepo")(function* (

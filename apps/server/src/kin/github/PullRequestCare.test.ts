@@ -174,7 +174,10 @@ describe("KinPullRequestCare.review", () => {
           "/repos/acme/site/pulls/7/reviews",
         ]);
         const sent = requests.at(-1)?.body as { body: string; event: string };
-        assert.match(sent.body, /^Looks right; one nit\.\n\n— .+, via Kin\n<!-- kin-agent: .+ -->$/);
+        assert.match(
+          sent.body,
+          /^Looks right; one nit\.\n\n_.+, via Kin_\n<!-- kin-agent: .+ -->$/,
+        );
         assert.strictEqual(sent.event, "COMMENT");
 
         // Anyone else's repo, public or private: a proposal and a card, nothing posted.
@@ -216,7 +219,7 @@ describe("KinPullRequestCare.review", () => {
         const done = yield* again("client/site", site!.postId);
         assert.strictEqual(done.status, "posted");
         const confirmed = requests.at(-1)?.body as { body: string; event: string };
-        assert.match(confirmed.body, /^Findings for client\/site\n\n— .+, via Kin/);
+        assert.match(confirmed.body, /^Findings for client\/site\n\n_.+, via Kin_/);
         assert.strictEqual(confirmed.event, "REQUEST_CHANGES");
         assert.strictEqual((yield* again("client/site", site!.postId)).status, "posted");
         assert.lengthOf(posts(requests), 3);
