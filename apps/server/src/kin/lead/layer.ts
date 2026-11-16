@@ -69,6 +69,7 @@ import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Handoff from "./Handoff.ts";
+import * as Team from "../team/KinTeam.ts";
 import * as Workers from "./Workers.ts";
 import * as KinRepoReads from "../github/KinRepoReads.ts";
 import * as PullRequestCare from "../github/PullRequestCare.ts";
@@ -232,6 +233,7 @@ const runner = Layer.effectDiscard(
     const memoryChanges = yield* Effect.serviceOption(KinMemoryChanges);
     const lander = yield* Effect.serviceOption(MemoryLander.MemoryLander);
     const hub = yield* KinChatHub;
+    const team = yield* Effect.serviceOption(Team.KinTeam);
     // A cleared chat's messages are gone, so are the words memory quoted from them.
     if (Option.isSome(writer))
       yield* (yield* hub.subscribeAll).pipe(
@@ -257,6 +259,11 @@ const runner = Layer.effectDiscard(
         yield* Context.get(context, Scheduler.Scheduler).register(
           "kin-memory-pull-requests",
           yield* memoryPullRequestSweep(lander.value),
+        );
+      if (Option.isSome(team))
+        yield* Context.get(context, Scheduler.Scheduler).register(
+          "kin-team-sweep",
+          team.value.sweep(),
         );
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
@@ -486,6 +493,7 @@ const production = withServices(
     issuedAmounts,
   ).pipe(
     Layer.provideMerge(workers),
+    Layer.provideMerge(Team.layer),
     Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),
     Layer.provide(repoReads),

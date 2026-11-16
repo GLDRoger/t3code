@@ -238,6 +238,19 @@ export type KinFeedRow =
       readonly retry: string | null;
     }
   /**
+   * One agent's words in another's chat (`relay`). `sent_by`: what one agent asked another, on
+   * the viewer's side of the receiver's chat. `reply_from`: the answer, or a Team-room outcome,
+   * back in the asker's chat, naming who answered; `discussionId` links to the discussion.
+   */
+  | {
+      readonly type: "relay";
+      readonly key: string;
+      readonly message: KinMessage;
+      readonly relay: "sent_by" | "reply_from";
+      readonly agentLabel: string;
+      readonly discussionId: string | null;
+    }
+  /**
    * A centred time divider: it starts each local day and any message after a quiet gap
    * (`KIN_TIME_GAP_MS`). `label` is relative to the day the rows were built on.
    */
@@ -362,6 +375,11 @@ export function buildKinFeedRows(
   expandedRuns: ReadonlySet<string>,
   now: Date = new Date(),
   drafts: ReadonlyArray<KinHeldDraft> = [],
+  /**
+   * The Team room, where discussions are the point: each opens by default under its line, and
+   * `expandedRuns` lists the ones the viewer closed.
+   */
+  openRuns = false,
 ): ReadonlyArray<KinFeedRow> {
   const visible = messages.filter(
     (message) =>
@@ -404,6 +422,18 @@ export function buildKinFeedRows(
 
   const pushMessage = (message: KinMessage) => {
     startDay(message);
+    if (isSystem(message) && message.relay !== undefined) {
+      rows.push({
+        type: "relay",
+        key: message.messageId,
+        message,
+        relay: message.relay.kind,
+        agentLabel: viewer.agentNames.get(message.relay.agentId) ?? "Another agent",
+        discussionId: message.discussionId ?? null,
+      });
+      previousAuthor = null;
+      return;
+    }
     // Host cards (memory changes, routines) arrive as system messages carrying a widget, and a
     // worker's screenshots as one carrying files: both draw as messages, not a line.
     if (
@@ -471,7 +501,7 @@ export function buildKinFeedRows(
     const decision =
       run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
         ?.body ?? null;
-    const expanded = expandedRuns.has(runId);
+    const expanded = expandedRuns.has(runId) !== openRuns;
     // Keyed by run so a page prepended into the run keeps the row; a run split by another
     // author falls back to its first message.
     const key = foldKeys.has(`fold:${runId}`)
@@ -679,6 +709,7 @@ export function kinRowSeq(row: KinFeedRow): number {
   switch (row.type) {
     case "message":
     case "system":
+    case "relay":
       return row.message.seq;
     case "fold":
       return row.lastSeq;
@@ -726,6 +757,11 @@ export function kinSeqToMarkRead(input: {
   if (!input.seesEnd || input.latestSeq <= sent || input.unread === 0) return null;
   return input.latestSeq;
 }
+
+/** What a chat has left to mark read: the Team room shows no count, but its "new" dot clears on read. */
+export const kinUnreadToMark = (
+  summary: { readonly unread: number; readonly fresh?: boolean | undefined } | undefined,
+) => (summary === undefined ? null : summary.fresh === true ? 1 : summary.unread);
 
 /** Whether a refused mark may be retried: the reader came back online or back to the chat. */
 export const kinMarkReadRearms = (

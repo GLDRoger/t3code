@@ -54,6 +54,7 @@ import { withInlineContext } from "../../apps/server/src/orchestration-v2/Contex
 import {
   groupRules as kinGroupRules,
   instructions as kinLeadInstructions,
+  teamRules as kinTeamRules,
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
@@ -1116,6 +1117,7 @@ const fillKinRules = (prompt: string) =>
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{WEEKLY_RULE}}", WEEKLY_RULE)
     .replaceAll("{{GROUP_RULES}}", kinGroupRules)
+    .replaceAll("{{TEAM_RULES}}", kinTeamRules)
     .replaceAll("{{HANDED_BACK_WORK}}", HANDED_BACK_WORK)
     .replaceAll("{{STARTED_RULE}}", STARTED_RULE)
     .replaceAll("{{SHARED_TURN}}", SHARED_TURN_LINE)

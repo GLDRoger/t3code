@@ -10,6 +10,7 @@ import {
   KinPersonId,
   ProviderInstanceId,
   KinWakeupId,
+  KIN_TEAM_ROOM_TEAM_ID,
   ThreadId,
   MemoryItemHead,
   type KinAuthor,
@@ -1835,6 +1836,18 @@ it.effect(
       expect(built).not.toContain("Memory index size");
       // A group lane gets the group rules with the standing rules; a direct chat never does.
       expect(built.split(TURN_DIVIDER)[0]).toContain("# Group rules");
+      // The Team room has its own rules; no group-chat line about who answers or staying silent.
+      yield* sql`UPDATE kin_chats SET team_id = ${KIN_TEAM_ROOM_TEAM_ID} WHERE chat_id = ${chatId}`;
+      const room = yield* prompt.build({
+        ...input,
+        events: [event("now")],
+        lane: { chatId, mode: "notice" },
+      });
+      expect(room.split(TURN_DIVIDER)[0]).toContain("# Team room");
+      expect(room).not.toContain("# Group rules");
+      expect(room).not.toContain("default agent");
+      expect(room).not.toContain("NO_REPLY");
+      yield* sql`UPDATE kin_chats SET team_id = NULL WHERE chat_id = ${chatId}`;
       const direct = KinChatId.make("direct-chat");
       yield* repo.createChat({
         orgId,
