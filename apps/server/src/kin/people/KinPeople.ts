@@ -62,6 +62,7 @@ import { placesOf } from "../work/teamView.ts";
 import { accessOf, accessSql, isOwnerHimself, mayActAsOwner, ownerLevel } from "./KinAccess.ts";
 import { KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
 import { profileSets } from "./profileFields.ts";
+import { reholdAfter } from "../triggers/quietHold.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -1030,8 +1031,13 @@ export const make = Effect.gen(function* () {
             )),
             ...(pictureId === undefined ? [] : [sql`avatar_attachment_id = ${pictureId}`]),
           ];
-          yield* sql`UPDATE kin_people SET ${sql.csv(set)}
-            WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
+          yield* reholdAfter(
+            input.orgId,
+            input.personId,
+            sql`UPDATE kin_people SET ${sql.csv(set)}
+              WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`,
+          ).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
             Effect.mapError(toPersistenceSqlError("KinPeople.updateProfile")),
           );
           yield* refresh.touch(input.orgId, "people");

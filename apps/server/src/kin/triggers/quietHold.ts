@@ -72,6 +72,34 @@ const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, person
   return holdRule(zone, quiet, Option.getOrUndefined(hours));
 });
 
+/**
+ * Runs `change` to someone's clock (zone, quiet hours, working hours, the hold switch), then
+ * moves each line held for them to the first minute their new rule lets it go. A line held past
+ * the old rule's free minute waited for a time of its own, which it keeps when that is later.
+ */
+export const reholdAfter = Effect.fn("KinQuiet.rehold")(function* <A, E, R>(
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  change: Effect.Effect<A, E, R>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const before = yield* personRule(orgId, personId);
+  const result = yield* change;
+  const now = yield* Clock.currentTimeMillis;
+  const was = freeAt(before, now);
+  const free = freeAt(yield* personRule(orgId, personId), now);
+  const held = yield* sql<{ holdId: string; at: number }>`SELECT hold_id AS "holdId",
+      deliver_at AS at FROM kin_held_posts
+    WHERE org_id = ${orgId} AND person_id = ${personId} AND delivered_at IS NULL`;
+  for (const row of held) {
+    const at = Math.max(free, row.at > was ? row.at : now);
+    if (at !== row.at)
+      yield* sql`UPDATE kin_held_posts SET deliver_at = ${at}
+        WHERE org_id = ${orgId} AND hold_id = ${row.holdId}`;
+  }
+  return result;
+});
+
 /** Whether a line to `personId` waits at `now`, why, and the first minute it may go. */
 const personQuiet = Effect.fn("KinQuiet.person")(function* (
   orgId: KinOrgId,
