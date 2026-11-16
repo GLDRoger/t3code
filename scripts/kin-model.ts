@@ -38,6 +38,8 @@ export interface View {
   }>;
   readonly state: (vars: Vars) => string;
   readonly step: (action: string, from: Vars, to: Vars) => string | null;
+  /** Smaller constants for drawing a chart whose full graph is too large to draw. */
+  readonly chartConstants?: Readonly<Record<string, string>>;
 }
 
 export const parseValue = (text: string): Value => {
@@ -486,7 +488,9 @@ export const chartOf = (
   for (const { rule, trace } of breaking) {
     const last = trace.at(-1);
     if (last === undefined) continue;
-    const id = idOf(view.state(last.vars));
+    const label = view.state(last.vars);
+    if (!ids.has(label)) continue;
+    const id = idOf(label);
     const rules = marked.get(id) ?? new Set<string>();
     rules.add(rule);
     marked.set(id, rules);
@@ -559,7 +563,12 @@ const main = async (args: ReadonlyArray<string>) => {
 
   const chartPath = argValue(args, "--chart");
   if (chartPath !== undefined) {
-    const { verdict, dot } = await runTlc(model, configWith(model.config, [], broken), true);
+    const drawn = Object.entries(view.chartConstants ?? {}).reduce(
+      (config, [name, value]) =>
+        config.replace(new RegExp(`^(\\s*${name}\\s*=\\s*).*$`, "m"), `$1${value}`),
+      configWith(model.config, [], broken),
+    );
+    const { verdict, dot } = await runTlc(model, drawn, true);
     if (dot === null) throw new Error(`TLC drew no state graph: ${JSON.stringify(verdict)}`);
     const breaking = failed.flatMap((one) =>
       "trace" in one.verdict ? [{ rule: one.rule, trace: one.verdict.trace }] : [],
@@ -593,7 +602,13 @@ const main = async (args: ReadonlyArray<string>) => {
         "",
         `Checked by \`node scripts/kin-model.ts ${name}\` with TLC ${TLC_VERSION}: ${
           results[0]?.verdict._tag === "pass" ? results[0].verdict.distinct : "?"
-        } model states, drawn as ${chart.states} chart states and ${chart.arrows} arrows.`,
+        } model states, drawn as ${chart.states} chart states and ${chart.arrows} arrows${
+          view.chartConstants === undefined
+            ? ""
+            : ` (drawn with ${Object.entries(view.chartConstants)
+                .map(([name, value]) => `${name} = ${value}`)
+                .join(", ")})`
+        }.`,
         "",
       ].join("\n"),
     );
