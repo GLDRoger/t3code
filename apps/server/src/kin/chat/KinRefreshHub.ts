@@ -61,7 +61,7 @@ const make = Effect.gen(function* () {
   const revisions = new Map<KinOrgId, KinRevisions>();
   const hubs = new Map<KinOrgId, PubSub.PubSub<void>>();
   const touched = new WeakMap<object, Set<string>>();
-  const boot = `${(yield* Clock.currentTimeMillis).toString(36)}-${(yield* Random.nextIntBetween(0, 2 ** 30)).toString(36)}`;
+  const boot = `${(yield* Clock.currentTimeMillis).toString(36)}-${(yield* Random.nextIntBetween(0, 2 ** 30)).toString(36).padStart(6, "0")}`;
   const views = new Map<string, { view: string | null; count: number }>();
   yield* Effect.addFinalizer(() =>
     Effect.forEach([...hubs.values()], PubSub.shutdown, { discard: true }),
