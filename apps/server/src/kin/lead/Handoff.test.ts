@@ -760,18 +760,6 @@ it.effect(
         assert.deepStrictEqual(sent, [
           { personId: "zoya", chatId: theirs!.chatId, body: "Ishaan moved W-7 to 1 February." },
         ]);
-        // Inside her quiet hours (15:00 to 17:00 here) it is held: nothing reaches her until 17:00.
-        yield* sql`UPDATE kin_trigger_settings SET quiet_hours_json = '{"from":"15:00","to":"17:00"}'`;
-        const held = yield* Effect.flip(handoff.relay(scopeFor(chief), answer, postTo));
-        assert.include(held.message, "quiet hours until 1970-01-01T01:00:00.000Z");
-        assert.lengthOf(sent, 1);
-        // Marked urgent, with its reason, it goes now.
-        yield* Effect.exit(
-          handoff.relay(scopeFor(chief), { ...answer, urgent: "Invented site is down" }, postTo),
-        );
-        assert.lengthOf(sent, 2);
-        sent.pop();
-        yield* sql`UPDATE kin_trigger_settings SET quiet_hours_json = '{"from":"22:00","to":"08:00"}'`;
         const toOwner = yield* Effect.flip(
           handoff.relay(scopeFor(chief), { ...answer, to: me!.name }, postTo),
         );

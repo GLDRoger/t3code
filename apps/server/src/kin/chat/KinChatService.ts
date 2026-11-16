@@ -168,6 +168,8 @@ export class KinChatService extends Context.Service<
       readonly waitingFor?: KinPersonId;
       /** Who `body` is for (`WriteAudience`), checked against the chat in the write's transaction. */
       readonly audience: WriteAudience;
+      /** Posted as this lead while it is in the chat, such as a relay held through quiet hours. */
+      readonly from?: KinAgentId;
       /** A row one agent sent into another's chat, or the answer carried back (`KinMessageRelay`). */
       readonly relay?: KinMessageRelay;
       readonly discussionId?: KinDiscussionId;
@@ -1355,7 +1357,9 @@ const make = Effect.gen(function* () {
                 }),
               );
         if (
-          message.author._tag !== "system" ||
+          (input.from === undefined
+            ? message.author._tag !== "system"
+            : message.author._tag === "human") ||
           message.chatId !== input.chatId ||
           message.body !== input.body ||
           (waiting?.personId ?? undefined) !== input.waitingFor
@@ -1363,13 +1367,32 @@ const make = Effect.gen(function* () {
           return yield* notAllowed;
         return { message, waiting };
       }
+      const [agent] =
+        input.from === undefined
+          ? []
+          : yield* sql<{ memberId: KinMemberId; ownerPersonId: KinPersonId; threadId: ThreadId }>`
+              SELECT m.member_id AS "memberId", a.owner_person_id AS "ownerPersonId",
+                l.thread_id AS "threadId"
+              FROM kin_chat_members m
+              JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
+              JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
+              WHERE m.org_id = ${input.orgId} AND m.chat_id = ${input.chatId}
+                AND m.principal_kind = 'agent' AND m.agent_id = ${input.from}
+                AND m.left_at IS NULL AND l.thread_id IS NOT NULL
+              ORDER BY m.member_id LIMIT 1`.pipe(
+              Effect.mapError(toPersistenceSqlError("KinChatService.notice")),
+            );
       const message = yield* repo.insertMessage({
         orgId: input.orgId,
         chatId: input.chatId,
         messageId,
-        author: { _tag: "system" },
+        author:
+          agent === undefined || input.from === undefined
+            ? { _tag: "system" }
+            : { _tag: "agent", agentId: input.from, ...agent },
+        ...(agent === undefined ? {} : { serverPosted: true as const }),
         audience: input.audience,
-        kind: "system",
+        kind: agent === undefined ? "system" : "text",
         body: input.body,
         ...(input.attachments === undefined || input.attachments.length === 0
           ? {}

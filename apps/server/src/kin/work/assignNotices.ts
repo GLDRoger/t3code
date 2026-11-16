@@ -18,6 +18,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
+import { holdFor, holdLine } from "../triggers/quietHold.ts";
 import { parseFields } from "./lists.ts";
 import { ownerZone, type RecordRow } from "./recordRows.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
@@ -219,6 +220,21 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
         .slice(0, 32)}`,
     );
     if (Option.isSome(yield* repo.value.getMessage({ orgId: turn.orgId, messageId }))) {
+      told.add(person);
+      continue;
+    }
+    // In their quiet hours it waits for their end; they are told all the same.
+    const held = yield* holdFor({ orgId: turn.orgId, personId: person, chatId });
+    if (held !== undefined) {
+      yield* holdLine({
+        orgId: turn.orgId,
+        chatId,
+        personId: person,
+        key: messageId,
+        body,
+        audience: "chat",
+        at: held.at,
+      });
       told.add(person);
       continue;
     }
