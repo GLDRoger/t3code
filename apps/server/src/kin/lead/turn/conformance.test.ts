@@ -4,6 +4,7 @@ import {
   KIN_CAPABILITIES,
   KIN_CAPABILITY_WORDS,
   kinProviderFacts,
+  type KinProviderLimit,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -19,12 +20,13 @@ import { SESSION_REFUSAL } from "../Audience.ts";
 import { KinAgentSessionPolicy } from "../sessionPolicy.ts";
 import type { Answer, ProviderFake } from "./conformance.testkit.ts";
 import { KIN_PROVIDERS } from "./providers.ts";
+import { acpFake } from "./providers/acp.testkit.ts";
 import { claudeFake } from "./providers/claude.testkit.ts";
 import { codexFake } from "./providers/codex.testkit.ts";
 import { kinInstructions } from "./session.ts";
 
 /** Every registered provider has a fake; a provider without one fails here, not in production. */
-const FAKES: ReadonlyArray<ProviderFake> = [claudeFake, codexFake];
+const FAKES: ReadonlyArray<ProviderFake> = [claudeFake, codexFake, acpFake];
 
 const AGENT = "Tech lead";
 const PINNED = "/kin-home/kin-tools/gh-pinned";
@@ -84,13 +86,20 @@ it("every registered provider has a conformance fake and its lacks match its des
     FAKES.map((fake) => fake.driver),
     KIN_PROVIDERS.map((provider) => provider.driver),
   );
-  for (const provider of KIN_PROVIDERS)
+  for (const provider of KIN_PROVIDERS) {
+    const facts = kinProviderFacts(provider.driver);
     assert.deepStrictEqual(
-      kinProviderFacts(provider.driver)?.lacks,
+      facts?.lacks,
       KIN_CAPABILITIES.filter((capability) => !(capability in provider.capabilities)),
       provider.driver,
     );
+    // A provider Kin can't hold to its rules never reaches a real owner.
+    if ((facts?.limits.length ?? 0) > 0) assert.isTrue(facts?.devOnly, provider.driver);
+  }
 });
+
+const limited = (driver: string, limit: KinProviderLimit) =>
+  kinProviderFacts(driver)?.limits.includes(limit) ?? false;
 
 describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (driver, fake) => {
   it.effect(
@@ -106,14 +115,14 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
           assert.include(owner.instructions, KIN_CAPABILITY_WORDS[capability]);
         assert.isTrue(owner.kinToolsUpFront);
         assert.isTrue(owner.deferredFindable);
-        assert.isFalse(owner.personalConfig);
+        assert.strictEqual(owner.personalConfig, limited(driver, "ownConfigLoads"));
         assert.isTrue(owner.builtins);
         assert.strictEqual(owner.shell?.path, signed(stateDir));
         assert.strictEqual(owner.shell?.agentName, AGENT);
         // The GitHub App's key and Kin's other secrets never reach a shell.
-        assert.deepStrictEqual(
-          owner.shell?.variables.filter((name) => kinSecretVariables.includes(name)),
-          [],
+        assert.strictEqual(
+          owner.shell?.variables.filter((name) => kinSecretVariables.includes(name)).length === 0,
+          !limited(driver, "hostEnvironment"),
         );
         assert.strictEqual(yield* asked(owner.askShell), "allowed");
         assert.strictEqual(yield* asked(owner.askRead), "allowed");
@@ -143,7 +152,7 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
         assert.strictEqual(shared.instructions, kinInstructions("confined", driver));
         assert.isTrue(shared.kinToolsUpFront);
         assert.isTrue(shared.deferredFindable);
-        assert.isFalse(shared.personalConfig);
+        assert.strictEqual(shared.personalConfig, limited(driver, "ownConfigLoads"));
         assert.isFalse(shared.builtins);
         assert.notStrictEqual(yield* asked(shared.askShell), "allowed");
         assert.notStrictEqual(yield* asked(shared.askRead), "allowed");
@@ -166,9 +175,9 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
         assert.isUndefined(task.instructions);
         assert.strictEqual(task.shell?.path, signed(stateDir));
         assert.strictEqual(task.shell?.agentName, AGENT);
-        assert.deepStrictEqual(
-          task.shell?.variables.filter((name) => kinSecretVariables.includes(name)),
-          [],
+        assert.strictEqual(
+          task.shell?.variables.filter((name) => kinSecretVariables.includes(name)).length === 0,
+          !limited(driver, "hostEnvironment"),
         );
         assert.strictEqual(yield* asked(task.askShell), "allowed");
         const refused = yield* open(fake, "task-from-lead", {

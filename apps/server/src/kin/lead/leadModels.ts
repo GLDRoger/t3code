@@ -10,9 +10,6 @@ import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { deriveProviderInstanceConfigMap } from "../../provider/ProviderInstanceRegistryHydration.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 
-/** `scripts/kin-verify`'s scripted agent: it calls tools it is told to and runs no model. */
-const KIN_VERIFY_SCRIPT_INSTANCE_ID = "kinVerifyScript";
-
 const decodeModel = Schema.decodeUnknownOption(Schema.fromJsonString(KinLead.fields.model));
 const encodeSelection = Schema.encodeSync(KinLead.fields.model);
 /** Rows from before K163 also carry `strong` and `cheap`; decoding ignores them. */
@@ -24,37 +21,36 @@ export const isDevServer = Effect.serviceOption(ServerConfig).pipe(
 );
 
 /** The models this host offers an agent: the one place that decides which providers qualify. */
-export const kinAgentModels = (
-  providers: ReadonlyArray<ServerProvider>,
-  nonClaudeAgents: boolean,
-) =>
+export const kinAgentModels = (providers: ReadonlyArray<ServerProvider>, otherProviders: boolean) =>
   providers
     .filter(
-      (provider) => kinAgentDriverAllowed(provider.driver, nonClaudeAgents) && provider.enabled,
+      (provider) => kinAgentDriverAllowed(provider.driver, otherProviders) && provider.enabled,
     )
     .flatMap((provider) =>
       provider.models.map((model) => ({ instanceId: provider.instanceId, model })),
     );
 
+const driverOf = (settings: ServerSettings, model: ModelSelection) =>
+  deriveProviderInstanceConfigMap(settings)[model.instanceId]?.driver;
+
 /** An agent runs only on a provider Kin plans its sessions for (`lead/turn/providers.ts`). */
-export const nonClaudeLeadModel = (
+export const leadProviderProblem = (
   settings: ServerSettings,
   model: ModelSelection,
   devServer = false,
 ): string | undefined => {
-  const { instanceId } = model;
-  const driver = deriveProviderInstanceConfigMap(settings)[instanceId]?.driver;
-  if (devServer && instanceId === KIN_VERIFY_SCRIPT_INSTANCE_ID && driver === "acpRegistry")
-    return undefined;
-  if (!kinAgentDriverAllowed(driver, settings.kinNonClaudeAgents))
-    return `Kin agents can't run on ${instanceId}: ${
-      driver === undefined
-        ? "it isn't a configured provider"
-        : kinProviderFacts(driver) === undefined
-          ? `Kin doesn't run agents on ${driver} yet`
+  const driver = driverOf(settings, model);
+  if (kinAgentDriverAllowed(driver, settings.kinNonClaudeAgents, devServer)) return undefined;
+  const facts = kinProviderFacts(driver);
+  return `Kin agents can't run on ${model.instanceId}: ${
+    driver === undefined
+      ? "it isn't a configured provider"
+      : facts === undefined
+        ? `Kin doesn't run agents on ${driver} yet`
+        : facts.devOnly
+          ? "it runs agents only on a dev server"
           : "turn on Agents on other providers in Kin's Settings first"
-    }. Delegated tasks may still use any provider.`;
-  return undefined;
+  }. Delegated tasks may still use any provider.`;
 };
 
 /** The model's name as its provider lists it, else the id it was saved with. */
@@ -75,10 +71,11 @@ export const leadModelProblem = (
   selection: ModelSelection,
   devServer = false,
 ): string | undefined => {
-  const notClaude = nonClaudeLeadModel(settings, selection, devServer);
-  if (notClaude !== undefined) return notClaude;
+  const refused = leadProviderProblem(settings, selection, devServer);
+  if (refused !== undefined) return refused;
   if (providers === null) return undefined;
-  if (devServer && selection.instanceId === KIN_VERIFY_SCRIPT_INSTANCE_ID) return undefined;
+  // A dev-only provider, such as kin-verify's scripted agent, lists no models of its own.
+  if (kinProviderFacts(driverOf(settings, selection))?.devOnly) return undefined;
   const provider = providers.find((entry) => entry.instanceId === selection.instanceId);
   if (provider === undefined || !provider.enabled || !provider.installed)
     return `${modelLabel(providers, selection)} isn't available on this server right now.`;
