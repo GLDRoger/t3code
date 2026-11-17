@@ -63,18 +63,17 @@ export function kinJoinStanding(
   return match.connected ? { _tag: "member", environmentId: match.environmentId } : { _tag: "new" };
 }
 
-/** What a removed teammate reads, on web and phone, wherever Kin finds their access ended. */
-export const KIN_ACCESS_ENDED = {
-  title: "Your access to Kin has ended",
-  detail:
-    "Whoever runs your team's Kin removed your access or signed you out here. Ask them for a new join link: opening it brings you back with your chats and tasks.",
-  joinLabel: "I have a join link",
-} as const;
-
 export const KIN_JOIN_NO_LINK =
   "That doesn't look like a join link. Paste the whole link your team sent you.";
 export const KIN_JOIN_UNREACHABLE =
   "Couldn't reach your team's Kin. Check your connection and try again. Your link hasn't been used.";
+/** What a teammate's browser or phone says once their access ended, wherever Kin finds it out. */
+export const kinAccessEndedCopy = (device: "browser" | "phone") =>
+  ({
+    title: "Your access to Kin has ended",
+    detail: `Whoever runs your team's Kin removed your access or signed this ${device} out. Ask them for a new join link: opening it brings you back with your chats and tasks.`,
+    action: "Join with a new link",
+  }) as const;
 export const KIN_JOIN_UPDATE_APP = "Update this app to join your team's Kin, then try again.";
 export const KIN_JOIN_FAILED =
   "Couldn't join. Try again, or ask your team for a new link if it keeps happening.";

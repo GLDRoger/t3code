@@ -1,5 +1,5 @@
 import { KIN_PEOPLE_CHAT, kinPeopleChatWith } from "@t3tools/client-runtime/kin/kinPeopleChat";
-import { KIN_ACCESS_ENDED } from "@t3tools/client-runtime/kin/kinJoin";
+import { kinAccessEndedCopy } from "@t3tools/client-runtime/kin/kinJoin";
 import { useKinAppShell } from "./state/kinChatOnly";
 import { KIN_ONLY } from "../../lib/kinOnly";
 import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED, KIN_ONLY_UNPAIRED } from "./kinOnlyCopy";
@@ -782,6 +782,8 @@ function KinChatPage(props: {
   );
 }
 
+const ACCESS_ENDED = kinAccessEndedCopy("phone");
+
 function KinChatStateView(props: {
   readonly state: Exclude<KinChatScreenState, { readonly _tag: "ready" }>;
   readonly chatId: string;
@@ -837,9 +839,9 @@ function KinChatStateView(props: {
         return teammate ? (
           <EmptyState
             variant="plain"
-            title={KIN_ACCESS_ENDED.title}
-            detail={KIN_ACCESS_ENDED.detail}
-            actionLabel={KIN_ACCESS_ENDED.joinLabel}
+            title={ACCESS_ENDED.title}
+            detail={ACCESS_ENDED.detail}
+            actionLabel={ACCESS_ENDED.action}
             onAction={() => navigation.navigate("KinJoin")}
           />
         ) : (

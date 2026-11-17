@@ -5,7 +5,11 @@ import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinAttentionBadge, kinTasksBadgeCount } from "@t3tools/client-runtime/kin/kinAttention";
 import { kinWorkListsMoved } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { kinBadgeCount } from "@t3tools/client-runtime/kin/kinInboxModel";
-import { kinDockTabs, type KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
+import {
+  kinAccessEndedCopy,
+  kinDockTabs,
+  type KinDockTab,
+} from "@t3tools/client-runtime/kin/kinJoin";
 import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
 import type { SessionGrantInput } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
@@ -42,6 +46,8 @@ import { useKinHost } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinMoneySummary } from "./state/useKinMoney";
 import { useKinWork, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+
+const ACCESS_ENDED = kinAccessEndedCopy("phone");
 
 const noSessionAtom = Atom.make(null);
 
@@ -145,9 +151,9 @@ function KinHomeTabs(props: {
           <KinHomeMessage title="Kin" bottomClearance={bottomClearance} actions={[settings]}>
             <EmptyState
               variant="plain"
-              title="You no longer have access"
-              detail="Your team's Kin signed this phone out. Ask them for a new join link to get back in."
-              actionLabel="Join with a new link"
+              title={ACCESS_ENDED.title}
+              detail={ACCESS_ENDED.detail}
+              actionLabel={ACCESS_ENDED.action}
               onAction={() => navigation.navigate("KinJoin")}
             />
           </KinHomeMessage>

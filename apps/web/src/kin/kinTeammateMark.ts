@@ -1,4 +1,4 @@
-import { KIN_ACCESS_ENDED } from "@t3tools/client-runtime/kin/kinJoin";
+import { kinAccessEndedCopy } from "@t3tools/client-runtime/kin/kinJoin";
 
 const KEY = "t3code:kin:teammate";
 
@@ -22,6 +22,8 @@ export function wasKinTeammate() {
     return false;
   }
 }
+
+export const KIN_ACCESS_ENDED = kinAccessEndedCopy("browser");
 
 /** A screen that can't tell who you are says your access ended, when this was a teammate's. */
 export function kinAccessCopy(

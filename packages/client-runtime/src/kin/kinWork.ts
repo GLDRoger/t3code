@@ -520,9 +520,12 @@ const KIN_WORK_MARKS: Record<KinWorkMark, string> = {
   handed_back: "Handed back",
 };
 
-/** The row with its "On me" mark, which its label also says. */
+/**
+ * The row with its "On me" mark, which its label also says. A row's own mark (Late, Handed back
+ * by Zoya) stays: "Due today" and "Stuck" are already in its detail.
+ */
 export function kinWorkRowMarked(row: KinWorkRowView, mark: KinWorkMark | null): KinWorkRowView {
-  if (mark === null || mark === row.mark) return row;
+  if (mark === null || row.mark !== null) return row;
   return {
     ...row,
     mark,

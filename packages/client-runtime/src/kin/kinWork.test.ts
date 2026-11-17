@@ -33,6 +33,7 @@ import {
   kinWorkListQuery,
   kinWorkOverview,
   kinWorkRow,
+  kinWorkRowMarked,
   kinWorkScreenState,
   kinWorkShown,
   type KinWorkNames,
@@ -504,6 +505,19 @@ describe("a task on an older host", () => {
     );
     expect(kinWorkRow(record({ owner: lead }), retired, now).line).toBe("Tech lead (retired)");
     expect(kinWorkRow(record({ owner: lead }), names, now).ownerRetired).toBe(false);
+  });
+
+  it("keeps who handed a task back on its row when On me marks it due today", () => {
+    const back = kinWorkRow(
+      record({ owner: me, handedBack: { by: priya, at: now.toISOString() } }),
+      names,
+      now,
+    );
+    // The row's detail already says it is due today; the mark keeps what only it says.
+    expect(kinWorkRowMarked(back, "today").markText).toBe("Handed back by Priya");
+    expect(kinWorkRowMarked(kinWorkRow(record({ owner: me }), names, now), "today").markText).toBe(
+      "Due today",
+    );
   });
 });
 
