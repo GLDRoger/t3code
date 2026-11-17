@@ -325,6 +325,15 @@ export class FakeGitHub {
     const installation = app?.installations.find((entry) => entry.id === minted?.installation);
     const actor = installation === undefined ? this.world.user : `${app!.slug}[bot]`;
     const association = actor === this.world.user ? "OWNER" : "NONE";
+    // As real GitHub: the App's JWT works only on `/app…`, which take nothing else, and
+    // `/installation…` takes only an installation token.
+    const appPath = path === "app" || path.startsWith("app/");
+    if (asApp !== appPath || (path.startsWith("installation/") && installation === undefined))
+      return {
+        status: 401,
+        headers: {},
+        body: { message: "A JSON web token could not be decoded" },
+      };
     if (app !== null && method === "GET" && decodeURIComponent(path) === `users/${app.slug}[bot]`)
       return ok({ id: app.botId, login: `${app.slug}[bot]` });
     if (asApp) {
@@ -341,6 +350,18 @@ export class FakeGitHub {
       const target = app.installations.find((entry) => entry.id === Number(mint?.[1]));
       if (method === "POST" && target !== undefined) {
         const asked = (body.permissions ?? target.permissions) as Record<string, string>;
+        const level = (value: string | undefined) =>
+          ["read", "write", "admin"].indexOf(value ?? "");
+        if (
+          Object.entries(asked).some(
+            ([name, value]) => level(value) > level(target.permissions[name]),
+          )
+        )
+          return {
+            status: 422,
+            headers: {},
+            body: { message: "The permissions requested are not granted to this installation." },
+          };
         const token = `ghs_fake_${target.id}_${app.minted.length + 1}`;
         const expiresAt = this.world.now + 60 * 60_000;
         app.minted.push({ token, installation: target.id, expiresAt, permissions: asked });

@@ -121,6 +121,24 @@ describe("Kin's GitHub App", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "an App GitHub refuses says so, and turns on once GitHub answers, installed or not",
+    () =>
+      Effect.gen(function* () {
+        const { app, github, folder } = yield* setup({ appId: "9001" });
+        installApp(github, []);
+        github.world.down = 401;
+        yield* app.refresh();
+        const state = yield* app.state();
+        assert.strictEqual(state._tag, "broken");
+        assert.match(state._tag === "broken" ? state.problem : "", /GitHub refused .*status 401/);
+        github.world.down = null;
+        yield* app.refresh();
+        assert.strictEqual((yield* app.state())._tag, "ok");
+        assert.strictEqual(yield* read(`${folder}/identity`), `${BOT_LOGIN}\n${BOT_EMAIL}\n`);
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("gives agents' shells the App's identity and a token it renews before it lapses", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

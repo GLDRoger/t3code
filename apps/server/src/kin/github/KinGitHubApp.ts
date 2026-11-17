@@ -89,7 +89,8 @@ const decodeInstallations = Schema.decodeUnknownOption(
   Schema.Array(
     Schema.Struct({
       id: Schema.Int,
-      account: Schema.NullOr(Schema.Struct({ login: Schema.String })),
+      // An enterprise account has a slug and no login; Kin's shells can't use it.
+      account: Schema.NullOr(Schema.Struct({ login: Schema.optional(Schema.String) })),
       permissions: Schema.Record(Schema.String, Schema.String),
     }),
   ),
@@ -120,6 +121,18 @@ interface Described {
   readonly installUrl: string;
   readonly installations: ReadonlyArray<Installation>;
 }
+
+/** Where `describe` stopped short of a working App, and GitHub's status (0: not reached). */
+interface Shortfall {
+  readonly _tag: "short";
+  readonly asked: "about the App" | "where it is installed" | "for its bot account";
+  readonly status: number;
+}
+
+const shortfallProblem = ({ asked, status }: Shortfall) =>
+  status === 0
+    ? "Kin couldn't reach GitHub to check its GitHub App, so agents work as you meanwhile. Kin keeps trying."
+    : `GitHub refused Kin's GitHub App when Kin asked ${asked} (status ${status}), so agents work as you meanwhile. Kin keeps trying.`;
 
 /** What Kin knows of its App now: none set up, set up but unusable (and why), or working. */
 export type AppState =
@@ -208,9 +221,11 @@ export const make = Effect.gen(function* () {
   const tokens = new Map<number, { token: Redacted.Redacted<string>; expiresAt: number }>();
   /** The bytes of the owner-uses file already recorded; a restart reads it again, without repeats. */
   let usesRead = 0;
+  /** The last shortfall logged, so a failure that lasts is logged once, not every look. */
+  let loggedProblem: string | null = null;
 
   const request = Effect.fn("KinGitHubApp.request")(function* (
-    token: Redacted.Redacted<string>,
+    token: Redacted.Redacted<string> | undefined,
     input: ApiRequest,
   ) {
     let outgoing = HttpClientRequest.make(input.method ?? "GET")(
@@ -222,8 +237,8 @@ export const make = Effect.gen(function* () {
         "user-agent": "kin",
         ...input.headers,
       }),
-      HttpClientRequest.bearerToken(token),
     );
+    if (token !== undefined) outgoing = HttpClientRequest.bearerToken(outgoing, token);
     if (input.body !== undefined)
       outgoing = HttpClientRequest.bodyText(outgoing, toJson(input.body), "application/json");
     const failed: ApiAnswer = { status: 0, headers: {}, body: null, text: "" };
@@ -278,7 +293,7 @@ export const make = Effect.gen(function* () {
     return entry;
   });
 
-  /** What GitHub says of the App now; a failed read keeps what Kin knew before. */
+  /** What GitHub says of the App now, or where it fell short. */
   const describe = Effect.fn("KinGitHubApp.describe")(function* (appId: string) {
     const appToken = yield* jwt(appId).pipe(Effect.orElseSucceed(() => undefined));
     if (appToken === undefined)
@@ -286,27 +301,30 @@ export const make = Effect.gen(function* () {
         _tag: "broken",
         problem: "Kin can't read its GitHub App's key on this computer, so agents work as you.",
       } as const;
+    const short = (asked: Shortfall["asked"], status: number): Shortfall => ({
+      _tag: "short",
+      asked,
+      status,
+    });
     const app = yield* request(appToken, { path: "app" });
     const about = app.status === 200 ? decodeApp(app.body) : Option.none();
-    if (Option.isNone(about)) return undefined;
+    if (Option.isNone(about)) return short("about the App", app.status);
     const botLogin = Option.getOrElse(config.botLogin, () => `${about.value.slug}[bot]`);
-    if (!botIds.has(botLogin)) {
-      const user = yield* request(appToken, { path: `users/${encodeURIComponent(botLogin)}` });
-      const found = user.status === 200 ? decodeUser(user.body) : Option.none();
-      if (Option.isNone(found)) return undefined;
-      botIds.set(botLogin, found.value.id);
-    }
     const installations: Array<Installation> = [];
     for (let page = 1; page <= MAX_PAGES; page++) {
       const answer = yield* request(appToken, {
         path: `app/installations?per_page=100&page=${page}`,
       });
       const listed = answer.status === 200 ? decodeInstallations(answer.body) : Option.none();
-      if (Option.isNone(listed)) return undefined;
+      if (Option.isNone(listed)) return short("where it is installed", answer.status);
       for (const installation of listed.value) {
-        const account = installation.account?.login.toLowerCase() ?? "";
+        const account = installation.account?.login?.toLowerCase() ?? "";
         if (!/^[a-z0-9-]+$/.test(account)) continue;
-        const token = tokens.get(installation.id) ?? (yield* mint(appToken, installation));
+        const held = tokens.get(installation.id);
+        const token =
+          held !== undefined && held.expiresAt - (yield* Clock.currentTimeMillis) > 5 * MINUTE
+            ? held
+            : yield* mint(appToken, installation);
         const repos = new Set<string>();
         for (let reposPage = 1; token !== undefined && reposPage <= MAX_PAGES; reposPage++) {
           const answer = yield* request(token.token, {
@@ -325,6 +343,17 @@ export const make = Effect.gen(function* () {
         });
       }
       if (listed.value.length < 100) break;
+    }
+    if (!botIds.has(botLogin)) {
+      // GitHub takes the App's JWT only on `/app…`. The bot's record is public: an installation
+      // token reads it, and so does no token at all, before the App is installed anywhere.
+      const held = installations.map((entry) => tokens.get(entry.id)).find(Boolean);
+      const user = yield* request(held?.token, {
+        path: `users/${encodeURIComponent(botLogin)}`,
+      });
+      const found = user.status === 200 ? decodeUser(user.body) : Option.none();
+      if (Option.isNone(found)) return short("for its bot account", user.status);
+      botIds.set(botLogin, found.value.id);
     }
     return {
       _tag: "ok",
@@ -396,7 +425,18 @@ export const make = Effect.gen(function* () {
         const last = yield* Ref.get(describedAt);
         if (last === null || now - last >= DESCRIBE_EVERY_MS || before._tag !== "ok") {
           const described = yield* describe(config.appId.value);
-          if (described !== undefined) {
+          if (described._tag === "short") {
+            const problem = shortfallProblem(described);
+            if (problem !== loggedProblem)
+              yield* Effect.logWarning("Kin's GitHub App isn't working; agents act as the owner", {
+                asked: described.asked,
+                status: described.status,
+              });
+            loggedProblem = problem;
+            // A working App stays on through a passing failure; its tokens still hold.
+            if (before._tag !== "ok") state = { _tag: "broken", problem };
+          } else {
+            loggedProblem = null;
             state = described;
             yield* Ref.set(describedAt, now);
           }
