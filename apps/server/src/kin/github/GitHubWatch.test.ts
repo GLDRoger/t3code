@@ -757,7 +757,8 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
   const PAID = "invented-owner/notes";
   const FREE = "invented-owner/private";
   const NOT_ADMIN = "invented-co/shared";
-  /** Six watched repos as GitHub holds them: open, protected by the owner two ways, and three Kin can't change. */
+  const EMPTY = "invented-owner/fresh";
+  /** Seven watched repos as GitHub holds them: open, protected by the owner two ways, three Kin can't change, and one with no branch yet. */
   const world = (github: FakeGitHub) => {
     github.world.accounts = [
       { login: "invented-co", id: 7001, type: "Organization", role: "admin" },
@@ -786,6 +787,7 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
     github.addRepo({ full_name: PAID });
     github.addRepo({ full_name: FREE, planLimited: true });
     github.addRepo({ full_name: NOT_ADMIN, admin: false });
+    github.addRepo({ full_name: EMPTY, default_branch: "trunk", empty: true });
   };
   const guards = Effect.gen(function* () {
     const repos = yield* withGuards(orgId, yield* repoList(orgId));
@@ -810,16 +812,20 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
         [PAID]: { state: "open", branch: "main", byKin: false },
         [FREE]: { state: "unknown", branch: "main", byKin: false, problem: "plan" },
         [NOT_ADMIN]: { state: "unknown", branch: "main", byKin: false, problem: "no_admin" },
+        [EMPTY]: { state: "unknown", branch: "trunk", byKin: false, problem: "no_branch" },
       });
       // The unwatched fork isn't read; classic protection only where rules didn't answer.
       const reads = github.world.calls.filter((call) => /rules|protection/.test(call));
       assert.lengthOf(
         reads.filter((call) => call.includes("/rules/")),
-        6,
+        7,
       );
       assert.sameMembers(
         reads.filter((call) => call.endsWith("/protection")),
-        [REPO, CLASSIC, PAID].map((repo) => `GET repos/${repo}/branches/main/protection`),
+        [
+          ...[REPO, CLASSIC, PAID].map((repo) => `GET repos/${repo}/branches/main/protection`),
+          `GET repos/${EMPTY}/branches/trunk/protection`,
+        ],
       );
       assert.strictEqual((yield* watchSummary(orgId, T0))?.open, 2);
       // A look before the next refresh reads none of it again.
@@ -852,6 +858,9 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
         const watch = yield* GitHubWatch.KinGitHubWatch;
         yield* watch.poll(orgId, { force: true });
         yield* misread;
+        assert.include((yield* guards)[EMPTY], { problem: "no_branch" });
+        // The empty repo gets its first commit meanwhile.
+        github.world.repos.find((entry) => entry.full_name === EMPTY)!.empty = false;
         // Six hours on, the repo refresh reads it again and overwrites the row.
         github.tick(6 * HOUR + MINUTE);
         yield* TestClock.adjust(6 * HOUR + MINUTE);
@@ -859,6 +868,11 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
         assert.deepStrictEqual((yield* guards)[PAID], {
           state: "open",
           branch: "main",
+          byKin: false,
+        });
+        assert.deepStrictEqual((yield* guards)[EMPTY], {
+          state: "open",
+          branch: "trunk",
           byKin: false,
         });
         // A server started since reads it on its first look, without waiting six hours.

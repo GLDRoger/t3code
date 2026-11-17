@@ -3074,7 +3074,13 @@ it("OWN-03 passes a reported conflict and fails reuse or close of the owner's se
 
 it("leaves errored samples out of pass rates and counts cases pass, within margin and fail", () => {
   const usage = { input: 10, output: 0, cacheWrite: 0, cacheRead: 0 };
-  const row = (id: string, pass: boolean, error?: string, withinMargin?: boolean) => ({
+  const row = (
+    id: string,
+    pass: boolean,
+    error?: string,
+    withinMargin?: boolean,
+    stopReason = "end_turn",
+  ) => ({
     id,
     kind: "bad" as const,
     pattern: "device",
@@ -3082,6 +3088,7 @@ it("leaves errored samples out of pass rates and counts cases pass, within margi
     pass,
     usage,
     shellUsage: usage,
+    stopReason,
     ...(error === undefined ? {} : { error }),
     ...(withinMargin === undefined ? {} : { withinMargin }),
   });
@@ -3096,6 +3103,8 @@ it("leaves errored samples out of pass rates and counts cases pass, within margi
       ...[true, true, false].map((pass) => row("W", pass)),
       ...[true, true].map((pass, index) => row("M", pass, undefined, index === 0)),
       ...[true, false, false].map((pass) => row("F", pass)),
+      // A turn the step limit cut off, before any reply, is counted apart from a wrong answer.
+      ...[true, false].map((pass) => row("S", pass, undefined, undefined, "max_steps")),
     ],
     {
       header: "run",
@@ -3105,8 +3114,13 @@ it("leaves errored samples out of pass rates and counts cases pass, within margi
     },
     new Map([["A", 0.5]]),
   );
-  assert.include(summary, "- Pass: 67% of 12 samples (7 pass, 1 within margin, 4 fail).");
-  assert.include(summary, "- Cases: 2 pass, 2 pass within margin, 1 fail.");
+  assert.include(summary, "- Pass: 64% of 14 samples (8 pass, 1 within margin, 5 fail).");
+  assert.include(summary, "- Cases: 2 pass, 2 pass within margin, 2 fail.");
+  assert.include(
+    summary,
+    "- Cut off by the step limit: 2 samples, 1 graded fail. Each ended on max_steps before replying; read its calls to tell a turn that needed more steps from one that looped.",
+  );
+  assert.include(summary, "| S | 50% of 2, 2 cut off by the step limit: FAIL |");
   assert.include(summary, "- Errored: A ×1, B ×1.");
   assert.include(summary, "| A | 100% of 1, 1 errored: pass | 50% | 50 pts |");
   assert.include(summary, "| B | - of 0, 1 errored | new | |");
@@ -3114,8 +3128,8 @@ it("leaves errored samples out of pass rates and counts cases pass, within margi
   assert.include(summary, "| W | 67% of 3: pass |");
   assert.include(summary, "| M | 100% of 2, 1 within margin: pass within margin |");
   assert.include(summary, "| F | 33% of 3: FAIL |");
-  // Errored samples' tokens still count: 14 rows of 10 input tokens each.
-  assert.include(summary, "input 140");
+  // Errored samples' tokens still count: 16 rows of 10 input tokens each.
+  assert.include(summary, "input 160");
 });
 
 it.each(["couldn't", "couldn’t", "can’t"])(

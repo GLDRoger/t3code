@@ -209,3 +209,22 @@ server_url`);
     expect(out).toEqual(["http://127.0.0.1:4100"]);
   });
 });
+
+describe("kin retire-workers.sh", () => {
+  it("prints a restart that reaches kin's user manager from a bare login shell", () => {
+    const retire = NodePath.resolve(import.meta.dirname, "../ops/kin/host/retire-workers.sh");
+    const { out, said } = onFakeHost(`
+grep -q 'restart kin-server: $(restart_hint)' "${retire}" || echo "leftovers print another restart"
+eval "$(sed -n '/^restart_hint()/p' "${retire}")"
+KIN_USER="$(id -un)"
+mkdir -p "$HOME/stubs"
+printf '#!/bin/sh\\necho "systemctl $* XDG_RUNTIME_DIR=\${XDG_RUNTIME_DIR:-unset}" >>"$HOME/calls"\\n' >"$HOME/stubs/systemctl"
+chmod +x "$HOME/stubs/systemctl"
+: >"$HOME/calls"
+env -i HOME="$HOME" PATH="$HOME/stubs:$PATH" LC_ALL=C bash --noprofile --norc -l -c "$(restart_hint)"
+tail -n1 "$HOME/calls"`);
+    expect(out, said).toEqual([
+      `systemctl --user restart kin-server XDG_RUNTIME_DIR=/run/user/${process.getuid?.()}`,
+    ]);
+  });
+});

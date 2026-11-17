@@ -31,10 +31,12 @@ OPEN_ORG="invented-co/site-$RUN"
 OPEN_OWN="invented-owner/notes-$RUN"
 FREE="invented-owner/diary-$RUN"
 OWN_RULES="invented-co/billing-$RUN"
+EMPTY="invented-owner/fresh-$RUN"
 world accounts '[{"login":"invented-co","id":7001,"type":"Organization","role":"admin"},{"login":"invented-owner","id":7000,"type":"User"}]' >/dev/null
 world repo "{\"full_name\":\"$OPEN_ORG\"}" >/dev/null
 world repo "{\"full_name\":\"$OPEN_OWN\"}" >/dev/null
 world repo "{\"full_name\":\"$FREE\",\"planLimited\":true}" >/dev/null
+world repo "{\"full_name\":\"$EMPTY\",\"empty\":true}" >/dev/null
 world repo "{\"full_name\":\"$OWN_RULES\",\"rulesets\":[{\"id\":9$RANDOM,\"name\":\"Owner's reviews\",\"target\":\"branch\",\"enforcement\":\"active\",\"include\":[\"~DEFAULT_BRANCH\"],\"exclude\":[],\"rules\":[{\"type\":\"pull_request\",\"parameters\":{\"required_approving_review_count\":1}}],\"bypass\":[]}]}" >/dev/null
 world interval '{"seconds":2}' >/dev/null
 expect_in "$(kv as owner rpc kin.github.connect.start "{\"token\":\"ghp_good_invented_$RUN\"}")" \
@@ -49,6 +51,7 @@ fi
 [[ "$(guard "$OPEN_ORG")" == "open false -" ]] || fail "$OPEN_ORG reads $(guard "$OPEN_ORG"), not open"
 [[ "$(guard "$OPEN_OWN")" == "open false -" ]] || fail "$OPEN_OWN reads $(guard "$OPEN_OWN"), not open"
 [[ "$(guard "$FREE")" == "unknown false plan" ]] || fail "$FREE reads $(guard "$FREE"), not the plan's limit"
+[[ "$(guard "$EMPTY")" == "unknown false no_branch" ]] || fail "$EMPTY reads $(guard "$EMPTY"), not that it has no branch yet"
 [[ "$(guard "$OWN_RULES")" == "protected false -" ]] || fail "$OWN_RULES reads $(guard "$OWN_RULES"), not the owner's own"
 expect_in "$(kv as owner rpc kin.github.connect.status '{}')" '"open":' "the watch line has no count of open repos"
 

@@ -313,6 +313,8 @@ export function kinGitHubGuardLine(
       return `${branch} protection unknown: it takes admin on this repo`;
     case "no_access":
       return `${branch} protection unknown: GitHub hides its rules from your login`;
+    case "no_branch":
+      return `No ${branch} branch yet: the repo is empty`;
     case "unreachable":
       return `${branch} protection unknown: Kin couldn't reach GitHub`;
     default:
@@ -340,6 +342,8 @@ function kinGitHubGuardRefusal(failed: KinGitHubGuardSetResult["failed"][number]
       return `${repo}: GitHub takes this only from an admin of the repo, and your login isn't one.`;
     case "no_access":
       return `${repo}: GitHub doesn't show this repo to your login.`;
+    case "no_branch":
+      return `${repo}: the repo has no commits yet, so there is no branch to protect.`;
     case "unreachable":
       return `${repo}: Kin couldn't reach GitHub, so nothing changed.`;
     case "not_kin":
