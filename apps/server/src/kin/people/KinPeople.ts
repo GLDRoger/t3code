@@ -60,9 +60,10 @@ import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { placesOf } from "../work/teamView.ts";
 import { accessOf, accessSql, isOwnerHimself, mayActAsOwner, ownerLevel } from "./KinAccess.ts";
-import { KIN_DEFAULT_QUIET_HOURS } from "../triggers/quietHours.ts";
+import { KIN_DEFAULT_QUIET_HOURS, stillAway } from "../triggers/quietHours.ts";
 import { profileSets } from "./profileFields.ts";
-import { reholdAfter } from "../triggers/quietHold.ts";
+import { reholdAfter, validZone } from "../triggers/quietHold.ts";
+import { ownerZone } from "../work/recordRows.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -83,23 +84,28 @@ const decodePersonRow = Schema.decodeUnknownSync(KinPerson);
 const decodePerson = (row: Record<string, unknown>) => decodePersonRow(row);
 const decodeProfileRow = Schema.decodeUnknownSync(KinPersonProfile);
 const decodeQuiet = Schema.decodeUnknownOption(Schema.fromJsonString(KinPersonQuietHours));
-const decodeProfile = (row: {
-  readonly personId: string;
-  readonly displayName: string;
-  readonly handle: string;
-  readonly pictureId: string | null;
-  readonly roleTags: string;
-  readonly skills: string;
-  readonly timeZone: string | null;
-  readonly workHours: string | null;
-  readonly talkStyle: string;
-  readonly quietHours: string | null;
-  readonly hold: number | null;
-}) => {
+const decodeProfile = (
+  row: {
+    readonly personId: string;
+    readonly displayName: string;
+    readonly handle: string;
+    readonly pictureId: string | null;
+    readonly roleTags: string;
+    readonly skills: string;
+    readonly timeZone: string | null;
+    readonly workHours: string | null;
+    readonly talkStyle: string;
+    readonly quietHours: string | null;
+    readonly hold: number | null;
+    readonly away: string | null;
+  },
+  awayNow: (day: string, timeZone: string | null) => boolean,
+) => {
   // An unset field stays off the wire, so the Team list's answer doesn't grow for nothing.
-  const { talkStyle, quietHours, hold, ...rest } = row;
+  const { talkStyle, quietHours, hold, away, ...rest } = row;
   return decodeProfileRow({
     ...rest,
+    ...(away !== null && awayNow(away, row.timeZone) ? { awayUntil: away } : {}),
     ...(talkStyle === "" ? {} : { talkStyle }),
     ...(quietHours === null ? {} : { quietHours: JSON.parse(quietHours) }),
     ...(hold === null ? {} : { holdOutsideHours: hold === 1 }),
@@ -892,17 +898,27 @@ export const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(sqlError("KinPeople.setPlaces")));
   });
-  const profileRows = (orgId: KinOrgId, personId?: KinPersonId) =>
-    sql<Parameters<typeof decodeProfile>[0]>`SELECT person_id AS "personId",
+  const profileRows = Effect.fn("KinPeople.profileRows")(
+    function* (orgId: KinOrgId, personId?: KinPersonId) {
+      const rows = yield* sql<Parameters<typeof decodeProfile>[0]>`SELECT person_id AS "personId",
         display_name AS "displayName", handle, avatar_attachment_id AS "pictureId",
         role_tags_json AS "roleTags", skills, time_zone AS "timeZone", work_hours_json AS "workHours",
-        talk_style AS "talkStyle", quiet_hours_json AS "quietHours", hold_outside_hours AS hold
+        talk_style AS "talkStyle", quiet_hours_json AS "quietHours", hold_outside_hours AS hold,
+        away_until AS away
       FROM kin_people WHERE org_id = ${orgId}
         ${personId === undefined ? sql`` : sql`AND person_id = ${personId}`}
-      ORDER BY display_name, person_id`.pipe(
-      Effect.map((rows) => rows.map(decodeProfile)),
-      Effect.mapError(toPersistenceSqlError("KinPeople.profiles")),
-    );
+      ORDER BY display_name, person_id`;
+      const now = yield* Clock.currentTimeMillis;
+      const company = rows.some((row) => row.away !== null)
+        ? yield* ownerZone(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+        : "UTC";
+      // Away ends on its day, on their own clock: the profile stops saying it then.
+      return rows.map((row) =>
+        decodeProfile(row, (day, zone) => stillAway(day, validZone(zone) ?? company, now)),
+      );
+    },
+    Effect.mapError(toPersistenceSqlError("KinPeople.profiles")),
+  );
   /** Everyone in the org, as they describe themselves. Any person of the org reads it. */
   const profiles = Effect.fn("KinPeople.profiles")(function* (
     session: AuthenticatedSession,

@@ -114,6 +114,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.handBack": Effect.fn("KinWork.rpc.handBack")(function* (input) {
         return yield* call((people) => Work.handBack(people, input));
       }),
+      "kin.work.handOver": Effect.fn("KinWork.rpc.handOver")(function* (input) {
+        return yield* call((people) => Work.handOver(people, input));
+      }),
       "kin.work.update": Effect.fn("KinWork.rpc.update")(function* (input) {
         return yield* call((people) => Work.update(people, input));
       }),

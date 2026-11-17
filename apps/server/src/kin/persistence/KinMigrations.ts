@@ -88,6 +88,7 @@ import WorkersRetired from "./migrations/K164_WorkersRetired.ts";
 import HandedBack from "./migrations/K165_HandedBack.ts";
 import GitHubAppRetired from "./migrations/K166_GitHubAppRetired.ts";
 import TeamMemorySetting from "./migrations/K167_TeamMemorySetting.ts";
+import AwayAndWhen from "./migrations/K168_AwayAndWhen.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -256,6 +257,7 @@ const loader = Migrator.fromRecord({
   "165_HandedBack": HandedBack,
   "166_GitHubAppRetired": GitHubAppRetired,
   "167_TeamMemorySetting": TeamMemorySetting,
+  "168_AwayAndWhen": AwayAndWhen,
 });
 
 // The Migrator skips every id at or below the latest applied one, so a migration that

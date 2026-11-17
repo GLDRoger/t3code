@@ -9,6 +9,7 @@ import {
   type KinWorkCreateInput,
   type KinWorkGetInput,
   type KinWorkHandBackInput,
+  type KinWorkHandOverInput,
   type KinWorkListInput,
   type KinWorkPrincipal,
   type KinWorkShareInput,
@@ -50,6 +51,7 @@ import {
   notFound,
   ownerZone,
   principal,
+  principalId,
   type RecordRow,
   samePrincipal,
   toRecord,
@@ -768,9 +770,12 @@ export const tellMoved = (
   person: PersonIdentity,
   before: RecordRow | undefined,
   after: RecordRow | undefined,
-) => (after === undefined ? Effect.void : tellOnScreen(person, after, movedNotices(before, after)));
+) =>
+  after === undefined
+    ? Effect.void
+    : tellOnScreen(person, `${after.recordId}:${after.rev}`, movedNotices(before, after));
 const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
-  function* (person: PersonIdentity, after: RecordRow, all: ReadonlyArray<AssignNotice>) {
+  function* (person: PersonIdentity, change: string, all: ReadonlyArray<AssignNotice>) {
     const notices = all.filter((notice) => notice.personId !== person.personId);
     if (notices.length === 0) return;
     const agentId = yield* theTeamAgent(person.orgId);
@@ -782,7 +787,7 @@ const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
       {
         orgId: person.orgId,
         agentId,
-        wakeupId: `screen:${after.recordId}:${after.rev}`,
+        wakeupId: `screen:${change}`,
         by: me?.name ?? "The owner",
       },
       notices,
@@ -808,10 +813,71 @@ export const handBack = Effect.fn("KinWork.handBack")(function* (
   const to = toRecord(row, yield* Clock.currentTimeMillis).owner;
   // An agent it goes back to is woken by the write; a person hears it from the team agent.
   if (to._tag === "person")
-    yield* tellOnScreen(viewer.person, row, [
+    yield* tellOnScreen(viewer.person, `${row.recordId}:${row.rev}`, [
       { personId: to.personId, kind: "returned", row, why: input.note ?? null },
     ]);
   return { key: row.key, to };
+});
+
+const OPEN_STATES = ["open", "doing", "waiting"];
+
+/**
+ * Gives every open task `from` holds to `to`, each as one reassignment (`assign`), and tells each
+ * person once for all of them. A task the write refuses this caller stays and is counted.
+ */
+export const handOver = Effect.fn("KinWork.handOver")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinWorkHandOverInput,
+) {
+  const viewer = yield* viewerOf(people, input.orgId);
+  const { person } = viewer;
+  const fromId = principalId(input.from);
+  if (viewer.teammate && !(input.from._tag === "person" && fromId === person.personId))
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: "Only the owner or a co-owner gives someone else's tasks away.",
+    });
+  if (samePrincipal(input.to, input.from))
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "Choose someone else to give them to.",
+    });
+  if (viewer.teammate) yield* teamAgent(person, input.to);
+  const sql = yield* SqlClient.SqlClient;
+  // Whoever holds a task sees it, and the owner level sees all: nothing listed here is hidden.
+  // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- the holder's own tasks, or an owner-level caller's
+  const held = yield* sql<{ key: string }>`SELECT key FROM kin_records
+    WHERE org_id = ${input.orgId} AND register_id = 'work' AND owner_kind = ${input.from._tag}
+      AND owner_id = ${fromId} AND state IN ${sql.in(OPEN_STATES)}
+      ${input.keys === undefined ? sql`` : sql`AND key IN ${sql.in(input.keys.length === 0 ? [""] : input.keys)}`}
+    ORDER BY key`.pipe(workFailure);
+  if (input.dryRun === true) return { keys: held.map((row) => row.key), kept: 0 };
+  const records = yield* KinRecords;
+  const moved: Array<string> = [];
+  const notices: Array<AssignNotice> = [];
+  let kept = 0;
+  for (const { key } of held) {
+    const before = yield* records.get(input.orgId, key);
+    const outcome = yield* Effect.result(
+      change(viewer, input.orgId, key, { owner: input.to }, undefined),
+    );
+    if (outcome._tag === "Failure") {
+      if (outcome.failure.reason !== "not_allowed" && outcome.failure.reason !== "invalid_state")
+        return yield* outcome.failure;
+      kept += 1;
+      continue;
+    }
+    moved.push(key);
+    const after = yield* records.get(input.orgId, key);
+    if (after !== undefined) notices.push(...movedNotices(before, after));
+  }
+  if (moved.length > 0)
+    yield* tellOnScreen(
+      person,
+      `handover:${input.from._tag}:${fromId}:${moved.join(",")}`,
+      notices,
+    );
+  return { keys: moved, kept };
 });
 
 export const update = Effect.fn("KinWork.update")(function* (

@@ -656,6 +656,27 @@ export type KinWorkHandBackInput = typeof KinWorkHandBackInput.Type;
 export const KinWorkHandBackResult = Schema.Struct({ key: KinRecordKey, to: KinWorkPrincipal });
 export type KinWorkHandBackResult = typeof KinWorkHandBackResult.Type;
 
+/**
+ * Every open task `from` holds goes to `to`, each recorded as one reassignment, and each person
+ * told once. `keys` limits it to those (Undo gives back exactly what moved); `dryRun` only counts.
+ * Anyone for their own tasks; the owner level for anyone's, an agent's included.
+ */
+export const KinWorkHandOverInput = Schema.Struct({
+  orgId: KinOrgId,
+  from: KinWorkPrincipal,
+  to: KinWorkPrincipal,
+  keys: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(500))),
+  dryRun: Schema.optional(Schema.Boolean),
+});
+export type KinWorkHandOverInput = typeof KinWorkHandOverInput.Type;
+export const KinWorkHandOverResult = Schema.Struct({
+  /** What moved, or with `dryRun` what would. */
+  keys: Schema.Array(KinRecordKey),
+  /** Tasks that stayed: the write refused them for this caller. */
+  kept: NonNegativeInt,
+});
+export type KinWorkHandOverResult = typeof KinWorkHandOverResult.Type;
+
 /** Keep a lead's suggested entry (`confirm`), or decline it, which drops it. */
 export const KinWorkConfirmInput = Schema.Struct({
   orgId: KinOrgId,
@@ -1203,6 +1224,7 @@ export const KIN_WORK_WS_METHODS = {
   create: "kin.work.create",
   assign: "kin.work.assign",
   handBack: "kin.work.handBack",
+  handOver: "kin.work.handOver",
   update: "kin.work.update",
   confirm: "kin.work.confirm",
   decline: "kin.work.decline",
@@ -1257,6 +1279,11 @@ export const KinWorkRpcs = [
   Rpc.make(KIN_WORK_WS_METHODS.handBack, {
     payload: KinWorkHandBackInput,
     success: KinWorkHandBackResult,
+    error,
+  }),
+  Rpc.make(KIN_WORK_WS_METHODS.handOver, {
+    payload: KinWorkHandOverInput,
+    success: KinWorkHandOverResult,
     error,
   }),
   Rpc.make(KIN_WORK_WS_METHODS.update, {
@@ -1358,6 +1385,7 @@ export const KIN_WORK_RPC_SCOPES = {
   [KIN_WORK_WS_METHODS.create]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.assign]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.handBack]: AuthKinChatScope,
+  [KIN_WORK_WS_METHODS.handOver]: AuthKinChatScope,
   [KIN_WORK_WS_METHODS.update]: AuthKinChatScope,
   // Keeping a lead's suggestion makes it the owner's word; only he does that, or shares.
   [KIN_WORK_WS_METHODS.confirm]: AuthKinChatScope,

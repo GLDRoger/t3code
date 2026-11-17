@@ -15,6 +15,10 @@ export function isQuiet(now: number, zone: string, hours: KinQuietHours) {
     : hours.from > hours.to && (time >= hours.from || time < hours.to);
 }
 
+/** Whether someone away until `day` (their calendar) still is at `now`, on their clock. */
+export const stillAway = (day: string | null | undefined, zone: string, now: number) =>
+  day != null && day > DateTime.formatIsoDate(DateTime.makeZonedUnsafe(now, { timeZone: zone }));
+
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 const formats = new Map<string, Intl.DateTimeFormat>();
 const formatIn = (timeZone: string) => {
@@ -49,6 +53,8 @@ export type KinHoldRule = {
   readonly zone: string;
   readonly quiet: KinQuietHours;
   readonly hours?: KinWorkHours | undefined;
+  /** While they are away: the first millisecond of the day they are back. */
+  readonly awayUntil?: number | undefined;
 };
 
 const minutesOf = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
@@ -74,12 +80,14 @@ export const holdRule = (
 };
 
 /** Why a line to them waits at `at`, or undefined when it goes now. */
-export const heldAt = (rule: KinHoldRule, at: number): "quiet" | "off" | undefined =>
-  isQuiet(at, rule.zone, rule.quiet)
-    ? "quiet"
-    : rule.hours !== undefined && !workingAt(rule.hours, rule.zone, at)
-      ? "off"
-      : undefined;
+export const heldAt = (rule: KinHoldRule, at: number): "quiet" | "off" | "away" | undefined =>
+  rule.awayUntil !== undefined && at < rule.awayUntil
+    ? "away"
+    : isQuiet(at, rule.zone, rule.quiet)
+      ? "quiet"
+      : rule.hours !== undefined && !workingAt(rule.hours, rule.zone, at)
+        ? "off"
+        : undefined;
 
 const MINUTE = 60_000;
 const STEP = 5 * MINUTE;
@@ -90,6 +98,8 @@ const SCAN = 8 * 24 * 60 * MINUTE;
  * now. Hours that never fall outside quiet hours within eight days leave only quiet hours.
  */
 export const freeAt = (rule: KinHoldRule, now: number): number => {
+  if (rule.awayUntil !== undefined && now < rule.awayUntil)
+    return freeAt({ ...rule, awayUntil: undefined }, rule.awayUntil);
   if (heldAt(rule, now) === undefined) return now;
   const start = Math.ceil(now / MINUTE) * MINUTE;
   for (let at = start; at < start + SCAN; at += STEP) {

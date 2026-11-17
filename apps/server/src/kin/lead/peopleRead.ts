@@ -4,7 +4,9 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { workingAt } from "../triggers/quietHours.ts";
+import { validZone } from "../triggers/quietHold.ts";
+import { stillAway, workingAt } from "../triggers/quietHours.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { playbookThreshold } from "../work/playbooks.ts";
 import { effectiveAudience } from "./Audience.ts";
 import { quote } from "./LeadPrompt.ts";
@@ -95,8 +97,9 @@ export const readPeople = Effect.fn("KinPeopleRead.read")(function* (turn: {
     skills: string;
     timeZone: string | null;
     workHours: string | null;
+    away: string | null;
   }>`SELECT person_id AS id, display_name AS name, role_tags_json AS "roleTags", skills, time_zone AS "timeZone",
-      work_hours_json AS "workHours"
+      work_hours_json AS "workHours", away_until AS away
     FROM kin_people p WHERE p.org_id = ${orgId}
       AND EXISTS (SELECT 1 FROM kin_session_bindings b WHERE b.org_id = p.org_id
         AND b.person_id = p.person_id AND b.revoked_at IS NULL)
@@ -106,9 +109,11 @@ export const readPeople = Effect.fn("KinPeopleRead.read")(function* (turn: {
     FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
     WHERE l.org_id = ${orgId} AND a.role = 'lead' AND a.retired_at IS NULL
     ORDER BY a.created_at, l.agent_id`;
+  const company = yield* ownerZone(orgId);
   const people = yield* Effect.forEach(rows, (row) =>
     Effect.gen(function* () {
       const hours = row.workHours === null ? null : yield* decodeHours(row.workHours);
+      const away = stillAway(row.away, validZone(row.timeZone) ?? company, now);
       return {
         name: row.name,
         personId: row.id,
@@ -116,8 +121,13 @@ export const readPeople = Effect.fn("KinPeopleRead.read")(function* (turn: {
         skillsInTheirWords: row.skills,
         timeZone: row.timeZone,
         hours: hours === null ? null : describeHours(hours),
-        workingNow:
-          hours === null || row.timeZone === null ? null : workingAt(hours, row.timeZone, now),
+        workingNow: away
+          ? false
+          : hours === null || row.timeZone === null
+            ? null
+            : workingAt(hours, row.timeZone, now),
+        // Back on this day, on their calendar: Kin holds non-urgent messages until then.
+        ...(away ? { awayUntil: row.away } : {}),
         ...(load === undefined ? {} : { load: load("person", row.id) }),
       };
     }),

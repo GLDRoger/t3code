@@ -16,8 +16,14 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { WriteAudience } from "../chat/KinChatRepository.ts";
-import { ownerZone } from "../work/recordRows.ts";
-import { freeAt, heldAt, holdRule, KIN_DEFAULT_QUIET_HOURS } from "./quietHours.ts";
+import { ownerZone, startOfDay } from "../work/recordRows.ts";
+import {
+  freeAt,
+  heldAt,
+  holdRule,
+  KIN_DEFAULT_QUIET_HOURS,
+  type KinHoldRule,
+} from "./quietHours.ts";
 
 const MINUTE = 60_000;
 /** A message they sent this recently is one a line to them answers, whatever the hour. */
@@ -26,7 +32,7 @@ const decodeJsonQuiet = Schema.decodeUnknownOption(Schema.fromJsonString(KinPers
 const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
 
-const validZone = (zone: string | null | undefined) => {
+export const validZone = (zone: string | null | undefined) => {
   if (zone === null || zone === undefined) return undefined;
   try {
     DateTime.makeZonedUnsafe(0, { timeZone: zone });
@@ -49,9 +55,10 @@ const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, person
     quiet: string | null;
     hours: string | null;
     hold: number | null;
+    away: string | null;
   }>`
     SELECT time_zone AS zone, quiet_hours_json AS quiet, work_hours_json AS hours,
-      hold_outside_hours AS hold, EXISTS (SELECT 1 FROM kin_agents a
+      hold_outside_hours AS hold, away_until AS away, EXISTS (SELECT 1 FROM kin_agents a
         WHERE a.org_id = p.org_id AND a.owner_person_id = p.person_id) AS owner
     FROM kin_people p WHERE org_id = ${orgId} AND person_id = ${personId} ORDER BY person_id`;
   const [settings] = yield* sql<{ hours: string }>`SELECT quiet_hours_json AS hours
@@ -69,33 +76,61 @@ const personRule = Effect.fn("KinQuiet.rule")(function* (orgId: KinOrgId, person
   );
   const holds = person?.hold === null || person?.hold === undefined ? !owner : person.hold === 1;
   const hours = holds && person?.hours != null ? decodeHours(person.hours) : Option.none();
-  return holdRule(zone, quiet, Option.getOrUndefined(hours));
+  const rule = holdRule(zone, quiet, Option.getOrUndefined(hours));
+  return person?.away == null ? rule : { ...rule, awayUntil: startOfDay(person.away, zone) };
 });
 
 /**
- * Runs `change` to someone's clock (zone, quiet hours, working hours, the hold switch), then
+ * Runs `change` to someone's clock (zone, quiet hours, working hours, the hold switch, away), then
  * moves each line held for them to the first minute their new rule lets it go. A line held past
  * the old rule's free minute waited for a time of its own, which it keeps when that is later.
  */
-export const reholdAfter = Effect.fn("KinQuiet.rehold")(function* <A, E, R>(
+export const reholdAfter = <A, E, R>(
   orgId: KinOrgId,
   personId: KinPersonId,
   change: Effect.Effect<A, E, R>,
+) => reholdFor(orgId, [personId], change);
+
+/**
+ * `reholdAfter` for everyone with a line held, for a change to the company's clock (its zone or
+ * quiet hours), which moves the rule of each person who keeps the company's.
+ */
+export const reholdEveryoneAfter = Effect.fn("KinQuiet.reholdEveryone")(function* <A, E, R>(
+  orgId: KinOrgId,
+  change: Effect.Effect<A, E, R>,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const before = yield* personRule(orgId, personId);
+  const people = yield* sql<{ personId: KinPersonId }>`SELECT DISTINCT person_id AS "personId"
+    FROM kin_held_posts WHERE org_id = ${orgId} AND delivered_at IS NULL ORDER BY person_id`;
+  return yield* reholdFor(
+    orgId,
+    people.map((row) => row.personId),
+    change,
+  );
+});
+
+const reholdFor = Effect.fn("KinQuiet.rehold")(function* <A, E, R>(
+  orgId: KinOrgId,
+  people: ReadonlyArray<KinPersonId>,
+  change: Effect.Effect<A, E, R>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const before = new Map<KinPersonId, KinHoldRule>();
+  for (const personId of people) before.set(personId, yield* personRule(orgId, personId));
   const result = yield* change;
   const now = yield* Clock.currentTimeMillis;
-  const was = freeAt(before, now);
-  const free = freeAt(yield* personRule(orgId, personId), now);
-  const held = yield* sql<{ holdId: string; at: number }>`SELECT hold_id AS "holdId",
-      deliver_at AS at FROM kin_held_posts
-    WHERE org_id = ${orgId} AND person_id = ${personId} AND delivered_at IS NULL`;
-  for (const row of held) {
-    const at = Math.max(free, row.at > was ? row.at : now);
-    if (at !== row.at)
-      yield* sql`UPDATE kin_held_posts SET deliver_at = ${at}
-        WHERE org_id = ${orgId} AND hold_id = ${row.holdId}`;
+  for (const personId of people) {
+    const was = freeAt(before.get(personId)!, now);
+    const free = freeAt(yield* personRule(orgId, personId), now);
+    const held = yield* sql<{ holdId: string; at: number }>`SELECT hold_id AS "holdId",
+        deliver_at AS at FROM kin_held_posts
+      WHERE org_id = ${orgId} AND person_id = ${personId} AND delivered_at IS NULL`;
+    for (const row of held) {
+      const at = Math.max(free, row.at > was ? row.at : now);
+      if (at !== row.at)
+        yield* sql`UPDATE kin_held_posts SET deliver_at = ${at}
+          WHERE org_id = ${orgId} AND hold_id = ${row.holdId}`;
+    }
   }
   return result;
 });
@@ -154,9 +189,9 @@ export const theirTime = (at: number, zone: string) => {
 /** What the sender hears of a held line: "Zoya Sheikh is off until 10:00 their time (Tue 17 Nov)". */
 export const heldUntil = (
   name: string,
-  held: { readonly at: number; readonly zone: string; readonly why: "quiet" | "off" },
+  held: { readonly at: number; readonly zone: string; readonly why: "quiet" | "off" | "away" },
 ) =>
-  `${name} is ${held.why === "off" ? "off" : "in quiet hours"} until ${theirTime(held.at, held.zone)}`;
+  `${name} is ${held.why === "off" ? "off" : held.why === "away" ? "away" : "in quiet hours"} until ${theirTime(held.at, held.zone)}`;
 
 /**
  * Until when a relay, nudge, notice or hand-over line for `personId` in `chatId` waits: the end

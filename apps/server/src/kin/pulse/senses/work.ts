@@ -2,7 +2,10 @@ import { KinAgentId, KinPersonId, type KinPulseActor } from "@t3tools/contracts"
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { validZone } from "../../triggers/quietHold.ts";
+import { stillAway } from "../../triggers/quietHours.ts";
 import { waitingSince } from "../../work/crm.ts";
+import { ownerZone } from "../../work/recordRows.ts";
 import { DAY_MS, threshold, toMs } from "../thresholds.ts";
 import {
   dayOf,
@@ -40,6 +43,14 @@ const workFact = (
   ...fact,
 });
 
+const awayLine = (
+  row: EntryRow,
+  away: ReadonlyMap<string, { readonly name: string; readonly day: string }>,
+) => {
+  const holder = row.ownerKind === "person" ? away.get(row.ownerId) : undefined;
+  return holder === undefined ? "" : ` ${holder.name} is away until ${holder.day}.`;
+};
+
 export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: SenseContext) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, at } = ctx;
@@ -55,6 +66,16 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
     WHERE r.org_id = ${orgId} AND r.register_id = 'work' AND r.state IN ${sql.in(OPEN)}
       AND r.due_at IS NOT NULL AND r.due_at <= ${at - toMs(grace)}
     ORDER BY r.due_at, r.key LIMIT ${SENSE_CAP * 2}`;
+  // A holder away right now: their late task says until when, so nobody chases them meanwhile.
+  const awayRows = yield* sql<{ personId: string; name: string; day: string; zone: string | null }>`
+    SELECT person_id AS "personId", display_name AS name, away_until AS day, time_zone AS zone
+    FROM kin_people WHERE org_id = ${orgId} AND away_until IS NOT NULL ORDER BY person_id`;
+  const company = awayRows.length === 0 ? "UTC" : yield* ownerZone(orgId);
+  const away = new Map(
+    awayRows
+      .filter((one) => stillAway(one.day, validZone(one.zone) ?? company, at))
+      .map((one) => [one.personId, one]),
+  );
   for (const row of late) {
     const due = row.dueAt!;
     const ours = row.side === "ours";
@@ -64,7 +85,7 @@ export const workSenses = Effect.fn("KinPulse.workSenses")(function* (ctx: Sense
         key: `${ours ? "task_late" : "theirs_late"}:${row.key}:due=${due}`,
         since: iso(due + toMs(grace)),
         measure: measure(elapsed(due, at, "hours"), grace),
-        consequence: `${ours ? "Was due" : "They owed it by"} ${dayOf(ctx, due)}, ${daysAgoText(ctx, due)}.`,
+        consequence: `${ours ? "Was due" : "They owed it by"} ${dayOf(ctx, due)}, ${daysAgoText(ctx, due)}.${awayLine(row, away)}`,
         wake: "sweep",
       }),
     );
