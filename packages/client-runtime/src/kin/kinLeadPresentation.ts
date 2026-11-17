@@ -181,7 +181,7 @@ export { kinAgentDriverAllowed } from "@t3tools/contracts";
 export const KIN_OPENAI_AGENTS = {
   title: "Agents on OpenAI models",
   detail:
-    "An experiment: agents may also run on Codex's models. There they use only their Kin tools, with no shell, files or web, in every chat. Sign in to Codex under Settings, Providers first.",
+    "An experiment: agents may also run on Codex's models. As on Claude, in your own chats they have a shell, files and web search, each step checked by Kin, and in chats others read only their Kin tools. Set up Codex under Settings, Providers first.",
 };
 
 /** An org's first agent is where the model comes from: the host copies it to every later one. */
