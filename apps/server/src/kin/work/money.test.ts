@@ -37,6 +37,7 @@ import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { moneySection } from "./moneyViews.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
+import { proposalFor } from "./registers.ts";
 import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import { endOfDay } from "./recordRows.ts";
@@ -1904,6 +1905,29 @@ describe("the company profile", () => {
         changeLines(unrated, { homeCurrency: "USD", rates: [], pan: "ABCDE1234F" }),
         ["PAN: none → ABCDE1234F"],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("gives a new expenses list the ways its company's country pays", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const paidWith = Effect.gen(function* () {
+        const proposal = yield* proposalFor(orgId, { template: "expenses" });
+        assert(proposal._tag === "new");
+        return proposal.definition.fields.find((field) => field.key === "paidWith")?.choices;
+      });
+      // A company that never set one keeps the default home currency, rupees, and so India's.
+      assert.deepStrictEqual(yield* paidWith, ["card", "upi", "bank", "cash"]);
+      let rev = 0;
+      for (const [home, ways] of [
+        ["USD", ["card", "ach", "wire", "check", "cash"]],
+        ["GBP", ["card", "bank", "direct debit", "cash"]],
+        ["EUR", ["card", "bank", "cash"]],
+        ["INR", ["card", "upi", "bank", "cash"]],
+      ] as const) {
+        rev = (yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, homeCurrency: home })).rev;
+        assert.deepStrictEqual(yield* paidWith, ways, home);
+      }
     }).pipe(Effect.provide(layer)),
   );
 

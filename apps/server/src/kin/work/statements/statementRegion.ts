@@ -1,13 +1,20 @@
+import { KIN_TEXT_LOCALE } from "@t3tools/contracts";
+
 /**
- * What a statement's country decides and its table doesn't say: how a numeric date is ordered,
- * which currency an unlabelled statement is in, the banks it may name and the payment rails its
- * narrations start with. One row per region; adding a country is one row here.
+ * What a country decides for a company in it and for a statement from it: the locale Kin's text is
+ * written in, the ways an expense is paid, how a numeric date is ordered, which currency an
+ * unlabelled statement is in, the banks it may name and the payment rails its narrations start
+ * with. One row per region; adding a country is one row here.
  */
 
 export type DateOrder = "dmy" | "mdy";
 
 export interface StatementRegion {
   readonly currency: string;
+  /** The locale server text for a company here is written in; it picks the clock. */
+  readonly locale: string;
+  /** How an expense here is paid, as the expenses template offers it. */
+  readonly paidWith: ReadonlyArray<string>;
   readonly dateOrder: DateOrder;
   /** Banks of this country, as their statements name them: the name to show. */
   readonly banks: ReadonlyArray<readonly [RegExp, string]>;
@@ -20,6 +27,9 @@ export interface StatementRegion {
 const INDIA: StatementRegion = {
   // oxlint-disable-next-line t3code/kin-one-format -- the region descriptor is where India's currency lives.
   currency: "INR",
+  // oxlint-disable-next-line t3code/kin-one-format -- the region descriptor is where India's locale lives.
+  locale: "en-IN",
+  paidWith: ["card", "upi", "bank", "cash"],
   dateOrder: "dmy",
   banks: [
     [/\bhdfc\b/i, "HDFC Bank"],
@@ -43,6 +53,9 @@ const INDIA: StatementRegion = {
 };
 const US: StatementRegion = {
   currency: "USD",
+  // oxlint-disable-next-line t3code/kin-one-format -- the region descriptor is where the US locale lives.
+  locale: "en-US",
+  paidWith: ["card", "ach", "wire", "check", "cash"],
   dateOrder: "mdy",
   banks: [
     [/\bchase\b/i, "Chase"],
@@ -55,6 +68,9 @@ const US: StatementRegion = {
 };
 const UK: StatementRegion = {
   currency: "GBP",
+  // oxlint-disable-next-line t3code/kin-one-format -- the region descriptor is where the UK's locale lives.
+  locale: "en-GB",
+  paidWith: ["card", "bank", "direct debit", "cash"],
   dateOrder: "dmy",
   banks: [
     [/\bbarclays\b/i, "Barclays"],
@@ -89,14 +105,23 @@ export const regionNamedIn = (text: string) =>
   bankIn(text)?.region ??
   STATEMENT_REGIONS.find((region) => region.marker !== undefined && region.marker.test(text));
 
+/** The company's region, by its home currency; none for a currency no row has. */
+export const companyRegion = (home: string): StatementRegion | undefined =>
+  STATEMENT_REGIONS.find((region) => region.currency === home);
+
+/** How an expense is paid where no region says: ways every country has. */
+export const NEUTRAL_PAID_WITH: ReadonlyArray<string> = ["card", "bank", "cash"];
+
 /**
  * The region a statement reads in: the one its text names, else the company's by its home
  * currency, else one with the home currency and day-first dates, as most of the world writes them.
  */
 export const statementRegion = (text: string, home: string): StatementRegion =>
   regionNamedIn(text) ??
-  STATEMENT_REGIONS.find((region) => region.currency === home) ?? {
+  companyRegion(home) ?? {
     currency: home,
+    locale: KIN_TEXT_LOCALE,
+    paidWith: NEUTRAL_PAID_WITH,
     dateOrder: "dmy",
     banks: [],
     rails: [],
