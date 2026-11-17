@@ -62,6 +62,11 @@ const Op = Schema.Union([
   Schema.TaggedStruct("archive", { pick: Pick, on: Schema.Boolean }),
   Schema.TaggedStruct("share", { pick: Pick, on: Schema.Boolean }),
   Schema.TaggedStruct("label", { pick: Pick, on: Schema.Boolean }),
+  // A doc filed under the project, and the mate holding its task or being on it: no doc changes,
+  // but the project's docs come into or leave her sight.
+  Schema.TaggedStruct("projectDoc", {}),
+  Schema.TaggedStruct("hold", { on: Schema.Boolean }),
+  Schema.TaggedStruct("member", { on: Schema.Boolean }),
 ]);
 type Op = typeof Op.Type;
 const history = Arbitrary.array(Arbitrary.schema(Op), { minLength: 2, maxLength: 12 });
@@ -84,8 +89,20 @@ const docsCase = ([ops, limit]: readonly [ReadonlyArray<Op>, number]) =>
       yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
         VALUES ('session-mate', ${orgId}, 'mate', 0)`;
       const writer = { actor: { _tag: "person", personId: ownerId }, via: "owner" } as const;
+      const project = yield* records.create(orgId, writer, {
+        list: "projects",
+        title: "Invented project",
+        owner: { _tag: "person", personId: ownerId },
+        originKey: "docs-property:project",
+      });
+      const task = yield* records.create(orgId, writer, {
+        title: "Invented task on the project",
+        owner: { _tag: "person", personId: ownerId },
+        projectId: project.row.recordId,
+        originKey: "docs-property:project-task",
+      });
       let made = 0;
-      const create = (shared: boolean) =>
+      const create = (shared: boolean, filed = false) =>
         Effect.gen(function* () {
           made += 1;
           const doc = yield* Docs.create(
@@ -98,6 +115,7 @@ const docsCase = ([ops, limit]: readonly [ReadonlyArray<Op>, number]) =>
               owner: { _tag: "person", personId: ownerId },
               summary: "Created",
               originKey: `docs-property:${made}`,
+              ...(filed ? { projectId: project.row.recordId } : {}),
             },
           );
           if (shared) yield* records.update(orgId, writer, doc.row.key, { team: true });
@@ -146,6 +164,15 @@ const docsCase = ([ops, limit]: readonly [ReadonlyArray<Op>, number]) =>
       const apply = (op: Op) =>
         Effect.gen(function* () {
           if (op._tag === "create") return yield* create(op.shared);
+          if (op._tag === "projectDoc") return yield* create(false, true);
+          if (op._tag === "hold")
+            return yield* records.update(orgId, writer, task.row.key, {
+              owner: { _tag: "person", personId: KinPersonId.make(op.on ? "mate" : "owner") },
+            });
+          if (op._tag === "member")
+            return yield* records.update(orgId, writer, project.row.key, {
+              fields: { members: op.on ? ["person:mate"] : [] },
+            });
           const one = yield* pick(op.pick);
           if (one === undefined) return;
           switch (op._tag) {
@@ -193,7 +220,7 @@ const docsCase = ([ops, limit]: readonly [ReadonlyArray<Op>, number]) =>
           const events: Array<KinDocsEvent> = [];
           for (const burst of bursts) events.push(...(yield* screen.session.burst(burst)));
           for (const event of events) screen.rows = kinApplyDocsEvent(screen.rows, event);
-          if (events.length === 0) continue;
+          // A step that sends nothing must leave the page a fresh read's too.
           const patched = kinPatchDocsPage(screen.page, screen.rows);
           screen.page =
             patched === null
