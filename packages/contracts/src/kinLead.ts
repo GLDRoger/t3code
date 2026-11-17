@@ -196,8 +196,8 @@ export type KinLeadUpdateInput = typeof KinLeadUpdateInput.Type;
 
 /**
  * One change an agent made to a record, as its history keeps it. `undo` is whether Kin can put
- * back what it replaced now: never once it changed `since`, nor for a change Kin can't reverse
- * on its own (list details, amounts, a doc's text).
+ * back what it replaced now: never once a later change is in the way (`since`), nor for a change
+ * Kin can't reverse on its own (list details, amounts, a doc's text).
  */
 export const KinAgentChange = Schema.Struct({
   seq: PositiveInt,
@@ -214,10 +214,19 @@ export const KinAgentChange = Schema.Struct({
     }),
   ),
   undo: Schema.Boolean,
-  /** Changed again after this one, by anyone: what it shows is no longer what the record holds. */
+  /**
+   * A later change, by anyone, stands in the way of Undo: one to the same field, or for an add any
+   * change at all. Never for a link, which goes back on its own while it is there.
+   */
   since: Schema.Boolean,
-  /** The change after it put back what this one replaced. */
+  /** The change after it put back what this one replaced; for a link, the link is gone. */
   undone: Schema.optional(Schema.Boolean),
+  /** An entry linked to another: that other end, or null when this viewer can't see it. */
+  linkedTo: Schema.optional(
+    Schema.NullOr(Schema.Struct({ key: KinRecordKey, title: Schema.String })),
+  ),
+  /** An add whose only later changes are links. */
+  linkedSince: Schema.optional(Schema.Boolean),
 });
 export type KinAgentChange = typeof KinAgentChange.Type;
 export const KinAgentPageInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });

@@ -211,11 +211,15 @@ export const KIN_AGENT_CHANGES = {
   undo: "Undo",
   undoing: "Undoing…",
   undone: "Put back.",
-  since: "Changed since",
+  linkUndone: "Link removed.",
   sinceDetail:
     "Changed again after this, so Kin won't put it back over that. Open it to change it.",
-  manual: "Open it to change it",
+  linkedSinceDetail:
+    "It has links now, so Kin won't take it back on its own. Open it to change it.",
+  linkGone: "Already removed.",
   manualDetail: "Kin can't put this one back on its own, such as an amount or a doc's text.",
+  manualAddDetail: "Kin can't take this one back on its own. Open it to change it.",
+  unseenEnd: "an entry you can't see",
   failed: "Couldn't undo that.",
 } as const;
 
@@ -240,6 +244,8 @@ const FIELD_WORDS: Readonly<Record<string, string>> = {
 };
 const HIDDEN_FIELDS = new Set(["reason", "handedBack"]);
 const VALUE_MAX = 40;
+/** Links whose shown end is words, such as "PR #12"; other kinds name an id. */
+const SHOWN_LINKS = new Set(["url", "pull_request"]);
 
 type Change = NonNullable<KinAgentPage["changed"]>[number];
 
@@ -251,7 +257,20 @@ export function kinAgentChangeLine(
 ): string {
   const record = `${change.key} ${change.title}`;
   if (change.kind === "created") return `Added ${record}`;
-  if (change.kind === "linked") return `Linked ${record}`;
+  const short = (shown: string) =>
+    shown.length > VALUE_MAX ? `${shown.slice(0, VALUE_MAX - 1)}…` : shown;
+  if (change.kind === "linked") {
+    const [made] = change.fields;
+    const other =
+      change.linkedTo === null
+        ? KIN_AGENT_CHANGES.unseenEnd
+        : change.linkedTo !== undefined
+          ? short(`${change.linkedTo.key} ${change.linkedTo.title}`)
+          : made?.to != null && SHOWN_LINKS.has(made.field)
+            ? short(made.to)
+            : undefined;
+    return other === undefined ? `Linked ${record}` : `Linked ${record} to ${other}`;
+  }
   const value = (field: string, shown: string | null) => {
     if (shown === null || shown === "") return "none";
     const principal = /^(person|agent):(.+)$/.exec(shown);
@@ -262,7 +281,7 @@ export function kinAgentChangeLine(
         new Date(shown),
         new Date(shown).getFullYear() === now.getFullYear() ? "date" : "dateYear",
       );
-    return shown.length > VALUE_MAX ? `${shown.slice(0, VALUE_MAX - 1)}…` : shown;
+    return short(shown);
   };
   const parts = change.fields
     .filter((one) => !HIDDEN_FIELDS.has(one.field))
@@ -273,14 +292,32 @@ export function kinAgentChangeLine(
   return parts.length === 0 ? `Changed ${record}` : `${record}: ${parts.join("; ")}`;
 }
 
-/** What the row offers: Undo, or why not. */
+/** What the row offers: Undo and what it says once done, or the sentence saying why not. */
 export const kinAgentChangeOffer = (change: Change) =>
   change.undo
-    ? ({ kind: "undo" } as const)
+    ? ({
+        kind: "undo",
+        done: change.kind === "linked" ? KIN_AGENT_CHANGES.linkUndone : KIN_AGENT_CHANGES.undone,
+      } as const)
     : change.undone === true
-      ? ({ kind: "undone", text: KIN_AGENT_CHANGES.undone } as const)
-      : change.since
-        ? ({ kind: "since", text: KIN_AGENT_CHANGES.since } as const)
-        : change.kind === "updated"
-          ? ({ kind: "manual", text: KIN_AGENT_CHANGES.manual } as const)
-          : ({ kind: "none" } as const);
+      ? ({
+          kind: "undone",
+          text: change.kind === "linked" ? KIN_AGENT_CHANGES.linkGone : KIN_AGENT_CHANGES.undone,
+        } as const)
+      : change.kind === "linked"
+        ? ({ kind: "none" } as const)
+        : change.since
+          ? ({
+              kind: "since",
+              text:
+                change.linkedSince === true
+                  ? KIN_AGENT_CHANGES.linkedSinceDetail
+                  : KIN_AGENT_CHANGES.sinceDetail,
+            } as const)
+          : ({
+              kind: "manual",
+              text:
+                change.kind === "created"
+                  ? KIN_AGENT_CHANGES.manualAddDetail
+                  : KIN_AGENT_CHANGES.manualDetail,
+            } as const);

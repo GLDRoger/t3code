@@ -21,7 +21,8 @@ import { type LeadCreator, profileIn, retirable } from "./KinLeadProvision.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import { turnModel } from "./leadModels.ts";
 import { setCharacter } from "./characters.ts";
-import { ownerLevelAgentChanges, ownerLevelUndoAgentChange } from "./agentChanges.ts";
+import { agentChanges, ownerLevelUndoAgentChange } from "./agentChanges.ts";
+import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 
 const CHARACTER_ORIGIN = "kin-character:";
@@ -92,7 +93,9 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
       paused: row.pausedAt !== null,
     })),
     playbooks: playbooks.map((row) => ({ key: KinRecordKey.make(row.key), title: row.title })),
-    changed: yield* ownerLevelAgentChanges(orgId, agentId).pipe(Effect.mapError(persistence)),
+    changed: yield* agentChanges(KIN_OWNER_LEVEL, orgId, agentId).pipe(
+      Effect.mapError(persistence),
+    ),
   } satisfies KinAgentPage;
 });
 

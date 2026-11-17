@@ -14,10 +14,12 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as Statement from "effect/sql/Statement";
 
 import { KinRecords, type Patch } from "../work/KinRecords.ts";
 import { tellMoved } from "../work/ownerWork.ts";
 import { isClosed, parseChanges } from "../work/recordRows.ts";
+import { KIN_OWNER_LEVEL, type KinViewer, seenBy } from "../work/teamView.ts";
 
 /** How many of an agent's changes its page lists. */
 const AGENT_CHANGES_SHOWN = 20;
@@ -143,7 +145,12 @@ type Row = {
   readonly kind: "created" | "updated" | "linked";
   readonly fieldsJson: string;
   readonly since: number;
+  readonly sinceOther: number;
   readonly nextJson: string | null;
+  readonly linkLive: number;
+  readonly otherKey: string | null;
+  readonly otherTitle: string | null;
+  readonly otherSeen: number;
 };
 
 /** Whether `next` put back exactly what `change` replaced, as an Undo of it writes. */
@@ -153,10 +160,6 @@ const putBack = (
 ) => {
   if (change.kind === "created")
     return next.some((one) => one.field === "state" && one.to === "dropped");
-  if (change.kind === "linked")
-    return change.fields.some((one) =>
-      next.some((back) => back.field === one.field && back.from === one.to && back.to === null),
-    );
   const own = change.fields.filter((one) => !ALONG.has(one.field));
   return (
     own.length > 0 &&
@@ -167,59 +170,100 @@ const putBack = (
 };
 
 const rowsOf = Effect.fn("KinAgentChanges.rows")(function* (
+  viewer: KinViewer,
   orgId: KinOrgId,
   agentId: KinAgentId,
   seq?: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  // Owner-level only (its page's check): every record, private ones included.
+  // What stands in the way of undoing `c`: for an add, any later change; for an update, a later
+  // one to the same field. A link is its own thing: it goes back while it is there.
+  const later = (only: Statement.Fragment) => sql`FROM kin_record_changes l
+    WHERE l.org_id = c.org_id AND l.record_id = c.record_id AND l.seq > c.seq
+      AND l.actor_kind <> 'system' AND ${only}`;
+  const inTheWay = sql`(c.kind = 'created' OR (c.kind = 'updated' AND l.kind <> 'linked'
+    AND EXISTS (SELECT 1 FROM json_each(l.fields_json) lf, json_each(c.fields_json) cf
+      WHERE json_extract(lf.value, '$.field') = json_extract(cf.value, '$.field')
+        AND json_extract(cf.value, '$.field') NOT IN ${sql.in([...ALONG])})))`;
+  const linked = sql`json_extract(c.fields_json, '$[0].to')`;
   return yield* sql<Row>`SELECT c.seq, c.record_id AS "recordId", c.at, r.key, r.title, r.register_id AS "registerId",
         r.state, c.kind, c.fields_json AS "fieldsJson",
-        EXISTS (SELECT 1 FROM kin_record_changes l WHERE l.org_id = c.org_id
-          AND l.record_id = c.record_id AND l.seq > c.seq AND l.actor_kind <> 'system') AS since,
-        (SELECT l.fields_json FROM kin_record_changes l WHERE l.org_id = c.org_id
-          AND l.record_id = c.record_id AND l.seq > c.seq AND l.actor_kind <> 'system'
-          ORDER BY l.seq LIMIT 1) AS "nextJson"
+        c.kind <> 'linked' AND EXISTS (SELECT 1 ${later(inTheWay)}) AS since,
+        EXISTS (SELECT 1 ${later(sql`l.kind <> 'linked'`)}) AS "sinceOther",
+        (SELECT l.fields_json ${later(inTheWay)} ORDER BY l.seq LIMIT 1) AS "nextJson",
+        c.kind = 'linked' AND EXISTS (SELECT 1 FROM kin_record_links k WHERE k.org_id = c.org_id
+          AND k.record_id = c.record_id AND k.kind = json_extract(c.fields_json, '$[0].field')
+          AND k.created_at = c.at AND COALESCE(k.label, k.target) = ${linked}) AS "linkLive",
+        o.key AS "otherKey", o.title AS "otherTitle",
+        EXISTS (SELECT 1 FROM kin_records r WHERE r.org_id = o.org_id
+          AND r.record_id = o.record_id AND ${seenBy(sql, viewer)}) AS "otherSeen"
       FROM kin_record_changes c
       JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
+      -- A record link names the other end by id, or by key when it was given a label.
+      LEFT JOIN kin_records o ON c.kind = 'linked'
+        AND json_extract(c.fields_json, '$[0].field') = 'record' AND o.org_id = c.org_id
+        AND (o.record_id = ${linked} OR o.key = ${linked})
       WHERE c.org_id = ${orgId} AND c.actor_kind = 'agent' AND c.actor_id = ${agentId}
+        AND ${seenBy(sql, viewer)}
         ${seq === undefined ? sql`` : sql`AND c.seq = ${seq}`}
         -- A link both ways is one change: the half back to the entry linked first isn't listed.
         AND NOT (c.kind = 'linked' AND EXISTS (SELECT 1 FROM kin_record_changes p
           WHERE p.org_id = c.org_id AND p.kind = 'linked' AND p.actor_kind = c.actor_kind
             AND p.actor_id = c.actor_id AND p.seq < c.seq AND p.at BETWEEN c.at - 5000 AND c.at
-            AND p.record_id = json_extract(c.fields_json, '$[0].to')
+            AND p.record_id = ${linked}
             AND json_extract(p.fields_json, '$[0].to') = c.record_id))
       ORDER BY c.seq DESC LIMIT ${AGENT_CHANGES_SHOWN}`;
 });
 
 const changeOf = (row: Row): KinAgentChange => {
   const fields = parseChanges(row.fieldsJson).filter((change) => change.field.trim() !== "");
-  const since = row.since === 1;
-  return {
+  const change = { ...row, fields };
+  const base = {
     seq: row.seq,
     at: DateTime.formatIso(DateTime.makeUnsafe(row.at)),
     key: KinRecordKey.make(row.key),
     title: row.title,
     registerId: row.registerId,
     kind: row.kind,
-    fields: fields.map((change) => ({ field: change.field, from: change.from, to: change.to })),
-    undo:
-      !since &&
-      (linkOf({ ...row, fields }) !== undefined || reversal({ ...row, fields }) !== undefined),
+    fields: fields.map((one) => ({ field: one.field, from: one.from, to: one.to })),
+  };
+  if (row.kind === "linked") {
+    const live = row.linkLive === 1 && linkOf(change) !== undefined;
+    return {
+      ...base,
+      undo: live,
+      since: false,
+      ...(live ? {} : { undone: true }),
+      ...(fields[0]?.field !== "record"
+        ? {}
+        : {
+            linkedTo:
+              row.otherKey === null || row.otherTitle === null || row.otherSeen !== 1
+                ? null
+                : { key: KinRecordKey.make(row.otherKey), title: row.otherTitle },
+          }),
+    };
+  }
+  // Nothing is in the way of a change Kin can't put back anyway.
+  const since = row.since === 1 && reversal(change) !== undefined;
+  return {
+    ...base,
+    undo: !since && reversal(change) !== undefined,
     since,
-    ...(row.nextJson !== null && putBack({ ...row, fields }, parseChanges(row.nextJson))
+    ...(row.nextJson !== null && putBack(change, parseChanges(row.nextJson))
       ? { undone: true }
       : {}),
+    ...(since && row.kind === "created" && row.sinceOther !== 1 ? { linkedSince: true } : {}),
   };
 };
 
-/** The agent's last record changes, newest first: the ones "undo it" reads, kept on each record. */
-export const ownerLevelAgentChanges = Effect.fn("KinAgentChanges.list")(function* (
+/** The agent's last record changes this viewer sees, newest first, kept on each record. */
+export const agentChanges = Effect.fn("KinAgentChanges.list")(function* (
+  viewer: KinViewer,
   orgId: KinOrgId,
   agentId: KinAgentId,
 ) {
-  return (yield* rowsOf(orgId, agentId)).map(changeOf);
+  return (yield* rowsOf(viewer, orgId, agentId)).map(changeOf);
 });
 
 /**
@@ -232,10 +276,10 @@ export const ownerLevelUndoAgentChange = Effect.fn("KinAgentChanges.undo")(funct
   readonly seq: number;
   readonly by: KinPersonId;
 }) {
-  const [row] = yield* rowsOf(input.orgId, input.agentId, input.seq);
+  const [row] = yield* rowsOf(KIN_OWNER_LEVEL, input.orgId, input.agentId, input.seq);
   if (row === undefined)
     return yield* new KinChatError({ reason: "not_found", message: "That change isn't there." });
-  if (row.since === 1)
+  if (changeOf(row).since)
     return yield* new KinChatError({
       reason: "invalid_state",
       message: `${row.key} changed since, so Kin won't put this back over it. Open it to change it yourself.`,
