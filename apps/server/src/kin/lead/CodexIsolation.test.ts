@@ -11,6 +11,7 @@ import type * as CodexClient from "effect-codex-app-server/client";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -20,7 +21,9 @@ import * as ServerConfig from "../../config.ts";
 import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as CodexIsolation from "./CodexIsolation.ts";
 import { ownerOnlyWakeup } from "./Audience.testkit.ts";
+import { pdf } from "../work/statements/statementPdf.testkit.ts";
 import { SESSION_REFUSAL } from "./Audience.ts";
+import { KIN_DEFERRED_TOOLS } from "./deferredTools.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { KinServer, type Services as KinServices } from "../KinServer.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -36,7 +39,12 @@ const recordingClient = (sent: Array<Sent>) =>
         Effect.sync(() => {
           sent.push({ method, params });
           return method === "config/read"
-            ? { config: { mcp_servers: { chrome: {}, sentry: {}, "t3-code": {} } } }
+            ? {
+                config: {
+                  mcp_servers: { chrome: {}, sentry: {}, "t3-code": {} },
+                  model_provider: "gateway",
+                },
+              }
             : {};
         }),
     },
@@ -93,7 +101,12 @@ const guidance = {
   ],
 };
 
-const session = (threadId: string, cwd: string, enabled = true) =>
+const session = (
+  threadId: string,
+  cwd: string,
+  enabled = true,
+  input: ReadonlyArray<unknown> = t3TurnStart.input,
+) =>
   Effect.gen(function* () {
     const sent: Array<Sent> = [];
     const base = Layer.succeed(
@@ -114,7 +127,7 @@ const session = (threadId: string, cwd: string, enabled = true) =>
       });
       yield* client.request("thread/start", { ...t3ThreadStart, cwd } as never).pipe(Effect.exit);
       yield* client.raw.request("thread/resume", { threadId: "native", ...t3ThreadStart, cwd });
-      yield* client.request("turn/start", t3TurnStart as never).pipe(Effect.exit);
+      yield* client.request("turn/start", { ...t3TurnStart, input } as never).pipe(Effect.exit);
       yield* client
         .request("thread/inject_items", {
           threadId: "native",
@@ -161,10 +174,21 @@ it.effect(
           assert.strictEqual(config["mcp_servers.chrome.enabled"], false);
           assert.strictEqual(config["mcp_servers.sentry.enabled"], false);
           assert.notProperty(config, "mcp_servers.t3-code.enabled");
+          // Kin's tools up front as a Claude lead gets them, the rare ones deferred on a second mount.
+          const { disabled_tools: _, ...endpoint } = t3ThreadStart.config["mcp_servers.t3-code"];
           assert.deepStrictEqual(config["mcp_servers.t3-code"], {
-            ...t3ThreadStart.config["mcp_servers.t3-code"],
+            ...endpoint,
+            disabled_tools: ["t3_thread_wait", ...KIN_DEFERRED_TOOLS],
+            omit_tools_from: ["deferred"],
             default_tools_approval_mode: "approve",
           });
+          assert.deepStrictEqual(config[`mcp_servers.${CodexIsolation.KIN_RARE_SERVER}`], {
+            ...endpoint,
+            enabled_tools: [...KIN_DEFERRED_TOOLS],
+            default_tools_approval_mode: "approve",
+          });
+          // No skills: Claude's Kin sessions load no setting sources.
+          assert.strictEqual(config["skills.include_instructions"], false);
           const servers = Object.entries(config).filter(
             ([key, value]) =>
               key.startsWith("mcp_servers.") && typeof value === "object" && value !== null,
@@ -347,11 +371,15 @@ it.effect(
       const config = ownerStart?.config as Record<string, unknown>;
       for (const [key, value] of Object.entries(CodexIsolation.FULL_SESSION_CONFIG))
         assert.deepStrictEqual(config[key], value, key);
-      // What can't ask stays off; the user's own servers too.
-      assert.strictEqual(config.web_search, "disabled");
+      // Search from the cached index and image viewing, as Claude's owner turn has them; unified
+      // exec, whose stdin Codex doesn't ask about, and the user's own servers stay off.
+      assert.strictEqual(config.web_search, "cached");
+      assert.strictEqual(config["tools.view_image"], true);
       assert.strictEqual(config["features.unified_exec"], false);
-      assert.strictEqual(config["tools.view_image"], false);
+      assert.strictEqual(config["skills.include_instructions"], false);
       assert.strictEqual(config["mcp_servers.chrome.enabled"], false);
+      // gpt-6.1's search is Codex's own call, made on a custom provider only when it says so.
+      assert.strictEqual(config["model_providers.gateway.supports_standalone_web_search"], true);
       // The signing gh first on PATH and the env a Claude agent's session keeps, nothing else.
       assert.strictEqual(
         config["shell_environment_policy.set.PATH"],
@@ -498,6 +526,45 @@ it.effect(
           ServerConfig.layerTest(process.cwd(), { prefix: "kin-codex-full-" }),
           KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
         ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+);
+
+it.effect(
+  "a PDF attached to a Kin turn on Codex reaches the model as its text, as Claude reads it; a path outside Kin's attachments is never read",
+  () =>
+    Effect.gen(function* () {
+      const { stateDir, attachmentsDir } = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(attachmentsDir, { recursive: true });
+      const contract = `${attachmentsDir}/contract.pdf`;
+      const outside = `${stateDir}/elsewhere.pdf`;
+      const bytes = pdf([[[{ x: 72, text: "Retainer: 40 hours a month" }]]]);
+      yield* fs.writeFile(contract, bytes);
+      yield* fs.writeFile(outside, bytes);
+      const said = (path: string, name: string) =>
+        `Read this\n\n[Attached file "${name}" is saved at: ${path}]`;
+      const input = [
+        {
+          type: "text",
+          text: `${said(contract, "Contract.pdf")}\n\n${said(outside, "Other.pdf")}`,
+        },
+      ];
+      for (const threadId of ["kin-shared:finance", "kin:finance"]) {
+        const sent = yield* session(threadId, `${stateDir}/kin/demo-a/memory-read`, true, input);
+        const turn = sent.find(({ method }) => method === "turn/start");
+        const items = turn?.params.input as ReadonlyArray<{ text: string }>;
+        assert.lengthOf(items, 2, threadId);
+        assert.deepStrictEqual(items[0], input[0]);
+        assert.match(items[1]!.text, /^\[Text of the attached PDF "Contract\.pdf", 1 pages\]/);
+        assert.include(items[1]!.text, "Retainer: 40 hours a month");
+        assert.notInclude(items[1]!.text, "Other.pdf");
+      }
+    }).pipe(
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "kin-codex-pdf-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+        ),
       ),
     ),
 );
