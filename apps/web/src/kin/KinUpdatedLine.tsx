@@ -8,9 +8,8 @@ import { useEffect, useState } from "react";
 
 import { Button } from "../components/ui/button";
 import { useAttachmentUploadStore } from "../lib/attachmentUploadQueue";
-import { primaryServerWelcomeAtom } from "../state/server";
 import { carryKinDraftsAcrossReload, hasUnsentKinDraft } from "./kinDraft";
-import { devBundle, pageBuild, reloadPage } from "./kinPageReload";
+import { devBundle, pageBuild, reloadPage, serverBuildAtom } from "./kinPageBuild";
 
 /** Marks a form whose contents a reload would lose. */
 export const KIN_UNSENT_ATTRIBUTE = "data-kin-unsent";
@@ -62,7 +61,7 @@ function kinPageIsBusy(): boolean {
  * nothing would be lost; otherwise it says so here and reloads once it is hidden and idle.
  */
 export function KinUpdatedLine() {
-  const serverBuild = useAtomValue(primaryServerWelcomeAtom)?.environment.webBuild;
+  const serverBuild = useAtomValue(serverBuildAtom);
   const [noticeFor, setNoticeFor] = useState<string | null>(null);
   const noticeShown = serverBuild !== undefined && noticeFor === serverBuild;
 

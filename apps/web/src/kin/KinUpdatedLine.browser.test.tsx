@@ -6,20 +6,15 @@ import "~/index.css";
 
 import { render } from "../../test/render";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../rpc/atomRegistry";
-import { primaryServerWelcomeAtom } from "../state/server";
 import { kinDraftAtom, restoreCarriedKinDrafts } from "./kinDraft";
-import { reloadPage } from "./kinPageReload";
+import { reloadPage, serverBuildAtom } from "./kinPageBuild";
 import { KinUpdatedLine } from "./KinUpdatedLine";
 
-vi.mock("./kinPageReload", () => ({
+vi.mock("./kinPageBuild", () => ({
   devBundle: false,
   pageBuild: () => "https://kin.example/assets/index-aaa.js",
+  serverBuildAtom: Atom.make<string | undefined>(undefined).pipe(Atom.keepAlive),
   reloadPage: vi.fn(),
-}));
-
-vi.mock("../state/server", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../state/server")>()),
-  primaryServerWelcomeAtom: Atom.make<unknown>(null).pipe(Atom.keepAlive),
 }));
 
 const DRAFT_KEY = "env-1:org-1:chat-1";
@@ -28,7 +23,7 @@ function setup() {
   vi.mocked(reloadPage).mockClear();
   window.sessionStorage.clear();
   appAtomRegistry.set(kinDraftAtom(DRAFT_KEY), "");
-  appAtomRegistry.set(primaryServerWelcomeAtom as Atom.Writable<unknown>, null);
+  appAtomRegistry.set(serverBuildAtom as Atom.Writable<string | undefined>, undefined);
 }
 
 function Composer() {
@@ -55,10 +50,11 @@ describe("a tab older than its Kin host", () => {
     const box = page.getByRole("textbox", { name: "Message Asha" });
     await userEvent.type(box, "Invoice is ready");
 
-    // The server restarted on a newer build and the reconnect's welcome says so.
-    appAtomRegistry.set(primaryServerWelcomeAtom as Atom.Writable<unknown>, {
-      environment: { webBuild: "assets/index-bbb.js" },
-    });
+    // The server restarted on a newer build and the reconnect's config snapshot says so.
+    appAtomRegistry.set(
+      serverBuildAtom as Atom.Writable<string | undefined>,
+      "assets/index-bbb.js",
+    );
 
     await expect
       .element(page.getByRole("status"))
