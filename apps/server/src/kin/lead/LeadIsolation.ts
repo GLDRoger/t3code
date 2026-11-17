@@ -19,14 +19,14 @@ import {
   withConfinementHook,
 } from "../claudeConfinement.ts";
 import { KinServer } from "../KinServer.ts";
-import { ghSignScript } from "../github/ghSign.ts";
+import { agentShellScripts, GH_APP_FOLDER } from "../github/ghSign.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../KinEnabled.ts";
 import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts";
 import { SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { instructions } from "./instructions.ts";
 
-/** Where the signing `gh` (`ghSign.ts`) lives under Kin's state folder. */
+/** Where an agent's `gh`, `git` and `kin-as-owner` (`ghSign.ts`) live under Kin's state folder. */
 export const GH_SIGN_FOLDER = "gh-sign";
 
 /** A lead's only built-in tools. Kin's MCP tools arrive separately, through `mcpServers`. */
@@ -152,7 +152,7 @@ const leadOptions = (
 /**
  * Claude Code's own "Generated with Claude Code" PR footer and co-author trailer stay off in a Kin
  * agent's sessions: what it posts ends with its own signature (`ghSign.ts`), and its commits carry
- * only the `Co-authored-by` line its instructions give.
+ * only the `Kin-Agent` trailer the git shim adds.
  */
 const NO_PROVIDER_FOOTER = {
   attribution: { commit: "", pr: "", sessionUrl: false },
@@ -254,19 +254,25 @@ export const claudeQueryRunner = <E, R>(
           Context.getOption(services, KinAgentSessionPolicy),
         ),
       );
-      // The signing gh, in front of the pinned one; a failed write leaves agents with the plain gh.
+      // The agent's gh and git, in front of the pinned gh; a failed write leaves the plain ones.
       const signDirectory = path.join(kinDirectory, GH_SIGN_FOLDER);
       if (Option.isSome(policy))
         yield* Effect.gen(function* () {
           yield* fs.makeDirectory(signDirectory, { recursive: true });
-          const shim = path.join(signDirectory, "gh");
           // The pinned gh's folder comes first (AgentSession.sessionPolicyLayer).
           const pinned = policy.value.toolDirectories[0] ?? "";
-          yield* fs.writeFileString(shim, ghSignScript(path.join(pinned, "gh")));
-          yield* fs.chmod(shim, 0o755);
+          for (const script of agentShellScripts({
+            shims: signDirectory,
+            app: path.join(kinDirectory, GH_APP_FOLDER),
+            realGh: path.join(pinned, "gh"),
+          })) {
+            const file = path.join(signDirectory, script.name);
+            yield* fs.writeFileString(file, script.text);
+            yield* fs.chmod(file, 0o755);
+          }
         }).pipe(
           Effect.catchCause((cause) =>
-            Effect.logWarning("Kin couldn't write its signing gh", { cause }),
+            Effect.logWarning("Kin couldn't write its agents' gh and git", { cause }),
           ),
         );
       const context = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
