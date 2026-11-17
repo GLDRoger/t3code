@@ -23,9 +23,13 @@ const kept = (patterns: ReadonlyArray<string>, name: string) =>
  * One `codex app-server` that answers like the real one: a native id for each thread it starts
  * and the user's own MCP servers on `config/read`. T3's own handlers would show an ask to a person.
  */
+/** Codex's bundled catalog, as far as these fakes go: 6.1 Sol and no later model. */
+const CATALOG = ["gpt-6.1-sol"];
+
 export const codexFake: ProviderFake = {
   driver: codex.driver,
-  open: ({ thread, cwd, environment }) =>
+  models: [...CATALOG, "gpt-unlisted-1"],
+  open: ({ thread, cwd, model, environment }) =>
     Effect.gen(function* () {
       const sent: Array<{ readonly method: string; readonly params: Config }> = [];
       const handlers = new Map<string, Handler>();
@@ -38,7 +42,10 @@ export const codexFake: ProviderFake = {
         });
       const client = {
         raw: { request: answer },
-        request: (method: string, params: Config) => answer(method, params),
+        request: (method: string, params: Config) =>
+          method === "model/list"
+            ? Effect.succeed({ data: CATALOG.map((id) => ({ model: id })), nextCursor: null })
+            : answer(method, params),
         handleServerRequest: (method: string, handler: Handler) =>
           Effect.sync(() => void handlers.set(method, handler)),
         handleServerNotification: () => Effect.void,
@@ -49,7 +56,7 @@ export const codexFake: ProviderFake = {
       );
       // What T3's adapter sends for a thread: its MCP servers and its id on the shell's env.
       const original = {
-        model: "gpt-6.1-sol",
+        model,
         cwd,
         config: {
           "mcp_servers.t3-code": { url: "http://127.0.0.1:3773/kin/mcp" },
@@ -115,7 +122,10 @@ export const codexFake: ProviderFake = {
         instructions:
           typeof started.baseInstructions === "string" ? started.baseInstructions : undefined,
         kinToolsUpFront: (server("t3-code")?.omit_tools_from as unknown) !== undefined,
+        heldBack: Array.isArray(rare) ? (rare as ReadonlyArray<string>) : [],
+        // Codex gives a model outside its catalog fallback metadata: no tool search.
         deferredFindable:
+          CATALOG.includes(model) &&
           Array.isArray(rare) &&
           rare.length > 0 &&
           Array.isArray(hidden) &&

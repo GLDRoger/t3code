@@ -30,7 +30,13 @@ import * as Sqlite from "../../../../persistence/Sqlite.ts";
 
 type Sent = { readonly method: string; readonly params: Record<string, unknown> };
 
-/** A Codex client that records what reaches the app-server and answers config/read. */
+/** Codex's catalog in these tests: it knows 6.1 Sol and no later model. */
+const catalog = {
+  data: [{ model: "gpt-6.1-sol" }],
+  nextCursor: null,
+};
+
+/** A Codex client that records what reaches the app-server and answers config/read and model/list. */
 const recordingClient = (sent: Array<Sent>) =>
   ({
     raw: {
@@ -49,6 +55,7 @@ const recordingClient = (sent: Array<Sent>) =>
     },
     request: (method: string, params: Record<string, unknown>) =>
       Effect.sync(() => {
+        if (method === "model/list") return catalog;
         sent.push({ method: `typed:${method}`, params });
         return {};
       }),
@@ -106,6 +113,7 @@ const session = (
   cwd: string,
   enabled = true,
   input: ReadonlyArray<unknown> = t3TurnStart.input,
+  model = t3ThreadStart.model,
 ) =>
   Effect.gen(function* () {
     const sent: Array<Sent> = [];
@@ -125,8 +133,9 @@ const session = (
         settings: {} as never,
         environment: { PATH: "/usr/bin" },
       });
-      yield* client.request("thread/start", { ...t3ThreadStart, cwd } as never).pipe(Effect.exit);
-      yield* client.raw.request("thread/resume", { threadId: "native", ...t3ThreadStart, cwd });
+      const thread = { ...t3ThreadStart, model, cwd };
+      yield* client.request("thread/start", thread as never).pipe(Effect.exit);
+      yield* client.raw.request("thread/resume", { threadId: "native", ...thread });
       yield* client.request("turn/start", { ...t3TurnStart, input } as never).pipe(Effect.exit);
       yield* client
         .request("thread/inject_items", {
@@ -159,8 +168,12 @@ it.effect(
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
       const memory = `${stateDir}/kin/demo-a/memory-read`;
-      for (const threadId of ["kin-shared:finance"]) {
-        const sent = yield* session(threadId, memory);
+      // A model Codex's catalog lacks has no tool search, so it gets every Kin tool up front.
+      for (const [model, rare] of [
+        ["gpt-6.1-sol", [...KIN_DEFERRED_TOOLS]],
+        ["gpt-unlisted-1", []],
+      ] as const) {
+        const sent = yield* session("kin-shared:finance", memory, true, t3TurnStart.input, model);
         const [read, start, resume, turn] = sent;
         assert.deepStrictEqual(read, { method: "config/read", params: { cwd: memory } });
         for (const thread of [start, resume]) {
@@ -182,15 +195,20 @@ it.effect(
           const { disabled_tools: _, ...endpoint } = t3ThreadStart.config["mcp_servers.t3-code"];
           assert.deepStrictEqual(config["mcp_servers.t3-code"], {
             ...endpoint,
-            disabled_tools: ["t3_thread_wait", ...KIN_DEFERRED_TOOLS],
+            disabled_tools: ["t3_thread_wait", ...rare],
             omit_tools_from: ["deferred"],
             default_tools_approval_mode: "approve",
           });
-          assert.deepStrictEqual(config[`mcp_servers.${Codex.KIN_RARE_SERVER}`], {
-            ...endpoint,
-            enabled_tools: [...KIN_DEFERRED_TOOLS],
-            default_tools_approval_mode: "approve",
-          });
+          assert.deepStrictEqual(
+            config[`mcp_servers.${Codex.KIN_RARE_SERVER}`],
+            rare.length === 0
+              ? undefined
+              : {
+                  ...endpoint,
+                  enabled_tools: rare,
+                  default_tools_approval_mode: "approve",
+                },
+          );
           // No skills: Claude's Kin sessions load no setting sources.
           assert.strictEqual(config["skills.include_instructions"], false);
           const servers = Object.entries(config).filter(

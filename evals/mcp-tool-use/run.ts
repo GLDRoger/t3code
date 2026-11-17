@@ -2078,6 +2078,11 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     : toolResult(call.id, output);
 });
 
+/** GPT models write ’ ‘ “ ” where cases write ' and ": text is matched with them made plain. */
+const plainQuotes = (text: string) => text.replaceAll(/[‘’]/g, "'").replaceAll(/[“”]/g, '"');
+const matchesPattern = (pattern: string, value: string) =>
+  new RegExp(plainQuotes(pattern)).test(plainQuotes(value));
+
 const BOUND = /^([<>]=)(-?\d+(?:\.\d+)?)$/;
 /**
  * Partial match: `~text` is a case-insensitive substring, `<=N` / `>=N` bound a number, and `null`
@@ -2093,7 +2098,9 @@ const matches = (expected: unknown, actual: unknown): boolean => {
   // A bare "~" asks only that the field is there.
   if (expected === "~") return actual !== undefined && actual !== null && actual !== "";
   if (typeof expected === "string" && expected.startsWith("~")) {
-    return valueText(actual).toLowerCase().includes(expected.slice(1).toLowerCase());
+    return plainQuotes(valueText(actual))
+      .toLowerCase()
+      .includes(plainQuotes(expected.slice(1)).toLowerCase());
   }
   if (Array.isArray(expected)) {
     return (
@@ -2271,7 +2278,7 @@ export const gradeSample = (
       ? [call.input.command, ...(sources[i] ?? [])]
       : [],
   );
-  const test = (pattern: string, value: string) => new RegExp(pattern).test(value);
+  const test = matchesPattern;
   for (const p of expect.shellMustNot ?? [])
     add(`shellMustNot /${p}/`, !shell.some((c) => test(p, c)));
   // A positive check also reads argv lists as command lines: spawnSync('pnpm', ['exec', …]).
@@ -2819,7 +2826,9 @@ const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSample")(fu
     .filter(isText)
     .map((block) => block.text)
     .join("\n\n");
-  const deferred = new Set(base.deferred.map((tool) => tool.name));
+  // As Kin's sessions decide (`kinDeferredTools`): a tool waits only where the model can look it up.
+  const lookup = yield* Effect.promise(() => server.knowsModel(config.model));
+  const deferred = new Set(lookup ? base.deferred.map((tool) => tool.name) : []);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
   const calls: Array<Call> = [];
   let step = 0;

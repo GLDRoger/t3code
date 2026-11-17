@@ -99,6 +99,25 @@ export const openAppServer = () => {
     capabilities: { experimentalApi: true },
   }).then(() => send({ method: "initialized" }));
 
+  let catalog: Promise<ReadonlySet<string>> | undefined;
+  /** Whether Codex's catalog knows the model; one it lacks runs with no tool search. */
+  const knowsModel = async (model: string) => {
+    catalog ??= ready.then(async () => {
+      const models = new Set<string>();
+      let cursor: string | null | undefined;
+      do {
+        const page = await request("model/list", {
+          includeHidden: true,
+          ...(cursor ? { cursor } : {}),
+        });
+        for (const entry of page.data) models.add(entry.model);
+        cursor = page.nextCursor;
+      } while (cursor);
+      return models;
+    });
+    return (await catalog).has(model);
+  };
+
   const runTurn = async (turn: AppServerTurn): Promise<AppServerResult> => {
     await ready;
     const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "kin-eval-"));
@@ -204,6 +223,6 @@ export const openAppServer = () => {
       NodeFS.rmSync(cwd, { recursive: true, force: true });
     }
   };
-  return { runTurn, close: () => child.kill() };
+  return { runTurn, knowsModel, close: () => child.kill() };
 };
 export type AppServer = ReturnType<typeof openAppServer>;

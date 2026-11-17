@@ -42,8 +42,8 @@ const NO_PROVIDER_FOOTER = {
 type Options = ClaudeAdapterV2.ClaudeAgentSdkQueryOptions;
 
 /** Kin's tools load up front; the plan's deferred ones carry `deferredMeta` and wait for ToolSearch. */
-const kinTools = (options: Options) =>
-  options.mcpServers === undefined
+const kinTools = (options: Options, plan: KinSessionPlan) =>
+  options.mcpServers === undefined || plan.deferredTools.size === 0
     ? { search: "false" as const, mcpServers: undefined }
     : {
         search: "true" as const,
@@ -73,7 +73,7 @@ const apply = (
   if (plan.seat === "dream") return { ...options, settingSources: [] };
   const { settings, env } = options;
   const environment = sessionEnvironment(env ?? session.environment);
-  const loading = kinTools(options);
+  const loading = kinTools(options, plan);
   const confined = plan.seat === "confined";
   return {
     ...options,
@@ -164,6 +164,9 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
             cwd: input.options.cwd,
             driver: DRIVER,
             path: (input.options.env ?? environment).PATH,
+            // Claude Code turns its ToolSearch off for a model without tool_reference blocks and
+            // then lists every tool up front, so a deferred tool stays reachable on any model.
+            toolLookup: true,
           });
           if (plan === undefined) return yield* runner.open(input);
           return yield* runner.open({
