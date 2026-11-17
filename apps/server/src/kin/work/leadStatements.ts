@@ -13,6 +13,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { homeCurrency } from "./companyProfile.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { turnChat } from "../lead/Audience.ts";
@@ -489,7 +490,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
     // Taken before the file is opened, so passwords at once can't all get through.
     if ((yield* takeTry(lead.orgId, "chat", tried, now)) !== undefined)
       return yield* invalid(CHAT_LIMIT);
-    outcome = yield* readWith(bytes, input.password);
+    outcome = yield* readWith(bytes, yield* homeCurrency(lead.orgId), input.password);
     if (outcome._tag !== "needs_password" && outcome._tag !== "wrong_password") {
       yield* clearTries(lead.orgId, tried);
       yield* hideTyped(lead, chat.chatId, Redacted.value(input.password));

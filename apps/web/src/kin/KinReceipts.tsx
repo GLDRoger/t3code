@@ -12,7 +12,12 @@ import {
 import { kinMoneyText } from "@t3tools/client-runtime/kin/kinLists";
 import { kinWorkDayOf } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
-import { KinListId, type KinRecord, type KinRecordKey } from "@t3tools/contracts";
+import {
+  KinListId,
+  type KinRecord,
+  type KinRecordKey,
+  KIN_DEFAULT_HOME_CURRENCY,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { PlusIcon } from "lucide-react";
@@ -232,7 +237,7 @@ function KinAdvanceDialog(
   const [problem, setProblem] = useState<string | null>(null);
   const [requestId] = useState(randomUUID);
   // A plain number is in the home currency; a typed symbol or code still names its own.
-  const home = useKinRates(props)?.home ?? "INR";
+  const home = useKinRates(props)?.home ?? KIN_DEFAULT_HOME_CURRENCY;
   const clients =
     Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))))?.clients ?? [];
   const ids = {

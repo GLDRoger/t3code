@@ -1,4 +1,5 @@
 import {
+  KIN_DEFAULT_HOME_CURRENCY,
   KIN_GST_STATES,
   KIN_GSTIN_PATTERN,
   KinRecordKey,
@@ -301,11 +302,12 @@ export interface KinProjectDraft {
   readonly billing: KinProjectBilling | null;
   /** As typed: "600000", "$12,000"; empty for none. */
   readonly value: string;
+  /** What a value that names no currency is in: the company's home currency. */
+  readonly currency: string;
   readonly startsOn: string | null;
   readonly renewsOn: string | null;
 }
 
-const VALUE_CURRENCY = "INR";
 export const KIN_PROJECT_BILLING_LABELS: Readonly<Record<KinProjectBilling, string>> = {
   fixed: "Fixed price",
   hourly: "Hourly",
@@ -318,6 +320,8 @@ export const kinProjectDraftOf = (
   targetDay?: string | null,
   /** The client a new project is opened from. */
   party?: KinWorkRef | null,
+  /** The company's home currency, when this viewer can read it. */
+  home: string = KIN_DEFAULT_HOME_CURRENCY,
 ): KinProjectDraft => ({
   name: project?.name ?? "",
   party:
@@ -334,12 +338,13 @@ export const kinProjectDraftOf = (
   value:
     project?.value === undefined || project.value === null
       ? ""
-      : kinMoneyDraft(project.value, VALUE_CURRENCY),
+      : kinMoneyDraft(project.value, home),
+  currency: home,
   startsOn: project?.startsOn ?? null,
   renewsOn: project?.renewsOn ?? null,
 });
-const valueOf = (text: string) =>
-  text.trim() === "" ? null : kinParseMoney(text.trim(), VALUE_CURRENCY);
+const valueOf = (text: string, currency: string) =>
+  text.trim() === "" ? null : kinParseMoney(text.trim(), currency);
 
 const isRepo = Schema.is(KinRepoName);
 const reposOf = (text: string) =>
@@ -365,7 +370,7 @@ export const kinProjectDraftCheck = (draft: KinProjectDraft): string | null => {
   if (draft.target !== null && !kinRealDay(draft.target)) return NOT_A_DAY;
   if (draft.startsOn !== null && !kinRealDay(draft.startsOn)) return NOT_A_DAY;
   if (draft.renewsOn !== null && !kinRealDay(draft.renewsOn)) return NOT_A_DAY;
-  if (draft.value.trim() !== "" && valueOf(draft.value) === null)
+  if (draft.value.trim() !== "" && valueOf(draft.value, draft.currency) === null)
     return "Write the value as an amount, such as 600000 or $12,000.";
   return tooLong(draft.name, NAME_MAX, "the name") ?? tooLong(draft.notes, NOTES_MAX, "the notes");
 };
@@ -382,13 +387,16 @@ export const kinProjectCreateInput = (
   ...(draft.notes.trim() === "" ? {} : { notes: draft.notes.trim() }),
   ...(draft.private ? { sensitive: true } : {}),
   ...(draft.billing === null ? {} : { billing: draft.billing }),
-  ...(valueOf(draft.value) === null ? {} : { value: valueOf(draft.value) }),
+  ...(valueOf(draft.value, draft.currency) === null
+    ? {}
+    : { value: valueOf(draft.value, draft.currency) }),
   ...(draft.startsOn === null ? {} : { startsOn: draft.startsOn }),
   ...(draft.renewsOn === null ? {} : { renewsOn: draft.renewsOn }),
 });
 
 export const kinProjectUpdateInput = (
   changed: Changed<KinProjectDraft>,
+  currency: string,
 ): Omit<KinProjectUpdateInput, "orgId" | "key" | "rev"> => ({
   ...(changed.name === undefined ? {} : { name: changed.name.trim() }),
   ...(changed.party === undefined ? {} : { party: changed.party?.key ?? null }),
@@ -401,7 +409,7 @@ export const kinProjectUpdateInput = (
   ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
   ...(changed.private === undefined ? {} : { sensitive: changed.private }),
   ...(changed.billing === undefined ? {} : { billing: changed.billing }),
-  ...(changed.value === undefined ? {} : { value: valueOf(changed.value) }),
+  ...(changed.value === undefined ? {} : { value: valueOf(changed.value, currency) }),
   ...(changed.startsOn === undefined ? {} : { startsOn: changed.startsOn }),
   ...(changed.renewsOn === undefined ? {} : { renewsOn: changed.renewsOn }),
 });
@@ -568,6 +576,7 @@ export function createKinWorkForm<D extends Draft, A>(options: {
           readonly key: KinRecordKey;
           readonly changed: { [K in keyof D]?: D[K] };
           readonly rev: number;
+          readonly draft: D;
         },
   ) => Sent<A>;
   readonly online: () => boolean;
@@ -621,7 +630,7 @@ export function createKinWorkForm<D extends Draft, A>(options: {
           options.send(
             editing === null
               ? { type: "create", draft }
-              : { type: "update", key: editing.key, changed, rev },
+              : { type: "update", key: editing.key, changed, rev, draft },
           ),
         noun: options.noun,
         name: options.nameOf(draft),

@@ -9,7 +9,7 @@ import * as Redacted from "effect/Redacted";
 import { readStatementFile } from "./statementFiles.ts";
 import { pdf, threePageStatement } from "./statementPdf.testkit.ts";
 import { READER_LIMITS, readIsolated, runReader, TOO_LARGE } from "./statementReader.ts";
-import { checkBalances, parseAmount, parseDay, readTable } from "./statementTable.ts";
+import { checkBalances, currencyIn, parseAmount, parseDay, readTable } from "./statementTable.ts";
 
 // Every statement here is invented: Lakeview Studio, its clients and its accounts are made up.
 const fixture = (name: string) =>
@@ -237,10 +237,18 @@ describe("statement values", () => {
     ["31/02/26", undefined],
     ["N275260001234567", undefined],
   ])("reads the day %s", (said, day) => {
-    assert.strictEqual(parseDay(said), day);
+    assert.strictEqual(parseDay(said, "dmy"), day);
+  });
+  it("takes an unlabelled statement's currency from the bank it names, else the company's home", () => {
+    assert.deepStrictEqual(currencyIn("HDFC Bank\nIFSC HDFC0000001", "USD"), { currency: "INR" });
+    assert.deepStrictEqual(currencyIn("Chase\nRouting number 000000000", "INR"), {
+      currency: "USD",
+    });
+    const unlabelled = currencyIn("Lakeview Bank\nDate Narration Amount", "USD");
+    assert.strictEqual("currency" in unlabelled && unlabelled.currency, "USD");
   });
   it("reads a spreadsheet's day serial", () => {
-    assert.strictEqual(parseDay("46297", 46297), "2026-10-02");
+    assert.strictEqual(parseDay("46297", "dmy", 46297), "2026-10-02");
   });
 
   it.each([
@@ -328,20 +336,20 @@ describe("hostile statement files", () => {
   it.live("reads each of them as unreadable in its reader process, and reads on after", () =>
     Effect.gen(function* () {
       for (const [name, file] of hostile)
-        assert.strictEqual((yield* readIsolated(file()))._tag, "unreadable", name);
-      assert.strictEqual((yield* readIsolated(fixture("hdfc-account.pdf")))._tag, "read");
+        assert.strictEqual((yield* readIsolated(file(), "INR"))._tag, "unreadable", name);
+      assert.strictEqual((yield* readIsolated(fixture("hdfc-account.pdf"), "INR"))._tag, "read");
     }),
   );
 
   it.live("stops a reader past its time or memory with a reason the owner can act on", () =>
     Effect.gen(function* () {
-      const slow = yield* readIsolated(fixture("hdfc-account.pdf"), undefined, {
+      const slow = yield* readIsolated(fixture("hdfc-account.pdf"), "INR", undefined, {
         ...READER_LIMITS,
         timeoutMs: 1,
       });
       if (slow._tag !== "unreadable") return assert.fail(slow._tag);
       assert.include(slow.reason, "too complex to read safely");
-      const big = yield* readIsolated(ledgerCsv(20_000), undefined, {
+      const big = yield* readIsolated(ledgerCsv(20_000), "INR", undefined, {
         ...READER_LIMITS,
         heapMb: 32,
       });
@@ -406,14 +414,17 @@ describe("hostile statement files", () => {
         const bytes = file();
         const limit = READER_LIMITS.residentMb * 1024;
         if (checked) {
-          const refused = yield* runReader(bytes);
+          const refused = yield* runReader(bytes, "INR");
           assert.deepStrictEqual(refused.outcome, {
             _tag: "unreadable",
             reason: "The PDF holds far more data than a statement.",
           });
           assert.isBelow(refused.peakKib, limit);
         }
-        const run = yield* runReader(bytes, undefined, { ...READER_LIMITS, precheck: false });
+        const run = yield* runReader(bytes, "INR", undefined, {
+          ...READER_LIMITS,
+          precheck: false,
+        });
         assert.deepStrictEqual(run.outcome, { _tag: "unreadable", reason: TOO_LARGE });
         assert.strictEqual(run.stopped, "memory");
         // Killed at the first sample past the limit: never the gigabytes the file decodes to.
@@ -443,7 +454,7 @@ describe("hostile statement files", () => {
           [sheet, 5_000],
           [ledgerPdf(300, 30), 9_000],
         ] as const) {
-          const { outcome, stopped, peakKib } = yield* runReader(file);
+          const { outcome, stopped, peakKib } = yield* runReader(file, "INR");
           if (outcome._tag !== "read") return assert.fail(JSON.stringify(outcome));
           assert.strictEqual(outcome.statement.rows.length, count);
           assert.strictEqual(outcome.statement.check.status, "adds_up");
@@ -456,8 +467,8 @@ describe("hostile statement files", () => {
   it.live("opens a locked PDF in its reader process with the owner's password", () =>
     Effect.gen(function* () {
       const locked = fixture("hdfc-account-locked.pdf");
-      assert.deepStrictEqual(yield* readIsolated(locked), { _tag: "needs_password" });
-      const opened = yield* readIsolated(locked, Redacted.make("lake4821"));
+      assert.deepStrictEqual(yield* readIsolated(locked, "INR"), { _tag: "needs_password" });
+      const opened = yield* readIsolated(locked, "INR", Redacted.make("lake4821"));
       assert.strictEqual(opened._tag, "read");
     }),
   );
@@ -647,11 +658,80 @@ describe("statement files", () => {
     assert.include(jumped.line, "row 2");
   });
 
+  // A US statement dated 03/04/2026 was read as 3 April: dates were always read day first.
+  describe("a statement's date order", () => {
+    const ledger = (dates: ReadonlyArray<string>) =>
+      text(
+        [
+          "Date,Description,Withdrawal,Deposit,Balance",
+          `${dates[0]},Opening deposit,,500.00,500.00`,
+          `${dates[1]},Coffee,20.00,,480.00`,
+          `${dates[2]},Rent,400.00,,80.00`,
+        ].join("\n"),
+      );
+    const days = async (dates: ReadonlyArray<string>, home?: string) => {
+      const outcome = await readStatementFile(
+        ledger(dates),
+        undefined,
+        home === undefined ? {} : { home },
+      );
+      if (outcome._tag !== "read") return assert.fail(JSON.stringify(outcome));
+      return {
+        days: outcome.statement.rows.map((row) => row.date),
+        check: outcome.statement.check.status,
+        currency: outcome.statement.currency,
+      };
+    };
+
+    it("reads month first for a company at home in the US, day first for one in India", async () => {
+      const ambiguous = ["03/04/2026", "03/05/2026", "03/06/2026"];
+      assert.deepStrictEqual(await days(ambiguous, "USD"), {
+        days: ["2026-03-04", "2026-03-05", "2026-03-06"],
+        check: "adds_up",
+        currency: "USD",
+      });
+      assert.deepStrictEqual((await days(ambiguous, "INR")).days, [
+        "2026-04-03",
+        "2026-05-03",
+        "2026-06-03",
+      ]);
+    });
+
+    it("lets the statement's own dates decide over the company's region", async () => {
+      // A day above 12 anywhere in the column shows the order, whoever reads it.
+      assert.deepStrictEqual((await days(["03/04/2026", "03/14/2026", "03/20/2026"], "INR")).days, [
+        "2026-03-04",
+        "2026-03-14",
+        "2026-03-20",
+      ]);
+      assert.deepStrictEqual((await days(["03/04/2026", "14/04/2026", "20/04/2026"], "USD")).days, [
+        "2026-04-03",
+        "2026-04-14",
+        "2026-04-20",
+      ]);
+    });
+
+    it("checks out on balances whichever way the days are read: the balance check can't catch a swap", async () => {
+      // Settles the open question: balances follow the rows' order and amounts, never their dates,
+      // so only the region and the statement's own dates can get the order right.
+      const swapped = await readStatementFile(
+        ledger(["03/04/2026", "03/05/2026", "03/06/2026"]),
+        undefined,
+        { home: "INR" },
+      );
+      if (swapped._tag !== "read") return assert.fail(swapped._tag);
+      assert.strictEqual(swapped.statement.check.status, "adds_up");
+    });
+  });
+
   it("refuses what isn't a statement", async () => {
     assert.strictEqual(
       (await readStatementFile(text("just some words\nno table here")))._tag,
       "unreadable",
     );
-    assert.strictEqual(readTable([[{ text: "Hello" }]])._tag, "no_table");
+    assert.strictEqual(
+      readTable([[{ text: "Hello" }]], { currency: "INR", dateOrder: "dmy" })._tag,
+      "no_table",
+    );
   });
 });

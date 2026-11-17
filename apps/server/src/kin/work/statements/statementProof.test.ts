@@ -90,6 +90,7 @@ const read = (
   text = PAGE,
 ) =>
   bindRows({
+    dateOrder: "dmy",
     kind: "account",
     currency: "INR",
     opening: 100_000,
@@ -212,6 +213,7 @@ describe("what the file itself proves", () => {
     });
   const headerless = (rows: ReadonlyArray<ReadRow>, text: string) =>
     bindRows({
+      dateOrder: "dmy",
       kind: "account",
       currency: "INR",
       opening: 30_000,
@@ -268,6 +270,7 @@ describe("what the file itself proves", () => {
     ].join("\n");
     const rows = (balanceMinor: number | null) =>
       bindRows({
+        dateOrder: "dmy",
         kind: "account",
         currency: "INR",
         opening: 100_000,
@@ -298,6 +301,7 @@ describe("what the file itself proves", () => {
     // No rows at all prove nothing, though the opening and closing agree.
     const none = prove(
       bindRows({
+        dateOrder: "dmy",
         kind: "account",
         currency: "INR",
         opening: 100_000,
@@ -314,6 +318,7 @@ describe("what the file itself proves", () => {
     // A page with no text between two printed balances that run on across it is covered.
     const across = (balance: string | undefined) =>
       bindRows({
+        dateOrder: "dmy",
         kind: "account",
         currency: "INR",
         opening: 100_000,
@@ -373,6 +378,7 @@ describe("what the file itself proves", () => {
         .join("\n");
     for (const by of [8, 12]) {
       const bound = bindRows({
+        dateOrder: "dmy",
         kind: "account",
         currency: "INR",
         opening: 100_000,
@@ -430,6 +436,7 @@ describe("what the file itself proves", () => {
       printed("09/04/26", "POS FIGMA.COM", { debit: "1,200", balance: "300" }),
     ].join("\n");
     const bound = bindRows({
+      dateOrder: "dmy",
       kind: "account",
       currency: "JPY",
       opening: 1_000,
@@ -461,6 +468,7 @@ describe("what the file itself proves", () => {
     assert.deepStrictEqual([bound.problems, bound.unproven], [[], []]);
     // The narration's 4500 is no amount: a row claiming it finds no line printing it.
     const claimed = bindRows({
+      dateOrder: "dmy",
       kind: "account",
       currency: "JPY",
       opening: 1_000,

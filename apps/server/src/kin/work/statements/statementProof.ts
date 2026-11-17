@@ -8,11 +8,13 @@ import {
   isHeaderLine,
   looksLikeMoney,
   parseAmount,
+  isDated,
   parseDay,
   signedMoney,
   type StatementRow,
   TOO_LARGE,
 } from "./statementTable.ts";
+import { type DateOrder, dateOrderIn } from "./statementRegion.ts";
 
 /**
  * The server's proof of a statement's rows, whoever read them: Kin's table reader or a lead
@@ -140,8 +142,15 @@ type Dated = {
   used: boolean;
 };
 
+/** The order a statement's pages show for their numeric dates, else its region's. */
+const textDateOrder = (texts: ReadonlyArray<string>, fallback: DateOrder) =>
+  dateOrderIn(
+    texts.flatMap((text) => text.split("\n").map((line) => line.trimStart())),
+    fallback,
+  );
+
 /** The lines of a page that start with a date, each with the block its narration wraps onto. */
-const datedOf = (text: string, header: ReadonlyArray<Column>, digits: number) => {
+const datedOf = (text: string, header: ReadonlyArray<Column>, digits: number, order: DateOrder) => {
   const lines = text.split("\n");
   let columns = header;
   let current: Dated | undefined;
@@ -152,11 +161,11 @@ const datedOf = (text: string, header: ReadonlyArray<Column>, digits: number) =>
       current = undefined;
       continue;
     }
-    const date = parseDay(line.trimStart());
+    const date = parseDay(line.trimStart(), order);
     if (date !== undefined) {
       const before = lines[at - 1] ?? "";
       const prior =
-        current === undefined && !isHeaderLine(before) && parseDay(before.trimStart()) === undefined
+        current === undefined && !isHeaderLine(before) && !isDated(before.trimStart())
           ? before
           : "";
       current = {
@@ -232,9 +241,7 @@ const settled = (line: Dated) => line.columns.length > 0 || line.balanceAt !== u
 
 /** How many lines of a page's text start with a date: what its rows must account for. */
 export const datedLinesOf = (text: string) =>
-  text === ""
-    ? null
-    : text.split("\n").filter((line) => parseDay(line.trimStart()) !== undefined).length;
+  text === "" ? null : text.split("\n").filter((line) => isDated(line.trimStart())).length;
 
 export type ReadRow = Omit<StatementRow, "index" | "foreign">;
 /** A dated line the reader says is no transaction, by its date and the words after it. */
@@ -271,6 +278,8 @@ const unsettled = (page: number) =>
 export const bindRows = (input: {
   readonly kind: "account" | "card";
   readonly currency: string;
+  /** The order the statement's region reads numeric dates in; its own dates decide first. */
+  readonly dateOrder: DateOrder;
   readonly opening: number | null;
   /** Every page's text, from page 1; "" for a page with no text layer. */
   readonly texts: ReadonlyArray<string>;
@@ -285,6 +294,7 @@ export const bindRows = (input: {
   const money = (minor: number) => signedMoney(minor, currency);
   const headerLine = input.texts.flatMap((text) => text.split("\n")).find(isHeaderLine);
   const header = headerLine === undefined ? [] : columnsOf(headerLine);
+  const order = textDateOrder(input.texts, input.dateOrder);
   const problems: Array<Problem> = [];
   const unproven = new Set<string>();
   const gaps: Array<number> = [];
@@ -309,7 +319,7 @@ export const bindRows = (input: {
   let undirected = 0;
   const read = input.pages.map(({ page }) => {
     const text = input.texts[page - 1] ?? "";
-    return text.trim() === "" ? undefined : datedOf(text, header, digits);
+    return text.trim() === "" ? undefined : datedOf(text, header, digits, order);
   });
   // How closely money sits under a header on the pages that print one; a carried one must match.
   const slack =
@@ -510,12 +520,14 @@ export const pagesFor = (
   texts: ReadonlyArray<string>,
   rows: ReadonlyArray<ReadRow>,
   currency: string,
+  dateOrder: DateOrder,
 ) => {
   const headerLine = texts.flatMap((text) => text.split("\n")).find(isHeaderLine);
   const header = headerLine === undefined ? [] : columnsOf(headerLine);
   const digits = currencyDigits(currency);
+  const order = textDateOrder(texts, dateOrder);
   const lines = texts.flatMap((text, at) =>
-    datedOf(text, header, digits).map((line) => ({ ...line, page: at + 1 })),
+    datedOf(text, header, digits, order).map((line) => ({ ...line, page: at + 1 })),
   );
   const pages = texts.map((_, at) => ({ page: at + 1, rows: [] as Array<ReadRow> }));
   let next = 0;

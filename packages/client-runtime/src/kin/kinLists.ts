@@ -19,11 +19,16 @@ import type {
   KinWorkListInput,
   KinWorkPrincipal,
 } from "@t3tools/contracts";
+import {
+  formatKinMoney,
+  KIN_DEFAULT_HOME_CURRENCY,
+  kinCurrency,
+  parseKinMoney,
+} from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { KIN_OFFLINE_NOT_SENT, kinFailure } from "./kinAnswers.ts";
-import { formatKinChartValue, KIN_CURRENCY_SYMBOLS } from "./kinChart.ts";
 import {
   isKinChatError,
   kinWorkAllDay,
@@ -156,15 +161,12 @@ export const KIN_LISTS = {
 
 // Money
 
-const moneyUnit = (currency: string) => ({ kind: "money" as const, currency });
-
 /** How many digits follow the point in `currency`: 2 for rupees, 0 for yen. */
-export const kinMinorDigits = (currency: string) =>
-  (formatKinChartValue(moneyUnit(currency), 1, "full", true).split(".")[1] ?? "").length;
+export const kinMinorDigits = (currency: string) => kinCurrency(currency).decimals;
 
 /** An exact amount: "₹4,20,000", with paise only when there are some unless `paise` keeps them. */
 export const kinMoneyText = (money: KinMoney, paise = false) =>
-  formatKinChartValue(moneyUnit(money.currency), money.minor, "full", paise);
+  formatKinMoney(money.minor, money.currency, { cents: paise ? "always" : "some", minus: "−" });
 
 /** One line per currency. Currencies are never added together. */
 export const kinTotalsLines = (totals: KinMoneyTotals, paise = false): ReadonlyArray<string> =>
@@ -186,52 +188,20 @@ const afterLabel = (when: string) =>
 export const kinTotalsText = (totals: KinMoneyTotals, nothing = KIN_MONEY_NOTHING) =>
   totals.length === 0 ? nothing : kinTotalsLines(totals).join(" and ");
 
-// Longest first, so "S$" is Singapore dollars before "$" is read as US ones.
-const SYMBOLS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/US\$/, "USD"],
-  ...Object.entries(KIN_CURRENCY_SYMBOLS)
-    .filter(([code]) => code !== "INR")
-    .sort(([, a], [, b]) => b.length - a.length)
-    .map(([code, sign]) => [new RegExp(sign.replace(/[$]/g, "\\$&")), code] as const),
-  [/₹|\brs\.?(?=\s|\d|$)/i, "INR"],
-];
-
 /**
- * An amount with the currency it names ("$120.50", "EUR 40", "₹4,200"), else in `fallback`.
- * Null when it isn't an amount, is zero, or names two currencies.
+ * An amount with the currency it names ("$120.50", "EUR 40", "₹4,200", "4.2 lakh"), else in
+ * `fallback`. Null when it isn't an amount, is zero, or names two currencies.
  */
 export function kinParseMoney(text: string, fallback: string): KinMoney | null {
-  const named = new Set<string>();
-  let rest = text;
-  for (const [pattern, code] of SYMBOLS)
-    if (pattern.test(rest)) {
-      named.add(code);
-      rest = rest.replace(new RegExp(pattern.source, `${pattern.flags}g`), " ");
-    }
-  rest = rest.replace(/\b[A-Za-z]{3}\b/g, (word) => {
-    named.add(word.toUpperCase());
-    return " ";
-  });
-  if (named.size > 1) return null;
-  const currency = [...named][0] ?? fallback;
-  try {
-    return kinParseAmount(rest, currency);
-  } catch {
-    return null;
-  }
+  const read = parseKinMoney(text, fallback);
+  return "money" in read && read.money.minor > 0 ? read.money : null;
 }
 
-/** What someone typed as an amount, in minor units; null when it isn't one or is zero. */
-export function kinParseAmount(text: string, currency: string): KinMoney | null {
-  const digits = kinMinorDigits(currency);
-  const cleaned = text.replace(/[\s,₹$€£]/g, "");
-  const found = /^(\d{1,13})(?:\.(\d+))?$/.exec(cleaned);
-  if (found === null) return null;
-  const fraction = found[2] ?? "";
-  if (fraction.length > digits) return null;
-  const minor = Number(found[1]) * 10 ** digits + Number(fraction.padEnd(digits, "0") || "0");
-  return minor > 0 && Number.isSafeInteger(minor) ? { minor, currency } : null;
-}
+/** An amount typed in `currency`, in minor units; null when it isn't one, is zero or names another. */
+const kinParseAmount = (text: string, currency: string): KinMoney | null => {
+  const money = kinParseMoney(text, currency);
+  return money === null || money.currency !== currency ? null : money;
+};
 
 // Periods
 
@@ -1141,7 +1111,7 @@ export function kinListEntryView(
               item.amount === undefined
                 ? ""
                 : kinMoneyDraft(item.amount, def?.currency ?? item.amount.currency),
-            currency: item.amount?.currency ?? def?.currency ?? "INR",
+            currency: item.amount?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY,
             received: received !== null && received.minor > 0 ? received : null,
           }
         : null,
@@ -1194,11 +1164,7 @@ export function kinListEntryView(
 
 /** An amount as someone would type it back: "50000.50", with its code when it isn't the list's. */
 export function kinMoneyDraft(money: KinMoney, listCurrency: string): string {
-  const digits = kinMinorDigits(money.currency);
-  const unit = 10 ** digits;
-  const whole = Math.floor(money.minor / unit);
-  const part = money.minor % unit;
-  const number = part === 0 ? String(whole) : `${whole}.${String(part).padStart(digits, "0")}`;
+  const number = formatKinMoney(money.minor, money.currency, { bare: true });
   return money.currency === listCurrency ? number : `${money.currency} ${number}`;
 }
 

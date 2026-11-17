@@ -1,6 +1,13 @@
 import * as Schema from "effect/Schema";
 
-import { currencyDigits, DEFAULT_CURRENCY, formatMoney, isCurrency } from "../money.ts";
+import { currencyDigits, formatMoney, isCurrency } from "../money.ts";
+import {
+  bankIn,
+  type DateOrder,
+  dateOrderIn,
+  likelyCurrencies,
+  regionNamedIn,
+} from "./statementRegion.ts";
 
 /**
  * A bank or card statement read from its table: whatever the file was, it arrives here as lines
@@ -56,8 +63,13 @@ export type Statement = {
   readonly check: BalanceCheck;
   /** The file doesn't prove its currency: read in `currency`, the owner picks one of these. */
   readonly currencyChoice?: ReadonlyArray<string>;
+  /** How its numeric dates were read; absent on one read before this was kept, read day first. */
+  readonly dateOrder?: DateOrder;
 };
-export type StatementFacts = Omit<Statement, "rows" | "check" | "currency" | "currencyChoice">;
+export type StatementFacts = Omit<
+  Statement,
+  "rows" | "check" | "currency" | "currencyChoice" | "dateOrder"
+>;
 
 const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 /** Whether a sum of minor units is still a number Kin keeps exactly. */
@@ -131,15 +143,22 @@ const fromSerial = (serial: number) => {
   return validDay(yoe + era * 400 + (month <= 2 ? 1 : 0), month, day);
 };
 
-/** A statement's date: day first, as Indian banks write it, or ISO; a time after it is ignored. */
-export const parseDay = (text: string, serial?: number): string | undefined => {
+/**
+ * A statement's date in `order` when it is all numbers ("03/04/2026"), or ISO, or with its month
+ * named; a time after it is ignored. `statementDateOrder` says which order a statement uses.
+ */
+export const parseDay = (text: string, order: DateOrder, serial?: number): string | undefined => {
   if (serial !== undefined) return fromSerial(serial);
   const said = text.trim().replace(/\s+/g, " ");
   const iso = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:$|[T\s|,])/.exec(said);
   if (iso !== null) return validDay(Number(iso[1]), Number(iso[2]), Number(iso[3]));
   const numeric = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4}|\d{2})(?:$|[\s|,T])/.exec(said);
-  if (numeric !== null)
-    return validDay(fullYear(Number(numeric[3])), Number(numeric[2]), Number(numeric[1]));
+  if (numeric !== null) {
+    const [first, second] = [Number(numeric[1]), Number(numeric[2])];
+    return order === "dmy"
+      ? validDay(fullYear(Number(numeric[3])), second, first)
+      : validDay(fullYear(Number(numeric[3])), first, second);
+  }
   const named =
     /^(\d{1,2})(?:st|nd|rd|th)?[\s/.-]?([A-Za-z]{3,9})[\s/.,-]*(\d{4}|\d{2})(?:$|[\s|,T])/.exec(
       said,
@@ -155,6 +174,10 @@ export const parseDay = (text: string, serial?: number): string | undefined => {
   }
   return undefined;
 };
+
+/** Whether a line starts with a date in either order: a row, not a narration's next line. */
+export const isDated = (text: string) =>
+  parseDay(text, "dmy") !== undefined || parseDay(text, "mdy") !== undefined;
 
 export type ParsedAmount = {
   readonly minor: number;
@@ -209,32 +232,29 @@ const AMBIGUOUS: ReadonlyArray<readonly [RegExp, ReadonlyArray<string>]> = [
   [/(?<![A-Z])\$/u, ["USD", "SGD", "AUD", "CAD", "HKD", "NZD"]],
   [/¥/u, ["JPY", "CNY"]],
 ];
-const COMMON = ["INR", "USD", "EUR", "GBP", "AED", "SGD"];
 const LABELLED = /\bcurrency(?:\s+code)?\s*[:-]?\s*([A-Za-z]{3})\b/gi;
 const NAMED =
   /\((?:in\s+)?([A-Z]{3})\)|\bin\s+([A-Z]{3})\b|\b([A-Z]{3})\s+[-(]?\d[\d,]*\.\d|\d\.\d+\)?\s+([A-Z]{3})\b/g;
 const SUMMARY = /opening|closing|balance|total|summary/i;
-/** Indian banks' own statements, and IFSC codes, are in rupees unless they print otherwise. */
-const RUPEE_ACCOUNT =
-  /\b(hdfc|icici|axis bank|kotak|state bank of india|sbi|yes bank|idfc first|indusind|rbl bank|federal bank|bank of baroda|punjab national bank|canara bank|union bank of india|au small finance)\b|\bifsc\b|\b[A-Z]{4}0[A-Z0-9]{6}\b/i;
-
 export type CurrencyRead =
   | { readonly currency: string; readonly choose?: ReadonlyArray<string> }
   | { readonly refused: string };
 
 /**
- * A statement's currency from its labels, header and summary lines (never narration), else an
- * Indian bank's account. Unproven or conflicting, it reads in the likeliest one and `choose` lists
- * same-minor-unit picks for the owner, so a pick only relabels. Refused when not recordable.
+ * A statement's currency from its labels, header and summary lines (never narration), else the
+ * country its bank or account markers name. Unproven or conflicting, it reads in the likeliest one,
+ * the company's `home` first, and `choose` lists same-minor-unit picks for the owner, so a pick
+ * only relabels. Refused when not recordable.
  */
-export const currencyIn = (text: string, proposed?: string): CurrencyRead => {
+export const currencyIn = (text: string, home: string, proposed?: string): CurrencyRead => {
+  const common = likelyCurrencies(home);
   const recordable = (code: string) => isCurrency(code) && currencyDigits(code) <= 4;
   const found = new Set<string>();
   const families: Array<ReadonlyArray<string>> = [];
   for (const match of text.matchAll(LABELLED)) found.add(match[1]!.toUpperCase());
   for (const line of text.split("\n")) {
     // A summary line, not a row of the table, which starts with its date.
-    const summary = SUMMARY.test(line) && parseDay(line.trimStart()) === undefined;
+    const summary = SUMMARY.test(line) && !isDated(line.trimStart());
     if (!isHeaderLine(line) && !summary) continue;
     for (const match of line.matchAll(NAMED)) {
       const code = match.slice(1).find((one) => one !== undefined)!;
@@ -252,47 +272,27 @@ export const currencyIn = (text: string, proposed?: string): CurrencyRead => {
           refused: `The statement's amounts are in ${code.slice(0, 3)}, which Kin can't record exactly.`,
         };
   }
-  if (found.size === 0 && fitting.length === 0 && RUPEE_ACCOUNT.test(text))
-    return { currency: DEFAULT_CURRENCY };
+  const named = found.size === 0 && fitting.length === 0 ? regionNamedIn(text) : undefined;
+  if (named !== undefined) return { currency: named.currency };
   const candidates = [
     ...new Set(
-      (found.size > 0 ? [...found] : fitting.length > 0 ? fitting.flat() : COMMON).filter(
+      (found.size > 0 ? [...found] : fitting.length > 0 ? fitting.flat() : common).filter(
         recordable,
       ),
     ),
   ];
-  const named = proposed?.toUpperCase();
+  const asked = proposed?.toUpperCase();
   const suggested =
-    named !== undefined && recordable(named) && (candidates.includes(named) || found.size === 0)
-      ? named
-      : (candidates[0] ?? DEFAULT_CURRENCY);
-  const choose = [suggested, ...candidates, ...(found.size === 0 ? COMMON : [])].filter(
+    asked !== undefined && recordable(asked) && (candidates.includes(asked) || found.size === 0)
+      ? asked
+      : (candidates.find((code) => code === home) ?? candidates[0] ?? home);
+  const choose = [suggested, ...candidates, ...(found.size === 0 ? common : [])].filter(
     (code, at, all) =>
       all.indexOf(code) === at && currencyDigits(code) === currencyDigits(suggested),
   );
   return { currency: suggested, choose };
 };
 
-const BANKS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/\bhdfc\b/i, "HDFC Bank"],
-  [/\bicici\b/i, "ICICI Bank"],
-  [/\baxis bank\b/i, "Axis Bank"],
-  [/\bkotak\b/i, "Kotak Mahindra Bank"],
-  [/\bstate bank of india\b|\bsbi\b/i, "State Bank of India"],
-  [/\byes bank\b/i, "Yes Bank"],
-  [/\bidfc first\b/i, "IDFC FIRST Bank"],
-  [/\bindusind\b/i, "IndusInd Bank"],
-  [/\brbl bank\b/i, "RBL Bank"],
-  [/\bfederal bank\b/i, "Federal Bank"],
-  [/\bbank of baroda\b/i, "Bank of Baroda"],
-  [/\bpunjab national bank\b/i, "Punjab National Bank"],
-  [/\bcanara bank\b/i, "Canara Bank"],
-  [/\bunion bank of india\b/i, "Union Bank of India"],
-  [/\bau small finance\b/i, "AU Small Finance Bank"],
-  [/\bstandard chartered\b/i, "Standard Chartered"],
-  [/\bhsbc\b/i, "HSBC"],
-  [/\bamerican express\b/i, "American Express"],
-];
 const ACCOUNT =
   /(?:account|a\/c|acct)\s*(?:no|number|num)?\.?\s*[:-]?\s*([0-9Xx*•\s-]{4,30}\d{4})(?!\d)/i;
 const CARD =
@@ -459,8 +459,15 @@ type Draft = {
   balanceMinor: number | null;
 };
 
+/** How a statement reads: its currency, and the date order its region uses when it doesn't show one. */
+export interface StatementReading {
+  readonly currency: string;
+  readonly dateOrder: DateOrder;
+}
+
 /** The facts around the table: the account, the bank, the period and the stated balances. */
-export const readFacts = (lines: ReadonlyArray<Line>, currency = DEFAULT_CURRENCY) => {
+export const readFacts = (lines: ReadonlyArray<Line>, reading: StatementReading) => {
+  const { currency } = reading;
   const text = lines.map(lineText).join("\n");
   const card = CARD.exec(text);
   const account = ACCOUNT.exec(text);
@@ -472,7 +479,9 @@ export const readFacts = (lines: ReadonlyArray<Line>, currency = DEFAULT_CURRENC
     return number.length >= 8 ? number : null;
   };
   const period = PERIOD.exec(text);
-  const bank = BANKS.find(([pattern]) => pattern.test(text))?.[1] ?? null;
+  const bank = bankIn(text)?.name ?? null;
+  const order =
+    period === null ? reading.dateOrder : dateOrderIn([period[1]!, period[2]!], reading.dateOrder);
   const isCard =
     /credit card|card statement|total (amount )?dues?|minimum (amount )?due/i.test(text) &&
     card !== null;
@@ -481,8 +490,8 @@ export const readFacts = (lines: ReadonlyArray<Line>, currency = DEFAULT_CURRENC
     bank,
     account: isCard ? digits(card) : (digits(account) ?? digits(card)),
     accountNumber: isCard ? whole(card) : account !== null ? whole(account) : whole(card),
-    from: period === null ? null : (parseDay(period[1]!) ?? null),
-    to: period === null ? null : (parseDay(period[2]!) ?? null),
+    from: period === null ? null : (parseDay(period[1]!, order) ?? null),
+    to: period === null ? null : (parseDay(period[2]!, order) ?? null),
     ...statedBalances(lines, currencyDigits(currency)),
   };
 };
@@ -537,7 +546,8 @@ const statedBalances = (lines: ReadonlyArray<Line>, digits: number) => {
 const centerOf = (cell: Cell) => ((cell.x ?? 0) + (cell.right ?? cell.x ?? 0)) / 2;
 
 /** Every transaction in the table, multi-line narrations joined, repeated page headers skipped. */
-export const readTable = (lines: ReadonlyArray<Line>, currency = DEFAULT_CURRENCY): TableResult => {
+export const readTable = (lines: ReadonlyArray<Line>, given: StatementReading): TableResult => {
+  const { currency } = given;
   const digits = currencyDigits(currency);
   const header = findHeader(lines);
   if (header === undefined)
@@ -545,7 +555,18 @@ export const readTable = (lines: ReadonlyArray<Line>, currency = DEFAULT_CURRENC
       _tag: "no_table",
       reason: "Kin found no table with a date, a description and an amount column in this file.",
     };
-  const facts = readFacts(lines, currency);
+  // The statement's own dates decide their order where any can only be read one way.
+  const dateCells = lines
+    .slice(header.at + 1)
+    .flatMap((line) => placeCells(line, header, digits).get("date")?.slice(0, 1) ?? []);
+  const reading = {
+    currency,
+    dateOrder: dateOrderIn(
+      dateCells.map((cell) => cell.text),
+      given.dateOrder,
+    ),
+  };
+  const facts = readFacts(lines, reading);
   const drafts: Array<Draft> = [];
   let ended = false;
   for (const line of lines.slice(header.at + 1)) {
@@ -557,7 +578,10 @@ export const readTable = (lines: ReadonlyArray<Line>, currency = DEFAULT_CURRENC
     }
     const cells = placeCells(line, header, digits);
     const dateCell = cells.get("date")?.[0];
-    const date = dateCell === undefined ? undefined : parseDay(dateCell.text, dateCell.serial);
+    const date =
+      dateCell === undefined
+        ? undefined
+        : parseDay(dateCell.text, reading.dateOrder, dateCell.serial);
     if (date === undefined) {
       // A repeated header on the next page, or the next line of the row above's narration.
       if (findHeader([line]) !== undefined) {
@@ -621,6 +645,7 @@ export const readTable = (lines: ReadonlyArray<Line>, currency = DEFAULT_CURRENC
     statement: {
       ...facts,
       currency,
+      dateOrder: reading.dateOrder,
       rows,
       check: checkBalances(facts.kind, rows, facts.openingMinor, facts.closingMinor, currency),
     },

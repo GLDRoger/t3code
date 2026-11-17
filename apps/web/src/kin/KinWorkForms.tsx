@@ -61,6 +61,7 @@ import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
+import { useKinRates } from "./useKinMoney.ts";
 import { KinProjectPeoplePicker } from "./KinProjectPeople";
 import { KinWorkPrivateMark, KinWorkProblem } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
@@ -607,9 +608,10 @@ export function KinProjectDialog(
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const [requestId] = useState(randomUUID);
   const [key] = useState(() => editing?.project.key ?? null);
+  const home = useKinRates(props)?.home;
   const { state, form } = useKinWorkForm(environmentId, {
     noun: "project",
-    start: kinProjectDraftOf(editing?.project, editing?.targetDay, props.party),
+    start: kinProjectDraftOf(editing?.project, editing?.targetDay, props.party, home),
     editing: editing === null ? null : { key: editing.project.key, rev: editing.project.rev },
     nameOf: (draft) => draft.name,
     check: kinProjectDraftCheck,
@@ -630,7 +632,7 @@ export function KinProjectDialog(
               orgId,
               key: change.key,
               rev: change.rev,
-              ...kinProjectUpdateInput(change.changed),
+              ...kinProjectUpdateInput(change.changed, change.draft.currency),
             },
           }),
     reread: () => {
@@ -641,8 +643,11 @@ export function KinProjectDialog(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the form a newer read of the project being edited, so saving again goes against it
   useEffect(() => {
     if (editing !== null)
-      form.latest(kinProjectDraftOf(editing.project, editing.targetDay), editing.project.rev);
-  }, [form, editing]);
+      form.latest(
+        kinProjectDraftOf(editing.project, editing.targetDay, null, home),
+        editing.project.rev,
+      );
+  }, [form, editing, home]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
   const ids = {

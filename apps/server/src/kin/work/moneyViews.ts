@@ -10,6 +10,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { homeCurrency } from "./companyProfile.ts";
 import { addUp, dayIn, financialYearOf, formatMoney, monthOf, shiftMonth } from "./money.ts";
 import {
   countedEntry,
@@ -199,6 +200,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const sql = yield* SqlClient.SqlClient;
   const seen = seenBy(sql, viewer);
   const zone = yield* ownerZone(orgId);
+  const home = yield* homeCurrency(orgId);
   const today = dayIn(now, zone);
   const thisMonth = monthOf(today);
   const lastMonth = shiftMonth(thisMonth, -1);
@@ -241,8 +243,14 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
         : { recordId: KinRecordId.make(partyId), key: first.partyKey, title: first.partyTitle };
     return {
       party,
-      owed: addUp(members.map((one) => one.balance)),
-      overdue: addUp(late.map((one) => one.balance)),
+      owed: addUp(
+        members.map((one) => one.balance),
+        home,
+      ),
+      overdue: addUp(
+        late.map((one) => one.balance),
+        home,
+      ),
       invoices: members.length,
       oldestOverdueDays: late.length === 0 ? null : Math.floor((now - oldest) / DAY_MS),
     };
@@ -261,8 +269,15 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const payments = paid.filter((one) => one.withheld === 0);
   const withheld = paid.filter((one) => one.withheld === 1);
   const receivedIn = (month: string) =>
-    addUp(payments.filter((one) => monthOf(one.paidOn) === month));
-  const tdsIn = (month: string) => addUp(withheld.filter((one) => monthOf(one.paidOn) === month));
+    addUp(
+      payments.filter((one) => monthOf(one.paidOn) === month),
+      home,
+    );
+  const tdsIn = (month: string) =>
+    addUp(
+      withheld.filter((one) => monthOf(one.paidOn) === month),
+      home,
+    );
 
   // Spent: paid expenses by their date, in the owner's zone.
   const expenses = yield* sql<{
@@ -282,9 +297,13 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     for (const one of members)
       categories.set(one.category, [...(categories.get(one.category) ?? []), one]);
     return {
-      total: addUp(members),
+      total: addUp(members, home),
       byCategory: [...categories]
-        .map(([category, amounts]) => ({ category, total: addUp(amounts), count: amounts.length }))
+        .map(([category, amounts]) => ({
+          category,
+          total: addUp(amounts, home),
+          count: amounts.length,
+        }))
         .toSorted(
           (a, b) =>
             (b.total[0]?.minor ?? 0) - (a.total[0]?.minor ?? 0) ||
@@ -306,8 +325,14 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     lastMonth,
     financialYear,
     owed: {
-      total: addUp(owing.map((one) => one.balance)),
-      overdue: addUp(owing.filter((one) => one.overdue).map((one) => one.balance)),
+      total: addUp(
+        owing.map((one) => one.balance),
+        home,
+      ),
+      overdue: addUp(
+        owing.filter((one) => one.overdue).map((one) => one.balance),
+        home,
+      ),
       invoices: owing.length,
       overdueInvoices: owing.filter((one) => one.overdue).length,
       byClient: byClient.toSorted(
@@ -317,11 +342,20 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
       ),
     },
     received: { thisMonth: receivedIn(thisMonth), lastMonth: receivedIn(lastMonth) },
-    receivedThisFinancialYear: addUp(payments.filter((one) => one.paidOn >= fyStart)),
+    receivedThisFinancialYear: addUp(
+      payments.filter((one) => one.paidOn >= fyStart),
+      home,
+    ),
     tdsDeducted: { thisMonth: tdsIn(thisMonth), lastMonth: tdsIn(lastMonth) },
-    tdsDeductedThisFinancialYear: addUp(withheld.filter((one) => one.paidOn >= fyStart)),
+    tdsDeductedThisFinancialYear: addUp(
+      withheld.filter((one) => one.paidOn >= fyStart),
+      home,
+    ),
     spent: { thisMonth: spentIn(thisMonth), lastMonth: spentIn(lastMonth) },
-    spentThisFinancialYear: addUp(spentRows.filter((one) => one.day >= fyStart)),
+    spentThisFinancialYear: addUp(
+      spentRows.filter((one) => one.day >= fyStart),
+      home,
+    ),
     upcoming: upcoming.rows,
     upcomingTotal: upcoming.total,
     series: months.map((month) => ({
@@ -404,6 +438,7 @@ export const ownerLevelStillToInvoice = Effect.fn("KinMoneyViews.stillToInvoice"
   orgId: KinOrgId,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const home = yield* homeCurrency(orgId);
   const rows = yield* sql<{
     key: string;
     title: string;
@@ -431,6 +466,7 @@ export const ownerLevelStillToInvoice = Effect.fn("KinMoneyViews.stillToInvoice"
         members
           .filter((one) => one.list === list && states.includes(one.state ?? ""))
           .map((one) => ({ minor: one.minor!, currency: one.currency! })),
+        home,
       );
     const accepted = money("quotes", ["done"]);
     const sent = money("quotes", ["waiting"]);

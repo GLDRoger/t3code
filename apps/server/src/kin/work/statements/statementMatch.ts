@@ -1,3 +1,4 @@
+import { RAILS } from "./statementRegion.ts";
 import type { StatementRow } from "./statementTable.ts";
 
 /**
@@ -325,10 +326,29 @@ const CATEGORIES: ReadonlyArray<readonly [RegExp, string]> = [
   [/amazon|flipkart|blinkit|zepto|bigbasket|dunzo|stationery|office/i, "office"],
 ];
 
-/** Who a narration paid, from the way banks write UPI, card, NEFT and ACH lines. */
+/** Who a narration paid, from the way banks write card lines and every region's payment rails. */
 export const SALARIES = "salaries";
-const CHANNEL =
-  /^(?:upi|pos|neft|imps|rtgs|nach|ach|ecs|atm|inb|ib|mb|bil|billpay|dr|cr|p2m|p2a|to|by|trf|transfer|purchase|txn|salary|sal)\b[\s\-/:.]*/i;
+const CHANNEL_WORDS = [
+  ...RAILS,
+  "pos",
+  "atm",
+  "inb",
+  "ib",
+  "mb",
+  "bil",
+  "billpay",
+  "dr",
+  "cr",
+  "to",
+  "by",
+  "trf",
+  "transfer",
+  "purchase",
+  "txn",
+  "salary",
+  "sal",
+];
+const CHANNEL = new RegExp(String.raw`^(?:${CHANNEL_WORDS.join("|")})\b[\s\-/:.]*`, "i");
 /** A payee's name without the bank's words before it: channel, direction and reference numbers. */
 const payee = (text: string) => {
   let rest = text.trim();

@@ -230,12 +230,13 @@ export interface KinFigureLine {
 
 const add = (sums: Map<string, number>, money: KinMoney, times = 1) =>
   sums.set(money.currency, (sums.get(money.currency) ?? 0) + Math.round(money.minor * times));
-const totalsOf = (sums: ReadonlyMap<string, number>): KinMoneyTotals =>
+/** One total per currency, the home currency first. */
+const totalsOf = (sums: ReadonlyMap<string, number>, home: string | undefined): KinMoneyTotals =>
   [...sums.entries()]
     .filter(([, minor]) => minor > 0)
     .map(([currency, minor]) => ({ currency, minor }))
     .sort((a, b) =>
-      a.currency === "INR" ? -1 : b.currency === "INR" ? 1 : a.currency.localeCompare(b.currency),
+      a.currency === home ? -1 : b.currency === home ? 1 : a.currency.localeCompare(b.currency),
     );
 const linesOf = (totals: KinMoneyTotals, rates: KinRates | null): ReadonlyArray<KinFigureLine> =>
   totals.map((money) => ({
@@ -372,13 +373,13 @@ export function kinSubscriptionsView(
   const strip = ({ sortDay: _sortDay, ...row }: (typeof rows)[number]): KinSubscriptionRow => row;
   const active = rows.filter((row) => !row.cancelled).sort(bySoonest);
   // A plan that doesn't divide evenly into months is averaged, so its currency shows in whole units.
-  const monthlyTotals = totalsOf(monthly).map((money) => {
+  const monthlyTotals = totalsOf(monthly, rates?.home).map((money) => {
     if (!averaged.has(money.currency)) return money;
     const unit = 10 ** kinMinorDigits(money.currency);
     return { ...money, minor: Math.round(money.minor / unit) * unit };
   });
   const allMonthly = kinTotalsEstimate(monthlyTotals, rates);
-  const runRateTotals = totalsOf(runRate);
+  const runRateTotals = totalsOf(runRate, rates?.home);
   const missing = [
     ...new Set([
       ...(kinTotalsEstimate(runRateTotals, rates)?.missing ?? []),
@@ -398,8 +399,8 @@ export function kinSubscriptionsView(
     renewing: active.filter((row) => row.next !== null && row.next <= soon).map(strip),
     monthly: linesOf(monthlyTotals, rates),
     monthlyAll: monthlyTotals.length > 1 ? (allMonthly?.all ?? null) : null,
-    thisMonth: linesOf(totalsOf(thisMonth), rates),
-    yearSoFar: linesOf(totalsOf(yearSoFar), rates),
+    thisMonth: linesOf(totalsOf(thisMonth, rates?.home), rates),
+    yearSoFar: linesOf(totalsOf(yearSoFar, rates?.home), rates),
     runRate: linesOf(runRateTotals, rates),
     missingRates: missing,
     uncounted,

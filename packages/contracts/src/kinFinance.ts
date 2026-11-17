@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinLabelText, KinOrgId, KinTrimmedText } from "./kinChat.ts";
+import { KIN_DEFAULT_HOME_CURRENCY } from "./kinCurrency.ts";
 import {
   KinCurrency,
   KinDay,
@@ -477,7 +478,9 @@ const KinCompanyProfileFields = {
   logo: Schema.NullOr(KinCompanyLogo).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   brand: KinCompanyBrand.pipe(Schema.withDecodingDefaultKey(Effect.succeed(NO_BRAND))),
   /** What the company keeps its books in; estimates beside foreign amounts are in it. */
-  homeCurrency: KinCurrency.pipe(Schema.withDecodingDefaultKey(Effect.succeed("INR"))),
+  homeCurrency: KinCurrency.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(KIN_DEFAULT_HOME_CURRENCY)),
+  ),
   rates: KinCurrencyRates.pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 };
 export const KinCompanyProfileData = Schema.Struct(KinCompanyProfileFields);

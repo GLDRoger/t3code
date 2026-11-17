@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
 import { KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
@@ -586,7 +587,7 @@ export function KinBudgetDialog(
   const ids = { category: useId(), project: useId(), limit: useId() };
   const categories = props.expenses?.categories ?? [];
   const label = (category: string) => props.expenses?.categoryLabels?.[category] ?? category;
-  const home = props.rates?.home ?? props.expenses?.currency ?? "INR";
+  const home = props.rates?.home ?? props.expenses?.currency ?? KIN_DEFAULT_HOME_CURRENCY;
   const save = async () => {
     const checked = kinBudgetInput(props.orgId, draft, home, requestId);
     if (!checked.ok) return setProblem(checked.problem);

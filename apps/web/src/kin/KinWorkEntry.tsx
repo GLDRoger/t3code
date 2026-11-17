@@ -1,4 +1,5 @@
 import { useKinOpensClients } from "./useKinOwnerLevel";
+import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import {
@@ -573,7 +574,7 @@ export function KinListEntry(
         itemKey={item.key}
         list={def?.list ?? (making === "pdf" ? "quotes" : "invoices")}
         {...(making === "pdf" ? { title: KIN_INVOICES.makePdf } : {})}
-        currency={item.amount?.currency ?? def?.currency ?? "INR"}
+        currency={item.amount?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY}
         actions={money}
         party={item.party ?? null}
         backLabel={invoice?.heading ?? item.title}
@@ -875,7 +876,9 @@ export function KinListEntry(
                       <FieldEdit
                         {...props}
                         field={field}
-                        currency={amountEdit?.currency ?? def?.currency ?? "INR"}
+                        currency={
+                          amountEdit?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY
+                        }
                         busy={busy}
                         previewKey={previewKey}
                         people={people}

@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { homeCurrency } from "./companyProfile.ts";
 import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth } from "./money.ts";
 import { dates } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL } from "./teamView.ts";
@@ -369,6 +370,7 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
+  const home = yield* homeCurrency(orgId);
   const today = dayIn(now, zone);
   const horizons = days === undefined ? [...HORIZONS] : [days];
   const ends = horizons.map((one) => ({ days: one, end: endOfDay(shift(today, one), zone) }));
@@ -512,11 +514,14 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
 
   const windows = ends.map(({ days: span, end }) => {
     const inWindow = (one: Expected) => one.at <= end;
-    const expectedIn = addUp(incoming.filter(inWindow).map((one) => one.money));
-    const expectedOut = addUp([
-      ...overdueOut.map((one) => one.money),
-      ...dueOut.filter(inWindow).map((one) => one.money),
-    ]);
+    const expectedIn = addUp(
+      incoming.filter(inWindow).map((one) => one.money),
+      home,
+    );
+    const expectedOut = addUp(
+      [...overdueOut.map((one) => one.money), ...dueOut.filter(inWindow).map((one) => one.money)],
+      home,
+    );
     const currencies = [...new Set([...expectedIn, ...expectedOut].map((one) => one.currency))];
     return {
       days: span,
@@ -542,8 +547,14 @@ export const outlook = Effect.fn("KinMoneyAnswers.outlook")(function* (
       dueAt: one.dueAt ?? 0,
       money: { minor: one.balance, currency: one.currency },
     })),
-    undatedIn: addUp(undatedIn.map((one) => ({ minor: one.balance, currency: one.currency }))),
-    laterIn: addUp(laterIn.map((one) => ({ minor: one.balance, currency: one.currency }))),
+    undatedIn: addUp(
+      undatedIn.map((one) => ({ minor: one.balance, currency: one.currency })),
+      home,
+    ),
+    laterIn: addUp(
+      laterIn.map((one) => ({ minor: one.balance, currency: one.currency })),
+      home,
+    ),
     dueOut,
     overdueOut,
     datesWithoutAmount: undated.rows,

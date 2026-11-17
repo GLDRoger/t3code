@@ -57,7 +57,7 @@ import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
-import { PRESETS } from "./registers.ts";
+import { presetDefinition } from "./registers.ts";
 import { ownerLevelAgentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
@@ -2266,7 +2266,7 @@ it.effect(
       const records = yield* KinRecords.KinRecords;
       yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
           created_at, definition_json)
-        VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)})`;
+        VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
       const project = (title: string, lead: KinPersonId) =>
         records
           .create(orgId, ownerWrites, {

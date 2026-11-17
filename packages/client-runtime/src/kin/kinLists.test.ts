@@ -1,4 +1,6 @@
 import {
+  formatKinMoney,
+  KIN_CURRENCY_CODES,
   KinListId,
   KinOrgId,
   KinRecordId,
@@ -28,13 +30,13 @@ import {
   kinListQuery,
   kinListRow,
   kinMoneyText,
-  kinParseAmount,
   kinPaymentCheck,
   kinPeriodLabel,
   kinTotalsText,
   type KinListContext,
   type KinListFieldView,
 } from "./kinLists.ts";
+import { formatKinChartValue } from "./kinChart.ts";
 
 // Invented lists, people and amounts only.
 const orgId = KinOrgId.make("org");
@@ -110,13 +112,31 @@ describe("money", () => {
     expect(kinTotalsText([])).toBe("Nothing");
   });
 
+  // The apps read PKR, IDR and HUF with two decimals the server never wrote: 1,500 PKR was "PKR\u00a015".
+  it("shows every currency's amount as the server and documents do", () => {
+    for (const code of KIN_CURRENCY_CODES)
+      for (const minor of [1_500, 123_456]) {
+        expect([code, kinMoneyText({ minor, currency: code }, true)]).toEqual([
+          code,
+          formatKinMoney(minor, code, { cents: "always" }),
+        ]);
+        expect([code, formatKinChartValue({ kind: "money", currency: code }, minor)]).toEqual([
+          code,
+          formatKinMoney(minor, code),
+        ]);
+      }
+    expect(kinMoneyText({ minor: 1_500, currency: "PKR" })).toBe("PKR\u00a01,500");
+    expect(kinParseMoney("1,500", "PKR")).toEqual({ minor: 1_500, currency: "PKR" });
+  });
+
   it("reads a typed amount into whole minor units, or refuses it", () => {
-    expect(kinParseAmount("40,000", "INR")).toEqual({ minor: 4_000_000, currency: "INR" });
-    expect(kinParseAmount("₹ 1,00,000.5", "INR")).toEqual({ minor: 10_000_050, currency: "INR" });
-    expect(kinParseAmount("0.1", "INR")).toEqual({ minor: 10, currency: "INR" });
-    expect(kinParseAmount("1200", "JPY")).toEqual({ minor: 1200, currency: "JPY" });
-    for (const wrong of ["", "0", "12.345", "4.2 lakh", "-5", "1.5"])
-      expect(kinParseAmount(wrong, wrong === "1.5" ? "JPY" : "INR")).toBeNull();
+    expect(kinParseMoney("40,000", "INR")).toEqual({ minor: 4_000_000, currency: "INR" });
+    expect(kinParseMoney("₹ 1,00,000.5", "INR")).toEqual({ minor: 10_000_050, currency: "INR" });
+    expect(kinParseMoney("0.1", "INR")).toEqual({ minor: 10, currency: "INR" });
+    expect(kinParseMoney("1200", "JPY")).toEqual({ minor: 1200, currency: "JPY" });
+    expect(kinParseMoney("4.2 lakh", "INR")).toEqual({ minor: 42_000_000, currency: "INR" });
+    for (const wrong of ["", "0", "12.345", "-5", "1.5"])
+      expect(kinParseMoney(wrong, wrong === "1.5" ? "JPY" : "INR")).toBeNull();
   });
 
   it("refuses a payment over what is owed", () => {

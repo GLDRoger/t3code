@@ -44,6 +44,7 @@ import {
   type KinFileRef,
   type KinListDefinition,
   type KinRecordDetail,
+  KIN_DEFAULT_HOME_CURRENCY,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -450,7 +451,7 @@ export function KinListEntryBody(
           actions={money}
           busy={busy}
           party={item.party ?? null}
-          currency={item.amount?.currency ?? def?.currency ?? "INR"}
+          currency={item.amount?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY}
           onMake={props.onMake}
         />
       )}

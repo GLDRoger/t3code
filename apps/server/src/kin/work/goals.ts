@@ -18,7 +18,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRecords, requestHashOf } from "./KinRecords.ts";
 import { fieldText, isMoney, parseFields, type FieldValue } from "./lists.ts";
-import { DEFAULT_CURRENCY, dayIn, formatMoneyPlain, parseAmount } from "./money.ts";
+import { homeCurrency } from "./companyProfile.ts";
+import { dayIn, formatMoneyPlain, parseAmount, roundToWhole } from "./money.ts";
 import { inList, ownerWriter, theOwner } from "./ownerWork.ts";
 import { playbookThreshold } from "./playbooks.ts";
 import { countedPayment, endOfDay, ownerZone, startOfDay } from "./recordRows.ts";
@@ -53,9 +54,9 @@ export const isMoneyMeasure = (measure: KinGoalMeasure) => measure === "revenue_
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
 /** A target as said: money for revenue, else a whole count. */
-const goalTarget = (measure: KinGoalMeasure, text: string) => {
+const goalTarget = (measure: KinGoalMeasure, text: string, home: string) => {
   if (isMoneyMeasure(measure)) {
-    const parsed = parseAmount(text, DEFAULT_CURRENCY);
+    const parsed = parseAmount(text, home);
     return "error" in parsed ? Effect.fail(parsed.error) : Effect.succeed<FieldValue>(parsed.money);
   }
   const count = Number(text.replace(/[\s,]/g, ""));
@@ -66,6 +67,7 @@ const goalTarget = (measure: KinGoalMeasure, text: string) => {
 
 /** The goal fields an agent row or update names, checked; `undefined` leaves one as it is. */
 export const goalFields = Effect.fn("KinGoals.fields")(function* (
+  orgId: KinOrgId,
   row: {
     readonly measure?: string | undefined;
     readonly target?: string | undefined;
@@ -82,7 +84,11 @@ export const goalFields = Effect.fn("KinGoals.fields")(function* (
   const fields: Record<string, FieldValue | null> = {};
   if (row.measure !== undefined) fields.measure = row.measure;
   if (row.target !== undefined && isMeasure(measure ?? null))
-    fields.target = yield* goalTarget(measure as KinGoalMeasure, row.target);
+    fields.target = yield* goalTarget(
+      measure as KinGoalMeasure,
+      row.target,
+      yield* homeCurrency(orgId),
+    );
   if (row.current !== undefined) fields.current = row.current === null ? null : String(row.current);
   if (row.unit !== undefined) fields.unit = row.unit;
   return fields;
@@ -147,7 +153,7 @@ export const goalsNow = Effect.fn("KinGoals.now")(function* (
       until,
       startsOn,
       untilDay: dayIn(until, zone),
-      currency: money?.currency ?? DEFAULT_CURRENCY,
+      currency: money?.currency ?? (yield* homeCurrency(orgId)),
       manual: Number(fieldText(fields, "current") ?? 0) || 0,
     });
     const expected = paceAt(target, start, end, at);
@@ -223,7 +229,7 @@ const progressOf = Effect.fn("KinGoals.progress")(function* (
 export const goalFigure = (goal: KinGoal, value: number, withUnit = true) =>
   goal.currency === undefined
     ? `${Math.round(value)}${goal.unit === undefined || !withUnit ? "" : ` ${goal.unit}`}`
-    : formatMoneyPlain({ minor: Math.round(value / 100) * 100, currency: goal.currency });
+    : formatMoneyPlain({ minor: roundToWhole(value, goal.currency), currency: goal.currency });
 
 /** One line per goal for a prompt: where it stands against its line. */
 export const goalLine = (goal: KinGoal) =>
@@ -281,7 +287,7 @@ export const save = Effect.fn("KinGoals.save")(function* (
   const zone = yield* ownerZone(input.orgId);
   if (input.dueOn < input.startsOn) return yield* invalid("A goal's date comes after its start.");
   const fields = {
-    ...(yield* goalFields({
+    ...(yield* goalFields(input.orgId, {
       measure: input.measure,
       target: input.target,
       ...(input.current === undefined ? {} : { current: input.current }),

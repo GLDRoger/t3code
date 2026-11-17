@@ -1,4 +1,4 @@
-import { KIN_GST_STATES } from "@t3tools/contracts";
+import { formatKinMoney, KIN_GST_STATES, kinCurrency } from "@t3tools/contracts";
 
 import type { Money, Value } from "./recipe.ts";
 
@@ -117,38 +117,9 @@ const divide = (num: bigint, den: bigint, rounding: Rounding = "half-up"): bigin
   return negative ? -magnitude : magnitude;
 };
 
-const CURRENCIES: Readonly<
-  Record<
-    string,
-    {
-      readonly symbol: string;
-      readonly major: string;
-      readonly minor: string;
-      readonly indian: boolean;
-    }
-  >
-> = {
-  INR: { symbol: "₹", major: "Rupees", minor: "Paise", indian: true },
-  USD: { symbol: "US$", major: "US Dollars", minor: "Cents", indian: false },
-  EUR: { symbol: "€", major: "Euros", minor: "Cents", indian: false },
-  GBP: { symbol: "£", major: "Pounds", minor: "Pence", indian: false },
-  AED: { symbol: "AED ", major: "Dirhams", minor: "Fils", indian: false },
-  SGD: { symbol: "S$", major: "Singapore Dollars", minor: "Cents", indian: false },
-};
-const currencyOf = (code: string) =>
-  CURRENCIES[code] ?? { symbol: `${code} `, major: code, minor: "Cents", indian: false };
-
-const group = (digits: string, indian: boolean) => {
-  if (!indian || digits.length <= 3) return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return `${digits.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ",")},${digits.slice(-3)}`;
-};
-/** "₹1,18,000.00" from paise. */
-const formatMoney = (value: Money) => {
-  const minor = BigInt(value.minor);
-  const abs = minor < 0n ? -minor : minor;
-  const c = currencyOf(value.currency);
-  return `${minor < 0n ? "-" : ""}${c.symbol}${group((abs / 100n).toString(), c.indian)}.${(abs % 100n).toString().padStart(2, "0")}`;
-};
+/** "₹1,18,000.00" from paise; every minor digit the currency has. */
+const formatMoney = (value: Money) =>
+  formatKinMoney(value.minor, value.currency, { cents: "always" });
 
 const ONES = [
   "",
@@ -210,14 +181,16 @@ const inWords = (value: bigint, indian: boolean): string => {
   if (n > 0n) parts.push(belowThousand(Number(n)));
   return parts.join(" ");
 };
-/** "Rupees One Thousand and Ninety Nine Paise Only". */
+/** "Rupees One Thousand and Ninety Nine Paise Only"; "Yen One Thousand Two Hundred Only". */
 const amountInWords = (value: Money) => {
-  const c = currencyOf(value.currency);
+  const c = kinCurrency(value.currency);
+  const indian = c.grouping === "indian";
   const minor = BigInt(value.minor);
   const abs = minor < 0n ? -minor : minor;
-  const words = `${minor < 0n ? "Minus " : ""}${c.major} ${inWords(abs / 100n, c.indian)}`;
-  const cents = abs % 100n;
-  return `${cents > 0n ? `${words} and ${inWords(cents, c.indian)} ${c.minor}` : words} Only`;
+  const unit = 10n ** BigInt(c.decimals);
+  const words = `${minor < 0n ? "Minus " : ""}${c.major} ${inWords(abs / unit, indian)}`;
+  const cents = abs % unit;
+  return `${cents > 0n ? `${words} and ${inWords(cents, indian)} ${c.minor || "Cents"}` : words} Only`;
 };
 
 const MONTHS = [
