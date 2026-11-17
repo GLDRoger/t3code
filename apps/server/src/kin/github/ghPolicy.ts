@@ -151,7 +151,7 @@ const WRITE_FLAGS: Record<string, string> = {
   "issue edit":
     "add-assignee= add-blocked-by= add-blocking= add-label= add-project= add-sub-issue= attach= body:b= body-file:F= milestone:m= parent= remove-assignee= remove-blocked-by= remove-blocking= remove-label= remove-milestone remove-parent remove-project= remove-sub-issue= remove-type title:t= type=",
   "pr review": "approve:a body:b= body-file:F= comment:c request-changes:r",
-  "pr close": "comment:c= delete-branch:d",
+  "pr close": "comment:c=",
   "pr reopen": "comment:c=",
   "issue close": "comment:c= duplicate-of= reason:r=",
   "issue reopen": "comment:c=",
@@ -566,6 +566,8 @@ const api = (tokens) => {
   }
   path = path.replace(/^\/+/, "").split("?")[0].replace(/\/+$/, "");
   const passthrough = flags.filter(([name]) => !["method", "field", "raw-field", "input"].includes(name));
+  if (valuesOf(flags, "header").some((header) => /^\s*x-http-method/i.test(String(header))))
+    refuse(unreadable("a method override header"));
   const graphql = path === "graphql";
   if (!graphql && (method === "GET" || method === "HEAD"))
     return run(["api", endpoint, "--method", method, ...flagArgs(flags.filter(([name]) => name !== "method"))]);

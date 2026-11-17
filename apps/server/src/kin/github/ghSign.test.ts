@@ -652,6 +652,18 @@ describe("the gh a Kin agent's shell runs", () => {
         "{}",
       ],
       [["pr", "comment", "3", "--editor"], unreadable],
+      [["pr", "close", "3", "--delete-branch"], unreadable],
+      [
+        [
+          "api",
+          "-X",
+          "GET",
+          "repos/invented-co/app/pulls/3/merge",
+          "-H",
+          "X-HTTP-Method-Override: PUT",
+        ],
+        unreadable,
+      ],
       [["pr", "comment", "3"], unreadable],
       [["issue", "create", "--title", "x", "--template", "bug"], unreadable],
     ];
