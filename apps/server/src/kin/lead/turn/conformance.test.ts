@@ -66,9 +66,11 @@ const open = (
     const cwd = options.cwd?.(stateDir) ?? `${stateDir}/kin/demo-a/memory-read`;
     return yield* fake.open({ thread, cwd, environment: host });
   }).pipe(
-    Effect.provide(kin(options.refusal ?? (() => undefined))),
     Effect.provide(
-      ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: options.enabled ?? true })),
+      Layer.merge(
+        kin(options.refusal ?? (() => undefined)),
+        ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: options.enabled ?? true })),
+      ),
     ),
   );
 

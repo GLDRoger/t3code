@@ -158,11 +158,11 @@ const ASKING = { approvalPolicy: "untrusted", approvalsReviewer: "user" } as con
 const threadParams = (params: Params, plan: KinSessionPlan, user: UserConfig) => {
   const config = params.config as Readonly<Record<string, Json>> | null | undefined;
   if (plan.seat === "dream") return params;
+  // T3's own sandbox stays: Kin only adds its per-command check and the signing shell.
   if (plan.seat === "delegated")
     return {
       ...params,
       ...ASKING,
-      sandbox: "danger-full-access",
       config: { ...config, ...(plan.shell === undefined ? {} : shellEnvironment(plan.shell)) },
     };
   const kin = {

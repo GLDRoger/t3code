@@ -75,6 +75,7 @@ const kinServer = Layer.succeed(KinServer, {
 const t3ThreadStart = {
   model: "gpt-6.1-sol",
   cwd: "",
+  sandbox: "workspace-write",
   config: {
     "mcp_servers.t3-code": {
       url: "http://127.0.0.1:3773/kin/mcp",
@@ -240,8 +241,9 @@ it.effect(
       assert.deepInclude(delegated?.params, {
         approvalPolicy: "untrusted",
         approvalsReviewer: "user",
-        sandbox: "danger-full-access",
       });
+      // Its sandbox stays T3's.
+      assert.strictEqual(delegated?.params.sandbox, "workspace-write");
       assert.notProperty(delegated?.params ?? {}, "environments");
       const plain = yield* session("thread-1", "/work/project");
       assert.deepStrictEqual(
