@@ -5,6 +5,8 @@ import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { homeCurrency } from "../companyProfile.ts";
+import { statementRegion } from "./statementRegion.ts";
 import { parseAmount } from "../money.ts";
 import type { Review } from "./statementCard.ts";
 import type { FileOutcome, StatementPage } from "./statementFiles.ts";
@@ -106,7 +108,7 @@ export const readStored = Effect.fn("KinStatements.readStored")(function* (
   password?: Redacted.Redacted<string>,
 ) {
   const bytes = yield* attachmentBytes(attachmentId);
-  const outcome = yield* readWith(bytes, password);
+  const outcome = yield* readWith(bytes, yield* homeCurrency(orgId), password);
   if (outcome._tag === "needs_password" && password === undefined)
     return (yield* tryKeptPasswords(orgId, bytes)) ?? outcome;
   return outcome;
@@ -122,12 +124,15 @@ const NO_BALANCES =
  */
 export const provenTable = (statement: Statement, pages: ReadonlyArray<StatementPage>) => {
   const texts = pages.map((page) => page.text);
+  // A statement read before its date order was kept was read day first.
+  const dateOrder = statement.dateOrder ?? "dmy";
   const bound = bindRows({
     kind: statement.kind,
     currency: statement.currency,
+    dateOrder,
     opening: statement.openingMinor,
     texts,
-    pages: pagesFor(texts, statement.rows, statement.currency),
+    pages: pagesFor(texts, statement.rows, statement.currency, dateOrder),
   });
   const balanced = bound.pages.every((page) => page.rows.every((row) => row.balanceMinor !== null));
   const proof = proveStatement({
@@ -366,7 +371,9 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
     );
   const texts = stored.pages.map((page) => page.text);
   // The text's own currency; unproven, as a scan's always is, the owner picks it on the card.
-  const said = currencyIn(texts.join("\n"), input.currency);
+  const home = yield* homeCurrency(input.orgId);
+  const said = currencyIn(texts.join("\n"), home, input.currency);
+  const { dateOrder } = statementRegion(texts.join("\n"), home);
   if ("refused" in said) return yield* invalid(`${said.refused} Nothing was kept from this call.`);
   const { currency } = said;
   const draft = draftOf(input.stored);
@@ -473,7 +480,7 @@ export const submitPages = Effect.fn("KinStatements.submitPages")(function* (inp
         gaps: [],
         ends: { opening: null, closing: null },
       }
-    : bindRows({ kind, currency, opening, texts, pages });
+    : bindRows({ kind, currency, dateOrder, opening, texts, pages });
   // A balance only the lead gave counts where the text labels it so, or the rows' own run of
   // balances starts or ends on it; never a figure printed only as a row's.
   if (!scanned)

@@ -20,7 +20,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import { dayIn, financialYearOf } from "../work/money.ts";
 import { ownerWriter } from "../work/ownerWork.ts";
-import { PRESETS } from "../work/registers.ts";
+import { presetDefinition } from "../work/registers.ts";
 import { issue, unvoidEntry, voidEntry } from "./numbering.ts";
 
 // Invented orgs and invoices only.
@@ -70,7 +70,7 @@ const freshOrg = Effect.gen(function* () {
     VALUES (${`${orgId}-owner`}, ${orgId}, 'owner', 'Owner', '2026-11-11', 'owner')`;
   yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
       created_at, definition_json)
-    VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)})`;
+    VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))})`;
   for (let n = 1; n <= ENTRIES; n += 1)
     yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
         owner_id, created_by_kind, origin_key, created_at, updated_at, state, amount_minor,

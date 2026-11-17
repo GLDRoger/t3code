@@ -8,6 +8,8 @@ import {
   type KinOrgId,
   KinPersonId,
   type KinSendCard,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -371,18 +373,9 @@ const plainWhen = (
   if (start === null || end === null)
     return `When: ${prepared.start} to ${prepared.end}${prepared.timeZone === null ? "" : ` (${prepared.timeZone})`}`;
   const day = (at: { ms: number; timeZone: string }) =>
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: at.timeZone,
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-    }).format(at.ms);
+    formatKinWhen(at.ms, "day", { zone: at.timeZone, locale: KIN_TEXT_LOCALE });
   const time = (at: { ms: number; timeZone: string }) =>
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: at.timeZone,
-      hour: "numeric",
-      minute: "2-digit",
-    }).format(at.ms);
+    formatKinWhen(at.ms, "time", { zone: at.timeZone, locale: KIN_TEXT_LOCALE });
   const shownZone = start.offset ? null : prepared.timeZone;
   const ending = day(end) === day(start) ? time(end) : `${day(end)}, ${time(end)}`;
   return `When: ${day(start)}, ${time(start)} to ${ending}${shownZone === null ? "" : ` (${shownZone})`}`;

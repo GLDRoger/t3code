@@ -32,6 +32,7 @@ import {
   type KinAgentPage,
   type KinLeadProfile,
   type ModelSelection,
+  formatKinWhen,
 } from "@t3tools/contracts";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import * as Option from "effect/Option";
@@ -764,12 +765,7 @@ function AgentChanged(props: {
             return (
               <li key={change.seq} className="flex flex-col gap-1">
                 <span className="text-xs text-muted-foreground">
-                  {new Date(change.at).toLocaleString(undefined, {
-                    day: "numeric",
-                    month: "short",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
+                  {formatKinWhen(new Date(change.at), "dateTime")}
                 </span>
                 <Link
                   to={place.to}

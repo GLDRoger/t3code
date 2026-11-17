@@ -19,7 +19,8 @@ import { KinRecords, type Writer } from "../KinRecords.ts";
 import type { RecordRow } from "../recordRows.ts";
 import { type FieldValue, parseFields } from "../lists.ts";
 import { endOfDay, ownerZone } from "../recordRows.ts";
-import { defineList, listDef, PRESETS } from "../registers.ts";
+import { homeCurrency } from "../companyProfile.ts";
+import { defineList, listDef, PRESETS, presetDefinition } from "../registers.ts";
 import {
   accountLabel,
   bankStates,
@@ -247,7 +248,12 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
       )
         yield* defineList(
           input.orgId,
-          { _tag: "new", id: "expenses", ...PRESETS.expenses, definition: PRESETS.expenses },
+          {
+            _tag: "new",
+            id: "expenses",
+            ...PRESETS.expenses,
+            definition: presetDefinition("expenses", yield* homeCurrency(input.orgId)),
+          },
           input.now,
         );
       const before = yield* listDef(input.orgId, "expenses");

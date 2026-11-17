@@ -1,5 +1,7 @@
 import { assert, it } from "@effect/vitest";
 
+import { formatKinMoney, KIN_CURRENCY_CODES } from "@t3tools/contracts";
+
 import { computeData } from "./compute.ts";
 
 // Invented rows and amounts only.
@@ -91,4 +93,28 @@ it("works out a year of rows, and refuses fields that grow past what Kin works o
   );
   if ("error" in fewer) return assert.fail(fewer.error);
   assert.isAbove(JSON.stringify(fewer.data).length, 101 * 6 * 60_000);
+});
+
+// A document printed ¥1,200 as "JPY 12.00" and USD as "US$": it divided every currency by 100.
+it("prints every currency's amount as the rest of Kin does, in figures and in words", () => {
+  for (const code of KIN_CURRENCY_CODES) {
+    const amount = { minor: 123_456, currency: code };
+    const done = computeData({ amount }, [
+      ["shown", { sum: "amount" }],
+      ["said", { words: "amount" }],
+    ]);
+    if ("error" in done) return assert.fail(done.error);
+    assert.strictEqual(
+      (done.data.shown as { readonly text: string }).text,
+      formatKinMoney(123_456, code, { cents: "always" }),
+      code,
+    );
+  }
+  const said = (minor: number, currency: string) => {
+    const done = computeData({ amount: { minor, currency } }, [["said", { words: "amount" }]]);
+    return "error" in done ? done.error : done.data.said;
+  };
+  assert.strictEqual(said(1_200, "JPY"), "Yen One Thousand Two Hundred Only");
+  assert.strictEqual(said(100_099, "INR"), "Rupees One Thousand and Ninety Nine Paise Only");
+  assert.strictEqual(said(4_000_050, "USD"), "US Dollars Forty Thousand and Fifty Cents Only");
 });

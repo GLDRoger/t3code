@@ -26,6 +26,7 @@ import {
   type KinWidget,
   type KinWorkActor,
   type KinWorkPrincipal,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import { kinDocBlockIndex, kinDocBlocks, kinDocParts } from "@t3tools/shared/kinDocBlocks";
 import * as Option from "effect/Option";
@@ -171,13 +172,9 @@ const plural = (count: number, one: string, many = `${one}s`) =>
 // When and who
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const clockFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-const dayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
-const dayYearFormat = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
+const clockFormat = kinWhenFormat("time");
+const dayFormat = kinWhenFormat("date");
+const dayYearFormat = kinWhenFormat("dateYear");
 const startOfDay = (date: Date) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 

@@ -84,6 +84,7 @@ const StatementOut = Schema.Struct({
   currencyChoice: Schema.optionalKey(
     Schema.Array(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))).check(Schema.isMaxLength(20)),
   ),
+  dateOrder: Schema.optionalKey(Schema.Literals(["dmy", "mdy"])),
 });
 const Reason = Schema.String.check(Schema.isMaxLength(1_000));
 // 300 pages of a dense statement's text is a few megabytes; a page past this is not a statement's.
@@ -98,6 +99,7 @@ const {
   check: _check,
   currency: _currency,
   currencyChoice: _choice,
+  dateOrder: _order,
   ...factFields
 } = StatementOut.fields;
 const Outcome = Schema.Union([
@@ -184,6 +186,7 @@ const entry = NodeURL.fileURLToPath(
 export const runReader = Effect.fn("KinStatements.runReader")(
   function* (
     bytes: Uint8Array,
+    home: string,
     password?: Redacted.Redacted<string>,
     limits: ReaderLimits = READER_LIMITS,
   ) {
@@ -200,6 +203,7 @@ export const runReader = Effect.fn("KinStatements.runReader")(
     const args = [
       ...(isExecutable ? [] : [entry]),
       "__kin-statement",
+      `--home=${home}`,
       ...(limits.precheck === false ? ["--no-precheck"] : []),
     ];
     const scoped =
@@ -330,6 +334,7 @@ export const runReader = Effect.fn("KinStatements.runReader")(
 
 export const readIsolated = (
   bytes: Uint8Array,
+  home: string,
   password?: Redacted.Redacted<string>,
   limits: ReaderLimits = READER_LIMITS,
-) => Effect.map(runReader(bytes, password, limits), (run) => run.outcome);
+) => Effect.map(runReader(bytes, home, password, limits), (run) => run.outcome);

@@ -313,6 +313,7 @@ describe("amounts", () => {
       ["$12.5", 1_250, "USD"],
       ["EUR 0.10", 10, "EUR"],
       ["JPY 1500", 1_500, "JPY"],
+      ["PKR 1,500", 1_500, "PKR"],
     ] as const)
       assert.deepStrictEqual(parseAmount(text, "INR"), { money: { minor, currency } }, text);
     for (const text of ["12.345", "$5 and ₹5", "a lot", "JPY 1.5", "99999999999999 crore"])
@@ -322,24 +323,35 @@ describe("amounts", () => {
   it("adds awkward amounts exactly and never mixes currencies", () => {
     const tenths = Array.from({ length: 10 }, () => ({ minor: 10, currency: "INR" }));
     assert.deepStrictEqual(
-      addUp([
-        ...tenths,
-        { minor: 1, currency: "USD" },
-        { minor: Number.MAX_SAFE_INTEGER - 100, currency: "EUR" },
-        { minor: 100, currency: "EUR" },
-        { minor: 2, currency: "USD" },
-      ]),
+      addUp(
+        [
+          ...tenths,
+          { minor: 1, currency: "USD" },
+          { minor: Number.MAX_SAFE_INTEGER - 100, currency: "EUR" },
+          { minor: 100, currency: "EUR" },
+          { minor: 2, currency: "USD" },
+        ],
+        "INR",
+      ),
       [
         { minor: 100, currency: "INR" },
         { minor: Number.MAX_SAFE_INTEGER, currency: "EUR" },
         { minor: 3, currency: "USD" },
       ],
     );
+    // A company whose home currency is USD reads its own total first.
+    assert.deepStrictEqual(
+      addUp([...tenths, { minor: 3, currency: "USD" }], "USD").map((one) => one.currency),
+      ["USD", "INR"],
+    );
     assert.throws(() =>
-      addUp([
-        { minor: Number.MAX_SAFE_INTEGER, currency: "INR" },
-        { minor: 1, currency: "INR" },
-      ]),
+      addUp(
+        [
+          { minor: Number.MAX_SAFE_INTEGER, currency: "INR" },
+          { minor: 1, currency: "INR" },
+        ],
+        "INR",
+      ),
     );
   });
 

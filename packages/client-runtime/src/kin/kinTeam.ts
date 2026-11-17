@@ -13,7 +13,9 @@ import {
   type KinPersonId,
   type KinPersonPlaces,
   type KinPersonProfile,
+  kinIsLocalOnlyHost,
   kinOwnerLevel,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import { KIN_INVITE_LINK_PATH } from "@t3tools/shared/remote";
 import * as Schema from "effect/Schema";
@@ -130,7 +132,7 @@ const kinLeadsLine = (places: KinPersonPlaces | null) =>
     ? ""
     : `Leads ${places.leads.map((project) => project.title).join(", ")}`;
 
-const dayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const dayFormat = kinWhenFormat("date");
 
 /** "18 Nov": the last day an invite link works. */
 const formatKinInviteDay = (iso: string): string => dayFormat.format(Date.parse(iso));
@@ -302,8 +304,7 @@ export function kinInviteLink(httpBaseUrl: string, secret: string): string {
 /** A link to this computer's own address opens nowhere else; said beside the link. */
 export function kinInviteLinkLocalOnly(httpBaseUrl: string): boolean {
   if (!URL.canParse(httpBaseUrl)) return false;
-  const { hostname } = new URL(httpBaseUrl);
-  return hostname === "localhost" || hostname === "[::1]" || /^127\./.test(hostname);
+  return kinIsLocalOnlyHost(new URL(httpBaseUrl).hostname);
 }
 
 export const KIN_INVITE_LOCAL_ONLY_NOTE =

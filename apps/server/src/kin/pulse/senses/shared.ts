@@ -5,6 +5,8 @@ import {
   type KinOrgId,
   type KinPulseActor,
   type KinPulseFact,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import type * as SqlClient from "effect/sql/SqlClient";
@@ -111,15 +113,7 @@ export const daysAgoText = (ctx: SenseContext, ms: number) => {
 };
 /** A moment in the owner's zone, such as "Thu 19 Nov, 15:00". */
 export const whenOf = (ctx: SenseContext, ms: number) =>
-  new Intl.DateTimeFormat("en-GB", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    timeZone: ctx.zone,
-  }).format(ms);
+  formatKinWhen(ms, "dayTime", { zone: ctx.zone, locale: KIN_TEXT_LOCALE });
 export const daysText = (days: number) => (days === 1 ? "1 day" : `${days} days`);
 export const hoursText = (hours: number) => (hours === 1 ? "1 hour" : `${hours} hours`);
 /** An instant as facts carry it. */

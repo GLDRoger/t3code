@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
+import { kinWhenFormat, kinWhenParts } from "@t3tools/contracts";
 import type { KinDateRow, KinDatesInput, KinDatesResult, KinRecordKey } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 
@@ -38,39 +39,23 @@ const KIN_DATES_BEHIND_DAYS = 30;
 const KIN_DATES_AHEAD_DAYS = 90;
 const READ_CAP = 400;
 
-const clockFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-const zoneClocks = new Map<string, Intl.DateTimeFormat | null>();
+const clockFormat = kinWhenFormat("time");
 
 /** The first instant of `day` where the owner is, so a month there is a month here too. */
 export function kinZonedDayStart(day: string, zone: string | null): Date {
   const [year, month, date] = day.split("-").map((part) => Number.parseInt(part, 10));
   const local = new Date(year ?? 1970, (month ?? 1) - 1, date ?? 1);
   if (zone === null) return local;
-  let format = zoneClocks.get(zone);
-  if (format === undefined) {
-    try {
-      format = new Intl.DateTimeFormat("en-CA", {
-        timeZone: zone,
-        hourCycle: "h23",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch {
-      format = null;
-    }
-    zoneClocks.set(zone, format);
-  }
-  if (format === null) return local;
   const wanted = Date.UTC(year ?? 1970, (month ?? 1) - 1, date ?? 1);
   const wallAt = (instant: number) => {
-    const parts = format.formatToParts(new Date(instant));
-    const part = (type: Intl.DateTimeFormatPartTypes) =>
-      Number(parts.find((held) => held.type === type)?.value);
-    return Date.UTC(part("year"), part("month") - 1, part("day"), part("hour"), part("minute"));
+    const part = kinWhenParts(instant, zone);
+    return Date.UTC(part.year, part.month - 1, part.day, part.hour, part.minute);
   };
+  try {
+    wallAt(wanted);
+  } catch {
+    return local;
+  }
   // The zone's offset at the guess, applied twice so a clock change that day still lands right.
   let instant = wanted - (wallAt(wanted) - wanted);
   instant = wanted - (wallAt(instant) - instant);

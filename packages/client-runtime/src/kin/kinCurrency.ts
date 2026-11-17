@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format a rate's day for React render, outside an Effect runtime.
+import { kinWhenFormat } from "@t3tools/contracts";
 import type {
   KinRecordDetail,
   KinRecordKey,
@@ -83,12 +84,7 @@ export interface KinEstimate {
   readonly money: KinMoney;
 }
 
-const dayFormat = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-  timeZone: "UTC",
-});
+const dayFormat = kinWhenFormat("dateYear", { zone: "UTC" });
 const kinRateDay = (day: string) => dayFormat.format(new Date(`${day}T00:00:00Z`));
 
 /** "₹84.25 per $1, as of 10 Nov 2026". */

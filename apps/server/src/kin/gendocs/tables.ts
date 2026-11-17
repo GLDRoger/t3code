@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a workbook is a small zip written in memory; zlib's deflate and crc32 are synchronous and exact.
 import * as NodeZlib from "node:zlib";
 
+import { formatKinMoney } from "@t3tools/contracts";
+
 import type { Money, Sheet, Value } from "./recipe.ts";
 
 /**
@@ -16,12 +18,9 @@ const isMoney = (value: unknown): value is Money =>
   value !== null &&
   typeof Reflect.get(value, "minor") === "number" &&
   typeof Reflect.get(value, "currency") === "string";
-/** Paise as an exact decimal string: 11800050 is "118000.50". */
-const decimal = (minor: number | bigint) => {
-  const value = BigInt(minor);
-  const abs = value < 0n ? -value : value;
-  return `${value < 0n ? "-" : ""}${(abs / 100n).toString()}.${(abs % 100n).toString().padStart(2, "0")}`;
-};
+/** Minor units as an exact decimal string: 11800050 paise is "118000.50", 1200 yen "1200". */
+const decimal = (minor: number | bigint, currency: string) =>
+  formatKinMoney(minor, currency, { bare: true, cents: "always" });
 type Row = Readonly<Record<string, unknown>>;
 const valueAt = (row: Row, field: string): unknown => {
   const [name = "", part] = field.split(".");
@@ -39,7 +38,8 @@ export const sheetCells = (rows: ReadonlyArray<Row>, sheet: Sheet): ReadonlyArra
     sheet.columns.map((column): Cell => {
       const value = valueAt(row, column.field);
       if (value === null || value === undefined) return { text: "" };
-      if (isMoney(value)) return { number: decimal(value.minor), currency: value.currency };
+      if (isMoney(value))
+        return { number: decimal(value.minor, value.currency), currency: value.currency };
       return { text: String(value) };
     }),
   );
@@ -78,7 +78,7 @@ export const sheetCells = (rows: ReadonlyArray<Row>, sheet: Sheet): ReadonlyArra
             ? total + BigInt(value.minor)
             : total;
         }, 0n);
-        return { number: decimal(sum), currency };
+        return { number: decimal(sum, currency), currency };
       }),
     ),
   );

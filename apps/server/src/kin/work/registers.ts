@@ -19,7 +19,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { type FieldValue, isMoney, LISTS, type ListName, sensitiveFields } from "./lists.ts";
-import { DEFAULT_CURRENCY, isCurrency } from "./money.ts";
+import { homeCurrency } from "./companyProfile.ts";
+import { isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
@@ -93,7 +94,10 @@ const field = (
 ): FieldDef => ({ key, label, type, sensitive: type === "money", ...more });
 
 /** The three lists money and the calendar read, by these ids; each is created in chat by a yes. */
-export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix: string }> = {
+export const PRESETS: Record<
+  PresetId,
+  Omit<StoredDefinition, "currency"> & { name: string; prefix: string }
+> = {
   expenses: {
     name: "Expenses",
     prefix: "EXP",
@@ -123,7 +127,6 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     ],
     sensitive: true,
     amount: true,
-    currency: DEFAULT_CURRENCY,
     dueLabel: "Due",
     dateLabel: "Paid on",
   },
@@ -142,7 +145,6 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     ],
     sensitive: true,
     amount: true,
-    currency: DEFAULT_CURRENCY,
     dueLabel: "Due",
     dateLabel: "Issued",
     payments: true,
@@ -170,7 +172,6 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     ],
     sensitive: true,
     amount: true,
-    currency: DEFAULT_CURRENCY,
     dueLabel: "Due",
     dateLabel: "Received on",
     numbering: { prefix: "RCT", series: "financial_year", width: 3 },
@@ -191,7 +192,6 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     ],
     sensitive: true,
     amount: true,
-    currency: DEFAULT_CURRENCY,
     dueLabel: "Valid until",
     dateLabel: "Dated",
     numbering: { prefix: "QT", series: "financial_year", width: 3 },
@@ -215,7 +215,6 @@ export const PRESETS: Record<PresetId, StoredDefinition & { name: string; prefix
     sensitive: false,
     // A renewal's fee or a filing's tax due; most dates have none.
     amount: true,
-    currency: DEFAULT_CURRENCY,
     dueLabel: "Due",
   },
 };
@@ -230,8 +229,11 @@ const STATE_NAMES: Record<string, string> = {
 export const stateLabel = (def: ListDef, state: string) =>
   def.stateLabels[state as keyof ListDef["stateLabels"]] ?? STATE_NAMES[state] ?? state;
 
+/** A template's definition, its amounts in `currency` (the company's home currency). */
+export const presetDefinition = (id: PresetId, currency: string) => ({ ...PRESETS[id], currency });
+
 /** Work and the light CRM as definitions, so every list reads the same way. */
-const builtInDef = (name: ListName): ListDef => {
+const builtInDef = (name: ListName, currency: string): ListDef => {
   const list = LISTS[name];
   const sensitive = sensitiveFields(name);
   return {
@@ -249,7 +251,7 @@ const builtInDef = (name: ListName): ListDef => {
     ),
     sensitive: false,
     amount: false,
-    currency: DEFAULT_CURRENCY,
+    currency,
     ...(name === "work" ? { dueLabel: "Due" } : name === "projects" ? { dueLabel: "Target" } : {}),
     archivedAt: null,
     rev: 1,
@@ -317,7 +319,7 @@ const registerColumns = (sql: SqlClient.SqlClient) => sql`register_id AS id, nam
 
 /** A list in this org: built in, or defined here. Another org's list reads as unknown. */
 export const listDef = Effect.fn("KinRegisters.def")(function* (orgId: KinOrgId, id: string) {
-  if (isBuiltIn(id)) return builtInDef(id);
+  if (isBuiltIn(id)) return builtInDef(id, yield* homeCurrency(orgId));
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<RegisterRow>`SELECT ${registerColumns(sql)} FROM kin_registers
     WHERE org_id = ${orgId} AND register_id = ${id} AND built_in = 0 ORDER BY register_id`;
@@ -338,8 +340,11 @@ const definedLists = Effect.fn("KinRegisters.defined")(function* (orgId: KinOrgI
 /** Built-in and defined lists by id: what a read needs to show any entry in its list's terms. */
 export const allLists = Effect.fn("KinRegisters.all")(function* (orgId: KinOrgId) {
   const defined = yield* definedLists(orgId);
+  const home = yield* homeCurrency(orgId);
   return new Map<string, ListDef>([
-    ...(Object.keys(LISTS) as Array<ListName>).map((name) => [name, builtInDef(name)] as const),
+    ...(Object.keys(LISTS) as Array<ListName>).map(
+      (name) => [name, builtInDef(name, home)] as const,
+    ),
     ...defined.map((def) => [def.id, def] as const),
   ]);
 });
@@ -774,7 +779,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     ],
     sensitive: input.sensitive ?? preset?.sensitive ?? amount,
     amount,
-    currency: input.currency ?? preset?.currency ?? "INR",
+    currency: input.currency ?? (yield* homeCurrency(orgId)),
     ...((input.dueLabel ?? preset?.dueLabel)
       ? { dueLabel: (input.dueLabel ?? preset?.dueLabel)! }
       : {}),

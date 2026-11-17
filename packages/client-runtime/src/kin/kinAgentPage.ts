@@ -5,6 +5,7 @@ import {
   type ModelSelection,
   type ProviderOptionDescriptor,
   type ServerProviderModel,
+  formatKinWhen,
   KIN_PROVIDER_FACTS,
 } from "@t3tools/contracts";
 
@@ -257,11 +258,10 @@ export function kinAgentChangeLine(
     if (principal !== null && (field === "owner" || field === "waitingOn"))
       return names.get(principal[2]!) ?? (principal[1] === "agent" ? "an agent" : "someone");
     if ((field === "due" || field === "date") && !Number.isNaN(Date.parse(shown)))
-      return new Date(shown).toLocaleDateString(undefined, {
-        day: "numeric",
-        month: "short",
-        ...(new Date(shown).getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
-      });
+      return formatKinWhen(
+        new Date(shown),
+        new Date(shown).getFullYear() === now.getFullYear() ? "date" : "dateYear",
+      );
     return shown.length > VALUE_MAX ? `${shown.slice(0, VALUE_MAX - 1)}…` : shown;
   };
   const parts = change.fields

@@ -14,6 +14,9 @@ import {
   KinMessageId,
   KinRoleTags,
   type KinWakeupId,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -1682,10 +1685,10 @@ const ownerClock = (at: number, timeZone: string | undefined) => {
     timeZone === undefined
       ? DateTime.formatIso(DateTime.makeUnsafe(at))
       : DateTime.formatIsoZoned(DateTime.makeZonedUnsafe(at, { timeZone }));
-  const weekday = new Intl.DateTimeFormat("en-GB", {
-    weekday: "short",
-    timeZone: timeZone ?? "UTC",
-  }).format(at);
+  const weekday = formatKinWhen(at, "weekdayShort", {
+    zone: timeZone ?? "UTC",
+    locale: KIN_TEXT_LOCALE,
+  });
   return `${iso.replace(/\.\d{3}/, "").replace(/\[.*\]$/, "")} ${weekday}`;
 };
 
@@ -1693,18 +1696,8 @@ const ownerClock = (at: number, timeZone: string | undefined) => {
 const chatClock = (at: number, now: number, zone: string | undefined) => {
   // Without an owner zone the server's own must not leak in.
   const timeZone = zone ?? "UTC";
-  const day = new Intl.DateTimeFormat("en-GB", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    timeZone,
-  });
-  const time = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    timeZone,
-  }).format(at);
+  const day = kinWhenFormat("day", { zone: timeZone, locale: KIN_TEXT_LOCALE });
+  const time = formatKinWhen(at, "time", { zone: timeZone, locale: KIN_TEXT_LOCALE });
   return day.format(at) === day.format(now) ? time : `${day.format(at).replace(",", "")} ${time}`;
 };
 

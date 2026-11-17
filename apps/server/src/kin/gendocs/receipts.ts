@@ -23,6 +23,7 @@ import {
   type RecordRow,
 } from "../work/recordRows.ts";
 import { parseFields } from "../work/lists.ts";
+import { homeCurrency } from "../work/companyProfile.ts";
 import { defineList, listDef, PRESETS } from "../work/registers.ts";
 import { makeDocument, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
@@ -97,7 +98,7 @@ const receiptsList = Effect.fn("KinReceipts.list")(function* (orgId: KinOrgId) {
         fields: preset.fields,
         sensitive: preset.sensitive,
         amount: preset.amount,
-        currency: preset.currency,
+        currency: yield* homeCurrency(orgId),
         ...(preset.dueLabel === undefined ? {} : { dueLabel: preset.dueLabel }),
         ...(preset.dateLabel === undefined ? {} : { dateLabel: preset.dateLabel }),
         numbering,

@@ -6,6 +6,7 @@ import {
   type KinPersonId,
   type KinReactionEmoji,
   type KinWidget,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 
@@ -74,7 +75,7 @@ type DayRow = Extract<KinFeedRow, { readonly type: "day" }>;
 type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
 type RelayRow = Extract<KinFeedRow, { readonly type: "relay" }>;
 
-const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const timeFormat = kinWhenFormat("time");
 const formatTime = (iso: string) => timeFormat.format(new Date(iso));
 
 // The viewer's message in the thread feed's user bubble; everyone else's on a quieter surface.

@@ -7,6 +7,7 @@ import {
   type KinPulseScope,
   type KinPulseScreenRead,
   type KinRecordKey,
+  formatKinWhen,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -114,13 +115,10 @@ const openOf = (fact: KinPulseFact): KinAttentionOpen =>
       : { type: "none" };
 
 const dayLabel = (at: DateTime.Utc, now: Date) =>
-  new Date(DateTime.toEpochMillis(at)).toLocaleDateString(undefined, {
-    day: "numeric",
-    month: "short",
-    ...(new Date(DateTime.toEpochMillis(at)).getFullYear() === now.getFullYear()
-      ? {}
-      : { year: "numeric" }),
-  });
+  formatKinWhen(
+    DateTime.toEpochMillis(at),
+    new Date(DateTime.toEpochMillis(at)).getFullYear() === now.getFullYear() ? "date" : "dateYear",
+  );
 
 const handledText = (fact: KinPulseFact, names: ReadonlyMap<string, string>, now: Date) => {
   const handled = fact.handled;
@@ -467,11 +465,10 @@ const figureOf = (goal: KinGoal, value: number, withUnit = true) =>
 const clamp = (value: number) => Math.max(0, Math.min(1, value));
 const shortDay = (day: string, now: Date) => {
   const [year, month, date] = day.split("-").map(Number);
-  return new Date(year ?? 1970, (month ?? 1) - 1, date ?? 1).toLocaleDateString(undefined, {
-    day: "numeric",
-    month: "short",
-    ...(year === now.getFullYear() ? {} : { year: "numeric" }),
-  });
+  return formatKinWhen(
+    new Date(year ?? 1970, (month ?? 1) - 1, date ?? 1),
+    year === now.getFullYear() ? "date" : "dateYear",
+  );
 };
 
 export function kinGoalView(goal: KinGoal, now: Date): KinGoalView {

@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format days and times for React render, outside an Effect runtime.
+import { kinWhenFormat, formatKinWhen, kinWhenParts } from "@t3tools/contracts";
 import type { KinMessage, KinMessageWhen, KinPersonProfile } from "@t3tools/contracts";
 
 import { kinSameTimeZone, kinZoneName } from "./kinTimeZone.ts";
@@ -32,12 +33,7 @@ const deviceZone = () => {
 /** Today on `zone`'s calendar, as YYYY-MM-DD. */
 const kinDayIn = (now: Date, zone: string | null) => {
   try {
-    return new Intl.DateTimeFormat("en-CA", {
-      timeZone: zone ?? deviceZone(),
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(now);
+    return kinWhenParts(now, zone ?? deviceZone()).isoDay;
   } catch {
     return now.toISOString().slice(0, 10);
   }
@@ -47,15 +43,10 @@ const kinDayIn = (now: Date, zone: string | null) => {
 const kinAwayDay = (day: string, now: Date = new Date()) => {
   const [year, month, date] = day.split("-").map(Number);
   const at = new Date(Date.UTC(year ?? 1970, (month ?? 1) - 1, date ?? 1, 12));
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: "UTC",
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    ...(year === now.getFullYear() ? {} : { year: "numeric" }),
-  })
-    .format(at)
-    .replace(/,/g, "");
+  return formatKinWhen(at, year === now.getFullYear() ? "day" : "dayYear", { zone: "UTC" }).replace(
+    /,/g,
+    "",
+  );
 };
 
 /**
@@ -91,22 +82,9 @@ export function kinAwayProblem(day: string, now: Date, zone: string | null): str
     : KIN_AWAY.notAfterToday;
 }
 
-const timeIn = (at: Date, zone: string) =>
-  new Intl.DateTimeFormat("en-GB", {
-    timeZone: zone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(at);
+const timeIn = (at: Date, zone: string) => kinWhenFormat("time", { zone }).format(at);
 const dayIn = (at: Date, zone: string) =>
-  new Intl.DateTimeFormat("en-GB", {
-    timeZone: zone,
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  })
-    .format(at)
-    .replace(/,/g, "");
+  kinWhenFormat("day", { zone }).format(at).replace(/,/g, "");
 
 /**
  * A time a message names, on the reader's clock: as written when they share its zone, else

@@ -33,6 +33,7 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
+import { homeCurrency } from "./companyProfile.ts";
 import { partyPage, projectDetail } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { matchName } from "./nameMatch.ts";
@@ -1237,16 +1238,21 @@ const clientOwed = Effect.fnUntraced(function* (
 ) {
   const invoices = yield* owedInvoices({ orgId, now, partyId });
   const zone = yield* ownerZone(orgId);
+  const home = yield* homeCurrency(orgId);
   return {
     tasksWeOwe: party.weOwe,
     tasksTheyOwe: party.theyOwe,
     tasksWeOweLate: party.late,
     tasksTheyOweLate: party.overdue,
     money: {
-      unpaid: addUp(invoices.map((one) => one.balance)).map(formatMoney),
-      overdue: addUp(invoices.filter((one) => one.overdue).map((one) => one.balance)).map(
-        formatMoney,
-      ),
+      unpaid: addUp(
+        invoices.map((one) => one.balance),
+        home,
+      ).map(formatMoney),
+      overdue: addUp(
+        invoices.filter((one) => one.overdue).map((one) => one.balance),
+        home,
+      ).map(formatMoney),
       invoices: invoices.map(
         (one) =>
           `${one.key}: ${formatMoney(one.balance)} ${
@@ -1489,7 +1495,7 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     const originKey = `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(rowKey)}`;
     if (list === "goals" && (row.measure === undefined || row.target === undefined))
       return yield* invalid("A goal needs its measure and target, and due as its date.");
-    const goal = yield* goalFields(row);
+    const goal = yield* goalFields(lead.orgId, row);
     const fields = { ...fieldsFrom(row), ...spineSet, ...goal };
     const inProject = projectId !== undefined ? projectId : spine.projectId;
     const closedAt = yield* finishedAt(
@@ -1704,7 +1710,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, input: typeof Update
   const fields = {
     ...fieldsFrom(input),
     ...spine.fields,
-    ...(yield* goalFields(input, parseFields(before.fieldsJson))),
+    ...(yield* goalFields(lead.orgId, input, parseFields(before.fieldsJson))),
   };
   const money = yield* moneyPatch(lead, def, input);
   const inProject = projectId !== undefined ? projectId : spine.projectId;

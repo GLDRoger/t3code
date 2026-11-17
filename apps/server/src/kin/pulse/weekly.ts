@@ -1,9 +1,11 @@
+import { formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
 import type { KinEvent, KinMoney, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail } from "../connections/Sending.ts";
 import { goalLine, goalsNow } from "../work/goals.ts";
+import { homeCurrency } from "../work/companyProfile.ts";
 import { addUp, dayIn, formatMoney } from "../work/money.ts";
 import { playbookThreshold } from "../work/playbooks.ts";
 import {
@@ -38,8 +40,6 @@ const OPEN = ["open", "doing", "waiting"] as const;
 
 const RENEWALS_AHEAD_MS = 30 * DAY_MS;
 
-const totals = (amounts: ReadonlyArray<KinMoney>) => addUp(amounts).map(formatMoney);
-
 /**
  * The week for the owner's weekly brief, counted from Kin's rows: goals first, then projects by
  * how they moved, money in and out and what is overdue, who is overloaded or free, and next week.
@@ -51,17 +51,10 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
   const sql = yield* SqlClient.SqlClient;
   const { orgId, now } = input;
   const zone = yield* ownerZone(orgId);
+  const home = yield* homeCurrency(orgId);
+  const totals = (amounts: ReadonlyArray<KinMoney>) => addUp(amounts, home).map(formatMoney);
   const weekAgo = now - WEEK_MS;
-  const when = (ms: number) =>
-    new Intl.DateTimeFormat("en-GB", {
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-      timeZone: zone,
-    }).format(ms);
+  const when = (ms: number) => formatKinWhen(ms, "dayTime", { zone, locale: KIN_TEXT_LOCALE });
   const goals = (yield* goalsNow(orgId, now, { money: true })).goals.filter(
     (goal) => goal.state === "open",
   );

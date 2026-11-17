@@ -9,6 +9,8 @@ import {
   type KinLeadRoutine,
   type KinWidget,
   type MemoryItemHead,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -180,20 +182,8 @@ const make = Effect.gen(function* () {
     const day = DateTime.formatIsoDate(local);
     const dayOf = (ms: number) =>
       DateTime.formatIsoDate(DateTime.makeZonedUnsafe(ms, { timeZone: zone }));
-    const dayLabel = (ms: number) =>
-      new Intl.DateTimeFormat("en-GB", {
-        weekday: "short",
-        day: "numeric",
-        month: "short",
-        timeZone: zone,
-      }).format(ms);
-    const timeLabel = (ms: number) =>
-      new Intl.DateTimeFormat("en-GB", {
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-        timeZone: zone,
-      }).format(ms);
+    const dayLabel = (ms: number) => formatKinWhen(ms, "day", { zone, locale: KIN_TEXT_LOCALE });
+    const timeLabel = (ms: number) => formatKinWhen(ms, "time", { zone, locale: KIN_TEXT_LOCALE });
 
     const all = (yield* memory.query(orgId, {}, { lead: event.agentId })).filter(
       (item) => item.orgId === orgId && !item.duplicate,

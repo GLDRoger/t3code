@@ -8,6 +8,7 @@ import {
   type KinChatSummary,
   type KinWaitingItem,
   type KinWaitingReason,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
@@ -84,8 +85,8 @@ export function kinInboxScreenState(
 
 type KinReadyScreenState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
 
-const kinClockFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-const kinDayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const kinClockFormat = kinWhenFormat("time");
+const kinDayFormat = kinWhenFormat("date");
 
 /** "9:41" for a time today (by `now`'s local day), "7 Nov" for any other day. */
 export function formatKinTime(date: Date, now: Date = new Date()): string {

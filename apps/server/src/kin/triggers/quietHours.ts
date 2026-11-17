@@ -1,3 +1,4 @@
+import { kinWhenParts } from "@t3tools/contracts";
 import type { KinWorkHours } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -20,27 +21,12 @@ export const stillAway = (day: string | null | undefined, zone: string, now: num
   day != null && day > DateTime.formatIsoDate(DateTime.makeZonedUnsafe(now, { timeZone: zone }));
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
-const formats = new Map<string, Intl.DateTimeFormat>();
-const formatIn = (timeZone: string) => {
-  const known = formats.get(timeZone);
-  if (known !== undefined) return known;
-  const made = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-  formats.set(timeZone, made);
-  return made;
-};
 
 /** Whether `now` falls inside the hours, in their time zone. */
 export const workingAt = (hours: KinWorkHours, timeZone: string, now: number) => {
-  const parts = formatIn(timeZone).formatToParts(now);
-  const part = (type: string) => parts.find((entry) => entry.type === type)?.value ?? "";
-  const day = DAYS.indexOf(part("weekday") as (typeof DAYS)[number]);
-  const time = `${part("hour")}:${part("minute")}`;
+  const parts = kinWhenParts(now, timeZone);
+  const day = DAYS.indexOf(parts.weekday as (typeof DAYS)[number]);
+  const time = `${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}`;
   return hours.days.includes(day) && time >= hours.start && time < hours.end;
 };
 

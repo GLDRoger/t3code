@@ -6,6 +6,8 @@ import {
   KinMessageId,
   type KinOrgId,
   KinPersonId,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -106,30 +108,14 @@ export const movedNotices = (
 
 const dueText = (row: RecordRow, zone: string) => {
   if (row.dueAt === null) return "";
-  const format = new Intl.DateTimeFormat("en-GB", {
-    timeZone: zone,
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    ...(row.dueAllDay === 1 ? {} : { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }),
-  });
-  return `, due ${format.format(row.dueAt).replace(/,/g, "")}`;
+  const style = row.dueAllDay === 1 ? "day" : "dayTime";
+  return `, due ${formatKinWhen(row.dueAt, style, { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "")}`;
 };
 
 const meetingAt = (row: RecordRow, zone: string) =>
   row.dateAt === null
     ? ""
-    : ` on ${new Intl.DateTimeFormat("en-GB", {
-        timeZone: zone,
-        weekday: "short",
-        day: "numeric",
-        month: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-      })
-        .format(row.dateAt)
-        .replace(/,/g, "")}`;
+    : ` on ${formatKinWhen(row.dateAt, "dayTime", { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "")}`;
 
 /** A meeting given to someone is theirs to attend, or, once held, on record: never a task to do. */
 const meetingLine = (agent: string, notice: AssignNotice, zone: string, now: number) => {

@@ -11,6 +11,9 @@ import {
   KinWidgetId,
   type MemoryItemHead,
   kinDeferralWidgetId,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
+  kinWhenParts,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -151,38 +154,19 @@ const then: Record<OnDue, string> = {
   chase: "I'll chase it then.",
 };
 
-const parts = (at: number, timeZone: string) =>
-  Object.fromEntries(
-    new Intl.DateTimeFormat("en-GB", {
-      timeZone,
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-      hourCycle: "h23",
-    })
-      .formatToParts(at)
-      .map((part) => [part.type, part.value]),
-  );
-
 export function confirmText(dueAt: number, onDue: OnDue, timeZone: string): string {
   return `Deferred to ${ownerDateTime(dueAt, timeZone)}. ${then[onDue]}`;
 }
 
-/** Owner-local "Fri 13 Nov, 9:00". */
+/** Owner-local "Fri 13 Nov, 09:00". */
 export function ownerDateTime(at: number, timeZone: string): string {
-  const p = parts(at, timeZone);
-  return `${p.weekday} ${p.day} ${p.month}, ${Number(p.hour)}:${p.minute}`;
+  return formatKinWhen(at, "dayTime", { zone: timeZone, locale: KIN_TEXT_LOCALE });
 }
 
-/** Owner-local "9:00", with the day when it isn't today. */
+/** Owner-local "09:00", with the day when it isn't today. */
 export function ownerTime(at: number, now: number, timeZone: string): string {
-  const p = parts(at, timeZone);
-  const today = parts(now, timeZone);
-  return p.day === today.day && p.month === today.month && p.year === today.year
-    ? `${Number(p.hour)}:${p.minute}`
+  return kinWhenParts(at, timeZone).isoDay === kinWhenParts(now, timeZone).isoDay
+    ? formatKinWhen(at, "time", { zone: timeZone, locale: KIN_TEXT_LOCALE })
     : ownerDateTime(at, timeZone);
 }
 

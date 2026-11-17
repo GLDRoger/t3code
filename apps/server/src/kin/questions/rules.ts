@@ -1,3 +1,4 @@
+import { formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 /** The company sits together 10:30 to 19:30: a question's day ends at 19:30, a raise comes at 10:30. */
@@ -157,11 +158,9 @@ export const dayWord = (at: number, now: number, zone: string) => {
   if (diff === 0) return "today";
   if (diff === 1) return "tomorrow";
   if (diff === -1) return "yesterday";
-  const format = (options: Intl.DateTimeFormatOptions) =>
-    new Intl.DateTimeFormat("en-GB", { timeZone: zone, ...options }).format(at).replace(/,/g, "");
-  return Math.abs(diff) <= 6
-    ? `on ${format({ weekday: "long" })}`
-    : `on ${format({ weekday: "short", day: "numeric", month: "short" })}`;
+  const format = (style: "weekday" | "day") =>
+    formatKinWhen(at, style, { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "");
+  return Math.abs(diff) <= 6 ? `on ${format("weekday")}` : `on ${format("day")}`;
 };
 
 /**

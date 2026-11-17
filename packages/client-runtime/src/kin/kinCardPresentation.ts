@@ -16,6 +16,7 @@ import {
   type KinOrgId,
   type KinRoutineSection,
   type KinWidget,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -211,11 +212,7 @@ const ROUTINE_SECTIONS: Record<KinRoutineSection, string> = {
 };
 
 // `day` is the owner's local date; built from its parts so no timezone shifts it.
-const dayFormat = new Intl.DateTimeFormat(undefined, {
-  weekday: "long",
-  month: "long",
-  day: "numeric",
-});
+const dayFormat = kinWhenFormat("longDay");
 const formatDay = (day: string) => {
   const [year, month, date] = day.split("-").map(Number);
   return dayFormat.format(new Date(year!, month! - 1, date));

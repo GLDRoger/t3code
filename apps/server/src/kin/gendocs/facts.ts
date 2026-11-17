@@ -120,7 +120,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       ? null
       : ((yield* issuedNumber(orgId, entry.recordId)) ??
         (recipe.numbered ? null : (cellOf(fields, "number") as string | null)));
-  const currency = entry?.currency ?? def?.currency ?? "INR";
+  const currency = entry?.currency ?? def?.currency ?? profile.homeCurrency;
   const day = (ms: number | null) => (ms === null ? null : dayIn(ms, zone));
   const clientDef = client === undefined ? undefined : yield* listDef(orgId, client.registerId);
   const entryLabelled = entry !== undefined && entrySensitive(entry, def);

@@ -36,6 +36,7 @@ import {
   type KinRecordDetail,
   type KinRecordKey,
   type KinRecordState,
+  KIN_DEFAULT_HOME_CURRENCY,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -567,7 +568,7 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
   const close = () => navigation.goBack();
   const categories = expenses?.categories ?? [];
   const label = (category: string) => expenses?.categoryLabels?.[category] ?? category;
-  const home = rates?.home ?? expenses?.currency ?? "INR";
+  const home = rates?.home ?? expenses?.currency ?? KIN_DEFAULT_HOME_CURRENCY;
   const save = async () => {
     const checked = kinBudgetInput(props.orgId, draft, home, requestId);
     if (!checked.ok) return setProblem(checked.problem);
@@ -795,7 +796,7 @@ export function KinQuoteActions(
           onPress={() =>
             props.onMakePdf({
               list: KIN_QUOTES_LIST,
-              currency: item.amount?.currency ?? props.def?.currency ?? "INR",
+              currency: item.amount?.currency ?? props.def?.currency ?? KIN_DEFAULT_HOME_CURRENCY,
               party: item.party ?? null,
             })
           }

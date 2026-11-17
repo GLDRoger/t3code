@@ -34,6 +34,7 @@ import {
   type KinPersonId,
   type KinReactionEmoji,
   type KinWidget,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { FileTextIcon, MessagesSquareIcon, ReplyIcon, SmilePlusIcon } from "lucide-react";
@@ -54,7 +55,7 @@ type DraftRow = Extract<KinFeedRow, { readonly type: "draft" }>;
 type FoldRow = Extract<KinFeedRow, { readonly type: "fold" }>;
 type RelayRow = Extract<KinFeedRow, { readonly type: "relay" }>;
 
-const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const timeFormat = kinWhenFormat("time");
 export const formatKinMessageTime = (iso: string) => timeFormat.format(new Date(iso));
 const formatTime = formatKinMessageTime;
 

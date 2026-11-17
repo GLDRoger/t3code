@@ -18,6 +18,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { homeCurrency } from "./companyProfile.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { theOwner } from "./ownerWork.ts";
@@ -108,7 +109,7 @@ export const unlock = Effect.fn("KinStatements.unlock")(function* (
       Effect.as({ status: "limit" as const }),
     );
   if (waiting !== undefined) return yield* spent(waiting);
-  const outcome = yield* readWith(bytes, input.password);
+  const outcome = yield* readWith(bytes, yield* homeCurrency(input.orgId), input.password);
   if (outcome._tag === "wrong_password" || outcome._tag === "needs_password") {
     const last = yield* spentUntil(input.orgId, "card", file, now);
     if (last !== undefined) return yield* spent(last);

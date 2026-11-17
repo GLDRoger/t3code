@@ -33,6 +33,7 @@ import {
   type KinDocFile,
   type KinListDefinition,
   type KinRecord,
+  KIN_DEFAULT_HOME_CURRENCY,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -157,7 +158,7 @@ export function KinInvoiceActions(
           onPress={() =>
             props.onMake({
               list: INVOICES,
-              currency: props.currency ?? "INR",
+              currency: props.currency ?? KIN_DEFAULT_HOME_CURRENCY,
               party: props.party,
             })
           }
@@ -788,7 +789,7 @@ function ReceiptForm(props: KinWorkTarget) {
   const navigation = useNavigation();
   const actions = useKinMoneyActions(props);
   // A plain number is in the home currency; a typed symbol or code still names its own.
-  const home = useKinRates(props)?.home ?? "INR";
+  const home = useKinRates(props)?.home ?? KIN_DEFAULT_HOME_CURRENCY;
   const now = new Date(useNowMinuteMs());
   const today = kinWorkDayOf(now);
   const [draft, setDraft] = useState<KinAdvanceDraft>(() => kinAdvanceDraft(today));
