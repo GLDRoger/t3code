@@ -1,5 +1,4 @@
 import type {
-  KinGitHubBranchGuard,
   KinGitHubGuardProblem,
   KinGitHubGuardSetInput,
   KinGitHubGuardSetResult,
@@ -14,7 +13,14 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import type { ApiAnswer, ApiRequest } from "./GitHubWatch.ts";
-import { guardRows, type KnownRepo, knownRepos, repoList } from "./githubWatchStore.ts";
+import {
+  guardRows,
+  type GuardState,
+  type KnownRepo,
+  knownRepos,
+  repoList,
+} from "./githubWatchStore.ts";
+import { gitHubApp } from "./KinGitHubApp.ts";
 
 /**
  * Whether Kin's GitHub App can change a watched repo's default branch, and the one ruleset Kin
@@ -60,6 +66,18 @@ const decodeRules = Schema.decodeUnknownOption(
     }),
   ),
 );
+const decodeRuleset = Schema.decodeUnknownOption(
+  Schema.Struct({
+    bypass_actors: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          actor_id: Schema.optional(Schema.NullOr(Schema.Number)),
+          actor_type: Schema.String,
+        }),
+      ),
+    ),
+  }),
+);
 const decodeClassic = Schema.decodeUnknownOption(
   Schema.Struct({
     required_pull_request_reviews: Schema.optional(
@@ -67,7 +85,13 @@ const decodeClassic = Schema.decodeUnknownOption(
     ),
     lock_branch: Schema.optional(Schema.Struct({ enabled: Schema.optional(Schema.Boolean) })),
     restrictions: Schema.optional(
-      Schema.NullOr(Schema.Struct({ apps: Schema.optional(Schema.Array(Schema.Unknown)) })),
+      Schema.NullOr(
+        Schema.Struct({
+          apps: Schema.optional(
+            Schema.Array(Schema.Struct({ id: Schema.optional(Schema.Number) })),
+          ),
+        }),
+      ),
     ),
   }),
 );
@@ -92,22 +116,39 @@ const problemOf = (answer: ApiAnswer, writing = false): KinGitHubGuardProblem =>
 };
 
 interface Read {
-  readonly state: KinGitHubBranchGuard["state"];
+  readonly state: GuardState;
   readonly byKin: boolean;
   readonly problem: KinGitHubGuardProblem | null;
 }
 
-/**
- * The rules in force on the branch, then classic protection where they don't stop the App. Each
- * counts when it keeps a non-admin off the branch: restricted updates, a locked branch, pushes
- * kept to named people, or a pull request with at least one approval.
- */
 type Call = (request: ApiRequest) => Effect.Effect<ApiAnswer>;
 
+/**
+ * A bypass actor that can't be Kin's App: people's roles, another App, a deploy key. A write or
+ * maintain role, a team or anything else might cover the App, so it doesn't count as a wall.
+ * https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/creating-rulesets-for-a-repository#granting-bypass-permissions-for-your-branch-or-tag-ruleset
+ */
+const keepsAppOut = (
+  actor: { readonly actor_id?: number | null | undefined; readonly actor_type: string },
+  appId: number | null,
+) =>
+  (actor.actor_type === "RepositoryRole" && actor.actor_id === 5) ||
+  actor.actor_type === "OrganizationAdmin" ||
+  actor.actor_type === "EnterpriseOwner" ||
+  actor.actor_type === "User" ||
+  actor.actor_type === "DeployKey" ||
+  (actor.actor_type === "Integration" && appId !== null && actor.actor_id !== appId);
+
+/**
+ * `protected` only for a wall Kin's App can't pass: an update rule whose ruleset lets no actor
+ * through that could be the App, a locked branch, or pushes kept to others. A required review
+ * isn't one (`review`): once someone approves, an App with contents write merges.
+ */
 const readGuard = Effect.fn("KinBranchGuard.read")(function* (
   call: Call,
   entry: KnownRepo & { readonly branch: string },
   kinRulesetId: number | null,
+  appId: number | null,
 ) {
   const branch = encodeURIComponent(entry.branch);
   const answer = yield* call({ path: `repos/${entry.repo}/rules/branches/${branch}` });
@@ -115,30 +156,54 @@ const readGuard = Effect.fn("KinBranchGuard.read")(function* (
     return { state: "unknown", byKin: false, problem: problemOf(answer) } satisfies Read;
   const rules = Option.getOrElse(decodeRules(answer.body), () => []);
   const byKin = kinRulesetId !== null && rules.some((rule) => rule.ruleset_id === kinRulesetId);
-  if (
-    rules.some(
-      (rule) =>
-        rule.type === "update" ||
-        (rule.type === "pull_request" &&
-          (rule.parameters?.required_approving_review_count ?? 0) >= 1),
-    )
-  )
-    return { state: "protected", byKin, problem: null } satisfies Read;
+  const reviews = rules.some(
+    (rule) =>
+      rule.type === "pull_request" && (rule.parameters?.required_approving_review_count ?? 0) >= 1,
+  );
+  // An update rule stops the App only if its ruleset's bypass list keeps the App out.
+  let unread: KinGitHubGuardProblem | null = null;
+  for (const id of new Set(
+    rules.flatMap((rule) =>
+      rule.type === "update" && rule.ruleset_id !== undefined ? [rule.ruleset_id] : [],
+    ),
+  )) {
+    const ruleset = yield* call({ path: `repos/${entry.repo}/rulesets/${id}` });
+    // GitHub shows who bypasses only to a login that may edit the ruleset.
+    const actors =
+      ruleset.status === 200
+        ? Option.getOrUndefined(decodeRuleset(ruleset.body))?.bypass_actors
+        : undefined;
+    if (actors === undefined) {
+      unread ??= ruleset.status === 200 ? "no_admin" : problemOf(ruleset);
+      continue;
+    }
+    if (actors.every((actor) => keepsAppOut(actor, appId)))
+      return { state: "protected", byKin, problem: null } satisfies Read;
+  }
+  if (unread !== null) return { state: "unknown", byKin, problem: unread } satisfies Read;
   if (entry.admin === false) return { state: "unknown", byKin, problem: "no_admin" } satisfies Read;
   const classic = yield* call({ path: `repos/${entry.repo}/branches/${branch}/protection` });
   if (classic.status === 404 && messageOf(classic) === "Branch not protected")
-    return { state: "open", byKin, problem: null } satisfies Read;
+    return { state: reviews ? "review" : "open", byKin, problem: null } satisfies Read;
   // A repo with no commits has no branch to protect: its rules read [] and this says so.
   if (classic.status === 404 && messageOf(classic) === "Branch not found")
     return { state: "unknown", byKin, problem: "no_branch" } satisfies Read;
   if (classic.status !== 200)
     return { state: "unknown", byKin, problem: problemOf(classic) } satisfies Read;
   const held = Option.getOrUndefined(decodeClassic(classic.body));
-  const stops =
-    (held?.required_pull_request_reviews?.required_approving_review_count ?? 0) >= 1 ||
+  const apps = held?.restrictions?.apps ?? [];
+  const walled =
     held?.lock_branch?.enabled === true ||
-    (held?.restrictions != null && (held.restrictions.apps ?? []).length === 0);
-  return { state: stops ? "protected" : "open", byKin, problem: null } satisfies Read;
+    (held?.restrictions != null &&
+      (apps.length === 0 || (appId !== null && !apps.some((app) => app.id === appId))));
+  if (walled) return { state: "protected", byKin, problem: null } satisfies Read;
+  const classicReviews =
+    (held?.required_pull_request_reviews?.required_approving_review_count ?? 0) >= 1;
+  return {
+    state: reviews || classicReviews ? "review" : "open",
+    byKin,
+    problem: null,
+  } satisfies Read;
 });
 
 const save = Effect.fn("KinBranchGuard.save")(function* (
@@ -159,6 +224,14 @@ const save = Effect.fn("KinBranchGuard.save")(function* (
       kin_ruleset_id = excluded.kin_ruleset_id, checked_at = excluded.checked_at`;
 });
 
+/** Kin's App's id, to tell it from another App on a bypass list; null while there is none. */
+const appIdOf = Effect.gen(function* () {
+  const app = yield* gitHubApp;
+  if (Option.isNone(app)) return null;
+  const state = yield* app.value.state();
+  return state._tag === "ok" ? state.app.id : null;
+});
+
 const withBranch = (entry: KnownRepo | undefined) =>
   entry?.branch === undefined ? undefined : { ...entry, branch: entry.branch };
 
@@ -172,13 +245,14 @@ export const checkGuards = Effect.fn("KinBranchGuard.check")(function* (
     (yield* knownRepos(orgId)).map((entry) => [entry.repo.toLowerCase(), entry]),
   );
   const saved = yield* guardRows(orgId);
+  const appId = yield* appIdOf;
   let changed = false;
   for (const repo of (yield* repoList(orgId)).filter((entry) => entry.watched)) {
     const key = repo.repo.toLowerCase();
     const entry = withBranch(known.get(key));
     if (entry === undefined) continue;
     const before = saved.get(key);
-    const read = yield* readGuard(call, entry, before?.kinRulesetId ?? null);
+    const read = yield* readGuard(call, entry, before?.kinRulesetId ?? null, appId);
     // A look that didn't reach GitHub keeps what the last one read.
     if (read.problem === "unreachable" && before !== undefined) continue;
     yield* save(orgId, key, entry.branch, read, before?.kinRulesetId ?? null, now);
@@ -269,7 +343,7 @@ export const setGuards = Effect.fn("KinBranchGuard.set")(function* (
         continue;
       }
       // What protects the branch now, the owner's own rules included.
-      const read = yield* readGuard(call, entry, null);
+      const read = yield* readGuard(call, entry, null, yield* appIdOf);
       yield* save(input.orgId, key, entry.branch, read, null, now);
     }
     changed += 1;

@@ -17,6 +17,7 @@ const appIn = (state: AppState) =>
 const working: AppState = {
   _tag: "ok",
   app: {
+    id: 9001,
     name: "Invented Kin",
     botLogin: BOT_LOGIN,
     botEmail: BOT_EMAIL,
