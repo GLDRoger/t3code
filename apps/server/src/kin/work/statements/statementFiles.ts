@@ -6,10 +6,10 @@ import * as NodeZlib from "node:zlib";
 
 import * as Schema from "effect/Schema";
 import { SaxesParser } from "saxes";
-import * as Yauzl from "yauzl";
 
 import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 
+import { openZip } from "../../files/zipParts.ts";
 import { officeProblem } from "../../gendocs/officeCheck.ts";
 import { statementRegion } from "./statementRegion.ts";
 import {
@@ -61,7 +61,6 @@ const STATEMENT_CAPS = {
   bytes: 25 * 1024 * 1024,
   pages: 300,
   rows: 20_000,
-  sheetBytes: 64 * 1024 * 1024,
   /** What one deflated PDF stream may inflate to, and all of them together. */
   streamBytes: 32 * 1024 * 1024,
   streamsBytes: 256 * 1024 * 1024,
@@ -499,52 +498,12 @@ export const inflatedTooFar = (bytes: Uint8Array): string | undefined => {
   return undefined;
 };
 
-const unzip = (bytes: Uint8Array) =>
-  new Promise<Map<string, string>>((resolve, reject) => {
-    const parts = new Map<string, string>();
-    Yauzl.fromBuffer(
-      NodeBuffer.Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-      { lazyEntries: true, validateEntrySizes: true },
-      (error, zip) => {
-        if (error !== null || zip === undefined) return reject(error ?? new Error("no zip"));
-        let total = 0;
-        zip.on("entry", (entry: Yauzl.Entry) => {
-          const name = entry.fileName;
-          const wanted =
-            name === "xl/workbook.xml" ||
-            name === "xl/sharedStrings.xml" ||
-            name === "xl/_rels/workbook.xml.rels" ||
-            /^xl\/worksheets\/sheet\d+\.xml$/.test(name);
-          if (!wanted) return zip.readEntry();
-          total += entry.uncompressedSize;
-          if (total > STATEMENT_CAPS.sheetBytes) return reject(new Error("too large"));
-          zip.openReadStream(entry, (streamError, stream) => {
-            if (streamError !== null || stream === undefined)
-              return reject(streamError ?? new Error("no stream"));
-            const chunks: Array<NodeBuffer.Buffer> = [];
-            stream.on("data", (chunk: NodeBuffer.Buffer) => chunks.push(chunk));
-            stream.on("error", reject);
-            stream.on("end", () => {
-              parts.set(name, NodeBuffer.Buffer.concat(chunks).toString("utf8"));
-              zip.readEntry();
-            });
-          });
-        });
-        zip.on("end", () => resolve(parts));
-        zip.on("error", reject);
-        zip.readEntry();
-      },
-    );
-  });
-
-const xml = (
-  text: string,
-  on: {
-    readonly open?: (name: string, attributes: Record<string, string>) => void;
-    readonly text?: (text: string) => void;
-    readonly close?: (name: string) => void;
-  },
-) => {
+/** A parser for one part's text as it streams in, tags without their prefix. */
+const xml = (on: {
+  readonly open?: (name: string, attributes: Record<string, string>) => void;
+  readonly text?: (text: string) => void;
+  readonly close?: (name: string) => void;
+}) => {
   const parser = new SaxesParser({ xmlns: false });
   parser.on("opentag", (tag) =>
     on.open?.(
@@ -556,7 +515,7 @@ const xml = (
   );
   parser.on("text", (value) => on.text?.(value));
   parser.on("closetag", (tag) => on.close?.(tag.name.replace(/^\w+:/, "")));
-  parser.write(text).close();
+  return parser;
 };
 
 /** A cell reference's column from 0, up to XFD; `undefined` past it or when it names none. */
@@ -588,14 +547,27 @@ const place = (
 const xlsxLines = async (bytes: Uint8Array): Promise<ReadonlyArray<Line> | Failure> => {
   const problem = await officeProblem("xlsx", bytes);
   if (problem !== undefined)
-    return { _tag: "unreadable", reason: `Kin doesn't open this spreadsheet: it has ${problem}.` };
-  const parts = await unzip(bytes).catch(() => undefined);
-  if (parts === undefined)
-    return { _tag: "unreadable", reason: "The spreadsheet couldn't be read." };
+    return { _tag: "unreadable", reason: `Kin doesn't open this spreadsheet: it ${problem}.` };
+  return sheetLines(bytes).catch((error: unknown) => {
+    if (isTooLarge(error)) throw error;
+    return { _tag: "unreadable", reason: "The spreadsheet couldn't be read." } as const;
+  });
+};
+
+/** The first sheet with a statement table, else the first sheet, each streamed from its part. */
+const sheetLines = async (bytes: Uint8Array): Promise<ReadonlyArray<Line>> => {
+  const zip = openZip(bytes);
+  const parse = async (name: string, on: Parameters<typeof xml>[0]) => {
+    const part = zip.parts.find((one) => one.name === name);
+    if (part === undefined) return;
+    const parser = xml(on);
+    await zip.stream(part, (text) => parser.write(text));
+    parser.close();
+  };
   const strings: Array<string> = [];
   let current: string | undefined;
   let inText = false;
-  xml(parts.get("xl/sharedStrings.xml") ?? "<sst/>", {
+  await parse("xl/sharedStrings.xml", {
     open: (name) => {
       if (name === "si") current = "";
       if (name === "t") inText = true;
@@ -613,16 +585,17 @@ const xlsxLines = async (bytes: Uint8Array): Promise<ReadonlyArray<Line> | Failu
       }
     },
   });
-  const sheets = [...parts.keys()]
-    .filter((name) => name.startsWith("xl/worksheets/"))
+  const sheets = zip.parts
+    .map((part) => part.name)
+    .filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name))
     .toSorted((left, right) => Number(/\d+/.exec(left)?.[0]) - Number(/\d+/.exec(right)?.[0]));
-  const read = (name: string) => {
+  const read = async (name: string) => {
     const budget = cellBudget();
     const lines: Array<Array<Cell>> = [];
     let row: Array<Cell> = [];
     let cell: { column: number | undefined; type: string; value: string } | undefined;
     let inValue = false;
-    xml(parts.get(name)!, {
+    await parse(name, {
       open: (tag, attributes) => {
         if (tag === "row") row = [];
         if (tag === "c")
@@ -661,7 +634,7 @@ const xlsxLines = async (bytes: Uint8Array): Promise<ReadonlyArray<Line> | Failu
     return lines;
   };
   for (const name of sheets) {
-    const lines = read(name);
+    const lines = await read(name);
     if (readsAsTable(lines)) return lines;
   }
   return sheets.length === 0 ? [] : read(sheets[0]!);
