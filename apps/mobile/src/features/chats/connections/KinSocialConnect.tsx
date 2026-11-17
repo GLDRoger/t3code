@@ -190,7 +190,8 @@ function ConnectSheet(props: {
   const [pick, setPick] = useState(0);
   const [key, setKey] = useState("");
   const [checked, setChecked] = useState<KinSocialCheck | null>(null);
-  const [done, setDone] = useState(false);
+  // The label it connected: once connected, that group leaves the choices.
+  const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const chosen = rekey === null ? choices[pick] : undefined;
@@ -217,7 +218,7 @@ function ConnectSheet(props: {
       setChecked(null);
       return setProblem(outcome.problem);
     }
-    setDone(true);
+    setDone(label);
   };
 
   return (
@@ -226,7 +227,7 @@ function ConnectSheet(props: {
         title={rekey === null ? COPY.sheetTitle : `${COPY.reconnect}: ${rekey.title}`}
         onClose={() => navigation.goBack()}
         confirm={
-          done
+          done !== null
             ? { label: COPY.done, onPress: () => navigation.goBack() }
             : {
                 label:
@@ -257,11 +258,8 @@ function ConnectSheet(props: {
             ) : (
               <AppActivityIndicator />
             )
-          ) : done ? (
-            <Notice
-              icon="checkmark.circle"
-              message={`${label} is connected. Social can read these accounts and draft for them; nothing posts until you confirm a week.`}
-            />
+          ) : done !== null ? (
+            <Notice icon="checkmark.circle" message={COPY.connected(done)} />
           ) : (
             <>
               <Text textRole="body" className="px-2 text-foreground-muted">

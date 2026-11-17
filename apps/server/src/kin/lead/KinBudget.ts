@@ -7,6 +7,7 @@ import {
   type KinEvent,
   KinMessageId,
   type KinOrgId,
+  type KinPersonId,
   type KinWakeupId,
   type ThreadId,
   type TurnTokenUsage,
@@ -169,6 +170,15 @@ export class KinBudget extends Context.Service<
   }
 >()("t3/kin/lead/KinBudget") {}
 
+const validZone = (zone: string | null) => {
+  if (zone === null) return null;
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: zone }).resolvedOptions().timeZone;
+  } catch {
+    return null;
+  }
+};
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const cache = yield* MemoryCache.MemoryCache;
@@ -270,8 +280,21 @@ const make = Effect.gen(function* () {
   /** What is left for the owner's own work: teammates' spending never takes from it. */
   const ownerShare = (budget: { leadUnits: number; teammates: number; limits: KinBudgetLimits }) =>
     left(budget.limits.leadUnits, Math.max(0, budget.leadUnits - budget.teammates));
-  const clock = Effect.fn("KinBudget.clock")(function* (orgId: KinOrgId, at: number) {
-    const timeZone = yield* cache.ownerTimeZone(orgId);
+  /** "7:00 am" on the reader's clock: a teammate's profile zone, else the owner's. */
+  const clock = Effect.fn("KinBudget.clock")(function* (
+    orgId: KinOrgId,
+    at: number,
+    reader?: KinPersonId,
+  ) {
+    const [person] =
+      reader === undefined
+        ? []
+        : yield* sql<{ zone: string | null; owner: number }>`
+            SELECT time_zone AS zone, EXISTS (SELECT 1 FROM kin_agents a
+              WHERE a.org_id = p.org_id AND a.owner_person_id = p.person_id) AS owner
+            FROM kin_people p WHERE org_id = ${orgId} AND person_id = ${reader}`;
+    const own = person === undefined || person.owner === 1 ? null : validZone(person.zone);
+    const timeZone = own ?? (yield* cache.ownerTimeZone(orgId));
     return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone })
       .format(at)
       .replace(/\s?AM$/, " am")
@@ -541,18 +564,24 @@ const make = Effect.gen(function* () {
         SELECT name, owner_chat_id AS "ownerChatId" FROM kin_leads
         WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} ORDER BY agent_id`;
         if (lead !== undefined) {
-          const at = yield* clock(input.orgId, input.nextReset);
           const why =
             input.heldBy === "teammates"
               ? "today's limit for teammates' requests is used up"
               : "today's limit is used up";
           // Where each asked: a message's or card's own chat, reported work's, else the lead's own.
-          const chats = new Set(
-            input.events.map((event) =>
-              "chatId" in event && event.chatId !== undefined ? event.chatId : lead.ownerChatId,
-            ),
-          );
-          for (const chatId of chats)
+          // Each chat reads the time on the clock of the person who asked there.
+          const chats = new Map<string, KinPersonId | undefined>();
+          for (const event of input.events) {
+            const chatId =
+              "chatId" in event && event.chatId !== undefined ? event.chatId : lead.ownerChatId;
+            const asker =
+              "provenance" in event && event.provenance._tag === "human"
+                ? event.provenance.personId
+                : undefined;
+            if (!chats.has(chatId) || chats.get(chatId) === undefined) chats.set(chatId, asker);
+          }
+          for (const [chatId, asker] of chats) {
+            const at = yield* clock(input.orgId, input.nextReset, asker);
             yield* system({
               orgId: input.orgId,
               chatId: KinChatId.make(chatId),
@@ -561,6 +590,7 @@ const make = Effect.gen(function* () {
               body: `${lead.name} will pick this up at ${at}: ${why}.`,
               now,
             });
+          }
         }
         yield* ownerNotice(input.orgId, input.heldBy);
       },

@@ -65,5 +65,11 @@ export const makeKinMemoryHandlers = Effect.fn("makeKinMemoryHandlers")(function
       const people = yield* Context.get(services, KinIdentity).resolve(session);
       return yield* Context.get(services, KinMemoryChanges).restore(people, input);
     }, Effect.catchDefect(defect)),
+    "kin.memory.setTeamMemory": Effect.fn("KinMemory.rpc.setTeamMemory")(function* (input) {
+      if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
+      const services = kin.value.services.value;
+      const people = yield* Context.get(services, KinIdentity).resolve(session);
+      return yield* Context.get(services, KinMemoryChanges).setTeamMemory(people, input);
+    }, Effect.catchDefect(defect)),
   });
 });

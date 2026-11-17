@@ -981,6 +981,12 @@ export const kinClient = {
     tag: "kin.memory.restore",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
   }),
+  /** Whether agents use team memory in chats with teammates; its `permissionAtom` gates the switch. */
+  memorySetTeamMemory: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:memory:team",
+    tag: "kin.memory.setTeamMemory",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+  }),
   /** The owner's daily limit. The host announces no change to it, so a set re-reads it here. */
   /** What needs attention, handled ones included; read again whenever the host's facts move. */
   attention: createKinQueryAtomFamily(connectionAtomRuntime, {

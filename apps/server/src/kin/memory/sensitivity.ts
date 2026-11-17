@@ -148,19 +148,45 @@ export interface StoredLabels {
    * suggested, null when only an earlier version recorded none.
    */
   readonly suggested: ReadonlyMap<string, string | null>;
-  /** `KIN_TEAM_MEMORY` is on: without it no shared turn reads anything (`reaches`). */
+  /** Team memory is on (`teamMemoryOn`): without it no shared turn reads anything (`reaches`). */
   readonly teamMemory: boolean;
 }
 
-/**
- * Whether the host lets shared turns read and write team memory: `KIN_TEAM_MEMORY=on`, exactly.
- * Anything else, padded, unset or unreadable, is off, and shared turns get no memory at all.
- */
-export const teamMemoryOn = Config.String("KIN_TEAM_MEMORY").pipe(
+/** The host's starting value, until the owner sets the switch: `KIN_TEAM_MEMORY=on`, exactly. */
+const hostTeamMemory = Config.String("KIN_TEAM_MEMORY").pipe(
   Config.withDefault("off"),
   Effect.map((value) => value === "on"),
   Effect.orElseSucceed(() => false),
 );
+
+/**
+ * Whether shared turns read and write team memory: the owner's switch (`kin_team_memory`) once
+ * set, else the host's `KIN_TEAM_MEMORY`. Unreadable is off, and shared turns get no memory.
+ */
+export const teamMemoryOn = Effect.fn("KinSensitivity.teamMemoryOn")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const stored = yield* sql<{ isOn: number }>`
+    SELECT is_on AS "isOn" FROM kin_team_memory WHERE org_id = ${orgId}`.pipe(
+    Effect.orElseSucceed(() => [{ isOn: 0 }]),
+  );
+  const [row] = stored;
+  return row === undefined ? yield* hostTeamMemory : row.isOn === 1;
+});
+
+/** The owner's switch: from the next turn, shared turns get team memory or none. */
+export const setTeamMemory = Effect.fn("KinSensitivity.setTeamMemory")(function* (
+  orgId: KinOrgId,
+  on: boolean,
+  by: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* Clock.currentTimeMillis;
+  yield* sql`INSERT INTO kin_team_memory (org_id, is_on, set_by, set_at)
+    VALUES (${orgId}, ${on ? 1 : 0}, ${by}, ${now})
+    ON CONFLICT (org_id) DO UPDATE SET is_on = excluded.is_on, set_by = excluded.set_by,
+      set_at = excluded.set_at`;
+  yield* (yield* KinRefreshObserver).touch(orgId, "memory");
+});
 
 /**
  * What the item's labels say, for keeping a label on a rewrite: held, else its file, else the
@@ -260,7 +286,7 @@ export const storedLabels = Effect.fn("KinSensitivity.storedLabels")(function* (
         row.suggestedAt === null ? [] : [[row.itemId, row.suggestedContent] as const],
       ),
     ),
-    teamMemory: yield* teamMemoryOn,
+    teamMemory: yield* teamMemoryOn(orgId),
   } satisfies StoredLabels;
 });
 

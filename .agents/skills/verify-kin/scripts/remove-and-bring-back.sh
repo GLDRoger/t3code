@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Removing Arjun changes his access only: his task stays his, shows under Needs you as held by
 # someone whose access was removed, no agent starts on it, and its history says who removed him.
-# His browser then says his access ended instead of asking to pair. A new link from the owner
-# brings him back as the same person: his level, his chat with its history, and his task.
+# His browser then says his access ended instead of asking to pair, and Zoya's chat with him leaves
+# her list. A new link from the owner brings him back as the same person: his level, his chat with
+# its history, and his task, and Zoya's chat with him is listed again.
 source "$(dirname "$0")/lib.sh"
 q() { kv db "$1" | tail -n +2 | tail -1; }
 ARJUN="$(q "select person_id from kin_people where display_name = 'Arjun Rao'")"
@@ -15,6 +16,11 @@ task="$(grep -o 'W-[0-9]*' <<<"$made" | head -1)"
 [[ -n "$task" ]] || fail "couldn't give Arjun a task: $made"
 kv tool chief pulse_read '{}' --as-turn-of arjun --say "$SAID" >/dev/null
 access="$(q "select access from kin_people where person_id = '$ARJUN'")"
+pair="$(kv as zoya rpc kin.chats.withPerson "{\"personId\":\"$ARJUN\"}" |
+  node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).chatId))')"
+kv as zoya rpc kin.messages.send "{\"chatId\":\"$pair\",\"clientMessageId\":\"gone-$RUN\",\"body\":\"Proof g$RUN: see you Monday\"}" >/dev/null
+zoya_list() { kv as zoya web open home >/dev/null && kv as zoya web snapshot --full; }
+expect_in "$(zoya_list)" "Arjun Rao" "Zoya's chat with Arjun isn't on her list"
 
 wakeups="$(q "select count(*) from kin_wakeups")"
 removed="$(kv as owner rpc kin.people.removeAccess "{\"personId\":\"$ARJUN\"}")"
@@ -27,6 +33,8 @@ needs="$(kv as owner rpc kin.pulse.read '{"acceptSenses":["holder_removed"]}')"
 expect_in "$needs" "whose access was removed" "Needs you doesn't show $task held by someone removed"
 sleep 5
 [[ "$(q "select count(*) from kin_wakeups")" == "$wakeups" ]] || fail "an agent started work when Arjun was removed"
+
+expect_not_in "$(zoya_list)" "Arjun Rao" "Zoya's chat with Arjun stayed listed after his access ended"
 
 kv as arjun web open /kin >/dev/null || true
 kv as arjun web wait "Your access to Kin has ended" >/dev/null ||
@@ -49,4 +57,5 @@ kv as arjun web open chat:chief >/dev/null
 kv as arjun web wait "$SAID" >/dev/null || fail "Arjun's chat came back without its history"
 kv as arjun web open tasks >/dev/null
 kv as arjun web wait "$TITLE" >/dev/null || fail "Arjun's task isn't his after he came back"
-pass "removing Arjun kept $task his, under Needs you, with no agent started; his browser said his access ended; a new link brought back his level, chat history and task"
+expect_in "$(zoya_list)" "Arjun Rao" "Zoya's chat with Arjun didn't come back when he did"
+pass "removing Arjun kept $task his, under Needs you, with no agent started; his browser said his access ended and Zoya's chat with him left her list; a new link brought back his level, chat history and task, and that chat"

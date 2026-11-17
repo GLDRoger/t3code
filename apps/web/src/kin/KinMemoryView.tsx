@@ -10,11 +10,13 @@ import {
   KIN_MEMORY_SEARCH_PLACEHOLDER,
   createKinMemoryActions,
   kinMemoryView,
+  kinTeamMemoryView,
   type KinMemoryActions,
   type KinMemoryConfirmAll,
   type KinMemoryItemView,
   type KinMemoryOriginView,
   type KinMemoryRow,
+  type KinTeamMemoryView,
 } from "@t3tools/client-runtime/kin/kinMemoryScreen";
 import type {
   EnvironmentId,
@@ -26,7 +28,7 @@ import { LegendList } from "@legendapp/list/react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { GlobeIcon, MessageSquareIcon, SparklesIcon } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
 import {
@@ -41,7 +43,9 @@ import {
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
 import { Skeleton } from "../components/ui/skeleton";
+import { Switch } from "../components/ui/switch";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
@@ -79,6 +83,10 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
   const setVisibility = useAtomCommand(kinClient.memorySetVisibility, { reportFailure: false });
   const confirm = useAtomCommand(kinClient.memoryConfirm, { reportFailure: false });
   const forget = useAtomCommand(kinClient.memoryForget, { reportFailure: false });
+  const setTeamMemory = useAtomCommand(kinClient.memorySetTeamMemory, { reportFailure: false });
+  const canSetTeamMemory = useAtomValue(
+    kinClient.memorySetTeamMemory.permissionAtom(environmentId),
+  );
   const [forgetting, setForgetting] = useState<KinMemoryItemView | null>(null);
   const [edits, setEdits] = useState(KIN_MEMORY_NO_EDITS);
   const [search, setSearch] = useState("");
@@ -95,6 +103,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
       setVisibility: (input) => setVisibility({ environmentId, input }),
       confirmSuggestions: (input) => confirm({ environmentId, input }),
       forget: (input) => forget({ environmentId, input }),
+      setTeamMemory: (input) => setTeamMemory({ environmentId, input }),
       update: setEdits,
       refresh: () => appAtomRegistry.refresh(listAtom),
     }),
@@ -130,6 +139,15 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
     people: Option.getOrNull(AsyncResult.value(people))?.people ?? [],
     agents: Option.getOrNull(AsyncResult.value(agents))?.leads ?? [],
   });
+  const team = kinTeamMemoryView(list, edits);
+  const teamSwitch =
+    team === null ? null : (
+      <KinTeamMemorySwitch
+        view={team}
+        disabled={!canSetTeamMemory}
+        onChange={(on) => void actions.setTeamMemory(list, on)}
+      />
+    );
   const forgotten = (
     <KinMemoryForgotten
       environmentId={environmentId}
@@ -139,7 +157,17 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
   );
   if (view.total === 0) {
     return (
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto scrollbar-gutter-both">
+        {teamSwitch === null && edits.problem === null ? null : (
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pt-2">
+            {teamSwitch}
+            {edits.problem === null ? null : (
+              <Alert variant="error">
+                <AlertDescription>{edits.problem}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+        )}
         <Empty size="compact">
           <EmptyHeader>
             <EmptyTitle>{KIN_MEMORY_EMPTY.title}</EmptyTitle>
@@ -160,8 +188,9 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
         extraData={[view.confirmAll, opened]}
         recycleItems
         ListHeaderComponent={
-          view.searchable || edits.problem !== null ? (
+          view.searchable || edits.problem !== null || teamSwitch !== null ? (
             <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pt-2">
+              {teamSwitch}
               {view.searchable ? (
                 <Input
                   type="search"
@@ -246,6 +275,29 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
         </AlertDialogPopup>
       </AlertDialog>
     </>
+  );
+}
+
+/** Whether agents use what the team can know in chats with teammates, said true either way. */
+function KinTeamMemorySwitch(props: {
+  readonly view: KinTeamMemoryView;
+  readonly disabled: boolean;
+  readonly onChange: (on: boolean) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5">
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <Label htmlFor={id}>{props.view.label}</Label>
+        <p className="text-xs text-muted-foreground">{props.view.detail}</p>
+      </div>
+      <Switch
+        id={id}
+        checked={props.view.on}
+        disabled={props.disabled || props.view.busy}
+        onCheckedChange={props.onChange}
+      />
+    </div>
   );
 }
 

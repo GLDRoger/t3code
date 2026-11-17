@@ -12,6 +12,8 @@ import {
   type KinMemoryListResult,
   type KinMemoryRestoreInput,
   type KinMemoryRestoreResult,
+  type KinMemorySetTeamMemoryInput,
+  type KinMemorySetTeamMemoryResult,
   type KinMemorySetVisibilityInput,
   type KinMemorySetVisibilityResult,
   type KinMemoryUndoInput,
@@ -46,6 +48,7 @@ import {
   bindSuggestions,
   fingerprint,
   hold,
+  setTeamMemory,
   storedLabels,
   visibility,
   type StoredLabels,
@@ -108,6 +111,11 @@ export class KinMemoryChanges extends Context.Service<
       people: ReadonlyArray<PersonIdentity>,
       input: KinMemoryRestoreInput,
     ) => Effect.Effect<KinMemoryRestoreResult, KinChatError>;
+    /** The owner's switch for team memory in chats with teammates; owner level only. */
+    readonly setTeamMemory: (
+      people: ReadonlyArray<PersonIdentity>,
+      input: KinMemorySetTeamMemoryInput,
+    ) => Effect.Effect<KinMemorySetTeamMemoryResult, KinChatError>;
     readonly attachWriter: (port: KinMemoryPort) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/kin/memory/MemoryChanges/KinMemoryChanges") {}
@@ -349,7 +357,10 @@ const make = Effect.gen(function* () {
         provideSql,
       );
       const provenance = yield* provenanceOf(input.orgId, person.personId, items);
-      return { items: items.map((item) => listed(item, labels, provenance)) };
+      return {
+        items: items.map((item) => listed(item, labels, provenance)),
+        teamMemory: labels.teamMemory,
+      };
     }, failed),
     setVisibility: Effect.fn("KinMemoryChanges.setVisibility")(function* (people, input) {
       const { person, port } = yield* ownerOf(people, input.orgId);
@@ -435,6 +446,11 @@ const make = Effect.gen(function* () {
       if (known.length !== 1) return yield* notFound;
       yield* port.restore(input.orgId, { itemId: input.itemId });
       return { itemId: input.itemId };
+    }, failed),
+    setTeamMemory: Effect.fn("KinMemoryChanges.setTeamMemory")(function* (people, input) {
+      const { person } = yield* ownerOf(people, input.orgId);
+      yield* setTeamMemory(input.orgId, input.on, person.personId).pipe(provideSql);
+      return { teamMemory: input.on };
     }, failed),
     attachWriter: Effect.fn("KinMemoryChanges.attachWriter")(function* (next) {
       yield* Effect.acquireRelease(
