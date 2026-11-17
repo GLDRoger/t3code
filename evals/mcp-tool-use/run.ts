@@ -2776,6 +2776,8 @@ type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   readonly pass: boolean;
   /** Passed, but some check only within margin. */
   readonly withinMargin?: boolean;
+  /** `max_steps` when the step limit ended the turn. */
+  readonly stopReason?: string;
   /** Set when the sample could not run to the end, even after retries. It is not graded. */
   readonly error?: string;
   readonly usage: Usage;
@@ -2821,6 +2823,8 @@ const spend = (usages: ReadonlyArray<Usage>, model: ShellModel | Model) => {
 };
 
 const caseKey = (row: ResultRow) => row.id;
+const cutOff = (rows: ReadonlyArray<ResultRow>) =>
+  rows.filter((row) => row.error === undefined && row.stopReason === "max_steps");
 /** Each sample's wall time: the model's calls and the runner's tool answers, as one turn. */
 const latencyLine = (rows: ReadonlyArray<ResultRow>) => {
   const times = rows.flatMap((row) => (row.latencyMs === undefined ? [] : [row.latencyMs]));
@@ -2873,7 +2877,8 @@ export const summarize = (
           : `${percent(was)} | ${Number.isNaN(now) ? "" : `${Math.round((now - was) * 100)} pts`} |`;
       const margin = members.filter((row) => row.withinMargin === true).length;
       const state = key === caseKey ? states.get(group) : undefined;
-      const pass = `${percent(now)} of ${members.length - errored}${margin > 0 ? `, ${margin} within margin` : ""}${errored > 0 ? `, ${errored} errored` : ""}${state === undefined ? "" : `: ${STATE_LABEL[state]}`}`;
+      const cut = cutOff(members).length;
+      const pass = `${percent(now)} of ${members.length - errored}${margin > 0 ? `, ${margin} within margin` : ""}${cut > 0 ? `, ${cut} cut off by the step limit` : ""}${errored > 0 ? `, ${errored} errored` : ""}${state === undefined ? "" : `: ${STATE_LABEL[state]}`}`;
       return `| ${group} | ${pass} |${compare ? ` ${delta}` : ""}`;
     }),
     "",
@@ -2893,6 +2898,11 @@ export const summarize = (
     `- Pass: ${percent(passRate(rows))} of ${finished} samples (${sampleCount("pass")} pass, ${sampleCount("margin")} within margin, ${sampleCount("fail")} fail).`,
     `- Cases: ${caseCount("pass")} pass, ${caseCount("margin")} pass within margin, ${caseCount("fail")} fail.`,
     ...(errors.length > 0 ? [errorNote] : []),
+    ...(cutOff(rows).length > 0
+      ? [
+          `- Cut off by the step limit: ${cutOff(rows).length} samples, ${cutOff(rows).filter((row) => !row.pass).length} graded fail. Each ended on max_steps before replying; read its calls to tell a turn that needed more steps from one that looped.`,
+        ]
+      : []),
     `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample${codex ? ", at OpenAI's API prices; the run itself bills whatever provider the Codex config (`CODEX_HOME`) selects" : ""}.`,
     `- Agent tokens: ${agent.tokens} ($${agent.cost.toFixed(2)}).`,
     ...latencyLine(rows),
