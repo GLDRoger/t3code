@@ -5,7 +5,10 @@
 //
 //   node scripts/kin-release-check.ts [--quick|--full] [--against <commit|findings.json>] [--out <dir>]
 //        [--base <ref>] [--only <stage,...>] [--keep-going] [--fuzz-time 2m] [--keep-traces]
-//        [--lifecycle-workers N]
+//        [--lifecycle-workers N] [--here]
+//   With KIN_RELEASE_REMOTE set to an ssh host, the check runs there through
+//   KIN_RELEASE_REMOTE_COMMAND (scripts/kin-release-remote.sh) and falls back to this machine when
+//   that one is unreachable, busy or can't fetch the commit. --here always runs it here.
 //   node scripts/kin-release-check.ts --mark-released <commit> [--from <findings.json>]
 //
 // Outputs (findings.json, summary.md, report.html, logs) go to --out, by default
@@ -826,6 +829,88 @@ const markReleased = (commit: string, from: string | undefined) => {
   );
 };
 
+/** Exits of kin-release-remote.sh (busy, can't fetch, install failed) and of ssh (no connection). */
+const RUN_HERE_ON = new Set([75, 76, 77, 255]);
+const BETWEEN =
+  /@@kin-release-findings\n([\s\S]*?)\n@@kin-release-summary\n([\s\S]*?)\n@@kin-release-end/;
+
+/** The check on KIN_RELEASE_REMOTE over ssh; undefined when it should run on this machine instead. */
+const onRemote = async (
+  args: Record<string, string | boolean | undefined>,
+  argv: ReadonlyArray<string>,
+): Promise<number | undefined> => {
+  const host = process.env.KIN_RELEASE_REMOTE;
+  if (host === undefined || host === "" || args.here) return undefined;
+  const here = (why: string) => {
+    console.log(`[release-check] ${host}: ${why}; running on this machine`);
+    return undefined;
+  };
+  if (typeof args.against === "string" && NodeFS.existsSync(args.against))
+    return here("--against names a file on this machine");
+  if (git("status", "--porcelain", "--untracked-files=no") !== "")
+    return here("this checkout has uncommitted changes");
+  const passed = argv.filter(
+    (arg, index) => arg !== "--here" && arg !== "--out" && argv[index - 1] !== "--out",
+  );
+  if (passed.some((arg) => !/^[\w.,:=/@+-]+$/.test(arg)))
+    return here("an argument needs quoting over ssh");
+  const reach = NodeChildProcess.spawnSync(
+    "ssh",
+    ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "exit 0"],
+    { stdio: "ignore", timeout: 30_000 },
+  );
+  if (reach.status !== 0) return here("not reachable");
+  const sha = git("rev-parse", "HEAD");
+  const out = NodePath.resolve(
+    (args.out as string | undefined) ??
+      NodePath.join(checkDir(), short(sha), args.full ? "full" : "quick"),
+  );
+  refuseLive(out);
+  NodeFS.mkdirSync(out, { recursive: true });
+  const command =
+    process.env.KIN_RELEASE_REMOTE_COMMAND ?? "bash t3code/scripts/kin-release-remote.sh";
+  console.log(`[release-check] running on ${host}; this machine takes over if it can't`);
+  const { code, output } = await new Promise<Ran>((resolve) => {
+    const log = NodeFS.createWriteStream(NodePath.join(out, "remote.log"));
+    let text = "";
+    const child = NodeChildProcess.spawn(
+      "ssh",
+      [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        host,
+        [command, sha, ...passed].join(" "),
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    if (child.pid !== undefined) children.add(child.pid);
+    const take = (chunk: Buffer) => {
+      text += chunk.toString();
+      log.write(chunk);
+      if (!BETWEEN.test(text) && !text.includes("@@kin-release-findings"))
+        process.stdout.write(chunk);
+    };
+    child.stdout.on("data", take);
+    child.stderr.on("data", take);
+    child.on("close", (exit) => {
+      if (child.pid !== undefined) children.delete(child.pid);
+      log.end();
+      resolve({ code: exit ?? 255, output: text });
+    });
+  });
+  const found = BETWEEN.exec(output);
+  if (RUN_HERE_ON.has(code) || found === null)
+    return here(
+      `its run ended without results (exit ${code}; see ${NodePath.join(out, "remote.log")})`,
+    );
+  NodeFS.writeFileSync(NodePath.join(out, "findings.json"), `${found[1]!}\n`);
+  NodeFS.writeFileSync(NodePath.join(out, "summary.md"), `${found[2]!}\n`);
+  console.log(`  ${NodePath.join(out, "summary.md")} (from ${host})`);
+  return code;
+};
+
 if (import.meta.main) {
   const { values } = NodeUtil.parseArgs({
     options: {
@@ -839,6 +924,7 @@ if (import.meta.main) {
       "keep-traces": { type: "boolean" },
       "fuzz-time": { type: "string" },
       "lifecycle-workers": { type: "string" },
+      here: { type: "boolean" },
       "mark-released": { type: "string" },
       from: { type: "string" },
     },
@@ -859,7 +945,8 @@ if (import.meta.main) {
     });
   try {
     if (values["mark-released"]) markReleased(values["mark-released"], values.from);
-    else process.exitCode = await check(values);
+    else
+      process.exitCode = (await onRemote(values, process.argv.slice(2))) ?? (await check(values));
   } catch (error) {
     console.error(`kin-release-check: ${(error as Error).message}`);
     process.exitCode = 2;
