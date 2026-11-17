@@ -143,6 +143,7 @@ it.effect("only the owner can undo an item on an earlier memory change card", ()
       relabel: () => Effect.die("Unused"),
       retire: () => Effect.die("Unused"),
       restore: () => Effect.die("Unused"),
+      recordDecision: () => Effect.die("Unused"),
       items: () => Effect.succeed([]),
     });
     const member = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("priya") }];
@@ -242,6 +243,7 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
           restored.push(input.itemId);
           return { restored: true };
         }),
+      recordDecision: () => Effect.die("Unused"),
       items: () => Effect.succeed(items),
       relabel: (_org, input) =>
         Effect.sync(() => {
@@ -271,6 +273,16 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
     assert.include(yield* memory.list(member, { orgId }).pipe(Effect.flip), {
       reason: "not_allowed",
     });
+    // Search finds what memory holds for the owner level alone; a teammate finds nothing, and
+    // what is no longer true isn't found.
+    const found = (people: typeof member, text: string) =>
+      memory
+        .search(people, { orgId, text, limit: 5 })
+        .pipe(Effect.map((hits) => hits.map((hit) => hit.itemId)));
+    assert.deepStrictEqual(yield* found(member, "invented terms"), []);
+    assert.deepStrictEqual(yield* found([owner], "invented terms"), ["terms"]);
+    assert.deepStrictEqual(yield* found([owner], "invented summary"), ["legacy"]);
+    assert.deepStrictEqual(yield* found([owner], "invented gone"), []);
     assert.include(yield* memory.setVisibility(member, flip).pipe(Effect.flip), {
       reason: "not_allowed",
     });
@@ -543,6 +555,7 @@ it.effect(
         undo: () => Effect.die("Unused"),
         retire: () => Effect.die("Unused"),
         restore: () => Effect.die("Unused"),
+        recordDecision: () => Effect.die("Unused"),
         relabel: () => Effect.die("Unused"),
         items: () => Effect.succeed(items),
       });
@@ -615,6 +628,7 @@ it.effect("a yes takes only the items and words the owner was shown", () =>
       undo: () => Effect.die("Unused"),
       retire: () => Effect.die("Unused"),
       restore: () => Effect.die("Unused"),
+      recordDecision: () => Effect.die("Unused"),
       items: () => Effect.succeed(items),
       relabel: (_org, input) =>
         Effect.succeed({ head: items.find((each) => each.head.id === input.itemId)!.head }),

@@ -1,11 +1,11 @@
-import type { KinOrgId, KinSearchKind } from "@t3tools/contracts";
+import { KIN_MONEY_SEARCH_KINDS, type KinOrgId, type KinSearchKind } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sectionsOf } from "./docBody.ts";
 import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
-import { sensitiveNow } from "./recordRows.ts";
+import { inheritedSensitive, sensitiveNow } from "./recordRows.ts";
 import { searchIndexed } from "./searchIndex.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 
@@ -41,6 +41,12 @@ type Row = {
 };
 
 const KINDS: ReadonlyArray<KinSearchKind> = ["work", "clients", "contacts", "projects", "docs"];
+/** What a search that asks for `everything` looks through among entries. */
+export const EVERY_RECORD_KIND: ReadonlyArray<KinSearchKind> = [
+  ...KINDS,
+  ...KIN_MONEY_SEARCH_KINDS,
+];
+const MONEY: ReadonlySet<string> = new Set(KIN_MONEY_SEARCH_KINDS);
 const SNIPPET_WORDS = 12;
 
 const wordsOf = (text: string) =>
@@ -89,11 +95,15 @@ export const search = Effect.fn("KinSearch.search")(function* (
     sql`r.org_id = ${orgId}`,
     sql`r.register_id IN ${sql.in(kinds)}`,
     ...(input.closed === true ? [] : [sql`r.state NOT IN ('done', 'dropped')`]),
-    ...(input.viewer === "team" ? [sql`NOT ${sensitiveNow(sql)}`] : []),
+    // A money list labels every entry private, so a teammate finds what Money shows them.
+    ...(input.viewer === "team"
+      ? [sql`(r.register_id IN ${sql.in([...MONEY])} OR NOT ${sensitiveNow(sql)})`]
+      : []),
     seenBy(sql, input.scope),
   ];
   const columns = sql`r.record_id AS "recordId", r.register_id AS "registerId", r.key, r.title,
-    r.state, r.updated_at AS "updatedAt", ${sensitiveNow(sql)} AS sensitive`;
+    r.state, r.updated_at AS "updatedAt", CASE WHEN r.register_id IN ${sql.in([...MONEY])}
+      THEN ${inheritedSensitive(sql)} ELSE ${sensitiveNow(sql)} END AS sensitive`;
   const rows = indexed
     ? yield* sql<Row>`SELECT ${columns}, m.part,
           snippet(kin_search, 1, '', '', '…', ${SNIPPET_WORDS}) AS snippet
@@ -123,9 +133,11 @@ export const search = Effect.fn("KinSearch.search")(function* (
       recordId: row.recordId,
       key: row.key,
       // A milestone or a goal opens as an entry does.
-      kind: ((list) => (list === "milestones" || list === "goals" ? "work" : list))(
-        listOf(row.registerId),
-      ),
+      kind: MONEY.has(row.registerId)
+        ? (row.registerId as KinSearchKind)
+        : ((list) => (list === "milestones" || list === "goals" ? "work" : list))(
+            listOf(row.registerId),
+          ),
       title: row.title,
       // A project's notes carry its price and terms, which only its lead and the owner read.
       snippet:

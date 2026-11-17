@@ -45,6 +45,8 @@ import { dayIn } from "../work/money.ts";
 import { owedInvoices, ownerZone, startOfDay } from "../work/recordRows.ts";
 import { personQuietUntil } from "../triggers/quietHold.ts";
 import { changesIn } from "../lead/undoSection.ts";
+import { discussionDecision } from "../memory/decisions.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { stakeholders } from "./stakes.ts";
 import { TEAM_ROOM_MUTED, TEAM_ROOM_TITLE, teamRoomOf } from "./teamRoom.ts";
 import * as Turns from "./turns.ts";
@@ -230,6 +232,7 @@ const make = Effect.gen(function* () {
   const identity = yield* KinIdentity;
   const repo = yield* KinChatRepository;
   const chat = yield* KinChatService;
+  const memory = yield* Effect.serviceOption(KinMemoryChanges);
   const hub = yield* KinChatHub;
   const queue = yield* KinEventQueue;
   const access = Effect.provideService(SqlClient.SqlClient, sql);
@@ -475,6 +478,26 @@ const make = Effect.gen(function* () {
       if (eventId !== null)
         yield* sql`UPDATE kin_discussions SET turn_json = ${encodeJson({ ...turn, eventId })}
           WHERE org_id = ${orgId} AND discussion_id = ${row.discussionId}`;
+    }
+    const outcome = changes.outcome ?? row.outcome;
+    if (d.final && d.state === "decided" && outcome !== null && Option.isSome(memory)) {
+      const last = yield* latest(orgId, next);
+      if (last !== undefined) {
+        const decision = discussionDecision({
+          orgId,
+          discussionId: row.discussionId,
+          topic: row.topic,
+          question: next.question,
+          outcome,
+          decider: KinAgentId.make(d.decider),
+          chatId: row.chatId,
+          messageId: last.messageId,
+        });
+        // Saving it is a git commit; the turn that ended the discussion doesn't wait for it.
+        yield* sql.afterCommit(
+          memory.value.recordDecision(orgId, decision).pipe(Effect.forkDetach, Effect.asVoid),
+        );
+      }
     }
     if (d.final) yield* tell(orgId, row.discussionId);
   });

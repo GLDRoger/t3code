@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChartCardState } from "./kinChart.ts";
-import { KinWorkerId } from "./kinLead.ts";
+import { KinMemoryItemId, KinWorkerId } from "./kinLead.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -491,23 +491,39 @@ export const KinDocsEvent = Schema.Union([
 ]);
 export type KinDocsEvent = typeof KinDocsEvent.Type;
 
-/** What one search box looks through: Work and the light CRM's entries, and docs. */
-export const KinSearchKind = Schema.Literals(["work", "clients", "contacts", "projects", "docs"]);
+/** The money lists one search box looks through, by the rules the Money place reads them. */
+export const KIN_MONEY_SEARCH_KINDS = ["invoices", "quotes", "expenses", "receipts"] as const;
+/**
+ * What one search box looks through: Work and the light CRM's entries, and docs; with
+ * `everything`, money entries and, for the owner level, what the agents remember (`memory`).
+ */
+export const KinSearchKind = Schema.Literals([
+  "work",
+  "clients",
+  "contacts",
+  "projects",
+  "docs",
+  ...KIN_MONEY_SEARCH_KINDS,
+  "memory",
+]);
 export type KinSearchKind = typeof KinSearchKind.Type;
 export const KinSearchInput = Schema.Struct({
   orgId: KinOrgId,
   text: KinTrimmedText.check(Schema.isMaxLength(200)),
-  kinds: Schema.optional(Schema.Array(KinSearchKind).check(Schema.isMaxLength(5))),
+  kinds: Schema.optional(Schema.Array(KinSearchKind).check(Schema.isMaxLength(10))),
   /** Closed entries and archived docs too. */
   closed: Schema.optional(Schema.Boolean),
+  /** Money entries and memory too: a client that can open them asks, so an older one never gets them. */
+  everything: Schema.optional(Schema.Literal(true)),
   limit: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(50)),
   ),
 });
 export type KinSearchInput = typeof KinSearchInput.Type;
 export const KinSearchHit = Schema.Struct({
+  /** A memory item's is `memory:<item id>`; it opens in Settings → Memory, not as a record. */
   recordId: KinRecordId,
-  key: KinRecordKey,
+  key: Schema.Union([KinRecordKey, KinMemoryItemId]),
   kind: KinSearchKind,
   title: KinTrimmedText,
   /** A few plain words around the match; never markup. */

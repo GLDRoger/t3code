@@ -51,7 +51,9 @@ import {
   unavailable,
   workFailure,
 } from "./recordRows.ts";
-import { search as runSearch } from "./search.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
+import { EVERY_RECORD_KIND, search as runSearch } from "./search.ts";
+import { searchIndexed } from "./searchIndex.ts";
 import {
   KIN_OWNER_LEVEL,
   placesOf,
@@ -336,33 +338,70 @@ export const restore = Effect.fn("KinDocs.restore")(
   Effect.catchTags({ SqlError: () => unavailable }),
 );
 
+/** At most this many remembered items lead a search; entries fill the rest. */
+const MEMORY_HITS = 5;
 export const search = Effect.fn("KinDocs.search")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinSearchInput) {
     const viewer = yield* viewerOf(people, input.orgId);
     const team = viewer.teammate ? viewer.person.personId : undefined;
     const now = yield* Clock.currentTimeMillis;
-    const found = yield* runSearch(input.orgId, {
-      text: input.text,
-      kinds: input.kinds,
-      closed: input.closed,
-      limit: input.limit ?? 20,
-      viewer: team === undefined ? "owner" : "team",
-      scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
-    });
+    const limit = input.limit ?? 20;
+    const asked = input.kinds ?? [];
+    const recordKinds = asked.filter((kind) => kind !== "memory");
+    const everything = input.everything === true;
+    // Memory is the owner level's alone: a teammate's search never reads it.
+    const memory =
+      everything && team === undefined && (asked.length === 0 || asked.includes("memory"))
+        ? yield* Effect.serviceOption(KinMemoryChanges).pipe(
+            Effect.flatMap((changes) =>
+              changes._tag === "None"
+                ? Effect.succeed([])
+                : changes.value.search(people, {
+                    orgId: input.orgId,
+                    text: input.text,
+                    limit: Math.min(MEMORY_HITS, limit),
+                  }),
+            ),
+          )
+        : [];
+    const found =
+      asked.length > 0 && recordKinds.length === 0
+        ? { hits: [], indexed: yield* searchIndexed() }
+        : yield* runSearch(input.orgId, {
+            text: input.text,
+            kinds:
+              recordKinds.length > 0 ? recordKinds : everything ? EVERY_RECORD_KIND : undefined,
+            closed: input.closed,
+            limit: limit - memory.length,
+            viewer: team === undefined ? "owner" : "team",
+            scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+          });
     return {
-      hits: found.hits.map((hit) => ({
-        recordId: hit.recordId as never,
-        key: hit.key,
-        kind: hit.kind,
-        title: hit.title as never,
-        snippet: hit.snippet,
-        ...(hit.section === undefined
-          ? {}
-          : { section: { id: hit.section.id, title: hit.section.title } }),
-        sensitive: hit.sensitive,
-        closed: hit.closed,
-        updatedAt: iso(hit.updatedAt),
-      })),
+      hits: [
+        ...memory.map((hit) => ({
+          recordId: KinRecordId.make(`memory:${hit.itemId}`),
+          key: hit.itemId,
+          kind: "memory" as const,
+          title: (hit.title.trim() || "Untitled") as never,
+          snippet: hit.snippet,
+          sensitive: hit.sensitive,
+          closed: false,
+          updatedAt: iso(hit.recordedAt),
+        })),
+        ...found.hits.map((hit) => ({
+          recordId: hit.recordId as never,
+          key: hit.key,
+          kind: hit.kind,
+          title: hit.title as never,
+          snippet: hit.snippet,
+          ...(hit.section === undefined
+            ? {}
+            : { section: { id: hit.section.id, title: hit.section.title } }),
+          sensitive: hit.sensitive,
+          closed: hit.closed,
+          updatedAt: iso(hit.updatedAt),
+        })),
+      ],
       indexed: found.indexed,
       asOf: iso(now),
     };

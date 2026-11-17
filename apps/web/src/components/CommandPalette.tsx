@@ -2103,14 +2103,29 @@ function OpenCommandPaletteDialog(props: {
                 .join(" · "),
               icon: <Icon className={ITEM_ICON_CLASS} />,
               run: async () => {
+                const params = {
+                  environmentId: kinNewLead.environmentId,
+                  orgId: kinNewLead.orgId,
+                };
+                if (hit.kind === "memory") {
+                  await navigate({ to: "/kin/$environmentId/$orgId/memory", params });
+                  return;
+                }
+                const money =
+                  hit.kind === "invoices" ||
+                  hit.kind === "quotes" ||
+                  hit.kind === "expenses" ||
+                  hit.kind === "receipts";
                 await navigate({
                   to:
                     hit.kind === "docs"
                       ? "/kin/$environmentId/$orgId/docs"
                       : hit.kind === "clients" || hit.kind === "projects"
                         ? "/kin/$environmentId/$orgId/clients"
-                        : "/kin/$environmentId/$orgId/tasks",
-                  params: { environmentId: kinNewLead.environmentId, orgId: kinNewLead.orgId },
+                        : money
+                          ? "/kin/$environmentId/$orgId/money"
+                          : "/kin/$environmentId/$orgId/tasks",
+                  params,
                   search:
                     hit.kind === "docs"
                       ? {

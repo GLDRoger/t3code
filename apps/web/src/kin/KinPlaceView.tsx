@@ -244,6 +244,7 @@ function KinPlaceView({
   readonly docLink: (doc: KinRecordKey, section: string | null) => string;
 }) {
   const { environmentId } = props;
+  const navigate = useNavigate();
   const wide = useMediaQuery("lg");
   const state = useKinWork(props);
   const canAdd = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
@@ -591,7 +592,12 @@ function KinPlaceView({
             if (hit.kind === "docs") openDoc(hit.key, hit.section?.id);
             else if (hit.kind === "clients") openClient(hit.key);
             else if (hit.kind === "projects") openProject(hit.key);
-            // A contact has no page of its own; its entry lists who it is with.
+            else if (hit.kind === "memory")
+              void navigate({
+                to: "/kin/$environmentId/$orgId/memory",
+                params: { environmentId, orgId: props.orgId },
+              });
+            // A contact has no page of its own, and a money entry opens on its sheet.
             else setOpenKey(hit.key);
           }}
         />

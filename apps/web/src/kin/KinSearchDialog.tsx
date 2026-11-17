@@ -1,5 +1,9 @@
 import { useKinViewerScope } from "./useKinOwnerLevel";
-import { KIN_SEARCH, type KinSearchHitView } from "@t3tools/client-runtime/kin/kinDocs";
+import {
+  KIN_SEARCH,
+  kinSearchHint,
+  type KinSearchHitView,
+} from "@t3tools/client-runtime/kin/kinDocs";
 import { useId } from "react";
 
 import {
@@ -17,7 +21,7 @@ import { KinWorkNotice } from "./KinWorkParts";
 import { useKinSearch } from "./useKinDocs";
 import type { KinWorkTarget } from "./useKinWork";
 
-/** One search box over tasks, clients, contacts, projects and docs. */
+/** One search box over tasks, clients, contacts, projects, docs, money and, for the owner level, memory. */
 export function KinSearchDialog(
   props: KinWorkTarget & {
     readonly onOpen: (hit: KinSearchHitView) => void;
@@ -54,7 +58,7 @@ export function KinSearchDialog(
               <Label htmlFor={closedId}>{KIN_SEARCH.includeClosed}</Label>
             </div>
             {state.text.trim() === "" ? (
-              <KinWorkNotice {...KIN_SEARCH.hint} />
+              <KinWorkNotice {...kinSearchHint(scope)} />
             ) : (
               <KinSearchHits
                 state={state}

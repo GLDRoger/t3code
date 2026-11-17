@@ -142,14 +142,28 @@ export const kinDocPieceKey = (piece: KinDocPiece, index: number) =>
 
 export const KIN_SEARCH = {
   title: "Search",
-  placeholder: "Search tasks, clients, projects and docs",
+  placeholder: "Search tasks, clients, docs and money",
   hint: {
-    title: "Search everything in Work",
-    detail: "Tasks, clients, contacts, projects and docs, by any words in them.",
+    title: "Search everything",
+    detail: "Tasks, clients, contacts, projects, docs and money, by any words in them.",
   },
   failed: "Couldn't search",
   includeClosed: "Include closed and archived",
 } as const;
+
+/** What the empty search box says it looks through: the owner level finds what memory keeps too. */
+export const kinSearchHint = (scope: KinViewerScope) =>
+  scope.all
+    ? {
+        title: KIN_SEARCH.hint.title,
+        detail:
+          "Tasks, clients, contacts, projects, docs, money, and the decisions your agents remember, by any words in them.",
+      }
+    : {
+        title: KIN_SEARCH.hint.title,
+        detail:
+          "Tasks, clients, contacts, projects, docs and money you can see, by any words in them.",
+      };
 
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${count} ${count === 1 ? one : many}`;
@@ -846,6 +860,11 @@ const KIND_LABEL: Record<KinSearchKind, string> = {
   contacts: "Contact",
   projects: "Project",
   docs: "Doc",
+  invoices: "Invoice",
+  quotes: "Quote",
+  expenses: "Expense",
+  receipts: "Receipt",
+  memory: "Remembered",
 };
 
 export interface KinSearchHitView {
@@ -893,13 +912,14 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
     title: hit.title,
     snippet: snippet === "" ? null : snippet,
     section,
-    private: hit.sensitive,
+    // Everything memory keeps is the owner level's; only an entry's own label reads as private.
+    private: hit.sensitive && hit.kind !== "memory",
     closed,
     accessibilityLabel: [
       `${KIND_LABEL[hit.kind]}: ${hit.title}`,
       section?.title ?? null,
       snippet === "" ? null : snippet,
-      hit.sensitive ? "Private" : null,
+      hit.sensitive && hit.kind !== "memory" ? "Private" : null,
       closed,
     ]
       .filter(Boolean)

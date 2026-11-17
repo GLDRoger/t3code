@@ -15,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -38,6 +39,8 @@ import { agentServices } from "../mcp/KinChatToolkit.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
+import type { KinDecision } from "../memory/MemoryWriter.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as Team from "./KinTeam.ts";
@@ -216,6 +219,24 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
     TestClock.setTime(Date.UTC(2026, 10, 16, 6)),
     Effect.gen(function* () {
       const { sql, chats, owner, orgId, person, chatOf, wake } = yield* ambermill;
+      // What memory is asked to save; the writer itself is MemoryWriter's to test.
+      const decisions: Array<KinDecision> = [];
+      const saved = yield* Deferred.make<void>();
+      yield* Context.get(
+        Option.getOrThrow((yield* Kin.KinServer).services),
+        KinMemoryChanges,
+      ).attachWriter({
+        undo: () => Effect.die("unused"),
+        relabel: () => Effect.die("unused"),
+        retire: () => Effect.die("unused"),
+        restore: () => Effect.die("unused"),
+        items: () => Effect.succeed([]),
+        recordDecision: (_org, decision) =>
+          Effect.sync(() => decisions.push(decision)).pipe(
+            Effect.andThen(Deferred.succeed(saved, undefined)),
+            Effect.as({ recorded: true }),
+          ),
+      });
       const ask = yield* chats.send(owner, {
         chatId: chatOf("social"),
         body: "Settle the brochure print run with the team.",
@@ -358,6 +379,18 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
       const ended = yield* discussion(sql, orgId);
       assert.strictEqual(ended.state, "decided");
       assert.isNotNull(ended.told);
+      // Saved to memory once, in the discussion's own words: no model wrote it.
+      yield* Deferred.await(saved);
+      assert.lengthOf(decisions, 1);
+      assert.deepInclude(decisions[0], {
+        title: "Brochure print run",
+        trust: "agent",
+        link: "discussion:TD-1",
+      });
+      assert.match(
+        decisions[0]!.body,
+        /^Print 400 brochures for the Kochi expo, printer booked for Thursday; budget ₹15,200\./,
+      );
 
       // Rhea hears it once, in Social's chat, as from the agent who answered, with what changed.
       const told = (yield* relayed(sql, orgId, chatOf("social"))).filter(

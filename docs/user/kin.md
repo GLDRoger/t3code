@@ -422,6 +422,17 @@ Agents use what the team can know in chats with teammates only while **Agents us
 chats with teammates** is on, at the top of the page. It starts off on a new Kin, and a change applies from the
 next reply. Nothing under **Only you** reaches a teammate's chat either way.
 
+### Finding a decision again
+
+Kin keeps a decision as soon as it's made: when you or a co-owner answer an agent's question card
+(a plan, a choice), and when a Team-room discussion ends decided. It is saved in the card's or the
+outcome's own words, with who decided and when, and is **Only you** until you let the team know.
+
+To find one months later, open **Search** (the magnifier on Tasks, Money, Clients or Docs, or the
+command palette) and type a word from it. Decisions show as **Remembered**; open one to see it in
+Settings → Memory. Search also finds invoices, quotes, expenses and receipts. Teammates search the
+same box: they find the money entries the Money place shows them and never what memory keeps.
+
 ## Who sees and does what
 
 A project lead is a member who leads one or more projects. They see what a member sees, plus more

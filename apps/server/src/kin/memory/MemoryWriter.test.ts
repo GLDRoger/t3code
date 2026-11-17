@@ -1451,6 +1451,114 @@ it.effect.each(["owner", "nightly", "lead"] as const)(
     ),
 );
 
+it.effect(
+  "a decision Kin saw made is saved once, to the owner alone, and the owner can forget it",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const vcs = yield* Vcs.VcsProcess;
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const source = `${root}/seed`;
+      const remote = `${root}/remote.git`;
+      const git = (cwd: string, args: ReadonlyArray<string>) =>
+        vcs
+          .run({ operation: "test.writer", command: "git", cwd, args })
+          .pipe(Effect.map((r) => r.stdout.trim()));
+      yield* fs.makeDirectory(source, { recursive: true });
+      yield* fs.writeFileString(`${source}/rules.md`, "Invented rules\n");
+      yield* git(source, ["init", "-b", "main"]);
+      yield* git(source, ["add", "--", "."]);
+      yield* git(source, [
+        "-c",
+        "user.name=Fixture Bot",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-m",
+        "fixture",
+      ]);
+      yield* git(root, ["clone", "--bare", "--", source, remote]);
+      const config = Layer.succeed(MemoryConfig, {
+        baseDirectory: root,
+        directMainPush: true,
+        repositories: [{ orgId, repoUrl: remote, path: "state" }],
+      });
+      const layer = Writer.layer.pipe(
+        Layer.provideMerge(
+          Memory.layer.pipe(
+            Layer.provide(config),
+            Layer.provide(Layer.succeed(Memory.MemorySyncHooks, { syncItems: () => Effect.void })),
+          ),
+        ),
+        Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+        Layer.provide(config),
+        Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
+        Layer.provide(
+          Layer.succeed(Writer.MemoryWriterAuthority, {
+            resolve: () => Effect.die("no wake-up writes here"),
+          }),
+        ),
+        Layer.provide(Scan.layer),
+      );
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        const writer = yield* Writer.MemoryWriter;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+        VALUES (${orgId}, 'Fixture', '2026-11-08T00:00:00.000Z')`;
+        const paths = yield* memory.ensureCheckouts(orgId);
+        yield* memory.prepareWakeup(orgId);
+        const itemId = KinMemoryItemId.make("decision-0123456789abcdef");
+        const decision = {
+          itemId,
+          title: "Which courier for the Lumen samples?",
+          body: "Chose “Bluedart” over “DTDC”.",
+          saidBy: "fixture-owner",
+          trust: "owner" as const,
+          source: "kin:chat:chat-1:message:message-1",
+          chat: KinChatId.make("chat-1"),
+          link: "card:widget-1",
+        };
+        expect(yield* writer.recordDecision(orgId, decision)).toEqual({ recorded: true });
+        // Seen again (a retried tap, a restart), it is the same decision: nothing new is written.
+        const head = yield* git(paths.writer, ["rev-parse", "main"]);
+        expect(yield* writer.recordDecision(orgId, { ...decision, body: "Other words" })).toEqual({
+          recorded: false,
+        });
+        expect(yield* git(paths.writer, ["rev-parse", "main"])).toBe(head);
+        const saved = yield* memory.readItemQuietly(orgId, itemId);
+        expect(saved.head).toMatchObject({
+          kind: "decision",
+          title: decision.title,
+          path: `decisions/${itemId}.md`,
+          sensitive: true,
+          said_by: "fixture-owner",
+          trust: "owner",
+          source: decision.source,
+          links: ["card:widget-1"],
+          invalid_at: null,
+        });
+        expect(saved.body).toContain("Bluedart");
+        expect(yield* git(remote, ["--git-dir=.", "log", "-1", "--format=%s", "main"])).toBe(
+          `kin: decision ${itemId}`,
+        );
+        expect(yield* writer.retire(orgId, { itemId, by: "owner" })).toEqual({ retired: true });
+        expect((yield* memory.readItemQuietly(orgId, itemId)).head.invalid_at).not.toBeNull();
+        expect(yield* writer.restore(orgId, { itemId })).toEqual({ restored: true });
+        expect((yield* memory.readItemQuietly(orgId, itemId)).head.invalid_at).toBeNull();
+      }).pipe(Effect.provide(layer));
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          gitLayer,
+          NodeServices.layer,
+          Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+        ),
+      ),
+      Effect.scoped,
+    ),
+);
+
 // Review 14: an item retired by a path that left its grant (an older build, an L0 lead's shadow
 // branch, a dream branch merged on GitHub) came back team-readable through the owner's Undo.
 it.effect.each(["legacy", "shadow", "github"] as const)(
