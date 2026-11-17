@@ -114,7 +114,7 @@ it.effect("a co-owner made a member mid-stream has her Needs attention moved to 
       if (change._tag !== "changed") return yield* Effect.die(new Error("No change."));
       const fresh = yield* Pulse.read(as(coraId), page);
       const folded = kinPulseApply(first.read, change);
-      assert.deepStrictEqual({ ...folded, asOf: fresh.asOf }, fresh);
+      assert.deepStrictEqual<unknown>({ ...folded, asOf: fresh.asOf }, fresh);
       assert.strictEqual(folded.facts.length, 0, "a member is shown none of the owner's tasks");
     }),
   ).pipe(Effect.provide(testLayer)),
