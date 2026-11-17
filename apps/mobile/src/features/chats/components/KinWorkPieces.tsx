@@ -1,4 +1,6 @@
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import type { KinGate } from "@t3tools/client-runtime/kin/kinAccess";
+import { KIN_OFFLINE_PAGE, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import {
   KIN_WORK_PRIVATE,
   KIN_WORK_REFRESH_FAILED,
@@ -20,6 +22,7 @@ import { AppBar } from "../../../components/ui/AppBar";
 import { SymbolView } from "../../../components/ui/AppSymbol";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
+import { EmptyState } from "../../../components/ui/EmptyState";
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { ListSection } from "../../../components/ui/ListSection";
 import { RowPressable } from "../../../components/ui/RowPressable";
@@ -354,13 +357,17 @@ export function KinWorkTextField(props: {
   );
 }
 
-/** Rows older than the host's: offline says so; a failed read while connected offers a retry. */
+/**
+ * Rows older than the host's: offline says so; a failed read while connected offers a retry;
+ * nothing is said while the first connection attempt is still under way.
+ */
 export function KinWorkStaleNotice(props: {
   readonly environmentId: EnvironmentId;
   readonly onRetry: () => void;
 }) {
-  const host = useKinHostAt(props.environmentId);
-  if (host._tag !== "host" || !host.connected) return <Notice message={KIN_WORK_STALE} />;
+  const link = kinHostLink(useKinHostAt(props.environmentId));
+  if (link === "offline") return <Notice message={KIN_WORK_STALE} />;
+  if (link === "connecting") return null;
   return (
     <Notice
       message={KIN_WORK_REFRESH_FAILED}
@@ -405,5 +412,28 @@ export function KinFoldSection(props: {
       </RowPressable>
       {open && onOpen === undefined ? props.children : null}
     </ListSection>
+  );
+}
+
+/** A gated page before its reads: a spinner, offline, or the page's own refusal. */
+export function KinGateView(props: {
+  readonly gate: Exclude<KinGate, null>;
+  readonly refused: { readonly title: string; readonly detail: string };
+  readonly offline?: { readonly title: string; readonly detail: string };
+  /** What is loading, for VoiceOver. */
+  readonly label: string;
+}) {
+  if (props.gate === "refused") return <EmptyState variant="plain" {...props.refused} />;
+  if (props.gate === "offline")
+    return <EmptyState variant="plain" {...(props.offline ?? KIN_OFFLINE_PAGE)} />;
+  return (
+    <View
+      className="items-center py-12"
+      accessible
+      accessibilityRole="progressbar"
+      accessibilityLabel={`Loading ${props.label}`}
+    >
+      <AppActivityIndicator />
+    </View>
   );
 }

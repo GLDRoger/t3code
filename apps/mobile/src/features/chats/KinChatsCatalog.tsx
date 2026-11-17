@@ -34,6 +34,7 @@ const ravi = KinPersonId.make("person-ravi");
 const environmentId = EnvironmentId.make("env-catalog");
 
 const directory: KinDirectory = {
+  known: true,
   agentNames: new Map([
     [lead, "Tech lead"],
     [qa, "QA"],
@@ -202,6 +203,7 @@ const ready = (
   _tag: "ready",
   environmentId,
   connected: options.connected,
+  offline: !options.connected,
   inbox: { value, live: options.live, savedAt: options.live ? null : minutesAgo(25) },
 });
 

@@ -23,7 +23,8 @@ describe("kinAgentPageCan", () => {
     ["co-owner", { access: "co_owner" as const }, "full", true],
     ["project lead", { access: "member" as const, leadsAProject: true }, "short", false],
     ["member", { access: "member" as const }, "short", false],
-    ["not yet known", { access: null }, "short", false],
+    ["not yet known", { access: undefined }, "unknown", false],
+    ["named no kind by the host", { access: null }, "short", false],
   ])("%s", (_who, viewer, card, edits) => {
     const can = kinAgentPageCan(viewer);
     expect(can.card).toBe(card);

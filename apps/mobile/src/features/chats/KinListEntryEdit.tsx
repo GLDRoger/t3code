@@ -50,6 +50,8 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { useKinGate } from "./state/useKinHost";
+import { KinGateView } from "./components/KinWorkPieces";
 
 const FIELD = "field:";
 
@@ -93,7 +95,8 @@ function KinEntryEditGate(
 ) {
   const navigation = useNavigation();
   const { environmentId, orgId, itemKey, what } = props;
-  const allowed = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
+  const gate = useKinGate(kinClient.workUpdate.permissionStateAtom(environmentId), environmentId);
+  const allowed = gate === null;
   const state = kinWorkItemState(
     useAtomValue(kinClient.workItem({ environmentId, input: { orgId, key: itemKey } })),
     null,
@@ -107,7 +110,11 @@ function KinEntryEditGate(
   if (!allowed) {
     return (
       <KinWorkFrame title={KIN_LISTS.entry.title} onClose={close}>
-        <EmptyState variant="plain" {...KIN_LISTS.onlyOwner} />
+        <KinGateView
+          gate={gate ?? "refused"}
+          refused={KIN_LISTS.onlyOwner}
+          label={KIN_LISTS.entry.title}
+        />
       </KinWorkFrame>
     );
   }

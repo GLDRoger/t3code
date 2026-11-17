@@ -40,6 +40,8 @@ import { kinHostConnected, useKinHost } from "./useKinHost";
 import { useKinCompanyProfile } from "./useKinMoney";
 import type { KinWorkTarget } from "./useKinWork";
 import { KinLoadFailed } from "./KinWorkParts";
+import { useKinGate } from "./useKinHost";
+import { KIN_OFFLINE_PAGE } from "@t3tools/client-runtime/kin/kinAnswers";
 
 function Notice(props: {
   readonly title: string;
@@ -65,9 +67,13 @@ export function KinCompanyProfileSettings() {
 }
 
 function Permitted(props: KinWorkTarget) {
-  const allowed = useAtomValue(kinClient.companyRead.permissionAtom(props.environmentId));
-  const { state, refresh } = useKinCompanyProfile(props, allowed);
-  if (!allowed || state._tag === "refused") return <Notice {...KIN_COMPANY.onlyOwner} />;
+  const gate = useKinGate(
+    kinClient.companyRead.permissionStateAtom(props.environmentId),
+    props.environmentId,
+  );
+  const { state, refresh } = useKinCompanyProfile(props, gate === null);
+  if (gate === "refused" || state._tag === "refused") return <Notice {...KIN_COMPANY.onlyOwner} />;
+  if (gate === "offline") return <Notice {...KIN_OFFLINE_PAGE} />;
   if (state._tag === "loading") {
     return (
       <div className="flex flex-col gap-2 p-4" role="status" aria-label="Loading company details">

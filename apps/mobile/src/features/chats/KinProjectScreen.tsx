@@ -4,8 +4,8 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_WORK_DEFAULT_FILTER,
-  KIN_WORK_OFFLINE,
-  KIN_WORK_ONLY_OWNER,
+  kinWorkOffline,
+  kinWorkOnlyOwner,
 } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_PROJECTS,
@@ -50,6 +50,7 @@ import {
   KinWorkProblemNotice,
   KinWorkTaskRow,
   KinWorkTimelineLines,
+  KinGateView,
 } from "./components/KinWorkPieces";
 import { KinWorkHealthWord } from "./KinWorkLists";
 import { KinWorkTaskList } from "./KinWorkScreen";
@@ -57,7 +58,7 @@ import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
 import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
 import { kinClient } from "./state/kinClient";
-import { kinHostConnected } from "./state/useKinHost";
+import { kinHostConnected, useKinGate } from "./state/useKinHost";
 import {
   useKinProjectPage,
   useKinWork,
@@ -103,12 +104,20 @@ type ProjectTarget = KinWorkTarget & { readonly projectKey: KinRecordKey };
 
 function KinProjectGate(props: ProjectTarget) {
   const navigation = useNavigation();
-  const allowed = useAtomValue(kinClient.workRead.permissionAtom(props.environmentId));
+  const gate = useKinGate(
+    kinClient.workRead.permissionStateAtom(props.environmentId),
+    props.environmentId,
+  );
   // A teammate who follows a link asks the host nothing.
-  if (!allowed) {
+  if (gate !== null) {
     return (
       <KinWorkFrame title={KIN_PROJECTS.title} onBack={() => navigation.goBack()}>
-        <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+        <KinGateView
+          gate={gate}
+          refused={kinWorkOnlyOwner("clients")}
+          offline={kinWorkOffline("clients")}
+          label={KIN_PROJECTS.title}
+        />
       </KinWorkFrame>
     );
   }
@@ -140,9 +149,9 @@ function KinProjectStates(props: ProjectTarget) {
       ) : state._tag === "refused" ? (
         <EmptyState variant="plain" {...KIN_PROJECT_REFUSED} />
       ) : work._tag === "refused" ? (
-        <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+        <EmptyState variant="plain" {...kinWorkOnlyOwner("clients")} />
       ) : work._tag === "offline" ? (
-        <EmptyState variant="plain" {...KIN_WORK_OFFLINE} />
+        <EmptyState variant="plain" {...kinWorkOffline("clients")} />
       ) : state._tag === "failed" || work._tag === "failed" ? (
         <EmptyState
           variant="plain"

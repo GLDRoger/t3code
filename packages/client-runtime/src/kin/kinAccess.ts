@@ -7,6 +7,7 @@ import {
   type KinPersonAccess,
   type KinRpcAccess,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
@@ -15,7 +16,51 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
 import type { EnvironmentRpcInput, EnvironmentUnaryRpcTag } from "../rpc/client.ts";
 import { createEnvironmentQueryAtomFamily, createEnvironmentRpcCommand } from "../state/runtime.ts";
+import { createEnvironmentSessionAtoms } from "../state/session.ts";
+import type { KinLink } from "./kinHost.ts";
 import { createKinRefreshTriggers, kinDirectoryOrgsAtom } from "./kinRefresh.ts";
+
+/**
+ * Whether this session may make a call, once that is known. `unknown` until the session's scopes
+ * and, for an owner-level call, the viewer's kind have arrived: not yet known is never a refusal.
+ */
+export type KinPermission = "unknown" | "granted" | "refused";
+
+export function kinPermission(input: {
+  /** The session's scopes have arrived (or their read failed). */
+  readonly sessionKnown: boolean;
+  readonly scopesGranted: boolean;
+  /** `undefined` until the host has said; null when it answered with no kind. */
+  readonly kind: KinPersonAccess | null | undefined;
+  readonly access: KinRpcAccess | undefined;
+}): KinPermission {
+  if (!input.sessionKnown) return "unknown";
+  if (!input.scopesGranted) return "refused";
+  if (input.access === undefined || input.access === "person") return "granted";
+  if (input.kind === undefined) return "unknown";
+  return kinAccessAllows(input.kind, input.access) ? "granted" : "refused";
+}
+
+/**
+ * What a page gated on one permission shows before its own reads: null once it may read. Until
+ * the permission is known it is loading, or offline once a connection failed; never a refusal.
+ */
+export type KinGate = "loading" | "offline" | "refused" | null;
+
+export function kinGate(permission: KinPermission, link: KinLink): KinGate {
+  if (permission === "refused") return "refused";
+  if (permission === "granted") return null;
+  return link === "offline" ? "offline" : "loading";
+}
+
+// A session read the host refused is an answer; a transport failure retries and says nothing.
+const SESSION_REFUSED = new Set([
+  "EnvironmentAuthInvalidError",
+  "EnvironmentScopeRequiredError",
+  "EnvironmentOperationForbiddenError",
+]);
+const errorTag = (error: unknown) =>
+  typeof error === "object" && error !== null && "_tag" in error ? String(error._tag) : "";
 
 /** Whether a person of `kind` may call a method of `access` (`KIN_RPC_ACCESS`). */
 function kinAccessAllows(kind: KinPersonAccess | null, access: KinRpcAccess | undefined) {
@@ -78,6 +123,17 @@ function makeKinAccess<R, ER>(
       return AsyncResult.getOrElse(result, () => null)?.access ?? null;
     }).pipe(Atom.withLabel(`kin:access:${environmentId}`)),
   );
+  // The kind once known: a failed read is an answer (null), a read not yet back is not.
+  const knownAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get): KinPersonAccess | null | undefined => {
+      const [orgId] = get(kinDirectoryOrgsAtom(environmentId));
+      if (orgId === undefined) return undefined;
+      const result = get(query({ environmentId, input: { orgId } }));
+      if (result._tag === "Initial") return undefined;
+      if (result._tag === "Failure") return result.waiting ? undefined : null;
+      return result.value.access ?? null;
+    }).pipe(Atom.withLabel(`kin:access:known:${environmentId}`)),
+  );
   const ownerLevelAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) => kinOwnerLevel(get(accessAtom(environmentId)) ?? undefined)),
   );
@@ -88,7 +144,7 @@ function makeKinAccess<R, ER>(
       return AsyncResult.getOrElse(get(query({ environmentId, input: { orgId } })), () => null);
     }).pipe(Atom.withLabel(`kin:access:me:${environmentId}`)),
   );
-  return { accessAtom, ownerLevelAtom, meAtom };
+  return { accessAtom, knownAtom, ownerLevelAtom, meAtom };
 }
 
 const accessByRuntime = new WeakMap<object, ReturnType<typeof makeKinAccess>>();
@@ -144,7 +200,31 @@ export function createKinRpcCommand<
 ) {
   const command = createEnvironmentRpcCommand<R, ER, TTag, Input, Started>(runtime, options);
   const access = kinRpcAccess(options.tag);
-  if (access === undefined || access === "person") return command;
+  const sessions = createEnvironmentSessionAtoms(runtime);
+  const states = new WeakMap<object, Atom.Atom<KinPermission>>();
+  /** `permissionAtom` that tells "not known yet" from a refusal, for a screen that says which. */
+  const permissionStateAtom = (environmentId: EnvironmentId, input?: unknown) => {
+    const granted = command.permissionAtom(environmentId, input);
+    let atom = states.get(granted);
+    if (atom === undefined) {
+      const session = sessions.sessionStateAtom(environmentId);
+      const kind = kinAccessAtoms(runtime).knownAtom(environmentId);
+      atom = Atom.make((get) => {
+        const state = get(session);
+        return kinPermission({
+          sessionKnown:
+            state._tag === "Success" ||
+            (state._tag === "Failure" && SESSION_REFUSED.has(errorTag(Cause.squash(state.cause)))),
+          scopesGranted: get(granted),
+          kind: access === undefined || access === "person" ? null : get(kind),
+          access,
+        });
+      });
+      states.set(granted, atom);
+    }
+    return atom;
+  };
+  if (access === undefined || access === "person") return { ...command, permissionStateAtom };
   const combined = new WeakMap<object, Atom.Atom<boolean>>();
   const permissionAtom = (environmentId: EnvironmentId | null, input?: unknown) => {
     const granted = command.permissionAtom(environmentId, input);
@@ -157,7 +237,7 @@ export function createKinRpcCommand<
     }
     return atom;
   };
-  return { ...command, permissionAtom };
+  return { ...command, permissionAtom, permissionStateAtom };
 }
 
 /**

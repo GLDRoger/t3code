@@ -1,7 +1,7 @@
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { KIN_WORK_ONLY_OWNER, type KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
+import { kinWorkOnlyOwner, type KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_CLIENTS,
   KIN_CLIENT_FAILED,
@@ -68,6 +68,7 @@ import { uuidv4 } from "../../lib/uuid";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
+  KinGateView,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkProblemNotice,
@@ -78,7 +79,7 @@ import { KinWorkPlaceRow } from "./components/KinWorkTaskMenus";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
 import { kinClient } from "./state/kinClient";
-import { kinHostConnected } from "./state/useKinHost";
+import { kinHostConnected, useKinGate } from "./state/useKinHost";
 import {
   kinWorkChoicesAtom,
   useKinWorkChoices,
@@ -133,7 +134,7 @@ function waiting(
   ) : state._tag === "gone" ? (
     <EmptyState variant="plain" {...copy.gone} />
   ) : state._tag === "refused" ? (
-    <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+    <EmptyState variant="plain" {...kinWorkOnlyOwner("clients")} />
   ) : (
     <EmptyState
       variant="plain"
@@ -212,16 +213,21 @@ function ClientFormRead(props: KinWorkTarget & { readonly clientKey: KinRecordKe
 }
 
 function ClientFormGate(props: KinWorkTarget & { readonly editing: KinPartyDetail | null }) {
-  const allowed = useAtomValue(
+  const gate = useKinGate(
     (props.editing === null
       ? kinClient.workClientCreate
       : kinClient.workClientUpdate
-    ).permissionAtom(props.environmentId),
+    ).permissionStateAtom(props.environmentId),
+    props.environmentId,
   );
-  if (!allowed)
+  if (gate !== null)
     return (
       <FormMessage title={props.editing === null ? COPY.party.newTitle : COPY.party.editTitle}>
-        <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+        <KinGateView
+          gate={gate}
+          refused={kinWorkOnlyOwner("clients")}
+          label={props.editing === null ? COPY.party.newTitle : COPY.party.editTitle}
+        />
       </FormMessage>
     );
   return <ClientForm {...props} />;
@@ -464,18 +470,19 @@ function ContactFormRead(
   },
 ) {
   const { environmentId, orgId, clientKey, contactKey } = props;
-  const allowed = useAtomValue(
+  const gate = useKinGate(
     (contactKey === null
       ? kinClient.workContactCreate
       : kinClient.workContactUpdate
-    ).permissionAtom(environmentId),
+    ).permissionStateAtom(environmentId),
+    environmentId,
   );
   const atom = kinClient.workClient({ environmentId, input: { orgId, key: clientKey } });
   const state = kinWorkReadState(useAtomValue(atom));
-  if (!allowed)
+  if (gate !== null)
     return (
       <FormMessage title={props.title}>
-        <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+        <KinGateView gate={gate} refused={kinWorkOnlyOwner("clients")} label={props.title} />
       </FormMessage>
     );
   if (state._tag !== "ready")
@@ -719,16 +726,21 @@ function ProjectFormGate(
     readonly party: KinWorkRef | null;
   },
 ) {
-  const allowed = useAtomValue(
+  const gate = useKinGate(
     (props.editing === null
       ? kinClient.workProjectCreate
       : kinClient.workProjectUpdate
-    ).permissionAtom(props.environmentId),
+    ).permissionStateAtom(props.environmentId),
+    props.environmentId,
   );
-  if (!allowed)
+  if (gate !== null)
     return (
       <FormMessage title={props.editing === null ? COPY.project.newTitle : COPY.project.editTitle}>
-        <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+        <KinGateView
+          gate={gate}
+          refused={kinWorkOnlyOwner("clients")}
+          label={props.editing === null ? COPY.project.newTitle : COPY.project.editTitle}
+        />
       </FormMessage>
     );
   return <ProjectForm {...props} />;

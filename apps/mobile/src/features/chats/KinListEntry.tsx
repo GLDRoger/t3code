@@ -109,6 +109,8 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
+import { useKinGate } from "./state/useKinHost";
+import { KinGateView } from "./components/KinWorkPieces";
 
 const NO_PLAYBACK = () => {};
 const DAY = "day:";
@@ -891,7 +893,11 @@ export function KinPaymentScreen({ route }: StaticScreenProps<KinPaymentParams>)
 function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey }) {
   const navigation = useNavigation();
   const { environmentId, orgId, itemKey } = props;
-  const allowed = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
+  const gate = useKinGate(
+    kinClient.workPaymentRecord.permissionStateAtom(environmentId),
+    environmentId,
+  );
+  const allowed = gate === null;
   const state = kinWorkItemState(
     useAtomValue(kinClient.workItem({ environmentId, input: { orgId, key: itemKey } })),
     null,
@@ -918,7 +924,7 @@ function KinPaymentForm(props: KinWorkTarget & { readonly itemKey: KinRecordKey 
   if (!allowed) {
     return (
       <KinWorkFrame title={title} onClose={close}>
-        <EmptyState variant="plain" {...KIN_LISTS.onlyOwner} />
+        <KinGateView gate={gate ?? "refused"} refused={KIN_LISTS.onlyOwner} label={title} />
       </KinWorkFrame>
     );
   }
@@ -1092,14 +1098,22 @@ export function KinListSettingsScreen({ route }: StaticScreenProps<KinListSettin
 
 function KinListSettingsGate(props: KinWorkTarget & { readonly list: KinListId }) {
   const navigation = useNavigation();
-  const allowed = useAtomValue(kinClient.workListUpdate.permissionAtom(props.environmentId));
+  const gate = useKinGate(
+    kinClient.workListUpdate.permissionStateAtom(props.environmentId),
+    props.environmentId,
+  );
+  const allowed = gate === null;
   const lists = useKinLists(props, { enabled: allowed, archived: true });
   const def = kinListsOf(lists).find((one) => one.list === props.list);
   const close = () => navigation.goBack();
   if (!allowed || lists.state._tag === "refused") {
     return (
       <KinWorkFrame title={KIN_LISTS.edit.title} onClose={close}>
-        <EmptyState variant="plain" {...KIN_LISTS.onlyOwner} />
+        <KinGateView
+          gate={gate ?? "refused"}
+          refused={KIN_LISTS.onlyOwner}
+          label={KIN_LISTS.edit.title}
+        />
       </KinWorkFrame>
     );
   }

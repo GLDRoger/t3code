@@ -17,7 +17,8 @@ import { isReasoningSelect } from "../modelTraits.ts";
  * the owner keeps private: its model, character, access or spend. The host refuses the rest anyway.
  */
 export interface KinAgentPageCan {
-  readonly card: "full" | "short";
+  /** `unknown` until the host has said who the viewer is: neither card, and no refusal. */
+  readonly card: "full" | "short" | "unknown";
   readonly edit: boolean;
   readonly model: boolean;
   readonly character: boolean;
@@ -37,10 +38,12 @@ const SHORT: KinAgentPageCan = {
 };
 
 export function kinAgentPageCan(viewer: {
-  readonly access: KinPersonAccess | null;
+  /** `undefined` until the host has said; null when it named no kind. */
+  readonly access: KinPersonAccess | null | undefined;
   /** Leads a project. Leading one gives no say over agents. */
   readonly leadsAProject?: boolean;
 }): KinAgentPageCan {
+  if (viewer.access === undefined) return { ...SHORT, card: "unknown" };
   if (viewer.access !== "owner" && viewer.access !== "co_owner") return SHORT;
   return {
     card: "full",
@@ -55,6 +58,7 @@ export function kinAgentPageCan(viewer: {
 
 export const KIN_AGENT_PAGE = {
   loadFailed: "Couldn't load this agent",
+  ownerLevelOnly: "Only the owner and co-owners see this agent's details.",
   notTeamAgent: "Not the team agent. Only you and the people you add can message it.",
   modelFailed: "Couldn't change the model.",
   characterFailed: "Couldn't save the character.",

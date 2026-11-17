@@ -7,8 +7,8 @@ import { KIN_SEARCH } from "@t3tools/client-runtime/kin/kinDocs";
 import {
   KIN_WORK_LOAD_FAILED,
   KIN_WORK_NEW,
-  KIN_WORK_OFFLINE,
-  KIN_WORK_ONLY_OWNER,
+  kinWorkOffline,
+  kinWorkOnlyOwner,
   KIN_WORK_SEARCH_PLACEHOLDER,
   KIN_WORK_TITLE,
   kinWorkEntrySummary,
@@ -326,9 +326,9 @@ export function KinPlace(
   return (
     <KinWorkMessage title={title}>
       {state._tag === "refused" ? (
-        <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+        <EmptyState variant="plain" {...kinWorkOnlyOwner(place.place)} />
       ) : state._tag === "offline" ? (
-        <EmptyState variant="plain" {...KIN_WORK_OFFLINE} />
+        <EmptyState variant="plain" {...kinWorkOffline(place.place)} />
       ) : state._tag === "failed" ? (
         <KinLoadFailed
           title={KIN_WORK_LOAD_FAILED}

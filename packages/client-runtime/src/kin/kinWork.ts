@@ -33,7 +33,9 @@ import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { KIN_CHECK_CONNECTION, kinFailureText } from "./kinAnswers.ts";
+import type { KinPermission } from "./kinAccess.ts";
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
+import type { KinLink } from "./kinHost.ts";
 import { KIN_SCOPE_ALL, kinScopeNote, type KinViewerScope } from "./kinViewerScope.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { formatKinTime, kinAgentAvatar, type KinAvatarView } from "./kinScreenState.ts";
@@ -46,13 +48,32 @@ export const KIN_WORK_SEARCH_PLACEHOLDER = "Search tasks";
 export const KIN_WORK_LOAD_FAILED = "Couldn't load tasks";
 export const KIN_WORK_STALE = "Offline. Showing the last update.";
 export const KIN_WORK_REFRESH_FAILED = "Couldn't refresh. Showing the last update.";
-export const KIN_WORK_ONLY_OWNER = {
-  title: "Only the owner can open this",
-  detail: "Tasks are shown to the person who runs this workspace for now.",
+/** Kin's work pages, each reached from the sidebar. */
+export type KinWorkPageName = "tasks" | "money" | "clients" | "docs";
+
+const PLACE_NOUN: Record<KinWorkPageName, { readonly name: string; readonly plural: boolean }> = {
+  tasks: { name: "Tasks", plural: true },
+  money: { name: "Money", plural: false },
+  clients: { name: "Clients", plural: true },
+  docs: { name: "Docs", plural: true },
 };
-export const KIN_WORK_OFFLINE = {
-  title: "You're offline",
-  detail: "Tasks come back when the connection does.",
+
+/** The refusal on a work page, naming that page. */
+export const kinWorkOnlyOwner = (place: KinWorkPageName) => {
+  const { name, plural } = PLACE_NOUN[place];
+  return {
+    title: "Only the owner can open this",
+    detail: `${name} ${plural ? "are" : "is"} shown to the person who runs this workspace for now.`,
+  };
+};
+
+/** A work page with nothing held, once a connection failed or was lost, naming that page. */
+export const kinWorkOffline = (place: KinWorkPageName) => {
+  const { name, plural } = PLACE_NOUN[place];
+  return {
+    title: "You're offline",
+    detail: `${name} ${plural ? "come" : "comes"} back when the connection does.`,
+  };
 };
 export const KIN_WORK_GONE = {
   title: "This task isn't here any more",
@@ -374,24 +395,24 @@ export const kinWorkFailuresOf = (cause: Cause.Cause<unknown>) =>
   cause.reasons.filter(Cause.isFailReason).map((reason) => reason.error);
 
 export function kinWorkScreenState(input: {
-  /** This session holds the scope to read Work at all. */
-  readonly allowed: boolean;
-  readonly connected: boolean;
+  /** Whether this session may read Work at all, once its scopes and kind are known. */
+  readonly allowed: KinPermission;
+  readonly link: KinLink;
   readonly live: AsyncResult.AsyncResult<KinWorkLive, unknown>;
 }): KinWorkScreenState {
-  if (!input.allowed) return { _tag: "refused" };
+  if (input.allowed === "refused") return { _tag: "refused" };
   const { live } = input;
   if (AsyncResult.isFailure(live) && kinWorkFailuresOf(live.cause).some(kinWorkRefused))
     return { _tag: "refused" };
   const held = Option.getOrNull(AsyncResult.value(live));
   if (held === null || held.summary === null) {
     if (AsyncResult.isFailure(live) || held?.failed === true) return { _tag: "failed" };
-    return input.connected ? { _tag: "loading" } : { _tag: "offline" };
+    return input.link === "offline" ? { _tag: "offline" } : { _tag: "loading" };
   }
   return {
     _tag: "ready",
     live: held,
-    stale: !input.connected || held.failed || AsyncResult.isFailure(live),
+    stale: input.link === "offline" || held.failed || AsyncResult.isFailure(live),
   };
 }
 
