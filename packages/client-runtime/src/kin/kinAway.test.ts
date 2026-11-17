@@ -13,7 +13,7 @@ const kinMessage = (fields: Partial<KinMessage>): KinMessage => ({
 const when = {
   at: "2026-11-19T04:30:00.000Z",
   zone: "Asia/Kolkata",
-  text: "10:00 their time (Thu 19 Nov)",
+  text: "10:00 their time (Thu Nov 19)",
   of: "Zoya Sheikh",
 };
 
@@ -21,7 +21,7 @@ describe("a held message's time, on each reader's clock", () => {
   it("reads as written on the receiver's clock and as the reader's own elsewhere, naming whose", () => {
     expect(kinWhenText(when, "Asia/Calcutta")).toBe(when.text);
     expect(kinWhenText(when, "Europe/London")).toBe(
-      "04:30 your time (Thu 19 Nov), 10:00 for Zoya Sheikh",
+      "4:30 AM your time (Thu Nov 19), 10:00 AM for Zoya Sheikh",
     );
     // The daily limit's notice names no one: the reader's own time alone.
     expect(
@@ -29,7 +29,7 @@ describe("a held message's time, on each reader's clock", () => {
         { at: "2026-11-18T01:30:00.000Z", zone: "Asia/Kolkata", text: "7:00 am" },
         "America/New_York",
       ),
-    ).toBe("20:30 your time (Tue 17 Nov)");
+    ).toBe("8:30 PM your time (Tue Nov 17)");
   });
 
   it("rewrites only the time in the body, and leaves a message without one alone", () => {
@@ -38,7 +38,7 @@ describe("a held message's time, on each reader's clock", () => {
       when,
     });
     expect(kinMessageOnMyClock(held, "Europe/London").body).toBe(
-      "Zoya Sheikh is away: it arrives at 04:30 your time (Thu 19 Nov), 10:00 for Zoya Sheikh.",
+      "Zoya Sheikh is away: it arrives at 4:30 AM your time (Thu Nov 19), 10:00 AM for Zoya Sheikh.",
     );
     const plain = kinMessage({ body: "Hello" });
     expect(kinMessageOnMyClock(plain, "Europe/London")).toBe(plain);
@@ -50,10 +50,10 @@ describe("away until a day", () => {
   it("names whose calendar when the reader's differs", () => {
     const zoya = { awayUntil: "2026-11-19", timeZone: "Asia/Kolkata", displayName: "Zoya" };
     expect(kinAwayLine(zoya, { mine: true, zone: "Asia/Kolkata", now })).toBe(
-      "You're away until Thu 19 Nov",
+      "You're away until Thu Nov 19",
     );
     expect(kinAwayLine(zoya, { mine: false, zone: "Europe/London", now })).toBe(
-      "Away until Thu 19 Nov (Asia/Kolkata)",
+      "Away until Thu Nov 19 (Asia/Kolkata)",
     );
     expect(kinAwayLine({ ...zoya, awayUntil: undefined }, { mine: false, now })).toBeNull();
   });

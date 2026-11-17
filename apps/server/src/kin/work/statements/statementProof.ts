@@ -1,3 +1,4 @@
+import { KIN_TEXT_LOCALE, kinWhenFormat } from "@t3tools/contracts";
 import { currencyDigits } from "../money.ts";
 import {
   type BalanceCheck,
@@ -37,7 +38,7 @@ export type Problem = {
 export type Proof = { readonly check: BalanceCheck; readonly problems: ReadonlyArray<Problem> };
 
 const MAX_PROBLEMS = 20;
-const SHORT = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", timeZone: "UTC" });
+const SHORT = kinWhenFormat("date", { zone: "UTC", locale: KIN_TEXT_LOCALE });
 const day = (date: string) => SHORT.format(Date.parse(`${date}T00:00:00Z`));
 const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "");
 const where = (index: number, page: number, date: string, minor: number, currency: string) =>

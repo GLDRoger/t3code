@@ -14,6 +14,8 @@ import {
   type MemoryItemEvery,
   type MemoryItemHead,
   kinScheduledTaskWidgetId,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -73,11 +75,7 @@ const armed = (item: SyncItem) =>
 
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const clockTime = (ms: number) =>
-  new Intl.DateTimeFormat("en-GB", {
-    timeZone: KinSchedules.hostTimeZone(),
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(ms);
+  formatKinWhen(ms, "time", { zone: KinSchedules.hostTimeZone(), locale: KIN_TEXT_LOCALE });
 const encodeSchedule = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSchedule));
 const encodeSubject = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSubject));
 const decodeCard = Schema.decodeUnknownEffect(KinScheduledTaskCard);

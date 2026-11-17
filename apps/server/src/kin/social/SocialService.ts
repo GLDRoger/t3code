@@ -14,6 +14,8 @@ import {
   type KinSocialLinkInput,
   type KinSocialMedia,
   type KinSocialView,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -592,12 +594,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     // 1 January 1970 was a Thursday, day 3 counting from Monday.
     const ahead = (slot.dayOfWeek - ((day + 3) % 7) + 7) % 7;
     const base = (day + ahead) * DAY_MS + slot.hourUtc * 3_600_000;
-    const parts = new Intl.DateTimeFormat("en-GB", {
-      timeZone: zone,
-      weekday: "short",
-      hour: "numeric",
-      hour12: true,
-    }).format(base);
+    const parts = `${formatKinWhen(base, "weekdayShort", { zone, locale: KIN_TEXT_LOCALE })} ${formatKinWhen(base, "time", { zone, locale: KIN_TEXT_LOCALE })}`;
     return `${parts} (avg ${Math.round(slot.avgEngagement)} from ${slot.posts} posts)`;
   };
 

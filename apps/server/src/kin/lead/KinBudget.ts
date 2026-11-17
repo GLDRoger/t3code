@@ -13,6 +13,9 @@ import {
   type ThreadId,
   type TurnTokenUsage,
   type OrchestrationV2ProviderTurnTokenUsage,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
+  canonicalTimeZone,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -174,7 +177,7 @@ export class KinBudget extends Context.Service<
 const validZone = (zone: string | null) => {
   if (zone === null) return null;
   try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: zone }).resolvedOptions().timeZone;
+    return canonicalTimeZone(zone);
   } catch {
     return null;
   }
@@ -296,10 +299,7 @@ const make = Effect.gen(function* () {
             FROM kin_people p WHERE org_id = ${orgId} AND person_id = ${reader}`;
     const own = person === undefined || person.owner === 1 ? null : validZone(person.zone);
     const timeZone = own ?? (yield* cache.ownerTimeZone(orgId));
-    const text = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone })
-      .format(at)
-      .replace(/\s?AM$/, " am")
-      .replace(/\s?PM$/, " pm");
+    const text = formatKinWhen(at, "time", { zone: timeZone, locale: KIN_TEXT_LOCALE });
     // Each reader's client says it on their own clock; the body keeps this one for older ones.
     return {
       text,

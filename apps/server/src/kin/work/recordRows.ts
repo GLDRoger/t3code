@@ -23,6 +23,7 @@ import {
   type KinRecordState,
   type KinWorkActor,
   type KinWorkPrincipal,
+  canonicalTimeZone,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -792,7 +793,7 @@ export const ownerZone = Effect.fn("KinRecords.ownerZone")(function* (orgId: Kin
 });
 const validZone = (zone: string) => {
   try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: zone }).resolvedOptions().timeZone !== "";
+    return canonicalTimeZone(zone) !== "";
   } catch {
     return false;
   }

@@ -18,6 +18,7 @@ import {
   type KinFieldValue,
   type KinRecordDetail,
   KIN_DEFAULT_HOME_CURRENCY,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -284,7 +285,7 @@ function DayEdit(
   );
 }
 
-const sentFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const sentFormat = kinWhenFormat("date");
 
 /** The files already in the owner's chats, newest first, to keep one on the entry. */
 function FileEdit(props: Shared & { readonly field: KinListFieldView }) {

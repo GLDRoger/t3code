@@ -24,6 +24,7 @@ import {
   KIN_DEFAULT_HOME_CURRENCY,
   kinCurrency,
   parseKinMoney,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 
@@ -250,12 +251,8 @@ export function kinFinancialYearPeriod(year: string): KinPeriod {
 }
 
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
-const dayMonthFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
-const dayMonthYearFormat = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
+const dayMonthFormat = kinWhenFormat("date");
+const dayMonthYearFormat = kinWhenFormat("dateYear");
 const localDay = (day: string) => {
   const found = DAY.exec(day);
   return found === null ? null : new Date(Number(found[1]), Number(found[2]) - 1, Number(found[3]));

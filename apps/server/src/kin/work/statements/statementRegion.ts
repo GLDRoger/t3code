@@ -18,6 +18,7 @@ export interface StatementRegion {
 }
 
 const INDIA: StatementRegion = {
+  // oxlint-disable-next-line t3code/kin-one-format -- the region descriptor is where India's currency lives.
   currency: "INR",
   dateOrder: "dmy",
   banks: [

@@ -16,6 +16,7 @@ import {
   type KinMemorySetVisibilityResult,
   type KinMemoryVisibility,
   type KinOrgId,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
@@ -101,12 +102,8 @@ export interface KinMemoryOriginView {
   readonly quote: string | null;
 }
 
-const dayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
-const dayYearFormat = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
+const dayFormat = kinWhenFormat("date");
+const dayYearFormat = kinWhenFormat("dateYear");
 const DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
 /** "9 Nov", with the year once it isn't this one; nothing for a time that doesn't parse. */
 const dayOf = (iso: string, now: Date) => {

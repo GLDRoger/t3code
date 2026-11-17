@@ -8,6 +8,8 @@ import {
   type KinSocialMedia,
   type KinSocialPlatform,
   type KinSocialPostState,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -340,17 +342,6 @@ export const digestOf = (
 export const idempotencyKey = (post: Pick<PostRow, "postId" | "digest">) =>
   `kin-${post.postId}-${(post.digest ?? "").slice(0, 16)}`;
 
-/** "Mon 18 Nov · 7:00 pm" in the owner's zone. */
-export const whenLabel = (ms: number, zone: string) => {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: zone,
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  }).formatToParts(ms);
-  const part = (type: string) => parts.find((one) => one.type === type)?.value ?? "";
-  return `${part("weekday")} ${part("day")} ${part("month")} · ${part("hour")}:${part("minute")} ${part("dayPeriod").toLowerCase()}`;
-};
+/** "Mon 18 Nov · 19:00" in the owner's zone. */
+export const whenLabel = (ms: number, zone: string) =>
+  `${formatKinWhen(ms, "day", { zone, locale: KIN_TEXT_LOCALE })} · ${formatKinWhen(ms, "time", { zone, locale: KIN_TEXT_LOCALE })}`;

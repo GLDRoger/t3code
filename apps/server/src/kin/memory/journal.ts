@@ -1,3 +1,4 @@
+import { formatKinWhen, KIN_TEXT_LOCALE, kinWhenParts } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -20,20 +21,12 @@ const renderJournalEntry = (
   outcome: "completed" | "failed",
   lines: ReadonlyArray<string>,
 ) => {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: ctx.timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(Date.parse(ctx.startedAt));
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((entry) => entry.type === type)?.value ?? "";
+  const at = Date.parse(ctx.startedAt);
+  if (Number.isNaN(at)) throw new RangeError("Invalid journal date");
+  const [year, month, day] = kinWhenParts(at, ctx.timeZone).isoDay.split("-");
   return {
-    path: `journal/${part("year")}/${part("month")}-${part("day")}.md`,
-    text: `\n## ${part("hour")}:${part("minute")} · wake-up ${oneLine(ctx.wakeupId)} · ${oneLine(ctx.agentId)} · ${ctx.level}\n\nOutcome: ${outcome}\nEvents: ${ctx.eventIds.map(oneLine).join(", ")}\n\n${lines.map((line) => `- ${oneLine(line)}\n`).join("")}`,
+    path: `journal/${year}/${month}-${day}.md`,
+    text: `\n## ${formatKinWhen(at, "time", { zone: ctx.timeZone, locale: KIN_TEXT_LOCALE })} · wake-up ${oneLine(ctx.wakeupId)} · ${oneLine(ctx.agentId)} · ${ctx.level}\n\nOutcome: ${outcome}\nEvents: ${ctx.eventIds.map(oneLine).join(", ")}\n\n${lines.map((line) => `- ${oneLine(line)}\n`).join("")}`,
   };
 };
 

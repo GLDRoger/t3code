@@ -10,6 +10,7 @@ import {
   type KinPersonId,
   type KinRecordKey,
   type KinWidget,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import { KIN_VISUAL_FILE_SCHEME } from "@t3tools/shared/kinVisual";
 import * as Cause from "effect/Cause";
@@ -613,16 +614,8 @@ function kinLocalDayKey(iso: string): string {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
-const kinWeekdayFormat = new Intl.DateTimeFormat(undefined, {
-  weekday: "short",
-  day: "numeric",
-  month: "short",
-});
-const kinFullDateFormat = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
+const kinWeekdayFormat = kinWhenFormat("day");
+const kinFullDateFormat = kinWhenFormat("dateYear");
 
 /** A day separator: "Today", "Yesterday", "Mon, 3 Nov", or with the year once it differs. */
 export function kinDayLabel(iso: string, now: Date = new Date()): string {
@@ -636,10 +629,7 @@ export function kinDayLabel(iso: string, now: Date = new Date()): string {
     : kinFullDateFormat.format(date);
 }
 
-const kinDividerTimeFormat = new Intl.DateTimeFormat(undefined, {
-  hour: "numeric",
-  minute: "2-digit",
-});
+const kinDividerTimeFormat = kinWhenFormat("time");
 
 /** A time divider: "Today 12:55 PM", "Yesterday 9:10 AM", "Mon, 3 Nov 8:02 AM". */
 function kinTimeDividerLabel(iso: string, now: Date = new Date()): string {

@@ -223,6 +223,7 @@ export const isHeaderLine = (line: string) =>
   /withdrawal|debit|deposit|credit|amount/i.test(line);
 
 const UNAMBIGUOUS: ReadonlyArray<readonly [RegExp, string]> = [
+  // oxlint-disable-next-line t3code/kin-one-format -- the rupee sign names the rupee, whatever the home.
   [/₹/u, "INR"],
   [/€/u, "EUR"],
   [/£/u, "GBP"],

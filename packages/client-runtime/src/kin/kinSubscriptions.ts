@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers count renewals for React render, outside an Effect runtime.
+import { kinWhenFormat } from "@t3tools/contracts";
 import type {
   KinListDefinition,
   KinListField,
@@ -165,12 +166,8 @@ export function kinRenewalsBetween(
   return days;
 }
 
-const shortDay = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
-const longDay = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
+const shortDay = kinWhenFormat("date");
+const longDay = kinWhenFormat("dateYear");
 const dayLabel = (day: string, today: string) => {
   const [year, month, date] = partsOf(day);
   const value = new Date(year, month - 1, date);

@@ -2,6 +2,7 @@ import { definePlugin } from "@oxlint/plugins";
 
 import kinFailureWords from "./rules/kin-failure-words.ts";
 import kinMessagesToPeople from "./rules/kin-messages-to-people.ts";
+import kinOneFormat from "./rules/kin-one-format.ts";
 import kinOwnerLevel from "./rules/kin-owner-level.ts";
 import kinViewerScopedReads from "./rules/kin-viewer-scoped-reads.ts";
 import kinZonedTime from "./rules/kin-zoned-time.ts";
@@ -49,6 +50,7 @@ export default definePlugin({
     "kin-owner-level": kinOwnerLevel,
     "kin-viewer-scoped-reads": kinViewerScopedReads,
     "kin-zoned-time": kinZonedTime,
+    "kin-one-format": kinOneFormat,
     "max-settings-description-length": maxSettingsDescriptionLength,
     "namespace-node-imports": namespaceNodeImports,
     "no-dom-test-environment": noDomTestEnvironment,

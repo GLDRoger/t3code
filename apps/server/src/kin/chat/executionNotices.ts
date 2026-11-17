@@ -3,6 +3,8 @@ import {
   KinChatId,
   KinMessageId,
   type KinPendingAction,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -156,15 +158,7 @@ export const kinNoticeDeviceName = (label: string) => {
 
 /** Owner-local "Thu 12 Nov, 09:30", or UTC (and saying so) before the owner has set a zone. */
 const noticeTime = (at: number, timeZone: string) =>
-  `${new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(at)}${timeZone === "UTC" ? " UTC" : ""}`;
+  `${formatKinWhen(at, "dayTime", { zone: timeZone, locale: KIN_TEXT_LOCALE })}${timeZone === "UTC" ? " UTC" : ""}`;
 
 export const keyNoticeBody = (input: KinKeyChange, timeZone: string) => {
   const device = `"${kinNoticeDeviceName(input.deviceLabel)}" (${PLATFORM[input.platform] ?? "phone"})`;

@@ -115,7 +115,7 @@ describe("what a lead has in hand", () => {
     expect(kinLeadTrackingDetail({ kind: "scheduled" })).toBe("Repeats");
     expect(
       kinLeadTrackingDetail({ kind: "reminder", dueAt: "2026-11-13T09:00:00.000Z" }, "UTC"),
-    ).toBe("Reminder, Fri 13 Nov, 9:00");
+    ).toBe("Reminder, Fri, Nov 13, 9:00 AM");
   });
 });
 

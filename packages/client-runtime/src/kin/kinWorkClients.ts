@@ -1,6 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
-import { kinOwnerLevel } from "@t3tools/contracts";
+import { kinOwnerLevel, formatKinWhen } from "@t3tools/contracts";
 import type {
   KinAccessMeResult,
   KinClientTouch,
@@ -861,11 +861,7 @@ const BILLING: Record<string, string> = {
 };
 /** "1 Dec" for a `YYYY-MM-DD` day, read as that calendar day wherever the viewer is. */
 const dayText = (day: string) =>
-  new Date(`${day}T12:00:00Z`).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    timeZone: "UTC",
-  });
+  formatKinWhen(new Date(`${day}T12:00:00Z`), "date", { zone: "UTC" });
 
 function projectTerms(project: KinProjectPage["project"], target: string | null): string | null {
   const parts = [

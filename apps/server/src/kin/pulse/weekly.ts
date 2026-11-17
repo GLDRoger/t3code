@@ -1,3 +1,4 @@
+import { formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
 import type { KinEvent, KinMoney, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -53,16 +54,7 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
   const home = yield* homeCurrency(orgId);
   const totals = (amounts: ReadonlyArray<KinMoney>) => addUp(amounts, home).map(formatMoney);
   const weekAgo = now - WEEK_MS;
-  const when = (ms: number) =>
-    new Intl.DateTimeFormat("en-GB", {
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-      hour: "2-digit",
-      minute: "2-digit",
-      hourCycle: "h23",
-      timeZone: zone,
-    }).format(ms);
+  const when = (ms: number) => formatKinWhen(ms, "dayTime", { zone, locale: KIN_TEXT_LOCALE });
   const goals = (yield* goalsNow(orgId, now, { money: true })).goals.filter(
     (goal) => goal.state === "open",
   );

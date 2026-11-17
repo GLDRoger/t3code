@@ -7,6 +7,8 @@ import {
   type KinStatementSelectChange,
   type KinStatementSelection,
   type KinStatementTarget,
+  KIN_TEXT_LOCALE,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 
 import { formatMoney } from "../money.ts";
@@ -42,12 +44,7 @@ const clamp = (text: string, max: number) => {
   const chars = Array.from(text.replace(/\s+/g, " ").trim());
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
 };
-const SHORT = new Intl.DateTimeFormat("en-IN", {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-  timeZone: "UTC",
-});
+const SHORT = kinWhenFormat("dateYear", { zone: "UTC", locale: KIN_TEXT_LOCALE });
 const shortDay = (day: string) => SHORT.format(Date.parse(`${day}T00:00:00Z`));
 const money = (minor: number, currency: string) => formatMoney({ minor, currency });
 

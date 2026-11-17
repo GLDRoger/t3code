@@ -1,4 +1,9 @@
-import { isCalendarDay, KinChatError, KinSacCode } from "@t3tools/contracts";
+import {
+  isCalendarDay,
+  KIN_DEFAULT_HOME_CURRENCY,
+  KinChatError,
+  KinSacCode,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { parseDocument } from "yaml";
 
@@ -459,7 +464,7 @@ export const checkedSample = (
       inputs[input.name] = null;
       continue;
     }
-    const checked = checkedValue(input, raw, "INR", true);
+    const checked = checkedValue(input, raw, KIN_DEFAULT_HOME_CURRENCY, true);
     if (typeof checked === "object" && checked !== null && "error" in checked)
       wrong.push(`${input.name} (${checked.error})`);
     else inputs[input.name] = checked;

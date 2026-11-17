@@ -6,6 +6,8 @@ import {
   type KinPersonId,
   KinPersonQuietHours,
   KinWorkHours,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -181,9 +183,9 @@ export const holdIfQuiet = Effect.fn("KinQuiet.hold")(function* (input: {
 
 /** When a held line reaches them, on their own clock: "07:00 their time (Tue 17 Nov)". */
 export const theirTime = (at: number, zone: string) => {
-  const part = (options: Intl.DateTimeFormatOptions) =>
-    new Intl.DateTimeFormat("en-GB", { timeZone: zone, ...options }).format(at).replace(/,/g, "");
-  return `${part({ hour: "2-digit", minute: "2-digit", hourCycle: "h23" })} their time (${part({ weekday: "short", day: "numeric", month: "short" })})`;
+  const part = (style: "time" | "day") =>
+    formatKinWhen(at, style, { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "");
+  return `${part("time")} their time (${part("day")})`;
 };
 
 /** What the sender hears of a held line: "Zoya Sheikh is off until 10:00 their time (Tue 17 Nov)". */

@@ -288,6 +288,7 @@ const gst = (args: {
             { name: UT_WITHOUT_LEGISLATURE.has(client!) ? "UTGST" : "SGST", ...half },
           ]
         : [{ name: "IGST", ...rate }];
+  // oxlint-disable-next-line t3code/kin-one-format -- GST is charged in rupees (finding 16 owns tax regimes).
   const currency = args.taxable?.currency ?? args.total?.currency ?? "INR";
   for (const one of [args.taxable, args.total, args.recordedTax])
     if (one !== null && one.currency !== currency) fail(`every amount must be in ${currency}`);

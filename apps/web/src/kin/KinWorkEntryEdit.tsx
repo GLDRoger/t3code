@@ -1,3 +1,4 @@
+import { kinWhenFormat } from "@t3tools/contracts";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_LISTS } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
@@ -161,7 +162,7 @@ export function KinEntryText(props: {
   );
 }
 
-const sentFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const sentFormat = kinWhenFormat("date");
 
 /** The files already in the owner's chats, newest first, to keep one on an entry. */
 export function KinEntryFilePicker(

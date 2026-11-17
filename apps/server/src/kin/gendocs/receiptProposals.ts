@@ -1,7 +1,15 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a proposal's id is a hash of what it asks.
 import * as NodeCrypto from "node:crypto";
 
-import { KinChatError, KinDay, KinMoney, type KinOrgId, KinPersonId } from "@t3tools/contracts";
+import {
+  KinChatError,
+  KinDay,
+  KinMoney,
+  type KinOrgId,
+  KinPersonId,
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
+} from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -106,13 +114,10 @@ export type Snapshot = Effect.Success<ReturnType<typeof snapshotOf>>;
 
 // A calendar day has no zone: read at noon UTC it names the same day everywhere.
 const dayText = (day: string) =>
-  new Intl.DateTimeFormat("en-GB", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(Date.parse(`${day}T12:00:00Z`));
+  formatKinWhen(Date.parse(`${day}T12:00:00Z`), "dayYear", {
+    zone: "UTC",
+    locale: KIN_TEXT_LOCALE,
+  });
 
 /** The card's lines: figures from the records, the agent's own words labelled as its note. */
 export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
