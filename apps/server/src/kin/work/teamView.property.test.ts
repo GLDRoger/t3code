@@ -625,8 +625,18 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
           ...emptyWorld,
           projects: [{ ...emptyWorld.projects[0]!, lead: "ana" }, emptyWorld.projects[1]!],
         },
-        [invoice("hidden", "p2"), invoice("led", "p1")],
+        [
+          invoice("hidden", "p2"),
+          invoice("led", "p1"),
+          invoice("yen", "p2"),
+          invoice("dinar", "p2"),
+        ],
       );
+      // Minor units follow each currency's decimals: none for yen, three for the Kuwaiti dinar.
+      yield* sql`UPDATE kin_records SET amount_minor = 150000, currency = 'JPY'
+        WHERE record_id = 'yen'`;
+      yield* sql`UPDATE kin_records SET amount_minor = 2750500, currency = 'KWD'
+        WHERE record_id = 'dinar'`;
       yield* sql`UPDATE kin_records SET amount_minor = 98765400, currency = 'INR'
         WHERE record_id = 'hidden'`;
       yield* sql`UPDATE kin_records SET amount_minor = 4320000, currency = 'INR'
@@ -640,10 +650,14 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
         "The agreed price is 987.654,00.",
         "The agreed price is nine hundred eighty-seven thousand six hundred fifty-four.",
         "They pay 125000 every month.",
+        "The yen invoice is 150000.",
+        "The dinar invoice is 2750.",
+        "The dinar invoice is 2750.500.",
       ])
         assert.isDefined(yield* to("ana", text), text);
       // A count that is no hidden sum goes; a sum she may see, on the project she leads, goes too.
       assert.isUndefined(yield* to("ana", "We have 4321 users and 98 tasks."));
+      assert.isUndefined(yield* to("ana", "We printed 1500 posters."));
       assert.isUndefined(yield* to("ana", "The milestone invoice is 43200."));
       assert.isDefined(yield* to("ben", "The milestone invoice is 43200."));
       // Ben's own words, relayed for him, are held only against what he sees: a refusal would

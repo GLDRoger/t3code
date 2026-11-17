@@ -17,7 +17,9 @@ const MONEY =
 const HOME =
   "A company's currency is its profile's `homeCurrency`; a missing one is `KIN_DEFAULT_HOME_CURRENCY` (contracts kinCurrency.ts).";
 const WHEN =
-  "Write a day or a time through `formatKinWhen` or `kinWhenFormat` (contracts kinWhen.ts), with the reader's zone and, on the server, `KIN_TEXT_LOCALE`.";
+  "Write a day or a time through `formatKinWhen` or `kinWhenFormat` (contracts kinWhen.ts), with the reader's zone and, on the server, the company's `textLocale` (work/companyProfile.ts).";
+const LOCALE =
+  "A locale comes from one place: the company's `textLocale` (work/companyProfile.ts) on the server, the device's on a client. A country's locale is a row of its region (statementRegion.ts).";
 const HOST =
   "Ask `kinIsLocalOnlyHost` (contracts kinPeople.ts) whether a host is reachable only from this machine.";
 
@@ -89,6 +91,14 @@ export default defineRule({
         }
         if (property.name === "startsWith" && isString(node.arguments[0], "127."))
           report(node, HOST);
+      },
+      Property(node) {
+        if (
+          node.key.type === "Identifier" &&
+          node.key.name === "locale" &&
+          isString(node.value as ESTree.Node)
+        )
+          report(node, LOCALE);
       },
       BinaryExpression(node) {
         if (node.operator !== "===" && node.operator !== "!==") return;

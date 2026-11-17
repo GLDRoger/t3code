@@ -51,7 +51,7 @@ import { KinMoneyActionNotice } from "./KinInvoice";
 import { KinWorkSection, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
-import { useKinMoneyActions, useKinRates, useKinReceipts } from "./useKinMoney";
+import { useKinHomeCurrency, useKinMoneyActions, useKinReceipts } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./useKinWork";
 
 const SHOWN = 8;
@@ -237,7 +237,7 @@ function KinAdvanceDialog(
   const [problem, setProblem] = useState<string | null>(null);
   const [requestId] = useState(randomUUID);
   // A plain number is in the home currency; a typed symbol or code still names its own.
-  const home = useKinRates(props)?.home ?? KIN_DEFAULT_HOME_CURRENCY;
+  const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
   const clients =
     Option.getOrNull(AsyncResult.value(useAtomValue(kinWorkChoicesAtom(props))))?.clients ?? [];
   const ids = {

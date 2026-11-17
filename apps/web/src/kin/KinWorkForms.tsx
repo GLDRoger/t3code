@@ -61,7 +61,7 @@ import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
-import { useKinRates } from "./useKinMoney.ts";
+import { useKinHomeCurrency } from "./useKinMoney.ts";
 import { KinProjectPeoplePicker } from "./KinProjectPeople";
 import { KinWorkPrivateMark, KinWorkProblem } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
@@ -608,7 +608,7 @@ export function KinProjectDialog(
   const update = useAtomCommand(kinClient.workProjectUpdate, { reportFailure: false });
   const [requestId] = useState(randomUUID);
   const [key] = useState(() => editing?.project.key ?? null);
-  const home = useKinRates(props)?.home;
+  const home = useKinHomeCurrency(props);
   const { state, form } = useKinWorkForm(environmentId, {
     noun: "project",
     start: kinProjectDraftOf(editing?.project, editing?.targetDay, props.party, home),

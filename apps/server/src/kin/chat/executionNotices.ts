@@ -4,7 +4,6 @@ import {
   KinMessageId,
   type KinPendingAction,
   formatKinWhen,
-  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -17,6 +16,7 @@ import {
   type KinKeyChange,
 } from "../approvals/ExecutionNotices.ts";
 import { CHIEF_OF_STAFF_DOMAIN } from "../lead/orgLeads.ts";
+import { textLocale, type TextClock } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { KinChatService } from "./KinChatService.ts";
 import { chatShared } from "./sharing.ts";
@@ -157,14 +157,14 @@ export const kinNoticeDeviceName = (label: string) => {
 };
 
 /** Owner-local "Thu 12 Nov, 09:30", or UTC (and saying so) before the owner has set a zone. */
-const noticeTime = (at: number, timeZone: string) =>
-  `${formatKinWhen(at, "dayTime", { zone: timeZone, locale: KIN_TEXT_LOCALE })}${timeZone === "UTC" ? " UTC" : ""}`;
+const noticeTime = (at: number, clock: TextClock) =>
+  `${formatKinWhen(at, "dayTime", clock)}${clock.zone === "UTC" ? " UTC" : ""}`;
 
-export const keyNoticeBody = (input: KinKeyChange, timeZone: string) => {
+export const keyNoticeBody = (input: KinKeyChange, clock: TextClock) => {
   const device = `"${kinNoticeDeviceName(input.deviceLabel)}" (${PLATFORM[input.platform] ?? "phone"})`;
   if (input.change === "added")
-    return `${device} can now approve for Kin. It was set up on ${noticeTime(input.at, timeZone)}. If that wasn't you, remove it in Settings, then Approvals.`;
-  const removed = `${device} can no longer approve for Kin. It was removed on ${noticeTime(input.at, timeZone)}, and anything it approved that hadn't run yet was cancelled.`;
+    return `${device} can now approve for Kin. It was set up on ${noticeTime(input.at, clock)}. If that wasn't you, remove it in Settings, then Approvals.`;
+  const removed = `${device} can no longer approve for Kin. It was removed on ${noticeTime(input.at, clock)}, and anything it approved that hadn't run yet was cancelled.`;
   return input.lastKey
     ? `${removed} No phone can approve now: open Approvals in the Kin app on your phone to set one up.`
     : removed;
@@ -204,7 +204,10 @@ export const keyNoticesLayer = Layer.effect(
         function* (input) {
           const body = keyNoticeBody(
             input,
-            yield* ownerZone(input.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+            yield* Effect.all({
+              zone: ownerZone(input.orgId),
+              locale: textLocale(input.orgId),
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
           );
           const messageId = KinMessageId.make(`kin-key-${input.change}:${input.thumbprint}`);
           const chatId = yield* ownerChat(input);

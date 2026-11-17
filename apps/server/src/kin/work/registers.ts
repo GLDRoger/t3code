@@ -20,6 +20,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { type FieldValue, isMoney, LISTS, type ListName, sensitiveFields } from "./lists.ts";
 import { homeCurrency } from "./companyProfile.ts";
+import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
 import { isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
@@ -121,7 +122,8 @@ export const PRESETS: Record<
     fields: [
       field("vendor", "Vendor", "text"),
       field("tax", "Tax paid", "money"),
-      field("paidWith", "Paid with", "choice", { choices: ["card", "upi", "bank", "cash"] }),
+      // The company's region replaces these with its own ways (`presetFor`).
+      field("paidWith", "Paid with", "choice", { choices: NEUTRAL_PAID_WITH }),
       field("paidBy", "Paid by", "person"),
       field("receipt", "Receipt", "file", { sensitive: true }),
     ],
@@ -229,8 +231,26 @@ const STATE_NAMES: Record<string, string> = {
 export const stateLabel = (def: ListDef, state: string) =>
   def.stateLabels[state as keyof ListDef["stateLabels"]] ?? STATE_NAMES[state] ?? state;
 
+/**
+ * A template as a company with `home` as its currency gets it: an expense is paid the ways its
+ * country pays (`paidWith` of the company's region). Lists already made keep their choices.
+ */
+const presetFor = (id: PresetId, home: string) => {
+  const preset = PRESETS[id];
+  const paidWith = companyRegion(home)?.paidWith ?? NEUTRAL_PAID_WITH;
+  return {
+    ...preset,
+    fields: preset.fields.map((field) =>
+      field.key === "paidWith" ? { ...field, choices: paidWith } : field,
+    ),
+  };
+};
+
 /** A template's definition, its amounts in `currency` (the company's home currency). */
-export const presetDefinition = (id: PresetId, currency: string) => ({ ...PRESETS[id], currency });
+export const presetDefinition = (id: PresetId, currency: string) => ({
+  ...presetFor(id, currency),
+  currency,
+});
 
 /** Work and the light CRM as definitions, so every list reads the same way. */
 const builtInDef = (name: ListName, currency: string): ListDef => {
@@ -744,8 +764,9 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     input.id ?? input.template ?? (input.name === undefined ? undefined : idFor(input.name));
   if (named === undefined)
     return yield* invalid("Name the list, start from a template, or say which list to add to.");
+  const home = yield* homeCurrency(orgId);
   const preset = (PRESET_IDS as ReadonlyArray<string>).includes(named)
-    ? PRESETS[named as (typeof PRESET_IDS)[number]]
+    ? presetFor(named as PresetId, home)
     : undefined;
   if (preset === undefined && (isBuiltIn(named) || named === "docs"))
     return yield* invalid(`${input.name ?? named} is one of Kin's own lists already.`);
@@ -779,7 +800,7 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     ],
     sensitive: input.sensitive ?? preset?.sensitive ?? amount,
     amount,
-    currency: input.currency ?? (yield* homeCurrency(orgId)),
+    currency: input.currency ?? home,
     ...((input.dueLabel ?? preset?.dueLabel)
       ? { dueLabel: (input.dueLabel ?? preset?.dueLabel)! }
       : {}),

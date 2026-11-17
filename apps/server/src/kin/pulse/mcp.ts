@@ -1,4 +1,5 @@
 import {
+  KIN_TEXT_LOCALE,
   KinChatError,
   KinDay,
   KinPulseFact,
@@ -185,7 +186,7 @@ const runNudge = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseNud
   return {
     person: sent.person,
     day: sent.day,
-    note: `${sent.held === undefined ? "Sent" : `Held until they start: Kin delivers it at ${theirTime(sent.held.at, sent.held.zone)},`} in ${sent.person}'s chat with you. Their answer arrives there; if none comes, replan or tell the owner rather than nudging again.`,
+    note: `${sent.held === undefined ? "Sent" : `Held until they start: Kin delivers it at ${theirTime(sent.held.at, sent.held.zone, KIN_TEXT_LOCALE)},`} in ${sent.person}'s chat with you. Their answer arrives there; if none comes, replan or tell the owner rather than nudging again.`,
   };
 });
 

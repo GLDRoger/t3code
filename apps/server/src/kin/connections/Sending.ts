@@ -9,7 +9,6 @@ import {
   KinPersonId,
   type KinSendCard,
   formatKinWhen,
-  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -19,6 +18,7 @@ import type * as HttpClient from "effect/http/HttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { readStoredFile } from "../gendocs/brand.ts";
+import type { TextClock } from "../work/companyProfile.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { formatMoney } from "../work/money.ts";
 import { logTouch } from "../work/touches.ts";
@@ -359,23 +359,27 @@ const OFFSET = /(?:z|[+-]\d{2}:?\d{2})$/i;
  */
 const plainWhen = (
   prepared: Pick<Extract<Prepared, { _tag: "event" }>, "start" | "end" | "timeZone">,
-  zone: string,
+  clock: TextClock,
 ) => {
   const read = (at: string) => {
     const offset = OFFSET.test(at);
     const parsed = DateTime.make(offset ? at : `${at}Z`);
     return Option.isNone(parsed)
       ? null
-      : { ms: DateTime.toEpochMillis(parsed.value), timeZone: offset ? zone : "UTC", offset };
+      : {
+          ms: DateTime.toEpochMillis(parsed.value),
+          timeZone: offset ? clock.zone : "UTC",
+          offset,
+        };
   };
   const start = read(prepared.start);
   const end = read(prepared.end);
   if (start === null || end === null)
     return `When: ${prepared.start} to ${prepared.end}${prepared.timeZone === null ? "" : ` (${prepared.timeZone})`}`;
   const day = (at: { ms: number; timeZone: string }) =>
-    formatKinWhen(at.ms, "day", { zone: at.timeZone, locale: KIN_TEXT_LOCALE });
+    formatKinWhen(at.ms, "day", { zone: at.timeZone, locale: clock.locale });
   const time = (at: { ms: number; timeZone: string }) =>
-    formatKinWhen(at.ms, "time", { zone: at.timeZone, locale: KIN_TEXT_LOCALE });
+    formatKinWhen(at.ms, "time", { zone: at.timeZone, locale: clock.locale });
   const shownZone = start.offset ? null : prepared.timeZone;
   const ending = day(end) === day(start) ? time(end) : `${day(end)}, ${time(end)}`;
   return `When: ${day(start)}, ${time(start)} to ${ending}${shownZone === null ? "" : ` (${shownZone})`}`;
@@ -396,8 +400,8 @@ export const sendCard = (input: {
   readonly tool: string;
   readonly prepared: Prepared;
   readonly choices?: ReadonlyArray<FromChoice>;
-  /** The owner's time zone, which an event's times are shown in. */
-  readonly zone: string;
+  /** The owner's zone, which an event's times are shown in, and the company's locale. */
+  readonly clock: TextClock;
 }): { readonly question: string; readonly detail: string; readonly send: KinSendCard } => {
   const { prepared } = input;
   if (prepared._tag === "email") {
@@ -443,7 +447,7 @@ export const sendCard = (input: {
   }
   if (prepared._tag === "event") {
     const body = [
-      plainWhen(prepared, input.zone),
+      plainWhen(prepared, input.clock),
       ...(prepared.location === null ? [] : [`Where: ${prepared.location}`]),
       ...(prepared.notes === null ? [] : ["", prepared.notes]),
     ].join("\n");
@@ -452,7 +456,7 @@ export const sendCard = (input: {
         prepared.eventId === null
           ? "Add this event and send the invitations?"
           : "Change this event and tell the guests?",
-      detail: [`Event: ${prepared.title}`, plainWhen(prepared, input.zone)]
+      detail: [`Event: ${prepared.title}`, plainWhen(prepared, input.clock)]
         .join("\n")
         .slice(0, 2000),
       send: {

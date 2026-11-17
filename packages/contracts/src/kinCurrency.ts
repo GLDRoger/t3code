@@ -63,6 +63,11 @@ export const KIN_DEFAULT_HOME_CURRENCY = "INR";
 /** Every ISO 4217 code Kin accepts. */
 export const KIN_CURRENCY_CODES: ReadonlySet<string> = words(CODES);
 export const isKinCurrency = (code: string) => KIN_CURRENCY_CODES.has(code);
+/** Every code whose minor units are `decimals` below its major one. */
+export const kinCurrenciesWithDecimals = (decimals: number): ReadonlyArray<string> =>
+  [...KIN_CURRENCY_CODES].filter(
+    (code) => (ZERO.has(code) ? 0 : THREE.has(code) ? 3 : 2) === decimals,
+  );
 
 /** A currency's description; an unknown code reads as its code with two decimals. */
 export const kinCurrency = (code: string): KinCurrencyInfo => {

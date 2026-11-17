@@ -28,6 +28,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
+import { textLocale, type TextClock } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import {
   accountsOf,
@@ -82,7 +83,7 @@ const ownerChatOf = Effect.fn("KinSocialCards.ownerChat")(function* (
 const cardPost = (
   post: PostRow,
   group: GroupRow | undefined,
-  zone: string,
+  clock: TextClock,
   now: number,
 ): KinSocialCardPost | undefined => {
   const account =
@@ -102,7 +103,7 @@ const cardPost = (
     caption: post.caption,
     media: mediaOf(post),
     at: iso(post.atMs),
-    when: whenLabel(post.atMs, zone),
+    when: whenLabel(post.atMs, clock),
     state,
     url: post.url,
     reason:
@@ -124,10 +125,10 @@ const weekState = Effect.fn("KinSocialCards.weekState")(function* (
   >,
 ) {
   const now = yield* Clock.currentTimeMillis;
-  const zone = yield* ownerZone(orgId);
+  const clock = { zone: yield* ownerZone(orgId), locale: yield* textLocale(orgId) };
   const group = yield* ownerLevelGroup(orgId, previous.groupId);
   const rows = yield* postsOfCard(orgId, cardId);
-  const posts = rows.flatMap((row) => cardPost(row, group, zone, now) ?? []);
+  const posts = rows.flatMap((row) => cardPost(row, group, clock, now) ?? []);
   const proposed = rows.filter((row) => row.state === "proposed");
   return {
     text: WEEK_TEXT,
@@ -324,7 +325,7 @@ export const applyWeekTap = Effect.fn("KinSocialCards.applyWeek")(function* (
   const sql = yield* SqlClient.SqlClient;
   const orgId = widget.orgId;
   const now = yield* Clock.currentTimeMillis;
-  const zone = yield* ownerZone(orgId);
+  const clock = { zone: yield* ownerZone(orgId), locale: yield* textLocale(orgId) };
   const card = tap.card;
   if (card.replaced) return yield* invalid("A newer card for these posts replaced this one.");
   const row = typeof tap.value === "string" ? yield* postById(orgId, tap.value) : undefined;
@@ -372,7 +373,7 @@ export const applyWeekTap = Effect.fn("KinSocialCards.applyWeek")(function* (
           );
         if (post.atMs < now + CONFIRM_LEAD_MS)
           return yield* invalid(
-            `${whenLabel(post.atMs, zone)} is too soon to schedule. Remove that post, or ask Social for a later time.`,
+            `${whenLabel(post.atMs, clock)} is too soon to schedule. Remove that post, or ask Social for a later time.`,
           );
       }
       yield* sql`UPDATE kin_social_posts SET state = 'scheduling', digest = ${card.digest},
@@ -487,7 +488,10 @@ export const writePackCard = Effect.fn("KinSocialCards.writePack")(function* (in
     caption: input.caption,
     media: input.media,
     at: iso(input.atMs),
-    when: whenLabel(input.atMs, yield* ownerZone(input.orgId)),
+    when: whenLabel(input.atMs, {
+      zone: yield* ownerZone(input.orgId),
+      locale: yield* textLocale(input.orgId),
+    }),
     reminderId: input.reminderId,
     posted: null,
   };
