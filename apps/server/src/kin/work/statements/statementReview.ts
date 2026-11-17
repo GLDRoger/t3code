@@ -33,6 +33,7 @@ import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { choiceCardState } from "../../widgets/choiceCard.ts";
 import { fieldText, parseFields } from "../lists.ts";
+import { homeCurrency } from "../companyProfile.ts";
 import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { listDef } from "../registers.ts";
@@ -197,6 +198,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
   statementId: string | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const home = yield* homeCurrency(orgId);
   const zone = yield* ownerZone(orgId);
   const day = (ms: number | null) => (ms === null ? null : dayIn(ms, zone));
   // Banks list newest first as often as oldest first; the window starts before either end.
@@ -292,7 +294,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         recordId: row.recordId,
         key: row.key,
         title: row.title,
-        currency: row.currency ?? "INR",
+        currency: row.currency ?? home,
         amountMinor: row.amountMinor ?? 0,
         paidMinor: row.paid,
         seen: seenOf(row.amountMinor ?? 0, received.get(row.recordId) ?? []),
@@ -312,7 +314,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
         recordId: row.recordId,
         key: row.key,
         title: row.title,
-        currency: row.currency ?? "INR",
+        currency: row.currency ?? home,
         amountMinor: row.amountMinor ?? 0,
         day: day(row.dateAt),
         due: day(row.dueAt),
@@ -849,6 +851,7 @@ export const tryKeptPasswords = Effect.fn("KinStatements.tryKept")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
+  const home = yield* homeCurrency(orgId);
   const kept = yield* sql<{ secretName: string }>`SELECT secret_name AS "secretName"
     FROM kin_statement_passwords WHERE org_id = ${orgId} ORDER BY remembered_at DESC`;
   for (const one of kept) {
@@ -857,15 +860,18 @@ export const tryKeptPasswords = Effect.fn("KinStatements.tryKept")(function* (
       .pipe(Effect.orElseSucceed(() => Option.none()));
     if (Option.isNone(value)) continue;
     const password = Redacted.make(new TextDecoder().decode(value.value));
-    const outcome = yield* readWith(bytes, password);
+    const outcome = yield* readWith(bytes, home, password);
     if (outcome._tag !== "wrong_password" && outcome._tag !== "needs_password") return outcome;
   }
   return undefined;
 });
 
-/** Reads a statement file, with a password for a locked PDF; nothing of it leaves this call. */
-export const readWith = (bytes: Uint8Array, password?: Redacted.Redacted<string>) =>
-  readIsolated(bytes, password).pipe(Effect.flatMap(identified));
+/**
+ * Reads a statement file, with a password for a locked PDF; nothing of it leaves this call. `home`
+ * is the company's home currency, which picks the region an unlabelled file reads in.
+ */
+export const readWith = (bytes: Uint8Array, home: string, password?: Redacted.Redacted<string>) =>
+  readIsolated(bytes, home, password).pipe(Effect.flatMap(identified));
 
 const ACCOUNT_KEY = "kin-bank-account-key";
 /**

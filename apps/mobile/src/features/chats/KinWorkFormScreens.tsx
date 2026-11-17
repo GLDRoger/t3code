@@ -73,6 +73,7 @@ import {
   KinWorkProblemNotice,
   KinWorkTextField,
 } from "./components/KinWorkPieces";
+import { useKinRates } from "./state/useKinMoney.ts";
 import { KinWorkPlaceRow } from "./components/KinWorkTaskMenus";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
@@ -751,9 +752,10 @@ function ProjectForm(
   const [requestId] = useState(uuidv4);
   const [key] = useState(() => editing?.project.key ?? null);
   const [opened] = useState(() => new Date());
+  const home = useKinRates(props)?.home;
   const { state, form } = useKinWorkForm(environmentId, {
     noun: "project",
-    start: kinProjectDraftOf(editing?.project, editing?.targetDay, props.party),
+    start: kinProjectDraftOf(editing?.project, editing?.targetDay, props.party, home),
     editing: editing === null ? null : { key: editing.project.key, rev: editing.project.rev },
     nameOf: (draft) => draft.name,
     check: kinProjectDraftCheck,
@@ -774,7 +776,7 @@ function ProjectForm(
               orgId,
               key: change.key,
               rev: change.rev,
-              ...kinProjectUpdateInput(change.changed),
+              ...kinProjectUpdateInput(change.changed, change.draft.currency),
             },
           }),
     reread: () => {
@@ -785,8 +787,11 @@ function ProjectForm(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the form a newer read of the project being edited, so saving again goes against it
   useEffect(() => {
     if (editing !== null)
-      form.latest(kinProjectDraftOf(editing.project, editing.targetDay), editing.project.rev);
-  }, [form, editing]);
+      form.latest(
+        kinProjectDraftOf(editing.project, editing.targetDay, null, home),
+        editing.project.rev,
+      );
+  }, [form, editing, home]);
   const { draft } = state;
   const moved = kinWorkFormMoved(state);
   const target = draft.target ?? "";

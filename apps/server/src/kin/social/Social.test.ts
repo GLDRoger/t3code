@@ -726,14 +726,8 @@ it.effect(
         const read = (yield* social.read(scope, { group: "our own" })) as {
           groups: ReadonlyArray<{ bestTimes?: ReadonlyArray<string> }>;
         };
-        // Friday 09:00 UTC is 10 am in London this week, not the 9 am of a winter week.
-        const friday = new Intl.DateTimeFormat("en-GB", {
-          timeZone: "Europe/London",
-          weekday: "short",
-          hour: "numeric",
-          hour12: true,
-        }).format(Date.parse("2026-07-10T09:00:00.000Z"));
-        assert.match(read.groups[0]!.bestTimes?.[0] ?? "", new RegExp(`^${friday} `));
+        // Friday 09:00 UTC is 10:00 in London this week, not the 09:00 of a winter week.
+        assert.match(read.groups[0]!.bestTimes?.[0] ?? "", /^Fri 10:00 /);
 
         yield* at(NOW);
         yield* connectGroup(fake, { kind: "client", clientId: "rec_lumen" }, LUMEN);

@@ -8,6 +8,7 @@ import {
   type KinApproverKey,
   type KinApproverKeyActivity,
   type KinKeyThumbprint,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -41,12 +42,7 @@ const HARDWARE: Record<string, string> = {
   tee: "secure hardware",
 };
 const PLATFORM: Record<string, string> = { ios: "iPhone", android: "Android" };
-const dayFormat = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-});
+const dayFormat = kinWhenFormat("dateTime");
 const on = (at: DateTime.Utc) => dayFormat.format(DateTime.toEpochMillis(at));
 
 /** Sets up this phone to approve Kin's requests, and lists the phones that can. */

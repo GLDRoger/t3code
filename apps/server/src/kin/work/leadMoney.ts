@@ -49,6 +49,7 @@ import {
   writerFor,
 } from "./leadWork.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
+import { homeCurrency } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount } from "./money.ts";
 import { dates, moneySection, moneySummary, ownerLevelStillToInvoice } from "./moneyViews.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
@@ -361,9 +362,10 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
       return yield* invalid(
         "A payment needs amount (cash received), withheld (TDS) or both, and paidOn; or void to take one back.",
       );
+    const fallback = before.currency ?? (yield* homeCurrency(lead.orgId));
     const parsed = (text: string | undefined) => {
       if (text === undefined) return Effect.undefined;
-      const one = parseAmount(text, before.currency ?? "INR");
+      const one = parseAmount(text, fallback);
       return "error" in one ? Effect.fail(one.error) : Effect.succeed(one.money);
     };
     const cash = yield* parsed(input.amount);
@@ -410,7 +412,7 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
   }
   const after = yield* records.get(lead.orgId, input.key);
   if (after === undefined) return yield* notFound(input.key);
-  const currency = after.currency ?? "INR";
+  const currency = after.currency ?? (yield* homeCurrency(lead.orgId));
   const amount = after.amountMinor ?? 0;
   return {
     key: after.key,

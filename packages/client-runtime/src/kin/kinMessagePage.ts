@@ -10,6 +10,7 @@ import {
   type KinMessage,
   type KinMessageLink,
   type KinPageSection,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import {
   formatComposerContextHref,
@@ -116,11 +117,7 @@ export function kinPageView(markdown: string, brief = false): KinPageView {
   };
 }
 
-const briefDate = new Intl.DateTimeFormat(undefined, {
-  weekday: "long",
-  day: "numeric",
-  month: "long",
-});
+const briefDate = kinWhenFormat("longDay");
 
 /** A brief's head: "Good morning, Rhea" by the reader's time of day when it came, and its date. */
 export function kinBriefHead(createdAt: string, firstName: string | null) {

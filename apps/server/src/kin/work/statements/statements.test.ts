@@ -57,7 +57,7 @@ import * as LeadWork from "../leadWork.ts";
 import { OPEN_INVOICE_NOTE } from "./statementCard.ts";
 import { moneySummary } from "../moneyViews.ts";
 import * as OwnerStatements from "../ownerStatements.ts";
-import { defineList, PRESETS } from "../registers.ts";
+import { defineList, PRESETS, presetDefinition } from "../registers.ts";
 import { makeKinWorkHandlers } from "../rpcHandlers.ts";
 import { readStatementFile } from "./statementFiles.ts";
 import { answerCurrencyCard } from "./statementReview.ts";
@@ -224,7 +224,11 @@ const seed = Effect.gen(function* () {
       worker_projects_json, owner_chat_id)
     VALUES (${lead}, ${orgId}, 'Chief of staff', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
   for (const id of ["invoices", "expenses"] as const)
-    yield* defineList(orgId, { _tag: "new", id, ...PRESETS[id], definition: PRESETS[id] }, NOW);
+    yield* defineList(
+      orgId,
+      { _tag: "new", id, ...PRESETS[id], definition: presetDefinition(id, "INR") },
+      NOW,
+    );
   const client = (title: string) =>
     records
       .create(orgId, owner, {
@@ -1861,7 +1865,12 @@ describe("bank statement safety", () => {
           FROM kin_record_payments WHERE voided_at IS NULL`;
         yield* defineList(
           orgId,
-          { _tag: "new", id: "receipts", ...PRESETS.receipts, definition: PRESETS.receipts },
+          {
+            _tag: "new",
+            id: "receipts",
+            ...PRESETS.receipts,
+            definition: presetDefinition("receipts", "INR"),
+          },
           NOW,
         );
         const receipt = yield* records.create(orgId, owner, {
@@ -2391,7 +2400,12 @@ describe("bank statement safety", () => {
         WHERE r.key = ${keys.exact}`;
       yield* defineList(
         orgId,
-        { _tag: "new", id: "receipts", ...PRESETS.receipts, definition: PRESETS.receipts },
+        {
+          _tag: "new",
+          id: "receipts",
+          ...PRESETS.receipts,
+          definition: presetDefinition("receipts", "INR"),
+        },
         NOW,
       );
       const receipt = yield* records.create(orgId, owner, {

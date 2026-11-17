@@ -38,7 +38,7 @@ const deferral = (state: Record<string, unknown> = {}, overrides: Record<string,
       title: "Rate limiting",
       dueAt: DUE,
       onDue: "start",
-      text: "Deferred to Fri 13 Nov, 9:00. I'll start then.",
+      text: "Deferred to Fri, Nov 13, 9:00 AM. I'll start then.",
       ...state,
     },
     source: null,
@@ -63,15 +63,15 @@ describe("kinDeferralCardView", () => {
     expect(confirmed.phase).toBe("confirmed");
     expect(confirmed.title).toBe("Rate limiting");
     // The host's own "Deferred to …" text repeats the local line, so it is dropped.
-    expect(confirmed.lines).toEqual(["Set for Fri 13 Nov, 9:00. I'll start then."]);
+    expect(confirmed.lines).toEqual(["Set for Fri, Nov 13, 9:00 AM. I'll start then."]);
     expect(confirmed.eyebrow).toBe("Scheduled");
     expect(view(deferral({ onDue: "remind" })).eyebrow).toBe("Reminder");
     expect(confirmed.countdown).toEqual({ to: Date.parse(DUE), kind: "due" });
     expect(view(deferral({ onDue: "remind", text: "" })).lines).toEqual([
-      "Set for Fri 13 Nov, 9:00. I'll remind you then.",
+      "Set for Fri, Nov 13, 9:00 AM. I'll remind you then.",
     ]);
     expect(view(deferral({ text: "Waiting on the API review." })).lines).toEqual([
-      "Set for Fri 13 Nov, 9:00. I'll start then.",
+      "Set for Fri, Nov 13, 9:00 AM. I'll start then.",
       "Waiting on the API review.",
     ]);
 
@@ -97,7 +97,7 @@ describe("kinDeferralCardView", () => {
     [
       "heads_up names the start time, not the host's owner-zone text",
       { phase: "heads_up", text: "Starting Rate limiting at 9:00." },
-      ["Starting at 9:00."],
+      ["Starting at 9:00 AM."],
       { to: Date.parse(DUE), kind: "start" },
     ],
     [
@@ -105,26 +105,26 @@ describe("kinDeferralCardView", () => {
       {
         phase: "heads_up",
         graceEndsAt: GRACE,
-        text: "Starting Rate limiting at 9:30. This was due at 9:00.",
+        text: "Starting Rate limiting at 9:30. This was due at 9:00 AM.",
       },
-      ["This was due at 9:00.", "Starting at 9:30."],
+      ["This was due at 9:00 AM.", "Starting at 9:30 AM."],
       { to: Date.parse(GRACE), kind: "start" },
     ],
     [
       "asked shows the host's text, which names what changed",
       {
         phase: "asked",
-        text: "Rate limiting is due at 9:00. Start it, move it to Monday, or cancel it? I won't start it on my own: Kin is at L1, below L2.",
+        text: "Rate limiting is due at 9:00 AM. Start it, move it to Monday, or cancel it? I won't start it on my own: Kin is at L1, below L2.",
       },
       [
-        "Rate limiting is due at 9:00. Start it, move it to Monday, or cancel it? I won't start it on my own: Kin is at L1, below L2.",
+        "Rate limiting is due at 9:00 AM. Start it, move it to Monday, or cancel it? I won't start it on my own: Kin is at L1, below L2.",
       ],
       null,
     ],
     [
       "asked without text still asks",
       { phase: "asked", text: "" },
-      ["Due at Fri 13 Nov, 9:00. Start it, move it to Monday, or cancel it?"],
+      ["Due at Fri, Nov 13, 9:00 AM. Start it, move it to Monday, or cancel it?"],
       null,
     ],
     ["started", { phase: "started", text: "" }, ["Started."], null],
@@ -140,7 +140,7 @@ describe("kinDeferralCardView", () => {
     expect(asked.eyebrow).toBe("Needs your decision");
     expect(asked.accessibilityLabel).toBe("Scheduled: Rate limiting. Due at 9:00. Start it?");
     expect(view(deferral({ text: "Waiting on lane A…" })).accessibilityLabel).toBe(
-      "Scheduled: Rate limiting. Set for Fri 13 Nov, 9:00. I'll start then. Waiting on lane A…",
+      "Scheduled: Rate limiting. Set for Fri, Nov 13, 9:00 AM. I'll start then. Waiting on lane A…",
     );
   });
 
@@ -160,12 +160,12 @@ describe("kinDeferralCardView", () => {
 
   it("writes times in the given timezone", () => {
     const due = Date.parse(DUE);
-    expect(formatKinDeferralTime(due, "UTC")).toBe("Fri 13 Nov, 9:00");
-    expect(formatKinDeferralTime(due, "Asia/Kolkata")).toBe("Fri 13 Nov, 14:30");
-    expect(formatKinDeferralTime(due, "America/Los_Angeles")).toBe("Fri 13 Nov, 1:00");
-    expect(formatKinDeferralTime(due, "Pacific/Auckland")).toBe("Fri 13 Nov, 22:00");
+    expect(formatKinDeferralTime(due, "UTC")).toBe("Fri, Nov 13, 9:00 AM");
+    expect(formatKinDeferralTime(due, "Asia/Kolkata")).toBe("Fri, Nov 13, 2:30 PM");
+    expect(formatKinDeferralTime(due, "America/Los_Angeles")).toBe("Fri, Nov 13, 1:00 AM");
+    expect(formatKinDeferralTime(due, "Pacific/Auckland")).toBe("Fri, Nov 13, 10:00 PM");
     expect(formatKinDeferralTime(Date.parse("2026-11-13T03:00:00.000Z"), "America/New_York")).toBe(
-      "Thu 12 Nov, 22:00",
+      "Thu, Nov 12, 10:00 PM",
     );
   });
 
@@ -173,8 +173,8 @@ describe("kinDeferralCardView", () => {
     using _parts = vi
       .spyOn(Intl.DateTimeFormat.prototype, "formatToParts")
       .mockReturnValue([{ type: "literal", value: "?" }]);
-    expect(formatKinDeferralTime(Date.parse(DUE), "Europe/Lisbon")).toBe("Fri 13 Nov, 9:00");
-    expect(formatKinDeferralClock(Date.parse("2026-11-13T23:05:00.000Z"), "UTC")).toBe("23:05");
+    expect(formatKinDeferralTime(Date.parse(DUE), "Europe/Lisbon")).toBe("Fri, Nov 13, 9:00 AM");
+    expect(formatKinDeferralClock(Date.parse("2026-11-13T23:05:00.000Z"), "UTC")).toBe("11:05 PM");
   });
 
   it("follows the device when its timezone changes", () => {
@@ -182,9 +182,9 @@ describe("kinDeferralCardView", () => {
     const original = process.env.TZ;
     try {
       process.env.TZ = "UTC";
-      expect(formatKinDeferralTime(due)).toBe("Fri 13 Nov, 9:00");
+      expect(formatKinDeferralTime(due)).toBe("Fri, Nov 13, 9:00 AM");
       process.env.TZ = "Asia/Kolkata";
-      expect(formatKinDeferralTime(due)).toBe("Fri 13 Nov, 14:30");
+      expect(formatKinDeferralTime(due)).toBe("Fri, Nov 13, 2:30 PM");
     } finally {
       if (original === undefined) delete process.env.TZ;
       else process.env.TZ = original;

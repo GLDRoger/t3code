@@ -1,4 +1,8 @@
 import {
+  formatKinMoney,
+  kinCompactNumber,
+  kinCurrency,
+  kinGroupDigits,
   KinChartCardState,
   type KinChartColor,
   type KinChartKind,
@@ -100,70 +104,18 @@ export interface KinChartView {
 
 const MINUS = "−";
 const MISSING = "–";
-const NO_MINOR_UNIT = new Set(
-  "BIF CLP DJF GNF ISK JPY KMF KRW PYG RWF UGX UYI VND VUV XAF XOF XPF".split(" "),
-);
-const THREE_MINOR_DIGITS = new Set("BHD IQD JOD KWD LYD OMR TND".split(" "));
-/** How each currency is written before an amount; typed amounts are read back with the same table. */
-export const KIN_CURRENCY_SYMBOLS: Readonly<Record<string, string>> = {
-  INR: "₹",
-  USD: "$",
-  EUR: "€",
-  GBP: "£",
-  JPY: "¥",
-  CNY: "CN¥",
-  AUD: "A$",
-  CAD: "CA$",
-  SGD: "S$",
-  HKD: "HK$",
-  NZD: "NZ$",
-};
-
-const minorDigits = (currency: string) =>
-  NO_MINOR_UNIT.has(currency) ? 0 : THREE_MINOR_DIGITS.has(currency) ? 3 : 2;
 /** One whole unit of what a chart counts: a rupee in paise, or simply 1. */
 export const kinChartWholeUnit = (unit: KinChartUnit) =>
-  unit.kind === "money" ? 10 ** minorDigits(unit.currency) : 1;
-const symbol = (currency: string) => KIN_CURRENCY_SYMBOLS[currency] ?? `${currency} `;
-
-// Indian grouping: the last three digits, then pairs (12,34,567).
-const group = (digits: string, indian: boolean) =>
-  indian && digits.length > 3
-    ? `${digits.slice(0, -3).replace(/\B(?=(\d{2})+(?!\d))/g, ",")},${digits.slice(-3)}`
-    : digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  unit.kind === "money" ? 10 ** kinCurrency(unit.currency).decimals : 1;
 
 const trimmed = (value: number, digits: number) => {
   const text = value.toFixed(digits);
   return text.includes(".") ? text.replace(/\.?0+$/, "") : text;
 };
 
-const decimal = (value: number, indian: boolean) => {
-  const [whole, fraction] = trimmed(value, 2).split(".");
-  return `${group(whole!, indian)}${fraction === undefined ? "" : `.${fraction}`}`;
-};
-
-const SCALES = {
-  indian: [
-    [1e7, "Cr"],
-    [1e5, "L"],
-    [1e3, "K"],
-  ],
-  western: [
-    [1e9, "B"],
-    [1e6, "M"],
-    [1e3, "K"],
-  ],
-} as const;
-
-const compact = (value: number, indian: boolean) => {
-  for (const [size, suffix] of SCALES[indian ? "indian" : "western"])
-    if (value >= size) return `${trimmed(value / size, 2)}${suffix}`;
-  return trimmed(value, 2);
-};
-
 /**
- * A chart value as text. Money arrives in whole minor units and is split with integer maths, so
- * the full form is exact; INR groups in lakh and crore. `compact` is for an axis.
+ * A chart value as text. Money goes through Kin's one money format, exact in full form; `compact`
+ * is for an axis.
  */
 export function formatKinChartValue(
   unit: KinChartUnit,
@@ -175,16 +127,16 @@ export function formatKinChartValue(
   const sign = value < 0 ? MINUS : "";
   const size = Math.abs(value);
   if (unit.kind === "percent") return `${sign}${trimmed(size, 2)}%`;
-  if (unit.kind === "count")
-    return `${sign}${style === "compact" ? compact(size, false) : decimal(size, false)}`;
-  const digits = minorDigits(unit.currency);
-  const indian = unit.currency === "INR";
-  const scale = 10 ** digits;
-  if (style === "compact") return `${sign}${symbol(unit.currency)}${compact(size / scale, indian)}`;
-  const minor = size % scale;
-  const fraction =
-    digits > 0 && (keepMinor || minor !== 0) ? `.${String(minor).padStart(digits, "0")}` : "";
-  return `${sign}${symbol(unit.currency)}${group(String(Math.floor(size / scale)), indian)}${fraction}`;
+  if (unit.kind === "count") {
+    if (style === "compact") return `${sign}${kinCompactNumber(size, "western")}`;
+    const [whole, fraction] = trimmed(size, 2).split(".");
+    return `${sign}${kinGroupDigits(whole!, "western")}${fraction === undefined ? "" : `.${fraction}`}`;
+  }
+  return formatKinMoney(Math.round(value), unit.currency, {
+    style,
+    cents: keepMinor ? "always" : "some",
+    minus: MINUS,
+  });
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

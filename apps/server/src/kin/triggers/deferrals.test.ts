@@ -317,7 +317,7 @@ it.effect("unchanged recheck, heads-up, silence, then starts once at due", () =>
     assert.equal((yield* runOf("def-1"))?.state, "heads_up");
     const headsUp = yield* cardOf("def-1");
     assert.equal(headsUp.phase, "heads_up");
-    assert.equal(headsUp.text, "Starting def-1 at 9:00.");
+    assert.equal(headsUp.text, "Starting def-1 at 09:00.");
 
     yield* tick(headsUpAt + 15 * 60_000);
     assert.equal((yield* runOf("def-1"))?.state, "heads_up");
@@ -510,7 +510,7 @@ it.effect(
       assert.deepStrictEqual(yield* runOf("def-1"), { state: "armed", dueAt: nextDue });
       const card = yield* cardOf("def-1");
       assert.equal(card.phase, undefined);
-      assert.equal(card.text, "Deferred to Mon 16 Nov, 9:00. I'll start then.");
+      assert.equal(card.text, "Deferred to Mon 16 Nov, 09:00. I'll start then.");
     }).pipe(openGates(new Map()), Effect.provide(layerFor(items)));
   },
 );
@@ -532,7 +532,7 @@ it.effect(
       assert.equal((yield* runOf("def-1"))?.state, "asked");
       const asked = (yield* cardOf("def-1")).text;
       assert.include(asked, "it's more than 30 minutes late");
-      assert.include(asked, "This was due at 9:00.");
+      assert.include(asked, "This was due at 09:00.");
 
       assert.equal((yield* runOf("def-2"))?.state, "grace");
       const grace = yield* cardOf("def-2");
@@ -721,14 +721,14 @@ it.effect("remind, ask and chase act at due, noting lateness", () => {
     assert.isAbove(reminder?.lateByMs ?? 0, 10 * 60_000);
     assert.isTrue(
       messages.some(({ body }) =>
-        body.includes("def-c was due Fri 13 Nov, 9:00. What's the status?"),
+        body.includes("def-c was due Fri 13 Nov, 09:00. What's the status?"),
       ),
     );
     assert.equal((yield* runOf("def-r"))?.state, "reminded");
     assert.equal((yield* runOf("def-a"))?.state, "asked");
     const asked = yield* cardOf("def-a");
     assert.equal(asked.phase, "asked");
-    assert.include(asked.text, "This was due at 9:00.");
+    assert.include(asked.text, "This was due at 09:00.");
     assert.equal((yield* runOf("def-c"))?.state, "chased");
     const ledger =
       yield* sql`SELECT item_id FROM kin_ping_ledger WHERE org_id = ${orgId} ORDER BY item_id`;
@@ -738,7 +738,7 @@ it.effect("remind, ask and chase act at due, noting lateness", () => {
     // A fire that can't be handled is consumed after telling the owner.
     assert.isTrue(
       messages.some(
-        ({ body }) => body === "I couldn't handle the deferral def-x due Fri 13 Nov, 9:00.",
+        ({ body }) => body === "I couldn't handle the deferral def-x due Fri 13 Nov, 09:00.",
       ),
     );
     assert.equal((yield* runOf("def-x"))?.state, "armed");

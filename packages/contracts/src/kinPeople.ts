@@ -423,3 +423,24 @@ export const KIN_PEOPLE_RPC_SCOPES = {
   (typeof KIN_PEOPLE_WS_METHODS)[keyof typeof KIN_PEOPLE_WS_METHODS],
   AuthEnvironmentScope
 >;
+
+/**
+ * Whether a URL's host reaches only the machine it runs on, so an invite link to it opens for no
+ * one else: loopback names and addresses. A private, link-local, `.local` or tailnet address
+ * reaches teammates on that network, so it isn't.
+ */
+export const kinIsLocalOnlyHost = (hostname: string) => {
+  const host = hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "");
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "0.0.0.0" ||
+    host === "::" ||
+    host === "::1" ||
+    /^127(?:\.\d{1,3}){3}$/.test(host) ||
+    /^::ffff:(?:127(?:\.\d{1,3}){3}|7f[0-9a-f]{2}:[0-9a-f]{1,4})$/.test(host)
+  );
+};

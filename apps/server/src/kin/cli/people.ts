@@ -1,6 +1,7 @@
 import {
   KinChatError,
   KinInviteId,
+  kinIsLocalOnlyHost,
   KinPeopleRpcs,
   KinOrgId,
   KinPersonId,
@@ -118,7 +119,7 @@ export const peopleCommand = Command.make("people").pipe(
               return yield* new KinPeopleCliError({
                 message: "Use an http or https server URL without credentials.",
               });
-            if (["127.0.0.1", "localhost", "[::1]"].includes(base.hostname))
+            if (kinIsLocalOnlyHost(base.hostname))
               yield* Console.error(
                 "This link works only on this machine. Use --url with a server address your teammate can reach.",
               );

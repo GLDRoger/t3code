@@ -1,3 +1,4 @@
+import { kinWhenFormat } from "@t3tools/contracts";
 import type {
   KinChatSummary,
   KinLeadProfile,
@@ -75,14 +76,10 @@ export function kinRestoreCopy(name: string): {
   };
 }
 
-const dayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
-const dayYearFormat = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
+const dayFormat = kinWhenFormat("date");
+const dayYearFormat = kinWhenFormat("dateYear");
 
-const yearFormat = new Intl.DateTimeFormat(undefined, { year: "numeric" });
+const yearFormat = kinWhenFormat("year");
 
 /** "Retired today", "Retired 11 Nov", "Retired 11 Nov 2025". */
 export function kinRetiredWhen(at: string | undefined, nowMs: number): string {

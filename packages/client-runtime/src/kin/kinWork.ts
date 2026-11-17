@@ -23,6 +23,8 @@ import {
   type KinWorkListInput,
   type KinWorkPrincipal,
   type KinWorkSummary,
+  kinWhenFormat,
+  kinWhenParts,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
@@ -403,17 +405,9 @@ const STATE_LABEL: Record<KinRecordState, string> = {
   dropped: "Dropped",
 };
 
-const dayFormat = new Intl.DateTimeFormat(undefined, {
-  weekday: "short",
-  day: "numeric",
-  month: "short",
-});
-const dayYearFormat = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-});
-const clockFormat = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const dayFormat = kinWhenFormat("day");
+const dayYearFormat = kinWhenFormat("dateYear");
+const clockFormat = kinWhenFormat("time");
 
 const startOfDay = (date: Date) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
@@ -429,30 +423,15 @@ function kinWorkDay(date: Date, now: Date): string {
     : dayYearFormat.format(date);
 }
 
-const zoneDays = new Map<string, Intl.DateTimeFormat | null>();
-
 /** The calendar day `date` falls on in `zone`, as that same day on this device. */
 function dayInZone(date: Date, zone: string | null): Date {
   if (zone === null) return date;
-  let format = zoneDays.get(zone);
-  if (format === undefined) {
-    try {
-      format = new Intl.DateTimeFormat("en-CA", {
-        timeZone: zone,
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      });
-    } catch {
-      format = null;
-    }
-    zoneDays.set(zone, format);
+  try {
+    const part = kinWhenParts(date, zone);
+    return new Date(part.year, part.month - 1, part.day);
+  } catch {
+    return date;
   }
-  if (format === null) return date;
-  const parts = format.formatToParts(date);
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    Number(parts.find((held) => held.type === type)?.value);
-  return new Date(part("year"), part("month") - 1, part("day"));
 }
 
 export const kinWorkDueText = (

@@ -1,4 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers read the device's clock for React render, outside an Effect runtime.
+import { formatKinWhen } from "@t3tools/contracts";
 import type { KinWaitingItem, KinWidgetId } from "@t3tools/contracts";
 
 export interface KinWaitingAskView {
@@ -26,8 +27,8 @@ function kinAskDay(atMs: number, nowMs: number): string {
   if (days === 1) return "tomorrow";
   const at = new Date(atMs);
   return days <= 6
-    ? `on ${at.toLocaleDateString("en-GB", { weekday: "long" })}`
-    : `on ${at.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }).replace(/,/g, "")}`;
+    ? `on ${formatKinWhen(at, "weekday")}`
+    : `on ${formatKinWhen(at, "day").replace(/,/g, "")}`;
 }
 
 /**

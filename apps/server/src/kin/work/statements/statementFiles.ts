@@ -8,7 +8,10 @@ import * as Schema from "effect/Schema";
 import { SaxesParser } from "saxes";
 import * as Yauzl from "yauzl";
 
+import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
+
 import { officeProblem } from "../../gendocs/officeCheck.ts";
+import { statementRegion } from "./statementRegion.ts";
 import {
   type Cell,
   cellBudget,
@@ -18,7 +21,7 @@ import {
   htmlLines,
   type Line,
   LINE_CAPS,
-  parseDay,
+  isDated,
   readFacts,
   readTable,
   type Statement,
@@ -89,12 +92,18 @@ const decodeText = (bytes: Uint8Array) => {
   return text.replace(/^﻿/, "");
 };
 
+/** Whether a sheet holds the statement's table: a probe, so any currency and either date order. */
+const readsAsTable = (lines: ReadonlyArray<Line>) =>
+  readTable(lines, { currency: "XXX", dateOrder: "dmy" })._tag === "read";
+
 /** Reads a statement file. `password` opens a protected PDF for this read only. */
 export const readStatementFile = async (
   bytes: Uint8Array,
   password?: string,
-  options: { readonly precheck?: boolean } = {},
+  /** `home` is the company's home currency, which picks the region an unlabelled file reads in. */
+  options: { readonly precheck?: boolean; readonly home?: string } = {},
 ): Promise<FileOutcome> => {
+  const home = options.home ?? KIN_DEFAULT_HOME_CURRENCY;
   if (bytes.byteLength > STATEMENT_CAPS.bytes)
     return {
       _tag: "unreadable",
@@ -116,11 +125,11 @@ export const readStatementFile = async (
   const pageLines = format === "pdf" ? (read as ReadonlyArray<ReadonlyArray<Line>>) : undefined;
   const lines = pageLines === undefined ? (read as ReadonlyArray<Line>) : pageLines.flat();
   const pages = pageLines?.map(pageText);
-  const said = currencyIn(
-    lines.map((line) => line.map((cell) => cell.text.trim()).join(" ")).join("\n"),
-  );
+  const whole = lines.map((line) => line.map((cell) => cell.text.trim()).join(" ")).join("\n");
+  const said = currencyIn(whole, home);
   if ("refused" in said) return { _tag: "unreadable", reason: said.refused };
-  const parsed = readTable(lines, said.currency);
+  const reading = { currency: said.currency, dateOrder: statementRegion(whole, home).dateOrder };
+  const parsed = readTable(lines, reading);
   const table =
     parsed._tag === "read" && "choose" in said && said.choose !== undefined
       ? { ...parsed, statement: { ...parsed.statement, currencyChoice: said.choose } }
@@ -128,7 +137,7 @@ export const readStatementFile = async (
   if (table._tag === "no_table")
     return pages === undefined
       ? { _tag: "unreadable", reason: table.reason }
-      : { _tag: "pages", pages, facts: readFacts(lines, said.currency) };
+      : { _tag: "pages", pages, facts: readFacts(lines, reading) };
   if (table.statement.rows.length > STATEMENT_CAPS.rows)
     return {
       _tag: "unreadable",
@@ -168,7 +177,7 @@ const pageText = (lines: ReadonlyArray<Line>): StatementPage => {
       out += " ".repeat(Math.max(out === "" ? 0 : 1, column - out.length)) + cell.text;
     }
     const first = line.find((cell) => cell.text !== "");
-    if (first !== undefined && parseDay(first.text) !== undefined) dated += 1;
+    if (first !== undefined && isDated(first.text)) dated += 1;
     return out.trimEnd();
   });
   return { text: text.join("\n"), dated };
@@ -653,7 +662,7 @@ const xlsxLines = async (bytes: Uint8Array): Promise<ReadonlyArray<Line> | Failu
   };
   for (const name of sheets) {
     const lines = read(name);
-    if (readTable(lines)._tag === "read") return lines;
+    if (readsAsTable(lines)) return lines;
   }
   return sheets.length === 0 ? [] : read(sheets[0]!);
 };
@@ -864,7 +873,7 @@ const xlsLines = (bytes: Uint8Array): ReadonlyArray<Line> | Failure => {
   };
   for (const one of sheets) {
     const lines = asLines(one);
-    if (readTable(lines)._tag === "read") return lines;
+    if (readsAsTable(lines)) return lines;
   }
   return sheets.length === 0 ? [] : asLines(sheets[0]!);
 };

@@ -124,7 +124,7 @@ it.effect("arms from front matter, re-arms on edits, and re-syncs without writes
       ],
     );
     const [posted] = yield* card(orgId);
-    assert.equal(posted?.state.text, "Deferred to Fri 13 Nov, 9:00. I'll start then.");
+    assert.equal(posted?.state.text, "Deferred to Fri 13 Nov, 09:00. I'll start then.");
     const [message] = yield* sql<{ body: string }>`SELECT body FROM kin_messages
       WHERE org_id = ${orgId} AND kind = 'system' ORDER BY message_id`;
     assert.equal(message?.body, posted?.state.text);
@@ -158,7 +158,7 @@ it.effect("arms from front matter, re-arms on edits, and re-syncs without writes
     );
     const [updated] = yield* card(orgId);
     assert.equal(updated?.revision, 3);
-    assert.equal(updated?.state.text, "Deferred to Mon 16 Nov, 9:00. I'll remind you then.");
+    assert.equal(updated?.state.text, "Deferred to Mon 16 Nov, 09:00. I'll remind you then.");
     const [run] = yield* sql<{ state: string; dueAt: number; onDue: string }>`
       SELECT state, due_at AS "dueAt", on_due AS "onDue" FROM kin_deferral_runs
       WHERE org_id = ${orgId} ORDER BY item_id`;

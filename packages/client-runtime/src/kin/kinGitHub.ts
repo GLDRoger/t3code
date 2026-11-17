@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format the App's set-up day for React render.
 import {
+  formatKinWhen,
   KinConnectionKey,
   type KinGitHubAgents,
   type KinGitHubAppAccount,
@@ -650,11 +651,7 @@ export function kinGitHubAgentsView(
         : KIN_GITHUB_APP_SETUP_COPY.setUpInKin(
             setUp.name ?? app,
             setUp.by,
-            new Date(setUp.at).toLocaleDateString(undefined, {
-              day: "numeric",
-              month: "short",
-              year: "numeric",
-            }),
+            formatKinWhen(new Date(setUp.at), "dateYear"),
           );
   const extras = {
     setUpLine,

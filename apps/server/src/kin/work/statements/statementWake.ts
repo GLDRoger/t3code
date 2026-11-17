@@ -7,6 +7,8 @@ import {
   KinPersonId,
   type KinOrgId,
   KinWidgetId,
+  KIN_TEXT_LOCALE,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -64,12 +66,7 @@ export const settledLine = (settled: Settled) => {
   ].join(" ");
 };
 
-const DAY = new Intl.DateTimeFormat("en-IN", {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-  timeZone: "UTC",
-});
+const DAY = kinWhenFormat("dateYear", { zone: "UTC", locale: KIN_TEXT_LOCALE });
 const day = (date: string) => DAY.format(Date.parse(`${date}T00:00:00Z`));
 /** The statement's account digits and period, as Kin read them: digits and days only. */
 const aboutOf = (stored: {

@@ -506,6 +506,24 @@ export default defineConfig({
         rules: { "t3code/kin-zoned-time": "error" },
       },
       {
+        // Money, days, times and local hosts each have one source in contracts; docs/kin/RULES.md.
+        files: [
+          "apps/server/src/kin/**",
+          "packages/client-runtime/src/kin/**",
+          "packages/contracts/src/kin*.ts",
+          "apps/web/src/kin/**",
+          "apps/web/src/components/settings/Kin*.tsx",
+          "apps/mobile/src/features/chats/**",
+        ],
+        excludeFiles: [
+          "**/*.{test,testkit}.{ts,tsx}",
+          "packages/contracts/src/kinCurrency.ts",
+          "packages/contracts/src/kinWhen.ts",
+          "packages/contracts/src/kinPeople.ts",
+        ],
+        rules: { "t3code/kin-one-format": "error" },
+      },
+      {
         // The one place that answers "may act as owner" and "is the owner himself".
         files: ["apps/server/src/kin/people/KinAccess.ts"],
         rules: { "t3code/kin-owner-level": "off" },

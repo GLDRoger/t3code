@@ -458,11 +458,11 @@ describe("KinBudget", () => {
             {
               chatId: "group",
               // On Kabir's clock where he asked; the owner's notice stays on the owner's.
-              body: "Lead will pick this up at 5:30 am: today's limit for teammates' requests is used up.",
+              body: "Lead will pick this up at 05:30: today's limit for teammates' requests is used up.",
             },
             {
               chatId: "owner-chat",
-              body: "Today's limit for teammates' requests is used up, so they wait until 12:00 am: Lead (1 request). Raise or remove it in Settings to run them now.",
+              body: "Today's limit for teammates' requests is used up, so they wait until 00:00: Lead (1 request). Raise or remove it in Settings to run them now.",
             },
           ],
         );
@@ -497,7 +497,7 @@ describe("KinBudget", () => {
         yield* sql`SELECT body FROM kin_messages WHERE org_id = ${orgId} ORDER BY message_id`,
         [
           {
-            body: "Your agents have used 80% of today's limit. At the limit only your own messages run until 12:00 am. You can raise or remove the limit in Settings.",
+            body: "Your agents have used 80% of today's limit. At the limit only your own messages run until 00:00. You can raise or remove the limit in Settings.",
           },
         ],
       );

@@ -28,6 +28,7 @@ import {
   type KinPresence,
   type KinWakeupId,
   KIN_TEAM_ROOM_TEAM_ID,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -904,7 +905,7 @@ function KinChatStateView(props: {
   return <View className="flex-1 justify-center p-4">{body}</View>;
 }
 
-const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const offlineTime = kinWhenFormat("time");
 /** The outbox had already handed the message to the host when the reader asked to take it back. */
 const alreadySending = () => Dialog.alert("It's already sending.");
 

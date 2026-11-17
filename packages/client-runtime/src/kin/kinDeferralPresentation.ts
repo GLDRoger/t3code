@@ -6,6 +6,7 @@ import {
   type KinScheduledTaskCardAction,
   type KinWidget,
   type KinWidgetsActInput,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -175,18 +176,8 @@ function formattersFor(timeZone: string | undefined) {
   let held = formatters.get(zone);
   if (held === undefined) {
     held = {
-      date: new Intl.DateTimeFormat("en-GB", {
-        timeZone: zone,
-        weekday: "short",
-        day: "numeric",
-        month: "short",
-      }),
-      time: new Intl.DateTimeFormat("en-GB", {
-        timeZone: zone,
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-      }),
+      date: kinWhenFormat("day", { zone }),
+      time: kinWhenFormat("time", { zone }),
     };
     formatters.set(zone, held);
   }

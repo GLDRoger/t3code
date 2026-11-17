@@ -20,6 +20,7 @@ import {
   kinIsPeopleChat,
   kinPageGist,
   kinPageShape,
+  kinWhenParts,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
@@ -270,12 +271,7 @@ const make = Effect.gen(function* () {
   /** The hour of the owner's day, for a brief's greeting: check-ins are his. */
   const ownerHour = Effect.fn("KinPushSender.ownerHour")(function* (orgId: KinOrgId) {
     const zone = yield* cache.ownerTimeZone(orgId);
-    const hour = new Intl.DateTimeFormat("en-GB", {
-      hour: "numeric",
-      hourCycle: "h23",
-      timeZone: zone,
-    }).format(yield* Clock.currentTimeMillis);
-    return Number(hour);
+    return kinWhenParts(yield* Clock.currentTimeMillis, zone).hour;
   });
 
   /**

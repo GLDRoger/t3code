@@ -39,6 +39,7 @@ import * as LeadAccess from "../lead/LeadAccess.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { mentionsMoney } from "../memory/sensitivity.ts";
 import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
+import { homeCurrency } from "./companyProfile.ts";
 import { indexRecord } from "./searchIndex.ts";
 import { SensitiveRefusal } from "./sensitiveReads.ts";
 import {
@@ -1894,6 +1895,7 @@ const make = Effect.gen(function* () {
     return yield* failed(
       Effect.gen(function* () {
         const now = input.at ?? (yield* Clock.currentTimeMillis);
+        const home = yield* homeCurrency(orgId).pipe(provideSql);
         const filter =
           everyEntry === true
             ? filterOf(orgId, input, now)
@@ -1938,20 +1940,27 @@ const make = Effect.gen(function* () {
             row.minor === null ? [] : [{ ...row, minor: row.minor }],
           );
           return {
-            total: addUp(priced),
+            total: addUp(priced, home),
             ...(paidOverTime
               ? {
                   owed: addUp(
                     priced
                       .filter((row) => owesIn(listDef, row.state) && row.minor > row.paid)
                       .map((row) => ({ minor: row.minor - row.paid, currency: row.currency })),
+                    home,
                   ),
                 }
               : {}),
             ...(listDef.id === "quotes"
               ? {
-                  sent: addUp(priced.filter((row) => row.state === "waiting")),
-                  accepted: addUp(priced.filter((row) => row.state === "done")),
+                  sent: addUp(
+                    priced.filter((row) => row.state === "waiting"),
+                    home,
+                  ),
+                  accepted: addUp(
+                    priced.filter((row) => row.state === "done"),
+                    home,
+                  ),
                 }
               : {}),
             ...(windowed
@@ -1960,6 +1969,7 @@ const make = Effect.gen(function* () {
                     priced
                       .filter((row) => row.received > 0)
                       .map((row) => ({ minor: row.received, currency: row.currency })),
+                    home,
                   ),
                 }
               : {}),

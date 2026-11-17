@@ -6,7 +6,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { mentionsMoney } from "../../memory/sensitivity.ts";
 import { type FieldValue, parseFields } from "../lists.ts";
-import { dayIn, DEFAULT_CURRENCY } from "../money.ts";
+import { homeCurrency } from "../companyProfile.ts";
+import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import {
   defineList,
@@ -54,7 +55,7 @@ const CATEGORIES = [
   "other",
 ];
 const STATE_LABELS = { open: "Unexplained", done: "Explained", dropped: "Ignored" } as const;
-const DEFINITION: StoredDefinition = {
+const definition = (currency: string): StoredDefinition => ({
   noun: "bank transaction",
   states: ["open", "done", "dropped"],
   stateLabels: STATE_LABELS,
@@ -63,9 +64,9 @@ const DEFINITION: StoredDefinition = {
   fields: FIELDS,
   sensitive: true,
   amount: true,
-  currency: "INR",
+  currency,
   dateLabel: "Date",
-};
+});
 const PREFIXES = ["BNK", "BTX", "BANK", "BKTX"];
 
 /** The owner's own list called Bank transactions, or Kin's; read only, so it may be neither yet. */
@@ -102,7 +103,13 @@ export const ensureBankList = Effect.fn("KinBankList.ensure")(function* (
     const prefix = PREFIXES.find((one) => !taken.some((row) => row.prefix === one)) ?? "BK9";
     yield* defineList(
       orgId,
-      { _tag: "new", id: BANK_LIST_ID, name: "Bank transactions", prefix, definition: DEFINITION },
+      {
+        _tag: "new",
+        id: BANK_LIST_ID,
+        name: "Bank transactions",
+        prefix,
+        definition: definition(yield* homeCurrency(orgId)),
+      },
       now,
     );
     return (yield* listDef(orgId, BANK_LIST_ID))!;
@@ -309,7 +316,7 @@ export const knownRows = Effect.fn("KinBankList.known")(function* (
       if (
         claimed.has(other.recordId) ||
         other.amountMinor !== row.amountMinor ||
-        (other.currency ?? DEFAULT_CURRENCY) !== statement.currency ||
+        (other.currency ?? def?.currency) !== statement.currency ||
         other.dateAt === null
       )
         return false;

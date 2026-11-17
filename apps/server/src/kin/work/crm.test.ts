@@ -43,7 +43,7 @@ import * as KinPulse from "../pulse/KinPulse.ts";
 import { sectionsOf } from "./docBody.ts";
 import { milestoneRisk } from "./projectSpine.ts";
 import { effectivelySensitive } from "./recordRows.ts";
-import { PRESETS } from "./registers.ts";
+import { presetDefinition } from "./registers.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 import * as Touches from "./touches.ts";
 import { buildWorkSection } from "./workPrompt.ts";
@@ -687,8 +687,8 @@ it.effect("every Work tool whose result shows the lead a sensitive entry marks i
     // An invoices list as if defined, and an invoice for the payment row.
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
         created_at, definition_json)
-      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)}),
-        (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(PRESETS.expenses)})`;
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))}),
+        (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
     yield* LeadWork.create(scope, {
       sourceEventId: "ask-event",
       records: [{ list: "invoices", title: "Invented October retainer", amount: "1 lakh" }],
@@ -1079,8 +1079,8 @@ it.effect(
       yield* setup("ask-event");
       yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
         created_at, definition_json)
-      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)}),
-        (${orgId}, 'quotes', 'Quotes', 'QT', 0, 0, ${JSON.stringify(PRESETS.quotes)})`;
+      VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(presetDefinition("invoices", "INR"))}),
+        (${orgId}, 'quotes', 'Quotes', 'QT', 0, 0, ${JSON.stringify(presetDefinition("quotes", "INR"))})`;
       const senses = (key: string) =>
         Effect.clockWith((clock) => clock.currentTimeMillis).pipe(
           Effect.flatMap((now) => Touches.clientSenses(orgId, now)),

@@ -8,6 +8,7 @@ import {
   type KinSendCard,
   type KinWidget,
   type KinWidgetsActInput,
+  formatKinWhen,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -111,13 +112,8 @@ export function kinQuotedInZone(quoted: string, raw: string | null): string {
   if (raw === null || !quoted.startsWith(`On ${raw}, `)) return quoted;
   const at = new Date(raw.trim());
   if (Number.isNaN(at.getTime()) || at.getTime() < Date.UTC(1995, 0, 1)) return quoted;
-  const day = at.toLocaleDateString(undefined, {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-  const time = at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const day = formatKinWhen(at, "dayYear");
+  const time = formatKinWhen(at, "time");
   return `On ${day} at ${time}, ${quoted.slice(`On ${raw}, `.length)}`;
 }
 

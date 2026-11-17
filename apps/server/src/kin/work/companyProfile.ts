@@ -1,4 +1,5 @@
 import {
+  KIN_DEFAULT_HOME_CURRENCY,
   KinChatError,
   KinCompanyLogo,
   type KinCompanyProfile,
@@ -44,7 +45,7 @@ const EMPTY: KinCompanyProfileData = {
   },
   logo: null,
   brand: { primaryColor: null, secondaryColor: null, font: null, footer: null },
-  homeCurrency: "INR",
+  homeCurrency: KIN_DEFAULT_HOME_CURRENCY,
   rates: [],
 };
 /** A client only clears the logo; a new one is Kin's copy of a file, from an agent's card. */
@@ -66,6 +67,24 @@ export const readProfile = Effect.fn("KinCompanyProfile.read")(function* (orgId:
     rev: row.rev,
     updatedAt: iso(row.updatedAt),
   } satisfies KinCompanyProfile;
+});
+
+/**
+ * What the company keeps its books in: an amount that names no currency is in it. A company that
+ * never set one, or a profile that can't be read, keeps the default.
+ */
+export const homeCurrency = Effect.fn("KinCompanyProfile.homeCurrency")(function* (
+  orgId: KinOrgId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ json: string }>`SELECT profile_json AS json
+    FROM kin_company_profile WHERE org_id = ${orgId}`.pipe(Effect.orElseSucceed(() => []));
+  return row === undefined
+    ? KIN_DEFAULT_HOME_CURRENCY
+    : Option.match(decodeProfile(row.json), {
+        onNone: () => KIN_DEFAULT_HOME_CURRENCY,
+        onSome: (profile) => profile.homeCurrency,
+      });
 });
 
 /** Only the fields given change. A `rev` other than the stored one is refused unless nothing would change. */

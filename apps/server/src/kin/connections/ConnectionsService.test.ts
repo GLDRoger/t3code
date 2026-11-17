@@ -1954,7 +1954,7 @@ describe("KinConnections sending", () => {
           });
           assert.strictEqual(event.note, ASKED);
           // Its times read plainly in the owner's zone, UTC here.
-          assert.include(JSON.stringify(cards.at(-1)), "When: Fri, Nov 20, 9:30 AM to 10:00 AM");
+          assert.include(JSON.stringify(cards.at(-1)), "When: Fri 20 Nov, 09:30 to 10:00");
           const booked = yield* answer(cards.at(-1)!.widgetId, ownerId, true);
           yield* connections.sendAsk(orgId, booked!.askId);
           const saved = vendor.vendor.sent.at(-1)!;

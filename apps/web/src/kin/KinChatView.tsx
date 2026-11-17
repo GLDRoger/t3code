@@ -95,6 +95,7 @@ import {
   type KinPresence,
   type KinReactionEmoji,
   type KinWakeupId,
+  kinWhenFormat,
 } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import * as Exit from "effect/Exit";
@@ -562,7 +563,7 @@ function KinChatStateView(props: {
   );
 }
 
-const offlineTime = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const offlineTime = kinWhenFormat("time");
 
 type KinChatRow =
   | KinFeedRow

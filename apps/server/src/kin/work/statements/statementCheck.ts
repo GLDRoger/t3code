@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a maintainer's check of the built reader, on one file named on the command line.
+import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import * as NodeFS from "node:fs";
 
 import * as Effect from "effect/Effect";
@@ -11,7 +12,9 @@ import { provenTable } from "./statementReading.ts";
  * it, from a built artefact too. Prints what happened, never the file's rows.
  */
 export const runStatementCheck = async (path: string) => {
-  const run = await Effect.runPromise(runReader(new Uint8Array(NodeFS.readFileSync(path))));
+  const run = await Effect.runPromise(
+    runReader(new Uint8Array(NodeFS.readFileSync(path)), KIN_DEFAULT_HOME_CURRENCY),
+  );
   process.stdout.write(
     `${JSON.stringify({
       outcome: run.outcome._tag,

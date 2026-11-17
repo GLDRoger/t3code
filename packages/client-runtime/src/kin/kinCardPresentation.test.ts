@@ -467,7 +467,7 @@ describe("reminder and scheduled task cards", () => {
     expect(kinCardView(reminder({ status: "due" }), HOST, known()).kind).toBe("deferral");
     const due = kinReminderCardView(reminder({ status: "due" }), zone)!;
     expect(due).toMatchObject({ eyebrow: "Reminder", title: "Send the invoice" });
-    expect(due.lines).toEqual(["Due Fri 13 Nov, 9:00."]);
+    expect(due.lines).toEqual(["Due Fri, Nov 13, 9:00 AM."]);
     expect(due.actions.map((action) => action.id)).toEqual([
       "done",
       "snooze_10m",
@@ -479,7 +479,7 @@ describe("reminder and scheduled task cards", () => {
       reminder({ status: "snoozed", snoozedUntil: "2026-11-13T03:40:00.000Z" }),
       zone,
     )!;
-    expect(snoozed.lines).toEqual(["Snoozed until Fri 13 Nov, 9:10."]);
+    expect(snoozed.lines).toEqual(["Snoozed until Fri, Nov 13, 9:10 AM."]);
     expect(snoozed.actions).toHaveLength(5);
     expect(kinReminderCardView(reminder({ status: "done" }), zone)!.actions).toEqual([]);
     expect(kinReminderCardView(reminder({ status: "bogus" }), zone)).toBeNull();
@@ -497,7 +497,7 @@ describe("reminder and scheduled task cards", () => {
 
   it("shows when a scheduled task runs, how the last run went, and its controls", () => {
     const active = kinScheduledTaskCardView(scheduled({}), zone)!;
-    expect(active.lines).toEqual(["Weekdays at 8:00.", "Next run Tue 10 Nov, 8:00."]);
+    expect(active.lines).toEqual(["Weekdays at 8:00.", "Next run Tue, Nov 10, 8:00 AM."]);
     expect(active.countdown).toEqual({ to: Date.parse("2026-11-10T02:30:00.000Z"), kind: "run" });
     expect(active.actions.map((action) => action.id)).toEqual([
       "run_now",
@@ -525,7 +525,7 @@ describe("reminder and scheduled task cards", () => {
       }),
       zone,
     )!;
-    expect(posted.lines.at(-1)).toBe("Last run Tue 10 Nov, 8:00: Three PRs are open.");
+    expect(posted.lines.at(-1)).toBe("Last run Tue, Nov 10, 8:00 AM: Three PRs are open.");
     const running = kinScheduledTaskCardView(
       scheduled({ lastRun: { at: "2026-11-10T02:30:00.000Z", status: "running" } }),
       zone,
@@ -603,7 +603,7 @@ describe("digest cards", () => {
 
   it("reads a raw timestamp in a note as a time", () => {
     const [noted] = digest(routine([row({ note: "review by 2026-11-09T16:09:12.531Z" })])).rows;
-    expect(noted!.note).toMatch(/^review by \w{3} \d+ Nov, \d+:\d{2}$/);
+    expect(noted!.note).toMatch(/^review by \w{3}, Nov \d+, \d+:\d{2} [AP]M$/);
   });
 
   it.each([

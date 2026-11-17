@@ -1,3 +1,4 @@
+import { formatKinWhen } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import {
@@ -75,12 +76,7 @@ export function KinAgentChanged(props: {
             >
               <ListRow
                 label={kinAgentChangeLine(change, names)}
-                description={new Date(change.at).toLocaleString(undefined, {
-                  day: "numeric",
-                  month: "short",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
+                description={formatKinWhen(new Date(change.at), "dateTime")}
                 onPress={() => open(change)}
               />
               {offer.kind === "undo" && canUndo ? (

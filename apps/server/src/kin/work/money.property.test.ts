@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Schema from "effect/Schema";
 
-import { addUp, DEFAULT_CURRENCY, formatMoney, parseAmount } from "./money.ts";
+import { addUp, formatMoney, parseAmount } from "./money.ts";
 
 // Invented amounts only.
 const CURRENCIES = ["INR", "USD", "EUR", "GBP", "JPY", "KWD", "AED"] as const;
@@ -13,19 +13,19 @@ const money = Arbitrary.all({ minor: int(0, 1_000_000_000_000), currency });
 const rows = Arbitrary.array(money, { maxLength: 30 });
 
 it.prop(
-  "each currency gets one total, the exact sum of its own rows, and no total mixes two",
-  [rows],
-  ([given]) => {
-    const totals = addUp(given);
+  "each currency gets one total, the exact sum of its own rows, home first, and no total mixes two",
+  [rows, currency],
+  ([given, home]) => {
+    const totals = addUp(given, home);
     const currencies = totals.map((one) => one.currency);
     assert.deepStrictEqual(
       currencies.toSorted(),
       [...new Set(given.map((one) => one.currency))].toSorted(),
     );
-    if (currencies.includes(DEFAULT_CURRENCY)) assert.strictEqual(currencies[0], DEFAULT_CURRENCY);
+    if (currencies.includes(home)) assert.strictEqual(currencies[0], home);
     assert.deepStrictEqual(
-      currencies.slice(currencies[0] === DEFAULT_CURRENCY ? 1 : 0),
-      currencies.filter((code) => code !== DEFAULT_CURRENCY).toSorted(),
+      currencies.slice(currencies[0] === home ? 1 : 0),
+      currencies.filter((code) => code !== home).toSorted(),
     );
     for (const total of totals) {
       const own = given.filter((one) => one.currency === total.currency);
@@ -42,8 +42,9 @@ it.prop(
   "totals don't depend on the rows' order or on how they are split",
   [rows, rows],
   ([a, b]) => {
-    assert.deepStrictEqual(addUp([...a, ...b]), addUp([...b, ...a]));
-    assert.deepStrictEqual(addUp([...a, ...b]), addUp([...addUp(a), ...addUp(b)]));
+    const sum = (amounts: Parameters<typeof addUp>[0]) => addUp(amounts, "INR");
+    assert.deepStrictEqual(sum([...a, ...b]), sum([...b, ...a]));
+    assert.deepStrictEqual(sum([...a, ...b]), sum([...sum(a), ...sum(b)]));
   },
 );
 
