@@ -34,6 +34,7 @@ const PrimaryEnvironmentRequestOperation = Schema.Literals([
   "list-client-sessions",
   "revoke-client-session",
   "revoke-other-client-sessions",
+  "sign-out",
 ]);
 type PrimaryEnvironmentRequestOperation = typeof PrimaryEnvironmentRequestOperation.Type;
 
@@ -190,6 +191,20 @@ export async function fetchSessionState(): Promise<AuthSessionState> {
       });
     }
   });
+}
+
+/** Ends this browser's own session on its server and drops its cookie. */
+export async function signOutThisBrowser(): Promise<void> {
+  try {
+    await runPrimaryHttp(
+      PrimaryEnvironmentHttpClient.pipe(
+        Effect.flatMap((client) => client.auth.signOut({ headers: {} })),
+      ),
+    );
+  } catch (error) {
+    throw PrimaryEnvironmentRequestError.fromCause({ operation: "sign-out", cause: error });
+  }
+  resolvedAuthenticatedGateState = null;
 }
 
 function readHttpApiStatus(error: unknown): number | null {

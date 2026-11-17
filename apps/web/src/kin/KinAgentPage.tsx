@@ -58,6 +58,8 @@ import { KinAgentSection, KinLeadAccess } from "./KinLeadAccess";
 import { kinLeadFormAtom } from "./kinLeadForm";
 import { KIN_PLACE_PATH, withKinAgentPage } from "./kinPlaces";
 import { KinLoadFailed } from "./KinWorkParts";
+import { kinNewLeadTarget } from "./KinNewLeadButton";
+import { useKinHost } from "./useKinHost";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
 
@@ -98,17 +100,21 @@ function useKinAgentPageCan(environmentId: EnvironmentId) {
   });
 }
 
-/** Mounted once on Kin's page, like the lead form. */
+/**
+ * Mounted once on Kin's page, like the lead form. An address with no company in it (bare `/kin`,
+ * where Settings → Agents links from) opens the page on Kin's own host and company.
+ */
 export function KinAgentPageHost() {
   const { agent } = useSearch({ from: "/_chat/kin" });
   const params = useParams({ strict: false });
-  if (agent === undefined || params.environmentId === undefined || params.orgId === undefined)
-    return null;
-  const target = {
-    environmentId: params.environmentId as EnvironmentId,
-    orgId: KinOrgId.make(params.orgId),
-    agentId: agent,
-  };
+  const fallback = kinNewLeadTarget(useKinHost());
+  if (agent === undefined) return null;
+  const at =
+    params.environmentId !== undefined && params.orgId !== undefined
+      ? { environmentId: params.environmentId as EnvironmentId, orgId: KinOrgId.make(params.orgId) }
+      : fallback;
+  if (at === null) return null;
+  const target = { environmentId: at.environmentId, orgId: at.orgId, agentId: agent };
   return <KinAgentSheet key={agent} target={target} />;
 }
 
