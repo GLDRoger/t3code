@@ -837,12 +837,6 @@ export const handOver = Effect.fn("KinWork.handOver")(function* (
       reason: "not_allowed",
       message: "Only the owner or a co-owner gives someone else's tasks away.",
     });
-  if (samePrincipal(input.to, input.from))
-    return yield* new KinChatError({
-      reason: "invalid_state",
-      message: "Choose someone else to give them to.",
-    });
-  if (viewer.teammate) yield* teamAgent(person, input.to);
   const sql = yield* SqlClient.SqlClient;
   // Whoever holds a task sees it, and the owner level sees all: nothing listed here is hidden.
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- the holder's own tasks, or an owner-level caller's
@@ -851,7 +845,14 @@ export const handOver = Effect.fn("KinWork.handOver")(function* (
       AND owner_id = ${fromId} AND state IN ${sql.in(OPEN_STATES)}
       ${input.keys === undefined ? sql`` : sql`AND key IN ${sql.in(input.keys.length === 0 ? [""] : input.keys)}`}
     ORDER BY key`.pipe(workFailure);
+  // The count comes before anyone is chosen, so it names no receiver to check.
   if (input.dryRun === true) return { keys: held.map((row) => row.key), kept: 0 };
+  if (samePrincipal(input.to, input.from))
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "Choose someone else to give them to.",
+    });
+  if (viewer.teammate) yield* teamAgent(person, input.to);
   const records = yield* KinRecords;
   const moved: Array<string> = [];
   const notices: Array<AssignNotice> = [];

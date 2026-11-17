@@ -505,7 +505,7 @@ it.effect(
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 41);
+      assert.lengthOf(methods, 42);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),
@@ -2630,12 +2630,12 @@ it.effect(
         ),
         { reason: "not_allowed" },
       );
-      // The count first, then the move: open ones only, each recorded as a reassignment.
+      // The count first, before anyone is chosen, then the move: open ones only, each recorded as a reassignment.
       assert.deepStrictEqual(
         yield* OwnerWork.handOver([meera], {
           orgId,
           from: mateHolds,
-          to: meeraHolds,
+          to: mateHolds,
           dryRun: true,
         }),
         { keys: [keys[0], keys[1]], kept: 0 },
