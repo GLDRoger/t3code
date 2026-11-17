@@ -34,6 +34,8 @@ import {
   kinWorkOverview,
   kinWorkRow,
   kinWorkRowMarked,
+  kinWorkOffline,
+  kinWorkOnlyOwner,
   kinWorkScreenState,
   kinWorkShown,
   type KinWorkNames,
@@ -190,48 +192,89 @@ describe("kinWorkScreenState", () => {
   const refusal: Input["live"] = AsyncResult.failure(
     Cause.fail(new KinChatError({ reason: "not_allowed", message: "Only the owner." })),
   );
+  const held = (failed = false): Input["live"] =>
+    AsyncResult.success({
+      seq: 4,
+      summary: failed ? null : ({} as never),
+      failed,
+      changed: {},
+      unnamed: 0,
+      lists: {},
+      unlisted: 0,
+      rows: null,
+    });
   const cases: ReadonlyArray<readonly [string, Input, string]> = [
     [
-      "a session without the scope",
-      { allowed: false, connected: true, live: AsyncResult.initial() },
+      "a session whose scopes are known and lack it",
+      { allowed: "refused", link: "connected", live: AsyncResult.initial() },
       "refused",
     ],
     [
       "a host that refuses the viewer",
-      { allowed: true, connected: true, live: refusal },
+      { allowed: "granted", link: "connected", live: refusal },
       "refused",
     ],
     [
-      "nothing read and no connection",
-      { allowed: true, connected: false, live: AsyncResult.initial() },
+      "scopes not known while the first connection is under way",
+      { allowed: "unknown", link: "connecting", live: AsyncResult.initial() },
+      "loading",
+    ],
+    [
+      "scopes not known yet on a live connection",
+      { allowed: "unknown", link: "connected", live: AsyncResult.initial() },
+      "loading",
+    ],
+    [
+      "scopes not known and the connection failed",
+      { allowed: "unknown", link: "offline", live: AsyncResult.initial() },
       "offline",
     ],
     [
+      "nothing read and no connection",
+      { allowed: "granted", link: "offline", live: AsyncResult.initial() },
+      "offline",
+    ],
+    [
+      "nothing read while connecting",
+      { allowed: "granted", link: "connecting", live: AsyncResult.initial() },
+      "loading",
+    ],
+    [
       "nothing read yet",
-      { allowed: true, connected: true, live: AsyncResult.initial() },
+      { allowed: "granted", link: "connected", live: AsyncResult.initial() },
       "loading",
     ],
     [
       "counts that couldn't be read",
-      {
-        allowed: true,
-        connected: true,
-        live: AsyncResult.success({
-          seq: 4,
-          summary: null,
-          failed: true,
-          changed: {},
-          unnamed: 0,
-          lists: {},
-          unlisted: 0,
-          rows: null,
-        }),
-      },
+      { allowed: "granted", link: "connected", live: held(true) },
       "failed",
     ],
   ];
   it.each(cases)("shows %s as %s", (_name, input, tag) => {
     expect(kinWorkScreenState(input)._tag).toBe(tag);
+  });
+
+  it.each([
+    ["connecting", false],
+    ["connected", false],
+    ["offline", true],
+  ] as const)("calls a held page stale when the link is %s: %s", (link, stale) => {
+    expect(kinWorkScreenState({ allowed: "granted", link, live: held() })).toMatchObject({
+      _tag: "ready",
+      stale,
+    });
+  });
+});
+
+describe("kinWorkOnlyOwner", () => {
+  it.each([
+    ["tasks", "Tasks are"],
+    ["money", "Money is"],
+    ["clients", "Clients are"],
+    ["docs", "Docs are"],
+  ] as const)("names %s, the page it is on", (place, starts) => {
+    expect(kinWorkOnlyOwner(place).detail.startsWith(starts)).toBe(true);
+    expect(kinWorkOffline(place).detail.startsWith(starts.split(" ")[0]!)).toBe(true);
   });
 });
 

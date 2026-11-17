@@ -32,6 +32,14 @@ const host = (probe: KinProbe, connected = true): KinHost => ({
   connected,
   probe,
 });
+/** A saved host on its first connection attempt: not known to be offline yet. */
+const connecting = (probe: KinProbe = { _tag: "pending" }): KinHost => ({
+  _tag: "host",
+  environmentId,
+  connected: false,
+  connecting: true,
+  probe,
+});
 const synced: KinSynced<KinInboxState> = { value: emptyKinInbox, live: true, savedAt: null };
 type Inbox = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
 const fail = (error: unknown): Inbox => AsyncResult.failure(Cause.fail(error));
@@ -72,6 +80,19 @@ describe("kinInboxScreenState", () => {
     ],
     ["while the inbox connects", host(ready), AsyncResult.initial(true), "loading"],
     ["for an offline host with no cache", host({ _tag: "pending" }, false), null, "offline"],
+    ["while the first connection is under way, with no cache", connecting(), null, "loading"],
+    [
+      "while the first connection is under way and the inbox hasn't started",
+      connecting(),
+      AsyncResult.initial(true),
+      "loading",
+    ],
+    [
+      "while the first connection is under way, with a cache",
+      connecting(),
+      AsyncResult.success(synced),
+      "ready",
+    ],
     [
       "for an offline host whose stream failed",
       host(ready, false),
@@ -119,6 +140,13 @@ describe("kinInboxScreenState", () => {
     ).toEqual({ _tag: "error", message: "nope", retry: "inbox" });
   });
 
+  it("says offline over a cache only once a connection failed or was lost", () => {
+    const cached = AsyncResult.success({ ...synced, live: false });
+    expect(kinInboxScreenState(connecting(), cached)).toMatchObject({ offline: false });
+    expect(kinInboxScreenState(host(ready, false), cached)).toMatchObject({ offline: true });
+    expect(kinInboxScreenState(host(ready), cached)).toMatchObject({ offline: false });
+  });
+
   it("names a transient probe failure plainly", () => {
     expect(
       kinInboxScreenState(host({ _tag: "error", message: "timeout", transient: true }), null),
@@ -145,9 +173,17 @@ describe("kinInboxNotice", () => {
       "Couldn't reconnect. Last updated 9:41.",
     ],
     ["reconnected but not live", true, false, savedAt, "pending", "Updating. Last updated 9:41."],
-  ] as const)("when %s", (_name, connected, live, saved, reconnect, message) => {
+    ["cached while the first attempt is under way", null, false, savedAt, "idle", null],
+  ] as const)("when %s", (_name, link, live, saved, reconnect, message) => {
+    const connected = link === true;
     const notice = kinInboxNotice(
-      { _tag: "ready", environmentId, connected, inbox: { ...synced, live, savedAt: saved } },
+      {
+        _tag: "ready",
+        environmentId,
+        connected,
+        offline: link === false,
+        inbox: { ...synced, live, savedAt: saved },
+      },
       reconnect,
       format,
     );
@@ -242,6 +278,16 @@ describe("chat list rows", () => {
     );
   });
 
+  it("leaves a direct chat's name unknown until the directory arrives, never a placeholder", () => {
+    const early = kinChatRowView(row({}), kinDirectory(connecting()));
+    expect(early.title).toBeNull();
+    expect(kinChatRowView(row({ title: "Payments" }), kinDirectory(connecting())).title).toBe(
+      "Payments",
+    );
+    const unnamed = row({ members: [member({ _tag: "agent", agentId: "gone" })] });
+    expect(kinChatRowView(unnamed, directory).title).toBe("Direct chat");
+  });
+
   it.each([
     ["the viewer's open mute", "owner", "9999-12-31T23:59:59.999Z", true],
     ["a mute that ended", "owner", "2026-11-08T09:00:00.000Z", false],
@@ -322,7 +368,13 @@ describe("chat list rows", () => {
       kind: "group",
       seed: "chat:c1",
     });
-    const unknown = kinChatRowView(row({}), kinDirectory({ _tag: "none" }));
+    const unknown = kinChatRowView(
+      row({
+        members: [member({ _tag: "agent", agentId: "gone" })],
+        lastMessage: { author: { _tag: "agent", agentId: "gone" }, status: "posted", body: "x" },
+      }),
+      directory,
+    );
     expect(unknown).toMatchObject({ title: "Direct chat", author: null });
   });
 

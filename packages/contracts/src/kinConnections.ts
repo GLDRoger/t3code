@@ -444,6 +444,11 @@ export const KinGitHubBranchGuard = Schema.Struct({
   byKin: Schema.Boolean,
   /** Why it is unknown. */
   problem: Schema.optional(KinGitHubGuardProblem),
+  /**
+   * With `open`: GitHub wants an approving review first, which doesn't stop Kin's App merging once
+   * someone approves. A flag rather than a state, so a phone older than the server still reads it.
+   */
+  needsReview: Schema.optional(Schema.Boolean),
 });
 export type KinGitHubBranchGuard = typeof KinGitHubBranchGuard.Type;
 

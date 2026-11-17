@@ -17,7 +17,7 @@ import type { AsyncResult } from "effect/reactivity";
 import type { SupervisorConnectionState } from "../connection/model.ts";
 import { kinRetiredAgentIds } from "./kinAgentRetire.ts";
 import type { KinSynced } from "./kinStreams.ts";
-import type { KinHost } from "./kinHost.ts";
+import { kinHostLink, type KinHost } from "./kinHost.ts";
 import { kinMessageGistMarkdown } from "./kinMessagePage.ts";
 import { kinTapText } from "./kinTap.ts";
 import type { KinInboxRow, KinInboxState } from "./kinInboxModel.ts";
@@ -25,7 +25,7 @@ import type { KinInboxRow, KinInboxState } from "./kinInboxModel.ts";
 /** What a Kin screen reading the inbox shows. */
 export type KinInboxScreenState =
   | { readonly _tag: "loading" }
-  /** The saved host is offline and nothing is cached yet. */
+  /** A connection to the saved host failed or was lost, and nothing is cached yet. */
   | { readonly _tag: "offline" }
   | { readonly _tag: "noHost" }
   | { readonly _tag: "unauthorized" }
@@ -41,6 +41,8 @@ export type KinInboxScreenState =
       readonly _tag: "ready";
       readonly environmentId: EnvironmentId;
       readonly connected: boolean;
+      /** Known to be unreachable; false while the first attempt is still under way. */
+      readonly offline: boolean;
       readonly inbox: KinSynced<KinInboxState>;
     };
 
@@ -67,18 +69,21 @@ export function kinInboxScreenState(
   if (host.probe._tag === "error" && inbox?._tag !== "Success") {
     return { _tag: "error", message: "Couldn't reach Kin.", retry: "orgs" };
   }
+  const offline = kinHostLink(host) === "offline";
   if (inbox === null || inbox._tag === "Initial") {
-    return host.connected ? { _tag: "loading" } : { _tag: "offline" };
+    return offline ? { _tag: "offline" } : { _tag: "loading" };
   }
   if (inbox._tag === "Success") {
     return {
       _tag: "ready",
       environmentId: host.environmentId,
       connected: host.connected,
+      offline,
       inbox: inbox.value,
     };
   }
-  if (!host.connected) return { _tag: "offline" };
+  if (offline) return { _tag: "offline" };
+  if (!host.connected) return { _tag: "loading" };
   if (isAuthorizationError(Cause.squash(inbox.cause))) return { _tag: "unauthorized" };
   return { _tag: "error", message: causeMessage(inbox.cause), retry: "inbox" };
 }
@@ -103,13 +108,22 @@ export interface KinStaleNotice {
   readonly message: string;
 }
 
-/** The stale-data notice over cached Kin data, or null while it is live and connected. */
+/**
+ * The stale-data notice over cached Kin data, or null while it is live and connected, or while the
+ * first connection attempt is still under way and nothing is known to be wrong.
+ */
 export function kinStaleNotice(
-  data: { readonly connected: boolean; readonly live: boolean; readonly savedAt: string | null },
+  data: {
+    readonly connected: boolean;
+    readonly offline: boolean;
+    readonly live: boolean;
+    readonly savedAt: string | null;
+  },
   reconnect: KinReconnectStatus,
   formatTime: (date: Date) => string,
 ): KinStaleNotice | null {
   if ((data.connected && data.live) || data.savedAt === null) return null;
+  if (!data.connected && !data.offline && reconnect === "idle") return null;
   const updated = `Last updated ${formatTime(new Date(data.savedAt))}.`;
   if (data.connected) return { offline: false, message: `Updating. ${updated}` };
   const status =
@@ -128,7 +142,12 @@ export function kinInboxNotice(
   formatTime: (date: Date) => string,
 ): KinStaleNotice | null {
   return kinStaleNotice(
-    { connected: state.connected, live: state.inbox.live, savedAt: state.inbox.savedAt },
+    {
+      connected: state.connected,
+      offline: state.offline,
+      live: state.inbox.live,
+      savedAt: state.inbox.savedAt,
+    },
     reconnect,
     formatTime,
   );
@@ -165,6 +184,8 @@ export function kinSentences(parts: ReadonlyArray<string | null>): string {
 
 /** Who the viewer is and what agents are called, from the host's `kin.orgs.list`. */
 export interface KinDirectory {
+  /** The host has named its agents, live or from a saved directory; until then names are unknown. */
+  readonly known: boolean;
   readonly agentNames: ReadonlyMap<string, string>;
   readonly me: ReadonlySet<string>;
   /** Agents the host marks retired; their names above still resolve. */
@@ -172,6 +193,7 @@ export interface KinDirectory {
 }
 
 const emptyKinDirectory: KinDirectory = {
+  known: false,
   agentNames: new Map(),
   me: new Set(),
   retiredAgents: new Set(),
@@ -182,6 +204,7 @@ export function kinDirectory(host: KinHost): KinDirectory {
   const { probe } = host;
   if (probe._tag !== "ready" && probe._tag !== "noIdentity") return emptyKinDirectory;
   return {
+    known: true,
     agentNames: new Map(
       probe.orgs.orgs.flatMap((org) =>
         org.agents.map((agent) => [agent.agentId, agent.displayName] as const),
@@ -194,7 +217,8 @@ export function kinDirectory(host: KinHost): KinDirectory {
 
 export interface KinChatRowView {
   readonly chatId: KinChatId;
-  readonly title: string;
+  /** Null while a direct chat's agent isn't named yet: draw a placeholder, never a stand-in name. */
+  readonly title: string | null;
   readonly avatar: KinAvatarView;
   /** "Lead" in "Lead: Payments test fixed". */
   readonly author: string | null;
@@ -335,7 +359,10 @@ export function kinChatRowView(
   // A direct chat is one person and one agent, so the other side is its agent.
   const counterpart =
     others.find((member) => member.principal._tag === "agent") ?? others[0] ?? null;
-  const title = kinChatTitle(chat, directory.agentNames);
+  const title =
+    chat.title === null && chat.kind === "direct" && !directory.known
+      ? null
+      : kinChatTitle(chat, directory.agentNames);
   const last = chat.lastMessage;
   const author =
     last === null
@@ -367,7 +394,7 @@ export function kinChatRowLabel(view: KinChatRowView, formatTime: (date: Date) =
       ? `${view.author}: ${view.preview}`
       : view.preview;
   return [
-    `${view.title}, ${view.avatar.kind}`,
+    view.title === null ? view.avatar.kind : `${view.title}, ${view.avatar.kind}`,
     preview.replace(/[.!?]+$/, ""),
     view.sentAt === null ? null : formatTime(new Date(view.sentAt)),
     view.muted ? "Muted" : null,

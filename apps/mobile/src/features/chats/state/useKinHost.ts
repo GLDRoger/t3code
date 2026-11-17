@@ -1,4 +1,5 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { kinGate, type KinGate, type KinPermission } from "@t3tools/client-runtime/kin/kinAccess";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -14,6 +15,7 @@ import { kinCachedOrgsAtom, kinClient, markKinHostKnown } from "./kinClient";
 import {
   classifyKinProbe,
   kinHostCandidate,
+  kinHostLink,
   kinHostIdToSave,
   resolveKinHost,
   resolveKinHostAt,
@@ -88,6 +90,14 @@ const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
 export function kinHostConnected(environmentId: EnvironmentId): boolean {
   const host = appAtomRegistry.get(kinHostAtAtom(environmentId));
   return host._tag === "host" && host.connected;
+}
+
+/** What a page gated on one permission shows before its reads; null once it may read. */
+export function useKinGate(
+  permission: Atom.Atom<KinPermission>,
+  environmentId: EnvironmentId,
+): KinGate {
+  return kinGate(useAtomValue(permission), kinHostLink(useKinHostAt(environmentId)));
 }
 
 /** The Kin host a route names, connected or not; `unpaired` when it left the catalog. */

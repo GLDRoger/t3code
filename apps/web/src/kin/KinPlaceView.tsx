@@ -8,8 +8,8 @@ import {
   KIN_WORK_LOAD_FAILED,
   KIN_WORK_NEW,
   KIN_WORK_NO_DRAFT,
-  KIN_WORK_OFFLINE,
-  KIN_WORK_ONLY_OWNER,
+  kinWorkOffline,
+  kinWorkOnlyOwner,
   kinWorkHostClients,
   kinWorkHostEdits,
   type KinWorkDraft,
@@ -548,9 +548,9 @@ function KinPlaceView({
     <>
       {docAlone ? null : header}
       {state._tag === "refused" ? (
-        <KinWorkNotice {...KIN_WORK_ONLY_OWNER} />
+        <KinWorkNotice {...kinWorkOnlyOwner(place)} />
       ) : state._tag === "offline" ? (
-        <KinWorkNotice {...KIN_WORK_OFFLINE} />
+        <KinWorkNotice {...kinWorkOffline(place)} />
       ) : state._tag === "failed" ? (
         <KinLoadFailed
           what={KIN_WORK_LOAD_FAILED}

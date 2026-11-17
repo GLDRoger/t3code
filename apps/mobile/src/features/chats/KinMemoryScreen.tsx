@@ -55,6 +55,8 @@ import { KinListBanner } from "./components/KinListBanner";
 import { KinFoldSection } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { useKinGate } from "./state/useKinHost";
+import { KinGateView } from "./components/KinWorkPieces";
 
 export type KinMemoryParams = {
   readonly environmentId: string;
@@ -160,7 +162,11 @@ function KinMemoryBody({
   find,
 }: KinMemoryTarget & { readonly find?: string }) {
   const navigation = useNavigation();
-  const allowed = useAtomValue(kinClient.memorySetVisibility.permissionAtom(environmentId));
+  const gate = useKinGate(
+    kinClient.memorySetVisibility.permissionStateAtom(environmentId),
+    environmentId,
+  );
+  const allowed = gate === null;
   const listAtom = kinClient.memory({ environmentId, input: { orgId } });
   const result = useAtomValue(allowed ? listAtom : noMemoryAtom);
   const setVisibility = useAtomCommand(kinClient.memorySetVisibility, { reportFailure: false });
@@ -216,34 +222,35 @@ function KinMemoryBody({
         />
       </ListSection>
     );
-  const message = !allowed ? (
-    <EmptyState
-      variant="plain"
-      title={KIN_MEMORY_COPY.ownerOnly}
-      detail={KIN_MEMORY_COPY.ownerOnlyDetail}
-    />
-  ) : list === null || view === null ? (
-    AsyncResult.isFailure(result) ? (
-      <KinLoadFailed
-        title={KIN_MEMORY_LOAD_FAILED}
-        cause={result}
-        onRetry={() => appAtomRegistry.refresh(listAtom)}
+  const message =
+    gate !== null ? (
+      <KinGateView
+        gate={gate}
+        refused={{ title: KIN_MEMORY_COPY.ownerOnly, detail: KIN_MEMORY_COPY.ownerOnlyDetail }}
+        label="Memory"
       />
-    ) : (
-      <View
-        className="items-center py-12"
-        accessible
-        accessibilityRole="progressbar"
-        accessibilityLabel={KIN_MEMORY_COPY.loading}
-      >
-        <AppActivityIndicator />
-      </View>
-    )
-  ) : view.total === 0 ? (
-    <EmptyState variant="plain" {...KIN_MEMORY_EMPTY} />
-  ) : view.noMatch !== null ? (
-    <EmptyState variant="plain" title={view.noMatch} detail="Try another word." />
-  ) : null;
+    ) : list === null || view === null ? (
+      AsyncResult.isFailure(result) ? (
+        <KinLoadFailed
+          title={KIN_MEMORY_LOAD_FAILED}
+          cause={result}
+          onRetry={() => appAtomRegistry.refresh(listAtom)}
+        />
+      ) : (
+        <View
+          className="items-center py-12"
+          accessible
+          accessibilityRole="progressbar"
+          accessibilityLabel={KIN_MEMORY_COPY.loading}
+        >
+          <AppActivityIndicator />
+        </View>
+      )
+    ) : view.total === 0 ? (
+      <EmptyState variant="plain" {...KIN_MEMORY_EMPTY} />
+    ) : view.noMatch !== null ? (
+      <EmptyState variant="plain" title={view.noMatch} detail="Try another word." />
+    ) : null;
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar

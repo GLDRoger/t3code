@@ -4,7 +4,7 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import {
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
-  KIN_WORK_ONLY_OWNER,
+  kinWorkOnlyOwner,
   KIN_WORK_REPEAT,
   KIN_WORK_TITLE_MAX,
   createKinWorkActions,
@@ -47,6 +47,8 @@ import {
   useKinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { KinGateView } from "./components/KinWorkPieces";
+import { useKinGate } from "./state/useKinHost";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -99,7 +101,8 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const navigation = useNavigation();
   const { environmentId, orgId } = props;
   const target = { environmentId, orgId };
-  const allowed = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
+  const gate = useKinGate(kinClient.workCreate.permissionStateAtom(environmentId), environmentId);
+  const allowed = gate === null;
   const { orgs, people, joined, invited, names } = useKinWorkDirectory(target, allowed);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
@@ -180,8 +183,8 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
-          {!allowed ? (
-            <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+          {gate !== null ? (
+            <KinGateView gate={gate} refused={kinWorkOnlyOwner("tasks")} label={words.title} />
           ) : (
             <>
               {problem === null ? null : <ErrorBanner message={problem} />}

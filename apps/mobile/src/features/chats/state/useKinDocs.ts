@@ -41,10 +41,10 @@ const docsLiveAtom = ({ environmentId, orgId }: KinWorkTarget) =>
 
 /** Docs' change number, and whether the host lets this viewer read docs at all. */
 export function useKinDocsLive(target: KinWorkTarget) {
-  const allowed = useAtomValue(kinClient.docsList.permissionAtom(target.environmentId));
-  const result = useAtomValue(allowed ? docsLiveAtom(target) : noLiveAtom);
+  const allowed = useAtomValue(kinClient.docsList.permissionStateAtom(target.environmentId));
+  const result = useAtomValue(allowed === "granted" ? docsLiveAtom(target) : noLiveAtom);
   const refused =
-    !allowed ||
+    allowed === "refused" ||
     (AsyncResult.isFailure(result) && kinWorkFailuresOf(result.cause).some(kinWorkRefused));
   return { refused, live: Option.getOrNull(AsyncResult.value(result)) };
 }

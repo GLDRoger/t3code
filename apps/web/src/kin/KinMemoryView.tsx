@@ -51,6 +51,8 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
 import { KinWorkSection } from "./KinWorkParts";
+import { useKinGate } from "./useKinHost";
+import { KinGateView } from "./KinWorkParts";
 
 interface KinMemoryTarget {
   readonly environmentId: EnvironmentId;
@@ -59,20 +61,18 @@ interface KinMemoryTarget {
 
 /** What the owner's leads remember, and who may know each thing. */
 export function KinMemoryView(props: KinMemoryTarget & { readonly find?: string }) {
-  const allowed = useAtomValue(kinClient.memorySetVisibility.permissionAtom(props.environmentId));
-  return (
-    <>
-      {allowed ? (
-        <KinMemoryBody {...props} />
-      ) : (
-        <Empty size="compact">
-          <EmptyHeader>
-            <EmptyTitle>{KIN_MEMORY_COPY.ownerOnly}</EmptyTitle>
-            <EmptyDescription>{KIN_MEMORY_COPY.ownerOnlyDetail}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      )}
-    </>
+  const gate = useKinGate(
+    kinClient.memorySetVisibility.permissionStateAtom(props.environmentId),
+    props.environmentId,
+  );
+  return gate === null ? (
+    <KinMemoryBody {...props} />
+  ) : (
+    <KinGateView
+      gate={gate}
+      refused={{ title: KIN_MEMORY_COPY.ownerOnly, detail: KIN_MEMORY_COPY.ownerOnlyDetail }}
+      label="Memory"
+    />
   );
 }
 

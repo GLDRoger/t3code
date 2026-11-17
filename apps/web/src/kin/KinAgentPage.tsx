@@ -70,13 +70,20 @@ import { useKinHost } from "./useKinHost";
 import { useKinWorkDirectory } from "./useKinWork";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
+import { Skeleton } from "../components/ui/skeleton";
 
 /** Who the viewer is to an agent's page; the host decides again on every read and write. */
 function useKinAgentPageCan(environmentId: EnvironmentId) {
   const ownerLevel = useKinOwnerLevel(environmentId);
   const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
   return kinAgentPageCan({
-    access: ownerLevel ? (me?.access === "co_owner" ? "co_owner" : "owner") : (me?.access ?? null),
+    access: ownerLevel
+      ? me?.access === "co_owner"
+        ? "co_owner"
+        : "owner"
+      : me === null
+        ? undefined
+        : (me.access ?? null),
     leadsAProject: (me?.leads?.length ?? 0) > 0,
   });
 }
@@ -138,10 +145,13 @@ function KinAgentSheet(props: { readonly target: KinAgentPageTarget }) {
               onClose={closePage}
               onOpenSettings={(section) => openKinSettingsInstead(router.history, section, "agent")}
             />
+          ) : can.card === "unknown" ? (
+            <div className="flex flex-col gap-2" role="status" aria-label={`Loading ${name}`}>
+              <Skeleton className="h-3.5 w-3/5" />
+              <Skeleton className="h-3.5 w-2/5" />
+            </div>
           ) : contact === undefined ? (
-            <p className="text-sm text-muted-foreground">
-              Only the owner and co-owners see this agent's details.
-            </p>
+            <p className="text-sm text-muted-foreground">{KIN_AGENT_PAGE.ownerLevelOnly}</p>
           ) : (
             <KinAgentSection title="About">
               <p className="whitespace-pre-line text-sm text-foreground">
