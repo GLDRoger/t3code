@@ -11,7 +11,10 @@ import {
   type KinCompanyFieldId,
 } from "@t3tools/client-runtime/kin/kinCompanyProfile";
 import { KIN_BRAND } from "@t3tools/client-runtime/kin/kinBrand";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
+import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { EnvironmentId, KinOrgId, type KinCompanyProfile } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -22,9 +25,12 @@ import { View } from "react-native";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { Notice } from "../../components/ui/Notice";
+import { downloadAndShareAttachment } from "../../lib/attachmentDownload";
+import { usePreparedConnection } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   KinWorkFrame,
@@ -220,6 +226,7 @@ function Profile(
           }
         />
         <KinTemplateRows environmentId={environmentId} orgId={orgId} />
+        <KinExportRows environmentId={environmentId} orgId={orgId} />
       </KinWorkFrame>
     );
   }
@@ -278,6 +285,54 @@ function CompanyTimeZone(props: KinWorkTarget) {
           zone.fromHost === true ? KIN_COMPANY.timeZoneFromHost : KIN_COMPANY.timeZoneUse
         }
       />
+    </ListSection>
+  );
+}
+
+/** Download everything, the owner's alone: the zip downloads to the phone, then the share sheet takes it. */
+function KinExportRows(props: KinWorkTarget) {
+  const { environmentId, orgId } = props;
+  const allowed = useAtomValue(kinClient.exportLink.permissionAtom(environmentId));
+  const link = useAtomCommand(kinClient.exportLink, { reportFailure: false });
+  const connection = usePreparedConnection(environmentId);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  if (!allowed) return null;
+  const download = async () => {
+    setBusy(true);
+    setProblem(null);
+    const failed = (cause: unknown) => setProblem(kinFailureText(cause, KIN_COMPANY.export.failed));
+    try {
+      if (Option.isNone(connection)) return failed(null);
+      const result = await link({ environmentId, input: { orgId } });
+      if (result._tag === "Failure") return failed(squashAtomCommandFailure(result));
+      const url = resolveAssetUrl(connection.value.httpBaseUrl, result.value.url);
+      if (url === null) return failed(null);
+      await downloadAndShareAttachment({
+        url,
+        attachment: { name: result.value.fileName, mimeType: "application/zip" },
+        signal: new AbortController().signal,
+      });
+    } catch (cause) {
+      failed(cause);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <ListSection title={KIN_COMPANY.export.title}>
+      <View className="gap-1 px-4 py-3">
+        <Text className="text-sm text-foreground-muted">{KIN_COMPANY.export.detail}</Text>
+        <Text className="text-sm text-foreground-muted">{KIN_COMPANY.export.memory}.</Text>
+      </View>
+      <ListActionRow
+        icon="square.and.arrow.up"
+        label={busy ? KIN_COMPANY.export.preparing : KIN_COMPANY.export.share}
+        disabled={busy}
+        loading={busy}
+        onPress={() => void download()}
+      />
+      {problem === null ? null : <Notice message={problem} tone="danger" />}
     </ListSection>
   );
 }

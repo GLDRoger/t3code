@@ -1407,6 +1407,10 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("company"),
   }),
+  exportLink: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:export",
+    tag: "kin.work.exportLink",
+  }),
   companyProfileSet: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:company:set",
     tag: "kin.work.setCompanyProfile",
