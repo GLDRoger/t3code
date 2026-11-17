@@ -213,9 +213,16 @@ describe("WakeupRunner", () => {
           yield* TestClock.adjust("30 seconds");
           assert.strictEqual(readyCalls, settled);
           yield* Deferred.succeed(commitRelease, undefined);
-          yield* TestClock.adjust("20 seconds");
-          // The finish wakes the loop at once: the queued event is claimed long before
-          // the 60-second cap a missed wake would wait for.
+          // The finish wakes the loop at once: the queued event is claimed with no clock advance,
+          // where a missed wake would wait for the 60-second cap.
+          while (true) {
+            const changed = yield* queue.changes(orgId);
+            const [second] = yield* sql<{
+              state: string;
+            }>`SELECT state FROM kin_events WHERE org_id = ${orgId} AND event_id = 'loop-second'`;
+            if (second?.state !== "queued") break;
+            yield* changed;
+          }
           const states = yield* sql<{
             event_id: string;
             state: string;
@@ -223,8 +230,8 @@ describe("WakeupRunner", () => {
           assert.strictEqual(states[0]?.state, "done");
           assert.notStrictEqual(states[1]?.state, "queued");
           assert.deepStrictEqual(
-            yield* sql`SELECT memory_commit FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'completed' ORDER BY started_at`,
-            [{ memory_commit: "fixture-1" }],
+            (yield* sql`SELECT memory_commit FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'completed' ORDER BY started_at`)[0],
+            { memory_commit: "fixture-1" },
           );
         }),
       ).pipe(

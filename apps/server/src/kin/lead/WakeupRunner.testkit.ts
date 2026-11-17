@@ -502,8 +502,8 @@ function parts(options: HarnessOptions) {
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
-    Layer.mock(CheckpointStore.CheckpointStore)({ isGitRepository: () => Effect.succeed(true) }),
-    Layer.mock(GitWorkflow.GitWorkflowService)({}),
+    Layer.mock(CheckpointStore.CheckpointStore)({ isGitRepository: () => Effect.succeed(false) }),
+    Layer.mock(GitWorkflow.GitWorkflowService)({ currentBranch: () => Effect.succeed(null) }),
     // Native schedules are exercised in triggers/scheduledTasks.test.ts.
     Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
     Layer.mock(TextGeneration.TextGeneration)({}),
