@@ -2,13 +2,11 @@ import { useAtomValue } from "@effect/atom-react";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import {
-  KIN_NEEDS_YOU_PAGE,
   kinAttentionProblem,
   kinAttentionShown,
-  kinPulseScopeOf,
   type KinAttentionScope,
 } from "@t3tools/client-runtime/kin/kinAttention";
-import { kinWorkAgent } from "@t3tools/client-runtime/kin/kinWorkHome";
+import { kinAskAboutAgent } from "@t3tools/client-runtime/kin/kinScreenReads";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import type {
@@ -18,17 +16,15 @@ import type {
   KinPulseScreenRead,
   KinDay,
 } from "@t3tools/contracts";
-import { useNavigation } from "@react-navigation/native";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { useAtomCommand } from "../../../state/use-atom-command";
-import { setComposerDraftText } from "../../../state/use-composer-drafts";
-import { kinDraftKey } from "../components/KinComposer";
 import { connectionAtomRuntime } from "../../../connection/runtime";
-import { kinClient } from "./kinClient";
+import { kinClient, kinReads } from "./kinClient";
+import { useKinOpenChat } from "./useKinOpenChat";
 import { useKinMoneyLive } from "./useKinMoneyLive";
 import { useRereadOnChange } from "./useKinMoney";
 import { kinWorkLiveAtom, type KinWorkTarget } from "./useKinWork";
@@ -43,40 +39,8 @@ const noGoalsAtom: Atom.Atom<AsyncResult.AsyncResult<KinGoalsResult, unknown>> =
   AsyncResult.initial(),
 );
 
-/**
- * `paged`: the first open facts Needs you shows, and counts of the rest (`outline`). `scope`: only
- * what a client's, project's or Money's own section is about; the section still filters exactly.
- */
-const attentionInput = (
-  { environmentId, orgId }: KinWorkTarget,
-  paged: boolean,
-  scope: KinAttentionScope | undefined,
-) => ({
-  environmentId,
-  input: {
-    orgId,
-    includeHandled: true,
-    ...(paged ? { limit: KIN_NEEDS_YOU_PAGE } : {}),
-    ...(scope === undefined ? {} : { scope: kinPulseScopeOf(scope) }),
-  },
-});
-const attentionAtom = (
-  target: KinWorkTarget,
-  streamed: boolean,
-  paged = false,
-  scope?: KinAttentionScope,
-) =>
-  streamed
-    ? kinClient.attentionLive(attentionInput(target, paged, scope))
-    : kinClient.attention(attentionInput(target, paged, scope));
-const streamedAtom = ({ environmentId, orgId }: KinWorkTarget) =>
-  kinClient.attentionStreamed({ environmentId, input: { orgId } });
-/** Facts answered on this device, hidden until the live read says where they stand now. */
-const answeredAtom = Atom.family((_target: string) =>
-  Atom.make<ReadonlyArray<string>>([]).pipe(Atom.keepAlive),
-);
-const answeredOf = ({ environmentId, orgId }: KinWorkTarget) =>
-  answeredAtom(`${environmentId}:${orgId}`);
+const attentionAtom = kinReads.attention;
+const streamedAtom = kinReads.attentionStreamed;
 
 /**
  * What needs attention, live; null until read. A host that streams it sends what moved. On an
@@ -102,7 +66,7 @@ export function useKinAttention(
   const live = useAtomValue(reads ? kinWorkLiveAtom(target) : noLiveAtom);
   const seq = Option.getOrNull(AsyncResult.value(live))?.seq ?? null;
   useRereadOnChange(seq, () => appAtomRegistry.refresh(atom));
-  const answered = useAtomValue(answeredOf(target));
+  const answered = useAtomValue(kinReads.answered(target));
   return state._tag === "ready" ? kinAttentionShown(state.value, new Set(answered)) : null;
 }
 
@@ -117,11 +81,7 @@ export function useKinAttentionHandle(target: KinWorkTarget, scope?: KinAttentio
     send: async (factKey: string, action: KinPulseHandleAction, until?: KinDay) => {
       setBusy(factKey);
       setProblem(null);
-      const answered = answeredOf(target);
-      const mark = (on: boolean) => {
-        const rest = appAtomRegistry.get(answered).filter((key) => key !== factKey);
-        appAtomRegistry.set(answered, on ? [...rest, factKey] : rest);
-      };
+      const mark = (on: boolean) => kinReads.markAnswered(target, factKey, on);
       // Answered, it leaves at once; an Undo lets the live read show it open again.
       mark(action !== "undo");
       const outcome = await handle({
@@ -134,13 +94,7 @@ export function useKinAttentionHandle(target: KinWorkTarget, scope?: KinAttentio
         },
       });
       setBusy(null);
-      // A host that streams it sends the answer's effect; an older one is asked again.
-      if (appAtomRegistry.get(streamedAtom(target)) === false) {
-        appAtomRegistry.refresh(attentionAtom(target, false));
-        appAtomRegistry.refresh(attentionAtom(target, false, true));
-        if (scope !== undefined)
-          appAtomRegistry.refresh(attentionAtom(target, false, false, scope));
-      }
+      kinReads.afterAttentionHandle(target, scope);
       const problem = kinAttentionProblem(
         AsyncResult.isSuccess(outcome) ? null : squashAtomCommandFailure(outcome),
       );
@@ -153,25 +107,16 @@ export function useKinAttentionHandle(target: KinWorkTarget, scope?: KinAttentio
 
 /** Opens the chat with the agent a row names, else the front door, holding what it is about. */
 export function useKinAskAbout({ environmentId, orgId }: KinWorkTarget) {
-  const navigation = useNavigation();
+  const openChat = useKinOpenChat();
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
-  const result = useAtomValue(
-    canRestore
-      ? kinClient.agents({ environmentId, orgId })
-      : kinClient.leads({ environmentId, input: { orgId } }),
-  );
+  const result = useAtomValue(kinReads.askLeads({ environmentId, orgId }, canRestore));
   const leads = Option.getOrNull(AsyncResult.value(result))?.leads ?? [];
   return (agentId: string | null) => {
-    const agent =
-      leads.find((lead) => lead.agentId === agentId && lead.retired === undefined) ??
-      kinWorkAgent(leads, "tasks");
+    const agent = kinAskAboutAgent(leads, agentId);
     if (agent === null) return null;
     return {
       name: agent.name,
-      ask: (message: string) => {
-        setComposerDraftText(kinDraftKey(environmentId, orgId, agent.ownerChatId), message);
-        navigation.navigate("KinChat", { environmentId, orgId, chatId: agent.ownerChatId });
-      },
+      ask: (message: string) => openChat(environmentId, orgId, agent.ownerChatId, message),
     };
   };
 }
@@ -186,12 +131,12 @@ export function useKinGoals(
 ) {
   const streamed = useKinMoneyLive(target, "goals");
   const live = options.money === true ? streamed : null;
-  const atom =
-    live?.atom ??
-    kinClient.goals({ environmentId: target.environmentId, input: { orgId: target.orgId } });
-  const state = kinWorkReadState(
-    useAtomValue(options.enabled && live !== undefined ? atom : noGoalsAtom),
-  );
+  const atom = kinClient.goals({
+    environmentId: target.environmentId,
+    input: { orgId: target.orgId },
+  });
+  const read = kinReads.chosen(live, atom, options.enabled);
+  const state = kinWorkReadState(useAtomValue(read.atom ?? noGoalsAtom));
   const save = useAtomCommand(kinClient.goalSave, { reportFailure: false });
   const canSave = useAtomValue(kinClient.goalSave.permissionAtom(target.environmentId));
   return {

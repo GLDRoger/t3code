@@ -15,6 +15,7 @@ import {
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinRatesOf } from "@t3tools/client-runtime/kin/kinCurrency";
 import { kinWorkAgent, type KinWorkPlace } from "@t3tools/client-runtime/kin/kinWorkHome";
+import type { KinMoneyUse } from "@t3tools/client-runtime/kin/kinScreenReads";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import {
   createKinListEntries,
@@ -33,7 +34,6 @@ import type {
   KinRecordKey,
   KinWorkFile,
 } from "@t3tools/contracts";
-import { useNavigation } from "@react-navigation/native";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useRef, useState } from "react";
@@ -43,9 +43,8 @@ import { uuidv4 } from "../../../lib/uuid";
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { useAtomCommand } from "../../../state/use-atom-command";
-import { setComposerDraftText } from "../../../state/use-composer-drafts";
-import { kinDraftKey } from "../components/KinComposer";
-import { kinClient } from "./kinClient";
+import { kinClient, kinReads } from "./kinClient";
+import { useKinOpenChat } from "./useKinOpenChat";
 import { useKinMoneyLive } from "./useKinMoneyLive";
 import { kinHostConnected } from "./useKinHost";
 import {
@@ -65,29 +64,7 @@ const noCompanyAtom: Atom.Atom<AsyncResult.AsyncResult<KinCompanyProfile, unknow
   AsyncResult.initial(),
 );
 
-const listsAtom = ({ environmentId, orgId }: KinWorkTarget, archived: boolean) =>
-  kinClient.workLists({ environmentId, input: archived ? { orgId, archived: true } : { orgId } });
-/**
- * `line`: a line of what is owed, which no task moves. `screen`: Money itself, whose coming-up count
- * counts tasks too. `rows`: Money for a viewer who can't open Dates, so it draws the coming-up rows.
- */
-export type KinMoneyUse = "line" | "screen" | "rows";
-const moneyAtom = ({ environmentId, orgId }: KinWorkTarget, use: KinMoneyUse) =>
-  use === "line"
-    ? kinClient.workOwed({ environmentId, input: { orgId, upcomingRows: false } })
-    : kinClient.workMoney({
-        environmentId,
-        input: use === "rows" ? { orgId } : { orgId, upcomingRows: false },
-      });
-const refreshMoney = (target: KinWorkTarget) => {
-  for (const use of ["line", "screen", "rows"] as const)
-    appAtomRegistry.refresh(moneyAtom(target, use));
-};
-
-const refreshKinLists = (target: KinWorkTarget) => {
-  appAtomRegistry.refresh(listsAtom(target, false));
-  appAtomRegistry.refresh(listsAtom(target, true));
-};
+export type { KinMoneyUse };
 
 /** Reads again when Work says something changed; `seq` is null while that isn't known. */
 export function useRereadOnChange(seq: number | null, reread: () => void) {
@@ -113,12 +90,13 @@ export function useKinLists(
 ) {
   const archived = options.archived === true;
   const streamed = useKinMoneyLive(target, "lists");
-  const live = options.money === true && !archived ? streamed : null;
-  const atom = live?.atom ?? listsAtom(target, archived);
-  const state = kinWorkReadState(
-    useAtomValue(options.enabled && live !== undefined ? atom : noListsAtom),
+  const read = kinReads.chosen(
+    options.money === true && !archived ? streamed : null,
+    kinReads.lists(target, archived),
+    options.enabled,
   );
-  return { state, refresh: live?.refresh ?? (() => appAtomRegistry.refresh(atom)) };
+  const state = kinWorkReadState(useAtomValue(read.atom ?? noListsAtom));
+  return { state, refresh: read.refresh };
 }
 
 export type KinListsHandle = ReturnType<typeof useKinLists>;
@@ -133,12 +111,13 @@ export function useKinMoneySummary(
 ) {
   const use = options.use ?? "line";
   const streamed = useKinMoneyLive(target, "summary");
-  const live = use === "rows" ? null : streamed;
-  const atom = live?.atom ?? moneyAtom(target, use);
-  const state = kinWorkReadState(
-    useAtomValue(options.enabled && live !== undefined ? atom : noMoneyAtom),
+  const read = kinReads.chosen(
+    use === "rows" ? null : streamed,
+    kinReads.money(target, use),
+    options.enabled,
   );
-  return { state, refresh: live?.refresh ?? (() => appAtomRegistry.refresh(atom)) };
+  const state = kinWorkReadState(useAtomValue(read.atom ?? noMoneyAtom));
+  return { state, refresh: read.refresh };
 }
 
 const noChoicesAtom: ReturnType<typeof kinWorkChoicesAtom> = Atom.make(AsyncResult.initial());
@@ -292,18 +271,16 @@ export function useKinEntryChanges({ environmentId, orgId }: KinWorkTarget, key:
   const takeBack = useAtomCommand(kinClient.workPaymentVoid, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const item = kinClient.workItem({ environmentId, input: { orgId, key } });
   const run = async <A>(send: () => Promise<AsyncResult.AsyncResult<A, unknown>>) => {
     setBusy(true);
     setProblem(null);
-    const outcome = await kinListSend({
-      online: () => kinHostConnected(environmentId),
-      send: send as Parameters<typeof kinListSend<A>>[0]["send"],
-    });
+    const outcome = await kinReads.sendEntryChange(
+      { environmentId, orgId },
+      key,
+      () => kinHostConnected(environmentId),
+      send as Parameters<typeof kinListSend<A>>[0]["send"],
+    );
     setBusy(false);
-    // The entry is read again either way: the answer, or what it became meanwhile.
-    appAtomRegistry.refresh(item);
-    refreshMoney({ environmentId, orgId });
     if (!outcome.ok) setProblem(outcome.problem);
     return outcome.ok;
   };
@@ -388,7 +365,7 @@ export function useKinListChanges(target: KinWorkTarget) {
         send: () => update({ environmentId, input }),
       });
       setBusy(false);
-      refreshKinLists(target);
+      kinReads.refreshLists(target);
       if (!outcome.ok) setProblem(outcome.problem);
       return outcome.ok;
     },
@@ -400,21 +377,14 @@ export function useKinAskAgent(
   { environmentId, orgId }: KinWorkTarget,
   place: KinWorkPlace | null = "money",
 ) {
-  const navigation = useNavigation();
+  const openChat = useKinOpenChat();
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
-  const result = useAtomValue(
-    canRestore
-      ? kinClient.agents({ environmentId, orgId })
-      : kinClient.leads({ environmentId, input: { orgId } }),
-  );
+  const result = useAtomValue(kinReads.askLeads({ environmentId, orgId }, canRestore));
   const agent = kinWorkAgent(Option.getOrNull(AsyncResult.value(result))?.leads ?? [], place);
   if (agent === null) return null;
   return {
     name: agent.name,
-    ask: (message: string) => {
-      setComposerDraftText(kinDraftKey(environmentId, orgId, agent.ownerChatId), message);
-      navigation.navigate("KinChat", { environmentId, orgId, chatId: agent.ownerChatId });
-    },
+    ask: (message: string) => openChat(environmentId, orgId, agent.ownerChatId, message),
   };
 }
 
@@ -446,14 +416,13 @@ const noRecipesAtom: ReturnType<typeof kinClient.recipes> = Atom.make(AsyncResul
 
 /** Money's receipts, newest first, kept current by Work's changes. */
 export function useKinReceipts(target: KinWorkTarget, options: { readonly enabled: boolean }) {
-  const live = useKinMoneyLive(target, "receipts");
-  const atom =
-    live?.atom ??
-    kinClient.receipts({ environmentId: target.environmentId, input: { orgId: target.orgId } });
-  const state = kinWorkReadState(
-    useAtomValue(options.enabled && live !== undefined ? atom : noReceiptsAtom),
+  const read = kinReads.chosen(
+    useKinMoneyLive(target, "receipts"),
+    kinClient.receipts({ environmentId: target.environmentId, input: { orgId: target.orgId } }),
+    options.enabled,
   );
-  return { state, refresh: live?.refresh ?? (() => appAtomRegistry.refresh(atom)) };
+  const state = kinWorkReadState(useAtomValue(read.atom ?? noReceiptsAtom));
+  return { state, refresh: read.refresh };
 }
 
 /** The company's document templates; `enabled` is off where the host would refuse. */
@@ -488,12 +457,6 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
   const [notice, setNotice] = useState<string | null>(null);
   /** The document the last action filed, for its notice to open. */
   const [filed, setFiled] = useState<KinRecordKey | null>(null);
-  const reread = (key?: KinRecordKey) => {
-    if (key !== undefined)
-      appAtomRegistry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } }));
-    refreshMoney({ environmentId, orgId });
-    appAtomRegistry.refresh(kinClient.receipts({ environmentId, input: { orgId } }));
-  };
   const run = async <A>(
     send: () => Promise<AsyncResult.AsyncResult<A, unknown>>,
     key: KinRecordKey | undefined,
@@ -503,12 +466,14 @@ export function useKinMoneyActions({ environmentId, orgId }: KinWorkTarget) {
     setProblem(null);
     setNotice(null);
     setFiled(null);
-    const outcome = await kinListSend({
-      online: () => kinHostConnected(environmentId),
-      send: send as Parameters<typeof kinListSend<A>>[0]["send"],
-    });
+    const outcome = await kinReads.sendEntryChange(
+      { environmentId, orgId },
+      key,
+      () => kinHostConnected(environmentId),
+      send as Parameters<typeof kinListSend<A>>[0]["send"],
+    );
+    appAtomRegistry.refresh(kinClient.receipts({ environmentId, input: { orgId } }));
     setBusy(false);
-    reread(key);
     if (!outcome.ok) {
       setProblem(outcome.problem);
       return null;

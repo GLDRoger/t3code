@@ -258,7 +258,8 @@ function KinPlaceView({
   const directory = useKinWorkDirectory(props, ready);
   const choices = useKinWorkChoices(props, ready && hostClients);
   const changes = useKinWorkChanges(props);
-  const agent = useKinAskAgent(props);
+  // Each place hands over to its own agent: Money to the books, the rest to the Chief of staff.
+  const agent = useKinAskAgent(props, place);
   const lists = useKinLists(props, { enabled: ready && place === "docs", archived: true });
   const moneyLists = useKinLists(props, { enabled: ready && place === "money", money: true });
   const [adding, setAdding] = useState<Adding>(null);
