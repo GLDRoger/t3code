@@ -35,6 +35,17 @@ export const KIN_COMPANY = {
     title: "No company here",
     detail: "Connect to the computer that runs your Kin to see its company details.",
   },
+  export: {
+    title: "Your data",
+    detail:
+      "Everything Kin keeps for the company in one zip: clients, projects, every list with its payments, and docs with their files. Kin can import it back.",
+    memory: "Memory is kept in your memory repository",
+    action: "Download everything",
+    preparing: "Preparing…",
+    started: "Your download has started.",
+    failed: "Couldn't start the download.",
+    share: "Download and share",
+  },
 };
 
 export type KinCompanyFieldId =

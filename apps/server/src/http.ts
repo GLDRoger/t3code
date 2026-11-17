@@ -1,5 +1,6 @@
 import * as Mime from "effect/http/Mime";
 import {
+  KIN_EXPORT_ROUTE,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
@@ -454,7 +455,8 @@ const layerUntracedRequests = Layer.succeed(HttpMiddleware.TracerDisabledWhen)((
     UNTRACED_REQUEST_PATHS.has(path) ||
     path.startsWith(`${WEBHOOK_ROUTE_PREFIX}/`) ||
     path.startsWith(`${ASSET_ROUTE_PREFIX}/`) ||
-    path.startsWith(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`)
+    path.startsWith(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`) ||
+    path.startsWith(`${KIN_EXPORT_ROUTE}/`)
   );
 });
 

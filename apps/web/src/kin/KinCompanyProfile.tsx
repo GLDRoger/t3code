@@ -9,9 +9,12 @@ import {
   type KinCompanyDraft,
   type KinCompanyFieldId,
 } from "@t3tools/client-runtime/kin/kinCompanyProfile";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
+import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { KinCompanyProfile } from "@t3tools/contracts";
-import { LockIcon, PencilIcon } from "lucide-react";
+import { DownloadIcon, LockIcon, PencilIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -28,7 +31,8 @@ import { Label } from "../components/ui/label";
 import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 import { useAtomCommand } from "../state/use-atom-command";
-import { KinBrandSection } from "./KinBrand";
+import { readPreparedConnection } from "../state/session";
+import { KinBrandSection, KinSettingsHeading } from "./KinBrand";
 import { KinTemplatesSection } from "./KinTemplates";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { kinClient } from "./kinClient";
@@ -170,6 +174,7 @@ function Profile(
         )}
         <KinBrandSection {...props} profile={profile} onRefresh={props.onRefresh} />
         <KinTemplatesSection environmentId={environmentId} orgId={orgId} />
+        <KinExportSection environmentId={environmentId} orgId={orgId} />
       </div>
     );
   }
@@ -248,5 +253,67 @@ function Profile(
         </Button>
       </div>
     </form>
+  );
+}
+
+/** Download everything: the owner's alone. The zip streams over HTTP straight to disk. */
+function KinExportSection(props: KinWorkTarget) {
+  const { environmentId, orgId } = props;
+  const allowed = useAtomValue(kinClient.exportLink.permissionAtom(environmentId));
+  const link = useAtomCommand(kinClient.exportLink, { reportFailure: false });
+  const [state, setState] = useState<"idle" | "preparing" | "started">("idle");
+  const [problem, setProblem] = useState<string | null>(null);
+  const headingId = useId();
+  if (!allowed) return null;
+  const download = async () => {
+    setState("preparing");
+    setProblem(null);
+    const failed = (cause: unknown) => {
+      setState("idle");
+      setProblem(kinFailureText(cause, KIN_COMPANY.export.failed));
+    };
+    const connection = readPreparedConnection(environmentId);
+    if (connection === null) return failed(null);
+    const result = await link({ environmentId, input: { orgId } });
+    if (result._tag === "Failure") return failed(squashAtomCommandFailure(result));
+    const url = resolveAssetUrl(connection.httpBaseUrl, result.value.url);
+    if (url === null) return failed(null);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.rel = "noreferrer";
+    anchor.click();
+    setState("started");
+  };
+  return (
+    <section
+      className="flex flex-col gap-3 border-t border-border pt-5"
+      aria-labelledby={headingId}
+    >
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:gap-4">
+        <div id={headingId} className="min-w-0 flex-1">
+          <KinSettingsHeading title={KIN_COMPANY.export.title} detail={KIN_COMPANY.export.detail} />
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={state === "preparing"}
+          aria-busy={state === "preparing"}
+          onClick={() => void download()}
+        >
+          <DownloadIcon />
+          {state === "preparing" ? KIN_COMPANY.export.preparing : KIN_COMPANY.export.action}
+        </Button>
+      </div>
+      <p className="text-xs text-muted-foreground">{KIN_COMPANY.export.memory}.</p>
+      {state === "started" ? (
+        <p role="status" className="text-xs text-muted-foreground">
+          {KIN_COMPANY.export.started}
+        </p>
+      ) : problem !== null ? (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {problem}
+        </p>
+      ) : null}
+    </section>
   );
 }
