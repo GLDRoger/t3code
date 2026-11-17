@@ -125,7 +125,7 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinPulse
                 return true;
               }),
               // Gone from the org: the read says so and ends the stream.
-              Effect.catch(() => Effect.succeed(true)),
+              Effect.orElseSucceed(() => true),
             );
           return Effect.succeed(
             member && (tick.key === undefined || tick.team?.has(person.personId) === true),
