@@ -327,9 +327,7 @@ export function kinPatchWorkPage(
       page: rows.arrival > page.mark ? { ...page, mark: rows.arrival } : page,
       moved: false,
     };
-  // Work's order is the only one rebuilt here; other lists read again.
   const list = input.list ?? "work";
-  if (list !== "work") return null;
   const records = [...page.records];
   let { total } = page;
   const known = new Map(page.known);
@@ -342,6 +340,8 @@ export function kinPatchWorkPage(
       continue;
     }
     if (entry.list !== null && entry.list !== list) continue;
+    // Work's order is the only one rebuilt here: another list's own entries read it again.
+    if (list !== "work") return null;
     const at = records.findIndex((record) => record.key === entry.key);
     const prior = known.get(entry.key);
     let was: boolean | undefined;
