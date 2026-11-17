@@ -207,4 +207,20 @@ describe("kinAgentChangeLine and kinAgentChangeOffer", () => {
     expect(kinAgentChangeLine(one, new Map())).toBe(line);
     expect(kinAgentChangeOffer(one)).toEqual(offer);
   });
+
+  it.each([
+    ["a link this person just removed", { linkedTo: end, undone: true }, true, C.linkUndone],
+    ["a link someone else removed first", { linkedTo: end, undone: true }, false, C.linkGone],
+    [
+      "a field this person just put back",
+      { kind: "updated", fields: [{ field: "title", from: "Old", to: "New" }], undone: true },
+      true,
+      C.undone,
+    ],
+  ] as const)("%s says so once read again", (_case, over, undoneHere, text) => {
+    expect(kinAgentChangeOffer(change(over as Partial<KinAgentChange>), undoneHere)).toEqual({
+      kind: "undone",
+      text,
+    });
+  });
 });

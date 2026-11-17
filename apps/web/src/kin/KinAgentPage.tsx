@@ -744,16 +744,20 @@ function AgentChanged(props: {
   const directory = useKinWorkDirectory({ environmentId, orgId }, true).names;
   const names = new Map([...directory.people, ...directory.agents]);
   const [busy, setBusy] = useState<number | null>(null);
-  const [said, setSaid] = useState<{ readonly seq: number; readonly text: string } | null>(null);
+  const [said, setSaid] = useState<{
+    readonly seq: number;
+    readonly text: string;
+    readonly ok: boolean;
+  } | null>(null);
   const run = async (seq: number, done: string) => {
     setBusy(seq);
     const outcome = await undo({ environmentId, input: { orgId, agentId: props.agentId, seq } });
     setBusy(null);
+    const ok = !AsyncResult.isFailure(outcome);
     setSaid({
       seq,
-      text: AsyncResult.isFailure(outcome)
-        ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_CHANGES.failed)
-        : done,
+      ok,
+      text: ok ? done : kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_CHANGES.failed),
     });
     props.onChanged();
   };
@@ -765,7 +769,7 @@ function AgentChanged(props: {
       ) : (
         <ul className="flex flex-col gap-2">
           {props.changed.map((change) => {
-            const offer = kinAgentChangeOffer(change);
+            const offer = kinAgentChangeOffer(change, said?.seq === change.seq && said.ok);
             const place = changePlace(change);
             return (
               <li key={change.seq} className="flex flex-col gap-1">
