@@ -882,7 +882,7 @@ const onRemote = async (
   if (args.full && previous !== undefined && NodeFS.existsSync(fixtureOf(previous))) {
     const tarball = NodeChildProcess.spawnSync(
       "tar",
-      ["-C", NodePath.dirname(fixtureOf(previous)), "-czf", "-", "fixture"],
+      ["--no-xattrs", "-C", NodePath.dirname(fixtureOf(previous)), "-czf", "-", "fixture"],
       { maxBuffer: 2 ** 31 },
     ).stdout;
     if (ssh(`${command} --fixture-in ${previous}`, tarball).status !== 0)
