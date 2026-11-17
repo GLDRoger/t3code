@@ -286,6 +286,10 @@ export function kinAgentChangeLine(
     const principal = /^(person|agent):(.+)$/.exec(shown);
     if (principal !== null && (field === "owner" || field === "waitingOn"))
       return names.get(principal[2]!) ?? (principal[1] === "agent" ? "an agent" : "someone");
+    if (field === "party" || field === "project") {
+      const title = change.named?.find((one) => one.key === shown)?.title;
+      return title === undefined ? shown : short(`${shown} ${title}`);
+    }
     if ((field === "due" || field === "date") && !Number.isNaN(Date.parse(shown)))
       return formatKinWhen(
         new Date(shown),
@@ -302,8 +306,11 @@ export function kinAgentChangeLine(
   return parts.length === 0 ? `Changed ${record}` : `${record}: ${parts.join("; ")}`;
 }
 
-/** What the row offers: Undo and what it says once done, or the sentence saying why not. */
-export const kinAgentChangeOffer = (change: Change) =>
+/**
+ * What the row offers: Undo and what it says once done, or the sentence saying why not.
+ * `undoneHere`: this person's Undo of it just went through, so it keeps saying that.
+ */
+export const kinAgentChangeOffer = (change: Change, undoneHere = false) =>
   change.undo
     ? ({
         kind: "undo",
@@ -312,7 +319,12 @@ export const kinAgentChangeOffer = (change: Change) =>
     : change.undone === true
       ? ({
           kind: "undone",
-          text: change.kind === "linked" ? KIN_AGENT_CHANGES.linkGone : KIN_AGENT_CHANGES.undone,
+          text:
+            change.kind !== "linked"
+              ? KIN_AGENT_CHANGES.undone
+              : undoneHere
+                ? KIN_AGENT_CHANGES.linkUndone
+                : KIN_AGENT_CHANGES.linkGone,
         } as const)
       : change.kind === "linked"
         ? ({ kind: "none" } as const)

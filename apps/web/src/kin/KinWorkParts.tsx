@@ -1,12 +1,13 @@
 import { KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
-import { KIN_WORK_PRIVATE } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_WORK_PRIVATE, kinWorkStaleNotice } from "@t3tools/client-runtime/kin/kinWork";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import type {
   KinHealthView,
   KinWorkTimelineLine,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import type { KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KIN_WORK_FORM_COPY } from "@t3tools/client-runtime/kin/kinWorkForms";
-import type { KinRecordKey } from "@t3tools/contracts";
+import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -43,8 +44,10 @@ import {
 } from "../components/ui/menu";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
-import type { KinGate } from "@t3tools/client-runtime/kin/kinAccess";
+import { KIN_GATE_FAILED, type KinGate } from "@t3tools/client-runtime/kin/kinAccess";
 import { KIN_OFFLINE_PAGE } from "@t3tools/client-runtime/kin/kinAnswers";
+import { retryKinAccess } from "./kinClient";
+import { useKinHost, useKinHostAt } from "./useKinHost";
 
 /**
  * A titled block of a task, client or project, with an optional action beside the title. With
@@ -101,6 +104,25 @@ export function KinWorkSection(props: {
       </div>
       {open ? props.children : null}
     </section>
+  );
+}
+
+/** The line over rows older than the host's, as `kinWorkStaleNotice` words it. */
+export function KinWorkStaleLine(props: {
+  readonly environmentId: EnvironmentId;
+  readonly onRetry?: () => void;
+}) {
+  const notice = kinWorkStaleNotice(kinHostLink(useKinHostAt(props.environmentId)));
+  if (notice === null) return null;
+  return (
+    <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+      {notice.message}
+      {notice.retry && props.onRetry !== undefined ? (
+        <Button size="xs" variant="outline" onClick={props.onRetry}>
+          {KIN_RETRY}
+        </Button>
+      ) : null}
+    </p>
   );
 }
 
@@ -178,6 +200,7 @@ export function KinGateView(props: {
 }) {
   if (props.gate === "refused") return <KinWorkNotice {...props.refused} />;
   if (props.gate === "offline") return <KinWorkNotice {...(props.offline ?? KIN_OFFLINE_PAGE)} />;
+  if (props.gate === "failed") return <KinGateFailed />;
   return (
     <div
       className="mx-auto w-full max-w-3xl p-4"
@@ -186,6 +209,21 @@ export function KinGateView(props: {
     >
       <KinWorkRowSkeletons />
     </div>
+  );
+}
+
+/** A gate whose read of what this person may open failed, with a Retry of that read. */
+export function KinGateFailed(props: { readonly className?: string }) {
+  const host = useKinHost();
+  return (
+    <KinLoadFailed
+      what={KIN_GATE_FAILED}
+      cause={null}
+      onRetry={() => {
+        if (host._tag === "host") retryKinAccess(host.environmentId);
+      }}
+      className={cn("mx-auto w-full max-w-3xl p-4", props.className)}
+    />
   );
 }
 

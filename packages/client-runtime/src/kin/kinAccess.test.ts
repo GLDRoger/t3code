@@ -15,7 +15,34 @@ describe("kinPermission", () => {
     ["a member", true, true, "member", "owner_level", "refused"],
     ["someone the host has no kind for", true, true, null, "owner_level", "refused"],
   ] as const)("%s", (_name, sessionKnown, scopesGranted, kind, access, expected) => {
-    expect(kinPermission({ sessionKnown, scopesGranted, kind, access })).toBe(expected);
+    expect(kinPermission({ sessionKnown, scopesGranted, kind, access, failed: false })).toBe(
+      expected,
+    );
+  });
+
+  it.each([
+    ["the scopes' read failed", false, false, undefined, "person", "failed"],
+    ["the kind's read failed", true, true, undefined, "owner_level", "failed"],
+    [
+      "the kind's read failed on a call anyone may make",
+      true,
+      true,
+      undefined,
+      "person",
+      "granted",
+    ],
+    [
+      "a read failed, but the scopes already lack it",
+      true,
+      false,
+      undefined,
+      "owner_level",
+      "refused",
+    ],
+  ] as const)("%s", (_name, sessionKnown, scopesGranted, kind, access, expected) => {
+    expect(kinPermission({ sessionKnown, scopesGranted, kind, access, failed: true })).toBe(
+      expected,
+    );
   });
 });
 
@@ -24,6 +51,9 @@ describe("kinGate", () => {
     ["unknown", "connecting", "loading"],
     ["unknown", "connected", "loading"],
     ["unknown", "offline", "offline"],
+    ["failed", "connected", "failed"],
+    ["failed", "connecting", "failed"],
+    ["failed", "offline", "offline"],
     ["refused", "connecting", "refused"],
     ["refused", "offline", "refused"],
     ["granted", "connecting", null],

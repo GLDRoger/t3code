@@ -1,3 +1,4 @@
+import { kinDraftJoin, kinDraftPrefill } from "@t3tools/client-runtime/kin/kinDraft";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
@@ -60,15 +61,14 @@ export function prefillKinDraft(
   chatId: string,
   body: string,
 ) {
-  const key = kinDraftKey(environmentId, orgId, chatId);
-  if (!appAtomRegistry.get(kinDraftAtom(key)).includes(body)) restoreDraft(key, body);
+  const atom = kinDraftAtom(kinDraftKey(environmentId, orgId, chatId));
+  appAtomRegistry.set(atom, kinDraftPrefill(appAtomRegistry.get(atom), body));
 }
 
 /** Puts an unsent body back in the draft, ahead of anything typed since. */
 export function restoreDraft(key: string, body: string) {
   const atom = kinDraftAtom(key);
-  const typed = appAtomRegistry.get(atom);
-  appAtomRegistry.set(atom, typed.trim().length === 0 ? body : `${body}\n\n${typed}`);
+  appAtomRegistry.set(atom, kinDraftJoin(appAtomRegistry.get(atom), body));
 }
 
 if (typeof window !== "undefined") restoreCarriedKinDrafts();

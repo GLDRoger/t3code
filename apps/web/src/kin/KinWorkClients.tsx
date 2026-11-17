@@ -2,7 +2,6 @@ import { useKinViewerScope } from "./useKinOwnerLevel";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
-  KIN_WORK_STALE,
   kinWorkDraftFor,
   type KinWorkDraft,
   type KinWorkRef,
@@ -70,6 +69,7 @@ import {
   KinWorkRowSkeletons,
   KinWorkSection,
   KinWorkTimeline,
+  KinWorkStaleLine,
 } from "./KinWorkParts";
 import { KinWorkRow } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
@@ -190,9 +190,13 @@ export function KinWorkClientsList(
       ListHeaderComponent={
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
           {props.stale || state.stale ? (
-            <p role="status" className="text-xs text-muted-foreground">
-              {KIN_WORK_STALE}
-            </p>
+            <KinWorkStaleLine
+              environmentId={props.environmentId}
+              onRetry={() => {
+                list.refresh();
+                projects.list.refresh();
+              }}
+            />
           ) : null}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <div className="min-w-0 flex-1">
@@ -578,9 +582,7 @@ function ClientPage(
             ) : null}
           </div>
           {props.stale ? (
-            <p role="status" className="text-xs text-muted-foreground">
-              {KIN_WORK_STALE}
-            </p>
+            <KinWorkStaleLine environmentId={environmentId} onRetry={props.onRefresh} />
           ) : null}
           {problem === null ? null : (
             <KinWorkProblem problem={problem} onOpenExisting={props.onOpenClient} />

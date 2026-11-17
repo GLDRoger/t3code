@@ -5,7 +5,6 @@ import {
   KIN_WORK_LOAD_FAILED,
   KIN_WORK_NEW,
   KIN_WORK_SEARCH_PLACEHOLDER,
-  KIN_WORK_STALE,
   kinWorkHostEdits,
   kinWorkListFooter,
   kinWorkNothing,
@@ -65,6 +64,7 @@ import {
   KinWorkRowSkeletons,
   type KinFilterGroup,
   KinLoadFailed,
+  KinWorkStaleLine,
 } from "./KinWorkParts";
 import { KinAvatar } from "./KinAvatar";
 import { KinHandOverButton } from "./KinAway";
@@ -242,9 +242,7 @@ export function KinWorkTaskList(
             />
           )}
           {props.stale || listState.stale ? (
-            <p role="status" className="text-xs text-muted-foreground">
-              {KIN_WORK_STALE}
-            </p>
+            <KinWorkStaleLine environmentId={environmentId} onRetry={list.refresh} />
           ) : null}
           <KinWorkFilters
             overview={overview}

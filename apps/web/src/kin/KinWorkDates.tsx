@@ -9,7 +9,6 @@ import {
   kinShiftMonth,
   type KinDateRowView,
 } from "@t3tools/client-runtime/kin/kinDates";
-import { KIN_WORK_STALE } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
@@ -21,7 +20,12 @@ import { Label } from "../components/ui/label";
 import { Switch } from "../components/ui/switch";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { cn } from "../lib/utils";
-import { KinWorkNotice, KinWorkRowSkeletons, KinLoadFailed } from "./KinWorkParts";
+import {
+  KinWorkNotice,
+  KinWorkRowSkeletons,
+  KinLoadFailed,
+  KinWorkStaleLine,
+} from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinDates } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
@@ -128,11 +132,7 @@ export function KinWorkDates(
             <Switch id={switchId} size="sm" checked={openOnly} onCheckedChange={setOpenOnly} />
           </div>
         </div>
-        {props.stale ? (
-          <p role="status" className="text-xs text-muted-foreground">
-            {KIN_WORK_STALE}
-          </p>
-        ) : null}
+        {props.stale ? <KinWorkStaleLine environmentId={props.environmentId} /> : null}
         {mode === "month" ? (
           <div className="flex items-center gap-2">
             <Button

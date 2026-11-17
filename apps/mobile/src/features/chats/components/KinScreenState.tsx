@@ -299,7 +299,7 @@ export function KinStandInLine(props: {
 }
 
 /** The stand-in line in a padded view, drawn only when there is one. */
-export function KinStandInNotice(props: { readonly className?: string }) {
+export function KinStandInNotice(props: { readonly className?: string | undefined }) {
   const line = useKinStandIn();
   if (line === null) return null;
   return (
@@ -310,11 +310,19 @@ export function KinStandInNotice(props: { readonly className?: string }) {
 }
 
 /** "Offline. Last updated 9:41." over a cached inbox, with Reconnect; nothing while it is live. */
-export function KinInboxNotice(props: { readonly state: KinReadyState }) {
+export function KinInboxNotice(props: {
+  readonly state: KinReadyState;
+  /** Padding for the notice, so nothing pads the list when there is none. */
+  readonly className?: string;
+}) {
   const { status, reconnect } = useKinReconnect(props.state.environmentId);
   const notice = kinInboxNotice(props.state, status, (date) => formatKinTime(date));
-  if (notice === null) return <KinStandInNotice />;
-  return <KinStaleNoticeView notice={notice} status={status} reconnect={reconnect} />;
+  if (notice === null) return <KinStandInNotice className={props.className} />;
+  return (
+    <View className={props.className}>
+      <KinStaleNoticeView notice={notice} status={status} reconnect={reconnect} />
+    </View>
+  );
 }
 
 /** A stale-data notice; offline ones carry Reconnect. */

@@ -265,8 +265,6 @@ export function KinChatsView(props: {
   const { state, onOpenChat } = props;
   const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
   const banner = view === null ? null : kinWaitingBannerView(view.waiting);
-  // The stale notice only shows over a cached inbox; an empty header would still pad the list.
-  const notice = state._tag === "ready" && !(state.connected && state.inbox.live);
   if (state._tag !== "ready" || view === null || view.rows.length === 0) {
     return (
       <ScreenScrollView
@@ -343,10 +341,8 @@ export function KinChatsView(props: {
       )}
       ListHeaderComponent={
         <>
-          {notice ? (
-            <View className="px-4 pb-2 pt-2">
-              <KinInboxNotice state={state} />
-            </View>
+          {state._tag === "ready" ? (
+            <KinInboxNotice state={state} className="px-4 pb-2 pt-2" />
           ) : (
             <KinStandInNotice className="px-4 pb-2 pt-2" />
           )}

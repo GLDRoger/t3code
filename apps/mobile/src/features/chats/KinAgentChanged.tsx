@@ -36,7 +36,11 @@ export function KinAgentChanged(props: {
   const directory = useKinWorkDirectory({ environmentId, orgId }, true).names;
   const names = new Map([...directory.people, ...directory.agents]);
   const [busy, setBusy] = useState<number | null>(null);
-  const [said, setSaid] = useState<{ readonly seq: number; readonly text: string } | null>(null);
+  const [said, setSaid] = useState<{
+    readonly seq: number;
+    readonly text: string;
+    readonly ok: boolean;
+  } | null>(null);
   const open = (change: KinAgentChange) => {
     const base = { environmentId, orgId };
     if (change.registerId === "docs") navigation.navigate("KinDoc", { ...base, doc: change.key });
@@ -50,11 +54,11 @@ export function KinAgentChanged(props: {
     setBusy(seq);
     const outcome = await undo({ environmentId, input: { orgId, agentId: props.agentId, seq } });
     setBusy(null);
+    const ok = !AsyncResult.isFailure(outcome);
     setSaid({
       seq,
-      text: AsyncResult.isFailure(outcome)
-        ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_CHANGES.failed)
-        : done,
+      ok,
+      text: ok ? done : kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_CHANGES.failed),
     });
     props.onChanged();
   };
@@ -68,7 +72,7 @@ export function KinAgentChanged(props: {
         </View>
       ) : (
         props.changed.map((change, index) => {
-          const offer = kinAgentChangeOffer(change);
+          const offer = kinAgentChangeOffer(change, said?.seq === change.seq && said.ok);
           return (
             <View
               key={change.seq}

@@ -58,6 +58,7 @@ const kin = makeKinClient(connectionAtomRuntime, appAtomRegistry, {
 
 export const markKinHostKnown = kin.markKinHostKnown;
 export const retryKinWorkLive = kin.retryKinWorkLive;
+export const retryKinAccess = kin.retryAccess;
 export const refreshKinAgents = kin.refreshKinAgents;
 
 const approvalRead = createKinRpcCommand(connectionAtomRuntime, {

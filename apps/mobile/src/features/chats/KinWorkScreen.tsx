@@ -93,7 +93,7 @@ import { KinMoneyArea } from "./KinWorkMoney";
 import { KinListBanner } from "./components/KinListBanner";
 import { kinTabBar, useKinTab } from "./components/KinTab";
 import { KinWorkStaleNotice, KinWorkTaskRow } from "./components/KinWorkPieces";
-import { kinClient } from "./state/kinClient";
+import { kinClient, retryKinAccess } from "./state/kinClient";
 import { useKinOpenPlace } from "./state/kinHomeTab";
 import { useKinOpenHit, useKinWorkLink } from "./state/kinWorkLink";
 import { useKinSearch } from "./state/useKinDocs";
@@ -333,7 +333,10 @@ export function KinPlace(
         <KinLoadFailed
           title={KIN_WORK_LOAD_FAILED}
           cause={null}
-          onRetry={() => appAtomRegistry.refresh(kinWorkLiveAtom(target))}
+          onRetry={() => {
+            retryKinAccess(target.environmentId);
+            appAtomRegistry.refresh(kinWorkLiveAtom(target));
+          }}
         />
       ) : (
         <View

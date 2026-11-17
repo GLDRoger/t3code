@@ -257,13 +257,37 @@ const changeOf = (row: Row): KinAgentChange => {
   };
 };
 
+/** Fields that name a client or project by key. */
+const NAMED_BY_KEY = new Set(["party", "project"]);
+
 /** The agent's last record changes this viewer sees, newest first, kept on each record. */
 export const agentChanges = Effect.fn("KinAgentChanges.list")(function* (
   viewer: KinViewer,
   orgId: KinOrgId,
   agentId: KinAgentId,
 ) {
-  return (yield* rowsOf(viewer, orgId, agentId)).map(changeOf);
+  const changes = (yield* rowsOf(viewer, orgId, agentId)).map(changeOf);
+  const keysOf = (change: KinAgentChange) =>
+    change.fields
+      .filter((one) => NAMED_BY_KEY.has(one.field))
+      .flatMap((one) => [one.from, one.to])
+      .filter((key): key is string => key !== null && key !== "");
+  const keys = [...new Set(changes.flatMap(keysOf))];
+  if (keys.length === 0) return changes;
+  const sql = yield* SqlClient.SqlClient;
+  const seen = new Map(
+    (yield* sql<{ key: string; title: string }>`SELECT r.key, r.title FROM kin_records r
+      WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(keys)} AND ${seenBy(sql, viewer)}`).map(
+      (row) => [row.key, row.title] as const,
+    ),
+  );
+  return changes.map((change): KinAgentChange => {
+    const named = keysOf(change).flatMap((key) => {
+      const title = seen.get(key);
+      return title === undefined ? [] : [{ key: KinRecordKey.make(key), title }];
+    });
+    return change.fields.some((one) => NAMED_BY_KEY.has(one.field)) ? { ...change, named } : change;
+  });
 });
 
 /**
