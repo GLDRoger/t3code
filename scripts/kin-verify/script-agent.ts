@@ -374,7 +374,8 @@ function main(): void {
           agentCapabilities: {
             loadSession: true,
             mcpCapabilities: { http: true },
-            promptCapabilities: { image: false, audio: false, embeddedContext: true },
+            // Kin sends every provider pictures (`lead/turn/content.ts`); T3 refuses them otherwise.
+            promptCapabilities: { image: true, audio: false, embeddedContext: true },
           },
           authMethods: [],
           agentInfo: { name: "kin-verify-script", version: "1" },
