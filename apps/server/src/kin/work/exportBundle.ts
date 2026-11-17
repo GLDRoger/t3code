@@ -109,17 +109,15 @@ export const exportLink = Effect.fn("KinExport.link")(function* (
   const payload = base64UrlEncode(
     encodeClaims({ kind: "kin-export", orgId: input.orgId, reader, expiresAt }),
   );
-  const signature = yield* signer
-    .sign(payload)
-    .pipe(
-      Effect.mapError(
-        () =>
-          new KinChatError({
-            reason: "unavailable",
-            message: "The download couldn't be prepared.",
-          }),
-      ),
-    );
+  const signature = yield* signer.sign(payload).pipe(
+    Effect.mapError(
+      () =>
+        new KinChatError({
+          reason: "unavailable",
+          message: "The download couldn't be prepared.",
+        }),
+    ),
+  );
   const fileName = fileNameFor(org?.name ?? "kin", now, yield* ownerZone(input.orgId));
   return {
     url: `${KIN_EXPORT_ROUTE}/${payload}.${signature}/${encodeURIComponent(fileName)}`,
@@ -478,11 +476,11 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
   );
 
   const readme = [
-    `Everything ${org?.name ?? "the company"} keeps in Kin, taken out on ${dayIn(yield* Clock.currentTimeMillis, zone)}.`,
+    `Everything Kin keeps for ${org?.name ?? "the company"}, taken out on ${dayIn(yield* Clock.currentTimeMillis, zone)}.`,
     "",
     "kin.jsonl  Clients, projects, every list's entries and their payments, in the format `kin import` reads.",
-    "           Restore it with: kin import --file kin.jsonl --apply",
-    "contacts.jsonl  People at your clients. kin import doesn't read these; they are here to keep.",
+    "           Restore it on the computer running Kin with: t3 kin import --file kin.jsonl --apply",
+    "contacts.jsonl  People at your clients. The import doesn't read these; they are here to keep.",
     "docs/      Each doc as it reads now, and the files docs show.",
     "files/     Files kept on entries, such as invoice PDFs and receipts.",
     "",
@@ -513,7 +511,7 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
 
 const safeName = (name: string) =>
   name
-    .replace(/[\\/:*?"<>|\p{Cc}]+/gu, " ")
+    .replace(/[\\/:*?"<>|\p{Cc}\s]+/gu, " ")
     .trim()
     .slice(0, 80) || "untitled";
 const extname = (path: string) => /\.[A-Za-z0-9]{1,10}$/.exec(path)?.[0] ?? "";
