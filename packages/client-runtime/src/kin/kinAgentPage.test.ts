@@ -173,6 +173,30 @@ describe("kinAgentChangeLine and kinAgentChangeOffer", () => {
       { kind: "since", text: C.sinceDetail },
     ],
     [
+      "a move to another project, both named",
+      {
+        kind: "updated",
+        fields: [{ field: "project", from: "P-1", to: "P-2" }],
+        named: [
+          { key: KinRecordKey.make("P-1"), title: "Invented portal" },
+          { key: KinRecordKey.make("P-2"), title: "Invented rebrand" },
+        ],
+        undo: false,
+      },
+      "D-3 Invented chase notes: project P-1 Invented portal → P-2 Invented rebrand",
+      { kind: "manual", text: C.manualDetail },
+    ],
+    [
+      "a move to a client, the one the viewer can't see by its key alone",
+      {
+        kind: "updated",
+        fields: [{ field: "party", from: "C-1", to: "C-2" }],
+        named: [{ key: KinRecordKey.make("C-2"), title: "Invented Harbour Co" }],
+      },
+      "D-3 Invented chase notes: client C-1 → C-2 Invented Harbour Co",
+      { kind: "manual", text: C.manualDetail },
+    ],
+    [
       "an amount Kin can't put back",
       { kind: "updated", fields: [{ field: "amount", from: "10", to: "12" }] },
       "D-3 Invented chase notes: amount 10 → 12",
@@ -182,5 +206,21 @@ describe("kinAgentChangeLine and kinAgentChangeOffer", () => {
     const one = change(over as Partial<KinAgentChange>);
     expect(kinAgentChangeLine(one, new Map())).toBe(line);
     expect(kinAgentChangeOffer(one)).toEqual(offer);
+  });
+
+  it.each([
+    ["a link this person just removed", { linkedTo: end, undone: true }, true, C.linkUndone],
+    ["a link someone else removed first", { linkedTo: end, undone: true }, false, C.linkGone],
+    [
+      "a field this person just put back",
+      { kind: "updated", fields: [{ field: "title", from: "Old", to: "New" }], undone: true },
+      true,
+      C.undone,
+    ],
+  ] as const)("%s says so once read again", (_case, over, undoneHere, text) => {
+    expect(kinAgentChangeOffer(change(over as Partial<KinAgentChange>), undoneHere)).toEqual({
+      kind: "undone",
+      text,
+    });
   });
 });

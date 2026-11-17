@@ -54,7 +54,7 @@ import { KinWorkNewDialog } from "./KinWorkNewDialog";
 import { KinWorkNotice, KinWorkRowSkeletons, KinLoadFailed } from "./KinWorkParts";
 import { KinWorkProjectPage } from "./KinWorkProjects";
 import { KinWorkTaskList } from "./KinWorkTasks";
-import { kinClient } from "./kinClient";
+import { kinClient, retryKinAccess } from "./kinClient";
 import {
   KIN_PLACE_PATH,
   kinPlaceOfRecord,
@@ -555,7 +555,10 @@ function KinPlaceView({
         <KinLoadFailed
           what={KIN_WORK_LOAD_FAILED}
           cause={null}
-          onRetry={() => appAtomRegistry.refresh(kinWorkLiveAtom(props))}
+          onRetry={() => {
+            retryKinAccess(props.environmentId);
+            appAtomRegistry.refresh(kinWorkLiveAtom(props));
+          }}
           className="mx-auto w-full max-w-3xl p-4"
         />
       ) : state._tag === "loading" ? (

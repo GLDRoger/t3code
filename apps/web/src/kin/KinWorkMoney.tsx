@@ -5,7 +5,6 @@ import {
   type KinListOpen,
   type KinMoneyFigure,
 } from "@t3tools/client-runtime/kin/kinMoney";
-import { KIN_WORK_STALE } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
   kinEstimatesByLine,
@@ -48,7 +47,13 @@ import { KinGoalSheet, KinGoals } from "./KinGoals";
 import { openKinLeadForm } from "./KinNewLeadButton";
 import { useKinGoals } from "./useKinAttention";
 import { useKinViewerScope } from "./useKinOwnerLevel";
-import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection, KinLoadFailed } from "./KinWorkParts";
+import {
+  KinWorkNotice,
+  KinWorkRowSkeletons,
+  KinWorkSection,
+  KinLoadFailed,
+  KinWorkStaleLine,
+} from "./KinWorkParts";
 import {
   kinListsOf,
   useKinAskAgent,
@@ -350,9 +355,7 @@ export function KinWorkMoney(
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-7 px-4 pt-4">
         {props.stale || state.stale ? (
-          <p role="status" className="text-xs text-muted-foreground">
-            {KIN_WORK_STALE}
-          </p>
+          <KinWorkStaleLine environmentId={props.environmentId} onRetry={refresh} />
         ) : null}
         {top}
         <section className="flex flex-col gap-3">

@@ -28,7 +28,6 @@ import {
   kinListsIndex,
   type KinListIndexRow,
 } from "@t3tools/client-runtime/kin/kinLists";
-import { KIN_WORK_STALE } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_HOME, kinPlaceLists } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinDocListRow, KinListDefinition, KinListId, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
@@ -53,6 +52,7 @@ import {
   KinWorkRowSkeletons,
   KinWorkSection,
   KinLoadFailed,
+  KinWorkStaleLine,
 } from "./KinWorkParts";
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { kinClient } from "./kinClient";
@@ -345,9 +345,7 @@ export function KinDocsList(
         ListHeaderComponent={
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
             {props.stale || state.stale ? (
-              <p role="status" className="text-xs text-muted-foreground">
-                {KIN_WORK_STALE}
-              </p>
+              <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
             ) : null}
             <Input
               type="search"

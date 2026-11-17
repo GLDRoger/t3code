@@ -24,7 +24,7 @@ import { createKinRefreshTriggers, kinDirectoryOrgsAtom } from "./kinRefresh.ts"
  * Whether this session may make a call, once that is known. `unknown` until the session's scopes
  * and, for an owner-level call, the viewer's kind have arrived: not yet known is never a refusal.
  */
-export type KinPermission = "unknown" | "granted" | "refused";
+export type KinPermission = "unknown" | "granted" | "refused" | "failed";
 
 export function kinPermission(input: {
   /** The session's scopes have arrived (or their read failed). */
@@ -33,24 +33,31 @@ export function kinPermission(input: {
   /** `undefined` until the host has said; null when it answered with no kind. */
   readonly kind: KinPersonAccess | null | undefined;
   readonly access: KinRpcAccess | undefined;
+  /** The last read of the scopes or the kind failed without an answer, and none is in flight. */
+  readonly failed: boolean;
 }): KinPermission {
-  if (!input.sessionKnown) return "unknown";
+  const pending = input.failed ? "failed" : "unknown";
+  if (!input.sessionKnown) return pending;
   if (!input.scopesGranted) return "refused";
   if (input.access === undefined || input.access === "person") return "granted";
-  if (input.kind === undefined) return "unknown";
+  if (input.kind === undefined) return pending;
   return kinAccessAllows(input.kind, input.access) ? "granted" : "refused";
 }
 
 /**
  * What a page gated on one permission shows before its own reads: null once it may read. Until
- * the permission is known it is loading, or offline once a connection failed; never a refusal.
+ * the permission is known it is loading, offline once a connection failed, or failed once its
+ * read failed on a live link; never a refusal.
  */
-export type KinGate = "loading" | "offline" | "refused" | null;
+export type KinGate = "loading" | "offline" | "refused" | "failed" | null;
+/** The heading on a gate whose read of what this person may open failed. */
+export const KIN_GATE_FAILED = "Couldn't load this page";
 
 export function kinGate(permission: KinPermission, link: KinLink): KinGate {
   if (permission === "refused") return "refused";
   if (permission === "granted") return null;
-  return link === "offline" ? "offline" : "loading";
+  if (link === "offline") return "offline";
+  return permission === "failed" ? "failed" : "loading";
 }
 
 // A session read the host refused is an answer; a transport failure retries and says nothing.
@@ -61,6 +68,19 @@ const SESSION_REFUSED = new Set([
 ]);
 const errorTag = (error: unknown) =>
   typeof error === "object" && error !== null && "_tag" in error ? String(error._tag) : "";
+// The host answering the kind read with a refusal is an answer; anything else says nothing.
+const KIND_ANSWERED = new Set([
+  "KinChatError",
+  ...SESSION_REFUSED,
+  "EnvironmentAuthorizationError",
+]);
+const failedWithoutAnswer = (
+  result: AsyncResult.AsyncResult<unknown, unknown>,
+  answered: ReadonlySet<string>,
+) =>
+  result._tag === "Failure" &&
+  !result.waiting &&
+  !answered.has(errorTag(Cause.squash(result.cause)));
 
 /** Whether a person of `kind` may call a method of `access` (`KIN_RPC_ACCESS`). */
 function kinAccessAllows(kind: KinPersonAccess | null, access: KinRpcAccess | undefined) {
@@ -123,17 +143,30 @@ function makeKinAccess<R, ER>(
       return AsyncResult.getOrElse(result, () => null)?.access ?? null;
     }).pipe(Atom.withLabel(`kin:access:${environmentId}`)),
   );
-  // The kind once known: a failed read is an answer (null), a read not yet back is not.
+  // The kind once known: a refused read is an answer (null); one not back, or failed, is not.
   const knownAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get): KinPersonAccess | null | undefined => {
       const [orgId] = get(kinDirectoryOrgsAtom(environmentId));
       if (orgId === undefined) return undefined;
       const result = get(query({ environmentId, input: { orgId } }));
       if (result._tag === "Initial") return undefined;
-      if (result._tag === "Failure") return result.waiting ? undefined : null;
+      if (result._tag === "Failure")
+        return result.waiting || failedWithoutAnswer(result, KIND_ANSWERED) ? undefined : null;
       return result.value.access ?? null;
     }).pipe(Atom.withLabel(`kin:access:known:${environmentId}`)),
   );
+  const kindFailedAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get): boolean => {
+      const [orgId] = get(kinDirectoryOrgsAtom(environmentId));
+      if (orgId === undefined) return false;
+      return failedWithoutAnswer(get(query({ environmentId, input: { orgId } })), KIND_ANSWERED);
+    }).pipe(Atom.withLabel(`kin:access:failed:${environmentId}`)),
+  );
+  /** Reads the kind again, for a Retry after its read failed. */
+  const retryKind = (registry: AtomRegistry.AtomRegistry, environmentId: EnvironmentId) => {
+    const [orgId] = registry.get(kinDirectoryOrgsAtom(environmentId));
+    if (orgId !== undefined) registry.refresh(query({ environmentId, input: { orgId } }));
+  };
   const ownerLevelAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get) => kinOwnerLevel(get(accessAtom(environmentId)) ?? undefined)),
   );
@@ -144,7 +177,7 @@ function makeKinAccess<R, ER>(
       return AsyncResult.getOrElse(get(query({ environmentId, input: { orgId } })), () => null);
     }).pipe(Atom.withLabel(`kin:access:me:${environmentId}`)),
   );
-  return { accessAtom, knownAtom, ownerLevelAtom, meAtom };
+  return { accessAtom, knownAtom, kindFailedAtom, retryKind, ownerLevelAtom, meAtom };
 }
 
 const accessByRuntime = new WeakMap<object, ReturnType<typeof makeKinAccess>>();
@@ -184,6 +217,16 @@ export function kinOwnerLevelAtom<R, ER>(
   return kinAccessAtoms(runtime).ownerLevelAtom(environmentId);
 }
 
+/** Reads this session's scopes and kind again, for the Retry on a gate whose read failed. */
+export function retryKinAccess<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  registry: AtomRegistry.AtomRegistry,
+  environmentId: EnvironmentId,
+) {
+  registry.refresh(createEnvironmentSessionAtoms(runtime).sessionStateAtom(environmentId));
+  kinAccessAtoms(runtime).retryKind(registry, environmentId);
+}
+
 /**
  * `createEnvironmentRpcCommand` for a Kin method: its `permissionAtom` also needs the viewer's
  * kind to allow the method, so a member never sees an owner-level control. The host decides.
@@ -209,6 +252,8 @@ export function createKinRpcCommand<
     if (atom === undefined) {
       const session = sessions.sessionStateAtom(environmentId);
       const kind = kinAccessAtoms(runtime).knownAtom(environmentId);
+      const kindFailed = kinAccessAtoms(runtime).kindFailedAtom(environmentId);
+      const needsKind = access !== undefined && access !== "person";
       atom = Atom.make((get) => {
         const state = get(session);
         return kinPermission({
@@ -216,8 +261,9 @@ export function createKinRpcCommand<
             state._tag === "Success" ||
             (state._tag === "Failure" && SESSION_REFUSED.has(errorTag(Cause.squash(state.cause)))),
           scopesGranted: get(granted),
-          kind: access === undefined || access === "person" ? null : get(kind),
+          kind: needsKind ? get(kind) : null,
           access,
+          failed: failedWithoutAnswer(state, SESSION_REFUSED) || (needsKind && get(kindFailed)),
         });
       });
       states.set(granted, atom);

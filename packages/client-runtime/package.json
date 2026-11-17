@@ -922,6 +922,10 @@
     "./kin/kinUpdated": {
       "types": "./src/kin/kinUpdated.ts",
       "default": "./src/kin/kinUpdated.ts"
+    },
+    "./kin/kinDraft": {
+      "types": "./src/kin/kinDraft.ts",
+      "default": "./src/kin/kinDraft.ts"
     }
   },
   "scripts": {

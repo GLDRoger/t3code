@@ -19,7 +19,6 @@ import {
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
-import { KIN_WORK_STALE } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type {
   KinListDefinition,
@@ -61,7 +60,13 @@ import {
 } from "../components/ui/table";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { cn } from "../lib/utils";
-import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection, KinLoadFailed } from "./KinWorkParts";
+import {
+  KinWorkNotice,
+  KinWorkRowSkeletons,
+  KinWorkSection,
+  KinLoadFailed,
+  KinWorkStaleLine,
+} from "./KinWorkParts";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import {
@@ -186,9 +191,7 @@ function KinListEntries(
           ) : null}
         </div>
         {props.stale || state.stale ? (
-          <p role="status" className="text-xs text-muted-foreground">
-            {KIN_WORK_STALE}
-          </p>
+          <KinWorkStaleLine environmentId={props.environmentId} onRetry={entries.refresh} />
         ) : null}
         <div className="-mx-1 overflow-x-auto px-1 py-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <ToggleGroup
