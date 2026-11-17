@@ -1,4 +1,5 @@
 import type {
+  KinAgentId,
   KinChatSummary,
   KinLeadAccessResult,
   KinLeadProfile,
@@ -345,3 +346,21 @@ export const KIN_AGENTS_COPY = {
   loadFailed: "Couldn't load your agents.",
   teammateViewHint: "Optional. People you let message this agent see this and nothing above.",
 } as const;
+
+/**
+ * The agents on a live run, from the chat list's live rows, whose `working` follows each run: a
+ * direct chat with an agent says it is working. The leads list's own flag is only as fresh as its
+ * last read, so the Agents list and an agent's page say "Working" from this instead.
+ */
+export function kinWorkingAgents(
+  chats: ReadonlyArray<KinChatSummary> | null,
+): ReadonlySet<KinAgentId> {
+  const working = new Set<KinAgentId>();
+  for (const chat of chats ?? []) {
+    if (chat.working !== true) continue;
+    for (const member of chat.members) {
+      if (member.principal._tag === "agent") working.add(member.principal.agentId);
+    }
+  }
+  return working;
+}

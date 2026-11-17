@@ -65,6 +65,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinAgentSections } from "./KinAgentSections";
 import { kinClient } from "./state/kinClient";
+import { useKinWorkingAgents } from "./state/useKinInbox";
 import { kinRetiredWhenNow, useKinAgentRetire } from "./state/useKinAgentRetire";
 import { useKinHostAt } from "./state/useKinHost";
 
@@ -127,6 +128,7 @@ function KinLeadBody(props: {
   // The owner's list keeps their retired agents, so one still has details and a way back.
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
   const canRetire = useAtomValue(kinClient.leadRetire.permissionAtom(environmentId));
+  const working = useKinWorkingAgents(environmentId);
   const atom = canRestore
     ? kinClient.agents({ environmentId, orgId })
     : kinClient.leads({ environmentId, input: { orgId } });
@@ -172,6 +174,7 @@ function KinLeadBody(props: {
             <>
               <KinLeadProfileView
                 lead={lead}
+                working={working.has(lead.agentId)}
                 access={
                   isRetired ? (
                     canRestore ? (
@@ -525,9 +528,12 @@ function KinLeadContactView({ contact }: { readonly contact: KinLeadContact }) {
 /** Also drawn from fixtures in the component catalog. */
 export function KinLeadProfileView({
   lead,
+  working = false,
   access,
 }: {
   readonly lead: KinLeadProfile;
+  /** On a live run now, from the chat list (`kinWorkingAgents`). */
+  readonly working?: boolean;
   /** The owner's "Who can message" section, placed under what the lead is for. */
   readonly access?: ReactNode;
 }) {
@@ -541,7 +547,7 @@ export function KinLeadProfileView({
       ? kinRetiredWhenNow(retired.at)
       : lead.paused !== undefined
         ? "Paused"
-        : lead.working
+        : working
           ? "Working now"
           : null,
   ]);

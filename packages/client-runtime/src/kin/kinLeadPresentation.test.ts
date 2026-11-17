@@ -1,4 +1,4 @@
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId, type KinAgentId, type KinChatSummary } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -10,6 +10,7 @@ import {
   kinLeadModelName,
   kinLeadStartingModel,
   kinLeadTrackingDetail,
+  kinWorkingAgents,
 } from "./kinLeadPresentation.ts";
 
 describe("lead domains", () => {
@@ -148,5 +149,33 @@ describe("a first agent's model", () => {
     ).toEqual(model("claude-opus-4-6"));
     expect(kinLeadStartingModel([model("claude-custom")])).toEqual(model("claude-custom"));
     expect(kinLeadStartingModel([])).toBeNull();
+  });
+});
+
+describe("kinWorkingAgents", () => {
+  const member = (principal: KinChatSummary["members"][number]["principal"]) =>
+    ({ principal }) as KinChatSummary["members"][number];
+  const row = (working: boolean | undefined, ...agents: ReadonlyArray<string>) =>
+    ({
+      ...(working === undefined ? {} : { working }),
+      members: [
+        member({ _tag: "person", personId: "owner" as never }),
+        ...agents.map((agentId) => member({ _tag: "agent", agentId: agentId as KinAgentId })),
+      ],
+    }) as KinChatSummary;
+
+  it.each([
+    ["a direct chat with it is working", [row(true, "finance")], ["finance"]],
+    ["its turn ended: the row says so", [row(false, "finance")], []],
+    ["a host without the flag", [row(undefined, "finance")], []],
+    ["another agent's chat is working", [row(true, "chief"), row(false, "finance")], ["chief"]],
+    // A group's row names only the viewer, so it can't say which agent is on a run.
+    ["a working group names nobody", [row(true)], []],
+  ] as const)("%s", (_, chats, working) => {
+    expect([...kinWorkingAgents(chats)]).toEqual(working);
+  });
+
+  it("knows nobody is working before the chat list has loaded", () => {
+    expect(kinWorkingAgents(null).size).toBe(0);
   });
 });

@@ -43,6 +43,7 @@ import { KinAgentDetails } from "./KinAgentPage";
 import { KinAvatar } from "./KinAvatar";
 import { openKinSettings } from "./kinSettingsAddress";
 import { kinClient } from "./kinClient";
+import { useKinWorkingAgents } from "./useKinHost";
 import { announceKinClearKept, useKinClearPreview } from "./useKinClearPreview";
 import { useNowMinuteMs } from "./useKinClock";
 
@@ -83,6 +84,7 @@ export function KinLeadSheet(props: {
   const nowMs = useNowMinuteMs();
   const retired = about.kind === "own" ? about.lead.retired : undefined;
   const canMute = useAtomValue(kinClient.mute.permissionAtom(environmentId));
+  const working = useKinWorkingAgents(environmentId);
   const mute = useAtomCommand(kinClient.mute, { reportFailure: false });
   const [muteState, setMuteState] = useState<"idle" | "saving" | "failed">("idle");
   const [muteProblem, setMuteProblem] = useState<string | null>(null);
@@ -134,7 +136,7 @@ export function KinLeadSheet(props: {
                     ? ` · ${kinRetiredWhen(retired.at, nowMs)}`
                     : about.lead.paused !== undefined
                       ? " · Paused"
-                      : about.lead.working
+                      : working.has(about.lead.agentId)
                         ? " · Working now"
                         : ""}
                 </SheetDescription>
