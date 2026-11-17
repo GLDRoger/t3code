@@ -588,6 +588,34 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ),
   );
 
+  it.effect("a removed Outlook account's owed card still names Outlook", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const hello = yield* connect(fake, "microsoft", HELLO);
+        const inbound = fake.deliver({
+          to: HELLO,
+          from: CLIENT,
+          subject: "Invoice question",
+          body: "Is GST included?",
+          at: NOW - 60_000,
+        });
+        yield* wake({ person: owner });
+        yield* callTool(HELLO, "mail_reply", { threadId: inbound.threadId, body: "Yes." });
+        fake.setDown(HELLO, true);
+        const broke = yield* tap(cards.at(-1)!.widgetId, owner);
+        assert.strictEqual(broke !== undefined && "state" in broke && broke.state, "failed");
+        yield* connections.remove(people(owner), { orgId, connectionId: hello });
+        const later = (yield* Clock.currentTimeMillis) + 1;
+        const [owed] = yield* connections.interruptedSends(orgId, later);
+        if (owed?.fresh === undefined) return assert.fail("the failed mail is on no card");
+        assert.strictEqual(owed.fresh.label, "Microsoft");
+        const fresh = yield* connections.freshAsk(orgId, owed.fresh, NOW);
+        assert.strictEqual(fresh?.card.question, "Send this reply from Outlook?");
+      }),
+    ),
+  );
+
   it.effect("an expired account says so on the card, loses nothing, and sends after sign-in", () =>
     setUp((fake, cards) =>
       Effect.gen(function* () {

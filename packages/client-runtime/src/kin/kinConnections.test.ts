@@ -266,6 +266,21 @@ describe("kinSignInCheck", () => {
 
   it("checks the pasted Google client and Microsoft app", () => {
     expect(kinSignInClientCheck(orgId, "google", "123-abc", "s").ok).toBe(false);
+    // The host's rule, whole: a client ID with a space is refused here, not at the host.
+    expect(kinSignInClientCheck(orgId, "google", "a b.apps.googleusercontent.com", "s").ok).toBe(
+      false,
+    );
+    const own = kinSignInCheck(
+      orgId,
+      {
+        ...kinConnectionDraft("google"),
+        clientId: "a b.apps.googleusercontent.com",
+        clientSecret: "s",
+      },
+      services,
+      "web",
+    );
+    expect(own.ok).toBe(false);
     expect(kinSignInClientCheck(orgId, "google", "123-abc.apps.googleusercontent.com", "").ok).toBe(
       false,
     );
