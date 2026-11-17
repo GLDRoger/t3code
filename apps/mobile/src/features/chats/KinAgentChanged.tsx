@@ -99,6 +99,12 @@ export function KinAgentChanged(props: {
                     </Text>
                   ) : null}
                 </View>
+              ) : offer.kind === "undone" ? (
+                <View className="px-4 pb-3">
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {offer.text}
+                  </Text>
+                </View>
               ) : offer.kind === "since" || offer.kind === "manual" ? (
                 <View className="px-4 pb-3">
                   <Text textRole="footnote" className="text-foreground-muted">

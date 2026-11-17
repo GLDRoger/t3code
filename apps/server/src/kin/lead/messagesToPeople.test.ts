@@ -17,6 +17,7 @@ import {
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -794,7 +795,7 @@ it.effect("a held message follows its reader's changed clock", () =>
         "Zoya Sheikh is away: it arrives at 10:00 their time (Thu 19 Nov).",
       );
       assert.deepStrictEqual(JSON.parse(arrives?.when ?? "null"), {
-        at: new Date(thursday).toISOString(),
+        at: DateTime.formatIso(DateTime.makeUnsafe(thursday)),
         zone: "Europe/London",
         text: "10:00 their time (Thu 19 Nov)",
         of: "Zoya Sheikh",

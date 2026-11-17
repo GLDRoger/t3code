@@ -277,8 +277,11 @@ async function byName(
   exact: boolean,
   inside?: string,
 ) {
-  // An open menu or listbox renders in a portal outside the dialog, in front of it.
-  const popups = page.locator("[role=menu]:visible, [role=listbox]:visible");
+  // An open menu or listbox renders in a portal outside the dialog, in front of it; so does a
+  // toast, which a dialog doesn't block.
+  const popups = page.locator(
+    "[role=menu]:visible, [role=listbox]:visible, [role=region][aria-label=Notifications] [role=dialog]:visible",
+  );
   const root = inside === undefined ? await reachable(page) : await within(page, inside);
   const scopes: Array<Page | Locator> =
     (await popups.count()) > 0 && inside === undefined ? [popups.last(), root] : [root];

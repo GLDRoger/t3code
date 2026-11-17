@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format change dates for React render, outside an Effect runtime.
 import type {
   KinAgentPage,
   KinPersonAccess,
@@ -273,8 +274,10 @@ export function kinAgentChangeLine(
 export const kinAgentChangeOffer = (change: Change) =>
   change.undo
     ? ({ kind: "undo" } as const)
-    : change.since
-      ? ({ kind: "since", text: KIN_AGENT_CHANGES.since } as const)
-      : change.kind === "updated"
-        ? ({ kind: "manual", text: KIN_AGENT_CHANGES.manual } as const)
-        : ({ kind: "none" } as const);
+    : change.undone === true
+      ? ({ kind: "undone", text: KIN_AGENT_CHANGES.undone } as const)
+      : change.since
+        ? ({ kind: "since", text: KIN_AGENT_CHANGES.since } as const)
+        : change.kind === "updated"
+          ? ({ kind: "manual", text: KIN_AGENT_CHANGES.manual } as const)
+          : ({ kind: "none" } as const);

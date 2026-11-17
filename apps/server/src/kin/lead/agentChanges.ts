@@ -130,6 +130,23 @@ type Row = {
   readonly kind: "created" | "updated" | "linked";
   readonly fieldsJson: string;
   readonly since: number;
+  readonly nextJson: string | null;
+};
+
+/** Whether `next` put back exactly what `change` replaced, as an Undo of it writes. */
+const putBack = (
+  change: { readonly kind: string; readonly fields: ReadonlyArray<FieldChange> },
+  next: ReadonlyArray<FieldChange>,
+) => {
+  if (change.kind === "created")
+    return next.some((one) => one.field === "state" && one.to === "dropped");
+  const own = change.fields.filter((one) => !ALONG.has(one.field));
+  return (
+    own.length > 0 &&
+    own.every((one) =>
+      next.some((back) => back.field === one.field && back.from === one.to && back.to === one.from),
+    )
+  );
 };
 
 const rowsOf = Effect.fn("KinAgentChanges.rows")(function* (
@@ -142,7 +159,10 @@ const rowsOf = Effect.fn("KinAgentChanges.rows")(function* (
   return yield* sql<Row>`SELECT c.seq, c.at, r.key, r.title, r.register_id AS "registerId",
         r.state, c.kind, c.fields_json AS "fieldsJson",
         EXISTS (SELECT 1 FROM kin_record_changes l WHERE l.org_id = c.org_id
-          AND l.record_id = c.record_id AND l.seq > c.seq AND l.actor_kind <> 'system') AS since
+          AND l.record_id = c.record_id AND l.seq > c.seq AND l.actor_kind <> 'system') AS since,
+        (SELECT l.fields_json FROM kin_record_changes l WHERE l.org_id = c.org_id
+          AND l.record_id = c.record_id AND l.seq > c.seq AND l.actor_kind <> 'system'
+          ORDER BY l.seq LIMIT 1) AS "nextJson"
       FROM kin_record_changes c
       JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
       WHERE c.org_id = ${orgId} AND c.actor_kind = 'agent' AND c.actor_id = ${agentId}
@@ -163,6 +183,9 @@ const changeOf = (row: Row): KinAgentChange => {
     fields: fields.map((change) => ({ field: change.field, from: change.from, to: change.to })),
     undo: !since && reversal({ ...row, fields }) !== undefined,
     since,
+    ...(row.nextJson !== null && putBack({ ...row, fields }, parseChanges(row.nextJson))
+      ? { undone: true }
+      : {}),
   };
 };
 

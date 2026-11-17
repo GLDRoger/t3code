@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+// @effect-diagnostics globalDate:off - Fixtures build days and times relative to a fixed clock.
+import { describe, expect, it } from "@effect/vitest";
 import { kinAwayLine, kinAwayProblem, kinMessageOnMyClock, kinWhenText } from "./kinAway.ts";
 import type { KinMessage } from "@t3tools/contracts";
 

@@ -2624,7 +2624,12 @@ it.effect(
       assert.deepStrictEqual(back.changes[0]!.by, { _tag: "person", personId: ownerId });
       // Undone once, it changed since: a second Undo is refused, not put back again.
       assert.include(yield* Effect.flip(undo(changes[1]!.seq)), { reason: "invalid_state" });
-      assert.isFalse((yield* ownerLevelAgentChanges(orgId, lead))[1]!.undo);
+      // The page says it was put back, not that something else changed it.
+      assert.deepInclude((yield* ownerLevelAgentChanges(orgId, lead))[1]!, {
+        undo: false,
+        since: true,
+        undone: true,
+      });
       // Someone else's change since the agent's: refused too.
       const w2 = yield* OwnerWork.get([owner], { orgId, key: "W-2" });
       yield* OwnerWork.update([owner], {
@@ -2662,16 +2667,16 @@ it.effect(
       const meera = { _tag: "person" as const, orgId, personId: meeraId };
       const mateHolds = { _tag: "person" as const, personId: mateId };
       const meeraHolds = { _tag: "person" as const, personId: meeraId };
-      const keys = [];
-      for (const title of ["Invented: copy", "Invented: icons", "Invented: done one"])
-        keys.push(
-          (yield* OwnerWork.create([owner], {
+      const keys = yield* Effect.forEach(
+        ["Invented: copy", "Invented: icons", "Invented: done one"],
+        (title) =>
+          OwnerWork.create([owner], {
             orgId,
             title,
             owner: mateHolds,
             clientRequestId: title,
-          })).key,
-        );
+          }).pipe(Effect.map((made) => made.key)),
+      );
       // One repeats and is open to everyone on the team; both go with it, as they are.
       const weekly = { every: "days" as const, days: 7 };
       const first = (yield* OwnerWork.get([owner], { orgId, key: keys[0]! })).rev;

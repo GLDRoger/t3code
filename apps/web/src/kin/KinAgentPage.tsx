@@ -813,6 +813,8 @@ function AgentChanged(props: {
                     >
                       {busy === change.seq ? KIN_AGENT_CHANGES.undoing : KIN_AGENT_CHANGES.undo}
                     </Button>
+                  ) : offer.kind === "undone" ? (
+                    <span className="text-xs text-muted-foreground">{offer.text}</span>
                   ) : offer.kind === "since" || offer.kind === "manual" ? (
                     <span className="text-xs text-muted-foreground">
                       {offer.kind === "since"
@@ -820,7 +822,7 @@ function AgentChanged(props: {
                         : KIN_AGENT_CHANGES.manualDetail}
                     </span>
                   ) : null}
-                  {said?.seq === change.seq ? (
+                  {said?.seq === change.seq && offer.kind !== "undone" ? (
                     <span role="status" className="text-xs text-muted-foreground">
                       {said.text}
                     </span>

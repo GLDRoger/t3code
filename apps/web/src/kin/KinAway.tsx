@@ -278,6 +278,8 @@ function KinHandOverDialog(props: {
     props.onClose();
     const toast = toastManager.add({
       type: "success",
+      // Long enough to read who took how many, and undo a move of many tasks.
+      timeout: 15_000,
       title: `${KIN_HAND_OVER.done(moved.length, chosen.name)}${KIN_HAND_OVER.kept(outcome.value.kept)}`,
       ...(moved.length === 0
         ? {}

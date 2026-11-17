@@ -223,6 +223,8 @@ export const KinAgentChange = Schema.Struct({
   undo: Schema.Boolean,
   /** Changed again after this one, by anyone: what it shows is no longer what the record holds. */
   since: Schema.Boolean,
+  /** The change after it put back what this one replaced. */
+  undone: Schema.optional(Schema.Boolean),
 });
 export type KinAgentChange = typeof KinAgentChange.Type;
 export const KinAgentPageInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
