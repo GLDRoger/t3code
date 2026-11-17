@@ -644,7 +644,8 @@ const ownerOf = (repo: string) => repo.split("/")[0]?.toLowerCase() ?? "";
 
 /**
  * Where the App stands on each account with watched repos, and the one GitHub page that changes
- * it. No accounts when the last look at the repos came before Kin stored what an account is.
+ * it. Watched repos belong to the login or its organisations, so the owners alone make the rows;
+ * what the poll kept of each account adds the exact install page and whether the login owns it.
  */
 const appAccounts = (
   app: Described,
@@ -665,12 +666,13 @@ const appAccounts = (
   const accounts: Array<KinGitHubAppAccount> = [];
   for (const [account, name] of names) {
     const entry = facts.get(account);
-    if (entry?.ownerOrg === undefined) return {};
+    const organisation = entry?.ownerOrg ?? (user === null ? undefined : account !== user);
+    if (organisation === undefined) return {};
     const repos = watched.filter((repo) => ownerOf(repo) === account);
     const installation = app.installations.find((item) => item.account === account);
     accounts.push({
       account: name,
-      organisation: entry.ownerOrg,
+      organisation,
       watched: repos.length,
       covered: repos.filter((repo) => installation?.repos.has(repo.toLowerCase()) === true).length,
       installation:
@@ -683,7 +685,7 @@ const appAccounts = (
       installUrl:
         installation !== undefined
           ? null
-          : entry.ownerId === undefined
+          : entry?.ownerId === undefined
             ? app.installUrl
             : `${app.installUrl}/permissions?target_id=${entry.ownerId}`,
       canManage: manages(account),

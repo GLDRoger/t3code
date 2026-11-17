@@ -376,6 +376,16 @@ describe("KinGitHubWatch", () => {
         { repo: "invented-co/old-fork", ownerId: 7001, ownerOrg: true, ownerAdmin: false },
         { repo: "invented-owner/notes", ownerId: 7000, ownerOrg: false },
       ]);
+      // Repos stored by a Kin from before it kept these facts are read again on the next look,
+      // not after the six-hourly refresh.
+      const sql = yield* SqlClient.SqlClient;
+      const old = JSON.stringify(facts.map(({ repo }) => ({ repo, fork: false })));
+      yield* sql`UPDATE kin_github_watch SET repos_json = ${old} WHERE org_id = ${orgId}`;
+      yield* look(github);
+      assert.deepStrictEqual(
+        (yield* knownRepos(orgId)).map(({ fork: _fork, id: _id, ...rest }) => rest),
+        facts,
+      );
     }).pipe(Effect.provide(layer));
   });
 
