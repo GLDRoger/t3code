@@ -23,6 +23,7 @@ import { KinConnections } from "./ConnectionsService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { repoList, setRepo, watchSummary } from "../github/githubWatchStore.ts";
 import { setAppRepos, withAgentsAs } from "../github/appRepos.ts";
+import { KinGitHubAppSetup } from "../github/appSetup.ts";
 import { ghApiLayer } from "../github/GitHubWatch.ts";
 import { agentsView, KinGitHubApp } from "../github/KinGitHubApp.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
@@ -122,6 +123,10 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
     Option.isNone(kin) || Option.isNone(kin.value.services)
       ? Option.none<KinGitHubApp["Service"]>()
       : Context.getOption(kin.value.services.value, KinGitHubApp);
+  const setupOf = () =>
+    Option.isNone(kin) || Option.isNone(kin.value.services)
+      ? Option.none<KinGitHubAppSetup["Service"]>()
+      : Context.getOption(kin.value.services.value, KinGitHubAppSetup);
   return group.of({
     "kin.github.connect.status": (input) =>
       github((g, people) => g.status(people, input)).pipe(
@@ -139,6 +144,20 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
           };
         }),
       ),
+    "kin.github.app.create": Effect.fn("KinGitHubAppSetup.start.rpc")(function* (input) {
+      const setup = setupOf();
+      if (Option.isNone(setup) || Option.isNone(kin) || Option.isNone(kin.value.services))
+        return yield* disabled;
+      const people = yield* Context.get(kin.value.services.value, KinIdentity).resolve(session);
+      return yield* setup.value.start(people, input.orgId);
+    }),
+    "kin.github.app.disconnect": Effect.fn("KinGitHubAppSetup.disconnect.rpc")(function* (input) {
+      const setup = setupOf();
+      if (Option.isNone(setup) || Option.isNone(kin) || Option.isNone(kin.value.services))
+        return yield* disabled;
+      const people = yield* Context.get(kin.value.services.value, KinIdentity).resolve(session);
+      return yield* setup.value.disconnect(people, input.orgId);
+    }),
     "kin.github.app.repos.set": Effect.fn("KinGitHubApp.setRepos.rpc")(function* (input) {
       const people = yield* github((g, found) =>
         g.status(found, { orgId: input.orgId }).pipe(Effect.as(found)),

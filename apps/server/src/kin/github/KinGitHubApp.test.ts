@@ -246,6 +246,7 @@ describe("Kin's GitHub App", () => {
           botLogin: BOT_LOGIN,
           installUrl: "https://github.com/apps/invented-kin/installations/new",
           problem: null,
+          setUp: { source: "host", name: null, at: null, by: null, settingsUrl: null },
           watched: 3,
           installed: 2,
           without: ["elsewhere/tool"],
@@ -430,6 +431,11 @@ describe("the App's row for each account with watched repos", () => {
             ["invented-lab", "none", "0/1", false, false],
           ],
         );
+        // Made public on GitHub: looking again sees it at once, not after the visibility cache.
+        github.world.app!.public = true;
+        yield* app.lookAgain();
+        const after = yield* rows(app);
+        assert.isTrue(after.accounts?.find((row) => row.account === "invented-lab")?.installable);
       }).pipe(Effect.provide(layer)),
   );
 

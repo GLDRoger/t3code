@@ -1,7 +1,10 @@
+// @effect-diagnostics globalDate:off - Pure view helpers format the App's set-up day for React render.
 import {
   KinConnectionKey,
   type KinGitHubAgents,
   type KinGitHubAppAccount,
+  type KinGitHubAppCreateStart,
+  type KinGitHubAppDisconnected,
   type KinGitHubAppReposResult,
   type KinGitHubAppReposSetInput,
   type KinGitHubConnectInput,
@@ -148,6 +151,41 @@ const settle = async (sent: Sent<KinGitHubStatus>, doing: string): Promise<Outco
       };
 };
 
+/** Starting and ending Kin's own GitHub App, each answered in plain words. */
+export function createKinGitHubAppSetupActions(options: {
+  readonly orgId: KinOrgId;
+  readonly create: (input: KinGitHubInput) => Sent<KinGitHubAppCreateStart>;
+  readonly disconnect: (input: KinGitHubInput) => Sent<KinGitHubAppDisconnected>;
+  readonly refresh: () => void;
+}) {
+  const answer = async <A>(sent: Sent<A>, doing: string) => {
+    const result = await sent;
+    return AsyncResult.isSuccess(result)
+      ? ({ ok: true, value: result.value } as const)
+      : ({
+          ok: false,
+          problem: kinFailureText(squashAtomCommandFailure(result), `Couldn't ${doing}.`, {
+            device: `This device isn't allowed to ${doing}.`,
+          }),
+        } as const);
+  };
+  return {
+    start: () => answer(options.create({ orgId: options.orgId }), "start making the App"),
+    disconnect: async () => {
+      const outcome = await answer(
+        options.disconnect({ orgId: options.orgId }),
+        "disconnect the App",
+      );
+      options.refresh();
+      return outcome;
+    },
+  };
+}
+
+/** Where the owner's browser goes to make the App: Kin's page, with the name he chose. */
+export const kinGitHubAppCreatePath = (start: KinGitHubAppCreateStart, name: string) =>
+  `${start.path}&name=${encodeURIComponent(name.trim() === "" ? start.name : name.trim())}`;
+
 /** The owner's GitHub changes, each answered in plain words. */
 export function createKinGitHubActions(options: {
   readonly orgId: KinOrgId;
@@ -263,6 +301,26 @@ export interface KinGitHubAccountRow {
   /** The installation's page on GitHub, offered when GitHub refuses a change made from Kin. */
   readonly settingsUrl: string | null;
 }
+
+/** Making Kin's GitHub App from Settings, and letting it go. */
+export const KIN_GITHUB_APP_SETUP_COPY = {
+  create: "Create Kin's GitHub App",
+  createDetail:
+    "Agents' commits, pull requests and reviews then show the App as the author instead of you. GitHub opens with the App filled in: choose Create GitHub App there, and GitHub sends you back. Kin keeps its key on this computer.",
+  nameLabel: "App name",
+  nameHint: "GitHub App names are unique across GitHub. You can change it on GitHub's page too.",
+  continue: "Continue on GitHub",
+  preparing: "Getting GitHub ready…",
+  disconnect: "Disconnect the App",
+  disconnectTitle: "Disconnect Kin's GitHub App?",
+  disconnectDetail: (name: string) =>
+    `Kin forgets ${name} and its key, and agents work on GitHub as you again. The App itself stays on GitHub until you delete it there.`,
+  disconnected: (name: string) =>
+    `Kin forgot ${name}; agents work on GitHub as you. To remove the App for good, delete it on GitHub.`,
+  appOnGitHub: "The App on GitHub",
+  setUpInKin: (name: string, by: string, at: string) => `${name}, set up in Kin by ${by} on ${at}.`,
+  setUpOnHost: "Set up on Kin's computer; it is changed there.",
+} as const;
 
 /** Choosing the App's repos one by one on an account, from Kin. */
 export const KIN_GITHUB_APP_REPOS_COPY = {
@@ -419,6 +477,12 @@ export interface KinGitHubAgentsView {
   readonly detail: string;
   /** GitHub's own install page, only while Kin can't tell the accounts to give each a row. */
   readonly installUrl: string | null;
+  /** Which App this is and where it was set up; null without one. */
+  readonly setUpLine: string | null;
+  /** No App anywhere: Settings can make one. */
+  readonly canCreate: boolean;
+  /** The App was made in Kin, so Kin can forget it; its GitHub page when it can. */
+  readonly disconnect: { readonly name: string; readonly settingsUrl: string | null } | null;
   /** The latest commands agents ran as the owner, newest first. */
   readonly uses: ReadonlyArray<{
     readonly key: string;
@@ -449,6 +513,29 @@ export function kinGitHubAgentsView(
     command: use.command,
   }));
   const app = agents.appName ?? "Kin's GitHub App";
+  const setUp = agents.setUp;
+  const setUpLine =
+    setUp === undefined
+      ? null
+      : setUp.source === "host"
+        ? KIN_GITHUB_APP_SETUP_COPY.setUpOnHost
+        : KIN_GITHUB_APP_SETUP_COPY.setUpInKin(
+            setUp.name ?? app,
+            setUp.by ?? "the owner",
+            setUp.at === null
+              ? "an earlier day"
+              : new Date(setUp.at).toLocaleDateString(undefined, {
+                  day: "numeric",
+                  month: "short",
+                  year: "numeric",
+                }),
+          );
+  const extras = {
+    setUpLine,
+    canCreate: agents.canCreate === true,
+    disconnect:
+      setUp?.source === "kin" ? { name: setUp.name ?? app, settingsUrl: setUp.settingsUrl } : null,
+  };
   if (agents.as === "owner")
     return {
       headline: `Agents work on GitHub as ${you}.`,
@@ -456,6 +543,7 @@ export function kinGitHubAgentsView(
         agents.problem ??
         "Kin has no GitHub App on this computer, so their commits, pull requests and reviews carry your name, signed with the agent's.",
       installUrl: null,
+      ...extras,
       uses,
     };
   const missing = agents.watched - agents.installed;
@@ -477,6 +565,7 @@ export function kinGitHubAgentsView(
     headline,
     detail,
     installUrl: agents.accounts === undefined ? (agents.installUrl ?? null) : null,
+    ...extras,
     uses,
   };
 }

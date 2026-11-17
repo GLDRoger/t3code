@@ -340,7 +340,14 @@ out as that App, so blame and history show what an agent did; each commit carrie
 (`Kin-Agent: Tech lead`). On repos the App isn't installed on, and without an App, they go out as
 you. When GitHub refuses the App, or you say "do it as me", the agent runs that one command as you
 and says so. Memory commits are by the App too. The App can't approve, merge or change a repo's
-settings. Your host guide says how to set one up.
+settings.
+
+To give your Kin an App, open **Settings → Connections → GitHub → Create Kin's GitHub App** (owner
+and co-owners). Kin suggests a name, GitHub opens with everything filled in, and after you choose
+**Create GitHub App** you land back in Kin with the App working; then install it from the account
+rows below. The section says which App agents use and who set it up when. **Disconnect the App**
+makes Kin forget it and its key, and links to the App on GitHub if you want to delete it there. An
+App set up on Kin's computer instead is changed there; your host guide covers that.
 
 **Settings → Connections → GitHub** has a row for each of your accounts and organizations with
 watched repos, saying whether the App is on all its repositories, only some, or none. To cover
