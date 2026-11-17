@@ -1,3 +1,4 @@
+import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinRatesOf } from "@t3tools/client-runtime/kin/kinCurrency";
 import { useAtomValue } from "@effect/atom-react";
 import { kinReadDates, type KinDatesWindow } from "@t3tools/client-runtime/kin/kinDates";
@@ -37,6 +38,7 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useRef, useState } from "react";
 
+import { connectionAtomRuntime } from "../connection/runtime";
 import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -441,6 +443,11 @@ export function useKinRates(target: KinWorkTarget, enabled = true) {
   const allowed = useAtomValue(kinClient.companyRead.permissionAtom(target.environmentId));
   const profile = useKinCompanyProfile(target, enabled && allowed);
   return profile.state._tag === "ready" ? kinRatesOf(profile.state.value) : null;
+}
+
+/** The company's home currency, which a form starts amounts in: every member reads it, rates or not. */
+export function useKinHomeCurrency(target: KinWorkTarget) {
+  return useAtomValue(kinAccessMeAtom(connectionAtomRuntime, target.environmentId))?.homeCurrency;
 }
 
 const noReceiptsAtom: ReturnType<typeof kinClient.receipts> = Atom.make(AsyncResult.initial());
