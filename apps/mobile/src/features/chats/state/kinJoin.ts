@@ -16,6 +16,7 @@ import { connectPairingUrl } from "../../../connection/onboarding";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentPresentations } from "../../../state/presentation";
 import { readEnvironmentChatOnly, whenEnvironmentSessionKnown } from "./kinChatOnly";
+import { kinClient } from "./kinClient";
 
 /** The team just joined, until the person confirms the name it gave them there. */
 export const kinJoinedNameAtom = Atom.make<EnvironmentId | null>(null).pipe(Atom.keepAlive);
@@ -58,6 +59,8 @@ export async function joinKin(
     whenEnvironmentSessionKnown(result.value),
     new Promise((resolve) => setTimeout(resolve, SESSION_WAIT_MS)),
   ]);
+  // The same computer may have been this phone's as someone else a moment ago: ask who we are now.
+  appAtomRegistry.refresh(kinClient.orgs({ environmentId: result.value, input: {} }));
   appAtomRegistry.set(kinJoinedNameAtom, result.value);
   return { ok: true };
 }
