@@ -73,7 +73,7 @@ import {
   KinWorkProblemNotice,
   KinWorkTextField,
 } from "./components/KinWorkPieces";
-import { useKinRates } from "./state/useKinMoney.ts";
+import { useKinHomeCurrency } from "./state/useKinMoney.ts";
 import { KinWorkPlaceRow } from "./components/KinWorkTaskMenus";
 import { KinProjectPeoplePicker } from "./KinProjectPeopleScreen";
 import { kinWorkRefParam, type KinWorkParams } from "./KinWorkScreen";
@@ -752,7 +752,7 @@ function ProjectForm(
   const [requestId] = useState(uuidv4);
   const [key] = useState(() => editing?.project.key ?? null);
   const [opened] = useState(() => new Date());
-  const home = useKinRates(props)?.home;
+  const home = useKinHomeCurrency(props);
   const { state, form } = useKinWorkForm(environmentId, {
     noun: "project",
     start: kinProjectDraftOf(editing?.project, editing?.targetDay, props.party, home),

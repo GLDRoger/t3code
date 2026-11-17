@@ -22,6 +22,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
+import { textLocale } from "../work/companyProfile.ts";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
@@ -462,7 +463,7 @@ const make = Effect.gen(function* () {
   ) {
     const here = yield* turnChat(ctx);
     if (here === undefined) return;
-    const text = theirTime(held.at, held.zone);
+    const text = theirTime(held.at, held.zone, yield* textLocale(ctx.orgId));
     const why =
       held.why === "away"
         ? `${name} is away`

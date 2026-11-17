@@ -7,7 +7,6 @@ import {
   type KinOrgId,
   KinPersonId,
   formatKinWhen,
-  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -21,6 +20,7 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import { holdFor, holdLine } from "../triggers/quietHold.ts";
+import { textLocale, type TextClock } from "./companyProfile.ts";
 import { parseFields } from "./lists.ts";
 import { ownerZone, type RecordRow } from "./recordRows.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
@@ -106,33 +106,31 @@ export const movedNotices = (
   ];
 };
 
-const dueText = (row: RecordRow, zone: string) => {
+const dueText = (row: RecordRow, clock: TextClock) => {
   if (row.dueAt === null) return "";
   const style = row.dueAllDay === 1 ? "day" : "dayTime";
-  return `, due ${formatKinWhen(row.dueAt, style, { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "")}`;
+  return `, due ${formatKinWhen(row.dueAt, style, clock).replace(/,/g, "")}`;
 };
 
-const meetingAt = (row: RecordRow, zone: string) =>
-  row.dateAt === null
-    ? ""
-    : ` on ${formatKinWhen(row.dateAt, "dayTime", { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "")}`;
+const meetingAt = (row: RecordRow, clock: TextClock) =>
+  row.dateAt === null ? "" : ` on ${formatKinWhen(row.dateAt, "dayTime", clock).replace(/,/g, "")}`;
 
 /** A meeting given to someone is theirs to attend, or, once held, on record: never a task to do. */
-const meetingLine = (agent: string, notice: AssignNotice, zone: string, now: number) => {
+const meetingLine = (agent: string, notice: AssignNotice, clock: TextClock, now: number) => {
   const { row } = notice;
   const held = row.dateAt !== null && row.dateAt <= now;
   return ended(
-    `${agent} ${held ? "recorded your meeting" : "added you to the meeting"} ${row.key} ${row.title}${meetingAt(row, zone)}`,
+    `${agent} ${held ? "recorded your meeting" : "added you to the meeting"} ${row.key} ${row.title}${meetingAt(row, clock)}`,
   );
 };
 
-const line = (notice: AssignNotice, zone: string) => {
+const line = (notice: AssignNotice, clock: TextClock) => {
   const task = `${notice.row.key} ${notice.row.title}`;
   const why = notice.why === null ? "" : `: ${notice.why}`;
   if (notice.kind === "added") return `added you to ${task}`;
   if (notice.kind === "lead") return `made you the lead of ${task}`;
   return notice.kind === "given"
-    ? `${task}${dueText(notice.row, zone)}${notice.why === null ? "" : `. Why: ${notice.why}`}`
+    ? `${task}${dueText(notice.row, clock)}${notice.why === null ? "" : `. Why: ${notice.why}`}`
     : notice.kind === "taken"
       ? `took over ${task}${why}`
       : `${notice.by === undefined ? "" : `${notice.by} `}handed ${task} back${why}`;
@@ -145,7 +143,7 @@ const ended = (text: string) => (/[.!?…]["”’)]?$/.test(text) ? text : `${t
 const bodyFor = (
   agent: string,
   notices: ReadonlyArray<AssignNotice>,
-  zone: string,
+  clock: TextClock,
   now: number,
 ) => {
   const given = notices.filter((notice) => notice.kind === "given");
@@ -154,22 +152,22 @@ const bodyFor = (
   if (notices.length === 1)
     return given.length === 1
       ? given[0]!.row.category === "meeting"
-        ? meetingLine(agent, given[0]!, zone, now)
-        : ended(`${agent} gave you ${line(given[0]!, zone)}`)
+        ? meetingLine(agent, given[0]!, clock, now)
+        : ended(`${agent} gave you ${line(given[0]!, clock)}`)
       : projects.length === 1
-        ? ended(`${agent} ${line(projects[0]!, zone)}`)
+        ? ended(`${agent} ${line(projects[0]!, clock)}`)
         : ended(
             other[0]!.by === undefined
-              ? `${agent} ${line(other[0]!, zone)}`
-              : line(other[0]!, zone),
+              ? `${agent} ${line(other[0]!, clock)}`
+              : line(other[0]!, clock),
           );
   return [
     given.length === 0
       ? `${agent}:`
       : `${agent} gave you ${given.length === 1 ? "a task" : `${given.length} tasks`}:`,
-    ...given.map((notice) => `• ${line(notice, zone)}`),
-    ...projects.map((notice) => `• ${capital(line(notice, zone))}`),
-    ...other.map((notice) => `• ${notice.by === undefined ? "It " : ""}${line(notice, zone)}`),
+    ...given.map((notice) => `• ${line(notice, clock)}`),
+    ...projects.map((notice) => `• ${capital(line(notice, clock))}`),
+    ...other.map((notice) => `• ${notice.by === undefined ? "It " : ""}${line(notice, clock)}`),
   ].join("\n");
 };
 
@@ -239,7 +237,7 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
     const body = bodyFor(
       turn.by ?? agent.name,
       theirs,
-      profile?.zone ?? fallbackZone,
+      { zone: profile?.zone ?? fallbackZone, locale: yield* textLocale(turn.orgId) },
       yield* Clock.currentTimeMillis,
     );
     // The same lines from the same turn are one message, so a retried call posts nothing more.

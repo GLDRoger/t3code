@@ -12,7 +12,6 @@ import {
   type MemoryItemHead,
   kinDeferralWidgetId,
   formatKinWhen,
-  KIN_TEXT_LOCALE,
   kinWhenParts,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -26,6 +25,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { stringify } from "yaml";
 
 import { KinChatHub } from "../chat/KinChatHub.ts";
+import type { TextClock } from "../work/companyProfile.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
@@ -154,24 +154,24 @@ const then: Record<OnDue, string> = {
   chase: "I'll chase it then.",
 };
 
-export function confirmText(dueAt: number, onDue: OnDue, timeZone: string): string {
-  return `Deferred to ${ownerDateTime(dueAt, timeZone)}. ${then[onDue]}`;
+export function confirmText(dueAt: number, onDue: OnDue, clock: TextClock): string {
+  return `Deferred to ${ownerDateTime(dueAt, clock)}. ${then[onDue]}`;
 }
 
-/** Owner-local "Fri 13 Nov, 09:00". */
-export function ownerDateTime(at: number, timeZone: string): string {
-  return formatKinWhen(at, "dayTime", { zone: timeZone, locale: KIN_TEXT_LOCALE });
+/** Owner-local "Fri 13 Nov, 09:00", on the company's clock. */
+export function ownerDateTime(at: number, clock: TextClock): string {
+  return formatKinWhen(at, "dayTime", clock);
 }
 
 /** Owner-local "09:00", with the day when it isn't today. */
-export function ownerTime(at: number, now: number, timeZone: string): string {
-  return kinWhenParts(at, timeZone).isoDay === kinWhenParts(now, timeZone).isoDay
-    ? formatKinWhen(at, "time", { zone: timeZone, locale: KIN_TEXT_LOCALE })
-    : ownerDateTime(at, timeZone);
+export function ownerTime(at: number, now: number, clock: TextClock): string {
+  return kinWhenParts(at, clock.zone).isoDay === kinWhenParts(now, clock.zone).isoDay
+    ? formatKinWhen(at, "time", clock)
+    : ownerDateTime(at, clock);
 }
 
-export const lateNote = (dueAt: number, now: number, timeZone: string) =>
-  now - dueAt > LATE_NOTE_MS ? ` This was due at ${ownerTime(dueAt, now, timeZone)}.` : "";
+export const lateNote = (dueAt: number, now: number, clock: TextClock) =>
+  now - dueAt > LATE_NOTE_MS ? ` This was due at ${ownerTime(dueAt, now, clock)}.` : "";
 
 /** Next Monday 09:00 owner time, strictly after today, as a front-matter date-time. */
 function nextMondayDue(now: number, timeZone: string): string {

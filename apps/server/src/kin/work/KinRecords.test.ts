@@ -2554,11 +2554,11 @@ it.effect(
       const [held, coming] = (yield* notices).slice(-2).map((row) => row.body);
       assert.match(
         held!,
-        /^Lead lead recorded your meeting W-\d+ Invented review .+ on Sun 15 Nov \d\d:\d\d\.$/u,
+        /^Lead lead recorded your meeting W-\d+ Invented review .+ on Sun 15 Nov \d{1,2}:\d\d [ap]m\.$/u,
       );
       assert.match(
         coming!,
-        /^Lead lead added you to the meeting W-\d+ Invented review .+ on Thu 19 Nov \d\d:\d\d\.$/u,
+        /^Lead lead added you to the meeting W-\d+ Invented review .+ on Thu 19 Nov \d{1,2}:\d\d [ap]m\.$/u,
       );
       // Put on a project from the app, or made its lead, they are told once, with its key.
       const portal = yield* OwnerClients.createProject([owner], {

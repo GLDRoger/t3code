@@ -27,6 +27,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { PersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Chat from "../chat/KinChatService.ts";
+import { textLocale, type TextClock } from "../work/companyProfile.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
 import type * as KinLevels from "../lead/KinLevels.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
@@ -161,7 +162,7 @@ const make = Effect.gen(function* () {
     readonly fire: KinTriggerFired;
     readonly fireAt: number;
     readonly now: number;
-    readonly timeZone: string;
+    readonly clock: TextClock;
     /** Set when a wake-up can run now. */
     readonly lead:
       | {
@@ -183,7 +184,7 @@ const make = Effect.gen(function* () {
       status: "due",
     } as const satisfies KinReminderCard;
     const widgetId = KinWidgetId.make(kinReminderWidgetId(orgId, itemId, fireAt));
-    const reminder = `Reminder: ${title}.${lateNote(fireAt, now, input.timeZone)}`;
+    const reminder = `Reminder: ${title}.${lateNote(fireAt, now, input.clock)}`;
     const fallbackBody = `${reminder} (${input.leadName ?? "Your agent"} couldn't write this one, so Kin sent it.)`;
     // The lead's wake-up answers in its owner's chat, so a teammate's own reminder is Kin's line.
     if (input.askersChat !== undefined) {
@@ -282,7 +283,7 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     item: MemoryItemHead,
     dueAt: number,
-    timeZone: string,
+    clock: TextClock,
   ) {
     const handle = item.owner ?? item.said_by;
     const [person] = yield* sql<{ personId: string }>`SELECT person_id AS "personId"
@@ -299,7 +300,7 @@ const make = Effect.gen(function* () {
           chatId: item.chat,
           owner: owner.ownerPersonId,
           ownerChatId: owner.ownerChatId,
-          nextStep: `${item.title} was due ${ownerDateTime(dueAt, timeZone)}. What's the status?`,
+          nextStep: `${item.title} was due ${ownerDateTime(dueAt, clock)}. What's the status?`,
         },
         item,
       )
@@ -317,7 +318,7 @@ const make = Effect.gen(function* () {
     itemId: KinMemoryItemId,
     phase: "heads_up" | "due",
     now: number,
-    timeZone: string,
+    clock: TextClock,
   ) {
     const fireAt = Date.parse(fire.dueAt);
     const run = yield* readRun(orgId, itemId).pipe(NodeSqliteClient.readOnly);
@@ -398,7 +399,7 @@ const make = Effect.gen(function* () {
           yield* post(
             card(
               "asked",
-              `${title} is due at ${ownerTime(dueAt, now, timeZone)}. Start it, move it to Monday, or cancel it?${reason}${lateNote(dueAt, now, timeZone)}`,
+              `${title} is due at ${ownerTime(dueAt, now, clock)}. Start it, move it to Monday, or cancel it?${reason}${lateNote(dueAt, now, clock)}`,
             ),
           );
           yield* setState("asked");
@@ -413,9 +414,7 @@ const make = Effect.gen(function* () {
         if (step.kind === "heads_up") {
           if (reasons.length > 0) yield* ask(reasons);
           else {
-            yield* post(
-              card("heads_up", `Starting ${title} at ${ownerTime(dueAt, now, timeZone)}.`),
-            );
+            yield* post(card("heads_up", `Starting ${title} at ${ownerTime(dueAt, now, clock)}.`));
             yield* setState("heads_up");
           }
         } else if (onDue === "start") {
@@ -429,7 +428,7 @@ const make = Effect.gen(function* () {
             yield* post(
               card(
                 "heads_up",
-                `Starting ${title} at ${ownerTime(graceEnd, now, timeZone)}.${lateNote(dueAt, now, timeZone)}`,
+                `Starting ${title} at ${ownerTime(graceEnd, now, clock)}.${lateNote(dueAt, now, clock)}`,
                 graceEnd,
               ),
             );
@@ -462,7 +461,7 @@ const make = Effect.gen(function* () {
           const failure =
             item === undefined
               ? "the item is gone"
-              : yield* prepareChase(orgId, item, dueAt, timeZone);
+              : yield* prepareChase(orgId, item, dueAt, clock);
           if (failure !== null) yield* ask([failure]);
           else {
             yield* setState("chased");
@@ -477,7 +476,7 @@ const make = Effect.gen(function* () {
             fire,
             fireAt,
             now,
-            timeZone,
+            clock,
             lead: reminderAdmitted ? reminderLead : undefined,
             leadName: reminderLead?.name,
             fallbackChat: reminderLead?.ownerChatId ?? (yield* cardChat(orgId, item)),
@@ -496,7 +495,7 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     fire: KinTriggerFired,
     itemId: KinMemoryItemId,
-    timeZone: string,
+    clock: TextClock,
   ) {
     const run = yield* readRun(orgId, itemId);
     if (run === undefined || !["start", "ask", "chase"].includes(run.onDue)) return;
@@ -509,7 +508,7 @@ const make = Effect.gen(function* () {
       chatId,
       messageId: KinMessageId.make(`deferral-failed:${orgId}:${fire.fireId}`),
       audience: "owner",
-      body: `I couldn't handle the deferral ${title} due ${ownerDateTime(dueAt, timeZone)}.`,
+      body: `I couldn't handle the deferral ${title} due ${ownerDateTime(dueAt, clock)}.`,
     });
   });
 
@@ -545,7 +544,10 @@ const make = Effect.gen(function* () {
         );
       });
       yield* Effect.gen(function* () {
-        const timeZone = yield* cache.ownerTimeZone(orgId);
+        const clock = {
+          zone: yield* cache.ownerTimeZone(orgId),
+          locale: yield* textLocale(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        };
         const fires = yield* inbox.listPending(orgId, 100, "deferral");
         const orgRetries = retries.get(orgId) ?? new Map();
         retries.set(orgId, orgRetries);
@@ -566,7 +568,7 @@ const make = Effect.gen(function* () {
           const retry = orgRetries.get(fire.fireId);
           const giveUp = now - Date.parse(fire.dueAt) > GIVE_UP_MS;
           if (retry !== undefined && now < retry.notBefore && !giveUp) continue;
-          yield* process(orgId, fire, itemId, phase, now, timeZone).pipe(
+          yield* process(orgId, fire, itemId, phase, now, clock).pipe(
             Effect.tap((put) =>
               Effect.sync(() => {
                 orgRetries.delete(fire.fireId);
@@ -596,7 +598,7 @@ const make = Effect.gen(function* () {
                   return;
                 }
                 orgRetries.delete(fire.fireId);
-                yield* noticeFailure(orgId, fire, itemId, timeZone).pipe(
+                yield* noticeFailure(orgId, fire, itemId, clock).pipe(
                   Effect.catch((cause) =>
                     Effect.logWarning("Kin deferral failure notice failed", {
                       orgId,

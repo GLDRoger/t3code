@@ -32,6 +32,11 @@ state.invalid(
   'const local = host === "127.0.0.1" || host === "localhost";',
   (output) => assert.include(output, "kinIsLocalOnlyHost"),
 );
+state.invalid(
+  "catches a locale written in",
+  'const shown = formatKinWhen(at, "time", { zone, locale: "en-GB" });',
+  (output) => assert.include(output, "textLocale"),
+);
 state.invalid("catches a loopback prefix by hand", 'const local = host.startsWith("127.");');
 state.valid(
   "allows a zone-name lookup",

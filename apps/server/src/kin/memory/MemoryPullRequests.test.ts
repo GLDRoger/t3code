@@ -13,7 +13,8 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
-import { KinGitHubApi } from "../github/GitHubWatch.ts";
+import { ghApiOutput, ghApiStderr } from "../github/fakeGitHub.ts";
+import { KinGitHubApi, parseGhApi } from "../github/GitHubWatch.ts";
 import { KinGitHubApp } from "../github/KinGitHubApp.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import { FIXTURE_QUOTE, FIXTURE_SAID, fixtureItem } from "./__fixtures__/items.ts";
@@ -450,12 +451,15 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           github.requests.push(recorded);
           const answer = yield* route(recorded);
           if (answer.hang === true || answer.stallBody === true) return yield* Effect.never;
-          return {
+          const sent = {
             status: answer.status,
             headers: answer.headers ?? {},
             body: answer.body ?? null,
-            text: "",
           };
+          // The owner's `gh` prints its error line straight after the body; the App reads plain HTTP.
+          if (as === "owner")
+            return parseGhApi(ghApiOutput(sent) + ghApiStderr(request.path, sent));
+          return { ...sent, text: "" };
         });
     // With the App installed on the memory repo, Kin lands memory without the owner's login.
     const api = Layer.succeed(
@@ -922,7 +926,8 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
               "check-failed": "memory-check failed",
               "owner-path-refused": "memory-check failed",
               "check-pending": "did not finish in time",
-              "merge-rejected": "GitHub refused the merge (HTTP 405",
+              "merge-rejected":
+                "GitHub refused the merge (HTTP 405: Required status check is expected.)",
             }[scenario],
           ),
         });

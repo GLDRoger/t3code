@@ -221,5 +221,12 @@ describe("kinAttention", () => {
     expect(view).toMatchObject({ progress: 0.25, pace: 0.5, status: "behind" });
     expect(view.figure).toBe("₹10,00,000 of ₹40,00,000");
     expect(kinGoalView({ ...goal, current: goal.target }, now).status).toBe("reached");
+    // Whole units of the goal's own currency: yen have no minor unit, the dinar has three.
+    expect(
+      kinGoalView({ ...goal, currency: "JPY", target: 2_000_000, current: 345_678 }, now).figure,
+    ).toBe("¥345,678 of ¥2,000,000");
+    expect(
+      kinGoalView({ ...goal, currency: "KWD", target: 2_000_000, current: 1_234_567 }, now).figure,
+    ).toBe("KWD\u00a01,235 of KWD\u00a02,000");
   });
 });
