@@ -163,7 +163,7 @@ With a GitHub App set up, agents' commits, pushes, pull requests, comments and r
 
 To set one up, open **Settings → Connections → GitHub → Create Kin's GitHub App** as the owner or a co-owner. Kin names it ("Kin for <company>", which you can change), sends your browser to GitHub with the App filled in (no webhook; Contents, Pull requests, Issues and Checks read and write; Actions and Metadata read), and when you choose **Create GitHub App** GitHub sends you back. Kin keeps the key in its secret store, `~/.t3/userdata/secrets/` (owner-only files, kept by backups like every other secret), and starts using the App straight away, with no restart. Then install it from the account rows. The App is made public when you watch an organisation's repos, since a private App installs only on the account that owns it. **Disconnect the App** makes Kin forget the App and its key; the App itself stays on GitHub until you delete it from its settings page, which Kin links to.
 
-If your browser can't reach GitHub and Kin in one go, or you already have an App, set it up by hand:
+Create is the way. Only if your browser can't reach GitHub and Kin in one go, or you already have an App you want Kin to use, set it up by hand as a fallback:
 
 1. On GitHub, Settings → Developer settings → GitHub Apps → New GitHub App, with the permissions above and no webhook. Make it public (its settings → Advanced) to use it on organisations. Generate a private key.
 2. As kin, put the key in Kin's secret store:
@@ -174,11 +174,11 @@ If your browser can't reach GitHub and Kin in one go, or you already have an App
 
    Then delete the `.pem`.
 
-3. Add `KIN_GITHUB_APP_ID=<app id>` and `KIN_GITHUB_BOT_LOGIN=<app slug>[bot]` to `~/.t3/service.env`, then `systemctl --user restart kin-server`. At its next start Kin adopts the App into Settings → Connections, which owns it from then on: Disconnect and making another work there, and a Disconnect stays after a restart even with these lines still set.
+3. Add `KIN_GITHUB_APP_ID=<app id>` and `KIN_GITHUB_BOT_LOGIN=<app slug>[bot]` to `~/.t3/service.env`, then `systemctl --user restart kin-server`. These lines only hand the App to Kin: on its next look at GitHub Kin adopts it into Settings → Connections, which owns it from then on. Disconnect and making another work there, a Disconnect stays after a restart even with the lines still set, and once Connections shows the App you may delete them.
 
 The key stays in the server; agents' shells only ever hold one-hour tokens. Hosts that kept the key in kin's keyring (the `kin-github-app` item) keep working: when the secret store has no key, Kin reads that item and copies it into the store once. The item stays in the keyring; once Connections shows the App working you may delete it, or keep it as a spare.
 
-**Hosts set up before November 2026** still carry the retired workers. Once `update.sh` has built a current `kin`, run `sudo /root/kin-ops/ops/kin/host/retire-workers.sh` to see what it would remove, then again with `--yes`. It removes the `kin-worker` user, its units, sudoers entry and mount, and never touches kin's home, `~/.t3`, the database or backups. It then lists what only you remove: the `KIN_WORKER_*` lines in `~/.t3/service.env`, the `kin-owner-merge` keyring item and the "Kin · GitHub App" scheduled task. Keep the App and its `KIN_GITHUB_*` lines.
+**Hosts set up before November 2026** still carry the retired workers. Once `update.sh` has built a current `kin`, run `sudo /root/kin-ops/ops/kin/host/retire-workers.sh` to see what it would remove, then again with `--yes`. It removes the `kin-worker` user, its units, sudoers entry and mount, and never touches kin's home, `~/.t3`, the database or backups. It then lists what only you remove: the `KIN_WORKER_*` lines in `~/.t3/service.env`, the `kin-owner-merge` keyring item and the "Kin · GitHub App" scheduled task. Keep the App: if Settings → Connections → GitHub doesn't show it yet, leave its `KIN_GITHUB_*` lines and the `kin-github-app` keyring item until it does, since Kin adopts the App from them on its next look.
 
 ## Documents
 

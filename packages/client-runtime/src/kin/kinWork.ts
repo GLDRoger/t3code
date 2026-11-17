@@ -1031,6 +1031,7 @@ export function kinWorkChangeText(
   }
   if (change.kind === "linked") {
     const link = change.fields[0];
+    if (link !== undefined && link.to === null) return `${who} removed a link`;
     if (link?.field === "worker") return `${who} started work on it`;
     if (link?.field === "pull_request") return `${who} linked ${link.to ?? "a pull request"}`;
     return `${who} added a link`;

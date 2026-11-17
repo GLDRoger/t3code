@@ -100,6 +100,17 @@ export const connectionById = Effect.fn("KinConnectionRows.byId")(function* (
   return row;
 });
 
+/** A connection by id, removed or not: what a card made before its removal still names. */
+export const connectionEverById = Effect.fn("KinConnectionRows.everById")(function* (
+  orgId: KinOrgId,
+  connectionId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<ConnectionRow>`SELECT ${connectionColumns(sql)} FROM kin_connections
+    WHERE org_id = ${orgId} AND connection_id = ${connectionId} ORDER BY connection_id`;
+  return row;
+});
+
 export const toolsOf = Effect.fn("KinConnectionRows.tools")(function* (
   orgId: KinOrgId,
   connectionId: string,
@@ -132,7 +143,7 @@ export const resolveConnection = Effect.fn("KinConnectionRows.resolve")(function
 });
 
 /**
- * A mail account's From addresses as last read from Gmail, default first; before they were read,
+ * A mail account's From addresses as last read from its mail service, default first; before they were read,
  * just the account's own address.
  */
 export const sendAsOf = (
@@ -240,7 +251,7 @@ export const promptLine = Effect.fn("KinConnectionRows.promptLine")(function* (o
         const aliases = sendAsOf(row)
           .map((one) => one.address)
           .filter((address) => address !== row.accountLabel);
-        // The note is the owner's own words; addresses are Gmail's, as plain JSON strings.
+        // The note is the owner's own words; addresses are the mail service's, as plain JSON strings.
         const who = `${JSON.stringify(row.label)}${account}${aliases.length === 0 ? "" : ` sends as ${aliases.map((one) => JSON.stringify(one)).join(", ")}`}${row.note === null ? "" : `, owner's note ${JSON.stringify(row.note)}`}`;
         const acts = tools
           .filter((tool) => callable(tool) && tool.mode === "ask")

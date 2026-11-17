@@ -5,6 +5,9 @@ import type {
   KinConnectionService,
 } from "@t3tools/contracts";
 
+import { googleMail } from "./Google.ts";
+import { microsoftMail } from "./Microsoft.ts";
+
 /** A preset Kin can add today: a remote MCP server that takes a key as a bearer token. */
 type KeyPreset = {
   readonly label: string;
@@ -57,7 +60,7 @@ export const SIGN_IN_PRESETS: Partial<Record<KinConnectionPreset, SignInPreset>>
       "In Zoho MCP: create a server, add Zoho Books and the tools agents may use, then copy its server address here and sign in.",
   },
   google: {
-    label: "Google",
+    label: googleMail.name,
     kind: "builtin",
     url: null,
     host: "googleapis.com",
@@ -65,7 +68,7 @@ export const SIGN_IN_PRESETS: Partial<Record<KinConnectionPreset, SignInPreset>>
     setup: "Mail and calendar. Nothing is sent until you tap Confirm.",
   },
   microsoft: {
-    label: "Microsoft",
+    label: microsoftMail.name,
     kind: "builtin",
     url: null,
     host: "graph.microsoft.com",
@@ -105,9 +108,6 @@ export const SERVICES: ReadonlyArray<KinConnectionService> = [
     needsSetup: false,
   },
 ];
-
-/** Presets whose sign-in uses a client the owner made at the service and pasted once. */
-export const OWNER_CLIENT_PRESETS: ReadonlyArray<KinConnectionPreset> = ["google", "microsoft"];
 
 /** The redirect every service sends the browser back to: Kin's static sign-in return page. */
 export const DEFAULT_SIGN_IN_ADDRESS = "https://gldroger.github.io/t3code/kin/oauth/callback/";

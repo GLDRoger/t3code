@@ -1954,7 +1954,7 @@ describe("KinConnections sending", () => {
           });
           assert.strictEqual(event.note, ASKED);
           // Its times read plainly in the owner's zone, UTC here.
-          assert.include(JSON.stringify(cards.at(-1)), "When: Fri 20 Nov, 09:30 to 10:00");
+          assert.include(JSON.stringify(cards.at(-1)), "When: Fri, 20 Nov, 9:30 am to 10:00 am");
           const booked = yield* answer(cards.at(-1)!.widgetId, ownerId, true);
           yield* connections.sendAsk(orgId, booked!.askId);
           const saved = vendor.vendor.sent.at(-1)!;
@@ -2353,7 +2353,7 @@ describe("KinConnections Microsoft", () => {
             client: { clientId: "kin-app" },
           })
           .pipe(Effect.flip);
-        assert.include(badId.message, "Microsoft application ID");
+        assert.include(badId.message, "application ID looks like");
         yield* connections.setSignInClient(owner, {
           orgId,
           service: "microsoft",

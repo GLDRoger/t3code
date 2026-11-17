@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host times and local days for React render, outside an Effect runtime.
 import {
+  kinCurrency,
   KIN_PULSE_URGENT,
   kinPulseFactRecord,
   type KinGoal,
@@ -457,10 +458,15 @@ export interface KinGoalView {
   readonly status: "behind" | "on_track" | "reached";
 }
 
+/** A goal's figure rounded to whole units of its currency, as its decimals say. */
+const wholeUnits = (minor: number, currency: string) => {
+  const unit = 10 ** kinCurrency(currency).decimals;
+  return Math.round(minor / unit) * unit;
+};
 const figureOf = (goal: KinGoal, value: number, withUnit = true) =>
   goal.currency === undefined
     ? `${Math.round(value)}${goal.unit === undefined || !withUnit ? "" : ` ${goal.unit}`}`
-    : kinMoneyText({ minor: Math.round(value / 100) * 100, currency: goal.currency });
+    : kinMoneyText({ minor: wholeUnits(value, goal.currency), currency: goal.currency });
 
 const clamp = (value: number) => Math.max(0, Math.min(1, value));
 const shortDay = (day: string, now: Date) => {

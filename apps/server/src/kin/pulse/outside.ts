@@ -22,7 +22,11 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 /** What is new at an org's connections since its last check-in, and the cursors that marks. */
 export interface OutsideRead {
   readonly lines: ReadonlyArray<KinPulseOutsideLine>;
-  readonly seen: ReadonlyArray<{ readonly connectionId: string; readonly until: number }>;
+  readonly seen: ReadonlyArray<{
+    readonly connectionId: string;
+    readonly until: number;
+    readonly cursor?: string | null;
+  }>;
 }
 
 /** The server's metadata reads of connections; no model runs and nothing is stored but cursors. */
@@ -110,7 +114,7 @@ export const fromConnections = (
         AND preset IN ${sql.in([...MAIL_PRESETS, "github"])}
       ORDER BY created_at, connection_id`;
       const lines: Array<KinPulseOutsideLine> = [];
-      const seen: Array<{ connectionId: string; until: number }> = [];
+      const seen: Array<{ connectionId: string; until: number; cursor: string | null }> = [];
       for (const row of rows) {
         const activity = yield* connections.activity(orgId, row.connectionId).pipe(
           Effect.catch((cause) =>
@@ -123,7 +127,11 @@ export const fromConnections = (
         );
         if (activity === undefined || activity._tag === "unsupported") continue;
         lines.push(...linesOf(row.label, activity));
-        seen.push({ connectionId: row.connectionId, until: activity.until });
+        seen.push({
+          connectionId: row.connectionId,
+          until: activity.until,
+          cursor: activity._tag === "mail" ? activity.cursor : null,
+        });
       }
       return { lines, seen } satisfies OutsideRead;
     },
@@ -136,9 +144,9 @@ export const fromConnections = (
   seen: (orgId, seen) =>
     Effect.forEach(
       seen,
-      ({ connectionId, until }) =>
+      ({ connectionId, until, cursor }) =>
         connections
-          .activitySeen(orgId, connectionId, until)
+          .activitySeen(orgId, connectionId, until, cursor)
           .pipe(
             Effect.catch((cause) =>
               Effect.logWarning("Kin pulse couldn't move a connection cursor", { orgId, cause }),

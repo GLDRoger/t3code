@@ -16,6 +16,7 @@ import type { KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinChatId, KinLeadContact, KinLeadProfile } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
+import { useRouter } from "@tanstack/react-router";
 import { useId, useState } from "react";
 
 import {
@@ -40,6 +41,7 @@ import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAgentDetails } from "./KinAgentPage";
 import { KinAvatar } from "./KinAvatar";
+import { openKinSettings } from "./kinSettingsAddress";
 import { kinClient } from "./kinClient";
 import { announceKinClearKept, useKinClearPreview } from "./useKinClearPreview";
 import { useNowMinuteMs } from "./useKinClock";
@@ -77,6 +79,7 @@ export function KinLeadSheet(props: {
   readonly activeAgents: number;
 }) {
   const { about, environmentId } = props;
+  const router = useRouter();
   const nowMs = useNowMinuteMs();
   const retired = about.kind === "own" ? about.lead.retired : undefined;
   const canMute = useAtomValue(kinClient.mute.permissionAtom(environmentId));
@@ -148,6 +151,10 @@ export function KinLeadSheet(props: {
               personId={props.personId}
               activeAgents={props.activeAgents}
               onClose={() => props.onOpenChange(false)}
+              onOpenSettings={(section) => {
+                props.onOpenChange(false);
+                openKinSettings(router.history, section);
+              }}
             />
           ) : (
             <Section title="About">

@@ -24,7 +24,7 @@ import {
   KinRoleTags,
   KinTrimmedText,
 } from "./kinChat.ts";
-import { KinDay } from "./kinMoney.ts";
+import { KinCurrency, KinDay } from "./kinMoney.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
 import { KinRecordRef } from "./kinWork.ts";
 
@@ -179,6 +179,8 @@ export const KinAccessMeResult = Schema.Struct({
   // Absent from a host older than places; an owner-level person's are all on.
   places: Schema.optional(KinPersonPlaceSwitches),
   leads: Schema.optional(Schema.Array(KinRecordRef)),
+  /** The company's home currency, which every member's forms start amounts in; absent from an older host. */
+  homeCurrency: Schema.optional(KinCurrency),
 });
 export type KinAccessMeResult = typeof KinAccessMeResult.Type;
 

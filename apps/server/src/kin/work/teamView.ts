@@ -1,4 +1,5 @@
 import {
+  kinCurrenciesWithDecimals,
   KinChatError,
   type KinOrgId,
   type KinRecordId,
@@ -843,14 +844,18 @@ export const unreadableBy = Effect.fn("KinTeamView.unreadableBy")(function* (
   // A bare figure that is the sum on something they can't see, however it is written.
   const figures = figuresIn(text);
   if (figures.length > 0) {
-    const same = (column: Statement.Fragment) =>
-      sql`(${column} IN ${sql.in(figures)} OR ${column} / 100 IN ${sql.in(figures)})`;
+    // The sum in whole units of its own currency, as a person writes it: yen have no minor unit.
+    const same = (column: Statement.Fragment, currency: Statement.Fragment) =>
+      sql`(${column} IN ${sql.in(figures)} OR (CASE
+        WHEN ${currency} IN ${sql.in(kinCurrenciesWithDecimals(0))} THEN ${column}
+        WHEN ${currency} IN ${sql.in(kinCurrenciesWithDecimals(3))} THEN ${column} / 1000
+        ELSE ${column} / 100 END) IN ${sql.in(figures)})`;
     const [hit] = yield* sql<{ hit: number }>`SELECT EXISTS (SELECT 1 FROM kin_records r
         WHERE r.org_id = ${orgId} AND r.amount_minor IS NOT NULL
-          AND ${same(sql`r.amount_minor`)} AND NOT ${personSees(sql, personId)} AND ${known})
+          AND ${same(sql`r.amount_minor`, sql`r.currency`)} AND NOT ${personSees(sql, personId)} AND ${known})
       OR EXISTS (SELECT 1 FROM kin_record_payments p
         JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
-        WHERE p.org_id = ${orgId} AND ${same(sql`p.amount_minor`)}
+        WHERE p.org_id = ${orgId} AND ${same(sql`p.amount_minor`, sql`p.currency`)}
           AND NOT ${personSees(sql, personId)} AND ${known}) AS hit`;
     if (hit?.hit === 1) return "it carries a figure that is a sum they may not see";
   }

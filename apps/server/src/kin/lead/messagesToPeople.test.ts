@@ -792,12 +792,12 @@ it.effect("a held message follows its reader's changed clock", () =>
           AND message_id LIKE 'kin-arrives:%' ORDER BY seq DESC LIMIT 1`;
       assert.strictEqual(
         arrives?.body,
-        "Zoya Sheikh is away: it arrives at 10:00 their time (Thu 19 Nov).",
+        "Zoya Sheikh is away: it arrives at 10:00 am their time (Thu 19 Nov).",
       );
       assert.deepStrictEqual(JSON.parse(arrives?.when ?? "null"), {
         at: DateTime.formatIso(DateTime.makeUnsafe(thursday)),
         zone: "Europe/London",
-        text: "10:00 their time (Thu 19 Nov)",
+        text: "10:00 am their time (Thu 19 Nov)",
         of: "Zoya Sheikh",
       });
       yield* setAway(null);

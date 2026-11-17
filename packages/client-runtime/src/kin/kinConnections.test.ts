@@ -19,6 +19,7 @@ import {
   kinConnectionAddCheck,
   kinConnectionDraft,
   kinConnectionStatus,
+  KIN_OWNER_CLIENT_SETUP,
   kinSignInCheck,
   kinSignInClientCheck,
   kinSuggestedModes,
@@ -266,6 +267,42 @@ describe("kinSignInCheck", () => {
 
   it("checks the pasted Google client and Microsoft app", () => {
     expect(kinSignInClientCheck(orgId, "google", "123-abc", "s").ok).toBe(false);
+    // The host's rule, whole: a client ID with a space is refused here, not at the host.
+    expect(kinSignInClientCheck(orgId, "google", "a b.apps.googleusercontent.com", "s").ok).toBe(
+      false,
+    );
+    const own = kinSignInCheck(
+      orgId,
+      {
+        ...kinConnectionDraft("google"),
+        clientId: "a b.apps.googleusercontent.com",
+        clientSecret: "s",
+      },
+      services,
+      "web",
+    );
+    expect(own.ok).toBe(false);
+    // One account's own client goes along only where the service's rule offers one.
+    const ready = [
+      ...services,
+      { ...services.find((one) => one.service === "google")!, service: "microsoft" as const },
+    ].map((one) => ({ ...one, needsSetup: false }));
+    const draft = (service: "google" | "microsoft") => ({
+      ...kinConnectionDraft(service),
+      clientId:
+        service === "google"
+          ? "9-x.apps.googleusercontent.com"
+          : "00000000-1111-2222-3333-444444444444",
+      clientSecret: "s",
+    });
+    const google = kinSignInCheck(orgId, draft("google"), ready, "web");
+    if (!google.ok) throw new Error(google.problem);
+    expect(google.input.client?.clientId).toBe("9-x.apps.googleusercontent.com");
+    const microsoft = kinSignInCheck(orgId, draft("microsoft"), ready, "web");
+    if (!microsoft.ok) throw new Error(microsoft.problem);
+    expect(microsoft.input.client).toBeUndefined();
+    expect(KIN_OWNER_CLIENT_SETUP.google.accountClient).not.toBeNull();
+    expect(KIN_OWNER_CLIENT_SETUP.microsoft.accountClient).toBeNull();
     expect(kinSignInClientCheck(orgId, "google", "123-abc.apps.googleusercontent.com", "").ok).toBe(
       false,
     );

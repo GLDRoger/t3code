@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { KinKeyThumbprint, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KIN_TEXT_LOCALE, KinKeyThumbprint, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import { keyNoticeBody, kinNoticeDeviceName } from "./executionNotices.ts";
@@ -35,13 +35,22 @@ describe("key notices", () => {
   });
 
   it("names the phone, when, and where to remove it", () => {
-    expect(keyNoticeBody(change("[x](https://evil.example)"), "UTC")).toBe(
+    expect(
+      keyNoticeBody(change("[x](https://evil.example)"), { zone: "UTC", locale: KIN_TEXT_LOCALE }),
+    ).toBe(
       '"x https evil example" (iOS) can now approve for Kin. It was set up on Thu 12 Nov, 09:30 UTC. If that wasn\'t you, remove it in Settings, then Approvals.',
     );
-    expect(keyNoticeBody(change("Pixel 9", "removed"), "Asia/Kolkata")).toBe(
+    expect(
+      keyNoticeBody(change("Pixel 9", "removed"), {
+        zone: "Asia/Kolkata",
+        locale: KIN_TEXT_LOCALE,
+      }),
+    ).toBe(
       '"Pixel 9" (iOS) can no longer approve for Kin. It was removed on Thu 12 Nov, 15:00, and anything it approved that hadn\'t run yet was cancelled.',
     );
-    expect(keyNoticeBody(change("Pixel 9", "removed", true), "UTC")).toMatch(
+    expect(
+      keyNoticeBody(change("Pixel 9", "removed", true), { zone: "UTC", locale: KIN_TEXT_LOCALE }),
+    ).toMatch(
       /cancelled\. No phone can approve now: open Approvals in the Kin app on your phone to set one up\.$/,
     );
   });

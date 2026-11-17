@@ -588,6 +588,67 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ),
   );
 
+  it.effect("a deleted Outlook meeting is in the next read of what changed", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const hello = yield* connect(fake, "microsoft", HELLO);
+        const lunch = {
+          account: HELLO,
+          id: "ev-lunch",
+          title: "Client lunch",
+          start: NOW + 86_400_000,
+          end: NOW + 90_000_000,
+          updated: NOW,
+        };
+        fake.putEvent(lunch);
+        const first = yield* connections.activity(orgId, hello);
+        if (first._tag !== "mail") return assert.fail("not a mail account");
+        assert.deepStrictEqual(
+          first.calendar.map((one) => one.summary),
+          ["Client lunch"],
+        );
+        // Graph names a deletion only in a later round of the same feed, so the read keeps its place.
+        yield* connections.activitySeen(orgId, hello, first.until, first.cursor);
+        fake.putEvent({ ...lunch, state: "deleted", updated: NOW + 1 });
+        const next = yield* connections.activity(orgId, hello);
+        if (next._tag !== "mail") return assert.fail("not a mail account");
+        assert.deepStrictEqual(
+          next.calendar.map((one) => [one.eventId, one.status]),
+          [["ev-lunch", "cancelled"]],
+        );
+      }),
+    ),
+  );
+
+  it.effect("a removed Outlook account's owed card still names Outlook", () =>
+    setUp((fake, cards) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const hello = yield* connect(fake, "microsoft", HELLO);
+        const inbound = fake.deliver({
+          to: HELLO,
+          from: CLIENT,
+          subject: "Invoice question",
+          body: "Is GST included?",
+          at: NOW - 60_000,
+        });
+        yield* wake({ person: owner });
+        yield* callTool(HELLO, "mail_reply", { threadId: inbound.threadId, body: "Yes." });
+        fake.setDown(HELLO, true);
+        const broke = yield* tap(cards.at(-1)!.widgetId, owner);
+        assert.strictEqual(broke !== undefined && "state" in broke && broke.state, "failed");
+        yield* connections.remove(people(owner), { orgId, connectionId: hello });
+        const later = (yield* Clock.currentTimeMillis) + 1;
+        const [owed] = yield* connections.interruptedSends(orgId, later);
+        if (owed?.fresh === undefined) return assert.fail("the failed mail is on no card");
+        assert.strictEqual(owed.fresh.label, HELLO);
+        const fresh = yield* connections.freshAsk(orgId, owed.fresh, NOW);
+        assert.strictEqual(fresh?.card.question, "Send this reply from Outlook?");
+      }),
+    ),
+  );
+
   it.effect("an expired account says so on the card, loses nothing, and sends after sign-in", () =>
     setUp((fake, cards) =>
       Effect.gen(function* () {

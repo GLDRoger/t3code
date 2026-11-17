@@ -66,7 +66,12 @@ import * as Service from "./KinChatService.ts";
 import * as VisualHosts from "./KinVisualHosts.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as LevelGate from "../lead/LevelGate.ts";
-import { attachChangeCard, proposeChange, readProfile } from "../work/companyProfile.ts";
+import {
+  attachChangeCard,
+  proposeChange,
+  readProfile,
+  textLocale,
+} from "../work/companyProfile.ts";
 
 const decodeKinOrgId = Schema.decodeSync(KinOrgId);
 const decodeKinPersonId = Schema.decodeSync(KinPersonId);
@@ -2740,23 +2745,25 @@ describe("KinChatService", () => {
         yield* sql.withTransaction(notices.changed(change(second, "removed", 2)));
         // An identical retry owes nothing more.
         yield* sql.withTransaction(notices.changed(change(first, "added", 1)));
+        // The org never set a home currency, so it writes India's clock.
+        const clock = { zone: "UTC", locale: yield* textLocale(person.orgId) };
         assert.deepStrictEqual(yield* owed, [
           {
             thumbprint: first,
             change: "added",
-            body: keyNoticeBody(change(first, "added", 1), "UTC"),
+            body: keyNoticeBody(change(first, "added", 1), clock),
             messageId: `kin-key-added:${first}`,
           },
           {
             thumbprint: second,
             change: "removed",
-            body: keyNoticeBody(change(second, "removed", 2), "UTC"),
+            body: keyNoticeBody(change(second, "removed", 2), clock),
             messageId: null,
           },
         ]);
         assert.deepStrictEqual(
           (yield* notified).map((message) => message.body),
-          [keyNoticeBody(change(first, "added", 1), "UTC")],
+          [keyNoticeBody(change(first, "added", 1), clock)],
         );
       }).pipe(Effect.provide(Layer.provideMerge(keyNoticesLayer, layer))),
   );

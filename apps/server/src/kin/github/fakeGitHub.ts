@@ -19,6 +19,8 @@ export interface FakeRepo {
   /** A private repo on GitHub Free: no rulesets or branch protection, read or written. */
   planLimited?: boolean;
   rulesets?: FakeRuleset[];
+  /** No commits yet, so no branches: GitHub reads its default branch's protection as "Branch not found". */
+  empty?: boolean;
   /** Classic branch protection on the default branch, as GitHub returns it. */
   classic?: Record<string, unknown>;
 }
@@ -472,6 +474,7 @@ export class FakeGitHub {
     if (asInstallation) return refused("Resource not accessible by integration");
     if (repo.admin === false) return refused("Must have admin rights to Repository.");
     if (classic !== null && method === "GET") {
+      if (repo.empty === true) return answer(404, { message: "Branch not found" });
       if (decodeURIComponent(classic[1]!) !== (repo.default_branch ?? "main") || !repo.classic)
         return answer(404, { message: "Branch not protected" });
       return answer(200, repo.classic);
