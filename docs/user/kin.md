@@ -343,8 +343,20 @@ out as that App, so blame and history show what an agent did; each commit carrie
 you. When GitHub refuses the App, or you say "do it as me", the agent runs that one command as you
 and says so. Memory commits are by the App too. The App's tokens can't change a repo's settings,
 but GitHub would let them merge or approve: what stops an agent is its own `gh` and `git`, which run
-in a shell that can also read those tokens. To be sure nothing merges without you, protect each
-default branch on GitHub (require pull requests and a review from someone other than the App).
+in a shell that can also read those tokens. To be sure the App changes no default branch, protect
+the branches from Kin, as below.
+
+**Settings → Connections → GitHub** says how many watched repos still let the App change their
+default branch, and each repo in the watched list says whether its branch is open to the App,
+protected by Kin, protected by your own rules, or why Kin can't tell (GitHub offers no protection on
+a private repo on its free plan, and only a repo's admins can see or set it). **Protect** on a repo,
+or **Protect all**, adds one ruleset on GitHub with your login: only the repo's admins (and an
+organization's owners) may update, delete or force-push the default branch. You keep merging your
+own pull requests and pushing as before; the App can't change the branch by any route, and no review
+is required, so you can't lock yourself out. Kin checks again with each repo refresh, every few
+hours. **Remove Kin's protection** deletes only the ruleset Kin made; protection you set up yourself
+is never Kin's to change. It guards against the App only: when an agent works as you, Kin's guard on
+its `gh` and `git` is what stands.
 
 To give your Kin an App, open **Settings → Connections → GitHub → Create Kin's GitHub App** (owner
 and co-owners). Kin suggests a name, GitHub opens with everything filled in, and after you choose

@@ -14,7 +14,46 @@ export interface FakeRepo {
   push: boolean;
   /** Admin on the repo, which GitHub wants before it adds or removes it on an installation. */
   admin?: boolean;
+  /** Default: main. */
+  default_branch?: string;
+  /** A private repo on GitHub Free: no rulesets or branch protection, read or written. */
+  planLimited?: boolean;
+  rulesets?: FakeRuleset[];
+  /** Classic branch protection on the default branch, as GitHub returns it. */
+  classic?: Record<string, unknown>;
 }
+export interface FakeRuleset {
+  id: number;
+  name: string;
+  target: string;
+  enforcement: string;
+  include: string[];
+  exclude: string[];
+  rules: { type: string; parameters?: Record<string, unknown> }[];
+  bypass: { actor_id: number | null; actor_type: string; bypass_mode: string }[];
+}
+
+const PLAN_LIMIT = "Upgrade to GitHub Pro or make this repository public to enable this feature.";
+const RULE_TYPES = new Set([
+  "creation",
+  "update",
+  "deletion",
+  "required_linear_history",
+  "required_signatures",
+  "pull_request",
+  "required_status_checks",
+  "non_fast_forward",
+]);
+const ACTOR_TYPES = new Set([
+  "Integration",
+  "OrganizationAdmin",
+  "RepositoryRole",
+  "Team",
+  "DeployKey",
+  "User",
+]);
+// GitHub's built-in repository roles as rulesets name them: maintain 2, write 4, admin 5.
+const REPOSITORY_ROLES = new Set([2, 4, 5]);
 export interface FakeItem {
   repo: string;
   number: number;
@@ -348,6 +387,169 @@ export class FakeGitHub {
       .map((repo) => repo.full_name)
       .filter((name) => name.toLowerCase().startsWith(prefix));
   }
+  /** The rules in force on a branch: active rulesets whose names match it. */
+  private rulesOn(repo: FakeRepo, branch: string) {
+    const matches = (pattern: string) =>
+      pattern === "~ALL" ||
+      (pattern === "~DEFAULT_BRANCH" && branch === (repo.default_branch ?? "main")) ||
+      pattern === `refs/heads/${branch}`;
+    return (repo.rulesets ?? []).filter(
+      (set) =>
+        set.enforcement === "active" && set.include.some(matches) && !set.exclude.some(matches),
+    );
+  }
+  /** Rulesets, classic protection and merges, as GitHub answers them; undefined for anything else. */
+  private rulesAnswer(
+    method: string,
+    name: string,
+    rest: string,
+    body: Record<string, unknown>,
+    actor: string,
+    asInstallation: boolean,
+  ): FakeAnswer | undefined {
+    const repo = this.world.repos.find(
+      (entry) => entry.full_name.toLowerCase() === name.toLowerCase(),
+    );
+    const answer = (status: number, value: unknown): FakeAnswer => ({
+      status,
+      headers: {},
+      body: value,
+    });
+    const refused = (message: string) => answer(403, { message });
+    const invalid = (error: string) =>
+      answer(422, { message: "Validation Failed", errors: [error] });
+    const rulesRead = /^rules\/branches\/(.+)$/.exec(rest);
+    const rulesets = rest === "rulesets" || /^rulesets\/\d+$/.test(rest);
+    const classic = /^branches\/(.+)\/protection$/.exec(rest);
+    const merge = /^pulls\/(\d+)\/merge$/.exec(rest);
+    if (rulesRead === null && !rulesets && classic === null && merge === null) return undefined;
+    if (repo === undefined) return answer(404, { message: "Not Found" });
+    if (merge !== null && method === "PUT") {
+      const item = this.world.items.find(
+        (entry) =>
+          entry.repo.toLowerCase() === name.toLowerCase() && entry.number === Number(merge[1]),
+      );
+      if (item === undefined || !item.pull) return answer(404, { message: "Not Found" });
+      const owner = this.account(name.split("/")[0]!);
+      const bypasses = (set: FakeRuleset) =>
+        !asInstallation &&
+        set.bypass.some(
+          (entry) =>
+            (entry.actor_type === "RepositoryRole" &&
+              entry.actor_id === 5 &&
+              repo.admin !== false) ||
+            (entry.actor_type === "OrganizationAdmin" &&
+              owner.type === "Organization" &&
+              owner.role !== "member"),
+        );
+      const blocked = this.rulesOn(repo, repo.default_branch ?? "main").some(
+        (set) => set.rules.some((rule) => rule.type === "update") && !bypasses(set),
+      );
+      if (blocked)
+        return answer(405, {
+          message: "Repository rule violations found\n\nCannot update this protected ref.\n\n",
+        });
+      this.merge({ repo: item.repo, number: item.number, actor });
+      return answer(200, { merged: true, message: "Pull Request successfully merged" });
+    }
+    if (repo.planLimited === true) return refused(PLAN_LIMIT);
+    if (rulesRead !== null && method === "GET") {
+      const branch = decodeURIComponent(rulesRead[1]!);
+      return answer(
+        200,
+        this.rulesOn(repo, branch).flatMap((set) =>
+          set.rules.map((rule) => ({
+            type: rule.type,
+            ruleset_source_type: "Repository",
+            ruleset_source: repo.full_name,
+            ruleset_id: set.id,
+            ...(rule.parameters === undefined ? {} : { parameters: rule.parameters }),
+          })),
+        ),
+      );
+    }
+    // Writing rules, and reading classic protection, take admin; the App holds no such permission.
+    if (asInstallation) return refused("Resource not accessible by integration");
+    if (repo.admin === false) return refused("Must have admin rights to Repository.");
+    if (classic !== null && method === "GET") {
+      if (decodeURIComponent(classic[1]!) !== (repo.default_branch ?? "main") || !repo.classic)
+        return answer(404, { message: "Branch not protected" });
+      return answer(200, repo.classic);
+    }
+    const one = /^rulesets\/(\d+)$/.exec(rest);
+    if (one !== null && method === "DELETE") {
+      const before = repo.rulesets ?? [];
+      repo.rulesets = before.filter((set) => set.id !== Number(one[1]));
+      return repo.rulesets.length === before.length
+        ? answer(404, { message: "Not Found" })
+        : answer(204, null);
+    }
+    if (rest !== "rulesets" || method !== "POST") return answer(404, { message: "Not Found" });
+    const text = (value: unknown) => (typeof value === "string" ? value : undefined);
+    const rulesetName = text(body.name);
+    if (rulesetName === undefined || rulesetName === "") return invalid("Name can't be blank");
+    if ((repo.rulesets ?? []).some((set) => set.name === rulesetName))
+      return invalid("Name must be unique");
+    const target = text(body.target) ?? "branch";
+    if (!["branch", "tag", "push"].includes(target)) return invalid("Invalid target");
+    const enforcement = text(body.enforcement);
+    if (enforcement === "evaluate")
+      return invalid("Evaluate mode is only available with GitHub Enterprise");
+    if (enforcement !== "active" && enforcement !== "disabled")
+      return invalid("Invalid enforcement");
+    const conditions = (body.conditions ?? {}) as {
+      ref_name?: { include?: unknown; exclude?: unknown };
+    };
+    const include = conditions.ref_name?.include;
+    const exclude = conditions.ref_name?.exclude ?? [];
+    if (!Array.isArray(include) || !Array.isArray(exclude) || include.length === 0)
+      return invalid("Invalid conditions: ref_name.include is required");
+    const rules = Array.isArray(body.rules) ? (body.rules as FakeRuleset["rules"]) : [];
+    for (const rule of rules) {
+      if (!RULE_TYPES.has(rule.type)) return invalid(`Invalid rule type: ${String(rule.type)}`);
+      if (
+        rule.type === "update" &&
+        typeof rule.parameters?.update_allows_fetch_and_merge !== "boolean"
+      )
+        return invalid("Invalid rule 'update': update_allows_fetch_and_merge is required");
+    }
+    const bypass = Array.isArray(body.bypass_actors)
+      ? (body.bypass_actors as FakeRuleset["bypass"])
+      : [];
+    const owner = this.account(name.split("/")[0]!);
+    for (const entry of bypass) {
+      if (!ACTOR_TYPES.has(entry.actor_type)) return invalid("Invalid actor type");
+      if (!["always", "pull_request", "exempt", undefined].includes(entry.bypass_mode))
+        return invalid("Invalid bypass mode");
+      if (entry.actor_type === "OrganizationAdmin" && owner.type !== "Organization")
+        return invalid("OrganizationAdmin is not applicable for personal repositories");
+      if (entry.actor_type === "RepositoryRole" && !REPOSITORY_ROLES.has(Number(entry.actor_id)))
+        return invalid("Invalid actor: the repository role doesn't exist");
+    }
+    const made: FakeRuleset = {
+      id: this.next(),
+      name: rulesetName,
+      target,
+      enforcement,
+      include: include.map(String),
+      exclude: exclude.map(String),
+      rules,
+      bypass: bypass.map((entry) => ({ ...entry, bypass_mode: entry.bypass_mode ?? "always" })),
+    };
+    repo.rulesets = [...(repo.rulesets ?? []), made];
+    return answer(201, {
+      id: made.id,
+      name: made.name,
+      target: made.target,
+      source_type: "Repository",
+      source: repo.full_name,
+      enforcement: made.enforcement,
+      bypass_actors: made.bypass,
+      conditions: { ref_name: { include: made.include, exclude: made.exclude } },
+      rules: made.rules,
+    });
+  }
+
   /** One REST call, as `gh api` makes it. */
   handle(
     method: string,
@@ -519,7 +721,8 @@ export class FakeGitHub {
           owner: (({ login, id, type }) => ({ login, id, type }))(
             this.account(repo.full_name.split("/")[0]!),
           ),
-          permissions: { push: repo.push },
+          default_branch: repo.default_branch ?? "main",
+          permissions: { push: repo.push, admin: repo.admin !== false },
         })),
       );
     const conversion = /^app-manifests\/([^/]+)\/conversions$/.exec(path);
@@ -624,6 +827,8 @@ export class FakeGitHub {
     const repo = match[1]!;
     const rest = match[2]!;
     let found: RegExpExecArray | null;
+    const guarded = this.rulesAnswer(method, repo, rest, body, actor, installation !== undefined);
+    if (guarded !== undefined) return guarded;
     try {
       if (method === "GET" && (found = /^issues\/(\d+)$/.exec(rest)))
         return ok(this.issueJson(this.item(repo, Number(found[1]))));

@@ -33,6 +33,7 @@ import {
   type ThreadSnapshot,
   type Trigger,
 } from "./githubTriggers.ts";
+import { checkGuards } from "./branchGuard.ts";
 import { companyRepo, knownRepos, type KnownRepo, repoList, watchRow } from "./githubWatchStore.ts";
 import { gitHubApp } from "./KinGitHubApp.ts";
 
@@ -181,7 +182,10 @@ const RepoEntry = Schema.Struct({
     id: Schema.optional(Schema.Int),
     type: Schema.optional(Schema.String),
   }),
-  permissions: Schema.optional(Schema.Struct({ push: Schema.Boolean })),
+  default_branch: Schema.optional(Schema.String),
+  permissions: Schema.optional(
+    Schema.Struct({ push: Schema.Boolean, admin: Schema.optional(Schema.Boolean) }),
+  ),
 });
 const Issue = Schema.Struct({
   number: Schema.Int,
@@ -327,6 +331,8 @@ export const make = Effect.gen(function* () {
             fork: repo.fork,
             ...(repo.id === undefined ? {} : { id: repo.id }),
             ...(repo.owner.id === undefined ? {} : { ownerId: repo.owner.id }),
+            ...(repo.default_branch === undefined ? {} : { branch: repo.default_branch }),
+            ...(repo.permissions?.admin === undefined ? {} : { admin: repo.permissions.admin }),
             ...(repo.owner.type === "Organization"
               ? { ownerOrg: true, ownerAdmin: ownsOrg(repo.owner.login) }
               : repo.owner.type === "User"
@@ -596,12 +602,15 @@ export const make = Effect.gen(function* () {
       );
     let reposChanged = false;
     // Repos stored before Kin kept each one's id and account are read again now.
-    const factsMissing = (yield* knownRepos(orgId)).some((entry) => entry.id === undefined);
+    const factsMissing = (yield* knownRepos(orgId)).some(
+      (entry) => entry.id === undefined || entry.branch === undefined,
+    );
     if (row.reposAt === null || now - row.reposAt > REPOS_EVERY_MS || factsMissing) {
       const before = row.reposJson;
       const failed = yield* refreshRepos(orgId, account, now);
       if (failed !== undefined) return yield* fail(failed);
-      reposChanged = (yield* watchRow(orgId))?.reposJson !== before;
+      const guardsChanged = yield* checkGuards(api.call, orgId, now);
+      reposChanged = guardsChanged || (yield* watchRow(orgId))?.reposJson !== before;
     }
     const repos = yield* repoList(orgId);
     const watched = new Map(

@@ -173,6 +173,7 @@ refs() {
   done
 }
 verdict=$(printf '%s\\n' "$input" | refs)
+[ -z "$verdict" ] || [ -z "$KIN_REFUSED" ] || echo "$verdict" >> "$KIN_REFUSED"
 case "$verdict" in
   default)
     echo "kin: Kin agents don't push to a repository's default branch (\${def:-main}): push a branch and open a pull request; the owner merges it." >&2
@@ -209,25 +210,41 @@ fi
 printf '%s\\n' "$input" | exec "$REAL" auth git-credential get
 `;
 
-/** Runs one command as the owner's own GitHub login; refuses to when Kin can't record it. */
+/**
+ * Runs one command as the owner's own GitHub login; refuses to when Kin can't record it. Kin's `gh`
+ * and `git` run by their own paths, and a run Kin's guard refused (`KIN_REFUSED`) isn't recorded.
+ */
 const asOwnerScript = (paths: AgentShellPaths) => `#!/bin/sh
 # Written by Kin. ${AS_OWNER_COMMAND} <command…>: runs one command as the owner's own GitHub login
-# instead of Kin's GitHub App, after Kin records who ran what, where and when.
+# instead of Kin's GitHub App, and records who ran what, where and when, unless Kin's guard refused it.
+HERE=${shellQuote(paths.shims)}
 APP=${shellQuote(paths.app)}
+LOG="$APP/${OWNER_USES_FILE}"
 [ $# -gt 0 ] || { echo "usage: ${AS_OWNER_COMMAND} <command> [arguments…]" >&2; exit 2; }
 ${REPO_OF}
 case "$1" in gh) repo=$(shift; kin_repo "$@") ;; *) repo=$(kin_repo "$@") ;; esac
 flat() { printf '%s' "$1" | tr '\\t\\r\\n' '   '; }
 T=$(printf '\\t')
 line="$(date +%s)$T$$$T$(flat "$KIN_AGENT_NAME")$T$(flat "$repo")$T$(flat "$*")"
-{ mkdir -p "$APP" && printf '%s\\n' "$line" >> "$APP/${OWNER_USES_FILE}"; } 2>/dev/null || {
+{ mkdir -p "$APP" && : >> "$LOG" && KIN_REFUSED=$(mktemp "$APP/.refused.XXXXXX"); } 2>/dev/null || {
   echo "kin: Kin couldn't record this use of the owner's login, so it didn't run." >&2
   exit 1
 }
+settle() {
+  [ -s "$KIN_REFUSED" ] || printf '%s\\n' "$line" >> "$LOG"
+  rm -f "$KIN_REFUSED"
+}
+trap 'settle; exit 129' HUP
+trap 'settle; exit 130' INT
+trap 'settle; exit 143' TERM
 KIN_AS_OWNER=1
-export KIN_AS_OWNER
+export KIN_AS_OWNER KIN_REFUSED
 unset GH_TOKEN GITHUB_TOKEN
-exec "$@"
+case "$1" in gh|git) cmd="$HERE/$1"; shift; set -- "$cmd" "$@" ;; esac
+"$@"
+code=$?
+settle
+exit $code
 `;
 
 /** Every script the agent's shell finds first, by file name. */
