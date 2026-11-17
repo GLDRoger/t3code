@@ -179,15 +179,28 @@ const listSpec = (def: ListDef): ImportList => {
   const preset = (Object.hasOwn(PRESETS, def.id) ? PRESETS[def.id as PresetId] : undefined) as
     | (typeof PRESETS)[PresetId]
     | undefined;
-  const fields = def.fields
-    .filter((one) => one.retired !== true && !preset?.fields.some((had) => had.key === one.key))
-    .map((one) => ({
-      label: one.label,
-      type: one.type,
-      ...some("choices", one.choices),
-      ...some("link", one.link),
-      ...(one.sensitive && one.type !== "money" && one.type !== "file" ? { sensitive: true } : {}),
-    }));
+  const fields = def.fields.flatMap((one) => {
+    if (one.retired === true) return [];
+    const had = preset?.fields.find((field) => field.key === one.key);
+    if (had !== undefined) {
+      // A template's field comes back with the template; only choices added to it travel.
+      const added = (one.choices ?? []).filter((item) => !(had.choices ?? []).includes(item));
+      return one.type === "choice" && added.length > 0
+        ? [{ label: had.label, type: one.type, choices: added }]
+        : [];
+    }
+    return [
+      {
+        label: one.label,
+        type: one.type,
+        ...some("choices", one.choices),
+        ...some("link", one.link),
+        ...(one.sensitive && one.type !== "money" && one.type !== "file"
+          ? { sensitive: true }
+          : {}),
+      },
+    ];
+  });
   const categories = def.categories.filter((one) => !preset?.categories.includes(one));
   const extras = {
     ...(fields.length === 0 ? {} : { fields }),
