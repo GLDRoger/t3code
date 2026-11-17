@@ -50,6 +50,7 @@ import { kinClient } from "./state/kinClient";
 import { pickKinPicture } from "./state/kinPicture";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinProfiles } from "./state/useKinProfiles";
+import { KinAwaySection } from "./components/KinAway";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
@@ -246,6 +247,13 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
           )}
         </View>
       </ListSection>
+      <KinAwaySection
+        environmentId={target.environmentId}
+        orgId={target.orgId}
+        profile={profile}
+        mine={target.mine}
+        mayEdit={target.mayEdit}
+      />
       <ListSection title={KIN_PROFILE_COPY.quietLabel}>
         <View className="px-4 py-3">
           <Text textRole="body" className="text-foreground">

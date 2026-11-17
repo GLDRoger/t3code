@@ -87,6 +87,7 @@ import { KinDocsList, KinSearchHits } from "./KinDocsList";
 import { KinTasksAttention, useKinNeedsRows } from "./KinNeedsYou";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { KinAvatar } from "./components/KinAvatar";
+import { KinHandOverRow } from "./components/KinAway";
 import { KinClientsList } from "./KinWorkLists";
 import { KinMoneyArea } from "./KinWorkMoney";
 import { KinListBanner } from "./components/KinListBanner";
@@ -439,6 +440,12 @@ export function KinWorkTaskList(
     if (record !== undefined) void changes.run(record, action, names);
   };
   const notice = kinWorkListNotice(changed, null);
+  const me = names.me;
+  const mineOpen =
+    props.within === undefined && me !== null
+      ? (overview.owners.find((row) => row.owner._tag === "person" && row.owner.personId === me)
+          ?.open ?? 0)
+      : 0;
   // A project's own list is always its project's, so only the rest of the filter is a chip.
   const narrowed = kinWorkFilterLabel(
     props.within === undefined ? filter : { ...filter, party: null, project: null },
@@ -619,6 +626,19 @@ export function KinWorkTaskList(
                           },
                         })}
                   />
+                </View>
+              )}
+              {me === null || mineOpen === 0 ? null : (
+                <View className="px-4">
+                  <ListSection>
+                    <KinHandOverRow
+                      environmentId={environmentId}
+                      orgId={orgId}
+                      from={{ _tag: "person", personId: me }}
+                      fromName={null}
+                      onDone={refresh}
+                    />
+                  </ListSection>
                 </View>
               )}
             </View>
