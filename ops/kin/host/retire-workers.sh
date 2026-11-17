@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Removes what kin-worker.sh installed on the Kin host, now that Kin has no workers, and lists what
-# the retired GitHub App left in kin's own files for you to remove. Run as root, from a root-owned
-# clone (the one kin-worker.sh ran from, /root/kin-ops):
+# the workers and the App's old merge and webhook setup left in kin's own files for you to remove.
+# Kin's GitHub App, its kin-github-app keyring item and its env lines stay: agents work as the App.
+# Run as root, from a root-owned clone (the one kin-worker.sh ran from, /root/kin-ops):
 #
 #   sudo /root/kin-ops/ops/kin/host/retire-workers.sh          prints what it would do
 #   sudo /root/kin-ops/ops/kin/host/retire-workers.sh --yes    does it
@@ -11,9 +12,9 @@
 # printed for you to run.
 set -euo pipefail
 
-# The merges of the PRs that stopped Kin using workers, then the GitHub App.
+# The merges of the PRs that stopped Kin using workers, then the App's webhooks and merge key.
 RETIRED_IN=13ffc91a413d341c6e05d5629d98d6fa120380e7
-APP_RETIRED_IN=48f6111f62205415e34d6e3795ee43deda0af678
+HOOKS_RETIRED_IN=48f6111f62205415e34d6e3795ee43deda0af678
 KIN_USER=kin
 KIN_HOME=/home/$KIN_USER
 REPO=${KIN_REPO:-$KIN_HOME/t3code}
@@ -50,15 +51,14 @@ leftovers() {
   say "left in kin's own files, which this never edits; in a kin shell (sudo -iu $KIN_USER):"
   echo "  - kin environment list, then kin environment unlink <id> for the worker server at 127.0.0.1:3874" >&2
   echo "  - delete the KIN_WORKER_* lines from ~/.t3/service.env" >&2
-  if runuser -u "$KIN_USER" -- git -C "$REPO" merge-base --is-ancestor "$APP_RETIRED_IN" "$sha" 2>/dev/null; then
-    echo "  - delete the KIN_GITHUB_* and KIN_REPOS lines from ~/.t3/service.env, then: systemctl --user restart kin-server" >&2
-    echo "  - delete the App's keyring items: secret-tool clear service kin-github-app; secret-tool clear service kin-owner-merge" >&2
-    echo "  - gh auth status: if the old bot account is still listed, gh auth logout --user <bot login>" >&2
+  echo "  - then restart kin-server: systemctl --user restart kin-server" >&2
+  echo "  - keep KIN_GITHUB_APP_ID, KIN_GITHUB_BOT_LOGIN and the kin-github-app keyring item: agents work on GitHub as the App" >&2
+  if runuser -u "$KIN_USER" -- git -C "$REPO" merge-base --is-ancestor "$HOOKS_RETIRED_IN" "$sha" 2>/dev/null; then
+    echo "  - delete the owner-merge key, which nothing reads now: secret-tool clear service kin-owner-merge" >&2
     echo "  - in Kin, Settings → Scheduled tasks: delete \"Kin · GitHub App · …\" (it already starts nothing)" >&2
-    echo "  - connect your own GitHub from the phone: Settings → Connections → GitHub" >&2
+    echo "  - connect your own GitHub from the phone (Settings → Connections → GitHub): Kin watches your repos with it" >&2
   else
-    echo "  - then restart kin-server: systemctl --user restart kin-server" >&2
-    say "this build still uses the GitHub App; update Kin again before removing the App's settings and key."
+    say "this build still merges with the owner-merge key; update Kin again before removing it."
   fi
 }
 

@@ -39,6 +39,8 @@ import * as Render from "./gendocs/render.ts";
 import * as Toolchain from "./gendocs/toolchain.ts";
 import * as GhTool from "./connections/ghTool.ts";
 import * as GitHubLogin from "./connections/GitHubLogin.ts";
+import * as KinGitHubApp from "./github/KinGitHubApp.ts";
+import * as Keychain from "./github/Keychain.ts";
 import * as AgentSession from "./lead/AgentSession.ts";
 import * as Workspace from "./gendocs/workspace.ts";
 import * as Vcs from "../vcs/VcsProcess.ts";
@@ -134,6 +136,13 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Layer.provide(ConnectionSecrets.layer),
           Layer.provide(McpGateway.layer),
           Layer.provide(DevFakeMail.egress),
+          // Kin's GitHub App: the identity agents' shells and Kin's own GitHub writes use.
+          Layer.provideMerge(
+            KinGitHubApp.layer.pipe(
+              Layer.provide(Keychain.layer),
+              Layer.provide(FetchHttpClient.layer),
+            ),
+          ),
           Layer.provideMerge(
             AgentSession.sessionPolicyLayer.pipe(
               Layer.provideMerge(

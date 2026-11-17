@@ -21,15 +21,15 @@ expect_in "$STATUS" "invented-owner" "GitHub did not connect as the owner: $STAT
 
 PR="https://github.com/invented-owner/ambermill-site/pull/$(($(cat "$FAKE/state/prs" 2>/dev/null || echo 0) + 1))"
 CHILD="child-$RUN"
-# The delegated task, after a while as real work takes: a commit with the owner as author and the
-# agent credited, pushed, and a PR.
+# The delegated task, after a while as real work takes: a plain commit, pushed, and a PR. With no
+# GitHub App set up the owner is the author.
 node -e '
 const [file, fake, pr] = process.argv.slice(1);
 require("node:fs").writeFileSync(file, JSON.stringify({
   calls: [{ name: "sleep", arguments: { ms: 10000 } }, { name: "shell", arguments: { command: [
     "git checkout -qb dark-theme",
     "printf \"theme: dark\\n\" > settings.txt",
-    "git -c user.name=invented-owner -c user.email=1+invented-owner@users.noreply.github.com commit -qam \"feat: dark theme setting\" -m \"Co-authored-by: Chief of staff <chief-of-staff@kin.invalid>\"",
+    "git -c user.name=invented-owner -c user.email=1+invented-owner@users.noreply.github.com commit -qam \"feat: dark theme setting\"",
     "git push -q origin dark-theme",
     `PATH="${fake}:$PATH" KIN_FAKE_GH="${fake}/state" gh pr create --fill`,
   ].join(" && ") } }],
@@ -76,9 +76,9 @@ expect_in "$(cat "$VERIFY/turns/notice.result.json")" "$PR" "task_status didn't 
 # The task ran in its own worktree: the clone stays on main, and the PR's branch is on the origin.
 [[ "$(git -C "$WORK/clones/ambermill-site" branch --show-current)" == main ]] ||
   fail "the delegated task changed the clone instead of its own worktree"
-AUTHOR="$(git --git-dir "$ORIGIN" log -1 --format='%an <%ae>|%(trailers:key=Co-authored-by,valueonly)' dark-theme)"
-expect_in "$AUTHOR" "invented-owner <1+invented-owner@users.noreply.github.com>|Chief of staff <chief-of-staff@kin.invalid>" \
-  "the commit isn't the owner's with the agent credited: $AUTHOR"
+AUTHOR="$(git --git-dir "$ORIGIN" log -1 --format='%an <%ae>' dark-theme)"
+expect_in "$AUTHOR" "invented-owner <1+invented-owner@users.noreply.github.com>" \
+  "the commit isn't the owner's: $AUTHOR"
 
 # The same request in a member's chat: T3's tools aren't there, and the agent offers it to the owner.
 node -e '

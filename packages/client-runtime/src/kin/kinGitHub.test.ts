@@ -1,7 +1,7 @@
 import { KinOrgId, type KinGitHubStatus } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
-import { kinGitHubRow, kinGitHubSheet } from "./kinGitHub.ts";
+import { kinGitHubAgentsView, kinGitHubRow, kinGitHubSheet } from "./kinGitHub.ts";
 
 const base: KinGitHubStatus = {
   orgId: KinOrgId.make("org"),
@@ -41,5 +41,65 @@ describe("kinGitHubRow", () => {
       "start",
     );
     expect(kinGitHubSheet({ ...base, account }).step).toBe("done");
+  });
+});
+
+describe("kinGitHubAgentsView", () => {
+  const app = {
+    as: "app" as const,
+    appName: "Invented Kin",
+    botLogin: "invented-kin[bot]",
+    installUrl: "https://github.com/apps/invented-kin/installations/new",
+    problem: null,
+    watched: 5,
+    installed: 3,
+    without: ["acme/site", "acme/tools"],
+    ownerUses: [],
+  };
+  const now = Date.UTC(2026, 10, 17, 12);
+
+  it("says truthfully who agents work as, and where the App is missing", () => {
+    const partly = kinGitHubAgentsView(app, "invented-owner", now);
+    expect(partly.headline).toBe("Agents work on GitHub as Invented Kin on 3 of 5 watched repos.");
+    expect(partly.detail).toMatch(
+      /^On acme\/site and acme\/tools, their work goes out as you \(invented-owner\)\./,
+    );
+    expect(partly.installUrl).toBe(app.installUrl);
+    expect(kinGitHubAgentsView({ ...app, installed: 5, without: [] }, null, now).headline).toBe(
+      "Agents work on GitHub as Invented Kin on all 5 watched repos.",
+    );
+    expect(
+      kinGitHubAgentsView({ ...app, installed: 0, without: ["a/b"] }, "invented-owner", now)
+        .headline,
+    ).toBe(
+      "Invented Kin isn't installed on any watched repo yet, so agents work there as you (invented-owner).",
+    );
+    const none = kinGitHubAgentsView(
+      { as: "owner", problem: null, watched: 5, installed: 0, without: [], ownerUses: [] },
+      "invented-owner",
+      now,
+    );
+    expect([none.headline, none.installUrl]).toEqual([
+      "Agents work on GitHub as you (invented-owner).",
+      null,
+    ]);
+  });
+
+  it("lists what agents did as the owner, newest first", () => {
+    const view = kinGitHubAgentsView(
+      {
+        ...app,
+        ownerUses: [
+          { at: now - 2 * 3_600_000, agent: "Tech lead", repo: "acme/site", command: "git push" },
+          { at: now - 86_400_000, agent: null, repo: null, command: "gh repo list" },
+        ],
+      },
+      null,
+      now,
+    );
+    expect(view.uses.map((use) => [use.line, use.command])).toEqual([
+      ["Tech lead on acme/site, 2 h ago", "git push"],
+      ["An agent, 1 d ago", "gh repo list"],
+    ]);
   });
 });

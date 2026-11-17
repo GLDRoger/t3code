@@ -165,8 +165,8 @@ features:
     phone: [tab:chats, KinChat]
     roles: { owner: both, co_owner: both, lead: both, member: both }
     note: >-
-      Through the agent, as the owner's GitHub login (Settings, Connections); it reads repos, PRs
-      and runs with gh.
+      Through the agent, which reads repos, PRs and runs with gh and posts as Kin's GitHub App
+      where it is installed, else as the owner's login (Settings, Connections).
     tools: [kin_github_review, kin_github_link, kin_github_watch]
     proof:
       - apps/server/src/kin/github/GitHubWatch.test.ts
@@ -894,7 +894,7 @@ features:
     proof: [apps/server/src/kin/connections/ConnectionsService.test.ts]
 
   - id: github-login
-    name: Connect GitHub as the owner
+    name: Connect GitHub as the owner, and see who agents work as
     tab: settings
     web: [settings, section:Connections, dialog:Connect GitHub]
     phone: [SettingsKin, KinConnections, KinGitHubConnect]
@@ -905,14 +905,15 @@ features:
       - apps/server/src/kin/connections/GitHubLogin.test.ts
       - apps/server/src/kin/connections/ghTool.test.ts
       - packages/client-runtime/src/kin/kinGitHub.test.ts
+      - apps/server/src/kin/github/KinGitHubApp.test.ts
 
   - id: github-work
-    name: The agent works on GitHub as the owner, through delegated tasks
+    name: The agent works on GitHub as Kin's GitHub App, or as the owner, through delegated tasks
     tab: chats
     web: [chat]
     phone: [tab:chats, KinChat]
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    note: With GitHub connected, in turns only the owner or a co-owner can read; a finished task gets one reply.
+    note: With GitHub connected, in turns only the owner or a co-owner can read; a finished task gets one reply. kin-as-owner runs one command as the owner and is recorded.
     tools:
       [
         orchestrator_capabilities,
@@ -973,6 +974,7 @@ features:
       ]
     proof:
       - apps/server/src/kin/lead/LeadIsolation.test.ts
+      - apps/server/src/kin/github/ghSign.test.ts
       - apps/server/src/kin/lead/TaskWake.test.ts
       - apps/server/src/kin/lead/WakeupRunner.test.ts
       - .agents/skills/verify-kin/scripts/github-delegated-task.sh

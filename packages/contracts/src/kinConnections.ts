@@ -384,6 +384,34 @@ export const KinGitHubWatch = Schema.Struct({
 });
 export type KinGitHubWatch = typeof KinGitHubWatch.Type;
 
+/** One command an agent ran as the owner's own login with `kin-as-owner`, secrets taken out. */
+export const KinGitHubOwnerUse = Schema.Struct({
+  at: NonNegativeInt,
+  agent: Schema.NullOr(Schema.String),
+  repo: Schema.NullOr(Schema.String),
+  command: Schema.String,
+});
+export type KinGitHubOwnerUse = typeof KinGitHubOwnerUse.Type;
+
+/** Who agents act as on GitHub: Kin's GitHub App where it is installed, else the owner. */
+export const KinGitHubAgents = Schema.Struct({
+  as: Schema.Literals(["app", "owner"]),
+  /** The App's name and bot login on GitHub, and where to install it on more repos, while it works. */
+  appName: Schema.optional(Schema.String),
+  botLogin: Schema.optional(Schema.String),
+  installUrl: Schema.optional(Schema.String),
+  /** Why an App set up on this computer isn't working, in plain words. */
+  problem: Schema.NullOr(Schema.String),
+  /** Watched repos, and how many of them the App is installed on. */
+  watched: NonNegativeInt,
+  installed: NonNegativeInt,
+  /** Watched repos without the App, where work goes out as the owner; at most 20. */
+  without: Schema.Array(Schema.String),
+  /** The latest commands agents ran as the owner, newest first; at most 5. */
+  ownerUses: Schema.Array(KinGitHubOwnerUse),
+});
+export type KinGitHubAgents = typeof KinGitHubAgents.Type;
+
 export const KinGitHubStatus = Schema.Struct({
   orgId: KinOrgId,
   account: Schema.NullOr(KinGitHubAccount),
@@ -392,6 +420,8 @@ export const KinGitHubStatus = Schema.Struct({
   failed: Schema.NullOr(Schema.String),
   /** Present while connected; an older server sends none. */
   watch: Schema.optional(KinGitHubWatch),
+  /** Present on a server with Kin's GitHub App support; an older one sends none. */
+  agents: Schema.optional(KinGitHubAgents),
 });
 export type KinGitHubStatus = typeof KinGitHubStatus.Type;
 

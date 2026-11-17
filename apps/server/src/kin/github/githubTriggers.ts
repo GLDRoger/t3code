@@ -71,7 +71,18 @@ export interface DecideContext {
   readonly since: number;
   /** Kin saw this PR as a draft earlier, so its being ready now is new. */
   readonly draftSeen: boolean;
+  /** The login of Kin's GitHub App, while agents work as it: what it writes is Kin's own. */
+  readonly botLogin?: string | undefined;
 }
+
+/** Kin's own work: written by its GitHub App, or carrying an agent's marker (as the owner). */
+export const isAgentsOwn = (
+  text: string | null | undefined,
+  author: string,
+  botLogin: string | undefined,
+) =>
+  isAgentText(text) ||
+  (botLogin !== undefined && botLogin !== "" && author.toLowerCase() === botLogin.toLowerCase());
 
 export interface Trigger {
   readonly key: string;
@@ -143,10 +154,10 @@ export const decideTriggers = (
   thread: ThreadSnapshot,
   context: DecideContext,
 ): ReadonlyArray<Trigger> => {
-  // Kin's memory writes land through PRs under the owner's login with no marker.
+  // Kin's memory writes land through PRs, as the App or the owner, with no marker.
   if (thread.pull?.headRef.startsWith(WRITE_BRANCH_PREFIX) === true) return [];
   const at = `${thread.repo.toLowerCase()}#${thread.number}`;
-  const agentsOwn = isAgentText(thread.body);
+  const agentsOwn = isAgentsOwn(thread.body, thread.author, context.botLogin);
   const itemInside = isInside(thread.association);
   const triggers: Trigger[] = [];
   const onItem = {
@@ -224,7 +235,7 @@ export const decideTriggers = (
     // A stranger's call starts nothing; an agent's own words never do.
     if (
       comment.createdAt < context.since ||
-      isAgentText(comment.body) ||
+      isAgentsOwn(comment.body, comment.author, context.botLogin) ||
       !isInside(comment.association)
     )
       continue;
