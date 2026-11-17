@@ -31,7 +31,8 @@ import { useDeviceType } from "../../../native/native-layout-metrics";
 import { useSidebarWorkspaceTabs } from "../../layout/workspace/useSystemWorkspaceTabBar";
 import { useComposerTextRole } from "../../settings/appearance/useScaledTextRole";
 import type { ComposerSendPresentation } from "../../threads/composerSendPresentation";
-import { ComposerSurface, SendActionButton } from "../../threads/ThreadComposer";
+import { ComposerSurface } from "../../../components/ComposerSurface";
+import { SendActionButton } from "../../threads/ThreadComposer";
 import type { ComposerEditorHandle } from "../../../native/T3ComposerEditor.types";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import {
