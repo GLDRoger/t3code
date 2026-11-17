@@ -9,7 +9,7 @@ import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientResponse, UrlParams } from "effect/http";
 
 import type { FakeApp, FakeGitHub } from "./fakeGitHub.ts";
-import { KinKeychain } from "./Keychain.ts";
+import { KinGitHubAppKey } from "./appKey.ts";
 import { KinGitHubAppConfig } from "./KinGitHubApp.ts";
 
 export const BOT_LOGIN = "invented-kin[bot]";
@@ -22,6 +22,9 @@ const privateKeyPem = NodeCrypto.generateKeyPairSync("rsa", { modulusLength: 204
 const Json = Schema.fromJsonString(Schema.Unknown);
 const parse = Schema.decodeUnknownSync(Json);
 const json = Schema.encodeSync(Json);
+
+/** The invented App key as the secret store keeps it. */
+export const appKeyJson = () => json({ privateKeyPem });
 
 /** Kin's GitHub App, installed where `installations` say, in the fake GitHub's world. */
 export const installApp = (github: FakeGitHub, installations: FakeApp["installations"]) => {
@@ -62,16 +65,18 @@ export const fakeHttp = (github: FakeGitHub) =>
     ),
   );
 
-/** The App's keyring item, or none, and the env lines that name the App. */
+/** The App's key, or none, and the env lines that name the App. */
 export const appHost = (options: { readonly appId?: string; readonly key?: boolean }) =>
   Layer.mergeAll(
-    Layer.succeed(KinKeychain, {
-      appSecret: () =>
+    Layer.succeed(KinGitHubAppKey, {
+      get: () =>
         Effect.succeed(
           options.key === false
             ? Option.none()
             : Option.some(Redacted.make(json({ privateKeyPem }))),
         ),
+      set: () => Effect.void,
+      remove: () => Effect.void,
     }),
     Layer.succeed(KinGitHubAppConfig, {
       appId: Option.fromNullishOr(options.appId),

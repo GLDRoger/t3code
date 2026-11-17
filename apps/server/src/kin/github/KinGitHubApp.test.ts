@@ -233,15 +233,30 @@ describe("Kin's GitHub App", () => {
         // A later look, and a restart that reads the file again, record nothing twice.
         yield* app.refresh();
         yield* (yield* restart).refresh();
-        const view = yield* agentsView(Option.some(app), orgId);
+        // The account rows have their own tests below.
+        const {
+          accounts: _accounts,
+          appOwner: _owner,
+          appSettingsUrl: _settings,
+          ...view
+        } = yield* agentsView(Option.some(app), orgId);
         assert.deepStrictEqual(view, {
           as: "app",
           appName: "Invented Kin",
           botLogin: BOT_LOGIN,
           installUrl: "https://github.com/apps/invented-kin/installations/new",
           problem: null,
+          // The App the host's environment named is Settings' own from the first look.
+          setUp: {
+            source: "kin",
+            name: "Invented Kin",
+            at: null,
+            by: null,
+            settingsUrl: "https://github.com/settings/apps/invented-kin",
+          },
           watched: 3,
           installed: 2,
+          elsewhere: 0,
           without: ["elsewhere/tool"],
           ownerUses: [
             {
@@ -325,6 +340,7 @@ describe("the App's row for each account with watched repos", () => {
               installUrl: null,
               canManage: true,
               installable: true,
+              elsewhere: 1,
             },
             {
               account: "invented-co",
@@ -337,6 +353,7 @@ describe("the App's row for each account with watched repos", () => {
                 "https://github.com/apps/invented-kin/installations/new/permissions?target_id=7001",
               canManage: true,
               installable: true,
+              elsewhere: 0,
             },
           ],
           appOwner: "invented-owner",
@@ -365,6 +382,17 @@ describe("the App's row for each account with watched repos", () => {
               2,
               "https://github.com/organizations/invented-co/settings/installations/9",
             ],
+          ],
+        );
+        // Moved to the organisation on GitHub: its settings are under the organisation now.
+        github.world.app!.owner = "invented-co";
+        yield* app.lookAgain();
+        const moved = yield* rows(app);
+        assert.deepStrictEqual(
+          [moved.appOwner, moved.appSettingsUrl],
+          [
+            "invented-co",
+            "https://github.com/organizations/invented-co/settings/apps/invented-kin",
           ],
         );
       }).pipe(Effect.provide(layer)),
@@ -399,6 +427,8 @@ describe("the App's row for each account with watched repos", () => {
           },
         ]);
         github.world.app!.public = false;
+        // GitHub's own casing of the owner, whatever case Kin keeps logins in.
+        github.world.accounts![0]!.login = "Invented-Owner";
         yield* watching(
           known([
             ...REPOS,
@@ -409,7 +439,11 @@ describe("the App's row for each account with watched repos", () => {
         );
         yield* setRepo({ orgId, repo: "invented-quiet/x", watched: false }, T0);
         yield* app.refresh();
-        const { accounts } = yield* rows(app);
+        const { accounts, appOwner, appSettingsUrl } = yield* rows(app);
+        assert.deepStrictEqual(
+          [appOwner, appSettingsUrl],
+          ["Invented-Owner", "https://github.com/settings/apps/invented-kin"],
+        );
         assert.deepStrictEqual(
           accounts?.map((row) => [
             row.account,
@@ -424,21 +458,75 @@ describe("the App's row for each account with watched repos", () => {
             ["invented-lab", "none", "0/1", false, false],
           ],
         );
+        // Made public on GitHub: looking again sees it at once, not after the visibility cache.
+        github.world.app!.public = true;
+        yield* app.lookAgain();
+        const after = yield* rows(app);
+        assert.isTrue(after.accounts?.find((row) => row.account === "invented-lab")?.installable);
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("no rows, only GitHub's own install page, while Kin can't tell the accounts", () =>
-    Effect.gen(function* () {
-      const { github, app } = yield* setup({ appId: "9001" }, false);
-      world(github);
-      installApp(github, []);
-      // Stored before Kin kept what each account is.
-      yield* watching(known(REPOS.map(({ repo }) => ({ repo }))));
-      yield* app.refresh();
-      const view = yield* agentsView(Option.some(app), orgId);
-      assert.isUndefined(view.accounts);
-      assert.strictEqual(view.installUrl, "https://github.com/apps/invented-kin/installations/new");
-    }).pipe(Effect.provide(layer)),
+  it.effect(
+    "rows from the watched repos' owners alone, before Kin has kept what each account is, whatever the login's case",
+    () =>
+      Effect.gen(function* () {
+        const { github, app } = yield* setup({ appId: "9001" }, false);
+        world(github);
+        // The live shape: selected on the user's account, covering only the unwatched memory repo.
+        installApp(github, [
+          {
+            id: 8,
+            account: "invented-owner",
+            repos: ["invented-owner/kin-memory"],
+            permissions: PERMISSIONS,
+          },
+        ]);
+        const sql = yield* SqlClient.SqlClient;
+        // Stored before Kin kept account facts, with GitHub's own mixed-case names.
+        const old = REPOS.map(({ repo }) => ({
+          repo: repo.replace("invented-owner/", "Invented-Owner/"),
+        }));
+        yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at, repos_json)
+          VALUES (${orgId}, 'Invented-Owner', 0, 0, 0, ${known(old)})`;
+        yield* app.refresh();
+        const view = yield* agentsView(Option.some(app), orgId);
+        assert.deepStrictEqual(
+          view.accounts?.map((row) => [
+            row.account,
+            row.organisation,
+            row.installation,
+            `${row.covered}/${row.watched}`,
+            row.settingsUrl,
+            row.installUrl,
+            row.canManage,
+            row.elsewhere,
+          ]),
+          [
+            [
+              "Invented-Owner",
+              false,
+              "selected",
+              "0/3",
+              "https://github.com/settings/installations/8",
+              null,
+              true,
+              1,
+            ],
+            [
+              "invented-co",
+              true,
+              "none",
+              "0/2",
+              null,
+              "https://github.com/apps/invented-kin/installations/new",
+              null,
+              0,
+            ],
+          ],
+        );
+        // The memory repo is the App's one repo, and Kin doesn't watch it.
+        assert.deepStrictEqual([view.installed, view.elsewhere], [0, 1]);
+      }).pipe(Effect.provide(layer)),
   );
 });
 

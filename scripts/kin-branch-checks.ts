@@ -175,11 +175,25 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
     );
   const onDisk = (file: string) => fs.readFileString(path.join(root, file)).pipe(Effect.option);
   const mergeBase = (yield* git(root, ["merge-base", "HEAD", ref])).toString().trim();
+  // PRs already merged between the ref and head, newest first: a release range, not one branch.
+  const prMerges = (yield* gitLines(root, [
+    "log",
+    "--first-parent",
+    "--merges",
+    "--format=%H %s",
+    `${mergeBase}..HEAD`,
+  ]))
+    .filter((line) => /^\S+ Merge pull request #\d+/.test(line))
+    .map((line) => line.split(" ")[0]!);
+  const mergedPrs = prMerges.length;
+  // Each merged PR passed survival against its own base; only work on top of the last one is new.
+  const survivalRef = prMerges[0] ?? ref;
+  const survivalBase = prMerges[0] ?? mergeBase;
   const changed = (yield* gitLines(root, [
     "diff",
     "--name-only",
     "--no-renames",
-    mergeBase,
+    survivalBase,
   ])).filter((file) => !SURVIVAL_SKIP.test(file));
   const problems: Array<string> = [];
 
@@ -197,13 +211,6 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
     yield* show(ref, INSTRUCTIONS),
     yield* onDisk(INSTRUCTIONS),
   ];
-  const mergedPrs = (yield* gitLines(root, [
-    "log",
-    "--first-parent",
-    "--merges",
-    "--format=%s",
-    `${mergeBase}..HEAD`,
-  ])).filter((subject) => /^Merge pull request #\d+/.test(subject)).length;
   if (Option.isSome(was) && Option.isSome(tip) && Option.isSome(now))
     problems.push(
       ...checkInstructions({ mergeBase: was.value, tip: tip.value, head: now.value, mergedPrs }),
@@ -216,7 +223,7 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
       "--merges",
       `--since=${days}.days.ago`,
       "--format=%H %s",
-      ref,
+      survivalRef,
     ]);
     const merged: Array<Merged> = [];
     for (const line of merges) {
@@ -237,10 +244,10 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
     const tipText = new Map<string, string | undefined>();
     const headText = new Map<string, string | undefined>();
     for (const file of files) {
-      tipText.set(file, Option.getOrUndefined(yield* show(ref, file)));
+      tipText.set(file, Option.getOrUndefined(yield* show(survivalRef, file)));
       headText.set(file, Option.getOrUndefined(yield* onDisk(file)));
     }
-    const messages = (yield* git(root, ["log", "--format=%B", `${mergeBase}..HEAD`])).toString();
+    const messages = (yield* git(root, ["log", "--format=%B", `${survivalBase}..HEAD`])).toString();
     problems.push(
       ...checkSurvival({
         merged,

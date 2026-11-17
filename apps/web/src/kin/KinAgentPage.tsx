@@ -20,6 +20,7 @@ import {
   kinLeadModelName,
   kinLeadOwnerSeesLine,
   kinLeadTrackingDetail,
+  kinProviderLimitLine,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -433,6 +434,9 @@ function AgentModels(props: {
 }) {
   const { environmentId, orgId, page } = props;
   const { providers } = useKinAgentModels(environmentId);
+  const limit = kinProviderLimitLine(
+    providers.find((provider) => provider.instanceId === page.runsOn.instanceId)?.driver,
+  );
   const update = useAtomCommand(kinClient.leadUpdate, { reportFailure: false });
   const canEdit =
     useAtomValue(kinClient.leadUpdate.permissionAtom(environmentId)) && !props.retired;
@@ -479,6 +483,7 @@ function AgentModels(props: {
         </Alert>
       )}
       <p className="text-xs text-muted-foreground">{KIN_AGENT_PAGE.modelDetail}</p>
+      {limit === null ? null : <p className="text-xs text-muted-foreground">{limit}</p>}
       <p className="text-xs text-muted-foreground">{kinAgentUsageLine(page.usedThisMonth)}</p>
       {problem === null ? null : (
         <p role="alert" className="text-xs text-destructive-foreground">

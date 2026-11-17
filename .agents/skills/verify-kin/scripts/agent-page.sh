@@ -24,9 +24,9 @@ expect_in "$(page)" "\"runsOn\":{\"instanceId\":\"kinVerifyScript\",\"model\":\"
 kv tool finance money_summary '{}' --say "where are we this month?" >/dev/null
 [[ "$(last_model)" == "script-b" ]] || fail "the next turn ran on $(last_model), not script-b"
 
-# A model this server doesn't have is refused, and Finance keeps the one it had.
+# A provider behind the host's switch is refused while it's off, and Finance keeps its model.
 refused="$(kv as owner rpc kin.lead.update "{\"agentId\":\"$FIN\",\"model\":{\"instanceId\":\"codex\",\"model\":\"gpt-5\"}}" 2>&1 || true)"
-expect_in "$refused" "Claude" "a non-Claude model was accepted"
+expect_in "$refused" "Kin agents can't run on codex" "a model on a switched-off provider was accepted"
 expect_in "$(page)" "script-b" "a refused change still changed the model"
 
 # By chat: the owner asks Chief of staff; a member's turn is refused. Saved means this host has
@@ -77,4 +77,4 @@ out="$(kv as zoya rpc kin.lead.update "{\"agentId\":\"$FIN\",\"model\":$(script_
 expect_not_in "$(page)" "zoya-$RUN" "Zoya changed Finance's model"
 out="$(kv as zoya rpc kin.lead.character.set "{\"agentId\":\"$FIN\",\"body\":\"zoya-$RUN\"}" 2>&1 || true)"
 [[ "$(latest)" == "$((EDITED + 1))" ]] || fail "Zoya's character change made a version"
-pass "Finance's page opened from web Settings → Agents; model script-b reached the next turn, a non-Claude one refused; character $KEY v$BEFORE -> v$EDITED restored; paused and resumed; retired and restored; Zoya refused the page, its model and its character"
+pass "Finance's page opened from web Settings → Agents; model script-b reached the next turn, one on a switched-off provider refused; character $KEY v$BEFORE -> v$EDITED restored; paused and resumed; retired and restored; Zoya refused the page, its model and its character"

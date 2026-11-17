@@ -1,5 +1,5 @@
 import { WRITE_BRANCH_PREFIX } from "../memory/MemoryConfig.ts";
-import { isAgentText } from "./agentMark.ts";
+import { isAgentText, postKey } from "./agentMark.ts";
 
 /**
  * Which GitHub activity starts an agent's work, decided by code from GitHub's own data. The poll
@@ -73,16 +73,28 @@ export interface DecideContext {
   readonly draftSeen: boolean;
   /** The login of Kin's GitHub App, while agents work as it: what it writes is Kin's own. */
   readonly botLogin?: string | undefined;
+  /** `postKey`s of texts agents' shells sent: their own words, even unsigned and as the owner. */
+  readonly agentPosts?: ReadonlySet<string> | undefined;
 }
 
-/** Kin's own work: written by its GitHub App, or carrying an agent's marker (as the owner). */
+/**
+ * Kin's own work: written by its GitHub App, carrying an agent's marker, or a text an agent's shell
+ * recorded sending (as the owner, a marker can be lost).
+ */
 export const isAgentsOwn = (
   text: string | null | undefined,
   author: string,
   botLogin: string | undefined,
+  agentPosts?: ReadonlySet<string>,
 ) =>
   isAgentText(text) ||
-  (botLogin !== undefined && botLogin !== "" && author.toLowerCase() === botLogin.toLowerCase());
+  (botLogin !== undefined && botLogin !== "" && author.toLowerCase() === botLogin.toLowerCase()) ||
+  (agentPosts !== undefined &&
+    agentPosts.size > 0 &&
+    text !== null &&
+    text !== undefined &&
+    text.trim() !== "" &&
+    agentPosts.has(postKey(text)));
 
 export interface Trigger {
   readonly key: string;
@@ -157,7 +169,7 @@ export const decideTriggers = (
   // Kin's memory writes land through PRs, as the App or the owner, with no marker.
   if (thread.pull?.headRef.startsWith(WRITE_BRANCH_PREFIX) === true) return [];
   const at = `${thread.repo.toLowerCase()}#${thread.number}`;
-  const agentsOwn = isAgentsOwn(thread.body, thread.author, context.botLogin);
+  const agentsOwn = isAgentsOwn(thread.body, thread.author, context.botLogin, context.agentPosts);
   const itemInside = isInside(thread.association);
   const triggers: Trigger[] = [];
   const onItem = {
@@ -235,7 +247,7 @@ export const decideTriggers = (
     // A stranger's call starts nothing; an agent's own words never do.
     if (
       comment.createdAt < context.since ||
-      isAgentsOwn(comment.body, comment.author, context.botLogin) ||
+      isAgentsOwn(comment.body, comment.author, context.botLogin, context.agentPosts) ||
       !isInside(comment.association)
     )
       continue;

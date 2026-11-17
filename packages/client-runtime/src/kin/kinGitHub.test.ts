@@ -6,6 +6,7 @@ import {
   kinGitHubAccountRows,
   kinGitHubAccountsHint,
   kinGitHubAgentsView,
+  kinGitHubAppCreatePath,
   kinGitHubRow,
   kinGitHubSheet,
 } from "./kinGitHub.ts";
@@ -84,6 +85,12 @@ describe("kinGitHubAgentsView", () => {
       "Invented Kin isn't installed on any watched repo yet, so agents work there as you (invented-owner).",
     );
     expect(nowhere.detail).not.toMatch(/show the App as the author\./);
+    // The live shape: the App reaches only the memory repo, which Kin doesn't watch.
+    expect(
+      kinGitHubAgentsView({ ...app, installed: 0, elsewhere: 1 }, "invented-owner", now).headline,
+    ).toBe(
+      "Invented Kin works only on 1 repo Kin doesn't watch, so on watched repos agents work as you (invented-owner).",
+    );
     expect(nowhere.detail).toMatch(
       /^Their commits, pull requests and reviews there carry your name/,
     );
@@ -96,6 +103,67 @@ describe("kinGitHubAgentsView", () => {
       "Agents work on GitHub as you (invented-owner).",
       null,
     ]);
+  });
+
+  it("offers Disconnect for an App made in Kin or adopted from the host, and Create only when there is none", () => {
+    const made = kinGitHubAgentsView(
+      {
+        ...app,
+        setUp: {
+          source: "kin",
+          name: "Invented Kin",
+          at: now,
+          by: "Owner",
+          settingsUrl: "https://github.com/settings/apps/invented-kin",
+        },
+      },
+      null,
+      now,
+    );
+    expect([made.canCreate, made.disconnect?.settingsUrl]).toEqual([
+      false,
+      "https://github.com/settings/apps/invented-kin",
+    ]);
+    expect(made.setUpLine).toMatch(/^Invented Kin, set up in Kin by Owner on /);
+    const adopted = kinGitHubAgentsView(
+      {
+        ...app,
+        setUp: {
+          source: "kin",
+          name: "Invented Kin",
+          at: null,
+          by: null,
+          settingsUrl: "https://github.com/settings/apps/invented-kin",
+        },
+      },
+      null,
+      now,
+    );
+    expect([adopted.canCreate, adopted.disconnect, adopted.setUpLine]).toEqual([
+      false,
+      { name: "Invented Kin", settingsUrl: "https://github.com/settings/apps/invented-kin" },
+      "Invented Kin, set up earlier on Kin's computer.",
+    ]);
+    const none = kinGitHubAgentsView(
+      {
+        as: "owner",
+        problem: null,
+        watched: 1,
+        installed: 0,
+        without: [],
+        ownerUses: [],
+        canCreate: true,
+      },
+      null,
+      now,
+    );
+    expect([none.canCreate, none.disconnect]).toEqual([true, null]);
+    expect(
+      kinGitHubAppCreatePath(
+        { path: "/api/kin/github-app/new?state=s", name: "Kin for X" },
+        " A&B ",
+      ),
+    ).toBe("/api/kin/github-app/new?state=s&name=A%26B");
   });
 
   it("lists what agents did as the owner, newest first", () => {
@@ -147,7 +215,7 @@ describe("kinGitHubAccountRows", () => {
     installed: 0,
     without: [],
     ownerUses: [],
-    appOwner: "invented-owner",
+    appOwner: "Invented-Owner",
     appSettingsUrl: "https://github.com/settings/apps/invented-kin",
   };
   const shown = (accounts: ReadonlyArray<KinGitHubAppAccount>) =>
@@ -162,7 +230,7 @@ describe("kinGitHubAccountRows", () => {
     expect(shown([row, org])).toEqual([
       [
         "Only selected repositories (0 of 48 watched)",
-        "Agents work as you on the other 48 watched repos.",
+        "Agents work as you on its 48 watched repos.",
         "Switch to all repositories -> https://github.com/settings/installations/8",
       ],
       [
@@ -193,6 +261,10 @@ describe("kinGitHubAccountRows", () => {
       null,
     ]);
     expect(kinGitHubAccountsHint(all)).toBeNull();
+    expect(shown([{ ...row, elsewhere: 1 }])[0]?.slice(0, 2)).toEqual([
+      "Only selected repositories (0 of 48 watched)",
+      "Works on 1 repo Kin doesn't watch. Agents work as you on its 48 watched repos.",
+    ]);
     expect(shown([{ ...row, covered: 40 }])[0]?.[0]).toBe(
       "Only selected repositories (40 of 48 watched)",
     );
@@ -220,7 +292,7 @@ describe("kinGitHubAccountRows", () => {
     ).toEqual([
       [
         "Only selected repositories (0 of 48 watched)",
-        "Agents work as you on the other 48 watched repos. Only an owner of invented-co can change this on GitHub.",
+        "Agents work as you on its 48 watched repos. Only an owner of invented-co can change this on GitHub.",
         null,
       ],
     ]);
@@ -230,8 +302,8 @@ describe("kinGitHubAccountRows", () => {
     expect(shown([{ ...org, installable: false }])).toEqual([
       [
         "Not installed",
-        "Invented Kin can only be installed on invented-owner, so agents work as you here. Making it public in its settings on GitHub lets you install it on invented-co.",
-        "Open the App's settings -> https://github.com/settings/apps/invented-kin",
+        "Invented Kin is private to Invented-Owner, so GitHub can't install it on invented-co and agents work as you here. On GitHub, open the App's settings → Advanced, then choose Make public.",
+        "Open Advanced on GitHub -> https://github.com/settings/apps/invented-kin/advanced",
       ],
     ]);
     const { accounts: _accounts, ...unknown } = { ...agents, accounts: undefined };

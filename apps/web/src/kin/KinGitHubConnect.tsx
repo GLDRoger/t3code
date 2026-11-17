@@ -4,6 +4,9 @@ import {
   createKinGitHubActions,
   createKinGitHubRepoActions,
   createKinGitHubAppRepoActions,
+  createKinGitHubAppSetupActions,
+  KIN_GITHUB_APP_SETUP_COPY as SETUP,
+  kinGitHubAppCreatePath,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_APP_REPOS_COPY as PICK,
   KIN_GITHUB_COPY as COPY,
@@ -16,7 +19,12 @@ import {
   kinGitHubSheet,
   kinGitHubWatchLine,
 } from "@t3tools/client-runtime/kin/kinGitHub";
-import type { EnvironmentId, KinGitHubStatus, KinOrgId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  KinGitHubAppCreateStart,
+  KinGitHubStatus,
+  KinOrgId,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
@@ -193,6 +201,7 @@ function AgentIdentity(props: {
         <p className="text-sm font-medium">{view.headline}</p>
         <p className="text-sm text-muted-foreground">{view.detail}</p>
       </div>
+      <AppSetUp environmentId={props.environmentId} orgId={props.orgId} view={view} />
       {rows.length === 0 ? null : (
         <div className="flex flex-col gap-1">
           <p className="text-xs font-medium text-muted-foreground">{AGENTS.accountsTitle}</p>
@@ -273,6 +282,186 @@ function AgentIdentity(props: {
         </div>
       )}
     </div>
+  );
+}
+
+/** Makes or forgets Kin's own GitHub App: Create on GitHub, or Disconnect with a confirm. */
+function AppSetUp(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly view: ReturnType<typeof kinGitHubAgentsView>;
+}) {
+  const { environmentId, orgId, view } = props;
+  const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const create = useAtomCommand(kinClient.githubAppCreate, { reportFailure: false });
+  const disconnect = useAtomCommand(kinClient.githubAppDisconnect, { reportFailure: false });
+  const actions = createKinGitHubAppSetupActions({
+    orgId,
+    create: (input) => create({ environmentId, input }),
+    disconnect: (input) => disconnect({ environmentId, input }),
+    refresh: reload,
+  });
+  const [creating, setCreating] = useState<{
+    readonly started: KinGitHubAppCreateStart | null;
+    readonly problem: string | null;
+  } | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [left, setLeft] = useState<{ readonly name: string; readonly url: string | null } | null>(
+    null,
+  );
+  const [problem, setProblem] = useState<string | null>(null);
+  const forgetting = view.disconnect;
+  return (
+    <>
+      {view.setUpLine === null ? null : (
+        <p className="text-xs text-muted-foreground">{view.setUpLine}</p>
+      )}
+      {view.canCreate || forgetting !== null ? (
+        <div className="flex flex-wrap gap-2">
+          {view.canCreate ? (
+            <Button
+              size="xs"
+              onClick={() => {
+                setCreating({ started: null, problem: null });
+                void actions
+                  .start()
+                  .then((outcome) =>
+                    setCreating((open) =>
+                      open === null
+                        ? null
+                        : outcome.ok
+                          ? { started: outcome.value, problem: null }
+                          : { started: null, problem: outcome.problem },
+                    ),
+                  );
+              }}
+            >
+              {SETUP.create}
+            </Button>
+          ) : null}
+          {forgetting === null ? null : (
+            <Button size="xs" variant="outline" onClick={() => setConfirming(true)}>
+              {SETUP.disconnect}
+            </Button>
+          )}
+        </div>
+      ) : null}
+      {left === null ? null : (
+        <Alert variant="info">
+          <AlertDescription>
+            <span>{SETUP.disconnected(left.name)}</span>
+            {left.url === null ? null : (
+              <span className="mt-2 block">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  render={<a href={left.url} target="_blank" rel="noreferrer noopener" />}
+                >
+                  {SETUP.appOnGitHub}
+                </Button>
+              </span>
+            )}
+          </AlertDescription>
+        </Alert>
+      )}
+      {problem === null ? null : (
+        <Alert variant="error">
+          <AlertDescription>{problem}</AlertDescription>
+        </Alert>
+      )}
+      {creating === null ? null : (
+        <CreateAppDialog
+          started={creating.started}
+          problem={creating.problem}
+          onClose={() => setCreating(null)}
+        />
+      )}
+      <KinConfirm
+        ask={
+          confirming && forgetting !== null
+            ? {
+                title: SETUP.disconnectTitle,
+                detail: SETUP.disconnectDetail(forgetting.name),
+                action: SETUP.disconnect,
+                destructive: true,
+              }
+            : null
+        }
+        onConfirm={() => {
+          setConfirming(false);
+          setProblem(null);
+          const name = forgetting?.name ?? "";
+          void actions.disconnect().then((outcome) => {
+            if (outcome.ok) setLeft({ name, url: outcome.value.settingsUrl });
+            else setProblem(outcome.problem);
+          });
+        }}
+        onClose={() => setConfirming(false)}
+      />
+    </>
+  );
+}
+
+/** Names the App, then hands the owner's browser to GitHub through Kin's own page. */
+function CreateAppDialog(props: {
+  readonly started: KinGitHubAppCreateStart | null;
+  readonly problem: string | null;
+  readonly onClose: () => void;
+}) {
+  const { started, problem } = props;
+  const [name, setName] = useState<string | null>(null);
+  const nameId = useId();
+  const shown = name ?? started?.name ?? "";
+  return (
+    <Dialog open onOpenChange={(open) => (open ? undefined : props.onClose())}>
+      <DialogPopup className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{SETUP.create}</DialogTitle>
+          <DialogDescription>{SETUP.createDetail}</DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <div className="flex flex-col gap-2">
+            {problem !== null ? (
+              <Alert variant="error">
+                <AlertDescription>{problem}</AlertDescription>
+              </Alert>
+            ) : started === null ? (
+              <p className="text-sm text-muted-foreground">{SETUP.preparing}</p>
+            ) : (
+              <>
+                <Label htmlFor={nameId}>{SETUP.nameLabel}</Label>
+                <Input
+                  id={nameId}
+                  value={shown}
+                  maxLength={34}
+                  onChange={(event) => setName(event.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">{SETUP.nameHint}</p>
+              </>
+            )}
+          </div>
+        </DialogPanel>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={props.onClose}>
+            {COPY.cancel}
+          </Button>
+          {started === null ? null : (
+            <Button
+              render={
+                <a
+                  href={kinGitHubAppCreatePath(started, shown)}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  onClick={props.onClose}
+                />
+              }
+            >
+              {SETUP.continue}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
   );
 }
 

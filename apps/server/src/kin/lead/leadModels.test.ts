@@ -3,7 +3,7 @@ import { ProviderInstanceId, type ServerProvider, ServerSettings } from "@t3tool
 import * as Schema from "effect/Schema";
 
 import { matchModel } from "./agentUpdate.ts";
-import { chooseLeadModel, leadModelProblem, nonClaudeLeadModel } from "./leadModels.ts";
+import { chooseLeadModel, leadModelProblem, leadProviderProblem } from "./leadModels.ts";
 
 const settings = Schema.decodeSync(ServerSettings)({
   providerInstances: {
@@ -19,7 +19,7 @@ const on = (instanceId: string) => ({
   model: "m",
 });
 
-describe("nonClaudeLeadModel", () => {
+describe("leadProviderProblem", () => {
   it.each([
     ["Claude, anywhere", "claudeAgent", false, false, false],
     ["the scripted agent, off a dev server", "kinVerifyScript", false, false, true],
@@ -29,7 +29,7 @@ describe("nonClaudeLeadModel", () => {
     ["another ACP instance, even with the switch on", "kinVerifyScript", false, true, true],
   ] as const)("%s", (_name, instanceId, devServer, codex, refused) => {
     expect(
-      nonClaudeLeadModel({ ...settings, kinNonClaudeAgents: codex }, on(instanceId), devServer) !==
+      leadProviderProblem({ ...settings, kinNonClaudeAgents: codex }, on(instanceId), devServer) !==
         undefined,
     ).toBe(refused);
   });

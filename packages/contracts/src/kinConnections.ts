@@ -409,6 +409,8 @@ export const KinGitHubAppAccount = Schema.Struct({
   canManage: Schema.NullOr(Schema.Boolean),
   /** False when the App is private to another account, so GitHub can't install it here. */
   installable: Schema.Boolean,
+  /** Repos of this account the App reaches that Kin doesn't watch, such as the memory repo. */
+  elsewhere: Schema.optional(NonNegativeInt),
 });
 export type KinGitHubAppAccount = typeof KinGitHubAppAccount.Type;
 
@@ -424,10 +426,28 @@ export const KinGitHubAgents = Schema.Struct({
   /** Watched repos, and how many of them the App is installed on. */
   watched: NonNegativeInt,
   installed: NonNegativeInt,
+  /** Repos the App reaches that Kin doesn't watch, such as the memory repo. */
+  elsewhere: Schema.optional(NonNegativeInt),
   /** Watched repos without the App, where work goes out as the owner; at most 20. */
   without: Schema.Array(Schema.String),
   /** The latest commands agents ran as the owner, newest first; at most 5. */
   ownerUses: Schema.Array(KinGitHubOwnerUse),
+  /** No App is named anywhere, so the owner may make one from Settings. */
+  canCreate: Schema.optional(Schema.Boolean),
+  /**
+   * The App Settings holds: who made it there and when, both null for one adopted from the host's
+   * environment. `host` comes only from servers older than that adoption.
+   */
+  setUp: Schema.optional(
+    Schema.Struct({
+      source: Schema.Literals(["kin", "host"]),
+      name: Schema.NullOr(Schema.String),
+      at: Schema.NullOr(NonNegativeInt),
+      by: Schema.NullOr(Schema.String),
+      /** The App's own settings on GitHub, where it can be deleted. */
+      settingsUrl: Schema.NullOr(Schema.String),
+    }),
+  ),
   /** One row per account with watched repos; absent when Kin can't tell the accounts. */
   accounts: Schema.optional(Schema.Array(KinGitHubAppAccount)),
   /** The account that owns the App, and its settings page when the login can open it. */
@@ -487,6 +507,20 @@ export const KinGitHubAppReposResult = Schema.Struct({
   problem: Schema.NullOr(Schema.String),
 });
 export type KinGitHubAppReposResult = typeof KinGitHubAppReposResult.Type;
+
+export const KinGitHubAppCreateStart = Schema.Struct({
+  /** The page on Kin's server that posts the manifest to GitHub, with its one-hour state. */
+  path: Schema.String,
+  /** The name it suggests; GitHub App names are global, so the owner may change it. */
+  name: Schema.String,
+});
+export type KinGitHubAppCreateStart = typeof KinGitHubAppCreateStart.Type;
+
+export const KinGitHubAppDisconnected = Schema.Struct({
+  /** Where the App can still be deleted on GitHub. */
+  settingsUrl: Schema.NullOr(Schema.String),
+});
+export type KinGitHubAppDisconnected = typeof KinGitHubAppDisconnected.Type;
 
 /** One repo's switch; `repo` null sets every repo back to the default (watch everything). */
 export const KinGitHubRepoSetInput = Schema.Struct({
@@ -611,6 +645,16 @@ export const KinConnectionRpcs = [
     success: KinGitHubRepos,
     error: KinError,
   }),
+  Rpc.make("kin.github.app.create", {
+    payload: KinGitHubInput,
+    success: KinGitHubAppCreateStart,
+    error: KinError,
+  }),
+  Rpc.make("kin.github.app.disconnect", {
+    payload: KinGitHubInput,
+    success: KinGitHubAppDisconnected,
+    error: KinError,
+  }),
   Rpc.make("kin.github.app.repos.set", {
     payload: KinGitHubAppReposSetInput,
     success: KinGitHubAppReposResult,
@@ -642,4 +686,6 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.github.repos": AuthKinChatScope,
   "kin.github.repos.set": AuthKinChatScope,
   "kin.github.app.repos.set": AuthKinChatScope,
+  "kin.github.app.create": AuthKinChatScope,
+  "kin.github.app.disconnect": AuthKinChatScope,
 } as const;

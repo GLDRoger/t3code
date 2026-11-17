@@ -3,7 +3,7 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
 /**
- * What a lead's Claude session needs from Kin to open (`LeadIsolation`), kept apart from Kin's
+ * What a Kin agent's session needs from Kin to open (`turn/session.ts`), kept apart from Kin's
  * services so the provider layers that load first import nothing of Kin's (`AgentSession` builds it).
  */
 export class KinAgentSessionPolicy extends Context.Service<
