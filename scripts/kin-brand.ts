@@ -196,6 +196,7 @@ const copyAssets = Effect.fn("kinBrand.copyAssets")(function* (
   rules: BrandRules,
   assetsRoot: string,
   target: string,
+  write = true,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -231,7 +232,7 @@ const copyAssets = Effect.fn("kinBrand.copyAssets")(function* (
         continue;
       }
     }
-    yield* fs.copyFile(source, destination);
+    if (write) yield* fs.copyFile(source, destination);
     copied.push(file);
   }
   const assetFiles = new Set(entries.map((entry) => entry.split(path.sep).join("/")));
@@ -246,6 +247,7 @@ const removeFiles = Effect.fn("kinBrand.removeFiles")(function* (
   rules: BrandRules,
   files: ReadonlyArray<string>,
   target: string,
+  write = true,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -255,8 +257,10 @@ const removeFiles = Effect.fn("kinBrand.removeFiles")(function* (
     const hits = files.filter((file) => matchesAny(file, entry.files));
     if (hits.length === 0) problems.push(`remove matches nothing: ${entry.files.join(", ")}`);
     for (const file of hits) {
-      yield* assertNoSymlink(target, file);
-      yield* fs.remove(path.join(target, file), { force: true });
+      if (write) {
+        yield* assertNoSymlink(target, file);
+        yield* fs.remove(path.join(target, file), { force: true });
+      }
       removed.add(file);
     }
   }
@@ -305,6 +309,8 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
   readonly rules: Option.Option<string>;
   readonly check: boolean;
   readonly updateDriftBaseline: boolean;
+  /** Brand in memory and report problems only: no copy, no writes, no drift, no install. */
+  readonly scan?: boolean;
   /** Tests point this at a temp repo and skip the install and typecheck. */
   readonly repoRoot?: string;
   readonly skipTypecheck?: boolean;
@@ -327,11 +333,18 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
     ),
   );
 
-  yield* Console.log(`kin-brand: copying ${repoRoot} to ${target}`);
-  const copiedFiles = yield* copyCheckout(repoRoot, target);
-  const removal = yield* removeFiles(rules, copiedFiles, target);
+  const scan = options.scan === true;
+  const assetsDir = path.join(brandingDir, "assets");
+  // A scan reads the checkout in place, and an asset's own file where one replaces a path.
+  const root = scan ? repoRoot : target;
+  if (!scan) yield* Console.log(`kin-brand: copying ${repoRoot} to ${target}`);
+  const copiedFiles = scan
+    ? (yield* listCheckoutFiles(repoRoot)).files
+    : yield* copyCheckout(repoRoot, target);
+  const removal = yield* removeFiles(rules, copiedFiles, root, !scan);
   const files = copiedFiles.filter((file) => !removal.removed.has(file));
-  const assets = yield* copyAssets(rules, path.join(brandingDir, "assets"), target);
+  const assets = yield* copyAssets(rules, assetsDir, root, !scan);
+  const replaced = new Set(assets.copied);
 
   const matches = new Map<number, number>();
   const changedFiles = new Set<string>(assets.copied);
@@ -356,7 +369,8 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
     scanned,
     // Runs once per file, thousands of times; a span each would swamp the run's trace.
     Effect.fnUntraced(function* (file) {
-      const destination = path.join(target, file);
+      const destination =
+        scan && replaced.has(file) ? path.join(assetsDir, file) : path.join(root, file);
       const info = yield* fs.lstat(destination).pipe(Effect.option);
       if (Option.isNone(info) || info.value.type !== "File") return;
       const ignored = isIgnoredFile(rules, file);
@@ -403,7 +417,7 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
         };
       }
       record(file, result);
-      if (result.changed) {
+      if (result.changed && !scan) {
         changedFiles.add(file);
         yield* assertNoSymlink(target, file);
         yield* fs.writeFileString(destination, result.output);
@@ -412,9 +426,11 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
     { concurrency: 16, discard: true },
   );
 
-  yield* Console.log(
-    `kin-brand: rewrote ${changedFiles.size - assets.copied.length} files, copied ${assets.copied.length} assets`,
-  );
+  if (!scan) {
+    yield* Console.log(
+      `kin-brand: rewrote ${changedFiles.size - assets.copied.length} files, copied ${assets.copied.length} assets`,
+    );
+  }
 
   problems.push(
     ...rules.text
@@ -430,12 +446,12 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
 
   const baselinePath = path.join(brandingDir, DRIFT_BASELINE_FILE);
   const current = drift.toSorted();
-  if (options.updateDriftBaseline) {
+  if (options.updateDriftBaseline && !scan) {
     yield* fs.writeFileString(baselinePath, `${[...BASELINE_HEADER, ...current].join("\n")}\n`);
     yield* Console.log(`kin-brand: wrote ${current.length} entries to ${baselinePath}`);
   }
 
-  if (options.check) {
+  if (options.check && !scan) {
     const baseline = yield* readBaseline(baselinePath);
     const counts = countLines(current);
     const newDrift = surplus(counts, baseline);
@@ -472,7 +488,7 @@ export const kinBrand = Effect.fn("kinBrand")(function* (options: {
   if (problems.length > 0) {
     return yield* fail(`${problems.length} problem(s):\n  ${problems.join("\n  ")}`);
   }
-  if (!options.check || options.skipTypecheck) return;
+  if (scan || !options.check || options.skipTypecheck) return;
 
   const packages = new Set<string>();
   for (const file of [...changedFiles, ...removal.removed].filter(
@@ -523,6 +539,12 @@ export const kinBrandCommand = Command.make(
     ),
     updateDriftBaseline: Flag.Boolean("update-drift-baseline").pipe(
       Flag.withDescription("Rewrite the drift baseline with the copy's current upstream text."),
+      Flag.withDefault(false),
+    ),
+    scan: Flag.Boolean("scan").pipe(
+      Flag.withDescription(
+        "Brand in memory and fail on its problems (leaks, dead rules, stale assets); no copy.",
+      ),
       Flag.withDefault(false),
     ),
   },

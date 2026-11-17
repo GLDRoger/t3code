@@ -9,7 +9,7 @@
 
 ## Branding at build time
 
-`scripts/kin-brand.ts` turns a checkout into Kin inside the build, on a copy. Its output is never committed. Run `node scripts/kin-brand.ts` to write the copy to `../<checkout>-kin` (or `--target <dir>` outside the checkout), and add `--check` before shipping a build. The copy holds the tracked files plus the uncommitted branding files.
+`scripts/kin-brand.ts` turns a checkout into Kin inside the build, on a copy. Its output is never committed. Run `node scripts/kin-brand.ts` to write the copy to `../<checkout>-kin` (or `--target <dir>` outside the checkout), and add `--check` before shipping a build. The copy holds the tracked files plus the uncommitted branding files. `--scan` brands in memory and reports the same leaks, dead rules and stale assets without a copy; `vp run check:changed` runs it on every branch through `scripts/kin-branch-checks.ts`.
 
 - **It changes only what's listed** in `branding/rules.yaml`. Upstream has about 800 uses of "T3 Code" across 370 files, and some must not change: the Codex `clientInfo`, MCP server ids, `T3CODE_*` environment variables, `@t3tools/*` package names, storage keys, and agent instructions. So the list says what to change, not what to skip.
 - **Text** is replaced in string, template, regex and JSX text, found with `ast-grep`. Strings that are code are never touched: import, `require`, `require.resolve`, `import.meta.resolve` and `new URL(_, import.meta.url)` paths, type literals, object keys, member names, subscripts. They're still scanned for leaks. Text that empties a JSX element removes the element, so a `gap-*` row keeps no empty item. In files it can't parse (Kotlin, Swift, shell, XML), a quoted string on one line is a literal. Tests are skipped.
@@ -51,6 +51,6 @@ sed -i.bak -E 's/runs-on: blacksmith-[0-9]+vcpu-ubuntu-2404/runs-on: ubuntu-24.0
 vp i
 vp run check:changed upstream/main
 (cd apps/server && vp test run kin-contract)
-node scripts/kin-brand.ts --target /tmp/kin-brand-sync --check && rm -rf /tmp/kin-brand-sync  # every sync; nothing runs it automatically yet
+node scripts/kin-brand.ts --target /tmp/kin-brand-sync --check && rm -rf /tmp/kin-brand-sync  # every sync: the drift list and the copy's typecheck
 git push origin main kin
 ```
