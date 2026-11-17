@@ -22,19 +22,22 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { githubClosed } from "../work/githubEntries.ts";
-import { isAgentText, signed } from "./agentMark.ts";
+import { signed } from "./agentMark.ts";
 import {
   decideTriggers,
+  isAgentsOwn,
   type ThreadComment,
   type ThreadSnapshot,
   type Trigger,
 } from "./githubTriggers.ts";
 import { companyRepo, repoList, watchRow } from "./githubWatchStore.ts";
+import { gitHubApp } from "./KinGitHubApp.ts";
 
 /**
  * Watches GitHub with the owner's own login: notifications and his own events, both conditional, so
  * an unchanged look costs no rate limit. Each trigger is stored once, in the same transaction as the
- * event that wakes an agent, so a restart or a re-read never handles it twice.
+ * event that wakes an agent, so a restart or a re-read never handles it twice. What Kin posts itself
+ * goes out as its GitHub App where the App is installed (`KinGitHubApp.ts`).
  */
 
 const MINUTE = 60_000;
@@ -251,6 +254,17 @@ export const make = Effect.gen(function* () {
   const queue = yield* KinEventQueue.KinEventQueue;
   const records = yield* Effect.serviceOption(KinRecords);
   const refresh = yield* KinRefreshObserver;
+  const app = yield* gitHubApp;
+  const botLogin = Effect.gen(function* () {
+    if (Option.isNone(app)) return undefined;
+    const state = yield* app.value.state();
+    return state._tag === "ok" ? state.app.botLogin : undefined;
+  });
+  /** Kin's own writes on a repo: as the App where it is installed, else as the owner. */
+  const writer = Effect.fn("KinGitHubWatch.writer")(function* (repo: string) {
+    const asApp = Option.isSome(app) ? yield* app.value.on(repo) : undefined;
+    return asApp?.call ?? api.call;
+  });
 
   const get = (path: string, headers?: Record<string, string>) =>
     api.call({ path, ...(headers === undefined ? {} : { headers }) });
@@ -471,16 +485,19 @@ export const make = Effect.gen(function* () {
   });
 
   const react = (repo: string, number: number, trigger: Trigger) =>
-    api
-      .call({
-        method: "POST",
-        path:
-          trigger.reactTo.type === "issue"
-            ? `repos/${repo}/issues/${number}/reactions`
-            : `repos/${repo}/${trigger.reactTo.kind === "issue" ? "issues" : "pulls"}/comments/${trigger.reactTo.id}/reactions`,
-        body: { content: "eyes" },
-      })
-      .pipe(Effect.asVoid);
+    writer(repo).pipe(
+      Effect.flatMap((call) =>
+        call({
+          method: "POST",
+          path:
+            trigger.reactTo.type === "issue"
+              ? `repos/${repo}/issues/${number}/reactions`
+              : `repos/${repo}/${trigger.reactTo.kind === "issue" ? "issues" : "pulls"}/comments/${trigger.reactTo.id}/reactions`,
+          body: { content: "eyes" },
+        }),
+      ),
+      Effect.asVoid,
+    );
 
   /** One plain comment when a thread's hourly cap stops an agent; at most one an hour. */
   const capComment = Effect.fn("KinGitHubWatch.capComment")(function* (
@@ -495,7 +512,8 @@ export const make = Effect.gen(function* () {
       VALUES (${orgId}, ${key}, ${thread.repo.toLowerCase()}, ${thread.number}, NULL, 'note', ${now})
       ON CONFLICT DO NOTHING RETURNING trigger_key`;
     if (inserted.length === 0) return;
-    yield* api.call({
+    const call = yield* writer(thread.repo);
+    yield* call({
       method: "POST",
       path: `repos/${thread.repo}/issues/${thread.number}/comments`,
       body: { body: signed(capNote(PER_THREAD_HOURLY), agentName) },
@@ -589,6 +607,7 @@ export const make = Effect.gen(function* () {
       note(pull.repo, pull.number);
 
     const agents = yield* agentsOf(orgId);
+    const bot = yield* botLogin;
     const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN });
     let woken = 0;
     let later = false;
@@ -611,7 +630,7 @@ export const make = Effect.gen(function* () {
             Effect.logWarning("Kin couldn't close Work entries for a merge", { cause }),
           ),
         );
-      if (current.item === "pull" && isAgentText(current.body)) {
+      if (current.item === "pull" && isAgentsOwn(current.body, current.author, bot)) {
         const failing = current.open ? yield* failingChecks(orgId, current) : undefined;
         if (!current.open)
           yield* sql`UPDATE kin_github_agent_pulls SET open = 0
@@ -646,6 +665,7 @@ export const make = Effect.gen(function* () {
         mentions: watched.get(current.repo.toLowerCase())?.mentions ?? false,
         since: row.startedAt,
         draftSeen: draft !== undefined,
+        botLogin: bot,
       });
       for (const trigger of triggers) {
         const agentId = agents.some((agent) => agent.agentId === trigger.agentId)
@@ -732,8 +752,8 @@ export const make = Effect.gen(function* () {
 });
 
 /**
- * Posts a review as the owner on one of the company's repos, signed by the agent: what
- * `kin_github_review` does once the owner's GitHub is connected. Other people's repos are asked first.
+ * Posts a review on one of the company's repos, signed by the agent: as Kin's GitHub App where it
+ * is installed and can, else as the owner. Other people's repos are asked first.
  */
 const ownerReview = Effect.fn("KinGitHubWatch.review")(
   function* (input: {
@@ -761,22 +781,28 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
     const pullAnswer = yield* get(`repos/${ours.repo}/issues/${input.number}`);
     const issue = pullAnswer.status === 200 ? decodeIssue(pullAnswer.body) : Option.none();
     const account = yield* api.connected();
-    // GitHub refuses changes requested on one's own PR: the owner's own PRs get a comment.
-    const event =
+    const app = yield* gitHubApp;
+    const asApp = Option.isSome(app) ? yield* app.value.on(ours.repo) : undefined;
+    // GitHub refuses changes requested on one's own PR: a PR by whoever posts gets a comment.
+    const eventAs = (login: string | undefined) =>
       Option.isSome(issue) &&
-      account !== null &&
-      issue.value.user?.login.toLowerCase() === account.login.toLowerCase()
+      login !== undefined &&
+      issue.value.user?.login.toLowerCase() === login.toLowerCase()
         ? "COMMENT"
         : input.event;
     const body = signed(input.body, input.agentName);
-    const send = (comments: typeof input.comments) =>
-      api.call({
+    const post = (
+      call: KinGitHubApi["Service"]["call"],
+      event: "COMMENT" | "REQUEST_CHANGES",
+      comments: typeof input.comments,
+    ) =>
+      call({
         method: "POST",
         path: `repos/${ours.repo}/pulls/${input.number}/reviews`,
         body: {
           body,
           event,
-          // The watch reads inline comments as the owner's own words: each carries the marker.
+          // Inline comments carry the marker too, so the watch knows them under either login.
           comments: comments.map((comment) => ({
             ...comment,
             body: signed(comment.body, input.agentName),
@@ -784,9 +810,14 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
           })),
         },
       });
-    let answer = yield* send(input.comments);
-    if (answer.status === 422 && input.comments.length > 0)
-      answer = yield* api.call({
+    const postAll = Effect.fn("KinGitHubWatch.postReview")(function* (
+      call: KinGitHubApi["Service"]["call"],
+      login: string | undefined,
+    ) {
+      const event = eventAs(login);
+      const answer = yield* post(call, event, input.comments);
+      if (answer.status !== 422 || input.comments.length === 0) return answer;
+      return yield* call({
         method: "POST",
         path: `repos/${ours.repo}/pulls/${input.number}/reviews`,
         body: {
@@ -799,6 +830,14 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
           event,
         },
       });
+    });
+    let answer =
+      asApp === undefined
+        ? yield* postAll(api.call, account?.login)
+        : yield* postAll(asApp.call, asApp.login);
+    // Where the App can't write, the owner's login posts it, and the agent says so.
+    const fellBack = asApp !== undefined && (answer.status === 403 || answer.status === 404);
+    if (fellBack) answer = yield* postAll(api.call, account?.login);
     const url =
       typeof answer.body === "object" && answer.body !== null
         ? Reflect.get(answer.body, "html_url")
@@ -808,7 +847,7 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
         reason: "unavailable",
         message: `GitHub didn't post the review (${problemOf(answer)})`,
       });
-    return url;
+    return { url, asOwner: fellBack };
   },
   Effect.catchTags({
     SqlError: () =>
@@ -866,7 +905,7 @@ export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(f
     WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`.pipe(
     Effect.orElseSucceed(() => []),
   );
-  const url = yield* ownerReview({
+  const posted = yield* ownerReview({
     orgId: lead.orgId,
     agentName: named?.name ?? "Agent",
     repo: input.repo,
@@ -877,7 +916,9 @@ export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(f
   });
   return {
     status: "posted" as const,
-    url,
-    next: "Posted on the PR. Tell the owner in one line with the link.",
+    url: posted.url,
+    next: posted.asOwner
+      ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as him."
+      : "Posted on the PR. Tell the owner in one line with the link.",
   };
 });

@@ -22,6 +22,7 @@ import { KinServer } from "../KinServer.ts";
 import { KinConnections } from "./ConnectionsService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { repoList, setRepo, watchSummary } from "../github/githubWatchStore.ts";
+import { agentsView, KinGitHubApp } from "../github/KinGitHubApp.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
 
 const group = RpcGroup.make(...KinConnectionRpcs);
@@ -103,9 +104,24 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
           Effect.map((watch) => (watch === undefined ? status : { ...status, watch })),
           Effect.orElseSucceed(() => status),
         );
+  /** Who agents act as on GitHub: Kin's App where it is installed, else the owner. */
+  const withAgents = (status: KinGitHubStatus) =>
+    Option.isNone(kin) || Option.isNone(kin.value.services)
+      ? Effect.succeed(status)
+      : agentsView(Context.getOption(kin.value.services.value, KinGitHubApp), status.orgId).pipe(
+          Effect.provideService(
+            SqlClient.SqlClient,
+            Context.get(kin.value.services.value, SqlClient.SqlClient),
+          ),
+          Effect.map((agents) => ({ ...status, agents })),
+          Effect.orElseSucceed(() => status),
+        );
   return group.of({
     "kin.github.connect.status": (input) =>
-      github((g, people) => g.status(people, input)).pipe(Effect.flatMap(withWatch)),
+      github((g, people) => g.status(people, input)).pipe(
+        Effect.flatMap(withWatch),
+        Effect.flatMap(withAgents),
+      ),
     "kin.github.repos": (input) =>
       watching(input.orgId, repoList(input.orgId).pipe(Effect.map((repos) => ({ repos })))),
     "kin.github.repos.set": (input) =>

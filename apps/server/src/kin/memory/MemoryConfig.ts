@@ -23,8 +23,8 @@ export class MemoryConfig extends Context.Service<
     readonly sshCommand?: string;
     readonly botEmail?: string;
     /**
-     * Writes to the default branch land through a pull request opened as the owner unless this is
-     * set; then they push directly, which a TRIG-15 ruleset on the memory repo rejects.
+     * Writes to the default branch land through a pull request, opened as Kin's GitHub App or the
+     * owner, unless this is set; then they push directly, which a TRIG-15 ruleset rejects.
      */
     readonly directMainPush?: boolean;
     readonly repositories: ReadonlyArray<{
