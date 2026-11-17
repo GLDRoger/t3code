@@ -1,5 +1,6 @@
 import type { HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { resolveNodeExecutable } from "@t3tools/shared/nodeRuntime";
 import type { ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -261,10 +262,15 @@ export const claudeQueryRunner = <E, R>(
           yield* fs.makeDirectory(signDirectory, { recursive: true });
           // The pinned gh's folder comes first (AgentSession.sessionPolicyLayer).
           const pinned = policy.value.toolDirectories[0] ?? "";
+          // Without a Node to run its policy, the agent's gh refuses every command.
+          const node = yield* resolveNodeExecutable("Kin's GitHub guard").pipe(
+            Effect.orElseSucceed(() => ""),
+          );
           for (const script of agentShellScripts({
             shims: signDirectory,
             app: path.join(kinDirectory, GH_APP_FOLDER),
             realGh: path.join(pinned, "gh"),
+            node,
           })) {
             const file = path.join(signDirectory, script.name);
             yield* fs.writeFileString(file, script.text);

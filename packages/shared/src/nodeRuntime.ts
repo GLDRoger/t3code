@@ -12,6 +12,7 @@ const NodeRuntimeFeature = Schema.Literals([
   "Device automation",
   "Antigravity",
   "Antigravity sign-in",
+  "Kin's GitHub guard",
 ]);
 
 export const nodeRuntimeUnavailableMessage = (feature: typeof NodeRuntimeFeature.Type): string =>
