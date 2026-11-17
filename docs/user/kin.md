@@ -123,8 +123,8 @@ its default and day, and you can answer it right there.
 
 Tap an agent's name at the top of its chat, or in any message, to open its page. It's also under
 **Settings → Agents** and in the command palette. The owner and co-owners can change
-everything there; anyone else sees a short card with what the agent looks after and a way to
-message it.
+everything there; anyone else sees a short card with what you wrote under **What teammates see**
+and a way to message it.
 
 - **Model.** Each agent runs on one model, with one effort, for everything it does. A change
   applies from its next reply. Medium or High effort is recommended: Low is too shallow, and
@@ -417,6 +417,10 @@ they reach it, only your urgent messages run, on the agent's usual model, until 
 decisions and lasting facts. Each item is **Only you**, **The team can know**, or **Waiting for your
 yes** when an agent thinks the team could know it. Anything about access, money or client terms
 stays with the owner. **Forget** an item and agents stop using it; bring it back from **Forgotten**.
+
+Agents use what the team can know in chats with teammates only while **Agents use team memory in
+chats with teammates** is on, at the top of the page. It starts off, and a change applies from the
+next reply. Nothing under **Only you** reaches a teammate's chat either way.
 
 ## Who sees and does what
 
