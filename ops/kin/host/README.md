@@ -159,7 +159,7 @@ Kin watches your repos with your own login, held by `gh` on this host. In the Ki
 
 ### Agents work as Kin's GitHub App
 
-With a GitHub App set up, agents' commits, pushes, pull requests, comments and reviews show the App as author, with the agent's name on each commit (`Kin-Agent:`) and post. Repos the App isn't installed on, and any command an agent runs with `kin-as-owner`, go out as you; Connections lists those runs. Without an App, everything goes out as you. The App never gets a way to approve, merge or change settings: Kin asks GitHub for tokens without those permissions.
+With a GitHub App set up, agents' commits, pushes, pull requests, comments and reviews show the App as author, with the agent's name on each commit (`Kin-Agent:`) and post. Repos the App isn't installed on, and any command an agent runs with `kin-as-owner`, go out as you; Connections lists those runs. Without an App, everything goes out as you. Kin asks GitHub for tokens without administration, secrets, hooks or member permissions, so the App can't change a repo's settings, access or secrets. Its tokens can still merge and approve as far as GitHub is concerned: an agent's `gh` and `git` refuse to, and refuse pushes to a default branch, but they run in the same shell that can read those tokens, so they aren't a lock. Branch protection on each default branch (pull requests only, a review from someone other than the App) is what stops a merge you didn't make.
 
 To set one up:
 

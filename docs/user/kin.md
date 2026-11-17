@@ -113,8 +113,9 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   to the agent you asked, in your chat with it. Ask it to tell a teammate something and it arrives
   in their chat as **Sent by** you, via the agent, and their answer comes back to you the same way.
 - **It does engineering work.** An agent that looks after engineering reads your GitHub repos, pull
-  requests and checks, reviews pull requests, and starts coding work in T3 Code. It never merges:
-  when a pull request is approved and green, it tells you it's ready and you merge it.
+  requests and checks, reviews pull requests, and starts coding work in T3 Code. It doesn't merge:
+  when a pull request is approved and green, it tells you it's ready and you merge it. See
+  [Who agents work as](#who-agents-work-as) for what holds it to that.
 
 **Waiting on you** in Chats collects what needs your answer. An agent's open question shows there with
 its default and day, and you can answer it right there.
@@ -328,9 +329,10 @@ Kin's computer out; to end it on GitHub too, revoke GitHub CLI under GitHub's Se
 Applications. If GitHub stops accepting the login, the row says so and offers **Reconnect**.
 
 Once GitHub is connected, an agent works on GitHub in chats only you and co-owners can read. It clones, branches, commits, pushes, opens pull requests and issues, reviews and comments. On your
-own and your organizations' repos it just does it; it asks first before acting in someone else's
-repo, changing a repo's settings, secrets or access, deleting a repo, or force-pushing or deleting a
-main branch. Longer work runs as a task in its own checkout, and when it finishes the agent replies
+own and your organizations' repos it just does it, and it asks first before acting in someone
+else's repo. Its `gh` and `git` refuse merging, approving, dismissing reviews, pushing to a repo's
+default branch or pushing tags, changing a repo's settings, secrets or access, and deleting repos or
+releases; it asks you to do those. Longer work runs as a task in its own checkout, and when it finishes the agent replies
 once with what changed and the pull request. Teammates' chats and shared rooms still get no shell: what they ask for comes to you.
 
 #### Who agents work as
@@ -339,8 +341,11 @@ If your Kin has its own GitHub App, agents' commits, pushes, pull requests, comm
 out as that App, so blame and history show what an agent did; each commit carries the agent's name
 (`Kin-Agent: Tech lead`). On repos the App isn't installed on, and without an App, they go out as
 you. When GitHub refuses the App, or you say "do it as me", the agent runs that one command as you
-and says so. Memory commits are by the App too. The App can't approve, merge or change a repo's
-settings. Your host guide says how to set one up.
+and says so. Memory commits are by the App too. The App's tokens can't change a repo's settings,
+but GitHub would let them merge or approve: what stops an agent is its own `gh` and `git`, which run
+in a shell that can also read those tokens. To be sure nothing merges without you, protect each
+default branch on GitHub (require pull requests and a review from someone other than the App). Your
+host guide says how to set one up.
 
 **Settings → Connections → GitHub** has a row for each of your accounts and organizations with
 watched repos, saying whether the App is on all its repositories, only some, or none. To cover
