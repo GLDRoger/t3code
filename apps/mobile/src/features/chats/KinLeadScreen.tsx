@@ -17,6 +17,7 @@ import {
   KIN_LEAD_EVERYONE,
   kinLeadAccessCandidates,
   kinLeadAccessChanged,
+  kinLeadContactAbout,
   kinLeadOwnerSeesLine,
   kinLeadAccessProblem,
   kinLeadTrackingDetail,
@@ -500,7 +501,6 @@ function KinLeadAccess(props: {
 
 /** A lead someone else set up, as a person let message it sees it. */
 function KinLeadContactView({ contact }: { readonly contact: KinLeadContact }) {
-  const intro = contact.intro.trim();
   return (
     <>
       <View className="items-center gap-3 pt-2">
@@ -512,7 +512,7 @@ function KinLeadContactView({ contact }: { readonly contact: KinLeadContact }) {
       <ListSection title="About" footer={kinLeadOwnerSeesLine(contact.ownerName)}>
         <View className="px-4 py-3">
           <Text textRole="body" selectable className="text-foreground">
-            {intro === "" ? `Message ${contact.name} here like a colleague.` : intro}
+            {kinLeadContactAbout(contact)}
           </Text>
         </View>
       </ListSection>

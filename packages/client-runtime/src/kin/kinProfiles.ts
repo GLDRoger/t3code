@@ -10,6 +10,8 @@ import {
   type KinWorkHours,
 } from "@t3tools/contracts";
 
+import { kinZoneName } from "./kinTimeZone.ts";
+
 export { KIN_PROFILE_NAME_MAX, KIN_PROFILE_SKILLS_MAX, KIN_PROFILE_TALK_MAX };
 
 export const KIN_PROFILE_COPY = {
@@ -226,9 +228,9 @@ export function kinTimeZoneChoices(held: string, query: string): ReadonlyArray<s
     .trim()
     .toLowerCase()
     .replace(/[\s_/]+/g, " ");
-  const all = [...new Set([deviceTimeZone(), held, ...platformTimeZones()])].filter(
-    (zone) => zone.trim() !== "",
-  );
+  const all = [
+    ...new Set([deviceTimeZone(), held, ...platformTimeZones()].map(kinZoneName)),
+  ].filter((zone) => zone.trim() !== "");
   return all
     .filter((zone) => words === "" || zone.toLowerCase().replace(/[_/]+/g, " ").includes(words))
     .slice(0, KIN_TIME_ZONES_SHOWN);

@@ -33,7 +33,14 @@ import {
   type KinFeedRow,
   type KinNoticeOpen,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
-import { kinOutboxRetractable, type KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
+import {
+  KIN_OUTBOX_STATUS,
+  kinOutboxRetractable,
+  kinPendingStatus,
+  type KinOutboxEntry,
+} from "@t3tools/client-runtime/kin/kinOutbox";
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import * as Clipboard from "expo-clipboard";
 import {
   KIN_PICKER_REACTIONS,
   KIN_REACTION_NAMES,
@@ -53,7 +60,9 @@ import { AgentMessageFoldHeader, MessageAttachmentList } from "../../threads/Thr
 import { attachmentImageGallery } from "../../threads/messageImageGallery";
 import { useResolveClassNames } from "uniwind";
 import { SymbolView } from "../../../components/ui/AppSymbol";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+import { kinOutbox } from "../state/kinOutboxDelivery";
 import { KinWidgetView } from "../widgets/KinWidgetView";
 import { KinAvatar } from "./KinAvatar";
 import { KinDocRefs } from "./KinDocRefs";
@@ -655,12 +664,18 @@ export function KinPendingBubble(props: {
 }) {
   const { entry } = props;
   const failed = entry.state === "failed";
-  const queued = !failed && entry.state !== "sending" && !props.connected;
-  const status = failed
-    ? `Not sent: ${entry.error ?? "refused"}`
-    : queued
-      ? "Waiting for connection"
-      : "Sending…";
+  const [now, setNow] = useState(() => Date.now());
+  const pending = kinPendingStatus(entry, props.connected, now);
+  const stuck = pending.kind === "stuck";
+  const queued = pending.kind === "waiting" || stuck;
+  const status = pending.text;
+  const turnsIn = pending.kind === "failed" || stuck ? null : (pending.stuckInMs ?? null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- one repaint when a wait turns into "Not sent yet"
+  useEffect(() => {
+    if (turnsIn === null) return;
+    const timer = setTimeout(() => setNow(Date.now()), turnsIn);
+    return () => clearTimeout(timer);
+  }, [turnsIn]);
   const attachments = entry.attachments ?? [];
   const refs = entry.refs ?? [];
   // Only while it reads as refused or waiting: a "Sending…" bubble is on its way.
@@ -732,6 +747,20 @@ export function KinPendingBubble(props: {
         >
           {status}
         </Text>
+        {stuck && hasBody ? (
+          <Pressable onPress={() => void Clipboard.setStringAsync(entry.body)} hitSlop={12}>
+            <Text textRole="caption" className="font-t3-medium text-foreground">
+              {KIN_OUTBOX_STATUS.copy}
+            </Text>
+          </Pressable>
+        ) : null}
+        {stuck ? (
+          <Pressable onPress={() => void kinOutbox.deliver(props.environmentId)} hitSlop={12}>
+            <Text textRole="caption" className="font-t3-medium text-foreground">
+              {KIN_RETRY}
+            </Text>
+          </Pressable>
+        ) : null}
         {hasBody && canEdit ? (
           <Pressable onPress={props.onEdit} hitSlop={12}>
             <Text textRole="caption" className="font-t3-medium text-foreground">

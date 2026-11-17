@@ -9,6 +9,7 @@ import {
 import { kinRetiredWhen } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import {
   kinDomainLabel,
+  kinLeadContactAbout,
   kinLeadOwnerSeesLine,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import type { KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -151,9 +152,7 @@ export function KinLeadSheet(props: {
           ) : (
             <Section title="About">
               <p className="whitespace-pre-line text-sm text-foreground">
-                {about.contact.intro.trim() === ""
-                  ? `Message ${about.contact.name} here like a colleague.`
-                  : about.contact.intro}
+                {kinLeadContactAbout(about.contact)}
               </p>
               <p className="text-xs text-muted-foreground">
                 {kinLeadOwnerSeesLine(about.contact.ownerName)}

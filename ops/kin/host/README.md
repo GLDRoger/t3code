@@ -45,8 +45,7 @@ Owner overrides such as `T3CODE_LAN=true` go in `~/.t3/service.env`, which the u
 
 On a phone, the invite page offers to open the join link in the app at `kin://`. A fork whose app registers another scheme sets `KIN_APP_SCHEME` (such as `kin-preview`) in `~/.t3/service.env` and restarts kin-server.
 
-Team memory is off unless `~/.t3/service.env` sets `KIN_TEAM_MEMORY=on` (any other value is off): until then a chat other people read gets no memory at all, while your own chats, the Memory page and its suggestions work as before.
-Leave it off until the sharing machinery has passed an independent review; choose on the Memory page what the team may know first, then set it and restart kin-server.
+Team memory is the owner's switch in **Settings → Memory**, taking effect on the next reply. Until the owner sets it once, `KIN_TEAM_MEMORY=on` in `~/.t3/service.env` is its starting value (unset or any other value is off): while it is off, a chat other people read gets no memory at all, and your own chats, the Memory page and its suggestions work as before.
 
 ## Memory repo access
 

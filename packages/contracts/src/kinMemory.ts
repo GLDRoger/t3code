@@ -93,7 +93,11 @@ export const KinMemoryListItem = Schema.Struct({
   version: Schema.optional(Schema.String),
 });
 export type KinMemoryListItem = typeof KinMemoryListItem.Type;
-export const KinMemoryListResult = Schema.Struct({ items: Schema.Array(KinMemoryListItem) });
+export const KinMemoryListResult = Schema.Struct({
+  items: Schema.Array(KinMemoryListItem),
+  /** Agents use what the team can know in chats with teammates. Absent from an older host. */
+  teamMemory: Schema.optional(Schema.Boolean),
+});
 export type KinMemoryListResult = typeof KinMemoryListResult.Type;
 
 /** Keeping an item to the owner needs nothing more; letting the team know needs the words shown. */
@@ -153,6 +157,12 @@ export type KinMemoryRestoreInput = typeof KinMemoryRestoreInput.Type;
 export const KinMemoryRestoreResult = Schema.Struct({ itemId: KinMemoryItemId });
 export type KinMemoryRestoreResult = typeof KinMemoryRestoreResult.Type;
 
+/** The owner's switch for team memory in chats with teammates, from the next turn. */
+export const KinMemorySetTeamMemoryInput = Schema.Struct({ orgId: KinOrgId, on: Schema.Boolean });
+export type KinMemorySetTeamMemoryInput = typeof KinMemorySetTeamMemoryInput.Type;
+export const KinMemorySetTeamMemoryResult = Schema.Struct({ teamMemory: Schema.Boolean });
+export type KinMemorySetTeamMemoryResult = typeof KinMemorySetTeamMemoryResult.Type;
+
 const KIN_MEMORY_WS_METHODS = {
   undo: "kin.memory.undo",
   list: "kin.memory.list",
@@ -160,6 +170,7 @@ const KIN_MEMORY_WS_METHODS = {
   confirmSuggestions: "kin.memory.confirmSuggestions",
   forget: "kin.memory.forget",
   restore: "kin.memory.restore",
+  setTeamMemory: "kin.memory.setTeamMemory",
 } as const;
 
 // Owner of the lead only, on the server; the scope gates the client's button.
@@ -194,6 +205,11 @@ export const KinMemoryRpcs = [
     success: KinMemoryRestoreResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(KIN_MEMORY_WS_METHODS.setTeamMemory, {
+    payload: KinMemorySetTeamMemoryInput,
+    success: KinMemorySetTeamMemoryResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
 ] as const;
 
 export const KIN_MEMORY_RPC_SCOPES = {
@@ -204,4 +220,5 @@ export const KIN_MEMORY_RPC_SCOPES = {
   [KIN_MEMORY_WS_METHODS.confirmSuggestions]: AuthKinChatScope,
   [KIN_MEMORY_WS_METHODS.forget]: AuthKinChatScope,
   [KIN_MEMORY_WS_METHODS.restore]: AuthKinChatScope,
+  [KIN_MEMORY_WS_METHODS.setTeamMemory]: AuthKinChatScope,
 } as const;
