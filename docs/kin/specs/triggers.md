@@ -135,7 +135,7 @@ A call with no name goes to the Tech lead, or whoever leads engineering. Each tr
 
 **The event is a hint.** The `github` event names the repo, the item and the trigger; the woken agent re-reads GitHub with `gh` in its shell before acting. Text from GitHub is outside content (`trust: external`): quoted into the brief, never obeyed, and a turn that has read it loses its shell (lead spec).
 
-**Replies are signed.** What an agent posts through `gh` goes out under the owner's name, so the `gh` on its PATH (`ghSign.ts`) ends each post with the agent's name and a hidden `kin-agent` marker (`agentMark.ts`). The watch uses the marker to skip Kin's own posts.
+**Replies are signed.** What an agent posts through `gh` can go out under the owner's name, so the `gh` on its PATH (`ghSign.ts`, `ghPolicy.ts`) reads each write in full, lets through only the writes on its list, and ends every body it sends, nested ones included, with `agentMark.signed`. It also records a hash of each text it sends in `gh-app/agent-posts.log`. The watch skips a comment or body that carries the marker, is by the App, or matches that record, so the agent's own `/kin` never wakes an agent even if the marker were lost. The shim is no wall: the same shell can read the tokens it uses.
 
 **Conditions** ("when #212 merges"): a condition is a memory item with `on: { event: "pull_request", action: "closed", merged: true, number: 212 }`, plus an optional `repo: owner/name`; unknown keys fail the item's parse. `github_recheck` (Watchdogs, below) matches them against GitHub state.
 

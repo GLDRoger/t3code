@@ -147,7 +147,7 @@ describe("KinLeadProvision", () => {
           "not_owner",
         );
         assert.strictEqual(yield* refusal(Provision.create(input())), "unknown_project");
-        // Only Claude sessions get LeadIsolation's no-shell tools, so a model elsewhere is refused.
+        // A provider Kin plans no session for, or Codex with the switch off, is refused.
         for (const instanceId of ["codex", "mine", "missing"]) {
           const model = { instanceId: ProviderInstanceId.make(instanceId), model: "gpt-5.5" };
           assert.strictEqual(

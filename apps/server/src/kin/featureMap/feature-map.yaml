@@ -973,7 +973,8 @@ features:
         t3_thread_send_attachments,
       ]
     proof:
-      - apps/server/src/kin/lead/LeadIsolation.test.ts
+      - apps/server/src/kin/lead/turn/conformance.test.ts
+      - apps/server/src/kin/lead/turn/providers/claude.test.ts
       - apps/server/src/kin/github/ghSign.test.ts
       - apps/server/src/kin/lead/TaskWake.test.ts
       - apps/server/src/kin/lead/WakeupRunner.test.ts

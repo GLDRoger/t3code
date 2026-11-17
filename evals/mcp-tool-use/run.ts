@@ -57,7 +57,7 @@ import {
   instructions as kinLeadInstructions,
   teamRules as kinTeamRules,
 } from "../../apps/server/src/kin/lead/instructions.ts";
-import { leadTools } from "../../apps/server/src/kin/lead/LeadIsolation.ts";
+import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_DEFERRED_TOOLS } from "../../apps/server/src/kin/lead/deferredTools.ts";
@@ -102,9 +102,7 @@ import { type AppServer, type AppServerEvent, openAppServer } from "./appServer.
 import {
   CONFINED_CONFIG,
   FULL_SESSION_CONFIG,
-  codexFullSessionInstructions,
-  codexInstructions,
-} from "../../apps/server/src/kin/lead/CodexIsolation.ts";
+} from "../../apps/server/src/kin/lead/turn/providers/codex.ts";
 import {
   CAPTION_PROMPT,
   classifySegment,
@@ -826,10 +824,11 @@ export const buildBase = (
     platform: /Platform: (\w+)/.exec(joined)?.[1] ?? "linux",
     date: /Today's date is ([\d-]+)/.exec(reminders.join("\n"))?.[1],
   };
-  // LeadIsolation: a lead's instructions are its whole system prompt and Kin tools load upfront
-  // except the few deferred behind ToolSearch. A turn with the owner's session (kinSession) has
-  // Claude Code's own tools too; one without it, such as a turn a teammate reads, the read-only ones.
+  // As Kin plans a session (`lead/turn/session.ts`): its instructions are the whole system prompt
+  // and Kin tools load upfront except the few deferred behind ToolSearch. A turn with the owner's
+  // seat (kinSession, not shared) has Claude Code's own tools too; a confined one, none of them.
   if (options.kinLead === true) {
+    const ownerSeat = options.kinSession === true && options.kinShared !== true;
     const deferredKin = t3.filter((tool) =>
       KIN_DEFERRED_TOOLS.has(tool.name.slice(T3_PREFIX.length)),
     );
@@ -837,7 +836,7 @@ export const buildBase = (
     const toolSearch = template.tools.filter((tool) => tool.name.endsWith("ToolSearch"));
     return {
       model,
-      system: [text(kinLeadInstructions)],
+      system: [text(kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"))],
       reminders:
         deferredKin.length > 0 && header !== undefined
           ? [text(`${header}${deferredKin.map((tool) => tool.name).join("\n")}\n`)]
@@ -845,14 +844,14 @@ export const buildBase = (
       gitStatusAt: undefined,
       environment,
       nativeTools: [
-        ...(options.kinSession === true
+        ...(ownerSeat
           ? [
               ...template.tools.filter(
                 (tool) => !isT3Name(tool.name) && !tool.name.endsWith("ToolSearch"),
               ),
               ...nativeDeferred.map((name): ApiTool => ({ name, ...nativeSchema(name) })),
             ]
-          : template.tools.filter((tool) => leadTools.includes(tool.name))),
+          : []),
         ...(deferredKin.length > 0 ? toolSearch : []),
         ...t3.filter((tool) => !deferredKin.includes(tool)),
       ],
@@ -1798,7 +1797,7 @@ type Config = {
   readonly effort: string;
   readonly maxSteps: number;
   readonly shellModel: ShellModel;
-  /** `--harness app-server`: GPT models run in `codex app-server` as Kin runs them (`CodexIsolation`). */
+  /** `--harness app-server`: GPT models run in `codex app-server` as Kin runs them (`providers/codex.ts`). */
   readonly appServer?: AppServer;
 };
 
@@ -2667,7 +2666,7 @@ const responsesHistory = (messages: ReadonlyArray<ApiMessage>, namespace: string
 const APP_SERVER_NAMESPACE = "t3_code";
 
 /**
- * One sample in `codex app-server`, confined as `CodexIsolation` confines a Kin thread: Kin's
+ * One sample in `codex app-server`, confined as Kin's Codex descriptor confines a Kin thread: Kin's
  * instructions as the base instructions, no environment, and the turn's T3 and Kin tools as dynamic
  * tools that the case's mocks answer. A Claude lead's ToolSearch list becomes Codex's deferred loading.
  */
@@ -2710,7 +2709,7 @@ const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSample")(fu
         effort: config.effort,
         // An owner-only session's note says it has a shell, as Kin's does; the eval runs none, so
         // it keeps the session's web search and no sub-agents nobody here would answer.
-        baseInstructions: ownerSession ? codexFullSessionInstructions : codexInstructions,
+        baseInstructions: kinInstructions(ownerSession ? "owner" : "confined", "codex"),
         config: ownerSession
           ? { ...FULL_SESSION_CONFIG, "agents.enabled": false }
           : CONFINED_CONFIG,
