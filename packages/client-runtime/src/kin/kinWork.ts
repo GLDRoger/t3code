@@ -48,6 +48,19 @@ export const KIN_WORK_SEARCH_PLACEHOLDER = "Search tasks";
 export const KIN_WORK_LOAD_FAILED = "Couldn't load tasks";
 export const KIN_WORK_STALE = "Offline. Showing the last update.";
 export const KIN_WORK_REFRESH_FAILED = "Couldn't refresh. Showing the last update.";
+
+/**
+ * The line over rows older than the host's: offline only when the link is down; a read that failed
+ * on a live link says so and offers a retry; nothing while the first attempt is still under way.
+ */
+export function kinWorkStaleNotice(
+  link: KinLink,
+): { readonly message: string; readonly retry: boolean } | null {
+  if (link === "connecting") return null;
+  return link === "offline"
+    ? { message: KIN_WORK_STALE, retry: false }
+    : { message: KIN_WORK_REFRESH_FAILED, retry: true };
+}
 /** Kin's work pages, each reached from the sidebar. */
 export type KinWorkPageName = "tasks" | "money" | "clients" | "docs";
 

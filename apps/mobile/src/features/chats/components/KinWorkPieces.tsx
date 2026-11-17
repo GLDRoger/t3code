@@ -3,8 +3,7 @@ import { KIN_OFFLINE_PAGE, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnsw
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import {
   KIN_WORK_PRIVATE,
-  KIN_WORK_REFRESH_FAILED,
-  KIN_WORK_STALE,
+  kinWorkStaleNotice,
   type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
@@ -365,13 +364,12 @@ export function KinWorkStaleNotice(props: {
   readonly environmentId: EnvironmentId;
   readonly onRetry: () => void;
 }) {
-  const link = kinHostLink(useKinHostAt(props.environmentId));
-  if (link === "offline") return <Notice message={KIN_WORK_STALE} />;
-  if (link === "connecting") return null;
+  const notice = kinWorkStaleNotice(kinHostLink(useKinHostAt(props.environmentId)));
+  if (notice === null) return null;
   return (
     <Notice
-      message={KIN_WORK_REFRESH_FAILED}
-      action={{ label: KIN_RETRY, onPress: props.onRetry }}
+      message={notice.message}
+      {...(notice.retry ? { action: { label: KIN_RETRY, onPress: props.onRetry } } : {})}
     />
   );
 }

@@ -1,12 +1,13 @@
 import { KIN_RETRY, kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
-import { KIN_WORK_PRIVATE } from "@t3tools/client-runtime/kin/kinWork";
+import { KIN_WORK_PRIVATE, kinWorkStaleNotice } from "@t3tools/client-runtime/kin/kinWork";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import type {
   KinHealthView,
   KinWorkTimelineLine,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import type { KinWorkFormProblem } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { KIN_WORK_FORM_COPY } from "@t3tools/client-runtime/kin/kinWorkForms";
-import type { KinRecordKey } from "@t3tools/contracts";
+import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -45,6 +46,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
 import type { KinGate } from "@t3tools/client-runtime/kin/kinAccess";
 import { KIN_OFFLINE_PAGE } from "@t3tools/client-runtime/kin/kinAnswers";
+import { useKinHostAt } from "./useKinHost";
 
 /**
  * A titled block of a task, client or project, with an optional action beside the title. With
@@ -101,6 +103,25 @@ export function KinWorkSection(props: {
       </div>
       {open ? props.children : null}
     </section>
+  );
+}
+
+/** The line over rows older than the host's, as `kinWorkStaleNotice` words it. */
+export function KinWorkStaleLine(props: {
+  readonly environmentId: EnvironmentId;
+  readonly onRetry?: () => void;
+}) {
+  const notice = kinWorkStaleNotice(kinHostLink(useKinHostAt(props.environmentId)));
+  if (notice === null) return null;
+  return (
+    <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+      {notice.message}
+      {notice.retry && props.onRetry !== undefined ? (
+        <Button size="xs" variant="outline" onClick={props.onRetry}>
+          {KIN_RETRY}
+        </Button>
+      ) : null}
+    </p>
   );
 }
 

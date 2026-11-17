@@ -38,6 +38,9 @@ import {
   kinWorkOnlyOwner,
   kinWorkScreenState,
   kinWorkShown,
+  kinWorkStaleNotice,
+  KIN_WORK_REFRESH_FAILED,
+  KIN_WORK_STALE,
   type KinWorkNames,
 } from "./kinWork.ts";
 import { KIN_CHANGED } from "./kinAnswers.ts";
@@ -263,6 +266,16 @@ describe("kinWorkScreenState", () => {
       _tag: "ready",
       stale,
     });
+  });
+});
+
+describe("kinWorkStaleNotice", () => {
+  it.each([
+    ["offline", { message: KIN_WORK_STALE, retry: false }],
+    ["connected", { message: KIN_WORK_REFRESH_FAILED, retry: true }],
+    ["connecting", null],
+  ] as const)("on a held page that is behind, with the link %s, says %j", (link, notice) => {
+    expect(kinWorkStaleNotice(link)).toEqual(notice);
   });
 });
 
