@@ -554,7 +554,7 @@ describe("picking the App's repos from Settings, with the owner's login", () => 
   const owner = { _tag: "person" as const, orgId, personId: KinPersonId.make("owner") };
   const start = (selection: "all" | "selected", picked: ReadonlyArray<string>) =>
     Effect.gen(function* () {
-      const { github, app } = yield* setup({ appId: "9001" }, false);
+      const { github, app, folder } = yield* setup({ appId: "9001" }, false);
       github.world.accounts = [{ login: "invented-owner", id: 7000, type: "User" }];
       for (const repo of [...REPOS, "invented-owner/kin-memory"])
         github.addRepo({ full_name: repo });
@@ -587,13 +587,15 @@ describe("picking the App's repos from Settings, with the owner's login", () => 
       const covered = agentsView(Option.some(app), orgId).pipe(
         Effect.map((view) => view.accounts?.[0]?.covered),
       );
-      return { github, app, set, covered };
+      return { github, app, set, covered, folder };
     });
 
   it.effect("adds every watched repo and takes them off again, as GitHub then holds it", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      const { github, app, set, covered } = yield* start("selected", ["invented-owner/kin-memory"]);
+      const { github, app, set, covered, folder } = yield* start("selected", [
+        "invented-owner/kin-memory",
+      ]);
       assert.deepStrictEqual(yield* set(REPOS, true), { changed: 3, problem: null });
       assert.strictEqual(yield* covered, 3);
       assert.sameMembers(github.world.app!.installations[0]!.repos, [
@@ -614,6 +616,12 @@ describe("picking the App's repos from Settings, with the owner's login", () => 
       // Kin's own writes on that repo go out as the owner from now on; the rest stay the App's.
       assert.isUndefined(yield* app.on("invented-owner/b"));
       assert.strictEqual((yield* app.on("invented-owner/a"))?.login, BOT_LOGIN);
+      // And so do the agents' gh and git: the shell's token holds only for the repos still picked.
+      assert.sameMembers((yield* read(`${folder}/repos/invented-owner`))!.trim().split("\n"), [
+        "invented-owner/a",
+        "invented-owner/c",
+        "invented-owner/kin-memory",
+      ]);
       const recorded = yield* sql<{ agent: string; repo: string; command: string }>`
         SELECT agent_name AS agent, repo, command FROM kin_github_owner_uses ORDER BY at, use_id`;
       assert.strictEqual(recorded.length, 4);

@@ -352,8 +352,9 @@ whether the App is on that repo to change it), needs a review first, protected b
 your own rules, not checked yet, or why Kin can't tell. A required review alone doesn't count as
 protection: once someone approves, the App can merge, so those repos still offer **Protect**. Your
 own rules count only when they restrict updates and their bypass list can't include the App (Kin
-can't tell whether a write or maintain role, or a team, covers an App, so those don't count) (GitHub offers no protection on a private repo on its free plan, and only a
-repo's admins can see or set it). Protecting a repo the App isn't on yet covers the day you add it. **Protect** on a repo,
+can't tell whether a write or maintain role, or a team, covers an App, so those don't count).
+GitHub offers no protection on a private repo on its free plan, and only a repo's admins can see or
+set it. Protecting a repo the App isn't on yet covers the day you add it. **Protect** on a repo,
 or **Protect all**, adds one ruleset on GitHub with your login: only the repo's admins (and an
 organization's owners) may update, delete or force-push the default branch. You keep merging your
 own pull requests and pushing as before; the App can't change the branch by any route, and no review
