@@ -24,27 +24,46 @@ function setup() {
 }
 
 describe("kinRefreshTriggers", () => {
-  it("moves a read's signal only when its own topic moves, or on a new session", () => {
+  it("moves a read's signal only when its own topic moves, or on a new session of an older host", () => {
     const { registry, revisions, session, triggers, heard } = setup();
     const memory = triggers("memory")(target);
     const company = triggers("company")(target);
     const other = triggers("memory")({ ...target, input: { orgId: KinOrgId.make("other") } });
     const unmount = [memory, company, other].map((atom) => registry.mount(atom));
     const read = () => [registry.get(memory), registry.get(company), registry.get(other)];
-    expect(read()).toEqual(["1:0", "1:0", "1:0"]);
+    expect(read()).toEqual(["0:0", "0:0", "0:0"]);
     // The first revisions are where things stand, not a change.
     heard({ memory: 3, company: 1 });
-    expect(read()).toEqual(["1:0", "1:0", "1:0"]);
+    expect(read()).toEqual(["0:0", "0:0", "0:0"]);
     heard({ memory: 4, company: 1, people: 9 });
-    expect(read()).toEqual(["1:1", "1:0", "1:0"]);
+    expect(read()).toEqual(["0:1", "0:0", "0:0"]);
     expect(registry.get(triggers.moves("memory")(target))).toBe(1);
     // Reconnecting, or a host that can't say, changes nothing.
     registry.set(revisions, AsyncResult.initial(true));
-    expect(read()).toEqual(["1:1", "1:0", "1:0"]);
+    expect(read()).toEqual(["0:1", "0:0", "0:0"]);
     heard({ memory: 4, company: 1 });
-    expect(read()).toEqual(["1:1", "1:0", "1:0"]);
+    expect(read()).toEqual(["0:1", "0:0", "0:0"]);
+    // A host that doesn't name its run can't resume: each new session reads again.
     registry.set(session, 2);
-    expect(read()).toEqual(["2:1", "2:0", "2:0"]);
+    expect(read()).toEqual(["1:1", "1:0", "1:0"]);
+    for (const stop of unmount) stop();
+  });
+
+  it("resumes across sessions on a host that names its run, and moves every topic in a new run", () => {
+    const { registry, session, triggers, heard } = setup();
+    const memory = triggers("memory")(target);
+    const company = triggers("company")(target);
+    const unmount = [memory, company].map((atom) => registry.mount(atom));
+    const read = () => [registry.get(memory), registry.get(company)];
+    heard({ memory: 3, company: 1, boot: "a" });
+    expect(read()).toEqual(["0:0", "0:0"]);
+    registry.set(session, 2);
+    heard({ memory: 3, company: 1, boot: "a" });
+    expect(read()).toEqual(["0:0", "0:0"]);
+    // The host restarted: its numbers start over, and may even match the old ones.
+    registry.set(session, 3);
+    heard({ memory: 3, company: 1, boot: "b" });
+    expect(read()).toEqual(["0:1", "0:1"]);
     for (const stop of unmount) stop();
   });
 

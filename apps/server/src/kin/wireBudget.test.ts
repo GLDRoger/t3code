@@ -4,12 +4,14 @@ import "./chat/KinChatService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, layer as withLayer } from "@effect/vitest";
 import {
+  KIN_REFRESH_TOPICS,
   KinChatError,
   KinDocsRpcs,
   KinFinanceRpcs,
   KinOrgId,
   KinPersonId,
   KinPulseRpcs,
+  KinRefreshes,
   KinWorkEvent,
   KinWorkRpcs,
 } from "@t3tools/contracts";
@@ -17,6 +19,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -26,9 +29,12 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../config.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import { KinIdentity, type PersonIdentity } from "./chat/KinIdentity.ts";
+import * as RefreshHub from "./chat/KinRefreshHub.ts";
+import { subscribeRefreshes } from "./chat/refreshes.ts";
 import * as KinEventQueue from "./lead/KinEventQueue.ts";
 import { KinLevelGate } from "./lead/LevelGate.ts";
 import * as KinPersistence from "./persistence/KinPersistence.ts";
+import * as KinPulse from "./pulse/KinPulse.ts";
 import * as Pulse from "./pulse/people.ts";
 import budget from "./kinWireBudget.json" with { type: "json" };
 import * as Docs from "./work/docs.ts";
@@ -209,6 +215,7 @@ const SCHEMAS = {
   lists: successOf(KinFinanceRpcs, "kin.work.lists"),
   docs: successOf(KinDocsRpcs, "kin.docs.list"),
   pulse: successOf(KinPulseRpcs, "kin.pulse.read"),
+  refreshes: KinRefreshes,
 };
 
 type Services = Layer.Success<typeof layer>;
@@ -374,6 +381,7 @@ const gate = Layer.mock(KinLevelGate)({
 });
 const layer = KinImport.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(KinRecords.layer, identity, gate)),
+  Layer.provideMerge(RefreshHub.layer),
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
   Layer.provideMerge(Sqlite.layerMemory),
@@ -492,6 +500,57 @@ const rowsChange = Effect.fn("KinWireBudget.rowsChange")(function* () {
   return measured;
 });
 
+/**
+ * A reconnect with nothing changed: each viewer's refresh revisions heard again. A topic that
+ * reads differently is one their screens read again; the bytes are what resubscribing costs.
+ */
+const reconnect = Effect.fn("KinWireBudget.reconnect")(function* () {
+  const measured: Record<string, number> = {};
+  const heard = (personId: KinPersonId) =>
+    Stream.runHead(subscribeRefreshes(as(personId), { orgId })).pipe(Effect.map(Option.getOrThrow));
+  for (const [name, personId] of VIEWERS) {
+    const before = yield* heard(personId);
+    const again = yield* heard(personId);
+    measured[`reconnect.${name}.topicsMoved`] =
+      KIN_REFRESH_TOPICS.filter((topic) => before[topic] !== again[topic]).length +
+      (before.boot === again.boot ? 0 : 1);
+    measured[`reconnect.${name}.refreshBytes`] = wireBytes(SCHEMAS.refreshes, again);
+  }
+  return measured;
+});
+
+/**
+ * One fact in Needs attention moves (a task due soon is done): what each viewer's home is sent
+ * for it. Today the pulse topic moves and each screen reads its first page again.
+ */
+const attentionMove = Effect.fn("KinWireBudget.attentionMove")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const measured: Record<string, number> = {};
+  yield* KinPulse.tick(orgId, NOW);
+  const about = (people: ReadonlyArray<PersonIdentity>) =>
+    Pulse.read(people, { orgId, includeHandled: true, limit: 8 }).pipe(
+      Effect.map((page) => ("outline" in page ? (page.outline?.records ?? []) : [])),
+    );
+  // A task the member holds that needs attention, so every viewer's page moves.
+  const named = new Set(yield* about(as(memberId)));
+  const tasks = yield* sql<{ key: string; rev: number }>`SELECT key, rev FROM kin_records
+    WHERE org_id = ${orgId} AND register_id = 'work' AND state = 'open'
+      AND owner_id = ${memberId} ORDER BY key`;
+  const soon = tasks.find((task) => named.has(task.key));
+  if (soon === undefined)
+    return yield* Effect.die(new Error("No task of the member's needs attention."));
+  expect(yield* about(as(ownerId))).toContain(soon.key);
+  yield* Work.update(as(ownerId), { orgId, key: soon.key, rev: soon.rev, state: "done" });
+  yield* KinPulse.tick(orgId, NOW + 60_000);
+  expect(yield* about(as(ownerId))).not.toContain(soon.key);
+  for (const [name, personId] of VIEWERS) {
+    const page = yield* Pulse.read(as(personId), { orgId, includeHandled: true, limit: 8 });
+    measured[`attention.${name}.reads`] = 1;
+    measured[`attention.${name}.bytes`] = wireBytes(SCHEMAS.pulse, page);
+  }
+  return measured;
+});
+
 withLayer(layer)("Kin wire budget", (it) => {
   it.effect("hot reads and one change's stream match kinWireBudget.json", () =>
     Effect.gen(function* () {
@@ -519,6 +578,8 @@ withLayer(layer)("Kin wire budget", (it) => {
       }
       Object.assign(measured, yield* oneChange(rereadBytes));
       Object.assign(measured, yield* Effect.scoped(rowsChange()));
+      Object.assign(measured, yield* reconnect());
+      Object.assign(measured, yield* attentionMove());
 
       expect(over, `Unpaged Kin reads over ${UNPAGED_CEILING} bytes: page them.`).toEqual([]);
       expect(

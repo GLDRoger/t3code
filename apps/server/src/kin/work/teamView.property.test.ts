@@ -1338,10 +1338,8 @@ layer(testLayer)("Work's live stream", (it) => {
   it.effect("a teammate added to a project reads its total as a fresh read does", () =>
     streamCase(PINNED_JOIN),
   );
-  // quarantine: #423 a task leaving a teammate doesn't re-send their other tasks in its project
-  it.effect.skip(
-    "a teammate whose task in a project leaves them reads its other tasks afresh",
-    () => streamCase(PINNED_MOVE),
+  it.effect("a teammate whose task in a project leaves them reads its other tasks afresh", () =>
+    streamCase(PINNED_MOVE),
   );
 
   it.effect("a late tick can't let a resume skip its change, or use up a removal", () =>

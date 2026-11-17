@@ -32,7 +32,8 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.pulse === b.pulse &&
   a.budget === b.budget &&
   a.connections === b.connections &&
-  a.workLists === b.workLists;
+  a.workLists === b.workLists &&
+  a.boot === b.boot;
 
 /**
  * The revisions this viewer may see, by their kind at each change. Owner-level people read every
@@ -50,7 +51,8 @@ export const subscribeRefreshes = (
       if (person === undefined) return yield* notFound;
       const { owner } = yield* KinIdentity;
       if (person.orgId !== owner.orgId) return yield* notFound;
-      const changes = (yield* KinRefreshHub).changes(input.orgId);
+      const hub = yield* KinRefreshHub;
+      const changes = hub.changes(input.orgId);
       const kind = accessOf(person.orgId, person.personId).pipe(
         Effect.orElseSucceed(() => undefined),
       );
@@ -68,9 +70,9 @@ export const subscribeRefreshes = (
         Effect.map((shown) => JSON.stringify(shown)),
         Effect.orElseSucceed(() => null),
       );
+      // Counted per person for the run, so a reconnect with nothing moved reads the same numbers.
+      const counter = (name: string) => `${input.orgId}:${person.personId}:${name}`;
       let heard: KinRevisions | undefined;
-      let shown: string | null | undefined;
-      let shownLists: string | null | undefined;
       let leads = 0;
       let lists = 0;
       return changes.pipe(
@@ -78,18 +80,13 @@ export const subscribeRefreshes = (
           Effect.gen(function* () {
             if (kinOwnerLevel(yield* kind)) {
               heard = undefined;
-              return now satisfies KinRefreshes;
+              return { ...now, boot: hub.boot } satisfies KinRefreshes;
             }
-            if (heard === undefined || heard.leads !== now.leads || heard.people !== now.people) {
-              const next = yield* view;
-              if (shown !== undefined && (next === null || next !== shown)) leads += 1;
-              shown = next;
-            }
-            if (heard === undefined || heard.workLists !== now.workLists) {
-              const next = yield* listsView;
-              if (shownLists !== undefined && next !== shownLists) lists += 1;
-              shownLists = next;
-            }
+            if (heard === undefined || heard.leads !== now.leads || heard.people !== now.people)
+              leads = hub.counted(counter("leads"), yield* view);
+            if (heard === undefined || heard.workLists !== now.workLists)
+              // A refusal that stands is no change.
+              lists = hub.counted(counter("workLists"), (yield* listsView) ?? "refused");
             heard = now;
             // Everyone's profile is readable by the whole org. Pulse moves only say "read your
             // Needs attention again"; the read shows them only what they may see.
@@ -99,6 +96,7 @@ export const subscribeRefreshes = (
               leads,
               pulse: now.pulse,
               workLists: lists,
+              boot: hub.boot,
             } satisfies KinRefreshes;
           }),
         ),

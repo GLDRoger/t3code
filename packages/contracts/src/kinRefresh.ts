@@ -52,6 +52,11 @@ export const KinRefreshes = Schema.Struct({
   budget: Schema.optional(NonNegativeInt),
   /** A list's definition: made, renamed, archived, its fields or numbering. Absent from older hosts. */
   workLists: Schema.optional(NonNegativeInt),
+  /**
+   * The host run these revisions count in. Unchanged across a reconnect, an unchanged revision
+   * means nothing moved; a new one means anything may have. Absent from older hosts.
+   */
+  boot: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
 });
 export type KinRefreshes = typeof KinRefreshes.Type;
 

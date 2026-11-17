@@ -1,10 +1,12 @@
 import { KIN_REFRESH_TOPICS, type KinOrgId, type KinRefreshTopic } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Random from "effect/Random";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
@@ -44,6 +46,13 @@ export class KinRefreshHub extends Context.Service<
   {
     /** The org's revisions now, then after each settled burst. Server only: callers filter by viewer. */
     readonly changes: (orgId: KinOrgId) => Stream.Stream<KinRevisions>;
+    /** This run of the host: revisions count from zero in each. */
+    readonly boot: string;
+    /**
+     * A count under `key` that moves each time `view` differs from the last one told, kept for the
+     * run so a viewer's reconnect reads the same number when nothing they see moved. Null moves it.
+     */
+    readonly counted: (key: string, view: string | null) => number;
   }
 >()("t3/kin/chat/KinRefreshHub") {}
 
@@ -52,6 +61,8 @@ const make = Effect.gen(function* () {
   const revisions = new Map<KinOrgId, KinRevisions>();
   const hubs = new Map<KinOrgId, PubSub.PubSub<void>>();
   const touched = new WeakMap<object, Set<string>>();
+  const boot = `${(yield* Clock.currentTimeMillis).toString(36)}-${(yield* Random.nextIntBetween(0, 2 ** 30)).toString(36).padStart(6, "0")}`;
+  const views = new Map<string, { view: string | null; count: number }>();
   yield* Effect.addFinalizer(() =>
     Effect.forEach([...hubs.values()], PubSub.shutdown, { discard: true }),
   );
@@ -88,6 +99,19 @@ const make = Effect.gen(function* () {
     yield* sql.afterCommit(bump(orgId, topic));
   });
   const hub = KinRefreshHub.of({
+    boot,
+    counted: (key, view) => {
+      const held = views.get(key);
+      if (held === undefined) {
+        views.set(key, { view, count: 0 });
+        return 0;
+      }
+      if (view === null || view !== held.view) {
+        held.view = view;
+        held.count += 1;
+      }
+      return held.count;
+    },
     changes: (orgId) =>
       Stream.unwrap(
         Effect.gen(function* () {

@@ -218,11 +218,22 @@ export const makeWorkStream = Effect.fn("KinWorkStream.make")(function* (
     const sequence = tick.team?.get(viewer.person.personId);
     if (sequence === undefined) return [];
     hear(sequence);
+    // A holder change inside a project moves it as its own change would, for whoever it touched.
+    const projects = (tick.projects ?? []).map((key) => ({
+      ...base,
+      list: "projects",
+      sequence,
+      key,
+    }));
     const rescan =
-      mine || tick.registerId === "clients" || tick.registerId === "projects"
+      mine || tick.registerId === "clients" || tick.registerId === "projects" || projects.length > 0
         ? [{ ...base, sequence, key: RESCAN }]
         : [];
-    return [...rescan, ...(tick.key === undefined ? [] : [{ ...base, sequence, key: tick.key }])];
+    return [
+      ...rescan,
+      ...projects,
+      ...(tick.key === undefined ? [] : [{ ...base, sequence, key: tick.key }]),
+    ];
   };
 
   const batch = Effect.fn("KinWorkStream.batch")(function* (all: ReadonlyArray<Pending>) {

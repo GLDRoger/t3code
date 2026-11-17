@@ -48,14 +48,15 @@ import {
   untilVisible,
 } from "./kin-bench/web.ts";
 
-const HELP = `kin-bench [--out <dir>] [--compare <old.json>] [--threshold <percent>] [--runs <n>] [--instance <name>] [--reuse] [--findings <json>]
+const HELP = `kin-bench [--out <dir>] [--compare <old.json>] [--threshold <percent>] [--runs <n>] [--instance <name>] [--reuse] [--findings <json>] [--heap <dir>]
 kin-bench --render <run.json> [--findings <json>] [--compare <old.json>]   re-render an earlier run's .md and report.html
   Seeds the "bench" company on its own kin-verify instance (default "bench"), measures, writes
   <out>/baseline-<commit>.json, .md and report.html, then stops everything it started.
   --runs        samples per web action (default 5; server reads take 4x as many)
   --compare     an earlier JSON: each metric's old, new and change; worse past --threshold (default 15) is flagged
   --reuse       keep an already seeded bench instance instead of seeding from cold
-  --only prompts  capture the agent prompts and tool lists only: no web build, server timing or walk`;
+  --only prompts  capture the agent prompts and tool lists only: no web build, server timing or walk
+  --heap        a directory for a server heap snapshot taken after the walk`;
 
 const CHATS = `[aria-label="Kin chats"]`;
 const log = (line: string) => console.log(`kin-bench: ${line}`);
@@ -115,6 +116,7 @@ const rssMb = (pid: number) => {
  */
 async function startProd(
   instance: Instance,
+  heapDir?: string,
 ): Promise<{ readyMs: number; pid: number; origin: string }> {
   const previous = readState(instance);
   if (previous !== undefined) await stopTree(previous.pid);
@@ -124,6 +126,9 @@ async function startProd(
   const child = NodeChildProcess.spawn(
     process.execPath,
     [
+      ...(heapDir === undefined
+        ? []
+        : ["--heapsnapshot-signal=SIGUSR2", `--diagnostic-dir=${heapDir}`]),
       "src/bin.ts",
       "serve",
       "--base-dir",
@@ -258,6 +263,9 @@ async function main() {
   }
 
   const promptsOnly = get("only") === "prompts";
+  const heapArg = get("heap");
+  const heapDir = heapArg === undefined ? undefined : NodePath.resolve(heapArg);
+  if (heapDir !== undefined) NodeFS.mkdirSync(heapDir, { recursive: true });
   if (get("build") !== "skip" && !promptsOnly) {
     log("building the web client (production bundle)");
     const built = NodeChildProcess.spawnSync("vp", ["run", "build"], {
@@ -371,7 +379,7 @@ async function main() {
     const starts: Array<number> = [];
     let server = { pid: 0, origin: "", readyMs: 0 };
     for (let run = 0; run < 3; run++) {
-      server = await startProd(instance);
+      server = await startProd(instance, heapDir);
       starts.push(server.readyMs);
     }
     metrics.push(metric("server", "startReady", "Start to first owner RPC answered", "ms", starts));
@@ -677,6 +685,7 @@ async function main() {
         change,
         clients: [...probes].map(([person, one]) => {
           const frames = one.frames.slice(marks.get(person));
+          const asked = frames.filter((frame) => frame.dir === "out");
           return {
             person,
             framesIn: frames.filter((frame) => frame.dir === "in").length,
@@ -689,9 +698,9 @@ async function main() {
             methods: Object.fromEntries(
               [
                 ...new Set(
-                  frames.flatMap((frame) => (frame.method === undefined ? [] : [frame.method])),
+                  asked.flatMap((frame) => (frame.method === undefined ? [] : [frame.method])),
                 ),
-              ].map((method) => [method, frames.filter((frame) => frame.method === method).length]),
+              ].map((method) => [method, asked.filter((frame) => frame.method === method).length]),
             ),
           };
         }),
@@ -761,7 +770,8 @@ async function main() {
         });
       const mark = probe.mark();
       await offline(true);
-      await sleep(3000);
+      // Past the client's 3 s probe timeout after an offline report, so the socket really drops.
+      await sleep(6000);
       await offline(false);
       await sleep(8000);
       const row = probe.wire("reconnectIdle", mark);
@@ -775,7 +785,12 @@ async function main() {
           "Reconnect with nothing changed: KB in, owner",
           "bytes",
           [row.bytesIn],
-          resubscribed ? undefined : "no resubscribe seen",
+          resubscribed
+            ? Object.entries(row.bytesInByMethod ?? {})
+                .toSorted((a, b) => b[1] - a[1])
+                .map(([method, bytes]) => `${method} ${(bytes / 1024).toFixed(1)} KB`)
+                .join(", ")
+            : "no resubscribe seen",
         ),
         metric("wire", "reconnect.deflated", "Reconnect with nothing changed: deflated", "bytes", [
           row.deflatedIn ?? 0,
@@ -797,6 +812,27 @@ async function main() {
       );
 
     const rssWalk = rssMb(server.pid);
+    if (heapDir !== undefined) {
+      // A snapshot collects garbage first, so it shows what the walk left held, not what it churned.
+      const before = new Set(NodeFS.readdirSync(heapDir));
+      process.kill(server.pid, "SIGUSR2");
+      let written: string | undefined;
+      for (let waited = 0; written === undefined && waited < 120_000; waited += 500) {
+        await sleep(500);
+        written = NodeFS.readdirSync(heapDir).find(
+          (name) => name.endsWith(".heapsnapshot") && !before.has(name),
+        );
+      }
+      if (written !== undefined) {
+        // Written in pieces; done once its size holds still.
+        let size = -1;
+        while (size !== NodeFS.statSync(NodePath.join(heapDir, written)).size) {
+          size = NodeFS.statSync(NodePath.join(heapDir, written)).size;
+          await sleep(1000);
+        }
+        notes.push(`Server heap snapshot after the walk: ${NodePath.join(heapDir, written)}.`);
+      } else notes.push("No server heap snapshot was written within 2 minutes.");
+    }
     metrics.push(metric("server", "rssStart", "Server memory after start", "MB", [rssStart]));
     metrics.push(metric("server", "rssWalk", "Server memory after the walk", "MB", [rssWalk]));
 

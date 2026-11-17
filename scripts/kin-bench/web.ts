@@ -17,7 +17,7 @@ interface Frame {
   readonly deflated: number;
   readonly at: number;
   readonly request: boolean;
-  /** The RPC a request frame calls, such as kin.work.list. */
+  /** The RPC a request frame calls, such as kin.work.list, or an answer frame answers. */
   readonly method?: string;
 }
 
@@ -42,6 +42,11 @@ const methodOf = (payload: string) => {
   const tag = /"_tag":"Request".*?"tag":"([^"]+)"/.exec(payload)?.[1];
   return tag === undefined ? {} : { method: tag };
 };
+const requestIdOf = (payload: string) =>
+  /"_tag":"Request".*?"id":"([^"]+)"/.exec(payload)?.[1] ??
+  /"_tag":"Request".*?"id":(\d+)/.exec(payload)?.[1];
+const answerIdOf = (payload: string) =>
+  /"requestId":"([^"]+)"/.exec(payload)?.[1] ?? /"requestId":(\d+)/.exec(payload)?.[1];
 
 /** Every WebSocket frame and script/style byte this page moves, from Chrome's own network log. */
 export class Probe {
@@ -73,8 +78,12 @@ export class Probe {
         });
     });
     const windows = new Map<string, Buffer>();
+    // Per socket, the RPC each request id called, so an answer's bytes count against it.
+    const calls = new Map<string, string>();
     cdp.on("Network.webSocketFrameReceived", (event) => {
       const payload = event.response.payloadData;
+      const answer = answerIdOf(payload);
+      const method = answer === undefined ? undefined : calls.get(`${event.requestId}:${answer}`);
       const window = windows.get(event.requestId) ?? Buffer.alloc(0);
       const deflated = deflatedSize(payload, window);
       windows.set(
@@ -87,18 +96,24 @@ export class Probe {
         deflated,
         at: performance.now(),
         request: false,
+        ...(method === undefined ? {} : { method }),
       });
     });
-    cdp.on("Network.webSocketFrameSent", (event) =>
+    cdp.on("Network.webSocketFrameSent", (event) => {
+      const payload = event.response.payloadData;
+      const called = methodOf(payload);
+      const id = requestIdOf(payload);
+      if (called.method !== undefined && id !== undefined)
+        calls.set(`${event.requestId}:${id}`, called.method);
       probe.frames.push({
         dir: "out",
-        bytes: Buffer.byteLength(event.response.payloadData),
+        bytes: Buffer.byteLength(payload),
         deflated: 0,
         at: performance.now(),
-        request: event.response.payloadData.includes('"_tag":"Request"'),
-        ...methodOf(event.response.payloadData),
-      }),
-    );
+        request: payload.includes('"_tag":"Request"'),
+        ...called,
+      });
+    });
     return probe;
   }
 
@@ -119,8 +134,16 @@ export class Probe {
       bytesOut: sum("out"),
       largest: Math.max(0, ...frames.filter((one) => one.dir === "in").map((one) => one.bytes)),
       methods: frames.reduce<Record<string, number>>((count, one) => {
-        if (one.method !== undefined) count[one.method] = (count[one.method] ?? 0) + 1;
+        if (one.dir === "out" && one.method !== undefined)
+          count[one.method] = (count[one.method] ?? 0) + 1;
         return count;
+      }, {}),
+      bytesInByMethod: frames.reduce<Record<string, number>>((bytes, one) => {
+        if (one.dir === "in") {
+          const method = one.method ?? "(unmatched)";
+          bytes[method] = (bytes[method] ?? 0) + one.bytes;
+        }
+        return bytes;
       }, {}),
     };
   }

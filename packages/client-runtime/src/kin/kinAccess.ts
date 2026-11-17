@@ -34,7 +34,7 @@ function makeKinAccess<R, ER>(
     label: "kin:access:read",
     tag: "kin.access.me",
   });
-  const query = createEnvironmentQueryAtomFamily(runtime, {
+  const query = createKinQueryAtomFamily(runtime, {
     label: "kin:access",
     execute: Effect.fn("KinAccess.me")(function* (input: KinAccessMeInput) {
       const registry = yield* AtomRegistry.AtomRegistry;
@@ -158,4 +158,18 @@ export function createKinRpcCommand<
     return atom;
   };
   return { ...command, permissionAtom };
+}
+
+/**
+ * A Kin read whose `refreshTrigger` follows the host's revisions and change numbers, which resume
+ * across a reconnect: its answer stays through one, and it reads again only when the trigger moves.
+ */
+export function createKinQueryAtomFamily<R, ER, Input, A, E>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+  options: Parameters<typeof createEnvironmentQueryAtomFamily<R, ER, Input, A, E>>[1],
+) {
+  return createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(runtime, {
+    ...options,
+    keepAcrossSessions: true,
+  });
 }

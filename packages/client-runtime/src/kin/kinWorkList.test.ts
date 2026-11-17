@@ -16,7 +16,13 @@ import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import { KIN_WORK_DEFAULT_FILTER } from "./kinWork.ts";
-import { KIN_WORK_PAGE, createKinWorkList, type KinWorkListState } from "./kinWorkList.ts";
+import {
+  KIN_WORK_PAGE,
+  createKinListKeeper,
+  createKinWorkList,
+  type KinWorkList,
+  type KinWorkListState,
+} from "./kinWorkList.ts";
 
 const orgId = KinOrgId.make("invented-org");
 const owner = { _tag: "person", personId: KinPersonId.make("invented-owner") } as const;
@@ -253,5 +259,39 @@ describe("createKinWorkList", () => {
     rows = kinWorkRowsStart(9, 1);
     h.list.changed(9);
     expect(h.asked).toHaveLength(2);
+  });
+
+  it("comes back to a kept list without reading, catching up from what the stream sent", async () => {
+    let rows = kinWorkRowsStart(7);
+    let clock = 0;
+    const keeper = createKinListKeeper<KinWorkList, KinWorkListState>(() => clock);
+    const h = harness(() => rows);
+    const first = keeper.take("tasks", () => h.list);
+    expect(keeper.wasKept(first)).toBe(false);
+    keeper.show(first, () => {});
+    h.list.start();
+    await h.answer(page(1, 3, 3, 7));
+    keeper.hide(first);
+
+    // Away, a task arrives on the stream; back, it shows with no read of the page.
+    rows = kinApplyWorkRow(
+      rows,
+      { _tag: "upsert", seq: 8, list: "work", record: kinCompactRecord(record(4)), fresh: true },
+      orgId,
+    );
+    const again = keeper.take("tasks", () => harness().list);
+    expect(again).toBe(first);
+    expect(keeper.wasKept(again)).toBe(true);
+    keeper.show(again, () => {});
+    again.list.resume();
+    again.list.changed(8);
+    expect(h.asked).toHaveLength(1);
+    expect(h.state().records.map((held) => held.key)).toEqual(["W-1", "W-2", "W-3", "W-4"]);
+
+    // Shown elsewhere, or left too long, it isn't handed out again.
+    expect(keeper.take("tasks", () => harness().list)).not.toBe(first);
+    keeper.hide(again);
+    clock += 10 * 60_000;
+    expect(keeper.take("tasks", () => harness().list)).not.toBe(first);
   });
 });

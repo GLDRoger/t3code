@@ -284,6 +284,14 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
       abandon();
       reread();
     },
+    /**
+     * Back on screen with the rows it held: the next `changed` catches them up from what the host
+     * sent since (`catchUp`), reading only what that can't bring. Nothing held, or a failure, reads.
+     */
+    resume: () => {
+      abandon();
+      if (state.seq === null || state.failed !== null || state.stale) reread();
+    },
     /** Stops caring about anything in flight. `start` brings it back. */
     dispose: abandon,
   };
@@ -327,6 +335,58 @@ export function createKinWorkList(options: {
     ...list,
     /** The host announced `seq`: rows it sent apply in place, and anything else reads again. */
     changed: (seq: number) => list.changed(seq, follow.newEpoch()),
+    resume: () => (follow.newEpoch() ? list.refresh() : list.resume()),
+  };
+}
+
+/** How long a list off screen is kept to come back to; past this its dates may have moved on. */
+const KIN_LIST_KEPT_MS = 5 * 60_000;
+const KIN_LISTS_KEPT = 4;
+
+/**
+ * Lists kept while their screen is away, so coming back shows what was held and catches up from
+ * the stream instead of reading the page again. One screen holds a list at a time; a few are kept.
+ */
+export function createKinListKeeper<List extends { readonly dispose: () => void }, State>(
+  now: () => number,
+) {
+  type Kept = {
+    readonly key: string;
+    readonly list: List;
+    /** Where the list's changes go: the screen showing it now. */
+    readonly sink: { current: (state: State) => void };
+    shown: boolean;
+    at: number;
+  };
+  const kept = new Map<string, Kept>();
+  return {
+    /** The list kept under `key` when no screen shows it and it is recent, else a new one. */
+    take: (key: string, make: (onChange: (state: State) => void) => List): Kept => {
+      const held = kept.get(key);
+      if (held !== undefined && !held.shown && now() - held.at < KIN_LIST_KEPT_MS) return held;
+      const sink = { current: (_state: State) => {} };
+      return { key, list: make((state) => sink.current(state)), sink, shown: false, at: now() };
+    },
+    /** A screen shows it; its changes go to `onChange`. */
+    show: (entry: Kept, onChange: (state: State) => void) => {
+      entry.shown = true;
+      entry.sink.current = onChange;
+      kept.delete(entry.key);
+      kept.set(entry.key, entry);
+      for (const old of kept.values()) {
+        if (kept.size <= KIN_LISTS_KEPT) break;
+        if (!old.shown) kept.delete(old.key);
+      }
+    },
+    /** Its screen left: reads in flight stop, and it waits to be taken again. */
+    hide: (entry: Kept) => {
+      entry.list.dispose();
+      entry.shown = false;
+      entry.at = now();
+      entry.sink.current = () => {};
+    },
+    /** Whether `take` handed back a list held from before, which `resume`s instead of starting. */
+    wasKept: (entry: Kept) => kept.get(entry.key) === entry,
   };
 }
 

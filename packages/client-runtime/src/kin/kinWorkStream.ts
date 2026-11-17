@@ -143,10 +143,9 @@ type KinWorkTarget = {
 };
 
 /**
- * Refresh signals for query atoms' `refreshTrigger` from Work's own announcements: a new session,
- * or a change to one of the lists the read covers. A read over money or every list passes `"any"`;
- * `also` adds a `kin.refreshes` topic. The query atom reads again only while it is shown, and
- * once on its next showing for a move it missed, so a screen not open asks for nothing.
+ * `refreshTrigger`s from Work's own stream: a change to a list the read covers (`"any"`: every
+ * list), a fresh start, or a new session on a host that can't resume; `also` adds a topic. Reads
+ * only while shown, and once on its next showing for a move it missed.
  */
 export function createKinWorkRefreshTriggers<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
@@ -164,7 +163,10 @@ export function createKinWorkRefreshTriggers<R, ER>(
         const topic = also === undefined ? "" : String(get(also(target)));
         // A new epoch reads everything again, even where its number happens to match the old one.
         const epoch = held?.rows?.epoch ?? 0;
-        return `${get(environmentSessionGenerationAtom(runtime, environmentId))}:${epoch}:${moved}:${topic}`;
+        // A host that streams rows resumes from its number; an older one's reads follow each session.
+        const sessions = get(environmentSessionGenerationAtom(runtime, environmentId));
+        const unresumed = held?.rows === null ? Math.max(0, sessions - 1) : 0;
+        return `${unresumed}:${epoch}:${moved}:${topic}`;
       });
 }
 
@@ -233,6 +235,9 @@ export interface KinWorkResume {
   at: { readonly seq: number; readonly team: boolean } | null;
 }
 
+let kinWorkFolds = 0;
+const KIN_WORK_FOLD_EPOCHS = 1_000_000;
+
 /** `kinWorkLiveStream` over any source of changes and retries. */
 export function kinWorkLiveFold<E, R, EE, RR>(
   events: Stream.Stream<KinWorkEvent | typeof KIN_WORK_RETRY, EE, RR>,
@@ -245,7 +250,8 @@ export function kinWorkLiveFold<E, R, EE, RR>(
     let named = KIN_WORK_NOTHING_NAMED;
     let last: KinWorkLive | null = null;
     let rows: KinWorkRows | null = null;
-    let epoch = 0;
+    // Each fold numbers its own epochs, so a page held from an earlier one never patches from this.
+    let epoch = (kinWorkFolds += KIN_WORK_FOLD_EPOCHS);
     return events.pipe(
       Stream.mapEffect((event) =>
         Effect.gen(function* () {

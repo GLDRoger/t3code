@@ -243,6 +243,11 @@ export type Tick = {
   readonly team?: ReadonlyMap<string, number>;
   /** People whose level or places changed, so what they may see may have (`peopleMoved`). */
   readonly people?: ReadonlyArray<string>;
+  /**
+   * Projects whose holders changed: the entry was made in, moved between, or given to someone in
+   * them. Holding a task there shows a project's docs (`personSees`), so their people look again.
+   */
+  readonly projects?: ReadonlyArray<string>;
 };
 /** Whose view of Work a change can move: the entries it may show or hide, and who saw them before. */
 type TeamScope = {
@@ -557,8 +562,19 @@ const make = Effect.gen(function* () {
       RETURNING seq`;
     const seq = change?.seq ?? 0;
     // Who sees it as this change leaves it, and what else of theirs it showed or hid (`personSees`).
-    const [stored] = yield* sql<{ registerId: string }>`SELECT register_id AS "registerId"
-      FROM kin_records WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
+    const [stored] = yield* sql<{ registerId: string; projectKey: string | null }>`SELECT
+        r.register_id AS "registerId", p.key AS "projectKey"
+      FROM kin_records r LEFT JOIN kin_records p ON p.org_id = r.org_id
+        AND p.record_id = r.project_id
+      WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId}`;
+    const holders =
+      kind === "created" || fields.some((one) => one.field === "owner" || one.field === "project");
+    const shifted = fields.find((one) => one.field === "project");
+    const projects = holders
+      ? [...new Set([shifted?.from, shifted?.to, stored?.projectKey])].filter(
+          (key): key is string => typeof key === "string",
+        )
+      : [];
     const before = team?.before ?? [];
     const after = yield* teamPairs(orgId, [
       ...new Set([row.recordId, ...(team?.scope ?? [])]),
@@ -592,6 +608,7 @@ const make = Effect.gen(function* () {
         ...(stored === undefined ? {} : { registerId: stored.registerId }),
         ...(kind === "created" ? { created: true as const } : {}),
         team: numbers,
+        ...(projects.length === 0 ? {} : { projects }),
       }),
     );
     return seq;
