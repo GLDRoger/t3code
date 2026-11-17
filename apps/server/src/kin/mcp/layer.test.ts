@@ -38,6 +38,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -155,7 +156,7 @@ it.effect.each([true, false])(
   (enabled) =>
     Effect.scoped(
       Effect.gen(function* () {
-        let runnerStarts = 0;
+        const runnerStarts = yield* Queue.unbounded<void>();
         // GitHub's login is the stand-in, never this machine's own gh (`KIN_DEV_FAKE_GITHUB`).
         const fs = yield* FileSystem.FileSystem;
         const github = yield* fs.makeTempDirectoryScoped({ prefix: "kin-mcp-github-" });
@@ -205,9 +206,7 @@ it.effect.each([true, false])(
           Layer.provide(
             Layer.succeed(
               ServerActivation,
-              Effect.sync(() => {
-                runnerStarts++;
-              }).pipe(Effect.andThen(Effect.never)),
+              Queue.offer(runnerStarts, undefined).pipe(Effect.andThen(Effect.never)),
             ),
           ),
           Layer.provide(
@@ -225,7 +224,8 @@ it.effect.each([true, false])(
         const http = yield* HttpRouter.toHttpEffect(routes);
         // The wake-up runner, the chat wake bridge, the worker tracker, the finished-task watch,
         // the Work import and the issued amounts check.
-        assert.strictEqual(runnerStarts, enabled ? 6 : 0);
+        if (enabled) yield* Queue.takeN(runnerStarts, 6);
+        assert.strictEqual(yield* Queue.size(runnerStarts), 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);
         const registry = Context.get(services, McpSessions.McpSessionRegistry);
