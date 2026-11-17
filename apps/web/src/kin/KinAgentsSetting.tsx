@@ -16,7 +16,7 @@ import { Switch } from "../components/ui/switch";
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "../hooks/useSettings";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
-import { useOpenKinAgentPage } from "./KinAgentPage";
+import { useOpenKinAgentPage } from "./kinAgentPageLink";
 import { KinAgentModelPicker } from "./KinAgentModelPicker";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";

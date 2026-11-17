@@ -470,3 +470,22 @@ teammates will use.
 
 To give agents characters you wrote yourself, see
 [Setting agents' characters from the host](../operations/kin-characters.md).
+
+### Taking your data out
+
+**Settings → Company details → Download everything** (the owner only) saves one zip: your clients,
+projects, every list's entries with their payments, each doc as it reads now, and the files docs
+and entries hold. On the phone, the same row downloads the zip and opens the share sheet.
+
+`kin.jsonl` inside it is the file [Kin's import](./kin-import.md) reads, so a new Kin can take
+the company back. On the computer running it, unzip the file, then:
+
+```sh
+t3 kin import --file kin.jsonl          # what it would make
+t3 kin import --file kin.jsonl --apply
+```
+
+What comes back is owned by whoever imports it; who did what and each entry's history stay behind,
+and so do contacts (they're in `contacts.jsonl` to keep). Memory isn't in the zip: it is kept in
+your memory repository. The zip never holds connection tokens, keys, sign-in sessions, pairing
+codes, invites or push tokens.

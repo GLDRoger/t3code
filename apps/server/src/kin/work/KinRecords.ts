@@ -1119,6 +1119,8 @@ const make = Effect.gen(function* () {
         dateAllDay: row.dateAllDay === 1,
         notes: row.notes,
         sensitive: row.sensitive === 1,
+        // The next one is seen by whoever saw this one.
+        team: row.teamShared === 1,
         confirmed: row.confirmed === 1,
         partyId: row.partyId,
         projectId: row.projectId,

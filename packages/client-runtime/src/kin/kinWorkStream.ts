@@ -20,6 +20,8 @@ import * as Stream from "effect/Stream";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
 import { requestGuarded, subscribeDynamic } from "../rpc/index.ts";
 import { environmentSessionGenerationAtom } from "../state/runtime.ts";
+import { kinAccessMeAtom } from "./kinAccess.ts";
+import { kinViewerReachKey } from "./kinJoin.ts";
 import { resubscribeWhenKinReturns, retryWhileKinUnavailable } from "./kinStreams.ts";
 import { kinWorkFailuresOf, kinWorkRefused } from "./kinWork.ts";
 
@@ -144,16 +146,17 @@ type KinWorkTarget = {
 
 /**
  * `refreshTrigger`s from Work's own stream: a change to a list the read covers (`"any"`: every
- * list), a fresh start, or a new session on a host that can't resume; `also` adds a topic. Reads
- * only while shown, and once on its next showing for a move it missed.
+ * list), a fresh start, a new session on a host that can't resume, or the viewer's places moving;
+ * `also` adds a topic. Reads only while shown, and once on its next showing for a move it missed.
  */
 export function createKinWorkRefreshTriggers<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
   live: (target: KinWorkTarget) => Atom.Atom<AsyncResult.AsyncResult<KinWorkLive, unknown>>,
 ) {
   return (lists: KinWorkListsCovered, also?: (target: KinWorkTarget) => Atom.Atom<unknown>) =>
-    (target: KinWorkTarget) =>
-      Atom.make((get) => {
+    (target: KinWorkTarget) => {
+      let firstReach: string | undefined;
+      return Atom.make((get) => {
         const { environmentId } = target;
         const held = AsyncResult.getOrElse(
           get(live({ environmentId, input: { orgId: target.input.orgId } })),
@@ -166,8 +169,15 @@ export function createKinWorkRefreshTriggers<R, ER>(
         // A host that streams rows resumes from its number; an older one's reads follow each session.
         const sessions = get(environmentSessionGenerationAtom(runtime, environmentId));
         const unresumed = held?.rows === null ? Math.max(0, sessions - 1) : 0;
-        return `${unresumed}:${epoch}:${moved}:${topic}`;
+        // A refused read stays refused until asked again, so a place switched on or off reads
+        // again. Learning the viewer's reach the first time is no move.
+        const me = get(kinAccessMeAtom(runtime, environmentId));
+        const reach = me === null ? undefined : kinViewerReachKey(me);
+        firstReach ??= reach;
+        const moves = reach === firstReach ? "" : reach;
+        return `${unresumed}:${epoch}:${moved}:${topic}:${moves}`;
       });
+    };
 }
 
 /**

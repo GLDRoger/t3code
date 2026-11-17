@@ -4,6 +4,9 @@ import {
   KIN_WORK_NOTES_MAX,
   KIN_WORK_TITLE_MAX,
   createKinWorkActions,
+  KIN_WORK_REPEAT,
+  kinRepeatText,
+  kinSameRepeat,
   kinWorkAssignees,
   kinWorkDayOf,
   kinWorkDraftCheck,
@@ -242,7 +245,46 @@ export function KinWorkNewDialog(
                     }
                   />
                 </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label>{KIN_WORK_REPEAT.label}</Label>
+                  <Select
+                    value={
+                      KIN_WORK_REPEAT.choices.find((choice) =>
+                        kinSameRepeat(choice.rule, draft.repeat),
+                      )?.label ?? NONE
+                    }
+                    onValueChange={(value) =>
+                      setDraft({
+                        ...draft,
+                        repeat:
+                          KIN_WORK_REPEAT.choices.find((choice) => choice.label === value)?.rule ??
+                          null,
+                      })
+                    }
+                  >
+                    <SelectTrigger className="w-full min-w-0" aria-label={KIN_WORK_REPEAT.label}>
+                      <SelectValue>
+                        {draft.repeat === null
+                          ? KIN_WORK_REPEAT.never
+                          : kinRepeatText(draft.repeat)}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup alignItemWithTrigger={false}>
+                      <SelectItem value={NONE}>{KIN_WORK_REPEAT.never}</SelectItem>
+                      {KIN_WORK_REPEAT.choices.map((choice) => (
+                        <SelectItem key={choice.label} value={choice.label}>
+                          {choice.label}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                </div>
               </div>
+              {draft.repeat === null || problem !== null ? null : (
+                <p className="text-xs text-muted-foreground">
+                  {draft.due === null ? KIN_WORK_REPEAT.needsDue : KIN_WORK_REPEAT.note}
+                </p>
+              )}
               {hint === null ? null : <p className="text-xs text-muted-foreground">{hint}</p>}
               {choices === null ? null : (
                 <div className="grid gap-4 sm:grid-cols-2">

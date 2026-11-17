@@ -40,7 +40,7 @@ import { useEffect, useRef, useState } from "react";
 import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
-import { prefillKinDraft } from "./KinChatView";
+import { prefillKinDraft } from "./kinDraft";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected } from "./useKinHost";
