@@ -15,17 +15,18 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { fullSessionRefusal } from "./AgentSession.ts";
-import * as ServerConfig from "../../config.ts";
-import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
-import * as CodexIsolation from "./CodexIsolation.ts";
-import { ownerOnlyWakeup } from "./Audience.testkit.ts";
-import { SESSION_REFUSAL } from "./Audience.ts";
-import { KIN_DEFERRED_TOOLS } from "./deferredTools.ts";
-import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
-import { KinServer, type Services as KinServices } from "../KinServer.ts";
-import * as KinPersistence from "../persistence/KinPersistence.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
+import { fullSessionRefusal } from "../../AgentSession.ts";
+import * as ServerConfig from "../../../../config.ts";
+import * as CodexAdapterV2 from "../../../../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as Codex from "./codex.ts";
+import { kinInstructions } from "../session.ts";
+import { ownerOnlyWakeup } from "../../Audience.testkit.ts";
+import { SESSION_REFUSAL } from "../../Audience.ts";
+import { KIN_DEFERRED_TOOLS } from "../../deferredTools.ts";
+import { KinAgentSessionPolicy } from "../../sessionPolicy.ts";
+import { KinServer, type Services as KinServices } from "../../../KinServer.ts";
+import * as KinPersistence from "../../../persistence/KinPersistence.ts";
+import * as Sqlite from "../../../../persistence/Sqlite.ts";
 
 type Sent = { readonly method: string; readonly params: Record<string, unknown> };
 
@@ -138,10 +139,14 @@ const session = (
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        CodexIsolation.codexClientFactory(base).pipe(
-          Layer.provide(kinServer),
-          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: enabled }))),
-        ),
+        Codex.codex
+          .install(base)
+          .pipe(
+            Layer.provide(kinServer),
+            Layer.provide(
+              ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: enabled })),
+            ),
+          ),
       ),
     );
     return sent;
@@ -164,9 +169,9 @@ it.effect(
           assert.deepStrictEqual(params.environments, []);
           assert.strictEqual(params.sandbox, "read-only");
           assert.strictEqual(params.approvalPolicy, "never");
-          assert.strictEqual(params.baseInstructions, CodexIsolation.codexInstructions);
+          assert.strictEqual(params.baseInstructions, kinInstructions("confined", "codex"));
           const config = params.config as Record<string, unknown>;
-          for (const [key, value] of Object.entries(CodexIsolation.CONFINED_CONFIG))
+          for (const [key, value] of Object.entries(Codex.CONFINED_CONFIG))
             assert.deepStrictEqual(config[key], value, key);
           // The user's own servers are off by name; T3's keep Kin's endpoint, calls approved.
           assert.strictEqual(config["mcp_servers.chrome.enabled"], false);
@@ -180,7 +185,7 @@ it.effect(
             omit_tools_from: ["deferred"],
             default_tools_approval_mode: "approve",
           });
-          assert.deepStrictEqual(config[`mcp_servers.${CodexIsolation.KIN_RARE_SERVER}`], {
+          assert.deepStrictEqual(config[`mcp_servers.${Codex.KIN_RARE_SERVER}`], {
             ...endpoint,
             enabled_tools: [...KIN_DEFERRED_TOOLS],
             default_tools_approval_mode: "approve",
@@ -221,15 +226,21 @@ it.effect(
 );
 
 it.effect(
-  "a Codex task a lead delegated posts on GitHub through the signing gh; other Codex threads, and Kin off, are untouched",
+  "a Codex task a lead delegated posts on GitHub through the signing gh and asks Kin before each command, as a Claude task does; other Codex threads, and Kin off, are untouched",
   () =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
       const [, delegated] = yield* session("task-from-lead", "/work/scratch");
-      assert.deepStrictEqual(delegated?.params.config, {
+      assert.deepInclude(delegated?.params.config, {
         ...t3ThreadStart.config,
+        "shell_environment_policy.inherit": "all",
         "shell_environment_policy.set.PATH": `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
         "shell_environment_policy.set.KIN_AGENT_NAME": "Tech lead",
+      });
+      assert.deepInclude(delegated?.params, {
+        approvalPolicy: "untrusted",
+        approvalsReviewer: "user",
+        sandbox: "danger-full-access",
       });
       assert.notProperty(delegated?.params ?? {}, "environments");
       const plain = yield* session("thread-1", "/work/project");
@@ -345,7 +356,7 @@ it.effect(
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          CodexIsolation.codexClientFactory(base).pipe(
+          Codex.codex.install(base).pipe(
             Layer.provide(
               Layer.succeed(KinServer, {
                 taskCardUpdater: Layer.empty,
@@ -365,9 +376,9 @@ it.effect(
       assert.strictEqual(ownerStart?.approvalPolicy, "untrusted");
       assert.strictEqual(ownerStart?.approvalsReviewer, "user");
       assert.strictEqual(ownerStart?.sandbox, "danger-full-access");
-      assert.strictEqual(ownerStart?.baseInstructions, CodexIsolation.codexFullSessionInstructions);
+      assert.strictEqual(ownerStart?.baseInstructions, kinInstructions("owner", "codex"));
       const config = ownerStart?.config as Record<string, unknown>;
-      for (const [key, value] of Object.entries(CodexIsolation.FULL_SESSION_CONFIG))
+      for (const [key, value] of Object.entries(Codex.FULL_SESSION_CONFIG))
         assert.deepStrictEqual(config[key], value, key);
       // Search from the cached index and image viewing, as Claude's owner turn has them; unified
       // exec, whose stdin Codex doesn't ask about, and the user's own servers stay off.
@@ -392,7 +403,7 @@ it.effect(
       assert.deepStrictEqual(sharedStart?.environments, []);
       assert.strictEqual(sharedStart?.approvalPolicy, "never");
       assert.strictEqual(sharedStart?.sandbox, "read-only");
-      assert.strictEqual(sharedStart?.baseInstructions, CodexIsolation.codexInstructions);
+      assert.strictEqual(sharedStart?.baseInstructions, kinInstructions("confined", "codex"));
       const turns = sent
         .filter(({ method }) => method === "turn/start")
         .map(({ params }) => params);

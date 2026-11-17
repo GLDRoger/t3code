@@ -3,6 +3,7 @@ import {
   type ModelSelection,
   type ServerProvider,
   TrimmedNonEmptyString,
+  KIN_PROVIDER_FACTS,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -28,8 +29,8 @@ const refused = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
 const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9.]+/g, "");
 
-/** Effort's option id: `effort` on Claude, `reasoningEffort` on Codex. */
-const EFFORT_OPTIONS = new Set(["effort", "reasoningEffort"]);
+/** Effort's option id on each provider an agent runs on. */
+const EFFORT_OPTIONS = new Set(KIN_PROVIDER_FACTS.map((facts) => facts.effortOption));
 
 /**
  * The model this host offers an agent that the owner's words name ("Sonnet", "opus 4.6"), with an

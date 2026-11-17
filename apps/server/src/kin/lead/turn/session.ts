@@ -1,0 +1,205 @@
+import {
+  KIN_CAPABILITY_WORDS,
+  type KinCapability,
+  kinProviderFacts,
+  type ThreadId,
+} from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+
+import { ServerConfig } from "../../../config.ts";
+import { threadPrefix as dreamThreadPrefix } from "../../dreaming/DreamIsolation.ts";
+import { agentShellScripts, GH_APP_FOLDER } from "../../github/ghSign.ts";
+import { KinEnabled, layer as kinEnabledLayer } from "../../KinEnabled.ts";
+import { KinServer } from "../../KinServer.ts";
+import { SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "../Audience.ts";
+import { KIN_DEFERRED_TOOLS } from "../deferredTools.ts";
+import { instructions } from "../instructions.ts";
+import { KinAgentSessionPolicy } from "../sessionPolicy.ts";
+
+/** Where an agent's `gh`, `git` and `kin-as-owner` (`ghSign.ts`) live under Kin's state folder. */
+const GH_SIGN_FOLDER = "gh-sign";
+
+/**
+ * - `owner`: an owner-only turn; the provider's built-ins, each call decided by `refusal`.
+ * - `confined`: a chat others read, or no Kin turn behind it: Kin's tools only.
+ * - `delegated`: a task a lead delegated; the provider's own session, Kin's signing shell.
+ * - `dream`: DreamIsolation's; a provider narrows it, never widens it.
+ */
+export type KinSeat = "owner" | "confined" | "delegated" | "dream";
+
+export interface KinShell {
+  /** Kin's signing `gh` and git first, then the pinned `gh` and Typst, then the host's PATH. */
+  readonly path: string;
+  /** What it posts on GitHub is signed with this name. */
+  readonly agentName: string | undefined;
+}
+
+export interface KinSessionPlan {
+  readonly seat: KinSeat;
+  readonly thread: ThreadId;
+  /** The whole system prompt for `owner` and `confined`; the provider's own otherwise. */
+  readonly instructions: string | undefined;
+  /** Kin tools that wait to be searched for; every other Kin tool loads up front. */
+  readonly deferredTools: ReadonlySet<string>;
+  readonly shell: KinShell | undefined;
+  /** Why a built-in call is refused now, as the line the model reads; undefined admits it. */
+  readonly refusal: Effect.Effect<string | undefined>;
+}
+
+/** GPT agents rarely asked with a card or made the Confirm card (evals, Nov 2026); true for all. */
+const ALL_MODELS_NOTE =
+  "When a decision is the owner's, ask with kin_ask and the default you'll take, not in prose. Mail, invoices, quotes, payments and social posts go out only by calling the tool that makes their Confirm card, never as a draft in the chat. Work on his own and his orgs' GitHub repos needs no card: do it.";
+const CONFINED_NOTE =
+  "This session has no shell, files or web: act only through your tools, and don't try those.";
+const OWNER_NOTE =
+  "Your shell and file edits run as the owner, and Kin checks each one as it runs: in a chat others read, or once the turn has read outside content, it's refused with a line saying why.";
+
+const listed = (words: ReadonlyArray<string>) =>
+  words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`;
+
+/** What a seat has, said once for every provider from what that provider lacks. */
+const sessionNote = (seat: "owner" | "confined", lacks: ReadonlyArray<KinCapability>) => {
+  if (seat === "confined") return `${CONFINED_NOTE}\n${ALL_MODELS_NOTE}`;
+  const missing = lacks.map((capability) => KIN_CAPABILITY_WORDS[capability]);
+  const curl =
+    lacks.includes("webFetch") && !lacks.includes("shell") ? " Fetch a web page with curl." : "";
+  return `${OWNER_NOTE}${missing.length === 0 ? "" : ` Here you can't ${listed(missing)}.`}${curl}\n${ALL_MODELS_NOTE}`;
+};
+
+/** Kin's instructions are the whole system prompt on every provider, then what this seat has. */
+export const kinInstructions = (seat: "owner" | "confined", driver: string) =>
+  `${instructions}\n\n${sessionNote(seat, kinProviderFacts(driver)?.lacks ?? [])}`;
+
+/**
+ * Decides, once and for every provider, what a Kin session is: which turn it serves, what it may
+ * use and what it is told. A provider's descriptor only applies the plan to its own session.
+ */
+export class KinSessions extends Context.Service<
+  KinSessions,
+  {
+    readonly enabled: boolean;
+    /** Undefined for a session that isn't Kin's: the provider leaves it as T3 made it. */
+    readonly plan: (input: {
+      readonly threadId: ThreadId;
+      readonly cwd: string | undefined;
+      readonly driver: string;
+      /** The PATH the provider would give its shell. */
+      readonly path: string | undefined;
+    }) => Effect.Effect<KinSessionPlan | undefined>;
+  }
+>()("t3/kin/lead/turn/session/KinSessions") {
+  static readonly layer = Layer.effect(
+    KinSessions,
+    Effect.gen(function* () {
+      const enabled = (yield* KinEnabled).enabled;
+      if (!enabled)
+        return KinSessions.of({
+          enabled,
+          plan: Effect.fn("KinSessions.plan")(() => Effect.undefined),
+        });
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const config = yield* ServerConfig;
+      const kinDirectory = path.join(config.stateDir, "kin");
+      const signDirectory = path.join(kinDirectory, GH_SIGN_FOLDER);
+      const real = (target: string) => fs.realPath(target).pipe(Effect.orElseSucceed(() => target));
+      const within = (parent: string, child: string) => {
+        const relative = path.relative(parent, child);
+        return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+      };
+      const kin = yield* Effect.serviceOption(KinServer);
+      const policy = Option.flatMap(kin, (server) =>
+        Option.flatMap(server.services, (services) =>
+          Context.getOption(services, KinAgentSessionPolicy),
+        ),
+      );
+      // The agent's gh and git, in front of the pinned gh; a failed write leaves the plain ones.
+      if (Option.isSome(policy))
+        yield* Effect.gen(function* () {
+          yield* fs.makeDirectory(signDirectory, { recursive: true });
+          // The pinned gh's folder comes first (AgentSession.sessionPolicyLayer).
+          const pinned = policy.value.toolDirectories[0] ?? "";
+          for (const script of agentShellScripts({
+            shims: signDirectory,
+            app: path.join(kinDirectory, GH_APP_FOLDER),
+            realGh: path.join(pinned, "gh"),
+          })) {
+            const file = path.join(signDirectory, script.name);
+            yield* fs.writeFileString(file, script.text);
+            yield* fs.chmod(file, 0o755);
+          }
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't write its agents' gh and git", { cause }),
+          ),
+        );
+      const shellOf = Effect.fn("KinSessions.shell")(function* (
+        sessions: KinAgentSessionPolicy["Service"],
+        thread: ThreadId,
+        hostPath: string | undefined,
+      ) {
+        return {
+          path: [signDirectory, ...sessions.toolDirectories, hostPath].filter(Boolean).join(":"),
+          agentName: yield* sessions.agentName(thread),
+        } satisfies KinShell;
+      });
+      const plan = Effect.fn("KinSessions.plan")(function* (input: {
+        readonly threadId: ThreadId;
+        readonly cwd: string | undefined;
+        readonly driver: string;
+        readonly path: string | undefined;
+      }) {
+        const { threadId: thread, cwd } = input;
+        const isKin =
+          cwd !== undefined &&
+          (within(kinDirectory, path.resolve(cwd)) ||
+            within(yield* real(kinDirectory), yield* real(cwd)));
+        const isDream = thread.startsWith(dreamThreadPrefix);
+        // A lead's delegated task runs wherever T3 put it, usually a Scratch folder.
+        const delegated =
+          !isDream && Option.isSome(policy) && (yield* policy.value.delegated(thread));
+        if (!isKin && !delegated) return undefined;
+        const base = { thread, deferredTools: KIN_DEFERRED_TOOLS };
+        if (delegated && Option.isSome(policy))
+          return {
+            ...base,
+            seat: "delegated",
+            instructions: undefined,
+            shell: yield* shellOf(policy.value, thread, input.path),
+            refusal: policy.value.refusal(thread),
+          } satisfies KinSessionPlan;
+        if (isDream)
+          return {
+            ...base,
+            seat: "dream",
+            instructions: undefined,
+            shell: undefined,
+            refusal: Effect.succeed(SESSION_REFUSAL.none),
+          } satisfies KinSessionPlan;
+        if (!thread.startsWith(SHARED_THREAD_PREFIX) && Option.isSome(policy))
+          return {
+            ...base,
+            seat: "owner",
+            instructions: kinInstructions("owner", input.driver),
+            shell: yield* shellOf(policy.value, thread, input.path),
+            refusal: policy.value.refusal(thread),
+          } satisfies KinSessionPlan;
+        return {
+          ...base,
+          seat: "confined",
+          instructions: kinInstructions("confined", input.driver),
+          shell: undefined,
+          refusal: Option.isSome(policy)
+            ? policy.value.refusal(thread).pipe(Effect.map((why) => why ?? SESSION_REFUSAL.shared))
+            : Effect.succeed(SESSION_REFUSAL.none),
+        } satisfies KinSessionPlan;
+      });
+      return KinSessions.of({ enabled, plan });
+    }),
+  ).pipe(Layer.provide(kinEnabledLayer));
+}

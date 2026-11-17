@@ -344,7 +344,7 @@ it.effect(
       });
       const prefix = (text: string) => text.split(TURN_DIVIDER)[0];
       expect(prefix(first)).toBe(prefix(second));
-      // The instructions ride in the session's system prompt (LeadIsolation), never per wake-up.
+      // The instructions ride in the session's system prompt (`lead/turn/session.ts`), never per wake-up.
       expect(first.startsWith("# Standing rules\n\n")).toBe(true);
       expect(first).not.toContain(instructions.split("\n")[0]);
       // A budget is only worth a line when it is nearly spent.

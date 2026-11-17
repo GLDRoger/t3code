@@ -1,10 +1,11 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format change dates for React render, outside an Effect runtime.
-import type {
-  KinAgentPage,
-  KinPersonAccess,
-  ModelSelection,
-  ProviderOptionDescriptor,
-  ServerProviderModel,
+import {
+  type KinAgentPage,
+  type KinPersonAccess,
+  type ModelSelection,
+  type ProviderOptionDescriptor,
+  type ServerProviderModel,
+  KIN_PROVIDER_FACTS,
 } from "@t3tools/contracts";
 
 import { isReasoningSelect } from "../modelTraits.ts";
@@ -161,12 +162,14 @@ export function kinWithMediumEffort(
   };
 }
 
+const KIN_EFFORT_OPTIONS = new Set(KIN_PROVIDER_FACTS.map((facts) => facts.effortOption));
+
 /** "Sonnet 4.6, high effort" from a model's name and the effort it was saved with. */
 export function kinAgentModelLine(
   name: string,
   selection: { readonly options?: ReadonlyArray<{ readonly id: string; readonly value: unknown }> },
 ): string {
-  const effort = selection.options?.find((option) => option.id === "effort")?.value;
+  const effort = selection.options?.find((option) => KIN_EFFORT_OPTIONS.has(option.id))?.value;
   return typeof effort === "string" && effort !== "default" ? `${name}, ${effort} effort` : name;
 }
 

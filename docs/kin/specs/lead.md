@@ -294,7 +294,7 @@ A `MemorySyncConflict` fails the wake-up and leaves the events queued with the q
 
 Kin cannot set cache breakpoints, but it keeps the stable text first, so the provider's automatic prefix caching hits.
 
-The lead instructions (`instructions.ts`, below, with its version line) are the Claude session's whole system prompt: a custom prompt, not the Claude Code preset with an `append`. A lead has no shell and none of T3's thread tools, and the preset plus T3's thread guidance cost about 9k tokens a turn describing them. `LeadIsolation` sets it; dreams and other threads are left alone. They are set with `snapshot: false`. A lead reuses one session across wake-ups, so a recorded prompt would keep an old instructions version until compaction. Rules and the index stay in the message, because they change with every memory head and a lead session spans many heads.
+The lead instructions (`instructions.ts`, below, with its version line) are the session's whole system prompt on every provider, followed by one shared line on what the session has (`lead/turn/session.ts`): on Claude a custom prompt, not the Claude Code preset with an `append`; on Codex its base instructions. The presets plus T3's thread guidance cost about 9k tokens a turn describing tools a lead doesn't use as a coding agent would. `KinSessions` plans it and each provider's descriptor sets it; dreams and other threads are left alone. They are set with `snapshot: false`. A lead reuses one session across wake-ups, so a recorded prompt would keep an old instructions version until compaction. Rules and the index stay in the message, because they change with every memory head and a lead session spans many heads.
 
 Each wake-up's message, most stable first:
 

@@ -7,7 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 
 import * as Confinement from "./claudeConfinement.ts";
 import { dreamTools } from "./dreaming/DreamIsolation.ts";
-import { leadTools } from "./lead/LeadIsolation.ts";
+const readTools = ["Read", "Grep", "Glob"];
 
 const home = NodeOS.homedir();
 
@@ -41,7 +41,7 @@ it.effect("a Kin session's file tools reach only its real checkout", () =>
     yield* fs.symlink(other, `${root}/link-other`);
     yield* fs.symlink(`${base}/outside/secret.txt`, `${attachments}/kin-chat-link.txt`);
 
-    const lead = { root, tools: leadTools, attachments };
+    const lead = { root, tools: readTools, attachments };
     const dream = { root, tools: dreamTools };
     const shared = { root: undefined, tools: [] };
     const rootless = { root: undefined, tools: ["Bash"], mcp: false };

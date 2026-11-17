@@ -15,19 +15,19 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 
-import * as ServerConfig from "../../config.ts";
-import * as ClaudeAdapterV2 from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import { hookAllows, kinSecretVariables } from "../claudeConfinement.testkit.ts";
-import * as DreamIsolation from "../dreaming/DreamIsolation.ts";
-import { instructions } from "./instructions.ts";
-import * as LeadIsolation from "./LeadIsolation.ts";
-import { ownerOnlyWakeup } from "./Audience.testkit.ts";
-import { delegatedFromLead, leadNameOf, fullSessionRefusal } from "./AgentSession.ts";
-import { SESSION_REFUSAL } from "./Audience.ts";
-import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
-import { KinServer, type Services as KinServices } from "../KinServer.ts";
-import * as KinPersistence from "../persistence/KinPersistence.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
+import * as ServerConfig from "../../../../config.ts";
+import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { hookAllows, kinSecretVariables } from "../../../claudeConfinement.testkit.ts";
+import * as DreamIsolation from "../../../dreaming/DreamIsolation.ts";
+import { builtinTools, claude } from "./claude.ts";
+import { kinInstructions } from "../session.ts";
+import { ownerOnlyWakeup } from "../../Audience.testkit.ts";
+import { delegatedFromLead, leadNameOf, fullSessionRefusal } from "../../AgentSession.ts";
+import { SESSION_REFUSAL } from "../../Audience.ts";
+import { KinAgentSessionPolicy } from "../../sessionPolicy.ts";
+import { KinServer, type Services as KinServices } from "../../../KinServer.ts";
+import * as KinPersistence from "../../../persistence/KinPersistence.ts";
+import * as Sqlite from "../../../../persistence/Sqlite.ts";
 
 const optionsAt = (cwd: string, environment: NodeJS.ProcessEnv = { PATH: "/usr/bin" }) =>
   ClaudeAdapterV2.makeClaudeQueryOptions({
@@ -48,7 +48,7 @@ it.effect.each([
   [true, false],
   [false, true],
 ])(
-  "a Kin lead loads no settings file and Kin tools upfront, its file tools confined to its checkout (KIN_ENABLED=%s, lead wrapper outside=%s)",
+  "a confined Kin session loads no settings file, Kin tools up front and none of Claude Code's own (KIN_ENABLED=%s, lead wrapper outside=%s)",
   ([enabled, leadOutside]) =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -108,8 +108,8 @@ it.effect.each([
       }).pipe(
         Effect.provide(
           (leadOutside
-            ? LeadIsolation.claudeQueryRunner(DreamIsolation.claudeQueryRunner(base))
-            : DreamIsolation.claudeQueryRunner(LeadIsolation.claudeQueryRunner(base))
+            ? claude.install(DreamIsolation.claudeQueryRunner(base))
+            : DreamIsolation.claudeQueryRunner(claude.install(base))
           ).pipe(
             Layer.provide(
               ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: enabled })),
@@ -129,22 +129,17 @@ it.effect.each([
       assert.deepStrictEqual(leadRest, {
         ...lead,
         // The instructions alone: no coding-agent preset, no T3 thread guidance.
-        systemPrompt: { type: "custom", prompt: instructions, snapshot: false },
+        systemPrompt: {
+          type: "custom",
+          prompt: kinInstructions("confined", "claudeAgent"),
+          snapshot: false,
+        },
         // No settings file: user settings carry hooks, plugins and env a lead must not inherit.
         settingSources: [],
-        disallowedTools: [
-          ...(lead.disallowedTools ?? []),
-          ...LeadIsolation.leadBlockedTools,
-          `Read(/${config.secretsDir}/**)`,
-          `Read(/${config.baseDir}/service.env)`,
-          `Read(/${config.dbPath}*)`,
-          "Read(~/.ssh/**)",
-          "Read(~/.config/kin/**)",
-          "Read(~/.config/gh/**)",
-        ],
+        disallowedTools: [...(lead.disallowedTools ?? []), ...builtinTools],
         strictMcpConfig: true,
         // Kin's tools load upfront; only those marked deferred wait for ToolSearch.
-        tools: [...LeadIsolation.leadTools, "ToolSearch"],
+        tools: ["ToolSearch"],
         mcpServers: { kin: { type: "http", url: "http://127.0.0.1/kin", alwaysLoad: true } },
         // Only the owner's model credentials come from their settings.
         settings: {
@@ -170,12 +165,12 @@ it.effect.each([
         assert.notProperty(dreamOpened?.env ?? {}, name);
         assert.notProperty(sharedOpened?.env ?? {}, name);
       }
-      // The confinement hook is what the session runs: its checkout, and nothing else.
+      // The confinement hook is what the session runs: Kin's tools, and nothing else.
       const leadAllows = (tool: string, input: unknown) => hookAllows(leadOpened, tool, input);
-      assert.isTrue(yield* Effect.promise(() => leadAllows("Read", { file_path: "notes.md" })));
-      assert.isTrue(yield* Effect.promise(() => leadAllows("Glob", { pattern: "**/*.md" })));
       assert.isTrue(yield* Effect.promise(() => leadAllows("ToolSearch", { query: "chart" })));
       for (const [tool, input] of [
+        ["Read", { file_path: "notes.md" }],
+        ["Glob", { pattern: "**/*.md" }],
         ["Read", { file_path: "/etc/passwd" }],
         ["Read", { file_path: "/proc/self/environ" }],
         ["Read", { file_path: "~/.local/share/keyrings/login.keyring" }],
@@ -209,8 +204,7 @@ it.effect.each([
       assert.isTrue(
         yield* Effect.promise(() => hookAllows(sharedOpened, "ToolSearch", { query: "chart" })),
       );
-      for (const tool of LeadIsolation.leadTools)
-        assert.include(sharedOpened?.disallowedTools ?? [], tool);
+      for (const tool of builtinTools) assert.include(sharedOpened?.disallowedTools ?? [], tool);
       assert.isDefined(sharedOpened?.mcpServers?.kin);
     }).pipe(
       Effect.scoped,
@@ -276,7 +270,7 @@ it.effect(
           return opened.at(-1);
         }).pipe(
           Effect.provide(
-            LeadIsolation.claudeQueryRunner(base).pipe(
+            claude.install(base).pipe(
               Layer.provide(
                 Layer.succeed(KinServer, {
                   taskCardUpdater: Layer.empty,
@@ -321,27 +315,30 @@ it.effect(
       assert.deepStrictEqual(full?.settingSources, []);
       assert.deepStrictEqual(full?.systemPrompt, {
         type: "custom",
-        prompt: instructions,
+        prompt: kinInstructions("owner", "claudeAgent"),
         snapshot: false,
       });
       const allows = (tool: string, input: unknown) =>
         Effect.promise(() => hookAllows(full, tool, input));
       const shell = { command: "gh pr list" };
-      // No running turn on the thread, such as a run Kin hasn't adopted: only the confined set.
+      // No running turn on the thread, such as a run Kin hasn't adopted: Kin's tools only.
       assert.isFalse(yield* allows("Bash", shell));
-      assert.isTrue(yield* allows("Read", { file_path: "notes.md" }));
+      assert.isFalse(yield* allows("Read", { file_path: "notes.md" }));
+      assert.isTrue(yield* allows("mcp__kin__memory_read", { id: "M-1" }));
       yield* sql`UPDATE kin_wakeups SET status = 'running', thread_id = 'kin:tech',
         audience = 'owner_only' WHERE wakeup_id = 'wake-full'`;
       assert.isTrue(yield* allows("Bash", shell));
       assert.isTrue(yield* allows("Edit", { file_path: "/work/x/README.md" }));
       assert.isTrue(yield* allows("WebFetch", { url: "https://example.com" }));
       assert.isTrue(yield* allows("Agent", { prompt: "look" }));
-      // Once the turn read a connected service's text, the shell is gone for the rest of it.
+      // Once the turn read a connected service's text, Claude Code's own tools are gone for the
+      // rest of it, as on every provider; memory stays open through Kin's memory tools.
       yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
         VALUES (${orgId}, 'wake-full', 0, 'conn_mail')`;
       assert.isFalse(yield* allows("Bash", shell));
       assert.isFalse(yield* allows("Read", { file_path: "/etc/passwd" }));
-      assert.isTrue(yield* allows("Read", { file_path: "notes.md" }));
+      assert.isFalse(yield* allows("Read", { file_path: "notes.md" }));
+      assert.isTrue(yield* allows("mcp__kin__memory_read", { id: "M-1" }));
       yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-full'`;
       // Someone else joined the chat it answers: aborted, and nothing more runs.
       yield* sql`UPDATE kin_wakeups SET aborted_at = 1 WHERE wakeup_id = 'wake-full'`;
@@ -460,7 +457,7 @@ it.effect(
           return opened.at(-1);
         }).pipe(
           Effect.provide(
-            LeadIsolation.claudeQueryRunner(base).pipe(
+            claude.install(base).pipe(
               Layer.provide(
                 Layer.succeed(KinServer, {
                   taskCardUpdater: Layer.empty,

@@ -315,7 +315,7 @@ export async function capturePrompts(
   }
   NodeFS.rmSync(flag, { force: true });
 
-  // The Claude lead's system prompt is Kin's instructions alone (LeadIsolation.ts).
+  // The Claude lead's system prompt is Kin's instructions alone (`lead/turn/session.ts`).
   const instructions = NodeFS.readFileSync(
     NodePath.join(ROOT, "apps/server/src/kin/lead/instructions.ts"),
     "utf8",
