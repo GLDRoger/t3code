@@ -145,3 +145,12 @@ export const syncKinCacheIdentity = Effect.fn("KinCache.syncIdentity")(function*
     Effect.catch(() => Effect.logWarning("Kin cache identity sync failed")),
   );
 });
+
+/** Drops an environment's whole Kin cache, as when the host is removed from this phone. */
+export const clearKinCache = Effect.fn("KinCache.clear")(function* (environmentId: EnvironmentId) {
+  const database = yield* MobileDatabase;
+  yield* database.clearCacheKind(environmentId, KIND).pipe(
+    indexLock.withPermit,
+    Effect.catch(() => Effect.logWarning("Kin cache clear failed")),
+  );
+});

@@ -618,9 +618,11 @@ const revalidateOnMount =
 export const selectEnvironmentQueryData = <A, E>(result: AsyncResult.AsyncResult<A, E>): A | null =>
   AsyncResult.getOrElse(result, () => null);
 
+/** The supervisor's state and session, and the supervisor: a new one is a new registration. */
 type EnvironmentConnection = readonly [
   SupervisorConnectionState,
   Option.Option<RpcSession.RpcSession>,
+  EnvironmentSupervisor.EnvironmentSupervisor["Service"],
 ];
 
 const connectionAtomsByRuntime = new WeakMap<
@@ -648,6 +650,7 @@ function environmentConnectionAtoms<R, ER>(
             Effect.map((supervisor) =>
               SubscriptionRef.changes(supervisor.state).pipe(
                 Stream.zipLatest(SubscriptionRef.changes(supervisor.session)),
+                Stream.map(([state, session]) => [state, session, supervisor] as const),
               ),
             ),
           ),
@@ -737,7 +740,11 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
     // Per registry: the connection the last build saw, and whether a read is still owed.
     const sessions = new WeakMap<
       AtomRegistry.AtomRegistry,
-      { connection: EnvironmentConnection | null; owed: boolean }
+      {
+        connection: EnvironmentConnection | null;
+        supervisor: EnvironmentConnection[2] | null;
+        owed: boolean;
+      }
     >();
     const owe = (registry: AtomRegistry.AtomRegistry) => {
       const held = sessions.get(registry);
@@ -762,9 +769,12 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
             get.self<AsyncResult.AsyncResult<A, unknown>>(),
             AsyncResult.value,
           );
+          const supervisor = connection?.[2] ?? held?.supervisor ?? null;
+          const sameRegistration = held === undefined || held.supervisor === supervisor;
           // Only the connection moved, and the answer held was read in full: it still stands.
           if (
             held !== undefined &&
+            sameRegistration &&
             held.connection !== connection &&
             !held.owed &&
             Option.isSome(previous)
@@ -772,7 +782,10 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
             held.connection = connection;
             return Effect.succeed(previous.value);
           }
-          const mark = { connection, owed: true };
+          // A new supervisor is a new registration, maybe another person on the same host: what
+          // the last one answered is not shown while this one is read.
+          if (!sameRegistration && Option.isSome(previous)) get.setSelf(AsyncResult.initial(true));
+          const mark = { connection, supervisor, owed: true };
           sessions.set(get.registry, mark);
           settle = Effect.sync(() => {
             mark.owed = false;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinAskDraft, kinDraftPrefill } from "./kinDraft.ts";
+import { kinAskDraft, kinDraftGoesWith, kinDraftKey, kinDraftPrefill } from "./kinDraft.ts";
 
 describe("kinDraftPrefill", () => {
   it.each([
@@ -41,5 +41,20 @@ describe("kinAskDraft", () => {
     ],
   ] as const)("%s", (_, typed, question, ref, text, after) => {
     expect(kinAskDraft(typed, { question, ref })).toEqual({ text, ref: after });
+  });
+});
+
+describe("kinDraftGoesWith", () => {
+  it.each([
+    ["its own host's chat", kinDraftKey("env-a", "org-1", "chat-1"), "env-a", true],
+    [
+      "another host's chat, same org and chat ids",
+      kinDraftKey("env-b", "org-1", "chat-1"),
+      "env-a",
+      false,
+    ],
+    ["a host whose id starts the same", kinDraftKey("env-ab", "org-1", "chat-1"), "env-a", false],
+  ])("removing a host takes %s: %s", (_name, key, removed, goes) => {
+    expect(kinDraftGoesWith(key, removed)).toBe(goes);
   });
 });

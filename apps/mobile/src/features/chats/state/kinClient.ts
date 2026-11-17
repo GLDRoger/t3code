@@ -20,11 +20,11 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { Atom } from "effect/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
-import { syncKinCacheIdentity, withKinCache, withKinCacheStream } from "./kinCache";
+import { clearKinCache, syncKinCacheIdentity, withKinCache, withKinCacheStream } from "./kinCache";
 
 export type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 
@@ -69,6 +69,25 @@ export const saveKinDockAtom = connectionAtomRuntime.fn(
       ),
     ),
 );
+
+const forgetKinCacheAtom = connectionAtomRuntime.fn((environmentId: EnvironmentId) =>
+  clearKinCache(environmentId).pipe(
+    Effect.andThen(
+      Effect.sync(() => {
+        appAtomRegistry.refresh(kinCachedOrgsAtom(environmentId));
+        appAtomRegistry.refresh(kinCachedDockAtom(environmentId));
+      }),
+    ),
+  ),
+);
+
+/** A removed host's directory and dock go from memory too, so the next person never reads them. */
+export const forgetKinCache = (environmentId: EnvironmentId): Promise<void> => {
+  appAtomRegistry.set(forgetKinCacheAtom, environmentId);
+  return Effect.runPromise(
+    AtomRegistry.getResult(appAtomRegistry, forgetKinCacheAtom, { suspendOnWaiting: true }),
+  ).then(() => undefined);
+};
 
 /** The shared Kin client, with this phone's device cache for the directory, chat list and chats. */
 const kin = makeKinClient(connectionAtomRuntime, appAtomRegistry, {

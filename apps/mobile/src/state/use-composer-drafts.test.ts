@@ -2469,12 +2469,16 @@ describe("mobile composer drafts", () => {
           "new-task:cloud-draft": cloudDraft,
           [`${retainedEnvironmentId}:thread-local`]: DRAFT,
           "new-task:local-draft": localDraft,
+          // A Kin chat's unsent text goes with its host, so the next person never sees it.
+          [`kin:${environmentId}:org-1:chat-1`]: DRAFT,
+          [`kin:${retainedEnvironmentId}:org-1:chat-1`]: DRAFT,
         },
         environmentId,
       ),
     ).toEqual({
       [`${retainedEnvironmentId}:thread-local`]: DRAFT,
       "new-task:local-draft": localDraft,
+      [`kin:${retainedEnvironmentId}:org-1:chat-1`]: DRAFT,
     });
   });
 

@@ -135,15 +135,23 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     Option.some(rpcSession ?? QUERY_RPC_SESSION),
   );
   const streamGeneration = yield* SubscriptionRef.make(0);
-  const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-    target: QUERY_ENVIRONMENT,
-    state: supervisorState,
-    session: supervisorSession,
-    prepared: yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none()),
-    connect: Effect.void,
-    disconnect: Effect.void,
-    retryNow: Effect.void,
-  } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+  const makeSupervisor = Effect.fn("TestEnvironmentQuery.makeSupervisor")(function* () {
+    return EnvironmentSupervisor.EnvironmentSupervisor.of({
+      target: QUERY_ENVIRONMENT,
+      state: supervisorState,
+      session: supervisorSession,
+      prepared: yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none()),
+      connect: Effect.void,
+      disconnect: Effect.void,
+      retryNow: Effect.void,
+    } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+  });
+  let supervisor = yield* makeSupervisor();
+  /** The registry forgets the environment and installs a new supervisor, as a re-pairing does. */
+  const replaceSupervisor = Effect.fn("TestEnvironmentQuery.replaceSupervisor")(function* () {
+    supervisor = yield* makeSupervisor();
+    yield* SubscriptionRef.update(streamGeneration, (generation) => generation + 1);
+  });
   const run: EnvironmentRegistry.EnvironmentRegistry["Service"]["run"] = (_environmentId, effect) =>
     Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor);
   const followStream: EnvironmentRegistry.EnvironmentRegistry["Service"]["followStream"] = (
@@ -182,6 +190,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
     supervisorSession,
     supervisorState,
     streamGeneration,
+    replaceSupervisor,
   };
 });
 
@@ -1271,6 +1280,36 @@ describe("environment query lifecycle", () => {
             queryConnectionState({ generation: 3 }),
           );
           expect(yield* read).toBe(2);
+        }),
+      ),
+  );
+
+  it.effect(
+    "a query kept across sessions holds nothing from before the registry installed a new supervisor",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let executions = 0;
+          const gate = yield* Deferred.make<void>();
+          const trigger = Atom.make(0).pipe(Atom.keepAlive);
+          const harness = yield* makeEnvironmentQueryHarness(
+            Effect.suspend(() => {
+              executions += 1;
+              return executions === 1 ? Effect.succeed(1) : Deferred.await(gate).pipe(Effect.as(2));
+            }),
+            { refreshTrigger: trigger, keepAcrossSessions: true },
+          );
+          const registry = yield* mountEnvironmentQuery(harness.atom);
+          expect(yield* readEnvironmentQuery(registry, harness.atom)).toBe(1);
+
+          // Signed out and someone else paired on the same host: the first person's answer is gone
+          // at once, not shown while the second person's is read.
+          yield* harness.replaceSupervisor();
+          yield* Effect.yieldNow;
+          expect(executions).toBe(2);
+          expect(Option.isNone(AsyncResult.value(registry.get(harness.atom)))).toBe(true);
+          yield* Deferred.succeed(gate, undefined);
+          expect(yield* readEnvironmentQuery(registry, harness.atom)).toBe(2);
         }),
       ),
   );

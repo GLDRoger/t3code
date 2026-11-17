@@ -5,7 +5,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
-import { clearKinOutboxEnvironment } from "../features/chats/state/kinOutboxRemoval";
+import {
+  clearKinCacheEnvironment,
+  clearKinOutboxEnvironment,
+} from "../features/chats/state/kinOutboxRemoval";
 import { clearThreadComposerErrorsForEnvironment } from "../state/thread-composer-error";
 import { clearThreadOutboxEnvironment } from "../state/thread-outbox-removal";
 import { clearComposerDraftsEnvironment } from "../state/use-composer-drafts";
@@ -21,7 +24,7 @@ export const layer = Layer.succeed(
     clear: Effect.fn("Persistence.EnvironmentOwnedDataCleanup.clear")(function (environmentId) {
       // Each clear settles on its own: a failure must not interrupt a clear that is still running.
       const settle = (
-        operation: "outbox" | "drafts" | "kin-outbox",
+        operation: "outbox" | "drafts" | "kin-outbox" | "kin-cache",
         clear: (environmentId: EnvironmentId) => Promise<void>,
       ) =>
         Effect.tryPromise({
@@ -41,6 +44,7 @@ export const layer = Layer.succeed(
           settle("outbox", clearThreadOutboxEnvironment),
           settle("drafts", clearComposerDraftsEnvironment),
           settle("kin-outbox", clearKinOutboxEnvironment),
+          settle("kin-cache", clearKinCacheEnvironment),
           Effect.sync(() => clearThreadComposerErrorsForEnvironment(environmentId)),
         ],
         { concurrency: "unbounded", discard: true },
