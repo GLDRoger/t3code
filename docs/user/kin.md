@@ -346,10 +346,13 @@ but GitHub would let them merge or approve: what stops an agent is its own `gh` 
 in a shell that can also read those tokens. To be sure the App changes no default branch, protect
 the branches from Kin, as below.
 
-**Settings → Connections → GitHub** says how many watched repos have an unprotected default
-branch, and each repo in the watched list says whether its branch is unprotected (and whether the
-App is on that repo to change it), protected by Kin, protected by your own rules, not checked yet,
-or why Kin can't tell (GitHub offers no protection on a private repo on its free plan, and only a
+**Settings → Connections → GitHub** says how many watched repos have a default branch Kin's App
+isn't kept out of, and each repo in the watched list says whether its branch is unprotected (and
+whether the App is on that repo to change it), needs a review first, protected by Kin, protected by
+your own rules, not checked yet, or why Kin can't tell. A required review alone doesn't count as
+protection: once someone approves, the App can merge, so those repos still offer **Protect**. Your
+own rules count only when they restrict updates and their bypass list can't include the App (Kin
+can't tell whether a write or maintain role, or a team, covers an App, so those don't count) (GitHub offers no protection on a private repo on its free plan, and only a
 repo's admins can see or set it). Protecting a repo the App isn't on yet covers the day you add it. **Protect** on a repo,
 or **Protect all**, adds one ruleset on GitHub with your login: only the repo's admins (and an
 organization's owners) may update, delete or force-push the default branch. You keep merging your

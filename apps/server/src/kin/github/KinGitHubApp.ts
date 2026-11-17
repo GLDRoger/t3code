@@ -158,6 +158,7 @@ interface Installation {
 }
 
 interface Described {
+  readonly id: number;
   readonly name: string;
   readonly botLogin: string;
   readonly botEmail: string;
@@ -492,6 +493,7 @@ export const make = Effect.gen(function* () {
     return {
       _tag: "ok",
       app: {
+        id: Number(appId),
         name: about.value.name,
         botLogin,
         botEmail: `${botIds.get(botLogin)}+${botLogin}@users.noreply.github.com`,

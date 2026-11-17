@@ -276,12 +276,12 @@ export function createKinGitHubRepoActions(options: {
   };
 }
 
-/** Watched repos whose main branch is unprotected, what protecting does, and the owner's switch. */
+/** Watched repos whose main branch Kin's App can reach, what protecting does, and the owner's switch. */
 export const KIN_GITHUB_GUARD_COPY = {
   open: (count: number) =>
     count === 1
-      ? "1 watched repo has an unprotected main branch."
-      : `${count} watched repos have an unprotected main branch.`,
+      ? "1 watched repo has a main branch that isn't closed to Kin's App."
+      : `${count} watched repos have main branches that aren't closed to Kin's App.`,
   truth:
     "Protecting it stops Kin's App changing the branch, on repos the App is on now or gets later. You still merge and push as today, and so does an agent working as you: only Kin's guard on its tools stops it.",
   protect: "Protect",
@@ -290,8 +290,8 @@ export const KIN_GITHUB_GUARD_COPY = {
 } as const;
 
 /**
- * A watched repo's main branch on its row: open (to the App where it is on the repo), protected
- * and by whom, or why Kin can't tell. Null for a repo Kin doesn't watch, which it never reads.
+ * A watched repo's main branch on its row: open (to the App where it is on the repo), open once a
+ * review approves, protected and by whom, or why Kin can't tell. Null for a repo Kin doesn't watch, which it never reads.
  */
 export function kinGitHubGuardLine(
   repo: Pick<KinGitHubRepo, "watched" | "agentsAs" | "guard">,
@@ -302,6 +302,10 @@ export function kinGitHubGuardLine(
   const branch = guard.branch;
   if (guard.state === "protected")
     return guard.byKin ? `Kin protects ${branch}` : `Your rules protect ${branch}`;
+  if (guard.state === "open" && guard.needsReview === true)
+    return repo.agentsAs === "app"
+      ? `${branch} needs a review, but Kin's App can merge once approved`
+      : `${branch} needs a review; the App isn't on this repo`;
   if (guard.state === "open")
     return repo.agentsAs === "app"
       ? `${branch} unprotected: Kin's App can change it`

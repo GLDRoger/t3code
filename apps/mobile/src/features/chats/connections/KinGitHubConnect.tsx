@@ -490,7 +490,7 @@ function useGuardActions(target: KinConnectionsTarget) {
   return { busy, run, notice };
 }
 
-/** "N watched repos have an unprotected main branch", what protecting does, and Protect all. */
+/** "N watched repos have main branches that aren't closed to Kin's App", what protecting does, and Protect all. */
 function ProtectAll(props: {
   readonly target: KinConnectionsTarget;
   readonly open: number;
