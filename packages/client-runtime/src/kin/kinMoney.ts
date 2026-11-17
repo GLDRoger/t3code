@@ -58,6 +58,8 @@ export const KIN_MONEY = {
       "Once an agent keeps your expenses and invoices, this shows who owes you, what came in and what went out, to the rupee.",
   },
   ask: "Ask an agent to start tracking expenses",
+  /** Before the first agent exists, the way in is making one. */
+  createChief: "Create Chief of staff",
   askMessage: "Start tracking our expenses and invoices.",
   onlyOwner: {
     title: "Not available",

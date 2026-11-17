@@ -183,6 +183,21 @@ export function kinPlaceReach(
 }
 
 /**
+ * What the viewer may reach, as one string: their kind, places and led projects. A read keyed on it
+ * asks again the moment the owner switches a place, in either direction.
+ */
+export function kinViewerReachKey(me: {
+  readonly access?: KinPersonAccess | undefined;
+  readonly places?: KinDockRefused | undefined;
+  readonly leads?: ReadonlyArray<{ readonly recordId: string }> | undefined;
+}): string {
+  const places =
+    me.places === undefined ? "" : `${+me.places.money}${+me.places.clients}${+me.places.docs}`;
+  const leads = (me.leads ?? []).map((lead) => lead.recordId).sort();
+  return `${me.access ?? ""}:${places}:${leads.join(",")}`;
+}
+
+/**
  * Whether the viewer runs the company here: their stored kind once the host has said, and until
  * then a session with more than chat (the owner's own) is taken for the owner's.
  */

@@ -11,6 +11,7 @@ import {
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
   KIN_WORK_ONLY_OWNER,
+  KIN_WORK_REPEAT,
   KIN_WORK_TITLE_MAX,
   kinWorkAssignees,
   kinWorkHostClients,
@@ -64,7 +65,12 @@ import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { KinNotesVersions } from "./KinNotesVersions";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
-import { KinWorkDueRow, KinWorkPlaceRow, KinWorkStatusRow } from "./components/KinWorkTaskMenus";
+import {
+  KinWorkDueRow,
+  KinWorkPlaceRow,
+  KinWorkRepeatRow,
+  KinWorkStatusRow,
+} from "./components/KinWorkTaskMenus";
 import { KinListEntryBody } from "./KinListEntry";
 import { KinMakeDocumentStep, type KinMakeStep } from "./KinInvoice";
 import { KinWorkTaskRow } from "./components/KinWorkPieces";
@@ -507,6 +513,15 @@ function KinWorkItemBody(props: ItemTarget) {
             icon="clock"
             label={view.due.charAt(0).toUpperCase() + view.due.slice(1)}
             detail="Due"
+          />
+        )}
+        {act !== null && view.can.repeat === true && !view.closed ? (
+          <KinWorkRepeatRow view={view} disabled={saving} onAct={act} />
+        ) : view.repeat === null ? null : (
+          <ListRowLayout
+            icon="arrow.clockwise"
+            label={view.repeat.text}
+            detail={KIN_WORK_REPEAT.label}
           />
         )}
         {canGive && view.assignLabel !== null ? (

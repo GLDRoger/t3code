@@ -18,6 +18,7 @@ import {
   kinJoinTarget,
   kinPlaceReach,
   kinViewerOwnerLevel,
+  kinViewerReachKey,
 } from "./kinJoin.ts";
 
 const team = EnvironmentId.make("team");
@@ -158,6 +159,22 @@ describe("the app's shell", () => {
       "clients",
     ]);
     expect(kinDockTabs(null, true, none)).toEqual(["chats"]);
+  });
+
+  it("moves an open place's read key when the owner switches a place either way, and only then", () => {
+    const off = { clients: true, docs: true, money: false };
+    const key = (money: boolean, leads: ReadonlyArray<string> = []) =>
+      kinViewerReachKey({
+        access: "member",
+        places: { ...off, money },
+        leads: leads.map((recordId) => ({ recordId })),
+      });
+    expect(key(true)).not.toBe(key(false));
+    expect(key(false, ["b", "a"])).toBe(key(false, ["a", "b"]));
+    expect(key(false, ["a"])).not.toBe(key(false));
+    expect(kinViewerReachKey({ access: "co_owner", places: off })).not.toBe(
+      kinViewerReachKey({ access: "member", places: off }),
+    );
   });
 
   it("takes the stored kind once known, and the owner's own session for the owner until then", () => {

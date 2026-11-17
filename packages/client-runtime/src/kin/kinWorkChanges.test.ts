@@ -262,6 +262,12 @@ describe("createKinWorkChanges", () => {
     ],
     [{ type: "due", day: null }, "update", { orgId, key: "W-1", rev: 3, dueAt: null }],
     [
+      { type: "repeat", rule: { every: "month" } },
+      "update",
+      { orgId, key: "W-1", rev: 3, repeat: { every: "month" } },
+    ],
+    [{ type: "repeat", rule: null }, "update", { orgId, key: "W-1", rev: 3, repeat: null }],
+    [
       { type: "state", state: "waiting", waitingOn: lead },
       "update",
       { orgId, key: "W-1", rev: 3, state: "waiting", waitingOn: lead },
