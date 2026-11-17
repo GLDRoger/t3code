@@ -3,6 +3,7 @@ import {
   KinDocsRpcs,
   KinFinanceRpcs,
   KinMoneyAnswerRpcs,
+  KinMoneyLiveRpcs,
   KinPulseRpcs,
   KinRefreshRpcs,
   KinStatementRpcs,
@@ -29,6 +30,7 @@ import * as Clients from "./ownerClients.ts";
 import * as Docs from "./ownerDocs.ts";
 import * as Money from "./ownerMoney.ts";
 import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
+import * as MoneyStream from "./moneyStream.ts";
 import * as Statements from "./ownerStatements.ts";
 import * as Work from "./ownerWork.ts";
 import * as WorkStream from "./workStream.ts";
@@ -36,6 +38,7 @@ import * as WorkStream from "./workStream.ts";
 const group = RpcGroup.make(...KinWorkRpcs, ...KinDocsRpcs);
 const finance = RpcGroup.make(...KinFinanceRpcs);
 const answers = RpcGroup.make(...KinMoneyAnswerRpcs);
+const moneyLive = RpcGroup.make(...KinMoneyLiveRpcs);
 const statements = RpcGroup.make(...KinStatementRpcs);
 const refreshes = RpcGroup.make(...KinRefreshRpcs);
 const pulse = RpcGroup.make(...KinPulseRpcs);
@@ -275,6 +278,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.invoiceFromQuote": Effect.fn("KinWork.rpc.invoiceFromQuote")(function* (input) {
         return yield* call((people) => MoneyAnswers.invoiceFromQuote(people, input));
       }),
+    }),
+    ...moneyLive.of({
+      "kin.money.subscribe": (input) => stream((people) => MoneyStream.subscribe(people, input)),
     }),
     ...statements.of({
       "kin.work.statementUnlock": Effect.fn("KinWork.rpc.statementUnlock")(function* (input) {

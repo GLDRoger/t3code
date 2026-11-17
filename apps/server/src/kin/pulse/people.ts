@@ -80,9 +80,8 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
     : { ...read, ...kinPulsePage(facts, input.limit) };
 });
 
-/** Names a page by what a screen shows of it (not `asOf`): cyrb53, as hex. */
-const pulseHash = (read: KinPulseScreenRead) => {
-  const text = JSON.stringify([read.total, read.facts, read.outline ?? null]);
+/** Names what a screen holds by its text: cyrb53, as hex. */
+export const viewHash = (text: string) => {
   let h1 = 0xdeadbeef;
   let h2 = 0x41c6ce57;
   for (let index = 0; index < text.length; index += 1) {
@@ -94,6 +93,9 @@ const pulseHash = (read: KinPulseScreenRead) => {
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
 };
+/** Names a page by what a screen shows of it (not `asOf`). */
+const pulseHash = (read: KinPulseScreenRead) =>
+  viewHash(JSON.stringify([read.total, read.facts, read.outline ?? null]));
 
 /**
  * `kin.pulse.subscribe`: the page `read` gives this viewer, then what moved in it, built by that
