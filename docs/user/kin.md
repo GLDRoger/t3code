@@ -418,6 +418,17 @@ decisions and lasting facts. Each item is **Only you**, **The team can know**, o
 yes** when an agent thinks the team could know it. Anything about access, money or client terms
 stays with the owner. **Forget** an item and agents stop using it; bring it back from **Forgotten**.
 
+### Finding a decision again
+
+Kin keeps a decision as soon as it's made: when you or a co-owner answer an agent's question card
+(a plan, a choice), and when a Team-room discussion ends decided. It is saved in the card's or the
+outcome's own words, with who decided and when, and is **Only you** until you let the team know.
+
+To find one months later, open **Search** (the magnifier on Tasks, Money, Clients or Docs, or the
+command palette) and type a word from it. Decisions show as **Remembered**; open one to see it in
+Settings → Memory. Search also finds invoices, quotes, expenses and receipts. Teammates search the
+same box: they find the money entries the Money place shows them and never what memory keeps.
+
 ## Who sees and does what
 
 A project lead is a member who leads one or more projects. They see what a member sees, plus more
