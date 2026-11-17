@@ -2001,6 +2001,12 @@ it.effect(
       expect(room).not.toContain("# Group rules");
       expect(room).not.toContain("default agent");
       expect(room).not.toContain("NO_REPLY");
+      // Reply text in the Team room is dropped, so the turn never says the room reads it.
+      expect(room).not.toContain("reads your reply");
+      expect(room).not.toContain("Your reply goes to");
+      expect(room).toContain(
+        "Your plain text goes nowhere: speak only with team_say, and pass by ending the turn without it.",
+      );
       yield* sql`UPDATE kin_chats SET team_id = NULL WHERE chat_id = ${chatId}`;
       const direct = KinChatId.make("direct-chat");
       yield* repo.createChat({
