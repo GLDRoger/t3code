@@ -60,6 +60,8 @@ export const KIN_SOCIAL_COPY = {
   connecting: "Connecting…",
   cancel: "Cancel",
   done: "Done",
+  connected: (label: string) =>
+    `${label} is connected. Social can read these accounts and draft for them; nothing posts until you confirm a week.`,
   reconnect: "New key",
   refresh: "Check again",
   remove: "Remove",

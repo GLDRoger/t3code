@@ -17,6 +17,8 @@ import {
   kinNeedsYouBeside,
   kinPlainDates,
   kinTasksAttention,
+  kinTasksBadgeCount,
+  kinTasksBlock,
   kinSnoozeDays,
 } from "./kinAttention.ts";
 import type { KinNeedsYouRow } from "./kinWorkHome.ts";
@@ -46,6 +48,7 @@ const read = (facts: ReadonlyArray<KinPulseFact>): KinPulseRead => ({
   total: facts.length,
   facts,
 });
+const owed = (key: string) => fact("invoice_overdue", key);
 const now = new Date(2026, 10, 15);
 const names = new Map([["owner", "Arjun"]]);
 
@@ -93,6 +96,25 @@ describe("kinAttention", () => {
     const tasks = kinTasksAttention(all.open);
     expect(tasks.rows.map((row) => row.factKey)).toEqual(["task_late:W-2", "task_due_soon:W-1"]);
     expect(tasks.money).toBe(1);
+    // "See all N" counts what the Tasks badge counts: Money's row is as many things as it says.
+    const twoOwed = read([...facts.slice(0, 2), ...["INV-2", "INV-3"].map(owed)]);
+    const owing = kinTasksAttention(
+      kinAttention(twoOwed, { scope: { type: "all" }, names, now }).open,
+    );
+    const block = kinTasksBlock({
+      ownerLevel: true,
+      onMe: new Set(),
+      attention: owing.rows,
+      needs: owing.moneyRow === null ? [] : [owing.moneyRow],
+      hidden: owing.hidden,
+      handled: 0,
+      expanded: false,
+    });
+    expect(block?.total).toBe(
+      kinTasksBadgeCount({ ownerLevel: true, attention: twoOwed, mineDue: null }),
+    );
+    // Three rows fit, so no "See all" that would open nothing new.
+    expect(block?.more).toBe(false);
     // A project or client fact does not repeat its own name after its key.
     const own = kinAttention(
       read([

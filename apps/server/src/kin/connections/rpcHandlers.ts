@@ -20,6 +20,7 @@ import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinConnections } from "./ConnectionsService.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { repoList, setRepo, watchSummary } from "../github/githubWatchStore.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
 
@@ -112,6 +113,15 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
         input.orgId,
         Clock.currentTimeMillis.pipe(
           Effect.flatMap((now) => setRepo(input, now)),
+          // The status's "Watching: N repos" line moved too, on every open screen.
+          Effect.tap(() =>
+            Option.isNone(kin) || Option.isNone(kin.value.services)
+              ? Effect.void
+              : Context.get(kin.value.services.value, KinRefreshObserver).touch(
+                  input.orgId,
+                  "connections",
+                ),
+          ),
           Effect.map((repos) => ({ repos })),
         ),
       ),
