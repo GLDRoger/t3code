@@ -319,34 +319,6 @@ export const list = Effect.fn("KinLeadProvision.list")(function* () {
   return yield* leadsIn(identity.owner.orgId, { liveOnly: false });
 });
 
-/** Replaces a live lead's worker projects. Readers query the row per call, so it applies at once. */
-export const setWorkerProjects = Effect.fn("KinLeadProvision.setWorkerProjects")(function* (
-  agentId: KinAgentId,
-  workerProjects: ReadonlyArray<ProjectId>,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  const { orgId } = (yield* KinIdentity).owner;
-  return yield* transaction(
-    sql,
-    "KinLeadProvision.setWorkerProjects",
-    Effect.gen(function* () {
-      const [lead] = yield* leadsIn(orgId, { liveOnly: false, agentId });
-      if (lead === undefined)
-        return yield* refuse("not_found", `Org ${orgId} has no agent ${agentId}.`);
-      if (lead.retiredAt !== null)
-        return yield* refuse("retired", `Agent ${agentId} was retired at ${lead.retiredAt}.`);
-      const projects = yield* knownProjects(workerProjects);
-      const json = yield* encodeProjects(projects).pipe(Effect.orDie);
-      const changed = yield* sql`UPDATE kin_leads SET worker_projects_json = ${json}
-          WHERE org_id = ${orgId} AND agent_id = ${agentId} RETURNING agent_id`;
-      if (changed.length === 0)
-        return yield* refuse("conflict", `Agent ${agentId} changed while updating.`);
-      yield* leadsChanged(orgId);
-      return { _tag: "updated" as const, lead: { ...lead, workerProjects: projects } };
-    }),
-  );
-});
-
 interface LeadChange {
   readonly name?: typeof TrimmedNonEmptyString.Type | undefined;
   readonly domain?: KinLeadDomain | undefined;

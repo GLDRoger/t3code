@@ -61,7 +61,7 @@ export const KinLead = Schema.Struct({
   levelSince: CanonicalUtcTimestamp,
   threadId: Schema.NullOr(ThreadId), // the lead's T3 thread, created on first wake-up
   model: ModelSelection,
-  workerProjects: Schema.Array(ProjectId), // the projects a request without its owner's reach is held to
+  workerProjects: Schema.Array(ProjectId), // unused since workers were retired; kept on the wire for older clients
   ownerChatId: KinChatId, // the owner's direct chat with this lead
 });
 ```
