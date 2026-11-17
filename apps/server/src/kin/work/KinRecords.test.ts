@@ -2543,8 +2543,45 @@ it.effect(
         ),
         ["Mate handed W-2 Invented: fix the login screen back: Invented: blocked on design."],
       );
-      // Run 4: a meeting already held is recorded, one to come is attended: neither is a task.
+      // Given on from one teammate to another, each reads who gave it to whom from their side.
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('mate-2', ${orgId}, 'mate2', 'Mate Two', ${at})`;
+      const mateTwoHolds = { _tag: "person" as const, personId: KinPersonId.make("mate-2") };
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+        VALUES ('mate-2-chat', ${orgId}, 'direct', ${`mate-2:${lead}`}, 0, ${at})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('mate-2-chat-mate', ${orgId}, 'mate-2-chat', 'person', 'mate-2', 'member', ${at})`;
+      const mateTwoNotices = sql<{ body: string }>`SELECT body FROM kin_messages
+        WHERE chat_id = 'mate-2-chat' AND message_id LIKE 'kin-assign-%' ORDER BY seq`;
+      const givenOn = (yield* notices).length;
+      yield* OwnerWork.assign([owner], { orgId, key: "W-1", to: mateHolds });
+      yield* OwnerWork.assign([owner], { orgId, key: "W-1", to: mateTwoHolds });
       yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
+      yield* LeadWork.assign(scope, {
+        sourceEventId: "ask-event",
+        tasks: [{ key: "W-1", to: "Mate", reason: "Invented: on leave" }],
+      });
+      yield* LeadWork.assign(scope, {
+        sourceEventId: "ask-event",
+        tasks: [{ key: "W-1", to: "Lead lead", reason: "Invented: quicker" }],
+      });
+      assert.deepStrictEqual(
+        (yield* notices).slice(givenOn).map((row) => row.body),
+        [
+          "Owner gave you W-1 Invented: draft the onboarding copy.",
+          "Owner gave W-1 Invented: draft the onboarding copy to Mate Two.",
+          "Lead lead gave you W-1 Invented: draft the onboarding copy. Why: Invented: on leave.",
+          "Lead lead took over W-1 Invented: draft the onboarding copy: Invented: quicker.",
+        ],
+      );
+      assert.deepStrictEqual(
+        (yield* mateTwoNotices).map((row) => row.body),
+        [
+          "Owner gave you W-1 Invented: draft the onboarding copy.",
+          "Lead lead gave W-1 Invented: draft the onboarding copy to Mate: Invented: on leave.",
+        ],
+      );
+      // Run 4: a meeting already held is recorded, one to come is attended: neither is a task.
       const meetings = [];
       for (const at of ["2026-11-15T17:00+05:30", "2026-11-19T15:00+05:30"])
         meetings.push(

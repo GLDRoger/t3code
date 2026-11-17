@@ -37,6 +37,8 @@ export type AssignNotice = {
   readonly why: string | null;
   /** Who handed it back, when it is not the agent telling them. */
   readonly by?: string;
+  /** Where a task taken from them went: words it as given on, unless whoever moved it took it. */
+  readonly to?: { readonly kind: "person" | "agent"; readonly id: string };
 };
 type Turn = {
   readonly orgId: KinOrgId;
@@ -45,6 +47,7 @@ type Turn = {
   readonly wakeupId: string;
   /** A person who gave it on their own screen: named in place of the agent, and no turn chat. */
   readonly by?: string;
+  readonly byPersonId?: KinPersonId;
 };
 
 const reasonOf = (row: RecordRow) => {
@@ -101,7 +104,15 @@ export const movedNotices = (
       ? [{ personId: KinPersonId.make(after.ownerId), kind: "given" as const, row: after, why }]
       : []),
     ...(before?.ownerKind === "person"
-      ? [{ personId: KinPersonId.make(before.ownerId), kind: "taken" as const, row: after, why }]
+      ? [
+          {
+            personId: KinPersonId.make(before.ownerId),
+            kind: "taken" as const,
+            row: after,
+            why,
+            to: { kind: after.ownerKind, id: after.ownerId },
+          },
+        ]
       : []),
   ];
 };
@@ -124,7 +135,8 @@ const meetingLine = (agent: string, notice: AssignNotice, clock: TextClock, now:
   );
 };
 
-const line = (notice: AssignNotice, clock: TextClock) => {
+/** `gaveTo` names who a taken task went to, or is null when whoever moved it took it. */
+const line = (notice: AssignNotice, clock: TextClock, gaveTo: string | null = null) => {
   const task = `${notice.row.key} ${notice.row.title}`;
   const why = notice.why === null ? "" : `: ${notice.why}`;
   if (notice.kind === "added") return `added you to ${task}`;
@@ -132,7 +144,9 @@ const line = (notice: AssignNotice, clock: TextClock) => {
   return notice.kind === "given"
     ? `${task}${dueText(notice.row, clock)}${notice.why === null ? "" : `. Why: ${notice.why}`}`
     : notice.kind === "taken"
-      ? `took over ${task}${why}`
+      ? gaveTo === null
+        ? `took over ${task}${why}`
+        : `gave ${task} to ${gaveTo}${why}`
       : `${notice.by === undefined ? "" : `${notice.by} `}handed ${task} back${why}`;
 };
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
@@ -145,6 +159,7 @@ const bodyFor = (
   notices: ReadonlyArray<AssignNotice>,
   clock: TextClock,
   now: number,
+  gaveTo: (notice: AssignNotice) => string | null,
 ) => {
   const given = notices.filter((notice) => notice.kind === "given");
   const projects = notices.filter((notice) => notice.kind === "added" || notice.kind === "lead");
@@ -158,7 +173,7 @@ const bodyFor = (
         ? ended(`${agent} ${line(projects[0]!, clock)}`)
         : ended(
             other[0]!.by === undefined
-              ? `${agent} ${line(other[0]!, clock)}`
+              ? `${agent} ${line(other[0]!, clock, gaveTo(other[0]!))}`
               : line(other[0]!, clock),
           );
   return [
@@ -167,7 +182,9 @@ const bodyFor = (
       : `${agent} gave you ${given.length === 1 ? "a task" : `${given.length} tasks`}:`,
     ...given.map((notice) => `• ${line(notice, clock)}`),
     ...projects.map((notice) => `• ${capital(line(notice, clock))}`),
-    ...other.map((notice) => `• ${notice.by === undefined ? "It " : ""}${line(notice, clock)}`),
+    ...other.map(
+      (notice) => `• ${notice.by === undefined ? "It " : ""}${line(notice, clock, gaveTo(notice))}`,
+    ),
   ].join("\n");
 };
 
@@ -234,11 +251,31 @@ export const tellPeople = Effect.fn("KinAssignNotices.tell")(function* (
     if (chatId === undefined) continue;
     const [profile] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone FROM kin_people
       WHERE org_id = ${turn.orgId} AND person_id = ${person}`;
+    const names = new Map<AssignNotice, string | null>();
+    for (const notice of theirs) {
+      const to = notice.to;
+      // Whoever moved it and now holds it took it over; anyone else was given it.
+      if (
+        to === undefined ||
+        (turn.by === undefined
+          ? to.kind === "agent" && to.id === turn.agentId
+          : to.kind === "person" && to.id === turn.byPersonId)
+      )
+        continue;
+      const [holder] =
+        to.kind === "person"
+          ? yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
+              WHERE org_id = ${turn.orgId} AND person_id = ${to.id}`
+          : yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_agents
+              WHERE org_id = ${turn.orgId} AND agent_id = ${to.id}`;
+      if (holder !== undefined) names.set(notice, holder.name);
+    }
     const body = bodyFor(
       turn.by ?? agent.name,
       theirs,
       { zone: profile?.zone ?? fallbackZone, locale: yield* textLocale(turn.orgId) },
       yield* Clock.currentTimeMillis,
+      (notice) => names.get(notice) ?? null,
     );
     // The same lines from the same turn are one message, so a retried call posts nothing more.
     const messageId = KinMessageId.make(

@@ -794,6 +794,7 @@ const tellOnScreen = Effect.fn("KinWork.tellOnScreen")(
         agentId,
         wakeupId: `screen:${change}`,
         by: me?.name ?? "The owner",
+        byPersonId: person.personId,
       },
       notices,
     );

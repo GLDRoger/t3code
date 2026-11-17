@@ -6,3 +6,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
  */
 export const clearKinOutboxEnvironment = (environmentId: EnvironmentId): Promise<void> =>
   import("./kinOutboxDelivery").then((kin) => kin.clearKinOutboxEnvironment(environmentId));
+
+/** Drops a removed environment's Kin device cache, from storage and from memory. */
+export const clearKinCacheEnvironment = (environmentId: EnvironmentId): Promise<void> =>
+  import("./kinClient").then((kin) => kin.forgetKinCache(environmentId));

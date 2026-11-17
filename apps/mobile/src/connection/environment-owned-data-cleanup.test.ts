@@ -23,6 +23,7 @@ vi.mock("../state/thread-composer-error", () => ({
 }));
 vi.mock("../features/chats/state/kinOutboxRemoval", () => ({
   clearKinOutboxEnvironment: () => Promise.resolve(),
+  clearKinCacheEnvironment: () => Promise.resolve(),
 }));
 
 import * as EnvironmentOwnedDataCleanup from "./environment-owned-data-cleanup";

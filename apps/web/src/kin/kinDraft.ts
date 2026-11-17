@@ -1,4 +1,8 @@
-import { kinDraftJoin, kinDraftPrefill } from "@t3tools/client-runtime/kin/kinDraft";
+import {
+  kinDraftGoesWith,
+  kinDraftJoin,
+  kinDraftPrefill,
+} from "@t3tools/client-runtime/kin/kinDraft";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
@@ -19,8 +23,14 @@ export function hasUnsentKinDraft(): boolean {
   }
   return false;
 }
-export const kinDraftKey = (environmentId: EnvironmentId, orgId: string, chatId: string) =>
-  `${environmentId}:${orgId}:${chatId}`;
+export { kinDraftKey } from "@t3tools/client-runtime/kin/kinDraft";
+
+/** A host removed from this browser takes its unsent drafts with it (`kinDraftGoesWith`). */
+export function clearKinDraftsEnvironment(environmentId: EnvironmentId) {
+  for (const key of draftKeys) {
+    if (kinDraftGoesWith(key, environmentId)) appAtomRegistry.set(kinDraftAtom(key), "");
+  }
+}
 
 const CARRIED_DRAFTS_KEY = "t3code:kin:carried-drafts";
 
@@ -61,7 +71,7 @@ export function prefillKinDraft(
   chatId: string,
   body: string,
 ) {
-  const atom = kinDraftAtom(kinDraftKey(environmentId, orgId, chatId));
+  const atom = kinDraftAtom(`${environmentId}:${orgId}:${chatId}`);
   appAtomRegistry.set(atom, kinDraftPrefill(appAtomRegistry.get(atom), body));
 }
 

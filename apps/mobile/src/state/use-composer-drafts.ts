@@ -71,7 +71,8 @@ import {
   type QueuedThreadMessage,
 } from "./thread-outbox-model";
 import { flushThreadOutbox, threadOutboxManager } from "./thread-outbox";
-import { composerDraftEnvironmentId } from "../lib/composerAttachmentUploadQueue";
+import { kinDraftGoesWith } from "@t3tools/client-runtime/kin/kinDraft";
+import { KIN_DRAFT_PREFIX, composerDraftEnvironmentId } from "../lib/composerAttachmentUploadQueue";
 
 const COMPOSER_DRAFTS_SCHEMA_VERSION = 1;
 const COMPOSER_DRAFTS_DIRECTORY = "composer-drafts";
@@ -2005,7 +2006,12 @@ export function removeComposerDraftsForEnvironment(
   return Object.fromEntries(
     Object.entries(drafts).filter(
       ([draftKey, draft]) =>
-        !draftKey.startsWith(environmentPrefix) && draft.project?.environmentId !== environmentId,
+        !draftKey.startsWith(environmentPrefix) &&
+        !(
+          draftKey.startsWith(KIN_DRAFT_PREFIX) &&
+          kinDraftGoesWith(draftKey.slice(KIN_DRAFT_PREFIX.length), environmentId)
+        ) &&
+        draft.project?.environmentId !== environmentId,
     ),
   );
 }

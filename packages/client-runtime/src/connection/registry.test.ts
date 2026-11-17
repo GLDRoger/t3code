@@ -20,6 +20,7 @@ import * as Scheduler from "effect/Scheduler";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 
 import * as ClientCapabilities from "../platform/capabilities.ts";
@@ -2276,6 +2277,112 @@ describe("EnvironmentRegistry routes", () => {
         );
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
+  );
+
+  // Kin keeps a screen's answers while the supervisor stays, and reads afresh on a new one.
+  it.effect(
+    "keeps one supervisor through everyday events; only a new registration replaces it",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(
+          [LAN_TARGET],
+          [LAN_PROFILE],
+          [[LAN_TARGET.connectionId, BEARER_CREDENTIAL]],
+          {
+            directEndpoints: [
+              { kind: "lan", httpBaseUrl: LAN_PROFILE.httpBaseUrl },
+              { kind: "tailnet", httpBaseUrl: "http://100.101.102.103:3773/" },
+            ],
+          },
+        );
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          const environmentId = LAN_TARGET.environmentId;
+          const supervisor = registry.run(
+            environmentId,
+            EnvironmentSupervisor.EnvironmentSupervisor,
+          );
+          const connected = awaitConnectionState(
+            registry,
+            environmentId,
+            (state) => state.phase === "connected",
+          );
+          yield* registry.start;
+          yield* connected;
+          const first = yield* supervisor;
+          const rows: Array<readonly [string, boolean]> = [];
+          const row = (event: string) =>
+            supervisor.pipe(Effect.map((current) => rows.push([event, current === first])));
+
+          yield* SubscriptionRef.changes(registry.entries).pipe(
+            Stream.filter((entries) => entries.get(environmentId)?.alternateRoutes !== undefined),
+            Stream.runHead,
+          );
+          yield* row("a route learned on the first connection");
+
+          const sessionsBefore = (yield* Ref.get(harness.sessions)).length;
+          const dropped = (yield* Ref.get(harness.sessions)).at(-1)!;
+          yield* Deferred.fail(
+            dropped.closed,
+            new ConnectionTransientError({ reason: "transport", detail: "Server restarted." }),
+          );
+          yield* awaitConnectionState(
+            registry,
+            environmentId,
+            (state) => state.phase !== "connected",
+          );
+          yield* TestClock.adjust("1 minute");
+          yield* connected;
+          expect((yield* Ref.get(harness.sessions)).length).toBeGreaterThan(sessionsBefore);
+          yield* row("the server restarts and the same routes are advertised again");
+
+          yield* SubscriptionRef.set(harness.networkStatus, "offline");
+          yield* Deferred.fail(
+            (yield* Ref.get(harness.sessions)).at(-1)!.closed,
+            new ConnectionTransientError({ reason: "transport", detail: "Network lost." }),
+          );
+          yield* awaitConnectionState(
+            registry,
+            environmentId,
+            (state) => state.phase === "offline",
+          );
+          yield* SubscriptionRef.set(harness.networkStatus, "online");
+          yield* TestClock.adjust("1 minute");
+          yield* connected;
+          yield* row("the network drops and returns");
+
+          yield* registry.setEnabled(environmentId, false);
+          yield* registry.setEnabled(environmentId, true);
+          yield* connected;
+          yield* row("switched off and on");
+
+          yield* registry.setCompatibility(
+            environmentId,
+            new ConnectionBlockedError({ reason: "unsupported", detail: "Too old." }),
+          );
+          yield* registry.setCompatibility(environmentId, null);
+          yield* connected;
+          yield* row("refused as incompatible, then cleared");
+
+          yield* registry.register(
+            new BearerConnectionRegistration({
+              target: LAN_TARGET,
+              profile: LAN_PROFILE,
+              credential: new BearerConnectionCredential({ token: "another-person" }),
+            }),
+          );
+          yield* row("paired again, maybe by another person");
+
+          expect(rows).toEqual([
+            ["a route learned on the first connection", true],
+            ["the server restarts and the same routes are advertised again", true],
+            ["the network drops and returns", true],
+            ["switched off and on", true],
+            ["refused as incompatible, then cleared", true],
+            ["paired again, maybe by another person", false],
+          ]);
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
   );
 
   it.effect("saves the Tailscale mark when the server reports a learned address as tailnet", () =>

@@ -16,6 +16,7 @@ import {
 import * as Effect from "effect/Effect";
 import { prepareTurnAttachments } from "../../../lib/attachmentUpload";
 import { uploadComposerAttachmentShared } from "../../../state/composer-attachment-uploads";
+import { kinDraftKey as sharedKinDraftKey } from "@t3tools/client-runtime/kin/kinDraft";
 import { KIN_DRAFT_PREFIX } from "../../../lib/composerAttachmentUploadQueue";
 import {
   composerAttachmentUploadBlockReason,
@@ -76,7 +77,7 @@ import { kinAttachmentFailure } from "../state/kinAttachmentFailure";
 
 /** Every Kin host uses the same org id, so the environment keeps two hosts' drafts apart. */
 export const kinDraftKey = (environmentId: EnvironmentId, orgId: string, chatId: string) =>
-  `${KIN_DRAFT_PREFIX}${environmentId}:${orgId}:${chatId}`;
+  `${KIN_DRAFT_PREFIX}${sharedKinDraftKey(environmentId, orgId, chatId)}`;
 
 // The native editor has no intrinsic height: it grows with its text from one line to four.
 // iOS reports at most four lines of content, so a taller cap would never turn scrolling on.

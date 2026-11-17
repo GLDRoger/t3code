@@ -618,9 +618,11 @@ const revalidateOnMount =
 export const selectEnvironmentQueryData = <A, E>(result: AsyncResult.AsyncResult<A, E>): A | null =>
   AsyncResult.getOrElse(result, () => null);
 
+/** The supervisor's state and session, and the supervisor: a new one is a new registration. */
 type EnvironmentConnection = readonly [
   SupervisorConnectionState,
   Option.Option<RpcSession.RpcSession>,
+  EnvironmentSupervisor.EnvironmentSupervisor["Service"],
 ];
 
 const connectionAtomsByRuntime = new WeakMap<
@@ -648,6 +650,7 @@ function environmentConnectionAtoms<R, ER>(
             Effect.map((supervisor) =>
               SubscriptionRef.changes(supervisor.state).pipe(
                 Stream.zipLatest(SubscriptionRef.changes(supervisor.session)),
+                Stream.map(([state, session]) => [state, session, supervisor] as const),
               ),
             ),
           ),
@@ -659,6 +662,31 @@ function environmentConnectionAtoms<R, ER>(
     environmentId: EnvironmentIdType,
   ) => Atom.Atom<AsyncResult.AsyncResult<EnvironmentConnection | null>>;
   connectionAtomsByRuntime.set(runtime, family);
+  return family;
+}
+
+const registrationAtomsByRuntime = new WeakMap<
+  object,
+  (environmentId: EnvironmentIdType) => Atom.Atom<EnvironmentConnection[2] | null>
+>();
+
+/**
+ * The environment's supervisor, which changes only when the registry installs a new one (paired
+ * again, removed and re-added, a route edit), never on a reconnect.
+ */
+function environmentRegistrationAtoms<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+) {
+  const existing = registrationAtomsByRuntime.get(runtime);
+  if (existing !== undefined) return existing;
+  const connectionAtom = environmentConnectionAtoms(runtime);
+  const family = Atom.family((environmentId: EnvironmentIdType) =>
+    Atom.make((get): EnvironmentConnection[2] | null => {
+      const connection = AsyncResult.getOrElse(get(connectionAtom(environmentId)), () => null);
+      return connection?.[2] ?? Option.getOrNull(get.self<EnvironmentConnection[2] | null>());
+    }),
+  );
+  registrationAtomsByRuntime.set(runtime, family);
   return family;
 }
 
@@ -737,7 +765,11 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
     // Per registry: the connection the last build saw, and whether a read is still owed.
     const sessions = new WeakMap<
       AtomRegistry.AtomRegistry,
-      { connection: EnvironmentConnection | null; owed: boolean }
+      {
+        connection: EnvironmentConnection | null;
+        supervisor: EnvironmentConnection[2] | null;
+        owed: boolean;
+      }
     >();
     const owe = (registry: AtomRegistry.AtomRegistry) => {
       const held = sessions.get(registry);
@@ -762,9 +794,12 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
             get.self<AsyncResult.AsyncResult<A, unknown>>(),
             AsyncResult.value,
           );
+          const supervisor = connection?.[2] ?? held?.supervisor ?? null;
+          const sameRegistration = held === undefined || held.supervisor === supervisor;
           // Only the connection moved, and the answer held was read in full: it still stands.
           if (
             held !== undefined &&
+            sameRegistration &&
             held.connection !== connection &&
             !held.owed &&
             Option.isSome(previous)
@@ -772,7 +807,10 @@ export function createEnvironmentQueryAtomFamily<R, ER, Input, A, E>(
             held.connection = connection;
             return Effect.succeed(previous.value);
           }
-          const mark = { connection, owed: true };
+          // A new supervisor is a new registration, maybe another person on the same host: what
+          // the last one answered is not shown while this one is read.
+          if (!sameRegistration && Option.isSome(previous)) get.setSelf(AsyncResult.initial(true));
+          const mark = { connection, supervisor, owed: true };
           sessions.set(get.registry, mark);
           settle = Effect.sync(() => {
             mark.owed = false;
@@ -930,14 +968,25 @@ export function createEnvironmentSubscriptionAtomFamily<R, ER, Input, A, E>(
     options.sensitiveInput
       ? `${options.label}:${parseEnvironmentRpcKey<Input>(key).environmentId}`
       : `${options.label}:${key}`;
+  const registrationAtom = environmentRegistrationAtoms(runtime);
   const live = Atom.family((key: string) => {
     const target = parseEnvironmentRpcKey<Input>(key);
     return runtime
-      .atom(
-        Stream.suspend(() =>
+      .atom((get) => {
+        // A reconnect resumes inside the stream; a new registration, maybe another person, starts
+        // it over, and what it streamed for the last one is not shown meanwhile.
+        let registration = get.once(registrationAtom(target.environmentId));
+        get.subscribe(registrationAtom(target.environmentId), (next) => {
+          const before = registration;
+          registration = next;
+          if (before === null || next === before) return;
+          get.setSelf(AsyncResult.initial(true));
+          get.refreshSelf();
+        });
+        return Stream.suspend(() =>
           followStreamInEnvironment(target.environmentId, options.subscribe(target.input)),
-        ).pipe(options.completeWhen ? Stream.takeUntil(options.completeWhen) : (stream) => stream),
-      )
+        ).pipe(options.completeWhen ? Stream.takeUntil(options.completeWhen) : (stream) => stream);
+      })
       .pipe(Atom.setIdleTTL(idleTtlMs), Atom.withLabel(label(key)));
   });
   const { completeWhen, completedTtlMs } = options;
