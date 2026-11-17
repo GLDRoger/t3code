@@ -614,6 +614,12 @@ function WatchedRepos(props: {
   const { environmentId, orgId, status } = props;
   const [open, setOpen] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const reloadRepos = useAtomRefresh(kinClient.githubRepos({ environmentId, input: { orgId } }));
+  const reloadStatus = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const guard = useGuardActions(environmentId, orgId, () => {
+    reloadRepos();
+    reloadStatus();
+  });
   const watch = status.watch;
   if (watch === undefined) return null;
   return (
@@ -625,8 +631,14 @@ function WatchedRepos(props: {
         </Alert>
       )}
       {(watch.open ?? 0) > 0 ? (
-        <ProtectAll environmentId={environmentId} orgId={orgId} open={watch.open ?? 0} />
+        <ProtectAll
+          environmentId={environmentId}
+          orgId={orgId}
+          open={watch.open ?? 0}
+          guard={guard}
+        />
       ) : null}
+      <GuardOutcome outcome={guard.outcome} />
       <div>
         <Button size="xs" variant="outline" onClick={() => setOpen(!open)} aria-expanded={open}>
           {open ? WATCH.hideRepos : WATCH.showRepos(watch.repos)}
@@ -673,11 +685,11 @@ function useGuardActions(environmentId: EnvironmentId, orgId: KinOrgId, refresh:
     set: (input) => set({ environmentId, input }),
     refresh,
   });
-  const run = (repos: ReadonlyArray<string>, on: boolean) => {
+  const run = (repos: ReadonlyArray<string>, on: boolean, all = false) => {
     if (busy || repos.length === 0) return;
     setBusy(true);
     setOutcome(null);
-    void change(repos, on).then((answer) => {
+    void change(repos, on, all).then((answer) => {
       setBusy(false);
       setOutcome(answer);
     });
@@ -690,17 +702,11 @@ function ProtectAll(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly open: number;
+  readonly guard: ReturnType<typeof useGuardActions>;
 }) {
-  const { environmentId, orgId } = props;
+  const { environmentId, orgId, guard } = props;
   const reposAtom = kinClient.githubRepos({ environmentId, input: { orgId } });
   const repos = Option.getOrNull(AsyncResult.value(useAtomValue(reposAtom)))?.repos ?? null;
-  const reload = useAtomRefresh(reposAtom);
-  const statusAtom = kinClient.github({ environmentId, input: { orgId } });
-  const reloadStatus = useAtomRefresh(statusAtom);
-  const guard = useGuardActions(environmentId, orgId, () => {
-    reload();
-    reloadStatus();
-  });
   const open = (repos ?? []).filter((repo) => kinGitHubGuardAction(repo.guard) === "protect");
   return (
     <div className="flex flex-col gap-2 rounded-md border px-3 py-2.5">
@@ -718,6 +724,7 @@ function ProtectAll(props: {
               guard.run(
                 open.map((repo) => repo.repo),
                 true,
+                true,
               )
             }
           >
@@ -725,7 +732,6 @@ function ProtectAll(props: {
           </Button>
         </div>
       </div>
-      <GuardOutcome outcome={guard.outcome} />
     </div>
   );
 }

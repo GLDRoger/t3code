@@ -292,7 +292,7 @@ export const KIN_GITHUB_GUARD_COPY = {
 export function kinGitHubGuardLine(guard: KinGitHubBranchGuard): string {
   const branch = guard.branch;
   if (guard.state === "protected")
-    return guard.byKin ? `${branch} protected by Kin` : `${branch} protected by your rules`;
+    return guard.byKin ? `Kin protects ${branch}` : `Your rules protect ${branch}`;
   if (guard.state === "open") return `Kin's App can change ${branch}`;
   switch (guard.problem) {
     case "plan":
@@ -338,7 +338,7 @@ function kinGitHubGuardRefusal(failed: KinGitHubGuardSetResult["failed"][number]
 }
 
 export interface KinGitHubGuardOutcome {
-  /** "Protected 3 of 4." when more than one repo was asked; null for one. */
+  /** "Protected 3 of 4. Not protected:" after Protect all; null for one repo's button. */
   readonly summary: string | null;
   /** One sentence for each repo that wasn't changed. */
   readonly problems: ReadonlyArray<string>;
@@ -350,7 +350,11 @@ export function createKinGitHubGuardActions(options: {
   readonly set: (input: KinGitHubGuardSetInput) => Sent<KinGitHubGuardSetResult>;
   readonly refresh: () => void;
 }) {
-  return async (repos: ReadonlyArray<string>, on: boolean): Promise<KinGitHubGuardOutcome> => {
+  return async (
+    repos: ReadonlyArray<string>,
+    on: boolean,
+    all = false,
+  ): Promise<KinGitHubGuardOutcome> => {
     const result = await options.set({ orgId: options.orgId, repos: [...repos], on });
     options.refresh();
     if (!AsyncResult.isSuccess(result))
@@ -365,12 +369,11 @@ export function createKinGitHubGuardActions(options: {
     const { changed, failed } = result.value;
     const total = changed + failed.length;
     return {
-      summary:
-        repos.length < 2
-          ? null
-          : failed.length === 0
-            ? `Protected ${plural(changed, "repo")}.`
-            : `Protected ${changed} of ${total}. Not protected:`,
+      summary: !all
+        ? null
+        : failed.length === 0
+          ? `Protected ${plural(changed, "repo")}.`
+          : `Protected ${changed} of ${total}. Not protected:`,
       problems: failed.map(kinGitHubGuardRefusal),
     };
   };

@@ -352,8 +352,8 @@ describe("protecting a repo's main branch from Kin's App", () => {
     ] as const;
     expect(rows.map((guard) => [kinGitHubGuardLine(guard), kinGitHubGuardAction(guard)])).toEqual([
       ["Kin's App can change main", "protect"],
-      ["main protected by Kin", "remove"],
-      ["trunk protected by your rules", null],
+      ["Kin protects main", "remove"],
+      ["Your rules protect trunk", null],
       ["GitHub's plan offers no protection for main here", null],
       ["Protecting main takes admin on this repo", null],
     ]);
@@ -374,7 +374,7 @@ describe("protecting a repo's main branch from Kin's App", () => {
       refresh: () => {},
     });
     expect(
-      await protect(["a/1", "a/2", "invented-owner/private", "invented-co/shared"], true),
+      await protect(["a/1", "a/2", "invented-owner/private", "invented-co/shared"], true, true),
     ).toEqual({
       summary: "Protected 2 of 4. Not protected:",
       problems: [

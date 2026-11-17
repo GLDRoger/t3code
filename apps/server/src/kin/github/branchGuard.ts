@@ -226,11 +226,18 @@ export const setGuards = Effect.fn("KinBranchGuard.set")(function* (
       });
       const created = answer.status === 201 ? decodeCreated(answer.body) : Option.none();
       if (Option.isNone(created)) {
-        failed.push({
-          repo: entry.repo,
-          problem: problemOf(answer, true),
-          said: messageOf(answer),
-        });
+        const problem = problemOf(answer, true);
+        failed.push({ repo: entry.repo, problem, said: messageOf(answer) });
+        // The row says what GitHub just answered, not what the last refresh read.
+        if (problem === "plan" || problem === "no_admin")
+          yield* save(
+            input.orgId,
+            key,
+            entry.branch,
+            { state: "unknown", byKin: false, problem },
+            null,
+            now,
+          );
         continue;
       }
       yield* save(

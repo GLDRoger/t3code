@@ -337,12 +337,16 @@ function WatchedRepos(props: {
   const { target, watch } = props;
   const [open, setOpen] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const guard = useGuardActions(target);
   const line = kinGitHubWatchLine(watch, useNowMinuteMs());
   return (
     <>
       {watch.problem === null ? null : <Notice tone="danger" message={watch.problem} />}
       {problem === null ? null : <ErrorBanner message={problem} />}
-      {(watch.open ?? 0) > 0 ? <ProtectAll target={target} open={watch.open ?? 0} /> : null}
+      {guard.notice}
+      {(watch.open ?? 0) > 0 ? (
+        <ProtectAll target={target} open={watch.open ?? 0} guard={guard} />
+      ) : null}
       <ListSection title={WATCH.reposTitle} footer={open ? `${line}\n\n${WATCH.reposHint}` : line}>
         {open ? <RepoRows target={target} onProblem={setProblem} /> : null}
         <ListActionRow
@@ -467,11 +471,11 @@ function useGuardActions(target: KinConnectionsTarget) {
       reloadStatus();
     },
   });
-  const run = (repos: ReadonlyArray<string>, on: boolean) => {
+  const run = (repos: ReadonlyArray<string>, on: boolean, all = false) => {
     if (busy || repos.length === 0) return;
     setBusy(true);
     setOutcome(null);
-    void change(repos, on).then((answer) => {
+    void change(repos, on, all).then((answer) => {
       setBusy(false);
       setOutcome(answer);
     });
@@ -487,17 +491,20 @@ function useGuardActions(target: KinConnectionsTarget) {
 }
 
 /** "N watched repos let Kin's App change their main branch", what protecting does, and Protect all. */
-function ProtectAll(props: { readonly target: KinConnectionsTarget; readonly open: number }) {
+function ProtectAll(props: {
+  readonly target: KinConnectionsTarget;
+  readonly open: number;
+  readonly guard: ReturnType<typeof useGuardActions>;
+}) {
   const { environmentId, orgId } = props.target;
+  const { guard } = props;
   const repos =
     Option.getOrNull(
       AsyncResult.value(useAtomValue(kinClient.githubRepos({ environmentId, input: { orgId } }))),
     )?.repos ?? [];
-  const guard = useGuardActions(props.target);
   const open = repos.filter((repo) => kinGitHubGuardAction(repo.guard) === "protect");
   return (
     <>
-      {guard.notice}
       <ListSection footer={GUARD.truth}>
         <ListActionRow
           label={GUARD.protectAll}
@@ -507,6 +514,7 @@ function ProtectAll(props: { readonly target: KinConnectionsTarget; readonly ope
           onPress={() =>
             guard.run(
               open.map((repo) => repo.repo),
+              true,
               true,
             )
           }

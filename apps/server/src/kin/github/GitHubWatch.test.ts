@@ -793,6 +793,15 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
       github.world.calls.length = 0;
       yield* look(github);
       assert.isFalse(github.world.calls.some((call) => /rules|protection/.test(call)));
+      // A repo gone private on the free plan since: Protect is refused and its row says why at once.
+      github.world.repos.find((entry) => entry.full_name === PAID)!.planLimited = true;
+      assert.strictEqual((yield* set(github, [PAID], true)).failed[0]?.problem, "plan");
+      assert.deepStrictEqual((yield* guards)[PAID], {
+        state: "unknown",
+        branch: "main",
+        byKin: false,
+        problem: "plan",
+      });
     }).pipe(Effect.provide(layer));
   });
 
