@@ -83,6 +83,10 @@ async function chromeFor(
     [
       "--remote-debugging-port=0",
       `--user-data-dir=${profile}`,
+      // Chrome refuses to start as root with its sandbox on (a container or WSL runner).
+      ...(process.getuid?.() === 0 ? ["--no-sandbox"] : []),
+      // A second machine someone else is using: no windows on its screen.
+      ...(process.env.KIN_VERIFY_HEADLESS === "1" ? ["--headless=new"] : []),
       "--no-first-run",
       "--no-default-browser-check",
       "--window-size=1280,900",

@@ -6,18 +6,15 @@
 source "$(dirname "$0")/lib.sh"
 # The owner's zone, set so the wall clock reads `$1` o'clock now: Etc/GMT-N is UTC+N.
 zone_at() { node -e 'const h=new Date().getUTCHours();let n=((+process.argv[1]-h)%24+24)%24;if(n>14)n-=24;process.stdout.write(n===0?"Etc/GMT":`Etc/GMT${n>0?"-":"+"}${Math.abs(n)}`)' "$1"; }
-# HH:MM on that zone's clock twelve hours on: its own slot never comes while this runs, and Run now
-# hands it to the same sink at once, so the script needn't wait for a slot minute.
-later() { node -e 'const d=new Date(Date.now()+12*3600000);process.stdout.write(new Intl.DateTimeFormat("en-GB",{timeZone:process.argv[1],hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(d))' "$1"; }
+# HH:MM on that zone's clock, six minutes on: a new check-in's window opens five minutes before.
+soon() { node -e 'const d=new Date(Date.now()+6*60000);process.stdout.write(new Intl.DateTimeFormat("en-GB",{timeZone:process.argv[1],hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(d))' "$1"; }
 q() { kv db "$1" | tail -n +2 | tail -1; }
 checkin() {
-  local title="$1" zone="$2" id
-  id="$(kv as owner rpc kin.checkIns.save "{\"agentId\":\"$CHIEF\",\"title\":\"$title\",\"what\":\"Look over what needs attention.\",\"at\":\"$(later "$zone")\",\"days\":[0,1,2,3,4,5,6]}" |
-    node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).checkIns.find(c=>c.title===process.argv[1])?.scheduleId??""))' "$title")"
-  kv as owner rpc kin.checkIns.act "{\"scheduleId\":\"$id\",\"action\":\"run_now\"}" >/dev/null
-  printf '%s' "$id"
+  local title="$1" zone="$2"
+  kv as owner rpc kin.checkIns.save "{\"agentId\":\"$CHIEF\",\"title\":\"$title\",\"what\":\"Look over what needs attention.\",\"at\":\"$(soon "$zone")\",\"days\":[0,1,2,3,4,5,6]}" |
+    node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).checkIns.find(c=>c.title===process.argv[1])?.scheduleId??""))' "$title"
 }
-# Waits until the check-in has run (T3's last run is set), then for Kin's sink.
+# Waits until the slot has run (T3's last run is set, up to four minutes), then for Kin's sink.
 ran() {
   for _ in $(seq 1 240); do
     [[ "$(q "select count(*) from scheduled_tasks t join kin_schedules s on s.task_id = t.task_id where s.schedule_id = '$1' and t.last_run_at is not null")" == 1 ]] && sleep 8 && return 0
