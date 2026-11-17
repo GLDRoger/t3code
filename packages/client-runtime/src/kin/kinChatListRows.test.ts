@@ -75,6 +75,33 @@ describe("kinChatListRows", () => {
     expect(rows[2]).toMatchObject({ fresh: true, preview: "No messages yet" });
   });
 
+  it("hides a chat with someone whose access ended until anything new arrives there", () => {
+    const pair = (chatId: string, leftAt: string | null, lastAt: string | null) => {
+      const base = row(chatId, lastAt === null ? null : { body: "Invented", createdAt: lastAt }, {
+        kind: "team_group",
+        teamId: `people:${chatId}`,
+      });
+      return {
+        ...base,
+        chat: {
+          ...base.chat,
+          members: [
+            member({ _tag: "person", personId: "owner" }),
+            { ...member({ _tag: "person", personId: "zoya" }), leftAt },
+          ],
+        },
+      } as never;
+    };
+    const removed = "2026-11-08T10:00:00.000Z";
+    const rows = list([
+      pair("gone-quiet", removed, "2026-11-08T09:30:00.000Z"),
+      pair("gone-empty", removed, null),
+      pair("written-since", removed, "2026-11-08T11:00:00.000Z"),
+      pair("still-here", null, "2026-11-08T09:30:00.000Z"),
+    ]);
+    expect(rows.map((item) => item.chat.chatId)).toEqual(["written-since", "still-here"]);
+  });
+
   it("puts the company chat first, even before what waits on you", () => {
     const rows = list([
       row("waiting", null, { fold: "needsYou" }),

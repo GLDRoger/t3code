@@ -374,9 +374,11 @@ const teamFactsOf = Effect.fn("KinTeamView.facts")(function* (
           writes: number;
           leads: number;
           marked: number;
+          gave: number;
           registerId: string;
         }>`SELECT
           r.record_id AS "recordId", ${teamWrites(sql, personId)} AS writes,
+          COALESCE(r.assigned_by_person_id = ${personId}, 0) AS gave,
           ${leadWrites(sql, personId)} AS leads,
           COALESCE(r.marked_by_person_id = ${personId}, 0) AS marked, r.register_id AS "registerId"
         FROM kin_records r WHERE r.org_id = ${orgId}
@@ -402,10 +404,16 @@ const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined 
   if (!facts.member) return noLongerTeam;
   const { row } = write;
   // Whoever marked it "Only me" may take their own mark off again.
-  const input =
+  const unmarked =
     write.input.sensitive === false && facts.seen?.marked === 1
       ? { ...write.input, sensitive: undefined }
       : write.input;
+  // Whoever gives a task says whether it comes back; one they make (or retry making) they give.
+  const task =
+    row === undefined || !write.changes
+      ? (typeof unmarked.list === "string" ? unmarked.list : "work") === "work"
+      : facts.seen?.registerId === "work" && facts.seen.gave === 1;
+  const input = task ? { ...unmarked, repeat: undefined } : unmarked;
   if (row !== undefined && facts.led.has(row.recordId as KinRecordId) && peopleOnly(input))
     return facts.seen === null || facts.seen === undefined ? notFound(row.key) : undefined;
   const intoLed = input.projectId === undefined || facts.led.has(input.projectId as KinRecordId);
@@ -502,6 +510,7 @@ export const teamCan = Effect.fn("KinTeamView.can")(function* (
         unmark: takes({ sensitive: false }),
         share: false,
         confirm: false,
+        repeat: takes({ repeat: { every: "month" } }),
       };
       return [row.recordId, can] as const;
     }),
@@ -673,6 +682,7 @@ const TEAM_FIELDS = new Set([
   "notes",
   "confirmed",
   "handedBack",
+  "repeat",
 ]);
 /** Numbered among themselves, newest highest: the org's numbers would show what they can't see. */
 export const teamChanges = (changes: ReadonlyArray<KinRecordChange>) => {

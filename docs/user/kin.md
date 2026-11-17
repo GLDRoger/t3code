@@ -123,8 +123,8 @@ its default and day, and you can answer it right there.
 
 Tap an agent's name at the top of its chat, or in any message, to open its page. It's also under
 **Settings → Agents** and in the command palette. The owner and co-owners can change
-everything there; anyone else sees a short card with what the agent looks after and a way to
-message it.
+everything there; anyone else sees a short card with what you wrote under **What teammates see**
+and a way to message it.
 
 - **Model.** Each agent runs on one model, with one effort, for everything it does. A change
   applies from its next reply. Medium or High effort is recommended: Low is too shallow, and
@@ -418,6 +418,21 @@ decisions and lasting facts. Each item is **Only you**, **The team can know**, o
 yes** when an agent thinks the team could know it. Anything about access, money or client terms
 stays with the owner. **Forget** an item and agents stop using it; bring it back from **Forgotten**.
 
+Agents use what the team can know in chats with teammates only while **Agents use team memory in
+chats with teammates** is on, at the top of the page. It starts off on a new Kin, and a change applies from the
+next reply. Nothing under **Only you** reaches a teammate's chat either way.
+
+### Finding a decision again
+
+Kin keeps a decision as soon as it's made: when you or a co-owner answer an agent's question card
+(a plan, a choice), and when a Team-room discussion ends decided. It is saved in the card's or the
+outcome's own words, with who decided and when, and is **Only you** until you let the team know.
+
+To find one months later, open **Search** (the magnifier on Tasks, Money, Clients or Docs, or the
+command palette) and type a word from it. Decisions show as **Remembered**; open one to see it in
+Settings → Memory. Search also finds invoices, quotes, expenses and receipts. Teammates search the
+same box: they find the money entries the Money place shows them and never what memory keeps.
+
 ## Who sees and does what
 
 A project lead is a member who leads one or more projects. They see what a member sees, plus more
@@ -455,3 +470,22 @@ teammates will use.
 
 To give agents characters you wrote yourself, see
 [Setting agents' characters from the host](../operations/kin-characters.md).
+
+### Taking your data out
+
+**Settings → Company details → Download everything** (the owner only) saves one zip: your clients,
+projects, every list's entries with their payments, each doc as it reads now, and the files docs
+and entries hold. On the phone, the same row downloads the zip and opens the share sheet.
+
+`kin.jsonl` inside it is the file [Kin's import](./kin-import.md) reads, so a new Kin can take
+the company back. On the computer running it, unzip the file, then:
+
+```sh
+t3 kin import --file kin.jsonl          # what it would make
+t3 kin import --file kin.jsonl --apply
+```
+
+What comes back is owned by whoever imports it; who did what and each entry's history stay behind,
+and so do contacts (they're in `contacts.jsonl` to keep). Memory isn't in the zip: it is kept in
+your memory repository. The zip never holds connection tokens, keys, sign-in sessions, pairing
+codes, invites or push tokens.

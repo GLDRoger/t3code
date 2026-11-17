@@ -15,7 +15,9 @@ import {
   classifyKinSendFailure,
   createKinOutbox,
   KIN_MESSAGE_MAX_LENGTH,
+  KIN_OUTBOX_STUCK_MS,
   kinOutboxRetractable,
+  kinPendingStatus,
   splitKinOutbox,
   type KinOutboxRecord,
   type KinOutboxStorage,
@@ -437,6 +439,42 @@ describe("kinOutbox", () => {
       [1, "one"],
       [2, "two"],
     ]);
+  });
+});
+
+describe("kinPendingStatus", () => {
+  it("says a message left unsent for a few minutes is not sent yet, connected or not", () => {
+    const written = Date.parse("2026-11-17T09:00:00.000Z");
+    const entry = (state: "waiting" | "sending" | "failed") => ({
+      environmentId: ENV,
+      chatId: CHAT,
+      clientMessageId: "client-1",
+      body: "Invented note",
+      createdAt: new Date(written).toISOString(),
+      error: state === "failed" ? "this chat is gone" : null,
+      state,
+      sent: null,
+    });
+    const early = written + 60_000;
+    const late = written + KIN_OUTBOX_STUCK_MS;
+    expect(kinPendingStatus(entry("waiting"), false, early)).toEqual({
+      kind: "waiting",
+      text: "Waiting for connection",
+      stuckInMs: KIN_OUTBOX_STUCK_MS - 60_000,
+    });
+    expect(kinPendingStatus(entry("waiting"), true, early)).toMatchObject({
+      kind: "sending",
+      stuckInMs: KIN_OUTBOX_STUCK_MS - 60_000,
+    });
+    expect(kinPendingStatus(entry("waiting"), false, late)).toEqual({
+      kind: "stuck",
+      text: "Not sent yet",
+    });
+    // A page that reads as connected but never gets it out doesn't keep saying "Sending…".
+    expect(kinPendingStatus(entry("waiting"), true, late).kind).toBe("stuck");
+    // An attempt under way is still on its way; a refusal says why, however old.
+    expect(kinPendingStatus(entry("sending"), false, late).kind).toBe("sending");
+    expect(kinPendingStatus(entry("failed"), false, late).text).toBe("Not sent: this chat is gone");
   });
 });
 

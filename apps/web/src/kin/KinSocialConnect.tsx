@@ -243,7 +243,8 @@ function ConnectDialog(props: {
   const [pick, setPick] = useState(rekey === null ? 0 : -1);
   const [key, setKey] = useState("");
   const [checked, setChecked] = useState<KinSocialCheck | null>(null);
-  const [done, setDone] = useState(false);
+  // The label it connected: once connected, that group leaves the choices.
+  const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const keyId = useId();
@@ -271,7 +272,7 @@ function ConnectDialog(props: {
       setChecked(null);
       return setProblem(outcome.problem);
     }
-    setDone(true);
+    setDone(label);
   };
 
   return (
@@ -286,7 +287,7 @@ function ConnectDialog(props: {
           className="contents"
           onSubmit={(event) => {
             event.preventDefault();
-            if (done) props.onClose();
+            if (done !== null) props.onClose();
             else void submit();
           }}
         >
@@ -297,10 +298,9 @@ function ConnectDialog(props: {
             <DialogDescription>{COPY.intro}</DialogDescription>
           </DialogHeader>
           <DialogPanel>
-            {done ? (
+            {done !== null ? (
               <p className="text-sm text-foreground" aria-live="polite">
-                {label} is connected. Social can read these accounts and draft for them; nothing
-                posts until you confirm a week.
+                {COPY.connected(done)}
               </p>
             ) : checked === null ? (
               <>
@@ -390,7 +390,7 @@ function ConnectDialog(props: {
             )}
           </DialogPanel>
           <DialogFooter>
-            {done ? (
+            {done !== null ? (
               <Button type="submit">{COPY.done}</Button>
             ) : (
               <>

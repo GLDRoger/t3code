@@ -10,6 +10,7 @@ export {
   type ServerPairingLinkRecord,
   __resetServerAuthBootstrapForTests,
   isChatOnlySession,
+  signOutThisBrowser,
 } from "./auth";
 
 export {

@@ -27,6 +27,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 import * as Cookies from "effect/http/Cookies";
 import * as HttpEffect from "effect/http/HttpEffect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -502,6 +503,36 @@ export const layer = HttpApiBuilder.group(
             ServerAuthForbiddenOperationError: () =>
               failEnvironmentOperationForbidden("current_session_revoke_not_allowed"),
           }),
+          Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
+            failEnvironmentInternal("client_session_revoke_failed", error),
+          ),
+        ),
+      )
+      .handle(
+        "signOut",
+        // Any session may end itself (a teammate's browser on a shared computer); ending others
+        // stays behind the access scope.
+        Effect.fn("environment.auth.signOut")(
+          function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            const session = yield* EnvironmentAuthenticatedPrincipal;
+            const revoked = yield* serverAuth.revokeSession(session.sessionId);
+            const cookieOptions = { httpOnly: true, path: "/", sameSite: "lax" } as const;
+            const { legacyCookieName } = sessions;
+            const expired = yield* Effect.fromResult(
+              Cookies.expireCookie(Cookies.empty, sessions.cookieName, cookieOptions).pipe(
+                Result.flatMap((cookies) =>
+                  legacyCookieName === undefined
+                    ? Result.succeed(cookies)
+                    : Cookies.expireCookie(cookies, legacyCookieName, cookieOptions),
+                ),
+              ),
+            ).pipe(Effect.catch(() => failEnvironmentInternal("browser_session_cookie_failed")));
+            yield* HttpEffect.appendPreResponseHandler((_request, response) =>
+              Effect.succeed(HttpServerResponse.mergeCookies(response, expired)),
+            );
+            return { revoked };
+          },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
             failEnvironmentInternal("client_session_revoke_failed", error),
           ),

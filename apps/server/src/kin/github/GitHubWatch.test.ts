@@ -8,6 +8,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { isAgentText, signed } from "./agentMark.ts";
@@ -478,18 +479,29 @@ describe("KinGitHubWatch", () => {
 
   it.effect("a signed-out login says how to fix it; the repo list counts what is watched", () => {
     const { github, layer } = setup();
+    // An open Connections screen is told when its watch line changes, and not on every look.
+    const told: Array<string> = [];
     return Effect.gen(function* () {
       yield* start(github);
+      assert.deepStrictEqual(told, ["connections"]);
       const before = yield* watchSummary(orgId, T0);
       assert.include(before, { repos: 1, problem: null, handledToday: 0 });
+      yield* look(github);
+      assert.lengthOf(told, 1);
       github.world.down = 401;
       yield* look(github);
+      assert.lengthOf(told, 2);
       const after = yield* watchSummary(orgId, T0 + MINUTE);
       assert.include(after?.problem ?? "", "Reconnect GitHub");
       yield* setRepo({ orgId, repo: REPO, watched: false }, T0);
       assert.strictEqual((yield* watchSummary(orgId, T0))?.repos, 0);
       yield* setRepo({ orgId, repo: null }, T0);
       assert.strictEqual((yield* watchSummary(orgId, T0))?.repos, 1);
-    }).pipe(Effect.provide(layer));
+    }).pipe(
+      Effect.provide(layer),
+      Effect.provideService(KinRefreshObserver, {
+        touch: (_org, topic) => Effect.sync(() => void told.push(topic)),
+      }),
+    );
   });
 });

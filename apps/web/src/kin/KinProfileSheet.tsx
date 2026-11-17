@@ -33,13 +33,6 @@ import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import {
-  Sheet,
-  SheetDescription,
-  SheetHeader,
-  SheetPopup,
-  SheetTitle,
-} from "../components/ui/sheet";
 import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { Toggle } from "../components/ui/toggle";
@@ -56,6 +49,8 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { useOpenKinPeopleChat } from "./KinPeopleChat";
+import { kinSettingsSectionIn } from "./kinSettingsAddress";
+import { KIN_DIALOG_PARTS, KIN_SHEET_PARTS } from "./kinOverlayParts";
 import { kinClient } from "./kinClient";
 import { useKinProfiles } from "./kinPictures";
 import { useKinHostAt } from "./useKinHost";
@@ -104,6 +99,9 @@ export function KinProfileSheetHost() {
   const shown = useLocation({
     select: (location) => new URLSearchParams(location.searchStr).get(PROFILE_PARAM),
   });
+  const overSettings = useLocation({
+    select: (location) => kinSettingsSectionIn(location.searchStr) !== null,
+  });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hands the router's history to `openKinProfile`, which runs from handlers outside React
   useEffect(() => {
     kinHistory = router.history;
@@ -129,6 +127,7 @@ export function KinProfileSheetHost() {
     <KinProfileSheet
       key={`${target.environmentId}:${target.personId}`}
       target={target}
+      inDialog={overSettings}
       onClose={close}
     />
   );
@@ -188,36 +187,41 @@ async function uploadPicture(
   return { attachment, release: () => releaseAttachmentUpload(image.id) };
 }
 
+/** A sheet over a Kin page; over Settings, a dialog, since a sheet would open under the modal. */
 function KinProfileSheet(props: {
   readonly target: KinProfileTarget;
+  readonly inDialog: boolean;
   readonly onClose: () => void;
 }) {
   const { environmentId, orgId, personId } = props.target;
   const profile = useKinProfileOf(environmentId, orgId, personId);
+  const Parts = props.inDialog ? KIN_DIALOG_PARTS : KIN_SHEET_PARTS;
   return (
-    <Sheet
+    <Parts.Root
       open
       onOpenChange={(open) => {
         if (!open) props.onClose();
       }}
     >
-      <SheetPopup side="right">
-        <SheetHeader>
-          <SheetTitle>
+      <Parts.Popup>
+        <Parts.Header>
+          <Parts.Title>
             {profile.mine
               ? KIN_PROFILE_COPY.mine
               : (profile.profile?.displayName ?? KIN_PROFILE_COPY.title)}
-          </SheetTitle>
-          {profile.runsWorkspace ? <SheetDescription>Runs this workspace</SheetDescription> : null}
+          </Parts.Title>
+          {profile.runsWorkspace ? (
+            <Parts.Description>Runs this workspace</Parts.Description>
+          ) : null}
           {profile.mine || profile.profile === null ? null : (
             <KinMessageButton target={props.target} />
           )}
-        </SheetHeader>
+        </Parts.Header>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
           <KinProfileBody {...props.target} />
         </div>
-      </SheetPopup>
-    </Sheet>
+      </Parts.Popup>
+    </Parts.Root>
   );
 }
 

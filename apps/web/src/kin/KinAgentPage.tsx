@@ -58,6 +58,8 @@ import { kinLeadFormAtom } from "./kinLeadForm";
 import { KIN_PLACE_PATH } from "./kinPlaces";
 import type { KinAgentPageTarget } from "./kinAgentPageLink";
 import { KinLoadFailed } from "./KinWorkParts";
+import { kinNewLeadTarget } from "./KinNewLeadButton";
+import { useKinHost } from "./useKinHost";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
 
@@ -75,11 +77,14 @@ function useKinAgentPageCan(environmentId: EnvironmentId) {
 export function KinAgentPageHost() {
   const { agent } = useSearch({ from: "/_chat/kin" });
   const params = useParams({ strict: false });
-  if (agent === undefined || params.environmentId === undefined || params.orgId === undefined)
-    return null;
+  // The bare Chats screen names no place: the link opens on this Kin's own host, as the dock does.
+  const host = kinNewLeadTarget(useKinHost());
+  const environmentId = params.environmentId ?? host?.environmentId;
+  const orgId = params.orgId ?? host?.orgId;
+  if (agent === undefined || environmentId === undefined || orgId === undefined) return null;
   const target = {
-    environmentId: params.environmentId as EnvironmentId,
-    orgId: KinOrgId.make(params.orgId),
+    environmentId: environmentId as EnvironmentId,
+    orgId: KinOrgId.make(orgId),
     agentId: agent,
   };
   return <KinAgentSheet key={agent} target={target} />;

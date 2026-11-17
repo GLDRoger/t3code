@@ -41,6 +41,15 @@ import {
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../components/WorkspaceBreadcrumb";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import {
@@ -57,7 +66,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
-import { isChatOnlySession } from "../environments/primary";
+import { isChatOnlySession, signOutThisBrowser } from "../environments/primary";
 import { useTheme } from "../hooks/useTheme";
 import { cn } from "../lib/utils";
 import type { ThemePreferenceMode } from "../themePalette";
@@ -74,6 +83,7 @@ import { KinSettingsNotifications } from "./KinNotifications";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import { KinProfileBody, useKinMe } from "./KinProfileSheet";
 import { closeKinSettings, kinSettingsSectionIn, openKinSettings } from "./kinSettingsAddress";
+import { rememberKinTeammate } from "./kinTeammateMark";
 import { KinTeamView } from "./KinTeamView";
 import { useKinHost } from "./useKinHost";
 import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
@@ -349,9 +359,79 @@ function KinSettingsProfile(props: KinSettingsTarget) {
       ) : (
         <KinProfileBody {...props} personId={me} />
       )}
+      {/* A teammate's browser is a chat-only session; the owner's never is. */}
+      {isChatOnlySession() ? <KinLeaveTeam /> : null}
     </div>
   );
 }
+
+/**
+ * The phone's Leave this team: this browser forgets the team. On the web that ends its own
+ * session on the host, so a shared computer is left signed out, and shows the access-ended page.
+ */
+function KinLeaveTeam() {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const leave = async () => {
+    setBusy(true);
+    setFailed(false);
+    try {
+      await signOutThisBrowser();
+    } catch {
+      setBusy(false);
+      setFailed(true);
+      return;
+    }
+    rememberKinTeammate(true);
+    window.location.assign("/pair");
+  };
+  return (
+    <section className="flex flex-col items-start gap-2 border-t pt-6">
+      <Button size="sm" variant="destructive-outline" onClick={() => setAsking(true)}>
+        {KIN_LEAVE_TEAM.button}
+      </Button>
+      {failed ? (
+        <p role="alert" className="text-xs text-destructive-foreground">
+          {KIN_LEAVE_TEAM.failed}
+        </p>
+      ) : null}
+      <AlertDialog open={asking} onOpenChange={(open) => !busy && setAsking(open)}>
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{KIN_LEAVE_TEAM.title}</AlertDialogTitle>
+            <AlertDialogDescription>{KIN_LEAVE_TEAM.detail}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />} disabled={busy}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              variant="destructive"
+              disabled={busy}
+              aria-busy={busy}
+              onClick={() => {
+                setAsking(false);
+                void leave();
+              }}
+            >
+              {KIN_LEAVE_TEAM.confirm}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+    </section>
+  );
+}
+
+const KIN_LEAVE_TEAM = {
+  button: "Leave this team",
+  title: "Leave this team?",
+  detail:
+    "You'll be signed out on this browser. To come back, ask your team for a new join link: it brings back your chats and tasks.",
+  confirm: "Leave",
+  failed: "Couldn't sign this browser out. Nothing changed.",
+} as const;
 
 const APPEARANCE_LABELS: Record<ThemePreferenceMode, string> = {
   system: "Match this device",

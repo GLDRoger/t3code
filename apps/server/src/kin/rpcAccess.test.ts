@@ -121,7 +121,13 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         assert.deepStrictEqual(table.owner, methods);
         assert.deepStrictEqual(
           methods.filter((method) => !table.coOwner.includes(method)),
-          ["kin.people.setAccess", "kin.people.setOwnerName", "kin.refreshes.announce"],
+          [
+            "kin.people.setAccess",
+            "kin.people.setOwnerName",
+            "kin.refreshes.announce",
+            // Download everything is the owner's alone.
+            "kin.work.exportLink",
+          ],
         );
         assert.deepStrictEqual(table.member, MEMBER);
         // Every method is in the table, so a new one can't slip past the gate unlisted.
@@ -137,6 +143,9 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
         assert.isTrue(yield* allowed("meera", "kin.work.recordPayment"));
         // Someone the org doesn't know is refused, not admitted as a member of nothing.
         assert.isFalse(yield* allowed("stranger", "kin.work.recordPayment"));
+        // Team memory is the owner's call: a co-owner (now Meera) may set it, a member never.
+        assert.isTrue(yield* allowed("meera", "kin.memory.setTeamMemory"));
+        assert.isFalse(yield* allowed("ravi", "kin.memory.setTeamMemory"));
       }),
   );
 });

@@ -9,7 +9,9 @@ import {
   KIN_WORK_MILESTONE,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
+  KIN_WORK_REPEAT,
   KIN_WORK_TITLE_MAX,
+  kinSameRepeat,
   kinWorkAssignees,
   kinWorkDayOf,
   kinWorkDueChoices,
@@ -57,6 +59,7 @@ import {
   NotebookTextIcon,
   PencilIcon,
   PlayIcon,
+  RepeatIcon,
   RotateCcwIcon,
 } from "lucide-react";
 import { useId, useState } from "react";
@@ -527,6 +530,18 @@ function KinWorkItem(
                 <DueMenu view={view} now={props.now} saving={saving} onAct={reword} />
               )}
             </dd>
+            {view.repeat === null && !(change !== null && view.can.repeat === true) ? null : (
+              <>
+                <dt className="text-muted-foreground">{KIN_WORK_REPEAT.label}</dt>
+                <dd className="flex min-w-0 items-center gap-2 text-foreground">
+                  {change === null || view.can.repeat !== true || view.closed ? (
+                    <span>{view.repeat?.text ?? KIN_WORK_REPEAT.never}</span>
+                  ) : (
+                    <RepeatMenu view={view} saving={saving} onAct={change} />
+                  )}
+                </dd>
+              </>
+            )}
             {choices === null || (!view.can.party && view.party === null) ? null : (
               <>
                 <dt className="text-muted-foreground">{KIN_WORK_NEW_COPY.clientLabel}</dt>
@@ -960,6 +975,57 @@ function StatusMenu(props: {
             >
               <KinWorkStateIcon state="dropped" />
               {KIN_WORK_COPY.drop}
+            </MenuItem>
+          </>
+        )}
+      </MenuPopup>
+    </Menu>
+  );
+}
+
+/** How the task comes back once closed: the usual rules, or off. It needs a due date to go from. */
+function RepeatMenu(props: {
+  readonly view: KinWorkItemView;
+  readonly saving: boolean;
+  readonly onAct: (action: KinWorkAction) => void;
+}) {
+  const { view } = props;
+  const shown = view.repeat?.text ?? KIN_WORK_REPEAT.never;
+  const dated = view.due !== null;
+  return (
+    <Menu>
+      <MenuTrigger
+        render={
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={props.saving}
+            aria-label={`${KIN_WORK_REPEAT.label}: ${shown}. Change`}
+          />
+        }
+      >
+        {view.repeat === null ? null : <RepeatIcon aria-hidden />}
+        {shown}
+        <ChevronDownIcon />
+      </MenuTrigger>
+      <MenuPopup align="start">
+        <MenuGroup>
+          <MenuGroupLabel>{dated ? KIN_WORK_REPEAT.note : KIN_WORK_REPEAT.needsDue}</MenuGroupLabel>
+          {KIN_WORK_REPEAT.choices.map((choice) => (
+            <MenuItem
+              key={choice.label}
+              disabled={!dated || kinSameRepeat(choice.rule, view.repeat?.rule ?? null)}
+              onClick={() => props.onAct({ type: "repeat", rule: choice.rule })}
+            >
+              {choice.label}
+            </MenuItem>
+          ))}
+        </MenuGroup>
+        {view.repeat === null ? null : (
+          <>
+            <MenuSeparator />
+            <MenuItem onClick={() => props.onAct({ type: "repeat", rule: null })}>
+              {KIN_WORK_REPEAT.stop}
             </MenuItem>
           </>
         )}

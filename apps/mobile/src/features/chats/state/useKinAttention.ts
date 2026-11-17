@@ -29,6 +29,7 @@ import { setComposerDraftText } from "../../../state/use-composer-drafts";
 import { kinDraftKey } from "../components/KinComposer";
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { kinClient } from "./kinClient";
+import { useKinMoneyLive } from "./useKinMoneyLive";
 import { useRereadOnChange } from "./useKinMoney";
 import { kinWorkLiveAtom, type KinWorkTarget } from "./useKinWork";
 
@@ -175,13 +176,22 @@ export function useKinAskAbout({ environmentId, orgId }: KinWorkTarget) {
   };
 }
 
-/** The company's goals, read again when Work changes or needs attention moves. */
-export function useKinGoals(target: KinWorkTarget, options: { readonly enabled: boolean }) {
-  const atom = kinClient.goals({
-    environmentId: target.environmentId,
-    input: { orgId: target.orgId },
-  });
-  const state = kinWorkReadState(useAtomValue(options.enabled ? atom : noGoalsAtom));
+/**
+ * The company's goals, read again when Work changes or needs attention moves; on Money's own screen
+ * (`money`), from Money's stream where the host streams it.
+ */
+export function useKinGoals(
+  target: KinWorkTarget,
+  options: { readonly enabled: boolean; readonly money?: boolean },
+) {
+  const streamed = useKinMoneyLive(target, "goals");
+  const live = options.money === true ? streamed : null;
+  const atom =
+    live?.atom ??
+    kinClient.goals({ environmentId: target.environmentId, input: { orgId: target.orgId } });
+  const state = kinWorkReadState(
+    useAtomValue(options.enabled && live !== undefined ? atom : noGoalsAtom),
+  );
   const save = useAtomCommand(kinClient.goalSave, { reportFailure: false });
   const canSave = useAtomValue(kinClient.goalSave.permissionAtom(target.environmentId));
   return {
@@ -192,7 +202,7 @@ export function useKinGoals(target: KinWorkTarget, options: { readonly enabled: 
         environmentId: target.environmentId,
         input: { ...input, orgId: target.orgId },
       });
-      appAtomRegistry.refresh(atom);
+      if (live === null) appAtomRegistry.refresh(atom);
       return AsyncResult.isSuccess(outcome)
         ? null
         : kinFailureText(squashAtomCommandFailure(outcome), "Couldn't save the goal.");

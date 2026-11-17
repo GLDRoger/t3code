@@ -37,6 +37,9 @@ import { useKinHost, useKinHostChooser } from "../state/useKinHost";
 import { kinCachedOrgsAtom } from "../state/kinClient";
 import { AsyncResult } from "effect/reactivity";
 import { useKinReconnect } from "../state/useKinReconnect";
+import { kinAccessEndedCopy } from "@t3tools/client-runtime/kin/kinJoin";
+
+const ACCESS_ENDED = kinAccessEndedCopy("phone");
 
 export type KinReadyState = Extract<KinInboxScreenState, { readonly _tag: "ready" }>;
 
@@ -114,9 +117,9 @@ export function KinScreenState(props: {
       return teammate ? (
         <EmptyState
           variant="plain"
-          title="You no longer have access"
-          detail="Ask your team for a new join link to get back in."
-          actionLabel="Join with a new link"
+          title={ACCESS_ENDED.title}
+          detail={ACCESS_ENDED.detail}
+          actionLabel={ACCESS_ENDED.action}
           onAction={() => navigation.navigate("KinJoin")}
         />
       ) : (

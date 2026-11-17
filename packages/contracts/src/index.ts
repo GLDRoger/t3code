@@ -88,6 +88,7 @@ export * from "./kinDocs.ts";
 export * from "./kinDocRows.ts";
 export * from "./kinMoney.ts";
 export * from "./kinPulse.ts";
+export * from "./kinMoneyLive.ts";
 export * from "./kinWire.ts";
 export * from "./kinWorkRows.ts";
 export * from "./kinFinance.ts";

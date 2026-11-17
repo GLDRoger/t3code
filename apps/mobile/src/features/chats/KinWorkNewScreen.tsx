@@ -5,8 +5,10 @@ import {
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
   KIN_WORK_ONLY_OWNER,
+  KIN_WORK_REPEAT,
   KIN_WORK_TITLE_MAX,
   createKinWorkActions,
+  kinSameRepeat,
   kinWorkAssignees,
   kinWorkDraftCheck,
   kinWorkDraftFor,
@@ -232,7 +234,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                     label={KIN_WORK_NEW_COPY.noDue}
                     selected={draft.due === null}
                     disabled={saving}
-                    onPress={() => setDraft({ ...draft, due: null })}
+                    onPress={() => setDraft({ ...draft, due: null, repeat: null })}
                   />
                   {kinWorkDueChoices(opened).map((choice) => (
                     <Chip
@@ -246,6 +248,35 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
                   ))}
                 </View>
               </View>
+              {draft.due === null ? null : (
+                <View className="gap-2">
+                  <Text className="px-2 text-sm text-foreground-muted">
+                    {KIN_WORK_REPEAT.label}
+                  </Text>
+                  <View className="flex-row flex-wrap gap-2">
+                    <Chip
+                      label={KIN_WORK_REPEAT.never}
+                      selected={draft.repeat === null}
+                      disabled={saving}
+                      onPress={() => setDraft({ ...draft, repeat: null })}
+                    />
+                    {KIN_WORK_REPEAT.choices.map((choice) => (
+                      <Chip
+                        key={choice.label}
+                        label={choice.label}
+                        selected={kinSameRepeat(choice.rule, draft.repeat)}
+                        disabled={saving}
+                        onPress={() => setDraft({ ...draft, repeat: choice.rule })}
+                      />
+                    ))}
+                  </View>
+                  {draft.repeat === null ? null : (
+                    <Text textRole="footnote" className="px-2 text-foreground-muted">
+                      {KIN_WORK_REPEAT.note}
+                    </Text>
+                  )}
+                </View>
+              )}
               {!hostClients || (!offersClient && !offersProject) ? null : (
                 <ListSection>
                   {!offersClient ? null : (

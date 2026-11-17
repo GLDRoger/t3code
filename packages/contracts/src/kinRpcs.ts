@@ -33,6 +33,7 @@ import { KinDocsRpcs, KIN_DOCS_RPC_SCOPES } from "./kinDocs.ts";
 import { KinFinanceRpcs, KIN_FINANCE_RPC_SCOPES } from "./kinFinance.ts";
 import { KinStatementRpcs, KIN_STATEMENT_RPC_SCOPES } from "./kinStatements.ts";
 import { KinMoneyAnswerRpcs, KIN_MONEY_ANSWER_RPC_SCOPES } from "./kinMoneyAnswers.ts";
+import { KinMoneyLiveRpcs, KIN_MONEY_LIVE_RPC_SCOPES } from "./kinMoneyLive.ts";
 import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
 import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
 import {
@@ -176,6 +177,7 @@ export const KinRpcs = [
   ...KinDocsRpcs,
   ...KinFinanceRpcs,
   ...KinMoneyAnswerRpcs,
+  ...KinMoneyLiveRpcs,
   ...KinStatementRpcs,
   ...KinPushRpcs,
   ...KinPeopleRpcs,
@@ -193,6 +195,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_DOCS_RPC_SCOPES,
   ...KIN_FINANCE_RPC_SCOPES,
   ...KIN_MONEY_ANSWER_RPC_SCOPES,
+  ...KIN_MONEY_LIVE_RPC_SCOPES,
   ...KIN_STATEMENT_RPC_SCOPES,
   ...KIN_PUSH_RPC_SCOPES,
   ...KIN_PEOPLE_RPC_SCOPES,
@@ -305,6 +308,7 @@ const KIN_RPC_ACCESS = {
   "kin.memory.confirmSuggestions": "owner_level",
   "kin.memory.forget": "owner_level",
   "kin.memory.restore": "owner_level",
+  "kin.memory.setTeamMemory": "owner_level",
   "kin.work.summary": "person",
   "kin.work.list": "person",
   "kin.work.get": "person",
@@ -352,6 +356,7 @@ const KIN_RPC_ACCESS = {
   "kin.work.dates": "person",
   "kin.work.money": "person",
   "kin.work.cash": "owner_level",
+  "kin.money.subscribe": "owner_level",
   "kin.work.outlook": "owner_level",
   "kin.work.budgets": "owner_level",
   "kin.work.setBudget": "owner_level",
@@ -361,6 +366,7 @@ const KIN_RPC_ACCESS = {
   "kin.work.voidPayment": "owner_level",
   "kin.work.files": "owner_level",
   "kin.work.companyProfile": "owner_level",
+  "kin.work.exportLink": "org_owner",
   "kin.work.setCompanyProfile": "owner_level",
   "kin.work.issue": "owner_level",
   "kin.work.nextNumber": "owner_level",
@@ -527,6 +533,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.memory.confirmSuggestions": "kin-memory",
   "kin.memory.forget": "kin-memory",
   "kin.memory.restore": "kin-memory",
+  "kin.memory.setTeamMemory": "kin-memory",
   "kin.docs.list": "kin-docs",
   "kin.docs.get": "kin-docs",
   "kin.docs.history": "kin-docs",
@@ -575,6 +582,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.voidPayment": "kin-work",
   "kin.work.files": "kin-work",
   "kin.work.companyProfile": "kin-work",
+  "kin.work.exportLink": "kin-work",
   "kin.work.setCompanyProfile": "kin-work",
   "kin.work.issue": "kin-work",
   "kin.work.void": "kin-work",
@@ -583,6 +591,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.work.receipts": "kin-work",
   "kin.work.makeReceipt": "kin-work",
   "kin.work.cash": "kin-work",
+  "kin.money.subscribe": "kin-work",
   "kin.work.outlook": "kin-work",
   "kin.work.budgets": "kin-work",
   "kin.work.setBudget": "kin-work",

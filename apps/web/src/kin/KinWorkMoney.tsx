@@ -24,7 +24,8 @@ import { KIN_GOALS } from "@t3tools/client-runtime/kin/kinAttention";
 import { KIN_BUDGETS, KIN_QUOTES } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { KIN_RECEIPTS } from "@t3tools/client-runtime/kin/kinInvoices";
 import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
-import { ArrowLeftRightIcon, MessageSquareIcon, PlusIcon } from "lucide-react";
+import { ArrowLeftRightIcon, MessageSquareIcon, PlusIcon, SparklesIcon } from "lucide-react";
+import { KIN_CHIEF_OF_STAFF } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { useState } from "react";
 
 import { Button } from "../components/ui/button";
@@ -44,6 +45,7 @@ import { KinSubscriptionsSection } from "./KinSubscriptions";
 import { KinNewReceiptDialog, KinReceiptsSection } from "./KinReceipts";
 import { KinAttentionSection } from "./KinAttention";
 import { KinGoalSheet, KinGoals } from "./KinGoals";
+import { openKinLeadForm } from "./KinNewLeadButton";
 import { useKinGoals } from "./useKinAttention";
 import { useKinViewerScope } from "./useKinOwnerLevel";
 import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection, KinLoadFailed } from "./KinWorkParts";
@@ -177,7 +179,7 @@ export function KinWorkMoney(
   const { state, refresh } = useKinMoneySummary(props, { enabled: true, use: "screen" });
   const agent = useKinAskAgent(props);
   const rates = useKinRates(props);
-  const goals = useKinGoals(props, { enabled: true });
+  const goals = useKinGoals(props, { enabled: true, money: true });
   const canBudget = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(props.environmentId));
   const [adding, setAdding] = useState<"goal" | "budget" | "receipt" | null>(null);
@@ -197,7 +199,73 @@ export function KinWorkMoney(
     </>
   );
   const [ratesOpen, setRatesOpen] = useState(false);
+  const canAddLead = useAtomValue(kinClient.leadCreate.permissionAtom(props.environmentId));
   const seq = props.stale ? null : props.live.seq;
+  /** The page's own ways in; `withAsk` adds Ask, which an empty page already offers above. */
+  const actions = (withAsk: boolean) => (
+    <div className="flex flex-wrap gap-2">
+      {!goals.canSave && !canBudget && !canReceipt && agent === null ? null : (
+        <Menu>
+          <MenuTrigger render={<Button size="sm" variant="ghost" />}>
+            <PlusIcon />
+            {KIN_MONEY.add}
+          </MenuTrigger>
+          <MenuPopup align="start" side="top">
+            {goals.canSave ? (
+              <MenuItem onClick={() => setAdding("goal")}>{KIN_GOALS.add}</MenuItem>
+            ) : null}
+            {canBudget ? (
+              <MenuItem onClick={() => setAdding("budget")}>{KIN_BUDGETS.add}</MenuItem>
+            ) : null}
+            {canReceipt ? (
+              <MenuItem onClick={() => setAdding("receipt")}>{KIN_RECEIPTS.newReceipt}</MenuItem>
+            ) : null}
+            {agent === null ? null : (
+              <MenuItem onClick={() => agent.ask(KIN_SUBSCRIPTIONS.addMessage)}>
+                {KIN_SUBSCRIPTIONS.add}
+              </MenuItem>
+            )}
+            {agent === null ? null : (
+              <MenuItem onClick={() => agent.ask(KIN_QUOTES.askMessage)}>
+                {KIN_MONEY.newQuote}
+              </MenuItem>
+            )}
+          </MenuPopup>
+        </Menu>
+      )}
+      {rates === null ? null : (
+        <Button size="sm" variant="ghost" onClick={() => setRatesOpen(true)}>
+          <ArrowLeftRightIcon />
+          {KIN_MONEY.rates}
+        </Button>
+      )}
+      {agent === null || !withAsk ? null : (
+        <Button size="sm" variant="ghost" onClick={() => agent.ask("")}>
+          <MessageSquareIcon />
+          Ask {agent.name}
+        </Button>
+      )}
+    </div>
+  );
+  const dialogs = (
+    <>
+      {adding === "goal" ? (
+        <KinGoalSheet goal={null} goals={goals} onClose={() => setAdding(null)} />
+      ) : adding === "budget" ? (
+        <KinBudgetDialog
+          {...props}
+          seq={seq}
+          rates={rates}
+          expenses={kinListsOf(props.lists).find((one) => one.list === "expenses") ?? null}
+          budget={null}
+          onClose={() => setAdding(null)}
+        />
+      ) : adding === "receipt" ? (
+        <KinNewReceiptDialog {...props} onClose={() => setAdding(null)} />
+      ) : null}
+      {ratesOpen ? <KinRatesDialog {...props} onClose={() => setRatesOpen(false)} /> : null}
+    </>
+  );
   if (state._tag === "refused") return <KinWorkNotice {...KIN_MONEY.onlyOwner} />;
   if (state._tag === "failed" || state._tag === "gone") {
     return (
@@ -219,22 +287,39 @@ export function KinWorkMoney(
   const summary = state.value;
   const view = kinMoneyView(summary, kinListsOf(props.lists));
   if (view.empty) {
+    const first = !scope.all ? null : agent !== null ? (
+      <Button onClick={() => agent.ask(KIN_MONEY.askMessage)}>
+        <MessageSquareIcon />
+        {KIN_MONEY.ask}
+      </Button>
+    ) : canAddLead ? (
+      <Button
+        onClick={() =>
+          openKinLeadForm({
+            environmentId: props.environmentId,
+            orgId: props.orgId,
+            lead: null,
+            suggested: KIN_CHIEF_OF_STAFF,
+          })
+        }
+      >
+        <SparklesIcon />
+        {KIN_MONEY.createChief}
+      </Button>
+    ) : null;
     return (
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-7 px-4 pt-4">{top}</div>
         <KinWorkNotice
           {...(kinNothingShown("money", scope) ?? KIN_MONEY.none)}
-          {...(agent === null || !scope.all
-            ? {}
-            : {
-                action: (
-                  <Button onClick={() => agent.ask(KIN_MONEY.askMessage)}>
-                    <MessageSquareIcon />
-                    {KIN_MONEY.ask}
-                  </Button>
-                ),
-              })}
+          action={
+            <div className="flex flex-col items-center gap-3">
+              {first}
+              {actions(false)}
+            </div>
+          }
         />
+        {dialogs}
       </div>
     );
   }
@@ -445,67 +530,9 @@ export function KinWorkMoney(
             )}
           </KinWorkSection>
         </div>
-        <div className="flex flex-wrap gap-2 px-2">
-          {!goals.canSave && !canBudget && !canReceipt && agent === null ? null : (
-            <Menu>
-              <MenuTrigger render={<Button size="sm" variant="ghost" />}>
-                <PlusIcon />
-                {KIN_MONEY.add}
-              </MenuTrigger>
-              <MenuPopup align="start" side="top">
-                {goals.canSave ? (
-                  <MenuItem onClick={() => setAdding("goal")}>{KIN_GOALS.add}</MenuItem>
-                ) : null}
-                {canBudget ? (
-                  <MenuItem onClick={() => setAdding("budget")}>{KIN_BUDGETS.add}</MenuItem>
-                ) : null}
-                {canReceipt ? (
-                  <MenuItem onClick={() => setAdding("receipt")}>
-                    {KIN_RECEIPTS.newReceipt}
-                  </MenuItem>
-                ) : null}
-                {agent === null ? null : (
-                  <MenuItem onClick={() => agent.ask(KIN_SUBSCRIPTIONS.addMessage)}>
-                    {KIN_SUBSCRIPTIONS.add}
-                  </MenuItem>
-                )}
-                {agent === null ? null : (
-                  <MenuItem onClick={() => agent.ask(KIN_QUOTES.askMessage)}>
-                    {KIN_MONEY.newQuote}
-                  </MenuItem>
-                )}
-              </MenuPopup>
-            </Menu>
-          )}
-          {rates === null ? null : (
-            <Button size="sm" variant="ghost" onClick={() => setRatesOpen(true)}>
-              <ArrowLeftRightIcon />
-              {KIN_MONEY.rates}
-            </Button>
-          )}
-          {agent === null ? null : (
-            <Button size="sm" variant="ghost" onClick={() => agent.ask("")}>
-              <MessageSquareIcon />
-              Ask {agent.name}
-            </Button>
-          )}
-        </div>
+        <div className="px-2">{actions(true)}</div>
       </div>
-      {adding === "goal" ? (
-        <KinGoalSheet goal={null} goals={goals} onClose={() => setAdding(null)} />
-      ) : adding === "budget" ? (
-        <KinBudgetDialog
-          {...props}
-          seq={seq}
-          rates={rates}
-          expenses={kinListsOf(props.lists).find((one) => one.list === "expenses") ?? null}
-          budget={null}
-          onClose={() => setAdding(null)}
-        />
-      ) : adding === "receipt" ? (
-        <KinNewReceiptDialog {...props} onClose={() => setAdding(null)} />
-      ) : null}
-      {ratesOpen ? <KinRatesDialog {...props} onClose={() => setRatesOpen(false)} /> : null}
+      {dialogs}
     </div>
   );
 }

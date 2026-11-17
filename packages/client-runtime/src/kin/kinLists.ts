@@ -16,7 +16,6 @@ import type {
   KinRecordDetail,
   KinRecordKey,
   KinRecordState,
-  KinRepeatRule,
   KinWorkListInput,
   KinWorkPrincipal,
 } from "@t3tools/contracts";
@@ -32,6 +31,7 @@ import {
   kinWorkDueLabel,
   kinWorkDueText,
   kinWorkName,
+  kinRepeatText,
   type KinWorkNames,
   type KinWorkRef,
 } from "./kinWork.ts";
@@ -784,15 +784,6 @@ export function kinFieldText(
       return value;
   }
 }
-
-const kinRepeatText = (rule: KinRepeatRule): string =>
-  rule.every === "days"
-    ? rule.days === 1
-      ? "Every day"
-      : rule.days === 7
-        ? "Every week"
-        : `Every ${rule.days} days`
-    : `Every ${rule.every}`;
 
 const whenText = (
   at: string | null | undefined,

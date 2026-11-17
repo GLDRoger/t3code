@@ -2,11 +2,15 @@ import { type KinOrgId, type KinPersonId, KinWidgetId } from "@t3tools/contracts
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { type ChoiceAnswerHandler, KinChatService } from "../chat/KinChatService.ts";
 import { KinConnections, type StaleAsk } from "../connections/ConnectionsService.ts";
+import { cardDecision } from "../memory/decisions.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { answerCard } from "../questions/openQuestions.ts";
 import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
@@ -54,6 +58,9 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   });
   if (asked !== undefined && asked._tag !== "declined")
     yield* sql.afterCommit(afterTap(sendAsked(input, asked), scope));
+  // An agent's question the owner level answered is a decision; Kin's own cards record elsewhere.
+  if (asked === undefined && made === undefined && currency === undefined)
+    yield* saveDecision(input, scope);
   if (made?._tag === "made")
     yield* sql.afterCommit(
       afterTap(
@@ -78,6 +85,26 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
       text: `The statement is read in ${input.option.label}.`,
     };
   return undefined;
+});
+
+/** Saves the answer to memory once the tap commits, when the owner or a co-owner gave it. */
+const saveDecision = Effect.fn("KinCardAnswers.saveDecision")(function* (
+  input: Parameters<ChoiceAnswerHandler>[0],
+  scope: Scope.Scope,
+) {
+  const memory = yield* Effect.serviceOption(KinMemoryChanges);
+  if (Option.isNone(memory) || !(yield* ownerLevel(input.orgId, input.personId))) return;
+  const sql = yield* SqlClient.SqlClient;
+  const [person] = yield* sql<{ handle: string }>`SELECT handle FROM kin_people
+    WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`;
+  const decision = cardDecision({
+    orgId: input.orgId,
+    widget: input.widget,
+    label: input.option.label,
+    by: person?.handle ?? input.personId,
+  });
+  if (decision !== undefined)
+    yield* sql.afterCommit(afterTap(memory.value.recordDecision(input.orgId, decision), scope));
 });
 
 const at = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));

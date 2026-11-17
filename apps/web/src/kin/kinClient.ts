@@ -14,6 +14,10 @@ import {
 } from "@t3tools/client-runtime/kin/kinStreams";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "@t3tools/client-runtime/kin/kinDocsStream";
 import {
+  KIN_MONEY_LIVE_LABEL,
+  kinMoneyLiveStream,
+} from "@t3tools/client-runtime/kin/kinMoneyStream";
+import {
   KIN_PULSE_LIVE_LABEL,
   kinPulseLiveStream,
 } from "@t3tools/client-runtime/kin/kinPulseStream";
@@ -977,6 +981,12 @@ export const kinClient = {
     tag: "kin.memory.restore",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.itemId },
   }),
+  /** Whether agents use team memory in chats with teammates; its `permissionAtom` gates the switch. */
+  memorySetTeamMemory: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:memory:team",
+    tag: "kin.memory.setTeamMemory",
+    concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+  }),
   /** The owner's daily limit. The host announces no change to it, so a set re-reads it here. */
   /** What needs attention, handled ones included; read again whenever the host's facts move. */
   attention: createKinQueryAtomFamily(connectionAtomRuntime, {
@@ -995,6 +1005,13 @@ export const kinClient = {
   }),
   /** Whether the host streams Needs attention; null until its refreshes say. */
   attentionStreamed: kinRefreshOn.serves("pulse"),
+  /** Money's parts as the host streams them to the owner level (`useKinMoneyLive`). */
+  moneyLive: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
+    label: KIN_MONEY_LIVE_LABEL,
+    subscribe: kinMoneyLiveStream,
+  }),
+  /** Whether the host streams Money; null until its refreshes say. */
+  moneyStreamed: kinRefreshOn.serves("money"),
   attentionHandle: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:pulse:handle",
     tag: "kin.pulse.handle",
@@ -1389,6 +1406,10 @@ export const kinClient = {
     }),
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("company"),
+  }),
+  exportLink: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:export",
+    tag: "kin.work.exportLink",
   }),
   companyProfileSet: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:company:set",

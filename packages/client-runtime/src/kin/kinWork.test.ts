@@ -33,6 +33,7 @@ import {
   kinWorkListQuery,
   kinWorkOverview,
   kinWorkRow,
+  kinWorkRowMarked,
   kinWorkScreenState,
   kinWorkShown,
   type KinWorkNames,
@@ -282,6 +283,14 @@ describe("kinWorkItemView", () => {
             kind: "updated",
             fields: [{ field: "dueAllDay", from: "false", to: "true" }],
           },
+          {
+            seq: 1.5,
+            at,
+            by: me,
+            via: "owner",
+            kind: "updated",
+            fields: [{ field: "repeat", from: null, to: "every month" }],
+          },
           { seq: 1, at, by: me, via: "owner", kind: "created", fields: [] },
         ],
       }),
@@ -297,6 +306,7 @@ describe("kinWorkItemView", () => {
       "Tech lead marked it waiting on Priya",
       "You gave it to Tech lead",
       "Tech lead updated it",
+      "You set it to repeat every month",
       "You added this",
     ]);
   });
@@ -505,6 +515,19 @@ describe("a task on an older host", () => {
     expect(kinWorkRow(record({ owner: lead }), retired, now).line).toBe("Tech lead (retired)");
     expect(kinWorkRow(record({ owner: lead }), names, now).ownerRetired).toBe(false);
   });
+
+  it("keeps who handed a task back on its row when On me marks it due today", () => {
+    const back = kinWorkRow(
+      record({ owner: me, handedBack: { by: priya, at: now.toISOString() } }),
+      names,
+      now,
+    );
+    // The row's detail already says it is due today; the mark keeps what only it says.
+    expect(kinWorkRowMarked(back, "today").markText).toBe("Handed back by Priya");
+    expect(kinWorkRowMarked(kinWorkRow(record({ owner: me }), names, now), "today").markText).toBe(
+      "Due today",
+    );
+  });
 });
 
 describe("links to other tasks and to a lead's work", () => {
@@ -584,7 +607,7 @@ describe("kinWorkRow", () => {
     expect(kinWorkRow(due, far, now).due).toContain("21");
   });
 
-  it("names the client, except in a list of only theirs, and nothing on an older host", () => {
+  it("names the project, else the client except in a list of only theirs, and nothing on an older host", () => {
     const party = {
       recordId: KinRecordId.make("rec-c"),
       key: "C-1",
@@ -598,6 +621,18 @@ describe("kinWorkRow", () => {
       line: "You · Invented Foods · They owe this",
     });
     expect(kinWorkRow(owed, names, now, { party: party, project: null }).about).toBeNull();
+    // Owner and member read the same words: the project when there is one, inside its client too.
+    const project = { recordId: KinRecordId.make("rec-p"), key: "P-1", title: "Invented app" };
+    const ownerSees = kinWorkRow(record({ party, project }), names, now);
+    const memberSees = kinWorkRow(record({ project }), names, now);
+    expect([ownerSees.about, memberSees.about]).toEqual(["Invented app", "Invented app"]);
+    expect(kinWorkRow(record({ party, project }), names, now, { party, project: null }).about).toBe(
+      "Invented app",
+    );
+    // A repeating task says so on its row while it is open.
+    const monthly = record({ project, repeat: { every: "month" } });
+    expect(kinWorkRow(monthly, names, now).line).toBe("You · Every month · Invented app");
+    expect(kinWorkRow({ ...monthly, state: "done" }, names, now).line).not.toContain("Every");
     // A host from before clients sends none of it: the row and the ways in show nothing new.
     expect(kinWorkRow(record(), names, now).line).toBe("You");
     expect(kinWorkHostClients(null)).toBe(false);

@@ -11,7 +11,6 @@ import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import {
-  KIN_NEEDS_YOU_SHOWN,
   KIN_WORK_HOME,
   kinNeedsPane,
   kinNeedsYou,
@@ -142,6 +141,7 @@ export function KinNeedsYou(
       needs={cut?.needs ?? []}
       title={pane.title}
       total={cut?.total ?? 0}
+      more={cut?.more ?? false}
       empty={pane.empty}
     />
   );
@@ -151,7 +151,10 @@ export function KinNeedsYou(
 export function KinTasksAttention(
   props: KinWorkTarget &
     KinNeedsYouGo &
-    NonNullable<ReturnType<typeof useKinNeedsRows>> & { readonly total: number },
+    NonNullable<ReturnType<typeof useKinNeedsRows>> & {
+      readonly total: number;
+      readonly more: boolean;
+    },
 ) {
   return <KinNeedsBlock {...props} title={KIN_ATTENTION.title} empty={null} />;
 }
@@ -162,6 +165,7 @@ function KinNeedsBlock(
     NonNullable<ReturnType<typeof useKinNeedsRows>> & {
       readonly title: string;
       readonly total: number;
+      readonly more: boolean;
       /** What an empty block says; null where it never shows empty. */
       readonly empty: string | null;
     },
@@ -223,7 +227,7 @@ function KinNeedsBlock(
     <KinWorkSection
       title={props.title}
       action={
-        total <= KIN_NEEDS_YOU_SHOWN ? undefined : (
+        !props.more ? undefined : (
           <Button size="xs" variant="ghost" onClick={() => setExpanded(!expanded)}>
             {expanded ? KIN_WORK_HOME.seeFewer : KIN_WORK_HOME.seeAll(total)}
           </Button>

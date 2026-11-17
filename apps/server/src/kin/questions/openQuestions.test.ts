@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -34,6 +35,8 @@ import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "../lead/Handoff.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
+import type { KinDecision } from "../memory/MemoryWriter.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as Team from "../team/KinTeam.ts";
@@ -318,6 +321,20 @@ it.effect("a question with no safe default is raised once, then waits for its an
     Effect.gen(function* () {
       const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
       const repo = Context.get(services, KinChatRepository);
+      const decisions: Array<KinDecision> = [];
+      const saved = yield* Deferred.make<void>();
+      yield* Context.get(services, KinMemoryChanges).attachWriter({
+        undo: () => Effect.die("unused"),
+        relabel: () => Effect.die("unused"),
+        retire: () => Effect.die("unused"),
+        restore: () => Effect.die("unused"),
+        items: () => Effect.succeed([]),
+        recordDecision: (_org, decision) =>
+          Effect.sync(() => decisions.push(decision)).pipe(
+            Effect.andThen(Deferred.succeed(saved, undefined)),
+            Effect.as({ recorded: true }),
+          ),
+      });
       yield* wake(
         "finance",
         yield* chats.send(owner, {
@@ -371,6 +388,16 @@ it.effect("a question with no safe default is raised once, then waits for its an
         answer: "Hold it",
       });
       assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: owner.personId }), 0);
+      // The answer is a decision memory keeps, in the card's own words, once.
+      yield* Deferred.await(saved);
+      assert.lengthOf(decisions, 1);
+      assert.deepInclude(decisions[0], {
+        title: "Send VIOM the reminder mail I drafted?",
+        trust: "owner",
+        chat: chatOf("finance"),
+        link: `card:${raised.widgetId}`,
+      });
+      assert.match(decisions[0]!.body, /^Chose “Hold it” over “Send it”\./);
     }).pipe(Effect.provide(layer)),
   ),
 );

@@ -324,7 +324,8 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
         </>
       )}
       <SidebarThreadUndoNotice />
-      <SidebarUpdatePill />
+      {/* Provider updates are for coding threads; over Kin they stay under This computer. */}
+      <SidebarUpdatePill appOnly={overKin} />
     </SidebarMenu>
   );
 });
@@ -332,9 +333,12 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
 export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   // A teammate's session runs no providers and doesn't update the server.
   const chatOnly = isChatOnlySession();
+  const overKin = useLocation({
+    select: (location) => kinListShownAt(location.pathname) === "kin",
+  });
   return (
     <SidebarFooter>
-      {chatOnly ? null : <SidebarProviderUpdatePill />}
+      {chatOnly || overKin ? null : <SidebarProviderUpdatePill />}
       {chatOnly ? null : <SidebarUpdateArchitectureWarning />}
       <SidebarUtilityMenu />
     </SidebarFooter>

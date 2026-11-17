@@ -74,12 +74,12 @@ import {
   EmptyTitle,
 } from "../components/ui/empty";
 import {
-  Sheet,
-  SheetDescription,
-  SheetHeader,
-  SheetPopup,
-  SheetTitle,
-} from "../components/ui/sheet";
+  Dialog,
+  DialogDescription,
+  DialogHeader,
+  DialogPopup,
+  DialogTitle,
+} from "../components/ui/dialog";
 import { Skeleton } from "../components/ui/skeleton";
 import { Switch } from "../components/ui/switch";
 import { connectionAtomRuntime } from "../connection/runtime";
@@ -292,7 +292,7 @@ function KinTeamBody(
         )}
       </div>
       {open === null ? null : (
-        <KinTeammateSheet
+        <KinTeammateDialog
           teammate={open}
           environmentId={environmentId}
           orgId={orgId}
@@ -355,8 +355,11 @@ function Section(props: { readonly title: string; readonly children: React.React
   );
 }
 
-/** One teammate: which leads they can message, their link, and the way to take access away. */
-function KinTeammateSheet(props: {
+/**
+ * One teammate: which leads they can message, their link, and the way to take access away.
+ * A dialog, as T3's Settings opens its details, so it stacks over the Settings modal.
+ */
+function KinTeammateDialog(props: {
   readonly teammate: KinTeammate;
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
@@ -390,22 +393,22 @@ function KinTeammateSheet(props: {
   };
 
   return (
-    <Sheet
+    <Dialog
       open
       onOpenChange={(open) => {
         if (!open && !busy) props.onClose();
       }}
     >
-      <SheetPopup side="right">
-        <SheetHeader>
+      <DialogPopup>
+        <DialogHeader>
           <div className="flex items-center gap-3 pe-8">
             <KinAvatar avatar={teammate.avatar} />
             <div className="flex min-w-0 flex-col">
-              <SheetTitle>{teammate.name}</SheetTitle>
-              <SheetDescription>{teammate.detail}</SheetDescription>
+              <DialogTitle>{teammate.name}</DialogTitle>
+              <DialogDescription>{teammate.detail}</DialogDescription>
             </div>
           </div>
-        </SheetHeader>
+        </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
           {teammate.personId === null ? null : (
             <Button
@@ -526,7 +529,7 @@ function KinTeammateSheet(props: {
             </Section>
           ) : null}
         </div>
-      </SheetPopup>
+      </DialogPopup>
       <AlertDialog open={kindCopy !== null} onOpenChange={(open) => !open && setKindAsked(null)}>
         <AlertDialogPopup>
           <AlertDialogHeader>
@@ -596,7 +599,7 @@ function KinTeammateSheet(props: {
           </AlertDialogPopup>
         </AlertDialog>
       )}
-    </Sheet>
+    </Dialog>
   );
 }
 

@@ -11,18 +11,11 @@ import type { KinCheckIn, KinCheckInActInput, KinCheckInsResult } from "@t3tools
 import { PlusIcon } from "lucide-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { type ReactNode, useId, useState } from "react";
+import { useId, useState } from "react";
 
 import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
 import { searchableSetting } from "../components/settings/settingsSearch";
 import { Button } from "../components/ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogHeader,
-  DialogPopup,
-  DialogTitle,
-} from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import {
@@ -32,19 +25,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
-import {
-  Sheet,
-  SheetDescription,
-  SheetHeader,
-  SheetPopup,
-  SheetTitle,
-} from "../components/ui/sheet";
 import { Switch } from "../components/ui/switch";
 import { Textarea } from "../components/ui/textarea";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { kinClient } from "./kinClient";
+import { KIN_DIALOG_PARTS, KIN_SHEET_PARTS } from "./kinOverlayParts";
 import { useKinHost } from "./useKinHost";
 import type { KinWorkTarget } from "./useKinWork";
 
@@ -209,7 +196,7 @@ function CheckInSheet(props: {
     if (ok) props.onClose();
     else setFailed(true);
   };
-  const Parts = props.inDialog ? DIALOG_PARTS : SHEET_PARTS;
+  const Parts = props.inDialog ? KIN_DIALOG_PARTS : KIN_SHEET_PARTS;
   return (
     <Parts.Root
       open
@@ -346,20 +333,3 @@ function CheckInSheet(props: {
     </Parts.Root>
   );
 }
-
-const SHEET_PARTS = {
-  Root: Sheet,
-  Popup: (props: { readonly children: ReactNode }) => (
-    <SheetPopup side="right">{props.children}</SheetPopup>
-  ),
-  Header: SheetHeader,
-  Title: SheetTitle,
-  Description: SheetDescription,
-};
-const DIALOG_PARTS = {
-  Root: Dialog,
-  Popup: (props: { readonly children: ReactNode }) => <DialogPopup>{props.children}</DialogPopup>,
-  Header: DialogHeader,
-  Title: DialogTitle,
-  Description: DialogDescription,
-};

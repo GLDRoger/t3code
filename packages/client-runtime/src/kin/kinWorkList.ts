@@ -339,6 +339,52 @@ export function createKinWorkList(options: {
   };
 }
 
+/**
+ * One list's entries (quotes, expenses, a list someone made) a page at a time, as
+ * `createKinPagedList`, brought up to date from Work's rows without a read when none of them is
+ * this list's: a task or an invoice changing leaves the quotes on screen as they are.
+ */
+export function createKinListEntries<Filter extends { readonly text: string }>(options: {
+  readonly initial: Filter;
+  readonly sameFilter: (a: Filter, b: Filter) => boolean;
+  /** The read a filter makes, without its page. */
+  readonly query: (filter: Filter) => KinWorkListInput;
+  /** One page of `filter`'s read. */
+  readonly read: (
+    input: KinWorkListInput,
+    filter: Filter,
+  ) => Promise<AtomCommandResult<KinWorkListResult, unknown>>;
+  readonly onChange: (state: KinPagedListState<Filter, KinRecord>) => void;
+  readonly schedule: (run: () => void, ms: number) => () => void;
+  /** The entries the host sent whole lately (`KinWorkLive.rows`); null from an older host. */
+  readonly rows: () => KinWorkRows | null;
+}) {
+  const follow = kinWorkPageFollower(options.rows);
+  const list = createKinPagedList<Filter, KinRecord>({
+    initial: options.initial,
+    sameFilter: options.sameFilter,
+    idOf: (record) => record.recordId,
+    onChange: options.onChange,
+    schedule: options.schedule,
+    read: async (filter, page) =>
+      mapPage(
+        await follow.read({ ...options.query(filter), ...page }, (input) =>
+          options.read(input, filter),
+        ),
+        (value) => ({
+          ...value,
+          rows: value.records,
+        }),
+      ),
+    catchUp: (state) => follow.catchUp(state.records),
+  });
+  return {
+    ...list,
+    changed: (seq: number) => list.changed(seq, follow.newEpoch()),
+    resume: () => (follow.newEpoch() ? list.refresh() : list.resume()),
+  };
+}
+
 /** How long a list off screen is kept to come back to; past this its dates may have moved on. */
 const KIN_LIST_KEPT_MS = 5 * 60_000;
 const KIN_LISTS_KEPT = 4;

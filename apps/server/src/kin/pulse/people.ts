@@ -80,9 +80,8 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
     : { ...read, ...kinPulsePage(facts, input.limit) };
 });
 
-/** Names a page by what a screen shows of it (not `asOf`): cyrb53, as hex. */
-const pulseHash = (read: KinPulseScreenRead) => {
-  const text = JSON.stringify([read.total, read.facts, read.outline ?? null]);
+/** Names what a screen holds by its text: cyrb53, as hex. */
+export const viewHash = (text: string) => {
   let h1 = 0xdeadbeef;
   let h2 = 0x41c6ce57;
   for (let index = 0; index < text.length; index += 1) {
@@ -94,11 +93,15 @@ const pulseHash = (read: KinPulseScreenRead) => {
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
 };
+/** Names a page by what a screen shows of it (not `asOf`). */
+const pulseHash = (read: KinPulseScreenRead) =>
+  viewHash(JSON.stringify([read.total, read.facts, read.outline ?? null]));
 
 /**
  * `kin.pulse.subscribe`: the page `read` gives this viewer, then what moved in it, built by that
  * same read each time the pulse moves. A member's page also turns on the Work they may see, so
- * their Work changes read it again too. Nothing is sent when the page a screen shows stayed put.
+ * their Work changes read it again too; whether they are a member follows their level as it
+ * changes. Nothing is sent when the page a screen shows stayed put.
  */
 export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinPulseSubscribeInput) =>
   Stream.unwrap(
@@ -109,20 +112,28 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinPulse
         Stream.map((now) => now.pulse ?? 0),
         Stream.changes,
       );
-      const work =
-        viewer._tag === "owner"
-          ? Stream.empty
-          : (yield* KinRecords).changes(input.orgId).pipe(
-              // The first is where Work stands, not a change.
-              Stream.drop(1),
-              Stream.filter(
-                (tick) =>
-                  tick.key === undefined ||
-                  tick.team?.has(person.personId) === true ||
-                  tick.people?.includes(person.personId) === true,
-              ),
-              Stream.map(() => -1),
+      let member = viewer._tag !== "owner";
+      const work = (yield* KinRecords).changes(input.orgId).pipe(
+        // The first is where Work stands, not a change.
+        Stream.drop(1),
+        Stream.mapEffect((tick) => {
+          // Their level or places moved: what their page shows may have, whatever they were.
+          if (tick.people?.includes(person.personId) === true)
+            return viewerIn(people, input.orgId).pipe(
+              Effect.map((now) => {
+                member = now.viewer._tag !== "owner";
+                return true;
+              }),
+              // Gone from the org: the read says so and ends the stream.
+              Effect.orElseSucceed(() => true),
             );
+          return Effect.succeed(
+            member && (tick.key === undefined || tick.team?.has(person.personId) === true),
+          );
+        }),
+        Stream.filter((moved) => moved),
+        Stream.map(() => -1),
+      );
       let sent: KinPulseScreenRead | null = null;
       return Stream.merge(pulse, work).pipe(
         // A burst during a read is one more read.

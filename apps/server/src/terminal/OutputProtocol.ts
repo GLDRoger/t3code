@@ -33,6 +33,7 @@ const COUNT_WINDOWED_STREAMS: ReadonlySet<string> = new Set([
   "kin.docs.subscribe",
   "kin.refreshes.subscribe",
   "kin.pulse.subscribe",
+  "kin.money.subscribe",
 ]);
 
 interface Window {

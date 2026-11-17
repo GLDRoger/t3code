@@ -9,6 +9,10 @@ import {
   KinDocsEvent,
   KinDocsRpcs,
   KinFinanceRpcs,
+  KIN_MONEY_PARTS,
+  KinMoneyAnswerRpcs,
+  KinMoneyEvent,
+  type KinMoneyPart,
   KinOrgId,
   KinPersonId,
   KinPulseRpcs,
@@ -43,11 +47,14 @@ import * as KinPulse from "./pulse/KinPulse.ts";
 import * as Pulse from "./pulse/people.ts";
 import budget from "./kinWireBudget.json" with { type: "json" };
 import * as Docs from "./work/docs.ts";
+import * as Goals from "./work/goals.ts";
 import * as KinImport from "./work/KinImport.ts";
 import * as KinRecords from "./work/KinRecords.ts";
 import * as Clients from "./work/ownerClients.ts";
 import * as OwnerDocs from "./work/ownerDocs.ts";
+import { demandOfTick, makeMoneyStream } from "./work/moneyStream.ts";
 import * as Money from "./work/ownerMoney.ts";
+import * as MoneyAnswers from "./work/ownerMoneyAnswers.ts";
 import * as Work from "./work/ownerWork.ts";
 import * as WorkStream from "./work/workStream.ts";
 
@@ -222,6 +229,7 @@ const SCHEMAS = {
   pulse: successOf(KinPulseRpcs, "kin.pulse.read"),
   pulseEvent: KinPulseEvent,
   docsEvent: KinDocsEvent,
+  moneyEvent: KinMoneyEvent,
   refreshes: KinRefreshes,
 };
 
@@ -629,6 +637,151 @@ const attentionMove = Effect.fn("KinWireBudget.attentionMove")(function* () {
   return measured;
 });
 
+/** Money's reads an open owner-level Money screen made again for each kind of change. */
+const MONEY_REREADS: ReadonlyArray<{
+  readonly name: string;
+  readonly onTask: boolean;
+  readonly schema: Schema.Top;
+  readonly run: (people: ReadonlyArray<PersonIdentity>) => Effect.Effect<object, unknown, Services>;
+}> = [
+  // Money's screen counts tasks among what is coming up; its line (`workOwed`) doesn't.
+  {
+    name: "money",
+    onTask: true,
+    schema: SCHEMAS.money,
+    run: (p) => Money.money(p, { orgId, upcomingRows: false }),
+  },
+  {
+    name: "owed",
+    onTask: false,
+    schema: SCHEMAS.money,
+    run: (p) => Money.money(p, { orgId, upcomingRows: false }),
+  },
+  {
+    name: "cash",
+    onTask: false,
+    schema: successOf(KinMoneyAnswerRpcs, "kin.work.cash"),
+    run: (p) => MoneyAnswers.cash(p, { orgId }),
+  },
+  {
+    name: "outlook",
+    onTask: false,
+    schema: successOf(KinMoneyAnswerRpcs, "kin.work.outlook"),
+    run: (p) => MoneyAnswers.outlook(p, { orgId }),
+  },
+  {
+    name: "budgets",
+    onTask: false,
+    schema: successOf(KinMoneyAnswerRpcs, "kin.work.budgets"),
+    run: (p) => MoneyAnswers.budgets(p, { orgId }),
+  },
+  {
+    name: "receipts",
+    onTask: true,
+    schema: successOf(KinFinanceRpcs, "kin.work.receipts"),
+    run: (p) => Money.receipts(p, { orgId }),
+  },
+  {
+    name: "goals",
+    onTask: true,
+    schema: successOf(KinPulseRpcs, "kin.goals.list"),
+    run: (p) => Goals.list(p, orgId),
+  },
+  { name: "lists", onTask: false, schema: SCHEMAS.lists, run: (p) => Money.lists(p, { orgId }) },
+];
+const MONEY_SCREENS: ReadonlyArray<ReadonlyArray<KinMoneyPart>> = [
+  ["summary"],
+  KIN_MONEY_PARTS.filter((part) => part !== "summary"),
+];
+
+/**
+ * An invoice paid, then a task renamed, with Money open: what reading again cost each viewer, and
+ * what `kin.money.subscribe` sends instead. A teammate is refused the stream and keeps their reads.
+ */
+const moneyChange = Effect.fn("KinWireBudget.moneyChange")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords.KinRecords;
+  const pull = yield* Stream.toPull(records.changes(orgId));
+  yield* pull;
+  const measured: Record<string, number> = {};
+  const viewers = yield* Effect.forEach(VIEWERS, ([name, personId]) =>
+    Effect.gen(function* () {
+      const sessions = yield* Effect.forEach(MONEY_SCREENS, (parts) =>
+        Effect.result(makeMoneyStream(as(personId), { orgId, parts })),
+      );
+      if (sessions.some((one) => one._tag === "Failure")) {
+        measured[`money.${name}.streamRefused`] = 1;
+        return { name, personId, sessions: [] };
+      }
+      const open = yield* Effect.forEach(sessions, (one) =>
+        one._tag === "Success" ? one.success.start() : Effect.die(new Error("unreachable")),
+      );
+      measured[`money.${name}.open.bytes`] = open.reduce(
+        (sum, event) => sum + wireBytes(SCHEMAS.moneyEvent, event),
+        0,
+      );
+      return {
+        name,
+        personId,
+        sessions: sessions.flatMap((one) => (one._tag === "Success" ? [one.success] : [])),
+      };
+    }),
+  );
+  const feed = Effect.fn("KinWireBudget.moneyFeed")(function* (
+    change: string,
+    key: string,
+    task: boolean,
+  ) {
+    const ticks: Array<KinRecords.Tick> = [];
+    while (!ticks.some((tick) => tick.key === key)) ticks.push(...(yield* pull));
+    const demand = new Set(ticks.flatMap((tick) => [...demandOfTick(tick)]));
+    for (const { name, personId, sessions } of viewers) {
+      let reads = 0;
+      let rereadBytes = 0;
+      for (const one of MONEY_REREADS.filter((read) => !task || read.onTask)) {
+        reads += 1;
+        const result = yield* Effect.result(one.run(as(personId)));
+        if (result._tag === "Success") rereadBytes += wireBytes(one.schema, result.success);
+      }
+      measured[`money.${name}.${change}.before.reads`] = reads;
+      measured[`money.${name}.${change}.before.bytes`] = rereadBytes;
+      if (sessions.length === 0) {
+        // Not on the stream: the same reads as before.
+        measured[`money.${name}.${change}.after.reads`] = reads;
+        continue;
+      }
+      const events = (yield* Effect.forEach(sessions, (session) => session.apply(demand))).flat();
+      measured[`money.${name}.${change}.after.reads`] = 0;
+      measured[`money.${name}.${change}.after.items`] = events.length;
+      measured[`money.${name}.${change}.after.bytes`] = events.reduce(
+        (sum, event) => sum + wireBytes(SCHEMAS.moneyEvent, event),
+        0,
+      );
+    }
+  });
+  const [unpaid] = yield* sql<{ key: string; minor: number }>`SELECT key, amount_minor AS minor
+    FROM kin_records WHERE org_id = ${orgId} AND register_id = 'invoices' AND state = 'waiting'
+    ORDER BY key LIMIT 1`;
+  yield* Money.recordPayment(as(ownerId), {
+    orgId,
+    key: unpaid!.key as never,
+    amount: { minor: unpaid!.minor, currency: "INR" },
+    paidOn: day(0),
+    clientRequestId: "wire-budget-paid",
+  });
+  yield* feed("invoicePaid", unpaid!.key, false);
+  const [task] = yield* sql<{ key: string; rev: number }>`SELECT key, rev FROM kin_records
+    WHERE org_id = ${orgId} AND register_id = 'work' AND state = 'open' ORDER BY key LIMIT 1`;
+  yield* Work.update(as(ownerId), {
+    orgId,
+    key: task!.key as never,
+    rev: task!.rev,
+    title: "Invented: check the logo files again",
+  });
+  yield* feed("taskChange", task!.key, true);
+  return measured;
+});
+
 withLayer(layer)("Kin wire budget", (it) => {
   it.effect("hot reads and one change's stream match kinWireBudget.json", () =>
     Effect.gen(function* () {
@@ -659,6 +812,7 @@ withLayer(layer)("Kin wire budget", (it) => {
       Object.assign(measured, yield* Effect.scoped(docChange()));
       Object.assign(measured, yield* reconnect());
       Object.assign(measured, yield* Effect.scoped(attentionMove()));
+      Object.assign(measured, yield* Effect.scoped(moneyChange()));
 
       expect(over, `Unpaged Kin reads over ${UNPAGED_CEILING} bytes: page them.`).toEqual([]);
       expect(

@@ -192,7 +192,11 @@ export async function installLocalUpdate(
   }
 }
 
-export function SidebarUpdatePill() {
+/** `appOnly` (Kin) shows the control only for an update to this app, not for provider updates. */
+export function SidebarUpdatePill(props: { readonly appOnly?: boolean }) {
+  const state = useDesktopUpdateState();
+  if (props.appOnly === true && (!state || resolveDesktopUpdateButtonAction(state) === "none"))
+    return null;
   return <SidebarUpdateControl />;
 }
 
