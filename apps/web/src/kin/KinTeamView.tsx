@@ -1,4 +1,7 @@
-import { kinLeadMessageable } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import {
+  kinLeadMessageable,
+  KIN_AGENTS_COPY,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
@@ -27,6 +30,7 @@ import {
   type KinTeamActions,
   type KinTeamList,
   type KinTeammate,
+  KIN_TEAM_COPY,
 } from "@t3tools/client-runtime/kin/kinTeam";
 import { executeAtomQuery, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
@@ -440,7 +444,7 @@ function KinTeammateDialog(props: {
             />
           )}
           {kinTeammateKindEditable(teammate, props.viewer) ? (
-            <Section title="What they can do">
+            <Section title={KIN_TEAM_COPY.canDo}>
               <RadioGroup
                 value={teammate.access}
                 disabled={busy}
@@ -748,8 +752,8 @@ function KinTeammatePlaces(props: {
   };
   return (
     <>
-      <Section title="What they can see">
-        <p className="text-xs text-muted-foreground">Tasks shared with the team, always.</p>
+      <Section title={KIN_TEAM_COPY.canSee}>
+        <p className="text-xs text-muted-foreground">{KIN_TEAM_COPY.sharedAlways}</p>
         {KIN_PLACE_SWITCHES.map((entry) => {
           const id = `kin-place-${entry.place}`;
           return (
@@ -790,12 +794,12 @@ function KinTeammateLeads(props: {
   if (leads === null) {
     return (
       <p className="text-sm text-muted-foreground">
-        {AsyncResult.isFailure(result) ? "Couldn't load your agents." : "Loading…"}
+        {AsyncResult.isFailure(result) ? KIN_AGENTS_COPY.loadFailed : "Loading…"}
       </p>
     );
   }
   if (leads.length === 0) {
-    return <p className="text-sm text-muted-foreground">You have no agents yet.</p>;
+    return <p className="text-sm text-muted-foreground">{KIN_AGENTS_COPY.none}</p>;
   }
   return (
     <>
@@ -806,9 +810,7 @@ function KinTeammateLeads(props: {
           </li>
         ))}
       </ul>
-      <p className="text-xs text-muted-foreground">
-        Open an agent to change whether {props.name} can message it.
-      </p>
+      <p className="text-xs text-muted-foreground">{KIN_TEAM_COPY.openAgentToChange(props.name)}</p>
     </>
   );
 }

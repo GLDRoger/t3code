@@ -844,3 +844,14 @@ export function kinFeedViewer(orgs: KinOrgsListResult | null, orgId: string | nu
     ),
   };
 }
+
+/** Words in an open chat and its rows. */
+export const KIN_CHAT_COPY = {
+  earlierFailed: "Couldn't load earlier messages.",
+  empty: "Messages in this chat show up here.",
+  awayHolds: (away: string) => `${away}. Kin holds what can wait until then.`,
+  unseen: (count: number) =>
+    `${count} new ${count === 1 ? "message" : "messages"}. Scroll to the latest.`,
+  suggestion: "Suggestion, not sent yet",
+  openChatWith: (chatTitle: string) => `Open the chat with ${chatTitle}`,
+} as const;

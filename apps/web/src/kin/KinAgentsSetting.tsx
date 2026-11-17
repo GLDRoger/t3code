@@ -103,7 +103,7 @@ function CompanyDefault(props: KinWorkTarget) {
       title={KIN_AGENT_PAGE.defaults}
       description={
         problem === null ? (
-          `${KIN_AGENT_PAGE.defaultsDetail}${defaults?.chosen === false ? " Until you choose, they start on your first agent's." : ""}`
+          `${KIN_AGENT_PAGE.defaultsDetail}${defaults?.chosen === false ? ` ${KIN_AGENT_PAGE.defaultsUnchosen}` : ""}`
         ) : (
           <span role="alert">{problem}</span>
         )

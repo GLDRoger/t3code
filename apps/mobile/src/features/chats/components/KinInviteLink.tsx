@@ -6,6 +6,7 @@ import {
   kinInviteLinkCopy,
   kinInviteLinkLocalOnly,
   type KinMadeInvite,
+  KIN_TEAM_ADD_COPY,
 } from "@t3tools/client-runtime/kin/kinTeam";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -34,11 +35,7 @@ export function KinInviteLink(props: {
   const [copied, setCopied] = useState(false);
   const copy = kinInviteLinkCopy(invite);
   if (connection === null) {
-    return (
-      <ErrorBanner
-        message={`The connection dropped before the link could be shown. Make a new link for ${invite.displayName} from Team once you're back online.`}
-      />
-    );
+    return <ErrorBanner message={KIN_TEAM_ADD_COPY.linkDropped(invite.displayName)} />;
   }
   const link = kinInviteLink(connection.httpBaseUrl, invite.secret);
   return (

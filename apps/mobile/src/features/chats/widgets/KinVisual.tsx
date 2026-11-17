@@ -1,3 +1,4 @@
+import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
@@ -108,10 +109,7 @@ function KinVisualWebView(props: {
     }
     const cleaned = kinVisualSaveBytes(saved.mimeType, bytes);
     if ("error" in cleaned) {
-      Dialog.alert(
-        "Couldn't save this file",
-        `Kin couldn't save this SVG safely: ${cleaned.error}.`,
-      );
+      Dialog.alert(KIN_CARD_COPY.saveFileFailed, KIN_CARD_COPY.svgUnsafe(cleaned.error));
       return;
     }
     void shareGeneratedAttachment({
@@ -121,9 +119,9 @@ function KinVisualWebView(props: {
     }).then(
       (shared) => {
         if (!shared)
-          Dialog.alert("Couldn't save this file", "Sharing is unavailable on this device.");
+          Dialog.alert(KIN_CARD_COPY.saveFileFailed, "Sharing is unavailable on this device.");
       },
-      () => Dialog.alert("Couldn't save this file", "Sharing didn't finish."),
+      () => Dialog.alert(KIN_CARD_COPY.saveFileFailed, "Sharing didn't finish."),
     );
   };
   const askToOpen = (url: string) => {
@@ -308,9 +306,9 @@ export const KinVisual = memo(function KinVisual(props: {
   const allowHost = (host: string) => {
     const unicode = kinVisualHostUnicode(host);
     return Dialog.confirm({
-      title: "Allow this host for every visual?",
-      message: `${host}${unicode === null ? "" : `\n(shown as “${unicode}”)`}\n\nThe visual asked for this itself; nobody checked the host. Once allowed, every visual in this workspace can load from it and send it anything a visual shows. Allow only a host you trust. You can remove it later under Team.`,
-      confirmText: "Allow for every visual",
+      title: KIN_CARD_COPY.allowHostTitle,
+      message: `${host}${unicode === null ? "" : `\n(shown as “${unicode}”)`}\n\n${KIN_CARD_COPY.allowHostDetail}`,
+      confirmText: KIN_CARD_COPY.visualAllowAll,
       onConfirm: () => {
         setAllowing(host);
         setProblem(null);
@@ -363,13 +361,13 @@ export const KinVisual = memo(function KinVisual(props: {
         ) : failed === "gone" ? (
           <View className="flex-1 items-center justify-center">
             <Text textRole="footnote" className="text-foreground-muted">
-              This visual is no longer available.
+              {KIN_CARD_COPY.visualGone}
             </Text>
           </View>
         ) : failed === "once" || asset._tag === "Failure" ? (
           <View className="flex-1 items-center justify-center gap-2">
             <Text textRole="footnote" className="text-foreground-muted">
-              Couldn't load this visual.
+              {KIN_CARD_COPY.visualFailed}
             </Text>
             <Pressable accessibilityRole="button" hitSlop={12} onPress={() => void retry()}>
               <Text textRole="footnote" className="font-t3-medium text-primary">
@@ -386,7 +384,7 @@ export const KinVisual = memo(function KinVisual(props: {
       {canAllow && blocked !== null ? (
         <View className="flex-row flex-wrap items-center gap-x-3 gap-y-1">
           <Text textRole="caption" className="min-w-0 shrink text-foreground-muted">
-            This visual asks to load from{" "}
+            {KIN_CARD_COPY.asksToLoadFrom}{" "}
             <Text
               textRole="caption"
               className="text-foreground"

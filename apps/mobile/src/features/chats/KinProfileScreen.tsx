@@ -428,7 +428,7 @@ function ProfileForm(props: {
           value={draft.skills}
           maxLength={KIN_PROFILE_SKILLS_MAX}
           onChangeText={(skills) => set({ skills })}
-          placeholder="SwiftUI, App Store releases"
+          placeholder={KIN_PROFILE_COPY.skillsExample}
           placeholderTextColorClassName="accent-placeholder"
           textAlignVertical="top"
           className="min-h-24 px-4 py-3 font-sans text-base leading-normal text-foreground"

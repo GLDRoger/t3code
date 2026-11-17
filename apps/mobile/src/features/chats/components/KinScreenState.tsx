@@ -1,3 +1,4 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_ONLY } from "../../../lib/kinOnly";
 import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED } from "../kinOnlyCopy";
@@ -128,8 +129,8 @@ export function KinScreenState(props: {
           {...(KIN_ONLY
             ? KIN_ONLY_UNAUTHORIZED
             : {
-                title: "This phone can't read Kin chats",
-                detail: "Pair it again with the computer that runs T3 Code.",
+                title: KIN_DEVICE_COPY.cantReadChats("phone"),
+                detail: KIN_DEVICE_COPY.pairAgain,
               })}
         />
       );

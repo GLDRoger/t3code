@@ -79,9 +79,7 @@ export function KinAgentSections(props: {
       <ListSection title={KIN_AGENT_PAGE.teamAgent}>
         <View className="px-4 py-3">
           <Text textRole="body" className="text-foreground">
-            {page.teamAgent
-              ? KIN_AGENT_PAGE.teamAgentDetail
-              : "Not the team agent. Only you and the people you add can message it."}
+            {page.teamAgent ? KIN_AGENT_PAGE.teamAgentDetail : KIN_AGENT_PAGE.notTeamAgent}
           </Text>
         </View>
       </ListSection>
@@ -124,7 +122,7 @@ function Models(props: {
     setBusy(false);
     setProblem(
       AsyncResult.isFailure(outcome)
-        ? kinFailureText(squashAtomCommandFailure(outcome), "Couldn't change the model.")
+        ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_PAGE.modelFailed)
         : null,
     );
     props.onChanged();

@@ -1,6 +1,6 @@
-// Against the ref a branch merges into: no recently merged PR's lines dropped without
-// `Supersedes: #N`, Kin migrations numbered on from the ref's with no gap, and the agent
-// instructions' version one above the ref's exactly when their text changed.
+// Against the ref a branch merges into: merged PRs' lines kept unless superseded, Kin migrations
+// numbered on with no gap, the instructions version moved exactly when their text did, and no
+// sentence typed into both Kin clients.
 //   node scripts/kin-branch-checks.ts <ref> [--days 14] [--root <checkout>]
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -160,7 +160,68 @@ export const supersededIn = (messages: string) =>
     ),
   );
 
-/** All three checks for the branch at `root` against `ref`; problems, or none. */
+export const KIN_COPY_DIRS = {
+  web: "apps/web/src/kin",
+  phone: "apps/mobile/src/features",
+} as const;
+const MIN_WORDS = 4;
+const HOLE = /\$\{(?:[^{}`]|`[^`]*`|\{[^{}]*\})*\}/;
+const TEMPLATE = /`((?:[^`\\$]|\\.|\$(?!\{)|\$\{(?:[^{}`]|`[^`]*`|\{[^{}]*\})*\})*)`/g;
+
+/**
+ * The sentences a source file shows people: string literals and JSX text, split at sentence ends,
+ * kept when they start with a capital and have four or more words.
+ */
+export const kinSentences = (source: string) => {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const texts = [
+    ...[...code.matchAll(/"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'/g)].map(
+      (match) => match[1] ?? match[2] ?? "",
+    ),
+    // Template literals (one level of nesting) and JSX text, cut at each `${…}` or `{…}` hole.
+    ...[...code.matchAll(TEMPLATE)].flatMap((match) => match[1]!.split(HOLE)),
+    ...[...code.matchAll(/>([^<>{}]+)(?=[<{])|\}([^<>{}]+)(?=<)/g)]
+      .map((match) => match[1] ?? match[2] ?? "")
+      // Code between a `>` or `}` and a `<` (a comparison, a generic) is not JSX text.
+      .filter((text) => !text.includes("=")),
+  ];
+  return texts
+    .flatMap((text) =>
+      text
+        .replace(/\\n/g, " ")
+        .replace(/\\(["'])/g, "$1")
+        .split(/(?<=[.!?…])\s+/),
+    )
+    .map((text) => text.replace(/\s+/g, " ").trim())
+    .filter(
+      (text) =>
+        /^[A-Z]/.test(text) &&
+        text.split(" ").filter((word) => /[A-Za-z]/.test(word)).length >= MIN_WORDS,
+    );
+};
+
+/** A sentence typed into both Kin clients belongs in client-runtime, which both render. */
+export const checkSharedCopy = (
+  web: ReadonlyMap<string, string>,
+  phone: ReadonlyMap<string, string>,
+) => {
+  const where = (files: ReadonlyMap<string, string>) => {
+    const found = new Map<string, string>();
+    for (const [file, source] of files)
+      for (const sentence of kinSentences(source))
+        if (!found.has(sentence)) found.set(sentence, file);
+    return found;
+  };
+  const onPhone = where(phone);
+  return [...where(web)]
+    .filter(([sentence]) => onPhone.has(sentence))
+    .map(
+      ([sentence, file]) =>
+        `kin copy: "${sentence}" is typed into ${file} and ${onPhone.get(sentence)}; move it into a client-runtime/src/kin presentation module and render it from both.`,
+    );
+};
+
+/** All four checks for the branch at `root` against `ref`; problems, or none. */
 export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
   root: string,
   ref: string,
@@ -215,6 +276,19 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
     problems.push(
       ...checkInstructions({ mergeBase: was.value, tip: tip.value, head: now.value, mergedPrs }),
     );
+
+  const copyFiles = Effect.fn("kinBranchChecks.copyFiles")(function* (dir: string) {
+    const files = new Map<string, string>();
+    for (const file of yield* gitLines(root, ["ls-files", "--", dir])) {
+      if (!/\.tsx?$/.test(file) || /\.test\./.test(file)) continue;
+      const text = yield* onDisk(file);
+      if (Option.isSome(text)) files.set(file, text.value);
+    }
+    return files;
+  });
+  problems.push(
+    ...checkSharedCopy(yield* copyFiles(KIN_COPY_DIRS.web), yield* copyFiles(KIN_COPY_DIRS.phone)),
+  );
 
   if (changed.length > 0) {
     const merges = yield* gitLines(root, [
@@ -296,7 +370,9 @@ export const kinBranchChecksCommand = Command.make(
         ),
       ),
     ),
-).pipe(Command.withDescription("Kin's merge-survival, migration and instructions checks."));
+).pipe(
+  Command.withDescription("Kin's merge-survival, migration, instructions and shared-copy checks."),
+);
 
 if (import.meta.main) {
   Command.run(kinBranchChecksCommand, { version: "0.0.0" }).pipe(

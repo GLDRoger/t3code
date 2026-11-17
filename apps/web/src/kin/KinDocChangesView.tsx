@@ -240,7 +240,7 @@ export function KinDocChangesView(
   if (view === null)
     return (
       <KinWorkNotice
-        title="Couldn't load the changes"
+        title={KIN_DOCS.changesFailed}
         detail={KIN_CHECK_CONNECTION}
         action={
           <Button

@@ -1,3 +1,4 @@
+import { KIN_CHAT_COPY } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { useNavigation } from "@react-navigation/native";
 import { kinApprovalActionIdOf } from "@t3tools/contracts";
 import { View } from "react-native";
@@ -91,7 +92,7 @@ export function KinWaitingScreen() {
                   <ListRow
                     icon="questionmark.bubble"
                     label={`${row.label} · ${row.chatTitle}`}
-                    description={row.text ?? `Open the chat with ${row.chatTitle}`}
+                    description={row.text ?? KIN_CHAT_COPY.openChatWith(row.chatTitle)}
                     detail={formatKinTime(new Date(row.createdAt))}
                     onPress={() => openChat(item)}
                   />
@@ -108,7 +109,7 @@ export function KinWaitingScreen() {
                       key={item.waitingId}
                       icon="exclamationmark.circle"
                       label={`${row.label} · ${row.chatTitle}`}
-                      description={row.text ?? `Open the chat with ${row.chatTitle}`}
+                      description={row.text ?? KIN_CHAT_COPY.openChatWith(row.chatTitle)}
                       detail={formatKinTime(new Date(row.createdAt))}
                       onPress={() => openChat(item)}
                     />

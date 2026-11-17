@@ -4,6 +4,7 @@ import {
   KIN_GROUP_PEOPLE_NOTE,
   kinGroupNameCheck,
   kinGroupProblem,
+  KIN_GROUP_FORM,
 } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinAgentAvatar, type KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -224,7 +225,7 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
                 </div>
               ) : null}
               {loading ? (
-                <p className="text-sm text-muted-foreground">Loading your agents and people…</p>
+                <p className="text-sm text-muted-foreground">{KIN_GROUP_FORM.loading}</p>
               ) : (
                 <>
                   {leads.length === 0 ? null : (
@@ -237,7 +238,7 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
                             name={lead.name}
                             detail={
                               creating && agentIds[0] === lead.agentId
-                                ? "Answers when no one is named"
+                                ? KIN_GROUP_FORM.answers
                                 : kinDomainLabel(lead.domain)
                             }
                             avatar={kinAgentAvatar(lead.agentId)}
@@ -249,8 +250,7 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
                       </ul>
                       {creating ? (
                         <p className="text-xs text-muted-foreground">
-                          The first agent you pick answers when a message names no one. Name another
-                          with @ to ask it instead.
+                          {KIN_GROUP_FORM.answersHint}
                         </p>
                       ) : null}
                     </fieldset>
@@ -278,7 +278,7 @@ function KinGroupDialog(props: { readonly target: KinGroupFormTarget }) {
                     <p className="text-sm text-muted-foreground">
                       {creating
                         ? "No agents or people to add yet. You can make the group and add them later."
-                        : "Every agent and person you could add is already in this group."}
+                        : KIN_GROUP_FORM.allAdded}
                     </p>
                   ) : null}
                 </>

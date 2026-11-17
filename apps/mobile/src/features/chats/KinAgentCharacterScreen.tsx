@@ -69,7 +69,7 @@ function Editor(props: {
     });
     setBusy(false);
     if (AsyncResult.isFailure(outcome)) {
-      setProblem(kinFailureText(squashAtomCommandFailure(outcome), "Couldn't save the character."));
+      setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_PAGE.characterFailed));
       return;
     }
     appAtomRegistry.refresh(props.pageAtom);

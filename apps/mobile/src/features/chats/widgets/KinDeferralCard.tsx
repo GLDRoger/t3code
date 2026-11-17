@@ -1,3 +1,4 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -123,7 +124,7 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
       )}
       {deferral.actions.length === 0 ? null : !canAct ? (
         <Text textRole="footnote" className="text-foreground-muted">
-          This phone can't answer here. Pair it again with the computer that runs T3 Code.
+          {KIN_DEVICE_COPY.cantAct("phone", "answer")}
         </Text>
       ) : (
         <View className="flex-row flex-wrap gap-2 pt-1">

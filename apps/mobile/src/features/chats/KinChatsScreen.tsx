@@ -1,3 +1,4 @@
+import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
 import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { LegendList } from "@legendapp/list/react-native";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -29,6 +30,7 @@ import {
   kinChatListRows,
   kinRoomLine,
   type KinChatListRow,
+  KIN_CHATS_EMPTY,
 } from "@t3tools/client-runtime/kin/kinChatListRows";
 import {
   formatKinTime,
@@ -288,16 +290,16 @@ export function KinChatsView(props: {
               {props.onCreateFirstAgent === undefined ? (
                 <EmptyState
                   title={props.empty?.title ?? "No chats yet"}
-                  detail={props.empty?.detail ?? "Chats with your agents show up here."}
+                  detail={props.empty?.detail ?? KIN_CHATS_EMPTY.none}
                 />
               ) : (
                 <EmptyState
-                  title="Create your first agent"
-                  detail="Start with a Chief of staff: your front door for everything. You chat with it like a colleague, and it passes work to the agents you add later."
+                  title={KIN_CHATS_EMPTY.firstAgent}
+                  detail={KIN_CHATS_EMPTY.chiefPitch}
                   action={
                     <Button
                       tone="primary"
-                      label="Create Chief of staff"
+                      label={KIN_MONEY.createChief}
                       onPress={props.onCreateFirstAgent}
                     />
                   }

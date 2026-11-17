@@ -25,6 +25,7 @@ import {
  */
 
 export const KIN_SUBSCRIPTIONS = {
+  moneyKept: "Money is kept by whoever runs this Kin.",
   title: "Subscriptions",
   renewing: "Renewing in the next 30 days",
   nothingRenewing: "Nothing renews in the next 30 days.",

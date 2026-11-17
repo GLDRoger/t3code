@@ -414,6 +414,7 @@ export function kinSnoozeDays(now: Date) {
 // Goals
 
 export const KIN_GOALS = {
+  saveFailed: "Couldn't save the goal.",
   title: "Goals",
   add: "Add goal",
   edit: "Edit goal",

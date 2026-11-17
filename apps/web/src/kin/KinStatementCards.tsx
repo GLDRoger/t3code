@@ -1,3 +1,4 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_STATEMENT_ACTION_LABELS,
@@ -33,6 +34,7 @@ import {
   type KinStatementPasswordView,
   type KinStatementReviewView,
   type KinStatementSectionId,
+  KIN_STATEMENT_COPY,
 } from "@t3tools/client-runtime/kin/kinStatementPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinStatementSelectChange } from "@t3tools/contracts";
@@ -50,8 +52,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { CardFrame } from "./KinCards";
 import { kinClient } from "./kinClient";
 
-const CANT_ACT_TEXT =
-  "This browser can't confirm here. Pair it again with the server that runs Kin.";
+const CANT_ACT_TEXT = KIN_DEVICE_COPY.cantAct("browser", "confirm");
 
 type Shown = ReturnType<typeof kinStatementShown>;
 type Row = {
@@ -357,9 +358,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
           >
             {confirm.label}
           </Button>
-          <span className="text-xs text-muted-foreground">
-            Rows you leave stay unexplained for later.
-          </span>
+          <span className="text-xs text-muted-foreground">{KIN_STATEMENT_COPY.leftRows}</span>
           <span className="ms-auto flex gap-1.5">
             {undoBefore === null ? null : (
               <Button
@@ -498,9 +497,7 @@ function UnmatchedRows(props: RowsProps) {
             variant="outline"
             onClick={() => props.onChange({ _tag: "suggestions" })}
           >
-            {whole
-              ? `Use Kin's suggestions for ${open} ${open === 1 ? "row" : "rows"}`
-              : "Use Kin's suggestions"}
+            {KIN_STATEMENT_COPY.takeSuggestions(whole ? open : undefined)}
           </Button>
         </li>
       )}
@@ -636,7 +633,7 @@ export const KinStatementPasswordCard = memo(function KinStatementPasswordCard(p
               disabled={pending}
               onCheckedChange={(next) => setRemember(next)}
             />
-            Remember for this account, so the next statement opens on its own
+            {KIN_STATEMENT_COPY.remember}
           </label>
         </form>
       ) : card.status === "opened" && card.remembered !== undefined ? (

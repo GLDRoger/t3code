@@ -377,10 +377,7 @@ function ConnectDialog(props: {
                     ))}
                   </ul>
                 )}
-                <p className="text-xs text-muted-foreground">
-                  In Kin, these become the accounts for {checked.label}, and its posts can only go
-                  to them.
-                </p>
+                <p className="text-xs text-muted-foreground">{COPY.accountsFor(checked.label)}</p>
               </div>
             )}
             {problem === null ? null : (
@@ -466,9 +463,7 @@ function LinkDialog(props: {
           <DialogHeader>
             <DialogTitle>{COPY.linkTitle(row.title)}</DialogTitle>
             <DialogDescription>
-              {row.kind === "client"
-                ? "Kin doesn't message your client. Forward the link yourself."
-                : "Open it on the phone or computer signed in to the account."}
+              {row.kind === "client" ? COPY.forwardLink : COPY.openSignedIn}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>

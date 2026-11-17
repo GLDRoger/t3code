@@ -1,3 +1,4 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -6,6 +7,7 @@ import {
   type KinDigestCardView,
   type KinTaskCardView,
   type KinTaskTone,
+  KIN_CARD_COPY,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   kinAddressPieces,
@@ -71,8 +73,7 @@ import { KinVisual } from "./KinVisual";
 import { kinClient } from "./kinClient";
 import { useKinHostAt } from "./useKinHost";
 
-const CANT_ACT_TEXT =
-  "This browser can't answer here. Pair it again with the server that runs Kin.";
+const CANT_ACT_TEXT = KIN_DEVICE_COPY.cantAct("browser", "answer");
 
 export function CardFrame(props: {
   readonly eyebrow?: string;
@@ -218,7 +219,7 @@ function KinTaskCard(props: { readonly task: KinTaskCardView }) {
       )}
       {task.unknownEnvironment ? (
         <p className="text-xs text-muted-foreground">
-          That thread is on an environment this browser doesn't know.
+          {KIN_DEVICE_COPY.unknownEnvironment("browser")}
         </p>
       ) : null}
       {task.open === null && task.pullRequests.length === 0 && task.model === null ? null : (
@@ -629,14 +630,14 @@ function KinChoiceImage(props: {
     <div className="flex h-28 items-center justify-center overflow-hidden rounded-md border border-border/80 bg-image-ground p-3">
       {failed ? (
         <p className="rounded bg-background/90 px-2 py-1 text-xs text-muted-foreground">
-          The picture couldn't load. Open the chat to see the file.
+          {KIN_CARD_COPY.pictureFailed}
         </p>
       ) : src == null ? null : (
         <AttachmentImage
           name={name}
           mimeType={image.mimeType}
           src={src}
-          alt="The picture this question is about"
+          alt={KIN_CARD_COPY.choicePicture}
           decoding="async"
           onError={() => setFailed(true)}
           className="max-h-full max-w-full object-contain"

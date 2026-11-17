@@ -1,3 +1,4 @@
+import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
@@ -55,8 +56,8 @@ function saveFile(name: string, mimeType: string, data: string) {
   if ("error" in saved) {
     toastManager.add({
       type: "error",
-      title: "Couldn't save this file",
-      description: `Kin couldn't save this SVG safely: ${saved.error}.`,
+      title: KIN_CARD_COPY.saveFileFailed,
+      description: KIN_CARD_COPY.svgUnsafe(saved.error),
     });
     return;
   }
@@ -251,7 +252,7 @@ function KinVisualBlockedHost(props: {
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
       <p className="min-w-0">
-        This visual asks to load from <KinVisualHostName host={props.host} />.
+        {KIN_CARD_COPY.asksToLoadFrom} <KinVisualHostName host={props.host} />.
       </p>
       <Button
         size="xs"
@@ -277,19 +278,15 @@ function KinVisualBlockedHost(props: {
       >
         <AlertDialogPopup>
           <AlertDialogHeader>
-            <AlertDialogTitle>Allow this host for every visual?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The visual asked for this itself; nobody checked the host. Once allowed, every visual
-              in this workspace can load from it and send it anything a visual shows. Allow only a
-              host you trust. You can remove it later under Team.
-            </AlertDialogDescription>
+            <AlertDialogTitle>{KIN_CARD_COPY.allowHostTitle}</AlertDialogTitle>
+            <AlertDialogDescription>{KIN_CARD_COPY.allowHostDetail}</AlertDialogDescription>
             <p className="rounded-md border border-border bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
               <KinVisualHostName host={props.host} />
             </p>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button onClick={() => void run()}>Allow for every visual</Button>
+            <Button onClick={() => void run()}>{KIN_CARD_COPY.visualAllowAll}</Button>
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
@@ -387,10 +384,10 @@ export function KinVisual(props: {
         ) : failed ? (
           <div className="flex size-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
             {retryFailed ? (
-              <p>This visual is no longer available.</p>
+              <p>{KIN_CARD_COPY.visualGone}</p>
             ) : (
               <>
-                <p>Couldn't load this visual.</p>
+                <p>{KIN_CARD_COPY.visualFailed}</p>
                 <Button size="xs" variant="outline" onClick={() => void retry()}>
                   {KIN_RETRY}
                 </Button>

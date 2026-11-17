@@ -1,3 +1,4 @@
+import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { KIN_RETRY, KIN_CHECK_CONNECTION } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -21,6 +22,7 @@ import {
   kinLeadOwnerSeesLine,
   kinLeadAccessProblem,
   kinLeadTrackingDetail,
+  KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import {
   KIN_RETIRE_ACTION,
@@ -242,7 +244,7 @@ function KinLeadBody(props: {
           ) : held === null ? (
             <EmptyState
               variant="plain"
-              title="Couldn't load this agent"
+              title={KIN_AGENT_PAGE.loadFailed}
               detail={KIN_CHECK_CONNECTION}
               action={
                 <Button
@@ -435,7 +437,7 @@ function KinLeadAccess(props: {
   const askRemove = (person: { readonly personId: KinPersonId; readonly displayName: string }) =>
     Dialog.confirm({
       title: `Remove ${person.displayName}?`,
-      message: `${person.displayName} keeps their chat with ${lead.name} to read, but can't send it anything more. You can add them back any time.`,
+      message: KIN_AGENTS_COPY.removeAccess(person.displayName, lead.name),
       confirmText: "Remove",
       destructive: true,
       onConfirm: () => void change(person, false),
@@ -448,14 +450,14 @@ function KinLeadAccess(props: {
       : allowed === null || everyone || allowed.length === 0
         ? undefined
         : intro === ""
-          ? "They see its name only. Add what teammates see when you edit this agent."
-          : `They see its name and this: ${intro}`;
+          ? KIN_AGENTS_COPY.nameOnly
+          : KIN_AGENTS_COPY.seesIntro(intro);
   return (
     <ListSection title="Who can message" footer={footer}>
       {allowed === null ? (
         <View className="px-4 py-3">
           <Text textRole="body" className="text-foreground-muted">
-            {AsyncResult.isFailure(access) ? "Couldn't load who can message it." : "Loading…"}
+            {AsyncResult.isFailure(access) ? KIN_AGENTS_COPY.accessFailed : "Loading…"}
           </Text>
         </View>
       ) : everyone || allowed.length === 0 ? (
@@ -578,7 +580,7 @@ export function KinLeadProfileView({
             <Text textRole="body" className="text-foreground-muted">
               {retired === undefined
                 ? "Nothing right now. Reminders, follow-ups and work it starts show up here."
-                : "Nothing is waiting on it."}
+                : KIN_AGENT_PAGE.nothingWaiting}
             </Text>
           </View>
         ) : (

@@ -997,8 +997,8 @@ function ToolItem(props: {
             <span className="font-medium">Now</span>
             <p className="whitespace-pre-line">{row.change.after ?? "No description."}</p>
           </div>
-          {row.change.inputsChanged ? <p>What it takes changed too.</p> : null}
-          {row.change.labelsChanged ? <p>What the service says it does changed too.</p> : null}
+          {row.change.inputsChanged ? <p>{COPY.inputsChanged}</p> : null}
+          {row.change.labelsChanged ? <p>{COPY.describedChanged}</p> : null}
           <Button
             size="xs"
             variant="outline"

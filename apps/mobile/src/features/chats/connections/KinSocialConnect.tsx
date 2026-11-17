@@ -309,7 +309,7 @@ function ConnectSheet(props: {
               ) : (
                 <ListSection
                   title={COPY.found(checked.profileName ?? checked.label)}
-                  footer={`In Kin, these become the accounts for ${checked.label}, and its posts can only go to them.`}
+                  footer={COPY.accountsFor(checked.label)}
                 >
                   {checked.accounts.length === 0 ? (
                     <View className="px-4 py-3">
@@ -399,9 +399,7 @@ function LinkSheet(props: { readonly target: KinConnectionsTarget; readonly grou
           ) : (
             <>
               <Text textRole="body" className="px-2 text-foreground-muted">
-                {row.kind === "client"
-                  ? "Kin doesn't message your client. Forward the link yourself."
-                  : "Open it on the phone or computer signed in to the account."}
+                {row.kind === "client" ? COPY.forwardLink : COPY.openSignedIn}
               </Text>
               {problem === null ? null : <ErrorBanner message={problem} />}
               {made === null ? (

@@ -227,3 +227,20 @@ export function kinMentionsIn(
   }
   return named;
 }
+
+/** Making or changing a group: who answers and who can still be added. */
+export const KIN_GROUP_FORM = {
+  addMembers: "Add agents or people",
+  nameAnother: "Name another agent with @ in a message to ask it instead.",
+  noAgent: "No agent is in this group, so messages here get no answer from one.",
+  closeDetail: "The group closes for everyone in it. This can't be undone.",
+  removeDetail: (name: string, agent: boolean) =>
+    agent
+      ? `${name} stops answering here. You can add it back any time.`
+      : `${name} stops seeing this group and its files. You can add them back any time.`,
+  allAdded: "Every agent and person you could add is already in this group.",
+  loading: "Loading your agents and people…",
+  answersHint:
+    "The first agent you pick answers when a message names no one. Name another with @ to ask it instead.",
+  answers: "Answers when no one is named",
+} as const;

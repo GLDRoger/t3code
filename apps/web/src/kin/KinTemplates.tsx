@@ -167,7 +167,7 @@ export function KinTemplatesSection(props: KinWorkTarget) {
         </div>
       ) : state._tag !== "ready" ? (
         <KinLoadFailed
-          what={"Couldn't load your templates"}
+          what={KIN_TEMPLATES.loadFailed}
           cause={state._tag === "failed" ? state.cause : null}
           onRetry={recipes.refresh}
         />

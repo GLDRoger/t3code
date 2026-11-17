@@ -39,6 +39,11 @@ import { kinActionFailureNotice, type KinCardNotice } from "./kinDeferralPresent
  * mobile draw what these return; the server builds every card from stored drafts.
  */
 export const KIN_SOCIAL_COPY = {
+  postPicture: (name: string) => `Picture for this post: ${name}`,
+  accountsFor: (label: string) =>
+    `In Kin, these become the accounts for ${label}, and its posts can only go to them.`,
+  openSignedIn: "Open it on the phone or computer signed in to the account.",
+  forwardLink: "Kin doesn't message your client. Forward the link yourself.",
   title: "Social accounts",
   intro:
     "Your company's accounts and each client's, through one posting service. Social drafts the week; nothing goes out until you confirm.",

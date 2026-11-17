@@ -17,6 +17,7 @@ import {
   type KinMemoryOriginView,
   type KinMemoryRow,
   type KinTeamMemoryView,
+  KIN_MEMORY_COPY,
 } from "@t3tools/client-runtime/kin/kinMemoryScreen";
 import type {
   EnvironmentId,
@@ -66,10 +67,8 @@ export function KinMemoryView(props: KinMemoryTarget & { readonly find?: string 
       ) : (
         <Empty size="compact">
           <EmptyHeader>
-            <EmptyTitle>Only the owner can open this</EmptyTitle>
-            <EmptyDescription>
-              What the agents remember is shown to the person who runs this workspace.
-            </EmptyDescription>
+            <EmptyTitle>{KIN_MEMORY_COPY.ownerOnly}</EmptyTitle>
+            <EmptyDescription>{KIN_MEMORY_COPY.ownerOnlyDetail}</EmptyDescription>
           </EmptyHeader>
         </Empty>
       )}
@@ -128,7 +127,7 @@ function KinMemoryBody({
       <div
         className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4"
         role="status"
-        aria-label="Loading what your agents remember"
+        aria-label={KIN_MEMORY_COPY.loading}
       >
         {[0, 1, 2, 3].map((index) => (
           <div key={index} className="flex flex-col gap-1.5">

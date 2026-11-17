@@ -245,7 +245,7 @@ export function useKinDocRestore(target: KinWorkTarget, key: KinRecordKey) {
   const [problem, setProblem] = useState<string | null>(null);
   const run = async (version: number, latest: number): Promise<KinDocDetail | null> => {
     if (!kinHostConnected(environmentId)) {
-      setProblem("You're offline. Restore it when the connection is back.");
+      setProblem(KIN_DOCS.restoreOffline);
       return null;
     }
     setBusy(true);
@@ -266,20 +266,16 @@ export function useKinDocRestore(target: KinWorkTarget, key: KinRecordKey) {
     run,
     /** Asks first. A restore loses nothing, so the question says so. */
     confirm: (version: number, latest: number, then: (doc: KinDocDetail) => void) =>
-      Alert.alert(
-        `Restore version ${version}?`,
-        `The doc will read as it did at version ${version}. Nothing is lost: the restore is saved as a new version, and you can undo it.`,
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Restore",
-            onPress: () =>
-              void run(version, latest).then((doc) => {
-                if (doc !== null) then(doc);
-              }),
-          },
-        ],
-      ),
+      Alert.alert(`Restore version ${version}?`, KIN_DOCS.restoreDetail(version), [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Restore",
+          onPress: () =>
+            void run(version, latest).then((doc) => {
+              if (doc !== null) then(doc);
+            }),
+        },
+      ]),
   };
 }
 
@@ -652,7 +648,7 @@ function KinDocBody(
             ) : null}
             {undo === null ? null : (
               <Notice
-                message={`Restored. This is now version ${doc.latest.version}, and nothing was lost.`}
+                message={KIN_DOCS.restored(doc.latest.version)}
                 action={{
                   label: "Undo",
                   pending: restore.busy,
@@ -697,7 +693,7 @@ function KinDocBody(
           {doc.body.trim() === "" ? (
             doc.version.file === undefined ? (
               <Text textRole="body" className="text-foreground-muted">
-                This doc has no text yet.
+                {KIN_DOCS.noText}
               </Text>
             ) : null
           ) : sections === null ? (

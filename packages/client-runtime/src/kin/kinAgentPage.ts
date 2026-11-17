@@ -54,6 +54,12 @@ export function kinAgentPageCan(viewer: {
 }
 
 export const KIN_AGENT_PAGE = {
+  loadFailed: "Couldn't load this agent",
+  notTeamAgent: "Not the team agent. Only you and the people you add can message it.",
+  modelFailed: "Couldn't change the model.",
+  characterFailed: "Couldn't save the character.",
+  nothingWaiting: "Nothing is waiting on it.",
+  defaultsUnchosen: "Until you choose, they start on your first agent's.",
   model: "Model",
   modelDetail: "Applies from its next reply.",
   effort: "Effort",
