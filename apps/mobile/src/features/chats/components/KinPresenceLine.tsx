@@ -16,7 +16,7 @@ import { AppText as Text } from "../../../components/ui/AppText";
 import { useReduceMotionEnabled } from "../../../lib/appState";
 import { KinAvatar } from "./KinAvatar";
 import type { KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
-import { formatWorkingDuration } from "../../threads/floating-working-control";
+import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { useVisibleSecondClock } from "../../threads/use-visible-second-clock";
 import type { KinPresence } from "@t3tools/contracts";
 
@@ -195,4 +195,23 @@ function KinWorkingTimer(props: { readonly startedAt: string }) {
       {formatWorkingDuration(props.startedAt, nowMs)}
     </Text>
   );
+}
+
+function formatWorkingDuration(startedAt: string, nowMs: number): string {
+  const startedAtMs = Date.parse(startedAt);
+  if (!Number.isFinite(startedAtMs) || nowMs <= startedAtMs) {
+    return "0s";
+  }
+
+  const totalSeconds = Math.floor((nowMs - startedAtMs) / 1_000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  if (totalSeconds >= 3_600) {
+    return formatDuration(totalSeconds * 1_000);
+  }
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}m ${seconds}s`;
 }

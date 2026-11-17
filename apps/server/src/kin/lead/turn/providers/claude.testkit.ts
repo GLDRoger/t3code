@@ -37,6 +37,7 @@ export const claudeFake: ProviderFake = {
             ),
           forkSession: () => Effect.die("unused"),
           subagentLaunchToolUseId: () => Effect.die("unused"),
+          subagentModel: () => Effect.succeed(null),
           assertComplete: Effect.void,
         }),
       );

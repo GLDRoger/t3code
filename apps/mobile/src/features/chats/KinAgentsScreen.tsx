@@ -145,7 +145,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
           {agents.map((agent) => (
             <ListRow
               key={agent.agentId}
-              icon="sparkles"
+              icon="robot"
               label={agent.name}
               description={kinDomainLabel(agent.domain)}
               {...(agent.paused !== undefined
@@ -174,7 +174,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
           {retired.map((agent) => (
             <ListRow
               key={agent.agentId}
-              icon="sparkles"
+              icon="robot"
               label={agent.name}
               description={kinRetiredWhenNow(agent.retired?.at)}
               detail={retire.busy === agent.agentId ? "Restoring…" : KIN_RESTORE_ACTION}

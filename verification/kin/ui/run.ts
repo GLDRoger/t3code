@@ -56,19 +56,36 @@ for (const name of ["VITE_HTTP_URL", "VITE_WS_URL", "ANTHROPIC_API_KEY", "OPENAI
   delete env[name];
 
 let server: NodeChildProcess.ChildProcess | undefined;
+let runningOrigin: string | undefined;
+const listening = (origin: string) =>
+  fetch(origin).then(
+    () => true,
+    () => false,
+  );
+const closes = async (origin: string) => {
+  for (let i = 0; i < 40; i++) {
+    if (!(await listening(origin))) return;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+};
 const stopServer = async () => {
   // The dev server runs in its own process group, started here; only that group is signalled.
   const s = server;
+  const origin = runningOrigin;
   server = undefined;
+  runningOrigin = undefined;
   if (s?.pid === undefined || s.exitCode !== null) return;
-  const exited = new Promise((r) => s.once("exit", r));
   try {
     process.kill(-s.pid, "SIGTERM");
   } catch {}
-  await Promise.race([exited, new Promise((r) => setTimeout(r, 10_000))]);
+  // The dev runner stops Vite and the server in a group of their own, so it must live until the
+  // server's port closes; the next walk replaces this home, which a live server would notice.
+  if (origin !== undefined) await closes(origin);
   try {
     process.kill(-s.pid, "SIGKILL");
   } catch {}
+  if (origin !== undefined && (await listening(origin)))
+    throw new Error(`the dev server at ${origin} is still running after its stop`);
 };
 process.on("exit", () => server?.pid !== undefined && process.kill(-server.pid, "SIGKILL"));
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => process.exit(130));
@@ -95,7 +112,8 @@ const startServer = async (log: string) => {
   const origin = `http://localhost:${ports[2]}`;
   // Warm Vite so a walk doesn't spend its minutes on cold module transforms.
   await fetch(`${origin}/kin`).catch(() => undefined);
-  return { serverOrigin: `http://127.0.0.1:${ports[1]}`, origin };
+  runningOrigin = `http://127.0.0.1:${ports[1]}`;
+  return { serverOrigin: runningOrigin, origin };
 };
 
 const node = (script: string, scriptArgs: string[]) =>

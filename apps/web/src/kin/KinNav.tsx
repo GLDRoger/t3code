@@ -3,12 +3,9 @@ import { kinAttentionBadge, kinTasksBadgeCount } from "@t3tools/client-runtime/k
 import { kinWorkListsMoved } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
   KIN_DESTINATION_NAMES,
-  kinDestinations,
-  kinDockSelection,
   type KinDestination,
 } from "@t3tools/client-runtime/kin/kinNavigation";
-import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { useEffect } from "react";
 import {
   BanknoteIcon,
@@ -38,12 +35,9 @@ import {
   kinListShownAt,
 } from "./kinListSwitch";
 import { useKinAttention } from "./useKinAttention";
-import { useKinDocsLive } from "./useKinDocs";
 import { useKinHost } from "./useKinHost";
-import { useKinMoneySummary } from "./useKinMoney";
-import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
-import { useKinMyDueTasks } from "./useKinPlaces";
-import { useKinWork, useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import { useKinDestinations, useKinMyDueTasks } from "./useKinPlaces";
+import { useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
 const ICON: Record<KinDestination, LucideIcon> = {
   chats: MessagesSquareIcon,
@@ -60,12 +54,8 @@ interface KinNavEntry {
 
 /** The destinations this person has, in the phone's order, each with the phone's badge. */
 function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
-  const work = useKinWork(target);
+  const { work, ownerLevel, destinations } = useKinDestinations(target);
   const ready = work._tag === "ready";
-  const money = useKinMoneySummary(target, { enabled: ready }).state;
-  const docs = useKinDocsLive(target);
-  const ownerLevel = useKinOwnerLevel(target.environmentId);
-  const reaches = useKinPlaceReach(target.environmentId);
   const unread = useAtomValue(kinInboxUnreadAtom(target.environmentId));
   const attention = useKinAttention(target, ownerLevel && work._tag !== "refused", true);
   // Anyone else's badge counts their own late and due-today tasks, the ones "On me" marks.
@@ -75,31 +65,7 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
     ready && !ownerLevel ? directory.names.me : null,
     ready && !work.stale ? kinWorkListsMoved(work.live, ["work"]) : null,
   );
-  const destinations = kinDestinations({
-    work: work._tag !== "refused",
-    ownerLevel,
-    refused: {
-      money: money._tag === "refused",
-      // Only an answer from an older host takes Clients away, never one still on its way.
-      clients: ready && !kinWorkHostClients(work.live.summary),
-      docs: docs.refused,
-    },
-    reaches,
-  });
   const key = destinations.join(",");
-  const navigate = useNavigate();
-  const pathname = useLocation({ select: (location) => location.pathname });
-  // On a place's own list: a record under it says for itself that it isn't theirs to see.
-  const onPlace =
-    pathname.split("/").filter(Boolean).length === 4 ? kinDestinationAt(pathname) : null;
-  const leave =
-    onPlace !== null &&
-    kinDockSelection({ held: onPlace, tabs: destinations, known: ownerLevel || reaches !== null })
-      .leave;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the host took away the place on screen: leave it for Chats, as the phone does
-  useEffect(() => {
-    if (leave) void navigate({ to: "/kin", replace: true });
-  }, [leave, navigate]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes the destinations this person has, so the command palette lists the same ones the nav shows
   useEffect(() => {
     appAtomRegistry.set(kinShownDestinationsAtom, {

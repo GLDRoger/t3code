@@ -1,6 +1,8 @@
 import type { EnvironmentId, KinAttachment } from "@t3tools/contracts";
 
+import * as Effect from "effect/Effect";
 import { prepareTurnAttachments } from "../../../lib/attachmentUpload";
+import { uploadComposerAttachmentShared } from "../../../state/composer-attachment-uploads";
 import { beginForegroundHandoff } from "../../../lib/foreground-handoff";
 import { uuidv4 } from "../../../lib/uuid";
 
@@ -43,21 +45,24 @@ export async function pickKinPicture(environmentId: EnvironmentId): Promise<KinA
   source.release();
   const { File } = await import("expo-file-system");
   const sizeBytes = new File(saved.uri).size ?? 0;
-  const prepared = await prepareTurnAttachments({
-    environmentId,
-    supportsImageUploads: true,
-    attachments: [
-      {
-        id: uuidv4(),
-        type: "image",
-        name: "picture.jpg",
-        mimeType: "image/jpeg",
-        sizeBytes,
-        previewUri: saved.uri,
-        fileUri: saved.uri,
-      },
-    ],
-  });
+  const prepared = await Effect.runPromise(
+    prepareTurnAttachments({
+      environmentId,
+      supportsImageUploads: true,
+      uploadAttachment: (attachment) => uploadComposerAttachmentShared(environmentId, attachment),
+      attachments: [
+        {
+          id: uuidv4(),
+          type: "image",
+          name: "picture.jpg",
+          mimeType: "image/jpeg",
+          sizeBytes,
+          previewUri: saved.uri,
+          fileUri: saved.uri,
+        },
+      ],
+    }),
+  );
   const uploaded = prepared.status === "ready" ? prepared.attachments[0] : undefined;
   if (uploaded === undefined || !("id" in uploaded) || uploaded.type !== "image")
     throw new Error("The picture didn't upload.");

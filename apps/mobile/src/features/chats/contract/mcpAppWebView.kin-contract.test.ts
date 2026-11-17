@@ -25,6 +25,7 @@ vi.mock("react-native-safe-area-context", () => ({}));
 vi.mock("../../../components/ui/Button", () => ({}));
 vi.mock("../../../components/ui/AppActivityIndicator", () => ({}));
 vi.mock("../../../lib/uuid", () => ({}));
+vi.mock("../../../lib/webViewDecelerationRate", () => ({}));
 vi.mock("../../../state/assets", () => ({}));
 vi.mock("../../../state/entities", () => ({}));
 vi.mock("../../../state/mcpApps", () => ({}));

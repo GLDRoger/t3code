@@ -13,7 +13,7 @@ import {
 } from "../../navigationHistory";
 import { primaryServerKeybindingsAtom } from "../../state/server";
 import { cn } from "../../lib/utils";
-import { usePullRequestsSupported } from "../../state/environments";
+import { useIssuesSupported, usePullRequestsSupported } from "../../state/environments";
 import { T3Wordmark } from "../T3Wordmark";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -37,6 +37,8 @@ import { kinListAt, kinListShownAt } from "../../kin/kinListSwitch";
 import { openKinSettings } from "../../kin/kinSettingsAddress";
 import { isChatOnlySession } from "../../environments/primary";
 import { useKinListSwitch } from "../../kin/useKinListSwitch";
+import { readIssueListPreferences } from "../issue/issueListPreferences";
+import { IssueGlyph } from "../issue/issuePresentation";
 import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarThreadUndoNotice } from "./SidebarThreadUndoNotice";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
@@ -260,6 +262,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     select: (location) => kinListShownAt(location.pathname) === "kin",
   });
   const pullRequestsSupported = usePullRequestsSupported();
+  const issuesSupported = useIssuesSupported();
   const closeMobileSidebar = () => {
     if (isMobile) {
       setOpenMobile(false);
@@ -271,6 +274,10 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       to: "/pull-requests",
       search: readPullRequestListPreferences(),
     });
+  };
+  const handleIssuesClick = () => {
+    closeMobileSidebar();
+    void navigate({ to: "/issues", search: readIssueListPreferences() });
   };
   const handleSettingsClick = () => {
     closeMobileSidebar();
@@ -306,12 +313,19 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             label="Settings"
             onClick={handleSettingsClick}
           />
-          {/* Pull requests and usage are about coding threads, which Kin doesn't offer. */}
+          {/* Pull requests, issues and usage are about coding threads, which Kin doesn't offer. */}
           {pullRequestsSupported && !overKin ? (
             <SidebarUtilityItem
               icon={<PullRequestGlyph.pullRequest />}
               label="Pull requests"
               onClick={handlePullRequestsClick}
+            />
+          ) : null}
+          {issuesSupported && !overKin ? (
+            <SidebarUtilityItem
+              icon={<IssueGlyph.issue />}
+              label="Issues"
+              onClick={handleIssuesClick}
             />
           ) : null}
           {overKin ? null : (

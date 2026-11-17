@@ -18,6 +18,9 @@ import { HtmlToolkit } from "../../mcp/toolkits/html/tools.ts";
 import { AttachmentToolkit } from "../../mcp/toolkits/attachment/tools.ts";
 import { EnvironmentToolkit } from "../../mcp/toolkits/environment/tools.ts";
 import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
+import { IssuesToolkit } from "../../mcp/toolkits/issues/tools.ts";
+import { MessageToolkit } from "../../mcp/toolkits/message/tools.ts";
+import { ThemeToolkit } from "../../mcp/toolkits/theme/tools.ts";
 import { ServerConfig } from "../../config.ts";
 import { toolDirectories } from "../gendocs/toolchain.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
@@ -44,6 +47,9 @@ const T3_TOOLKITS = [
   AttachmentToolkit,
   EnvironmentToolkit,
   ThreadToolkit,
+  IssuesToolkit,
+  MessageToolkit,
+  ThemeToolkit,
 ];
 const t3Tools: ReadonlySet<string> = new Set(
   T3_TOOLKITS.flatMap((toolkit) => Object.keys(toolkit.tools)),

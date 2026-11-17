@@ -126,12 +126,8 @@ import {
 import { ComposerAttachButton } from "../components/chat/ComposerAttachmentStrip";
 import { shouldHandleComposerAttachmentPaste } from "../components/chat/composerAttachmentFiles";
 import { ExpandedImageDialogHost } from "../components/chat/ExpandedImageDialog";
-import {
-  ComposerPrimaryActions,
-  StopGenerationButton,
-} from "../components/chat/ComposerPrimaryActions";
+import { ComposerPrimaryActions } from "../components/chat/ComposerPrimaryActions";
 import { ComposerSurface } from "../components/chat/ComposerSurface";
-import { WorkingTimer } from "../components/chat/TimelineWorkGroupRows";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -147,6 +143,7 @@ import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
+import { KinStopButton, KinWorkingTimer } from "./KinPresenceControls";
 import {
   KinComposerAttachmentStrip,
   kinPreviewKey,
@@ -1124,7 +1121,12 @@ function KinChatFeed(props: {
         ListHeaderComponent={header}
         ListEmptyComponent={empty}
         ListFooterComponent={
-          <KinPresenceLine presence={props.presence} stop={stopState} onStop={onStop} />
+          <KinPresenceLine
+            environmentId={props.environmentId}
+            presence={props.presence}
+            stop={stopState}
+            onStop={onStop}
+          />
         }
       />
       <div className="relative mx-auto w-full max-w-3xl px-4 pb-4">
@@ -1192,6 +1194,7 @@ function KinChatFeed(props: {
  * reply landing never shifts the feed. Static text: it changes on 15 s ticks, never animates.
  */
 function KinPresenceLine(props: {
+  readonly environmentId: EnvironmentId;
   readonly presence: KinPresence | undefined;
   readonly onStop: (() => void) | null;
   readonly stop: StopState;
@@ -1209,7 +1212,7 @@ function KinPresenceLine(props: {
       {timerStart === null ? null : (
         // The timer ticks on its own; screen readers hear the presence text, not every second.
         <span aria-hidden="true">
-          <WorkingTimer createdAt={timerStart} />
+          <KinWorkingTimer createdAt={timerStart} environmentId={props.environmentId} />
         </span>
       )}
       {stoppable ? (
@@ -1219,8 +1222,7 @@ function KinPresenceLine(props: {
               {props.stop === "failed" ? "Couldn't stop" : "Stopping…"}
             </span>
           )}
-          <StopGenerationButton
-            size="compact"
+          <KinStopButton
             label={props.stop === "failed" ? "Try stopping again" : "Stop"}
             tooltip={props.stop === "failed" ? KIN_RETRY : "Stop"}
             disabled={props.stop === "stopping"}

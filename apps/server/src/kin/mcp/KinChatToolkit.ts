@@ -28,7 +28,7 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { deferredMeta } from "../lead/deferredTools.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 
-export const enabled = () => {
+export const enabled = McpToolAccess.threadBoundGate(() => {
   const fiber = Fiber.getCurrent();
   if (!fiber) return false;
   const kin = Context.getOrUndefined(fiber.context, KinServer);
@@ -40,7 +40,7 @@ export const enabled = () => {
     scope.thread.subagent !== true &&
     Context.get(kin.services.value, KinIdentity).isAgentThread(scope.thread.threadId)
   );
-};
+});
 const shared = {
   failure: Schema.Union([KinChatError, OrchestratorMcpFailure]),
   failureMode: "return" as const,

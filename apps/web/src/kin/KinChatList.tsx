@@ -36,7 +36,7 @@ import type {
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { Link, useParams } from "@tanstack/react-router";
-import { BellOffIcon, ChevronDownIcon, ChevronRightIcon, SparklesIcon } from "lucide-react";
+import { BellOffIcon, ChevronDownIcon, ChevronRightIcon, BotIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -521,7 +521,7 @@ function KinFirstAgent(props: { readonly target: KinLeadFormTarget }) {
           size="sm"
           onClick={() => openKinLeadForm({ ...props.target, suggested: KIN_CHIEF_OF_STAFF })}
         >
-          <SparklesIcon />
+          <BotIcon />
           {KIN_MONEY.createChief}
         </Button>
       ) : null}

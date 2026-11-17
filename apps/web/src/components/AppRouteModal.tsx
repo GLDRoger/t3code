@@ -4,6 +4,7 @@ import { useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { useNativeTitlebarHeight } from "../lib/windowControlsOverlay";
 import { useCloseAppModal } from "./sidebar/mainAppLocation";
+import { GlobalVoiceInputIndicator } from "./chat/GlobalVoiceInputIndicator";
 import { Button } from "./ui/button";
 import { DialogBackdrop } from "./ui/dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
@@ -40,8 +41,18 @@ export function AppRouteModal({
       open={open}
       // Portaled layers outside this tree (toasts, Clerk, confirm dialogs) are not backdrop presses.
       disablePointerDismissal
-      onOpenChange={(nextOpen) => {
+      onOpenChange={(nextOpen, eventDetails) => {
         if (nextOpen) return;
+        // Esc from a layer outside Base UI (Clerk's modals) is that layer's to handle.
+        const target = eventDetails.event.target;
+        if (
+          eventDetails.reason === "escape-key" &&
+          target !== document.body &&
+          target instanceof Node &&
+          !popupRef.current?.contains(target)
+        ) {
+          return eventDetails.cancel();
+        }
         // Closing unmounts a focused field without a blur, so commit-on-blur rows would
         // drop what was typed. Blur first so they commit.
         const focused = document.activeElement;
@@ -62,7 +73,9 @@ export function AppRouteModal({
               "--app-modal-sm-top": `max(1.5rem, ${nativeTitlebarHeight}px)`,
             } as CSSProperties
           }
-          className="fixed inset-0 z-50 flex items-center justify-center sm:p-6 sm:pt-(--app-modal-sm-top) lg:p-10"
+          // Electron hit-tests drag regions under the backdrop regardless of z-index; without
+          // this, presses above the modal move the window instead of dismissing it.
+          className="fixed inset-0 z-50 flex items-center justify-center [-webkit-app-region:no-drag] sm:p-6 sm:pt-(--app-modal-sm-top) lg:p-10"
           onPointerDown={(event) => {
             backdropPressRef.current = event.target === event.currentTarget;
           }}
@@ -86,6 +99,7 @@ export function AppRouteModal({
               className="absolute inset-x-0 top-0 hidden h-(--app-modal-titlebar-height) [-webkit-app-region:drag] max-sm:block"
             />
             {children}
+            <GlobalVoiceInputIndicator />
           </DialogPrimitive.Popup>
         </DialogPrimitive.Viewport>
       </DialogPrimitive.Portal>

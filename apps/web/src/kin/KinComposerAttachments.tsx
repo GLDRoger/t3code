@@ -168,6 +168,7 @@ export function useKinComposerAttachments(input: {
       id: randomUUID(),
       name: file.name || "image",
       file,
+      hidden: false,
     }));
     addPreparingComposerImages(target, placeholders);
     const prepared: ComposerImageAttachment[] = [];
@@ -331,6 +332,8 @@ export function KinComposerAttachmentStrip(props: {
             openExpandedImagePreview(kinPreviewKey(props.draftKey), preview)
           }
           onFileOpen={noop}
+          // Only SnapShot captures offer a copy, and a Kin chat takes none.
+          onCopySnapshot={noCopy}
           onRemoveImage={state.removeImage}
           onRemoveFile={state.removeFile}
         />
@@ -362,3 +365,4 @@ export function KinComposerAttachmentStrip(props: {
 
 const NONE: ReadonlyArray<never> = [];
 const noop = () => {};
+const noCopy = () => Promise.resolve();

@@ -5,6 +5,7 @@ import { useControlTheme } from "../../../components/ui/useControlTheme";
 import { useNavigationTabOrder, useHiddenNavigationTabs } from "./navigation-tabs";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
 import { useSelectWorkspaceTab } from "./useSelectWorkspaceTab";
+import { useAdaptiveWorkspaceLayout } from "../adaptive-workspace-context";
 
 const NativeSidebarTabBar = requireNativeView<
   ViewProps & {
@@ -27,6 +28,7 @@ export function WorkspaceSidebarTabs(props: {
   readonly reserveComposeSpace?: boolean;
 }) {
   const workspace = useWorkspaceTabs()!;
+  const { layout } = useAdaptiveWorkspaceLayout();
   const order = useNavigationTabOrder();
   const hidden = useHiddenNavigationTabs();
   const tabs = [...visibleNavigationTabs(order, hidden), "settings" as const];
@@ -34,6 +36,7 @@ export function WorkspaceSidebarTabs(props: {
   return (
     <SidebarTabBar
       {...props}
+      maxWidth={layout.variant === "medium" ? 280 : undefined}
       tabs={tabs}
       selectedTab={selectedNavigationTab(
         order,
@@ -56,6 +59,7 @@ export function SidebarTabBar<Tab extends string>(props: {
   readonly onNewTask?: () => void;
   readonly compact?: boolean;
   readonly reserveComposeSpace?: boolean;
+  readonly maxWidth?: number | undefined;
   /** Titles under the icons; the workspace's own dock is icon-only. */
   readonly showsLabels?: boolean;
   /** A short count on a tab, keyed by tab. */
@@ -93,6 +97,7 @@ export function SidebarTabBar<Tab extends string>(props: {
         position: "absolute",
         bottom: 0,
         left: props.compact ? 8 : 0,
+        maxWidth: props.maxWidth,
         // Keep the tab icons in place when Compose disappears on other destinations.
         right:
           (props.compact ? 12 : 0) +

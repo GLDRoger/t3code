@@ -3,6 +3,7 @@ import { KIN_DATES } from "@t3tools/client-runtime/kin/kinDates";
 import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
 import { KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_MONEY, type KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
+import { kinPlaceInPlace } from "@t3tools/client-runtime/kin/kinNavigation";
 import {
   KIN_WORK_DEFAULT_FILTER,
   KIN_WORK_LOAD_FAILED,
@@ -66,6 +67,7 @@ import {
 } from "./kinPlaces";
 import { openKinMemoryInstead } from "./kinSettingsAddress";
 import { kinListsOf, useKinAskAgent, useKinLists } from "./useKinMoney";
+import { useKinDestinations } from "./useKinPlaces";
 import {
   kinWorkLiveAtom,
   useKinWork,
@@ -248,6 +250,9 @@ function KinPlaceView({
   const router = useRouter();
   const wide = useMediaQuery("lg");
   const state = useKinWork(props);
+  const { destinations, known } = useKinDestinations(props);
+  // The web stays on its address: a place the host took away says so here and comes back by itself.
+  const placeRefused = kinPlaceInPlace({ held: place, tabs: destinations, known }) === "refused";
   const canAdd = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
   const canAddClient = useAtomValue(kinClient.workClientCreate.permissionAtom(environmentId));
   const canAddProject = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
@@ -549,6 +554,8 @@ function KinPlaceView({
       {docAlone ? null : header}
       {state._tag === "refused" ? (
         <KinWorkNotice {...kinWorkOnlyOwner(place)} />
+      ) : placeRefused && record === null ? (
+        <KinWorkNotice {...(place === "money" ? KIN_MONEY.onlyOwner : kinWorkOnlyOwner(place))} />
       ) : state._tag === "offline" ? (
         <KinWorkNotice {...kinWorkOffline(place)} />
       ) : state._tag === "failed" ? (
@@ -567,7 +574,8 @@ function KinPlaceView({
         </div>
       ) : (
         <div className="flex min-h-0 flex-1">
-          {record !== null && !wide ? null : (
+          {/* A record under a place taken away says for itself that it isn't theirs; no list beside it. */}
+          {record !== null && (!wide || placeRefused) ? null : (
             <div
               className={
                 record === null

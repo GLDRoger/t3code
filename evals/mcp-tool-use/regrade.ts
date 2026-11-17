@@ -12,7 +12,7 @@ import * as NodeUtil from "node:util";
 import * as Schema from "effect/Schema";
 
 import { caseState, type Check, sampleState, type State } from "./margin.ts";
-import { gradeSample, McpToolUseCase, pastedText, shownText } from "./run.ts";
+import { gradeSample, McpToolUseCase, pastedText, shownText, worldFilePaths } from "./run.ts";
 
 const { values, positionals } = NodeUtil.parseArgs({
   allowPositionals: true,
@@ -51,7 +51,10 @@ for (const file of positionals) {
     const rubric: Array<Check> = Array.isArray(row.checks)
       ? row.checks.filter((check: Check) => check.check.startsWith("rubric "))
       : [];
-    const checks = [...gradeSample(testCase.expect, graded, pastedText(testCase)), ...rubric];
+    const checks = [
+      ...gradeSample(testCase.expect, graded, pastedText(testCase), worldFilePaths(testCase)),
+      ...rubric,
+    ];
     const failed = checks.filter((check) => !check.pass);
     const cut = failed.length === 0 && row.stopReason === "failed_early";
     const state = cut ? "fail" : sampleState(checks);

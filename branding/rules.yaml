@@ -208,6 +208,16 @@ text:
   - files: [apps/server/src/cloud/bootService.ts, apps/server/src/cli/update.ts]
     from: t3code.service
     to: kin.service
+  # The service launcher reads the Windows task file where bootService writes Kin's (above), and
+  # names the task Kin's own, so it never ends or re-registers T3 Code's task.
+  - files: [apps/server/src/serviceLauncher.ts]
+    from: t3code
+    to: kin
+  # The integrated terminal tells the tools inside it they run in Kin.
+  - files: [apps/server/src/terminal/Manager.ts]
+    from: t3code
+    to: kin
+    exact: true
   # The notification tap falls back to the app's own scheme, not T3 Code's.
   - files:
       - apps/mobile/modules/t3-agent-notifications/android/src/main/java/expo/modules/t3agentnotifications/AgentNotifications.kt
@@ -569,8 +579,18 @@ ignore:
       - scripts/install.ps1
       - scripts/mobile-showcase*.ts
       - scripts/mobile-e2e/**
-  - reason: Upstream's contributor tooling (agent skills, lint plugin, issue repro seeds), not part of any build.
-    files: [.agents/**, .claude/**, oxlint-plugin-t3code/**, scripts/seed-issue-*]
+  - reason: >-
+      Upstream's contributor tooling (agent skills, lint plugin, issue repro seeds, scenario
+      proofs), not part of any build.
+    files:
+      [
+        .agents/**,
+        .claude/**,
+        oxlint-plugin-t3code/**,
+        scripts/seed-issue-*,
+        scripts/e2e.config.ts,
+        scripts/scenarios/**,
+      ]
   - reason: >-
       Upstream's mobile dev-client tooling. It installs prebuilt dev clients from a shared native
       build cache keyed to T3's bundle ids; Kin's mobile builds go through Expo prebuild and EAS.
@@ -691,6 +711,7 @@ leaks:
         - packages/source-control-github/src/server/GitHubRequestPolicy.ts
         - packages/source-control-gitcafe/src/server/GitCafeApi.ts
         - packages/provider-grok/src/server/acpSupport.ts
+        - packages/source-control-github/src/server/gitHubPullRequestEvents.ts
     - reason: A placeholder DISPLAY value for SSH askpass, not an identity.
       leak: scheme-name
       text: "^t3code$"
@@ -833,8 +854,17 @@ leaks:
         - scripts/install.ps1
     - reason: >-
         Contributor tooling for developing T3 Code itself (agent skills, lint plugin, issue repro
-        seeds); not part of any build.
-      files: [.agents/**, .claude/**, oxlint-plugin-t3code/**, scripts/seed-issue-*]
+        seeds, and the scenario proofs that drive T3's dev client from a source checkout); not
+        part of any build.
+      files:
+        [
+          .agents/**,
+          .claude/**,
+          oxlint-plugin-t3code/**,
+          scripts/seed-issue-*,
+          scripts/e2e.config.ts,
+          scripts/scenarios/**,
+        ]
     - reason: >-
         Mobile e2e and behavior runs get their dev client from scripts/mobile-native-client.ts,
         which the copy refuses to run (kinBrandGuards.ts), so they stop before touching a device.
@@ -885,6 +915,23 @@ leaks:
         same file (like .t3code), so editors keep validating it.
       leak: t3-domain
       files: [packages/contracts/src/t3ProjectFile.ts, t3.json]
+    - reason: >-
+        An example path inside the user's repository, next to the t3.json Kin also reads; not the
+        T3 home.
+      leak: t3-home
+      text: "\\.t3/sparse-checkout"
+      files: [packages/contracts/src/t3ProjectFile.ts]
+    - reason: >-
+        SSH remote launch runs upstream's published `t3` on the remote (see the cliRelease.ts
+        entry); when its download fails, the hint names T3's installer for that same release.
+      leak: t3-domain
+      text: "https://t3\\.codes/install\\.sh"
+      files: [packages/ssh/src/tunnel.ts]
+    - reason: >-
+        Upstream's SSH launcher test harness. It fakes a remote running T3's published `t3`, which
+        keeps upstream's home there; no build ships it.
+      leak: t3-home
+      files: [packages/ssh/src/launcherTestHarness.ts]
     - reason: >-
         The Linux package's homepage field. Kin has no site; T3 Code's describes what Kin is
         built on.

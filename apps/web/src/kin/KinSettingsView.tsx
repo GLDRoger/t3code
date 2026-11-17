@@ -27,7 +27,7 @@ import {
   PlugIcon,
   BrainIcon,
   SettingsIcon,
-  SparklesIcon,
+  BotIcon,
   UsersIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -101,7 +101,7 @@ const PAGE_ICON: Record<KinSettingsPage, LucideIcon> = {
   notifications: BellIcon,
   appearance: PaletteIcon,
   team: UsersIcon,
-  agents: SparklesIcon,
+  agents: BotIcon,
   "check-ins": CalendarCheckIcon,
   connections: PlugIcon,
   memory: BrainIcon,
@@ -517,7 +517,7 @@ function KinSettingsAgents(props: KinSettingsTarget) {
                 search={(prev) => withKinAgentPage(prev, agent.agentId)}
                 className="flex items-center gap-3 px-3 py-2.5 outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
               >
-                <SparklesIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+                <BotIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
                 <span className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate text-sm font-medium text-foreground">{agent.name}</span>
                   <span className="truncate text-xs text-muted-foreground">

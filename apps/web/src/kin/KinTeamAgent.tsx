@@ -8,7 +8,7 @@ import {
 import { KinAgentId, type EnvironmentId, type KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { ChevronDownIcon, SparklesIcon, UsersIcon } from "lucide-react";
+import { ChevronDownIcon, BotIcon, UsersIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "../components/ui/button";
@@ -54,7 +54,7 @@ export function KinTeamAgentRow(props: {
   return (
     <section className="flex flex-col gap-1.5 rounded-lg border border-border/60 p-3">
       <div className="flex items-center gap-3">
-        <SparklesIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+        <BotIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
           {KIN_TEAM_AGENT_COPY.label}
         </span>

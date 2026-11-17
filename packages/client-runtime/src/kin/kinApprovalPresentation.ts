@@ -7,7 +7,7 @@ import {
   type KinCheckRun,
   type KinPendingAction,
   type KinWidget,
-  type PullRequestMergeMethod,
+  type KinMergeMethod,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -86,7 +86,7 @@ const clamp = (text: string, max: number) => {
   return chars.length > max ? `${chars.slice(0, max - 1).join("")}…` : chars.join("");
 };
 
-const METHOD: Record<PullRequestMergeMethod, string> = {
+const METHOD: Record<KinMergeMethod, string> = {
   squash: "Squash",
   merge: "Merge commit",
   rebase: "Rebase",

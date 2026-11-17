@@ -69,6 +69,20 @@ export function kinDockSelection(input: {
   return { shown: "chats", leave: input.known };
 }
 
+/**
+ * The web's rule for the place in its address, where the phone has `kinDockSelection`: it never
+ * navigates. The page follows the host both ways where it is: its content while the place is this
+ * person's, its refusal once the host has said it isn't, its own loading until the host has said.
+ */
+export function kinPlaceInPlace(input: {
+  readonly held: KinDestination;
+  readonly tabs: ReadonlyArray<KinDestination>;
+  readonly known: boolean;
+}): "shown" | "refused" | "pending" {
+  if (input.tabs.includes(input.held)) return "shown";
+  return input.known ? "refused" : "pending";
+}
+
 export type KinSettingsPage =
   | "profile"
   | "notifications"

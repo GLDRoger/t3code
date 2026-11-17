@@ -1365,6 +1365,10 @@ describe("KinActionExecutor", () => {
           "const run = new Function(",
         ],
       ],
+      // Source text for worker threads that load only Node's own modules.
+      ...["persistence/initializeV2Database.ts", "process/SpawnWorker.ts"].map(
+        (file): [string, ReadonlyArray<string>] => [file, ['*require("node:']],
+      ),
       // Scripts run with `node -e` on a device host.
       ...[
         "device/sshDeviceScript.ts",

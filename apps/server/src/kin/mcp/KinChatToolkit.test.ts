@@ -235,7 +235,6 @@ it.effect(
         body: "Evidence",
         intent: "evidence",
         clientMessageId: "retry",
-        author: { _tag: "human", personId: person.personId },
       };
       const first = yield* call("kin_chat_post", input);
       assert.isFalse(first.isError);

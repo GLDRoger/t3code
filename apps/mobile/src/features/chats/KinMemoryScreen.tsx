@@ -505,7 +505,7 @@ function KinMemoryItem(props: {
 
 const ORIGIN_SYMBOL: Record<KinMemoryOriginView["kind"], AppSymbolName> = {
   said: "bubble.left",
-  worked_out: "sparkles",
+  worked_out: "brain",
   outside: "globe",
 };
 

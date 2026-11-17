@@ -1,3 +1,5 @@
+import { kinDestinations } from "@t3tools/client-runtime/kin/kinNavigation";
+import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
 import { createKinWorkFollowedRead } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinPersonId, KinRecord } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -7,7 +9,32 @@ import { useEffect, useState } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
-import { kinWorkLiveAtom, type KinWorkTarget } from "./useKinWork";
+import { useKinDocsLive } from "./useKinDocs";
+import { useKinMoneySummary } from "./useKinMoney";
+import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
+import { kinWorkLiveAtom, useKinWork, type KinWorkTarget } from "./useKinWork";
+
+/** The destinations this person has, and whether the host has said which places they reach. */
+export function useKinDestinations(target: KinWorkTarget) {
+  const work = useKinWork(target);
+  const ready = work._tag === "ready";
+  const money = useKinMoneySummary(target, { enabled: ready }).state;
+  const docs = useKinDocsLive(target);
+  const ownerLevel = useKinOwnerLevel(target.environmentId);
+  const reaches = useKinPlaceReach(target.environmentId);
+  const destinations = kinDestinations({
+    work: work._tag !== "refused",
+    ownerLevel,
+    refused: {
+      money: money._tag === "refused",
+      // Only an answer from an older host takes Clients away, never one still on its way.
+      clients: ready && !kinWorkHostClients(work.live.summary),
+      docs: docs.refused,
+    },
+    reaches,
+  });
+  return { work, ownerLevel, destinations, known: ownerLevel || reaches !== null };
+}
 
 const localDayEnd = (nowMs: number) => {
   const now = new Date(nowMs);

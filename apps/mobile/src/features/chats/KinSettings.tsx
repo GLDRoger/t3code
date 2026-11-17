@@ -79,13 +79,13 @@ const COMPANY_ROWS: Partial<
   Record<
     KinSettingsPage,
     {
-      readonly icon: "person.2" | "sparkles" | "brain" | "link" | "doc.text";
+      readonly icon: "person.2" | "robot" | "brain" | "link" | "doc.text";
       readonly route: "KinTeam" | "KinAgents" | "KinMemory" | "KinConnections" | "KinCompany";
     }
   >
 > = {
   team: { icon: "person.2", route: "KinTeam" },
-  agents: { icon: "sparkles", route: "KinAgents" },
+  agents: { icon: "robot", route: "KinAgents" },
   connections: { icon: "link", route: "KinConnections" },
   memory: { icon: "brain", route: "KinMemory" },
   company: { icon: "doc.text", route: "KinCompany" },

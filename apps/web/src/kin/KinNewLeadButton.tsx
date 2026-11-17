@@ -3,7 +3,7 @@ import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { Atom } from "effect/reactivity";
 import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { useRouter } from "@tanstack/react-router";
-import { MessageSquareIcon, PlusIcon, SparklesIcon, UserPlusIcon, UsersIcon } from "lucide-react";
+import { MessageSquareIcon, PlusIcon, BotIcon, UserPlusIcon, UsersIcon } from "lucide-react";
 
 import { SidebarHeaderIconButton } from "../components/sidebar/SidebarThreadHeader";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
@@ -66,7 +66,7 @@ function PermittedNewLeadButton(props: { readonly target: KinLeadFormTarget }) {
         ) : null}
         {canAddLead ? (
           <MenuItem onClick={() => openKinLeadForm(props.target)}>
-            <SparklesIcon />
+            <BotIcon />
             New agent
           </MenuItem>
         ) : null}

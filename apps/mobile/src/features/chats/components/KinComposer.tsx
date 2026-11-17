@@ -13,7 +13,9 @@ import {
   VideoPreviewModal,
   type VideoPreviewSource,
 } from "../../../components/ui/VideoPreviewModal";
+import * as Effect from "effect/Effect";
 import { prepareTurnAttachments } from "../../../lib/attachmentUpload";
+import { uploadComposerAttachmentShared } from "../../../state/composer-attachment-uploads";
 import { KIN_DRAFT_PREFIX } from "../../../lib/composerAttachmentUploadQueue";
 import {
   composerAttachmentUploadBlockReason,
@@ -31,7 +33,8 @@ import { useDeviceType } from "../../../native/native-layout-metrics";
 import { useSidebarWorkspaceTabs } from "../../layout/workspace/useSystemWorkspaceTabBar";
 import { useComposerTextRole } from "../../settings/appearance/useScaledTextRole";
 import type { ComposerSendPresentation } from "../../threads/composerSendPresentation";
-import { ComposerSurface, SendActionButton } from "../../threads/ThreadComposer";
+import { ComposerSurface } from "../../../components/ComposerSurface";
+import { SendActionButton } from "../../threads/ThreadComposer";
 import type { ComposerEditorHandle } from "../../../native/T3ComposerEditor.types";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import {
@@ -47,7 +50,6 @@ import { resolveVoiceComposerPresentation } from "../../voice-input/voiceInputPr
 import {
   appendComposerDraftAttachments,
   clearComposerDraftContent,
-  composerDraftsAtom,
   getComposerDraftSnapshot,
   removeComposerDraftAttachment,
   scheduleUnusedComposerAttachmentCleanup,
@@ -177,7 +179,6 @@ export function KinComposer({
     ownerKey: draftKey,
     label: props.recipient ?? "Kin chat",
     readDraftMessage: () => getComposerDraftSnapshot(draftKey).text,
-    subscribeToDraftChanges: (onChange) => appAtomRegistry.subscribe(composerDraftsAtom, onChange),
     selection,
     onChangeDraftMessage: (text) => setComposerDraftText(draftKey, text),
     onChangeSelection: setSelection,
@@ -253,11 +254,15 @@ export function KinComposer({
     if (attachments.length === 0) return [];
     setSending(true);
     const prepared = await settlePromise(() =>
-      prepareTurnAttachments({
-        environmentId: props.environmentId,
-        attachments,
-        supportsImageUploads: true,
-      }),
+      Effect.runPromise(
+        prepareTurnAttachments({
+          environmentId: props.environmentId,
+          attachments,
+          supportsImageUploads: true,
+          uploadAttachment: (attachment) =>
+            uploadComposerAttachmentShared(props.environmentId, attachment),
+        }),
+      ),
     );
     setSending(false);
     if (AsyncResult.isFailure(prepared)) {

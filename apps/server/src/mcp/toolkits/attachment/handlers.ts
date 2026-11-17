@@ -6,7 +6,8 @@ import * as Upload from "../../../assets/AttachmentUpload.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { newCommandId, readThread, unavailable } from "../../threadAccess.ts";
+import { isThreadManagementError, threadManagementFailure } from "../../OrchestratorMcpService.ts";
+import { dispatchFailure, newCommandId, readThread, unavailable } from "../../threadAccess.ts";
 import { AttachmentToolkit } from "./tools.ts";
 
 export function resolveAttachmentReferences(
@@ -43,13 +44,17 @@ export const layer = McpToolAccess.toLayer(
       t3_attachment_prepare_upload: McpToolAccess.writes(
         (input) =>
           Effect.gen(function* () {
-            return yield* Upload.issueAttachmentUploadUrl(
+            const result = yield* Upload.issueAttachmentUploadUrl(
               input.upload,
               yield* mcpCallerUploadOwner,
             ).pipe(
               Effect.provideService(AssetSigner.AssetSigner, assetSigner),
               Effect.mapError(unavailable),
             );
+            const { origin } = yield* McpInvocationContext.McpInvocationContext;
+            return origin === undefined
+              ? result
+              : { ...result, uploadUrl: `${origin}${result.relativeUrl}` };
           }),
         { linkedCallers: "allowed" },
       ),
@@ -105,7 +110,9 @@ export const layer = McpToolAccess.toLayer(
                       code: "orchestration_error",
                       message: error.message,
                     })
-                  : unavailable(),
+                  : isThreadManagementError(error)
+                    ? threadManagementFailure(error)
+                    : dispatchFailure(error),
               ),
             );
             return {

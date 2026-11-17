@@ -23,6 +23,8 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
+import * as ServerConfig from "../../config.ts";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -480,7 +482,13 @@ function parts(options: HarnessOptions) {
             ),
           ),
           Layer.provide(
-            Layer.mergeAll(WorkspacePaths.layer, ThreadCommandExecutor.layer, settings, database),
+            Layer.mergeAll(
+              WorkspacePaths.layer,
+              ThreadCommandExecutor.layer,
+              settings,
+              database,
+              ServerConfig.layerTest(process.cwd(), { prefix: "kin-wakeup-projects-" }),
+            ),
           ),
           Layer.provide(NodeServices.layer),
         )
@@ -494,7 +502,8 @@ function parts(options: HarnessOptions) {
     WorktreeSetupTracker.layer,
     Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
     Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
-    Layer.mock(GitWorkflow.GitWorkflowService)({}),
+    Layer.mock(CheckpointStore.CheckpointStore)({ isGitRepository: () => Effect.succeed(false) }),
+    Layer.mock(GitWorkflow.GitWorkflowService)({ currentBranch: () => Effect.succeed(null) }),
     // Native schedules are exercised in triggers/scheduledTasks.test.ts.
     Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
     Layer.mock(TextGeneration.TextGeneration)({}),
@@ -510,7 +519,7 @@ function parts(options: HarnessOptions) {
     settings,
   );
   const launch = ThreadLaunch.layer.pipe(
-    Layer.provide(Layer.mergeAll(external, management, receipts, IdAllocator.layer)),
+    Layer.provide(Layer.mergeAll(external, management, receipts, orchestration, IdAllocator.layer)),
   );
   const queueLayer =
     options.onReadyLeads === undefined

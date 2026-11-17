@@ -5,6 +5,7 @@ import {
   kinDestinations,
   kinDockSelection,
   kinDockShown,
+  kinPlaceInPlace,
   kinSettingsGroups,
   kinSettingsPageOf,
 } from "./kinNavigation.ts";
@@ -75,6 +76,21 @@ describe("kinDockSelection", () => {
     ["elsewhere while unknown: stay", "tasks", member, false, "tasks", false],
   ] as const)("%s", (_, held, tabs, known, shown, leave) => {
     expect(kinDockSelection({ held, tabs, known })).toEqual({ shown, leave });
+  });
+});
+
+describe("kinPlaceInPlace", () => {
+  const member = ["chats", "tasks"] as const;
+  const withClients = ["chats", "tasks", "clients"] as const;
+  // The web never navigates for the host: the open place follows it on its own address.
+  it.each([
+    // held, places, known, shows
+    ["in place and refused: stay and say so", "clients", member, true, "refused"],
+    ["refused, then granted: the same address shows it", "clients", withClients, true, "shown"],
+    ["while it isn't known yet: stay, loading", "clients", member, false, "pending"],
+    ["a place still there", "clients", withClients, false, "shown"],
+  ] as const)("%s", (_, held, tabs, known, shows) => {
+    expect(kinPlaceInPlace({ held, tabs, known })).toBe(shows);
   });
 });
 
