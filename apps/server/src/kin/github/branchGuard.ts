@@ -128,6 +128,9 @@ const readGuard = Effect.fn("KinBranchGuard.read")(function* (
   const classic = yield* call({ path: `repos/${entry.repo}/branches/${branch}/protection` });
   if (classic.status === 404 && messageOf(classic) === "Branch not protected")
     return { state: "open", byKin, problem: null } satisfies Read;
+  // A repo with no commits has no branch to protect: its rules read [] and this says so.
+  if (classic.status === 404 && messageOf(classic) === "Branch not found")
+    return { state: "unknown", byKin, problem: "no_branch" } satisfies Read;
   if (classic.status !== 200)
     return { state: "unknown", byKin, problem: problemOf(classic) } satisfies Read;
   const held = Option.getOrUndefined(decodeClassic(classic.body));

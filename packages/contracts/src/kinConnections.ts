@@ -391,6 +391,7 @@ export const KinGitHubGuardProblem = Schema.Literals([
   "no_admin",
   "plan",
   "no_access",
+  "no_branch",
   "unreachable",
   "not_kin",
   "refused",
