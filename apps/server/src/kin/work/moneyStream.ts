@@ -106,7 +106,7 @@ export const makeMoneyStream = Effect.fn("KinMoneyStream.make")(function* (
     }
   });
   const buildAll = (parts: ReadonlyArray<KinMoneyPart>) =>
-    Effect.forEach(parts, build).pipe(
+    Effect.forEach(parts, build, { concurrency: "unbounded" }).pipe(
       Effect.map((built): KinMoneyLive => Object.assign({}, ...built)),
     );
 
@@ -140,8 +140,7 @@ export const makeMoneyStream = Effect.fn("KinMoneyStream.make")(function* (
   return { start, apply };
 });
 
-/** As Work's stream: changes this close together are built once. */
-const BATCH = 512;
+/** Changes this close together are built once. */
 const BATCH_WINDOW = Duration.millis(50);
 
 export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinMoneySubscribeInput) =>
@@ -171,19 +170,26 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinMoney
       let pending: Array<MoneyDemand | typeof START> = [];
       return Stream.merge(ticks, moved).pipe(
         Stream.filter((one) => one === START || (started && one.size > 0)),
-        Stream.groupedWithin(BATCH, BATCH_WINDOW),
-        Stream.map((group) => {
-          pending.push(...group);
+        Stream.map((one) => {
+          pending.push(one);
         }),
-        // A burst during a build is one more build, of everything it asked for.
+        // A burst during a build is one more build, of everything it asked for. Untraced: the
+        // start and apply inside carry the spans.
         Stream.buffer({ capacity: 1, strategy: "sliding" }),
-        Stream.mapEffect(() => {
-          const taken = pending;
-          pending = [];
-          if (taken.includes(START))
-            return session.start().pipe(Effect.map((one): ReadonlyArray<KinMoneyEvent> => [one]));
-          return session.apply(joined(taken.filter((one): one is MoneyDemand => one !== START)));
-        }),
+        Stream.mapEffect(
+          Effect.fnUntraced(function* () {
+            const none: ReadonlyArray<KinMoneyEvent> = [];
+            if (pending.length === 0) return none;
+            // The first build answers at once; a change waits a moment for the rest of its burst.
+            if (!pending.includes(START)) yield* Effect.sleep(BATCH_WINDOW);
+            const taken = pending;
+            pending = [];
+            if (taken.includes(START)) return [yield* session.start()];
+            return yield* session.apply(
+              joined(taken.filter((one): one is MoneyDemand => one !== START)),
+            );
+          }),
+        ),
         Stream.flattenIterable,
       );
     }),
