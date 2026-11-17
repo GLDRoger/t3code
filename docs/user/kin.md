@@ -419,7 +419,7 @@ yes** when an agent thinks the team could know it. Anything about access, money 
 stays with the owner. **Forget** an item and agents stop using it; bring it back from **Forgotten**.
 
 Agents use what the team can know in chats with teammates only while **Agents use team memory in
-chats with teammates** is on, at the top of the page. It starts off, and a change applies from the
+chats with teammates** is on, at the top of the page. It starts off on a new Kin, and a change applies from the
 next reply. Nothing under **Only you** reaches a teammate's chat either way.
 
 ## Who sees and does what
