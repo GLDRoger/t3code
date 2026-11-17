@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinDraftPrefill } from "./kinDraft.ts";
+import { kinAskDraft, kinDraftPrefill } from "./kinDraft.ts";
 
 describe("kinDraftPrefill", () => {
   it.each([
@@ -20,5 +20,26 @@ describe("kinDraftPrefill", () => {
     ],
   ])("into %s keeps what was typed", (_name, typed, prepared, expected) => {
     expect(kinDraftPrefill(typed, prepared)).toBe(expected);
+  });
+});
+
+describe("kinAskDraft", () => {
+  const launch = { doc: "Launch plan" };
+  const pricing = { doc: "Pricing" };
+  it.each([
+    // typed, the Ask's question and doc, text after, doc after
+    ["a Tasks Ask after a Docs Ask left a doc", "", "Is T-4 late?", null, "Is T-4 late?", null],
+    ["a Docs Ask after another Docs Ask", "", null, pricing, "", pricing],
+    ["a Docs Ask over a Tasks Ask's text", "Is T-4 late?", null, launch, "Is T-4 late?", launch],
+    [
+      "typed text stays under the new question",
+      "and the logo",
+      "Is T-4 late?",
+      null,
+      "Is T-4 late?\n\nand the logo",
+      null,
+    ],
+  ] as const)("%s", (_, typed, question, ref, text, after) => {
+    expect(kinAskDraft(typed, { question, ref })).toEqual({ text, ref: after });
   });
 });
