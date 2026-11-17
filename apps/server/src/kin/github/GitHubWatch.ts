@@ -615,11 +615,15 @@ export const make = Effect.gen(function* () {
       );
     let reposChanged = false;
     // Repos stored before Kin kept each one's id and account are read again now.
-    const factsMissing = (yield* knownRepos(orgId)).some(
+    const known = yield* knownRepos(orgId);
+    const factsMissing = known.some(
       (entry) => entry.id === undefined || entry.branch === undefined,
     );
+    // An empty list is no answer yet, and a login signed in again (no look since) reads afresh.
     if (
       row.reposAt === null ||
+      row.checkedAt === null ||
+      known.length === 0 ||
       now - row.reposAt > REPOS_EVERY_MS ||
       factsMissing ||
       !reposReadSinceStart.has(orgId)

@@ -29,7 +29,13 @@ import {
   writeSeedTaken,
   writeStoredApp,
 } from "./appStore.ts";
-import { APP_IDENTITY_FILE, APP_TOKENS_FOLDER, GH_APP_FOLDER, OWNER_USES_FILE } from "./ghSign.ts";
+import {
+  APP_IDENTITY_FILE,
+  APP_REPOS_FOLDER,
+  APP_TOKENS_FOLDER,
+  GH_APP_FOLDER,
+  OWNER_USES_FILE,
+} from "./ghSign.ts";
 import { type KnownRepo, knownRepos, repoList, watchRow } from "./githubWatchStore.ts";
 import { KinGitHubAppKey } from "./appKey.ts";
 
@@ -152,6 +158,7 @@ interface Installation {
 }
 
 interface Described {
+  readonly id: number;
   readonly name: string;
   readonly botLogin: string;
   readonly botEmail: string;
@@ -285,6 +292,7 @@ export const make = Effect.gen(function* () {
   const orgId = identity.owner.orgId;
   const folder = path.join(stateDir, "kin", GH_APP_FOLDER);
   const tokensFolder = path.join(folder, APP_TOKENS_FOLDER);
+  const reposFolder = path.join(folder, APP_REPOS_FOLDER);
   const lock = yield* Semaphore.make(1);
   const current = yield* Ref.make<AppState>({ _tag: "none" });
   const describedAt = yield* Ref.make<number | null>(null);
@@ -485,6 +493,7 @@ export const make = Effect.gen(function* () {
     return {
       _tag: "ok",
       app: {
+        id: Number(appId),
         name: about.value.name,
         botLogin,
         botEmail: `${botIds.get(botLogin)}+${botLogin}@users.noreply.github.com`,
@@ -499,24 +508,47 @@ export const make = Effect.gen(function* () {
     } as const;
   });
 
-  /** The shell's files match what Kin holds: the App's identity and a live token per account. */
+  /**
+   * The shell's files match what Kin holds: the App's identity, a live token per account, and the
+   * repos it covers where the installation has only some.
+   */
   const writeShellFiles = Effect.fn("KinGitHubApp.writeShellFiles")(function* (state: AppState) {
     yield* fs.makeDirectory(tokensFolder, { recursive: true, mode: 0o700 });
+    yield* fs.makeDirectory(reposFolder, { recursive: true, mode: 0o700 });
     yield* fs.chmod(folder, 0o700);
     const live = new Map<string, string>();
+    const picked = new Map<string, string>();
     if (state._tag === "ok")
       for (const installation of state.app.installations) {
         const token = tokens.get(installation.id);
-        if (token !== undefined) live.set(installation.account, Redacted.value(token.token));
+        if (token === undefined) continue;
+        live.set(installation.account, Redacted.value(token.token));
+        if (installation.selection === "selected")
+          picked.set(
+            installation.account,
+            [...installation.repos]
+              .toSorted()
+              .map((repo) => `${repo}\n`)
+              .join(""),
+          );
       }
-    for (const name of yield* fs.readDirectory(tokensFolder))
-      if (!live.has(name)) yield* fs.remove(path.join(tokensFolder, name), { force: true });
-    for (const [account, token] of live) {
-      const file = path.join(tokensFolder, account);
-      const staged = `${file}.next`;
-      yield* fs.writeFileString(staged, token, { mode: 0o600 });
-      yield* fs.rename(staged, file);
-    }
+    for (const [dir, keep] of [
+      [tokensFolder, live],
+      [reposFolder, picked],
+    ] as const)
+      for (const name of yield* fs.readDirectory(dir))
+        if (!keep.has(name)) yield* fs.remove(path.join(dir, name), { force: true });
+    // The repo list goes first, so a token never stands without the repos it is limited to.
+    for (const [dir, files, mode] of [
+      [reposFolder, picked, 0o644],
+      [tokensFolder, live, 0o600],
+    ] as const)
+      for (const [account, text] of files) {
+        const file = path.join(dir, account);
+        const staged = `${file}.next`;
+        yield* fs.writeFileString(staged, text, { mode });
+        yield* fs.rename(staged, file);
+      }
     const identityFile = path.join(folder, APP_IDENTITY_FILE);
     if (state._tag === "ok")
       yield* fs.writeFileString(identityFile, `${state.app.botLogin}\n${state.app.botEmail}\n`);

@@ -16,19 +16,23 @@ main() {
   root="$(cd "$(dirname "$0")/.." && pwd)"
   commit=$1
   shift
-  lock="$root/.t3/release-check.lock"
+  # A symlink whose target is the owner's pid: taking the lock and naming its owner are one step.
+  lock="$root/.t3/release-check.pid"
   mkdir -p "$root/.t3"
-  if ! mkdir "$lock" 2>/dev/null; then
-    pid="$(cat "$lock/pid" 2>/dev/null || true)"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      echo "kin-release-remote: busy with another run (pid $pid)"
+  if ! ln -s "$$" "$lock" 2>/dev/null; then
+    pid="$(readlink "$lock" 2>/dev/null || true)"
+    if [[ -z "$pid" ]] || kill -0 "$pid" 2>/dev/null; then
+      echo "kin-release-remote: busy with another run (pid ${pid:-unknown})"
       return 75
     fi
-    rm -rf "$lock"
-    mkdir "$lock" || return 75
+    # Its owner is gone: remove that lock only if it still names the same dead pid, then take it.
+    [[ "$(readlink "$lock" 2>/dev/null)" == "$pid" ]] && rm -f "$lock"
+    ln -s "$$" "$lock" 2>/dev/null || {
+      echo "kin-release-remote: busy with another run"
+      return 75
+    }
   fi
-  echo $$ >"$lock/pid"
-  trap 'rm -rf "'"$lock"'"' EXIT
+  trap 'rm -f "'"$lock"'"' EXIT
   cd "$root" || return 76
   git fetch -q origin "$commit" && git checkout -q --detach "$commit" || {
     echo "kin-release-remote: can't fetch $commit here; push it first"
