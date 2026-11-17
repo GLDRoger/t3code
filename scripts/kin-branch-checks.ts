@@ -1,6 +1,6 @@
 // Against the ref a branch merges into: merged PRs' lines kept unless superseded, Kin migrations
-// numbered on with no gap, the instructions version moved exactly when their text did, and no
-// sentence typed into both Kin clients.
+// numbered on with no gap, the instructions version moved exactly when their text did, no
+// sentence typed into both Kin clients, and no upstream identity the Kin build's branding rejects.
 //   node scripts/kin-branch-checks.ts <ref> [--days 14] [--root <checkout>]
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -290,6 +290,25 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
     ...checkSharedCopy(yield* copyFiles(KIN_COPY_DIRS.web), yield* copyFiles(KIN_COPY_DIRS.phone)),
   );
 
+  // The iOS build brands a copy and fails on any upstream identity left; catch that here.
+  if (yield* fs.exists(path.join(root, "branding/rules.yaml"))) {
+    // Loaded here: checkouts without Kin's branding don't carry kin-brand.ts and its engine.
+    const { kinBrand } = yield* Effect.promise(() => import("./kin-brand.ts"));
+    const branding = yield* kinBrand({
+      repoRoot: root,
+      scan: true,
+      target: Option.none(),
+      rules: Option.none(),
+      check: false,
+      updateDriftBaseline: false,
+    }).pipe(
+      Effect.as(undefined),
+      Effect.catchTags({ KinBrandError: (error) => Effect.succeed(error.message) }),
+    );
+    if (branding !== undefined)
+      problems.push(`Kin branding (node scripts/kin-brand.ts --scan): ${branding}`);
+  }
+
   if (changed.length > 0) {
     const merges = yield* gitLines(root, [
       "log",
@@ -371,7 +390,9 @@ export const kinBranchChecksCommand = Command.make(
       ),
     ),
 ).pipe(
-  Command.withDescription("Kin's merge-survival, migration, instructions and shared-copy checks."),
+  Command.withDescription(
+    "Kin's merge-survival, migration, instructions, shared-copy and branding checks.",
+  ),
 );
 
 if (import.meta.main) {
