@@ -1,7 +1,8 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { KIN_TEAMMATE_WELCOME } from "@t3tools/client-runtime/kin/kinChatListRows";
-import { kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinAccessMeAtom, kinOwnerLevelAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinDockSelection, kinDockShown } from "@t3tools/client-runtime/kin/kinNavigation";
 import { kinAttentionBadge, kinTasksBadgeCount } from "@t3tools/client-runtime/kin/kinAttention";
 import { kinWorkListsMoved } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { kinBadgeCount } from "@t3tools/client-runtime/kin/kinInboxModel";
@@ -12,7 +13,8 @@ import {
 } from "@t3tools/client-runtime/kin/kinJoin";
 import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
 import type { SessionGrantInput } from "@t3tools/contracts";
-import { Atom } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
+import { useEffect } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -41,6 +43,7 @@ import {
   useKinOwnerLevel,
   useKinPlaceReach,
 } from "./state/kinChatOnly";
+import { kinCachedDockAtom, saveKinDockAtom } from "./state/kinClient";
 import { useKinDocsLive } from "./state/useKinDocs";
 import { useKinHost } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
@@ -72,14 +75,19 @@ export function KinHomeScreen() {
 
   if (KIN_ONLY && !catalog.isReady) return <View className="flex-1 bg-screen" />;
   if (KIN_ONLY && catalog.entries.size === 0) return <KinWelcome />;
-  const chatsOnly = kinDockTabs(session, true, { money: false, clients: false, docs: false });
-  if (workTarget === null || chatsOnly.length === 1) {
-    return <KinHomeTabs tabs={["chats"]} workTarget={null} />;
+  const chatsOnly =
+    session !== null &&
+    kinDockTabs(session, true, { money: false, clients: false, docs: false }).length === 1;
+  if (workTarget === null || chatsOnly) {
+    return <KinHomeTabs tabs={["chats"]} known={chatsOnly} workTarget={null} />;
   }
   return <KinHomeWithWork session={session} workTarget={workTarget} />;
 }
 
-/** The dock for a viewer who may read Work: a place the host refuses them leaves it. */
+/**
+ * The dock for a viewer who may read Work: a place the host refuses them leaves it. Until the host
+ * has said who this is (a cold start offline), the dock this device last drew stands in.
+ */
 function KinHomeWithWork(props: {
   readonly session: SessionGrantInput | null;
   readonly workTarget: KinWorkTarget;
@@ -88,23 +96,46 @@ function KinHomeWithWork(props: {
   const money = useKinMoneySummary(props.workTarget, { enabled: true }).state;
   const docs = useKinDocsLive(props.workTarget);
   const ownerLevel = useKinOwnerLevel(props.workTarget.environmentId, props.session);
-  const reach = useKinPlaceReach(props.workTarget.environmentId);
-  const tabs = kinDockTabs(
-    props.session,
-    ownerLevel,
-    {
-      money: money._tag === "refused",
-      // Only an answer from an older host takes Clients away, never one still on its way.
-      clients: work._tag === "ready" && !kinWorkHostClients(work.live.summary),
-      docs: docs.refused,
-    },
-    reach,
-  );
-  return <KinHomeTabs tabs={tabs} workTarget={props.workTarget} />;
+  const { environmentId } = props.workTarget;
+  const reach = useKinPlaceReach(environmentId);
+  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
+  const live =
+    props.session === null || me === null
+      ? null
+      : kinDockTabs(
+          props.session,
+          ownerLevel,
+          {
+            money: money._tag === "refused",
+            // Only an answer from an older host takes Clients away, never one still on its way.
+            clients: work._tag === "ready" && !kinWorkHostClients(work.live.summary),
+            docs: docs.refused,
+          },
+          reach,
+        );
+  const cachedResult = useAtomValue(kinCachedDockAtom(environmentId));
+  const cached = AsyncResult.getOrElse(cachedResult, () => null);
+  const dock = kinDockShown({ live, cached });
+  const save = useAtomSet(saveKinDockAtom);
+  const liveKey = live?.join(",") ?? null;
+  // A string, so the write runs once per change of dock, not once per render.
+  const toSave =
+    liveKey !== null && cachedResult._tag === "Success" && liveKey !== cached?.join(",")
+      ? liveKey
+      : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- writes the live dock to device storage so a cold start offline keeps its places
+  useEffect(() => {
+    if (toSave !== null) save({ environmentId, tabs: kinDockTabsOf(toSave) });
+  }, [toSave, environmentId, save]);
+  return <KinHomeTabs tabs={dock.tabs} known={dock.known} workTarget={props.workTarget} />;
 }
+
+const kinDockTabsOf = (key: string) => key.split(",") as ReadonlyArray<KinDockTab>;
 
 function KinHomeTabs(props: {
   readonly tabs: ReadonlyArray<KinDockTab>;
+  /** The host has said which places these are; a cached or not-yet-known dock moves nobody. */
+  readonly known: boolean;
   readonly workTarget: KinWorkTarget | null;
 }) {
   const navigation = useNavigation();
@@ -113,8 +144,13 @@ function KinHomeTabs(props: {
   const accessEnded = useKinAccessEnded().length > 0;
   const insets = useSafeAreaInsets();
   const held = useAtomValue(kinHomeTabAtom);
-  // A place leaves the dock when the session behind it does; fall back rather than show a ghost tab.
-  const tab = tabs.includes(held.tab) ? held.tab : "chats";
+  const { shown: tab, leave } = kinDockSelection({ held: held.tab, tabs, known: props.known });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the host took the open place away: let it go, so switching it back on doesn't reopen it
+  useEffect(() => {
+    if (leave) {
+      appAtomRegistry.set(kinHomeTabAtom, { ...appAtomRegistry.get(kinHomeTabAtom), tab: "chats" });
+    }
+  }, [leave]);
   const docked = tabs.length > 1;
   const bottomClearance = docked ? kinDockClearance(insets.bottom) : 0;
   const unread = useKinUnreadBadge();

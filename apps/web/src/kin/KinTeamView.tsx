@@ -27,12 +27,14 @@ import {
   kinTeammateAgentsLine,
   kinTeammateKindEditable,
   kinTeammateLeadLine,
+  kinOpenCountsFollower,
   type KinMadeInvite,
   type KinTeamActions,
   type KinTeamList,
   type KinTeammate,
   KIN_TEAM_COPY,
 } from "@t3tools/client-runtime/kin/kinTeam";
+import { kinWorkListsMoved } from "@t3tools/client-runtime/kin/kinWorkStream";
 import { executeAtomQuery, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import type {
@@ -100,6 +102,7 @@ import { kinProfileRequestAtom, kinTeamAddRequestAtom } from "./kinTeamForm";
 import { openKinProfile } from "./KinProfileSheet";
 import { KinCompanyChatRow, KinTeamAgentRow } from "./KinTeamAgent";
 import { useKinHostAt } from "./useKinHost";
+import { useKinWork } from "./useKinWork";
 import { KinLoadFailed } from "./KinWorkParts";
 import { useKinGate } from "./useKinHost";
 import { KinGateView } from "./KinWorkParts";
@@ -125,9 +128,23 @@ async function refreshKinTeam(target: KinTeamTarget) {
   ]);
 }
 
+const followOpenCounts = kinOpenCountsFollower();
+
+/** The open-task counts the profiles carry follow Work's task changes while Team is open. */
+function useKinOpenCounts({ environmentId, orgId }: KinTeamTarget) {
+  const work = useKinWork({ environmentId, orgId });
+  const seq = work._tag === "ready" && !work.stale ? kinWorkListsMoved(work.live, ["work"]) : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the profiles again when the host's Work stream says a task moved
+  useEffect(() => {
+    if (followOpenCounts(`${environmentId}:${orgId}`, seq))
+      appAtomRegistry.refresh(kinClient.profiles({ environmentId, input: { orgId } }));
+  }, [seq, environmentId, orgId]);
+}
+
 /** The people and unopened links, once both have been read; what was last read stays up. */
 function useKinTeam(target: KinTeamTarget) {
   const { environmentId, orgId } = target;
+  useKinOpenCounts(target);
   const { peopleAtom, invitesAtom, profilesAtom } = teamAtoms(target);
   const people = useAtomValue(peopleAtom);
   const invites = useAtomValue(invitesAtom);

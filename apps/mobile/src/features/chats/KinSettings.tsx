@@ -1,6 +1,7 @@
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, useRoute } from "@react-navigation/native";
+import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   KIN_DAILY_LIMIT,
@@ -25,6 +26,7 @@ import {
 import type { EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { useState } from "react";
 import { View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -100,8 +102,15 @@ export function KinSettings(props: {
   const bottomClearance = useKinTab()?.bottomClearance ?? 0;
   const controller = useConnectionController();
   const { environments } = useEnvironments();
-  const teammateIds = useChatOnlyEnvironments();
-  const { host, state } = useKinInbox();
+  // Signed out or left here: nothing about that computer shows while the phone lets it go.
+  const [left, setLeft] = useState<ReadonlySet<EnvironmentId>>(() => new Set());
+  const teammateIds = useChatOnlyEnvironments().filter((id) => !left.has(id));
+  const inbox = useKinInbox();
+  const { state } = inbox;
+  const host: KinHost =
+    inbox.host._tag === "host" && left.has(inbox.host.environmentId)
+      ? { _tag: "none" }
+      : inbox.host;
   const session = useAtomValue(
     host._tag === "host"
       ? environmentSession.sessionStateValueAtom(host.environmentId)
@@ -118,6 +127,7 @@ export function KinSettings(props: {
   const mine = profiles?.profiles.find((profile) => profile.personId === myPersonId) ?? null;
   const owned = environments.filter(
     (held) =>
+      !left.has(held.environmentId) &&
       !teammateIds.includes(held.environmentId) &&
       (!inCodingApp || (host._tag === "host" && held.environmentId === host.environmentId)),
   );
@@ -152,6 +162,17 @@ export function KinSettings(props: {
       ? null
       : `${nameOf(held)} (${CONNECTION_LABEL[held.connection.phase].toLowerCase()})`;
   };
+  const forget = (environmentId: EnvironmentId) => {
+    setLeft((held) => new Set(held).add(environmentId));
+    void controller.removeEnvironment(environmentId).then((result) => {
+      if (result._tag === "Success") return;
+      setLeft((held) => {
+        const next = new Set(held);
+        next.delete(environmentId);
+        return next;
+      });
+    });
+  };
   const leave = (environmentId: EnvironmentId) =>
     Dialog.alert(
       teamOf(environmentId) === null ? "Leave this team?" : `Leave ${teamOf(environmentId)}?`,
@@ -161,7 +182,7 @@ export function KinSettings(props: {
         {
           text: "Leave",
           style: "destructive",
-          onPress: () => void controller.removeEnvironment(environmentId),
+          onPress: () => forget(environmentId),
         },
       ],
     );
@@ -174,7 +195,7 @@ export function KinSettings(props: {
         {
           text: "Sign out",
           style: "destructive",
-          onPress: () => void controller.removeEnvironment(environment.environmentId),
+          onPress: () => forget(environment.environmentId),
         },
       ],
     );
@@ -197,7 +218,7 @@ export function KinSettings(props: {
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32 + bottomClearance, gap: 20 }}
         >
-          <SettingsSection title={you.title} footer={team ?? undefined}>
+          <SettingsSection title={you.title}>
             {you.pages.map((page) => {
               switch (page) {
                 case "profile":

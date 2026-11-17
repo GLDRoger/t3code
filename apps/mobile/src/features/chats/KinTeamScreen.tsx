@@ -27,6 +27,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinListBanner } from "./components/KinListBanner";
+import { useKinOpenCounts } from "./state/useKinProfiles";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { KinGateView } from "./components/KinWorkPieces";
@@ -89,6 +90,7 @@ export function KinTeamScreen({ route }: StaticScreenProps<KinTeamParams>) {
 function KinTeamBody(target: KinTeamTarget) {
   const navigation = useNavigation();
   const team = useKinTeam(target);
+  useKinOpenCounts(target);
   const { list } = team;
   const add = () => navigation.navigate("KinInvite", target);
   const { environmentId, orgId } = target;

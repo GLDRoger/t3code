@@ -4,10 +4,11 @@ import { kinWorkListsMoved } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
   KIN_DESTINATION_NAMES,
   kinDestinations,
+  kinDockSelection,
   type KinDestination,
 } from "@t3tools/client-runtime/kin/kinNavigation";
 import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
-import { Link, useLocation } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import {
   BanknoteIcon,
@@ -86,6 +87,19 @@ function useKinNavEntries(target: KinWorkTarget): ReadonlyArray<KinNavEntry> {
     reaches,
   });
   const key = destinations.join(",");
+  const navigate = useNavigate();
+  const pathname = useLocation({ select: (location) => location.pathname });
+  // On a place's own list: a record under it says for itself that it isn't theirs to see.
+  const onPlace =
+    pathname.split("/").filter(Boolean).length === 4 ? kinDestinationAt(pathname) : null;
+  const leave =
+    onPlace !== null &&
+    kinDockSelection({ held: onPlace, tabs: destinations, known: ownerLevel || reaches !== null })
+      .leave;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the host took away the place on screen: leave it for Chats, as the phone does
+  useEffect(() => {
+    if (leave) void navigate({ to: "/kin", replace: true });
+  }, [leave, navigate]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- publishes the destinations this person has, so the command palette lists the same ones the nav shows
   useEffect(() => {
     appAtomRegistry.set(kinShownDestinationsAtom, {

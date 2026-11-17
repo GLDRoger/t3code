@@ -33,6 +33,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { useEnvironmentServerConfig } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { kinClient } from "./state/kinClient";
+import { useKinWorkingAgents } from "./state/useKinInbox";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   KinAgentEffortAdvice,
@@ -98,6 +99,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
   const { environmentId, orgId } = props;
   // Only a session that may restore an agent asks the host for the retired ones.
   const canRestore = useAtomValue(kinClient.leadRestore.permissionAtom(environmentId));
+  const working = useKinWorkingAgents(environmentId);
   const atom = canRestore
     ? kinClient.agents({ environmentId, orgId })
     : kinClient.leads({ environmentId, input: { orgId } });
@@ -148,7 +150,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
               description={kinDomainLabel(agent.domain)}
               {...(agent.paused !== undefined
                 ? { detail: "Paused" }
-                : agent.working
+                : working.has(agent.agentId)
                   ? { detail: "Working" }
                   : {})}
               onPress={() =>
