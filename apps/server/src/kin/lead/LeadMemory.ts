@@ -701,8 +701,12 @@ const make = Effect.gen(function* () {
     return yield* withReadableQuotes(ctx.orgId, owner, heads).pipe(provideSql);
   });
   /** The one gate on a shared turn's memory writes: none at all while team memory is off. */
-  const sharedWrites = Effect.fn("LeadMemory.sharedWrites")(function* (audience: TurnAudience) {
-    if (audience !== "owner_only" && !(yield* teamMemoryOn)) return yield* invalid(SHARED_REFUSAL);
+  const sharedWrites = Effect.fn("LeadMemory.sharedWrites")(function* (
+    orgId: KinOrgId,
+    audience: TurnAudience,
+  ) {
+    if (audience !== "owner_only" && !(yield* teamMemoryOn(orgId).pipe(provideSql)))
+      return yield* invalid(SHARED_REFUSAL);
   });
   /** The items a shared turn may see, judged and returned from one snapshot of the lead's view. */
   const visibleItems = Effect.fn("LeadMemory.visibleItems")(function* (
@@ -773,7 +777,7 @@ const make = Effect.gen(function* () {
     audience: TurnAudience,
     input: typeof WriteInput.Type,
   ) {
-    yield* sharedWrites(audience);
+    yield* sharedWrites(ctx.orgId, audience);
     if (input.item.kind === "deferral" && input.op !== "update" && input.op !== "invalidate")
       return yield* new KinChatError({
         reason: "not_allowed",
@@ -1258,7 +1262,7 @@ const make = Effect.gen(function* () {
     }, Effect.mapError(failure)),
     journal: Effect.fn("LeadMemory.journal")(function* (scope, input) {
       const { ctx, audience } = yield* turn(scope);
-      yield* sharedWrites(audience);
+      yield* sharedWrites(ctx.orgId, audience);
       const lines = [
         ...input.saw.map((x) => `Saw: ${x}`),
         ...input.did.map((x) => `Did: ${x}`),
