@@ -128,7 +128,7 @@ describe("KinLeadProvision", () => {
   );
 
   it.effect(
-    "refuses anyone but the host's Kin owner, unknown worker projects and non-Claude models",
+    "refuses anyone but the host's Kin owner, unknown worker projects and models on a provider Kin may not use",
     () =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;

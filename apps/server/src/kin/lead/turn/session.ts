@@ -1,10 +1,5 @@
 import { resolveNodeExecutable } from "@t3tools/shared/nodeRuntime";
-import {
-  KIN_CAPABILITY_WORDS,
-  type KinCapability,
-  kinProviderFacts,
-  type ThreadId,
-} from "@t3tools/contracts";
+import { type KinCapability, kinCantDo, kinProviderFacts, type ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -60,16 +55,16 @@ const CONFINED_NOTE =
 const OWNER_NOTE =
   "Your shell and file edits run as the owner, and Kin checks each one as it runs: in a chat others read, or once the turn has read outside content, it's refused with a line saying why.";
 
-const listed = (words: ReadonlyArray<string>) =>
-  words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`;
-
 /** What a seat has, said once for every provider from what that provider lacks. */
 const sessionNote = (seat: "owner" | "confined", lacks: ReadonlyArray<KinCapability>) => {
   if (seat === "confined") return `${CONFINED_NOTE}\n${ALL_MODELS_NOTE}`;
-  const missing = lacks.map((capability) => KIN_CAPABILITY_WORDS[capability]);
-  const curl =
-    lacks.includes("webFetch") && !lacks.includes("shell") ? " Fetch a web page with curl." : "";
-  return `${OWNER_NOTE}${missing.length === 0 ? "" : ` Here you can't ${listed(missing)}.`}${curl}\n${ALL_MODELS_NOTE}`;
+  const shell = !lacks.includes("shell");
+  const owner = [
+    shell ? OWNER_NOTE : "",
+    lacks.length === 0 ? "" : `Here you can't ${kinCantDo(lacks)}.`,
+    shell && lacks.includes("webFetch") ? "Fetch a web page with curl." : "",
+  ].filter(Boolean);
+  return `${owner.join(" ")}\n${ALL_MODELS_NOTE}`;
 };
 
 /** Kin's instructions are the whole system prompt on every provider, then what this seat has. */
