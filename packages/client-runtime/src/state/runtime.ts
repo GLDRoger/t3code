@@ -665,6 +665,31 @@ function environmentConnectionAtoms<R, ER>(
   return family;
 }
 
+const registrationAtomsByRuntime = new WeakMap<
+  object,
+  (environmentId: EnvironmentIdType) => Atom.Atom<EnvironmentConnection[2] | null>
+>();
+
+/**
+ * The environment's supervisor, which changes only when the registry installs a new one (paired
+ * again, removed and re-added, a route edit), never on a reconnect.
+ */
+function environmentRegistrationAtoms<R, ER>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
+) {
+  const existing = registrationAtomsByRuntime.get(runtime);
+  if (existing !== undefined) return existing;
+  const connectionAtom = environmentConnectionAtoms(runtime);
+  const family = Atom.family((environmentId: EnvironmentIdType) =>
+    Atom.make((get): EnvironmentConnection[2] | null => {
+      const connection = AsyncResult.getOrElse(get(connectionAtom(environmentId)), () => null);
+      return connection?.[2] ?? Option.getOrNull(get.self<EnvironmentConnection[2] | null>());
+    }),
+  );
+  registrationAtomsByRuntime.set(runtime, family);
+  return family;
+}
+
 export function environmentConnectionAtom<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
   environmentId: EnvironmentIdType,
@@ -943,14 +968,25 @@ export function createEnvironmentSubscriptionAtomFamily<R, ER, Input, A, E>(
     options.sensitiveInput
       ? `${options.label}:${parseEnvironmentRpcKey<Input>(key).environmentId}`
       : `${options.label}:${key}`;
+  const registrationAtom = environmentRegistrationAtoms(runtime);
   const live = Atom.family((key: string) => {
     const target = parseEnvironmentRpcKey<Input>(key);
     return runtime
-      .atom(
-        Stream.suspend(() =>
+      .atom((get) => {
+        // A reconnect resumes inside the stream; a new registration, maybe another person, starts
+        // it over, and what it streamed for the last one is not shown meanwhile.
+        let registration = get.once(registrationAtom(target.environmentId));
+        get.subscribe(registrationAtom(target.environmentId), (next) => {
+          const before = registration;
+          registration = next;
+          if (before === null || next === before) return;
+          get.setSelf(AsyncResult.initial(true));
+          get.refreshSelf();
+        });
+        return Stream.suspend(() =>
           followStreamInEnvironment(target.environmentId, options.subscribe(target.input)),
-        ).pipe(options.completeWhen ? Stream.takeUntil(options.completeWhen) : (stream) => stream),
-      )
+        ).pipe(options.completeWhen ? Stream.takeUntil(options.completeWhen) : (stream) => stream);
+      })
       .pipe(Atom.setIdleTTL(idleTtlMs), Atom.withLabel(label(key)));
   });
   const { completeWhen, completedTtlMs } = options;

@@ -1332,6 +1332,34 @@ describe("environment query lifecycle", () => {
       ),
   );
 
+  it.effect("a subscription refused under one registration starts over under the next", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let subscriptions = 0;
+        const harness = yield* makeEnvironmentQueryHarness(Effect.void);
+        const family = createEnvironmentSubscriptionAtomFamily(harness.runtime, {
+          label: "test.registration-subscription",
+          subscribe: () =>
+            Stream.suspend(() => {
+              subscriptions += 1;
+              return subscriptions === 1
+                ? Stream.fail(new Error("Refused for this person."))
+                : Stream.make(subscriptions);
+            }),
+        });
+        const atom = family({ environmentId: QUERY_ENVIRONMENT.environmentId, input: undefined });
+        const registry = yield* mountEnvironmentQuery(atom);
+        yield* Effect.yieldNow;
+        expect(registry.get(atom)._tag).toBe("Failure");
+
+        // Signed out and the owner paired on the same host: their stream, not the refusal.
+        yield* harness.replaceSupervisor();
+        yield* Effect.yieldNow;
+        expect(Option.getOrNull(AsyncResult.value(registry.get(atom)))).toBe(2);
+      }),
+    ),
+  );
+
   it.effect("refreshes on its trigger while read, and once on its next read when idle", () =>
     Effect.gen(function* () {
       let executions = 0;
