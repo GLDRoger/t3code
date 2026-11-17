@@ -8,34 +8,30 @@ import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-/** The one keyring item Kin reads: its GitHub App's private key, account `<app id>`. */
+/**
+ * The keyring item hosts set up before November 2026 kept the GitHub App's key in, account
+ * `<app id>`. Kin only reads it, to copy it into its secret store once (see `appKey.ts`).
+ */
 const SERVICE = "kin-github-app";
 
 export class KinKeychainError extends Schema.TaggedError<KinKeychainError>()("KinKeychainError", {
-  operation: Schema.Literals(["secret_service", "load", "get", "set", "delete"]),
+  operation: Schema.Literals(["secret_service", "load", "get"]),
   cause: Schema.Defect(),
 }) {
   override get message(): string {
     return this.operation === "secret_service"
       ? `No Secret Service (org.freedesktop.secrets) answers on this user's D-Bus session, so Kin won't read the ${SERVICE} item. Start one for this user, such as gnome-keyring-daemon.`
-      : `The OS keychain refused to ${this.operation === "set" ? "store" : this.operation} the ${SERVICE} item.`;
+      : `The OS keychain refused to ${this.operation} the ${SERVICE} item.`;
   }
 }
 
-/** The App's keyring item. The value leaves only as `Redacted`, never in errors or logs. */
+/** Reads the App's keyring item. The value leaves only as `Redacted`, never in errors or logs. */
 export class KinKeychain extends Context.Service<
   KinKeychain,
   {
     readonly appSecret: (
       appId: string,
     ) => Effect.Effect<Option.Option<Redacted.Redacted<string>>, KinKeychainError>;
-    /** Whether an item can be stored here at all (on Linux, whether a Secret Service answers). */
-    readonly writable?: () => Effect.Effect<boolean>;
-    readonly setAppSecret?: (
-      appId: string,
-      secret: Redacted.Redacted<string>,
-    ) => Effect.Effect<void, KinKeychainError>;
-    readonly removeAppSecret?: (appId: string) => Effect.Effect<void, KinKeychainError>;
   }
 >()("t3/kin/github/Keychain/KinKeychain") {}
 
@@ -93,40 +89,8 @@ const decodeSecret = (stored: string) =>
 const make = (options: {
   readonly platform: string;
   readonly secretServiceReachable: Effect.Effect<boolean>;
-}) => {
-  const reachable = Effect.fn("KinKeychain.reachable")(function* () {
-    if (options.platform === "linux" && !(yield* options.secretServiceReachable))
-      return yield* new KinKeychainError({
-        operation: "secret_service",
-        cause: "org.freedesktop.secrets did not answer",
-      });
-    return yield* Effect.tryPromise({
-      try: () => import("@napi-rs/keyring"),
-      catch: (cause) => new KinKeychainError({ operation: "load", cause }),
-    });
-  });
-  return KinKeychain.of({
-    writable: Effect.fn("KinKeychain.writable")(function* () {
-      return yield* reachable().pipe(
-        Effect.as(true),
-        Effect.orElseSucceed(() => false),
-      );
-    }),
-    setAppSecret: Effect.fn("KinKeychain.setAppSecret")(function* (appId, secret) {
-      const Keyring = yield* reachable();
-      const stored = `${ENCODED}${Buffer.from(Redacted.value(secret)).toString("base64")}`;
-      yield* Effect.tryPromise({
-        try: () => new Keyring.AsyncEntry(SERVICE, appId).setPassword(stored),
-        catch: (cause) => new KinKeychainError({ operation: "set", cause }),
-      });
-    }),
-    removeAppSecret: Effect.fn("KinKeychain.removeAppSecret")(function* (appId) {
-      const Keyring = yield* reachable();
-      yield* Effect.tryPromise({
-        try: () => new Keyring.AsyncEntry(SERVICE, appId).deleteCredential(),
-        catch: (cause) => new KinKeychainError({ operation: "delete", cause }),
-      });
-    }),
+}) =>
+  KinKeychain.of({
     appSecret: Effect.fn("KinKeychain.appSecret")(function* (appId: string) {
       if (options.platform === "linux" && !(yield* options.secretServiceReachable))
         return yield* new KinKeychainError({
@@ -147,7 +111,6 @@ const make = (options: {
         : Option.some(Redacted.make(decodeSecret(value)));
     }),
   });
-};
 
 export const layer = Layer.effect(
   KinKeychain,

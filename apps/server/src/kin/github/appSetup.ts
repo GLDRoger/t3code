@@ -20,14 +20,14 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { readStoredApp, removeStoredApp, writeStoredApp } from "./appStore.ts";
 import { knownRepos } from "./githubWatchStore.ts";
-import { KinKeychain } from "./Keychain.ts";
+import { KinGitHubAppKey } from "./appKey.ts";
 import { KinGitHubApp, KinGitHubAppConfig } from "./KinGitHubApp.ts";
 
 /**
  * Making Kin's GitHub App from Settings with GitHub's manifest flow: an owner-level call mints a
  * one-hour state; Kin's page posts the manifest from the owner's browser; GitHub sends that browser
  * back with a one-time code, which Kin exchanges once for the App's id and key. The key goes only
- * to the keyring; nothing here returns it.
+ * to the server's secret store; nothing here returns it.
  */
 
 export const APP_SETUP_ROUTE = "/api/kin/github-app";
@@ -111,7 +111,7 @@ export const setupHtml = (title: string, body: string) =>
 
 export const make = Effect.gen(function* () {
   const config = yield* KinGitHubAppConfig;
-  const keychain = yield* KinKeychain;
+  const appKey = yield* KinGitHubAppKey;
   const client = yield* HttpClient.HttpClient;
   const sql = yield* SqlClient.SqlClient;
   const app = yield* KinGitHubApp;
@@ -153,13 +153,6 @@ export const make = Effect.gen(function* () {
       Option.isSome(yield* readStoredApp.pipe(Effect.provideContext(files)))
     )
       return yield* refuse("Kin already has a GitHub App. Disconnect it first to make another.");
-    if (
-      keychain.setAppSecret === undefined ||
-      !(yield* keychain.writable?.() ?? Effect.succeed(false))
-    )
-      return yield* refuse(
-        "This computer has no keyring Kin can keep the App's key in (on Linux, a Secret Service such as gnome-keyring), so Kin can't make one here. Your host guide has the manual steps.",
-      );
     const [company] = yield* sql<{ name: string }>`SELECT name FROM kin_orgs
       WHERE org_id = ${orgId}`.pipe(Effect.orElseSucceed(() => []));
     const known = yield* knownRepos(orgId).pipe(
@@ -256,19 +249,18 @@ export const make = Effect.gen(function* () {
       } satisfies SetupOutcome;
     const { id, slug, name, owner, pem } = made.value;
     const settingsUrl = `https://github.com/settings/apps/${slug}`;
-    const keep = keychain.setAppSecret;
-    const stored =
-      keep !== undefined &&
-      (yield* keep(String(id), Redacted.make(toJson({ privateKeyPem: pem }))).pipe(
+    const stored = yield* appKey
+      .set(String(id), Redacted.make(toJson({ privateKeyPem: pem })))
+      .pipe(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
-      ));
+      );
     if (!stored)
       return {
         ok: false,
         title: `GitHub made ${name}, but Kin couldn't keep its key`,
         detail:
-          "This computer's keyring refused it, so Kin can't use the App. Delete it on GitHub, fix the keyring, then start again.",
+          "Kin's secret store on this computer refused it, so Kin can't use the App. Delete it on GitHub, then start again.",
         link: { label: "The App on GitHub", url: settingsUrl },
       } satisfies SetupOutcome;
     yield* writeStoredApp({
@@ -300,9 +292,7 @@ export const make = Effect.gen(function* () {
       );
     const stored = yield* readStoredApp.pipe(Effect.provideContext(files));
     if (Option.isNone(stored)) return { settingsUrl: null };
-    yield* (keychain.removeAppSecret?.(String(stored.value.appId)) ?? Effect.void).pipe(
-      Effect.ignore,
-    );
+    yield* appKey.remove(String(stored.value.appId));
     yield* removeStoredApp.pipe(Effect.provideContext(files), Effect.orDie);
     yield* app.lookAgain();
     yield* refreshes.touch(orgId, "connections");

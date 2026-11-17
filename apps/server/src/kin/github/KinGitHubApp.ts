@@ -25,7 +25,7 @@ import type { ApiAnswer, ApiRequest } from "./GitHubWatch.ts";
 import { readStoredApp, type StoredApp } from "./appStore.ts";
 import { APP_IDENTITY_FILE, APP_TOKENS_FOLDER, GH_APP_FOLDER, OWNER_USES_FILE } from "./ghSign.ts";
 import { type KnownRepo, knownRepos, repoList, watchRow } from "./githubWatchStore.ts";
-import { KinKeychain } from "./Keychain.ts";
+import { KinGitHubAppKey } from "./appKey.ts";
 
 /**
  * Kin's GitHub App, so agents' commits, PRs, comments and reviews show the App as author. Its key
@@ -254,7 +254,7 @@ export const parseOwnerUse = (line: string) => {
 
 export const make = Effect.gen(function* () {
   const config = yield* KinGitHubAppConfig;
-  const keychain = yield* KinKeychain;
+  const appKey = yield* KinGitHubAppKey;
   const client = yield* HttpClient.HttpClient;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -327,7 +327,7 @@ export const make = Effect.gen(function* () {
   });
 
   const jwt = Effect.fn("KinGitHubApp.jwt")(function* (appId: string) {
-    const stored = yield* keychain.appSecret(appId);
+    const stored = yield* appKey.get(appId);
     const secrets = Option.flatMap(stored, (value) => decodeSecrets(Redacted.value(value)));
     if (Option.isNone(secrets)) return undefined;
     const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);

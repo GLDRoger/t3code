@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { KinOrgId, KinPersonId } from "@t3tools/contracts";
@@ -6,7 +7,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Redacted from "effect/Redacted";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -17,6 +17,8 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Setup from "./appSetup.ts";
 import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
+import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
+import * as AppKey from "./appKey.ts";
 import { KinKeychain } from "./Keychain.ts";
 import { KinGitHubApp, KinGitHubAppConfig, make as makeApp } from "./KinGitHubApp.ts";
 import { fakeHttp } from "./KinGitHubApp.testkit.ts";
@@ -36,8 +38,8 @@ const seed = Effect.gen(function* () {
       ('member', ${orgId}, 'member', 'Member', ${at}, 'member')`;
 });
 
-/** Kin with no App yet, over the fake GitHub, with a keyring that keeps what it is given. */
-const setup = (options: { readonly keyring?: boolean; readonly hostAppId?: string } = {}) =>
+/** Kin with no App yet, over the fake GitHub, keeping the key in a real secret store. */
+const setup = (options: { readonly hostAppId?: string } = {}) =>
   Effect.gen(function* () {
     yield* seed;
     yield* TestClock.setTime(T0);
@@ -45,16 +47,16 @@ const setup = (options: { readonly keyring?: boolean; readonly hostAppId?: strin
     github.world.manifestCodes = {
       "code-1": { name: "Kin for Invented Studio", slug: "kin-for-invented-studio" },
     };
-    const kept = new Map<string, string>();
+    const store = yield* ServerSecretStore.ServerSecretStore;
+    const appKey = yield* AppKey.make.pipe(
+      Effect.provideService(KinKeychain, { appSecret: () => Effect.succeedNone }),
+    );
+    const kept = (appId: string) =>
+      store
+        .get(AppKey.appKeyName(appId))
+        .pipe(Effect.map(Option.map((bytes) => new TextDecoder().decode(bytes))));
     const services = Layer.mergeAll(
-      Layer.succeed(KinKeychain, {
-        appSecret: (appId: string) =>
-          Effect.succeed(Option.fromNullishOr(kept.get(appId)).pipe(Option.map(Redacted.make))),
-        writable: () => Effect.succeed(options.keyring !== false),
-        setAppSecret: (appId: string, secret: Redacted.Redacted<string>) =>
-          Effect.sync(() => void kept.set(appId, Redacted.value(secret))),
-        removeAppSecret: (appId: string) => Effect.sync(() => void kept.delete(appId)),
-      }),
+      Layer.succeed(AppKey.KinGitHubAppKey, appKey),
       Layer.succeed(KinGitHubAppConfig, {
         appId: Option.fromNullishOr(options.hostAppId),
         botLogin: Option.none(),
@@ -76,14 +78,16 @@ const setup = (options: { readonly keyring?: boolean; readonly hostAppId?: strin
   });
 
 const layer = KinPersistence.layer.pipe(
+  Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(Sqlite.layerMemory),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-github-app-setup-" })),
   Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(NodeCrypto.layer),
 );
 
 describe("making Kin's GitHub App from Settings", () => {
-  it.effect("only the owner level starts it, and only with a keyring to keep the key", () =>
+  it.effect("only the owner level starts it", () =>
     Effect.gen(function* () {
       const { flow } = yield* setup();
       const refused = yield* Effect.flip(flow.start([member], orgId));
@@ -91,14 +95,6 @@ describe("making Kin's GitHub App from Settings", () => {
       const started = yield* flow.start([owner], orgId);
       assert.strictEqual(started.name, "Kin for Invented Studio");
       assert.match(started.path, /^\/api\/kin\/github-app\/new\?state=[\w-]{20,}$/);
-    }).pipe(Effect.provide(layer)),
-  );
-
-  it.effect("says plainly when this computer has no keyring", () =>
-    Effect.gen(function* () {
-      const { flow } = yield* setup({ keyring: false });
-      const refused = yield* Effect.flip(flow.start([owner], orgId));
-      assert.match(refused.message, /no keyring Kin can keep the App's key in/);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -122,7 +118,7 @@ describe("making Kin's GitHub App from Settings", () => {
   );
 
   it.effect(
-    "spends the state before the code, uses the code once, and keeps the key only in the keyring",
+    "spends the state before the code, uses the code once, and keeps the key only in the secret store",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -141,7 +137,10 @@ describe("making Kin's GitHub App from Settings", () => {
         const done = yield* flow.complete(state, "code-1");
         assert.isTrue(done.ok);
         assert.strictEqual(done.title, "Kin for Invented Studio is set up");
-        assert.match(kept.get("9100") ?? "", /BEGIN RSA PRIVATE KEY/);
+        assert.match(
+          Option.getOrElse(yield* kept("9100"), () => ""),
+          /BEGIN RSA PRIVATE KEY/,
+        );
         const stored = yield* fs.readFileString(`${stateDir}/kin/gh-app/app.json`);
         assert.include(stored, '"appId":9100');
         assert.include(stored, '"by":"Owner"');
@@ -175,7 +174,7 @@ describe("making Kin's GitHub App from Settings", () => {
       const outcome = yield* flow.complete(state, "code-1");
       assert.isFalse(outcome.ok);
       assert.match(outcome.detail, /status 404/);
-      assert.strictEqual(kept.size, 0);
+      assert.isTrue(Option.isNone(yield* kept("9100")));
       assert.isFalse(yield* fs.exists(`${stateDir}/kin/gh-app/app.json`));
     }).pipe(Effect.provide(layer)),
   );
@@ -194,7 +193,7 @@ describe("making Kin's GitHub App from Settings", () => {
       assert.deepStrictEqual(yield* flow.disconnect([owner], orgId), {
         settingsUrl: "https://github.com/settings/apps/kin-for-invented-studio",
       });
-      assert.strictEqual(kept.size, 0);
+      assert.isTrue(Option.isNone(yield* kept("9100")));
       assert.deepStrictEqual(yield* app.origin!(), { source: "none" });
       assert.deepStrictEqual(yield* app.state(), { _tag: "none" });
     }).pipe(Effect.provide(layer)),

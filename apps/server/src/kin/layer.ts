@@ -35,6 +35,7 @@ import { KinServer, type Services } from "./KinServer.ts";
 export { KinServer } from "./KinServer.ts";
 import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as KinMcp from "./mcp/layer.ts";
 import * as Render from "./gendocs/render.ts";
 import * as Toolchain from "./gendocs/toolchain.ts";
@@ -42,6 +43,7 @@ import * as GhTool from "./connections/ghTool.ts";
 import * as GitHubLogin from "./connections/GitHubLogin.ts";
 import { devAppStandIn } from "./github/devAppStandIn.ts";
 import * as KinGitHubApp from "./github/KinGitHubApp.ts";
+import * as KinGitHubAppKey from "./github/appKey.ts";
 import * as KinGitHubAppSetup from "./github/appSetup.ts";
 import * as Keychain from "./github/Keychain.ts";
 import * as AgentSession from "./lead/AgentSession.ts";
@@ -144,6 +146,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
             KinGitHubAppSetup.layer.pipe(
               Layer.provideMerge(KinGitHubApp.layer),
               Layer.provide(KinGitHubApp.KinGitHubAppConfig.layer),
+              Layer.provide(KinGitHubAppKey.layer.pipe(Layer.provide(ServerSecretStore.layer))),
               Layer.provide(
                 Layer.unwrap(
                   Config.String("KIN_DEV_FAKE_GITHUB").pipe(
