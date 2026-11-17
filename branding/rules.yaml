@@ -622,6 +622,16 @@ leaks:
         - vite.config.ts
         - .gitignore
     - reason: >-
+        Kin's dev and release tooling keeps its state in that same `<worktree>/.t3`, and names the
+        live `~/.t3` only to refuse writing under it.
+      leak: t3-home
+      files:
+        - scripts/kin-bench.ts
+        - scripts/kin-release-check.ts
+        - scripts/kin-release-remote.sh
+        - scripts/kin-verify/instance.ts
+        - verification/kin/ui/run.ts
+    - reason: >-
         Recognizes worktrees T3 Code manages so session scanning skips them; Kin's own worktrees
         folder is matched separately.
       leak: t3-home
@@ -634,7 +644,18 @@ leaks:
         - ops/kin/host/backup.sh
         - ops/kin/host/kin
         - ops/kin/host/kin-server.service
+        - ops/kin/host/retire-workers.sh
         - ops/kin/host/update.sh
+    - reason: >-
+        kin-verify drives the unbranded dev client from a source checkout (T3's dev scheme and
+        bundle id); nobody runs it from the branded copy.
+      files: [scripts/kin-verify.ts]
+    - reason: >-
+        The fixed list of both builds' phone schemes Kin's sign-in return page may send a sign-in
+        back to; each app looks its own scheme up in it, so it must stay the same in the copy.
+      leak: scheme-name
+      text: "^t3code(-dev|-preview)?$"
+      files: [packages/contracts/src/kinConnections.ts]
     - reason: Message attribution enum on the wire; peers and stored threads use this value.
       leak: scheme-name
       text: "^t3code$"
