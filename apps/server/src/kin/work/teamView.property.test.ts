@@ -46,6 +46,7 @@ import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import * as WorkStream from "./workStream.ts";
 import { search } from "./search.ts";
+import { indexWhere, searchIndexed } from "./searchIndex.ts";
 import { listDef } from "./registers.ts";
 import { personSees, teamCan, unreadableBy, viewerOfPeople } from "./teamView.ts";
 
@@ -252,6 +253,7 @@ const install = (w: World, extra: ReadonlyArray<Row> = []) =>
           ${row.shared ? 1 : 0}, ${JSON.stringify(row.fields)}, ${createdKind}, ${createdBy},
           ${row.assignedBy}, ${row.id}, ${at}, ${at})`;
     }
+    if (yield* searchIndexed()) yield* indexWhere(sql, sql`r.org_id = ${orgId}`);
   });
 
 const seen = (viewer: Member) =>
@@ -421,7 +423,73 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
               assert.isTrue(sees.has(hit.recordId), `${viewer} finds ${hit.key}`);
           }
         }
+        // Everything one search box finds, money entries included, opens for whoever found it.
+        for (const viewer of [...MEMBERS, CO_OWNER, ownerId]) {
+          const people = [{ _tag: "person" as const, orgId, personId: KinPersonId.make(viewer) }];
+          for (const word of ["plan", "fix", "call", "client", "project"]) {
+            const { hits } = yield* OwnerDocs.search(people, {
+              orgId,
+              text: word,
+              everything: true,
+              closed: true,
+              limit: 50,
+            });
+            for (const hit of hits) {
+              const opened = yield* Effect.result(
+                OwnerWork.get(people, { orgId, recordId: hit.recordId }),
+              );
+              assert.strictEqual(
+                opened._tag,
+                "Success",
+                `${viewer} finds ${hit.key}, can't open it`,
+              );
+            }
+          }
+        }
       }),
+  );
+
+  it.effect("a teammate finds a money entry exactly when Money shows it to her", () =>
+    Effect.gen(function* () {
+      const quiet = { sensitive: false, shared: false };
+      const invoice = {
+        list: "invoices",
+        owner: "owner",
+        createdBy: "owner",
+        assignedBy: null,
+        sensitive: true,
+        shared: true,
+        project: null,
+        party: null,
+        attendees: [],
+        company: false,
+        title: "Call vendor",
+      } as const;
+      const found = (money: boolean) =>
+        Effect.gen(function* () {
+          yield* install({
+            clients: [quiet, quiet],
+            projects: [
+              { lead: "owner", party: null, members: [], ...quiet },
+              { lead: "owner", party: null, members: [], ...quiet },
+            ],
+            places: [
+              { clients: false, docs: false, money },
+              { clients: false, docs: false, money: false },
+            ],
+            entries: [invoice],
+          });
+          const people = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("ana") }];
+          const { hits } = yield* OwnerDocs.search(people, {
+            orgId,
+            text: "vendor",
+            everything: true,
+          });
+          return hits.map((hit) => [hit.kind, hit.key]);
+        });
+      assert.deepStrictEqual(yield* found(true), [["invoices", "E-1"]]);
+      assert.deepStrictEqual(yield* found(false), []);
+    }),
   );
 
   it.effect.prop(

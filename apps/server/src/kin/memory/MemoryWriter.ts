@@ -13,6 +13,7 @@ import {
   MemoryItemFrontMatter,
   RepoSlug,
   type KinAgentId,
+  type KinChatId,
   type KinMemoryItemId,
   type KinPersonId,
   type MemoryItemHead,
@@ -155,6 +156,19 @@ export type MemoryUndoResult =
   | { readonly _tag: "undone"; readonly commit: string }
   /** The item changed after `commit`, or that history is gone. */
   | { readonly _tag: "stale" };
+/** What was decided, in the card's or the discussion's own words; `itemId` is derived from its id. */
+export interface KinDecision {
+  readonly itemId: KinMemoryItemId;
+  readonly title: string;
+  readonly body: string;
+  readonly saidBy: string;
+  readonly trust: MemoryTrust;
+  /** The message it was decided on, `kin:chat:<chat>:message:<message>`. */
+  readonly source: string;
+  readonly chat: KinChatId;
+  /** Where to find it again: `card:<widget>` or `discussion:<id>`, unique to this decision. */
+  readonly link: string;
+}
 export interface MemoryChange {
   readonly path: string;
   readonly content: string;
@@ -254,6 +268,14 @@ export class MemoryWriter extends Context.Service<
       orgId: KinOrgId,
       input: { readonly itemId: KinMemoryItemId },
     ) => Effect.Effect<{ readonly restored: boolean }, Failure>;
+    /**
+     * A decision Kin saw made, saved by server code outside any wake-up: one new item on the
+     * default branch, kept to the owner. `recorded` is false when the id was saved before.
+     */
+    readonly recordDecision: (
+      orgId: KinOrgId,
+      input: KinDecision,
+    ) => Effect.Effect<{ readonly recorded: boolean }, Failure>;
     /**
      * Ends who may know every item the default branch holds retired, whatever retired it: a
      * GitHub merge, a promoted shadow branch, or a grant older than retirement clearing one.
@@ -1601,6 +1623,63 @@ const make = Effect.gen(function* () {
             message: `kin: owner restores ${input.itemId}\n`,
           });
           return { restored: true };
+        }),
+      ),
+    ),
+    recordDecision: Effect.fn("MemoryWriter.recordDecision")((orgId, input) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const main = config.defaultBranch ?? "main";
+          const { writer } = yield* validate(orgId);
+          yield* refuseDuringPurge(orgId);
+          const repo = yield* repoFor(orgId);
+          // Nobody asked for this one, so a host that refuses writes tells the owner nothing.
+          if (mainWrites === "refused")
+            return yield* new MemorySyncConflict({
+              orgId,
+              operation: "push",
+              reason: "Memory writes to the default branch are refused",
+            });
+          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
+          const path = `decisions/${input.itemId}.md`;
+          yield* safePath(orgId, writer, path);
+          const head = yield* branchHead(orgId, writer, main);
+          const headFiles = yield* filesAt(orgId, writer, head);
+          if (headFiles.has(path)) return { recorded: false };
+          const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+          const text = render(
+            {
+              id: input.itemId,
+              kind: "decision",
+              title: input.title,
+              status: "open",
+              due: null,
+              chat: input.chat,
+              recorded_at: at,
+              valid_from: at,
+              invalid_at: null,
+              superseded_by: null,
+              review_by: null,
+              source: input.source,
+              said_by: input.saidBy,
+              trust: input.trust,
+              links: [input.link],
+              sensitive: true,
+            },
+            `${input.body.trim()}\n`,
+          );
+          yield* parseFrontMatter(orgId, path, text);
+          yield* ownerCommit(orgId, {
+            writer,
+            repoUrl: repo.repoUrl,
+            branch: main,
+            head,
+            headFiles,
+            files: new Map([[path, text]]),
+            message: `kin: decision ${input.itemId}\n`,
+          });
+          return { recorded: true };
         }),
       ),
     ),

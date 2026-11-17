@@ -58,6 +58,8 @@ export type QuestionRow = {
   readonly answer: string | null;
 };
 
+/** How a question raised again opens its card, so what answers it can read past it. */
+export const STILL_OPEN = "Still open: ";
 const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 const OptionsJson = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ optionId: Schema.String, label: Schema.String })),
@@ -498,7 +500,7 @@ const raise = Effect.fn("KinQuestions.raise")(function* (
     {
       chatId: row.chatId,
       clientMessageId: `kin-question-raise:${row.questionId}`,
-      question: oneLine(`Still open: ${row.question}`, 240),
+      question: oneLine(`${STILL_OPEN}${row.question}`, 240),
       detail: `${row.agentName} asked ${dayWord(row.askedAt, now, clock.zone)}. Nothing happens until you answer.`,
       options: row.options.map((option) => ({ label: option.label })),
       untilAnswered: true,

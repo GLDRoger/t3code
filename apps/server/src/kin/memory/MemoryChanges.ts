@@ -7,6 +7,7 @@ import {
   type KinMemoryConfirmSuggestionsResult,
   type KinMemoryForgetInput,
   type KinMemoryForgetResult,
+  type KinMemoryItemId,
   type KinMemoryListInput,
   type KinMemoryListItem,
   type KinMemoryListResult,
@@ -40,7 +41,7 @@ import { ownerLevel } from "../people/KinAccess.ts";
 import { endedBy } from "./frontMatter.ts";
 import { readableSources } from "./quoteAccess.ts";
 import type { MemoryItem } from "./MemoryCache.ts";
-import type { MemoryWriter } from "./MemoryWriter.ts";
+import type { KinDecision, MemoryWriter } from "./MemoryWriter.ts";
 import {
   authorise,
   bindSuggestions,
@@ -59,6 +60,7 @@ export interface KinMemoryPort {
   readonly relabel: MemoryWriter["Service"]["relabel"];
   readonly retire: MemoryWriter["Service"]["retire"];
   readonly restore: MemoryWriter["Service"]["restore"];
+  readonly recordDecision: MemoryWriter["Service"]["recordDecision"];
   /** Every current item on the default branch, with its body. */
   readonly items: (
     orgId: KinOrgId,
@@ -108,9 +110,37 @@ export class KinMemoryChanges extends Context.Service<
       people: ReadonlyArray<PersonIdentity>,
       input: KinMemoryRestoreInput,
     ) => Effect.Effect<KinMemoryRestoreResult, KinChatError>;
+    /**
+     * Saves a decision Kin saw made, by code. Server-only, never a tool or RPC; a failure is
+     * logged, since the answer it records already stands.
+     */
+    readonly recordDecision: (orgId: KinOrgId, decision: KinDecision) => Effect.Effect<void>;
+    /**
+     * Current items that hold every word, newest first, for search; the owner level only, and
+     * nothing for anyone else or while memory isn't running here.
+     */
+    readonly search: (
+      people: ReadonlyArray<PersonIdentity>,
+      input: { readonly orgId: KinOrgId; readonly text: string; readonly limit: number },
+    ) => Effect.Effect<ReadonlyArray<KinMemoryHit>>;
     readonly attachWriter: (port: KinMemoryPort) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/kin/memory/MemoryChanges/KinMemoryChanges") {}
+
+export type KinMemoryHit = {
+  readonly itemId: KinMemoryItemId;
+  readonly title: string;
+  readonly snippet: string;
+  readonly sensitive: boolean;
+  readonly recordedAt: number;
+};
+const SEARCH_SNIPPET = 160;
+const searchWords = (text: string) =>
+  text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word !== "")
+    .slice(0, 12);
 
 const decodeCard = Schema.decodeUnknownEffect(KinMemoryChangeCard);
 const encodeCard = Schema.encodeEffect(KinMemoryChangeCard);
@@ -436,6 +466,50 @@ const make = Effect.gen(function* () {
       yield* port.restore(input.orgId, { itemId: input.itemId });
       return { itemId: input.itemId };
     }, failed),
+    recordDecision: Effect.fn("KinMemoryChanges.recordDecision")(function* (orgId, decision) {
+      if (port === undefined) return;
+      const saved = yield* port.recordDecision(orgId, decision).pipe(Effect.result);
+      if (saved._tag === "Failure")
+        yield* Effect.logWarning("Kin couldn't save a decision to memory", {
+          orgId,
+          itemId: decision.itemId,
+          errorTag: saved.failure._tag,
+        });
+    }),
+    search: Effect.fn("KinMemoryChanges.search")(function* (people, input) {
+      const words = searchWords(input.text);
+      const allowed = yield* ownerOf(people, input.orgId).pipe(Effect.result);
+      if (words.length === 0 || allowed._tag === "Failure") return [];
+      const all = yield* allowed.success.port.items(input.orgId).pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning("Kin memory search failed", { errorTag: error._tag }),
+        ),
+        Effect.orElseSucceed((): ReadonlyArray<MemoryItem> => []),
+      );
+      const now = yield* Clock.currentTimeMillis;
+      return current(all, now)
+        .flatMap((item): ReadonlyArray<KinMemoryHit> => {
+          const text = `${item.head.title}\n${item.head.what ?? ""}\n${item.body}`;
+          const lower = text.toLowerCase();
+          if (!words.every((word) => lower.includes(word))) return [];
+          const body = (item.head.what ?? item.body).replace(/\s+/g, " ").trim();
+          const recordedAt = Date.parse(item.head.recorded_at);
+          return [
+            {
+              itemId: item.head.id,
+              title: item.head.title,
+              snippet:
+                body.length > SEARCH_SNIPPET
+                  ? `${body.slice(0, SEARCH_SNIPPET - 1).trimEnd()}…`
+                  : body,
+              sensitive: item.head.sensitive !== false,
+              recordedAt: Number.isFinite(recordedAt) ? recordedAt : 0,
+            },
+          ];
+        })
+        .toSorted((a, b) => b.recordedAt - a.recordedAt || a.itemId.localeCompare(b.itemId))
+        .slice(0, input.limit);
+    }),
     attachWriter: Effect.fn("KinMemoryChanges.attachWriter")(function* (next) {
       yield* Effect.acquireRelease(
         Effect.sync(() => {
