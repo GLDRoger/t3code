@@ -17,6 +17,8 @@ import { sessionVariablePatterns } from "../claudeConfinement.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinEnabled, layer as kinEnabledLayer } from "../KinEnabled.ts";
 import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts";
+import { readPdfPages } from "../work/statements/statementFiles.ts";
+import { KIN_DEFERRED_TOOLS } from "./deferredTools.ts";
 import { instructions } from "./instructions.ts";
 import { SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { GH_SIGN_FOLDER } from "./LeadIsolation.ts";
@@ -26,15 +28,20 @@ type Json = Schema.Json;
 type Params = Readonly<Record<string, unknown>>;
 type Client = CodexClient.CodexAppServerClient["Service"];
 
+/** Kin's rare tools, mounted apart so Codex defers them as Claude Code's ToolSearch does. */
+export const KIN_RARE_SERVER = "t3-code-rare";
 /** The MCP servers T3 mounts on a Codex thread; Kin's endpoint arrives as the first. */
-const T3_SERVERS = ["t3-code", "t3-code-direct"];
+const T3_SERVERS = ["t3-code", "t3-code-direct", KIN_RARE_SERVER];
 
 /**
  * Codex's own tools and the user's Codex extensions that a Kin session never gets (codex-cli 0.169).
- * Explicit, because the user's config can switch experimental tools on for every thread.
+ * Explicit, because the user's config can switch experimental tools on for every thread. Skills
+ * stay out as on Claude, whose Kin sessions load no setting sources: no catalog, no bundled ones.
  */
 export const CONFINED_CONFIG: Readonly<Record<string, Json>> = {
   web_search: "disabled",
+  "skills.include_instructions": false,
+  "skills.bundled.enabled": false,
   "agents.enabled": false,
   include_apply_patch_tool: false,
   "tools.view_image": false,
@@ -57,12 +64,14 @@ export const CONFINED_CONFIG: Readonly<Record<string, Json>> = {
 };
 
 /**
- * An owner-only thread's Codex tools: its shell and patches, each of which Codex asks Kin about
- * first (`fullSessionThreadParams`). What runs without asking stays off: hosted web search, image
- * viewing, and unified exec, whose open sessions would take later stdin unasked.
+ * An owner-only turn's tools, as on Claude: shell and patches, each asked about first; cached web
+ * search, which opens no page, so a query reaches no site (curl asks); image viewing. Unified exec
+ * stays off: under full access Codex sends stdin to an open session unasked (`stdin_approval.rs`).
  */
 export const FULL_SESSION_CONFIG: Readonly<Record<string, Json>> = {
   ...CONFINED_CONFIG,
+  web_search: "cached",
+  "tools.view_image": true,
   include_apply_patch_tool: true,
   "features.shell_tool": true,
   // A Codex sub-agent inherits the turn's approval policy and sandbox (codex-cli 0.169), so its
@@ -76,18 +85,42 @@ const CODEX_NOTE =
 const CONFINED_NOTE =
   "This session has no shell, files or web: act only through your tools, and don't try those.";
 const FULL_SESSION_NOTE =
-  "Your shell and file edits run as the owner, and Kin checks each one as it runs: in a chat others read, or once the turn has read outside content, it's refused with a line saying why. Web search is off; fetch a page with curl.";
+  "Your shell and file edits run as the owner, and Kin checks each one as it runs: in a chat others read, or once the turn has read outside content, it's refused with a line saying why. Web search finds pages; fetch one with curl.";
 /** Kin's instructions are the whole system prompt, as on Claude, plus what this session has. */
 export const codexInstructions = `${instructions}\n\n${CONFINED_NOTE}\n${CODEX_NOTE}`;
 export const codexFullSessionInstructions = `${instructions}\n\n${FULL_SESSION_NOTE}\n${CODEX_NOTE}`;
 
+type Server = Readonly<Record<string, Json>>;
+const isServer = (value: Json | undefined): value is Server =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Kin's tools as a Claude lead gets them. A model with tool search (gpt-6.1) defers every MCP tool
+ * unless its server says otherwise, so the agent would look up each tool before using it. Kin's
+ * endpoint shows up front, minus the rare tools, which a second mount of it leaves deferred.
+ */
+const kinToolLoading = (config: Record<string, Json>) => {
+  const kin = config["mcp_servers.t3-code"];
+  if (!isServer(kin)) return;
+  const rare = [...KIN_DEFERRED_TOOLS];
+  const disabled = Array.isArray(kin.disabled_tools) ? kin.disabled_tools : [];
+  const { disabled_tools: _, ...endpoint } = kin;
+  config["mcp_servers.t3-code"] = {
+    ...kin,
+    disabled_tools: [...disabled, ...rare],
+    omit_tools_from: ["deferred"],
+  };
+  config[`mcp_servers.${KIN_RARE_SERVER}`] = { ...endpoint, enabled_tools: rare };
+};
+
 /** T3's MCP servers, calls approved (Kin's gate checks each); the user's own servers off by name. */
 const kinServersOnly = (params: Params, userServers: ReadonlyArray<string>) => {
   const config = { ...(params.config as Readonly<Record<string, Json>> | null | undefined) };
+  kinToolLoading(config);
   for (const name of T3_SERVERS) {
     const server = config[`mcp_servers.${name}`];
     // Codex asks before an MCP call outside full access; nobody answers on a Kin thread.
-    if (typeof server === "object" && server !== null && !Array.isArray(server))
+    if (isServer(server))
       config[`mcp_servers.${name}`] = { ...server, default_tools_approval_mode: "approve" };
   }
   const disabled = userServers
@@ -183,7 +216,27 @@ const signedShellParams = (params: Params, sign: Shell) => ({
 });
 
 const THREAD_METHODS = new Set(["thread/start", "thread/resume"]);
-const REWRITTEN = new Set([...THREAD_METHODS, "turn/start", "thread/inject_items"]);
+const TURN_INPUT = new Set(["turn/start", "turn/steer"]);
+const REWRITTEN = new Set([...THREAD_METHODS, ...TURN_INPUT, "thread/inject_items"]);
+
+/** How T3 names an attached file in a Codex turn's text (`providerMessageTextWithAttachmentPaths`). */
+const ATTACHED_PDF = /\[Attached \w+ "([^"\n]+)" is saved at: ([^\n]+?\.pdf)\]/gi;
+/** About 50k tokens: a long contract, not a book. */
+const PDF_TEXT_CHARS = 200_000;
+
+const pdfText = (name: string, read: Awaited<ReturnType<typeof readPdfPages>>) => {
+  if ("_tag" in read)
+    return `[Kin couldn't read the attached PDF "${name}": ${
+      read._tag === "scanned"
+        ? "it is scanned pages with no text layer. Ask for photos of the pages."
+        : read._tag === "unreadable"
+          ? read.reason
+          : "it is password-protected."
+    }]`;
+  const pages = read.map((page, index) => `--- Page ${index + 1} ---\n${page}`).join("\n");
+  const cut = pages.length > PDF_TEXT_CHARS;
+  return `[Text of the attached PDF "${name}", ${read.length} pages${cut ? `, cut at ${PDF_TEXT_CHARS} characters` : ""}]\n${cut ? pages.slice(0, PDF_TEXT_CHARS) : pages}\n[End of "${name}"]`;
+};
 
 /** After a compaction T3 puts its thread guidance back (`restoreAdditionalContext`); not on Kin's. */
 const isT3Guidance = (item: unknown) => {
@@ -365,6 +418,25 @@ export const codexClientFactory = <E, R>(
           within(yield* real(kinDirectory), yield* real(cwd))
         );
       });
+      /** Claude reads an attached PDF as a document; Codex takes no file, so its text joins the turn. */
+      const withPdfText = Effect.fn("KinCodexIsolation.withPdfText")(function* (params: Params) {
+        const input = Array.isArray(params.input) ? (params.input as ReadonlyArray<unknown>) : [];
+        const attached = input.flatMap((item) => {
+          const text = (item as { type?: unknown; text?: unknown }).text;
+          return typeof text === "string" ? [...text.matchAll(ATTACHED_PDF)] : [];
+        });
+        if (attached.length === 0) return params;
+        const attachments = yield* real(config.attachmentsDir);
+        const texts = yield* Effect.forEach(attached, ([, name = "", file = ""]) =>
+          Effect.gen(function* () {
+            if (!within(attachments, yield* real(file))) return [];
+            const bytes = yield* fs.readFile(file);
+            const read = yield* Effect.promise(() => readPdfPages(bytes));
+            return [{ type: "text", text: pdfText(name, read), text_elements: [] }];
+          }).pipe(Effect.orElseSucceed(() => [])),
+        );
+        return { ...params, input: [...input, ...texts.flat()] };
+      });
       const kin = yield* Effect.serviceOption(KinServer);
       const policy = Option.flatMap(kin, (server) =>
         Option.flatMap(server.services, (services) =>
@@ -453,14 +525,16 @@ export const codexClientFactory = <E, R>(
             (method, params) => {
               const seat =
                 typeof params.threadId === "string" ? seats.get(params.threadId) : undefined;
-              if (method === "turn/start")
-                return Effect.succeed(
-                  seat === undefined
-                    ? null
-                    : seat.full
-                      ? fullSessionTurnParams(params)
-                      : confinedTurnParams(params),
-                );
+              if (TURN_INPUT.has(method))
+                return seat === undefined
+                  ? Effect.succeed(null)
+                  : withPdfText(
+                      method === "turn/steer"
+                        ? params
+                        : seat.full
+                          ? fullSessionTurnParams(params)
+                          : confinedTurnParams(params),
+                    );
               if (method === "thread/inject_items")
                 return Effect.succeed(seat === undefined ? null : withoutT3Guidance(params));
               return THREAD_METHODS.has(method) ? threadParams(params) : Effect.succeed(null);
