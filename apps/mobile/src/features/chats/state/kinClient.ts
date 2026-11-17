@@ -84,6 +84,10 @@ import {
 import type { KinChatState } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "@t3tools/client-runtime/kin/kinDocsStream";
 import {
+  KIN_MONEY_LIVE_LABEL,
+  kinMoneyLiveStream,
+} from "@t3tools/client-runtime/kin/kinMoneyStream";
+import {
   KIN_PULSE_LIVE_LABEL,
   kinPulseLiveStream,
 } from "@t3tools/client-runtime/kin/kinPulseStream";
@@ -1472,6 +1476,13 @@ export const kinClient = {
   }),
   /** Whether the host streams Needs attention; null until its refreshes say. */
   attentionStreamed: kinRefreshOn.serves("pulse"),
+  /** Money's parts as the host streams them to the owner level (`useKinMoneyLive`). */
+  moneyLive: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
+    label: KIN_MONEY_LIVE_LABEL,
+    subscribe: kinMoneyLiveStream,
+  }),
+  /** Whether the host streams Money; null until its refreshes say. */
+  moneyStreamed: kinRefreshOn.serves("money"),
   attentionHandle: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:pulse:handle",
     tag: "kin.pulse.handle",

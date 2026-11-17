@@ -16,9 +16,8 @@ import { kinRatesOf } from "@t3tools/client-runtime/kin/kinCurrency";
 import { kinWorkAgent, type KinWorkPlace } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
 import {
-  createKinPagedList,
+  createKinListEntries,
   kinPagedListInitial,
-  mapPage,
   type KinPagedListState,
 } from "@t3tools/client-runtime/kin/kinWorkList";
 import type {
@@ -45,8 +44,14 @@ import { useAtomCommand } from "../../../state/use-atom-command";
 import { setComposerDraftText } from "../../../state/use-composer-drafts";
 import { kinDraftKey } from "../components/KinComposer";
 import { kinClient } from "./kinClient";
+import { useKinMoneyLive } from "./useKinMoneyLive";
 import { kinHostConnected } from "./useKinHost";
-import { kinWorkChoicesAtom, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import {
+  kinWorkChoicesAtom,
+  kinWorkLiveAtom,
+  type KinWorkDirectory,
+  type KinWorkTarget,
+} from "./useKinWork";
 
 const noListsAtom: Atom.Atom<AsyncResult.AsyncResult<KinListsResult, unknown>> = Atom.make(
   AsyncResult.initial(),
@@ -97,12 +102,21 @@ export function useRereadOnChange(seq: number | null, reread: () => void) {
 /** Every list there is, as its definition. `enabled` is off for a viewer the host would refuse. */
 export function useKinLists(
   target: KinWorkTarget,
-  options: { readonly enabled: boolean; readonly archived?: boolean },
+  options: {
+    readonly enabled: boolean;
+    readonly archived?: boolean;
+    /** Money's own screen: from Money's stream where the host streams it. */
+    readonly money?: boolean;
+  },
 ) {
   const archived = options.archived === true;
-  const atom = listsAtom(target, archived);
-  const state = kinWorkReadState(useAtomValue(options.enabled ? atom : noListsAtom));
-  return { state, refresh: () => appAtomRegistry.refresh(atom) };
+  const streamed = useKinMoneyLive(target, "lists");
+  const live = options.money === true && !archived ? streamed : null;
+  const atom = live?.atom ?? listsAtom(target, archived);
+  const state = kinWorkReadState(
+    useAtomValue(options.enabled && live !== undefined ? atom : noListsAtom),
+  );
+  return { state, refresh: live?.refresh ?? (() => appAtomRegistry.refresh(atom)) };
 }
 
 export type KinListsHandle = ReturnType<typeof useKinLists>;
@@ -115,9 +129,14 @@ export function useKinMoneySummary(
   target: KinWorkTarget,
   options: { readonly enabled: boolean; readonly use?: KinMoneyUse },
 ) {
-  const atom = moneyAtom(target, options.use ?? "line");
-  const state = kinWorkReadState(useAtomValue(options.enabled ? atom : noMoneyAtom));
-  return { state, refresh: () => appAtomRegistry.refresh(atom) };
+  const use = options.use ?? "line";
+  const streamed = useKinMoneyLive(target, "summary");
+  const live = use === "rows" ? null : streamed;
+  const atom = live?.atom ?? moneyAtom(target, use);
+  const state = kinWorkReadState(
+    useAtomValue(options.enabled && live !== undefined ? atom : noMoneyAtom),
+  );
+  return { state, refresh: live?.refresh ?? (() => appAtomRegistry.refresh(atom)) };
 }
 
 const noChoicesAtom: ReturnType<typeof kinWorkChoicesAtom> = Atom.make(AsyncResult.initial());
@@ -165,21 +184,22 @@ export function useKinListEntries(
     readonly totals: KinListTotals;
   } | null>(null);
   const [entries] = useState(() =>
-    createKinPagedList<KinListFilter, KinRecord>({
+    createKinListEntries<KinListFilter>({
       initial,
       sameFilter: kinListSameFilter,
-      idOf: (record) => record.recordId,
+      query: (filter) => kinListQuery(orgId, list, filter),
       onChange: setState,
       schedule,
-      read: async (filter, page) => {
-        const result = await kinClient.workList.run(appAtomRegistry, {
-          environmentId,
-          input: { ...kinListQuery(orgId, list, filter), ...page },
-        });
+      read: async (input, filter) => {
+        const result = await kinClient.workList.run(appAtomRegistry, { environmentId, input });
         if (AsyncResult.isSuccess(result) && result.value.totals !== undefined)
           setTotals({ filter, totals: result.value.totals });
-        return mapPage(result, (value) => ({ ...value, rows: value.records }));
+        return result;
       },
+      rows: () =>
+        appAtomRegistry
+          .get(kinWorkLiveAtom({ environmentId, orgId }))
+          .pipe(AsyncResult.value, Option.getOrNull)?.rows ?? null,
     }),
   );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- starts the list's reads from the host when it shows, and abandons what is in flight when it leaves
@@ -419,12 +439,14 @@ const noRecipesAtom: ReturnType<typeof kinClient.recipes> = Atom.make(AsyncResul
 
 /** Money's receipts, newest first, kept current by Work's changes. */
 export function useKinReceipts(target: KinWorkTarget, options: { readonly enabled: boolean }) {
-  const atom = kinClient.receipts({
-    environmentId: target.environmentId,
-    input: { orgId: target.orgId },
-  });
-  const state = kinWorkReadState(useAtomValue(options.enabled ? atom : noReceiptsAtom));
-  return { state, refresh: () => appAtomRegistry.refresh(atom) };
+  const live = useKinMoneyLive(target, "receipts");
+  const atom =
+    live?.atom ??
+    kinClient.receipts({ environmentId: target.environmentId, input: { orgId: target.orgId } });
+  const state = kinWorkReadState(
+    useAtomValue(options.enabled && live !== undefined ? atom : noReceiptsAtom),
+  );
+  return { state, refresh: live?.refresh ?? (() => appAtomRegistry.refresh(atom)) };
 }
 
 /** The company's document templates; `enabled` is off where the host would refuse. */

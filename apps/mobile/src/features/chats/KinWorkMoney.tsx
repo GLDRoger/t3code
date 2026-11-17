@@ -382,7 +382,7 @@ export function KinMoneyArea(props: Shared) {
     enabled: true,
     use: datesAllowed ? "screen" : "rows",
   });
-  const lists = useKinLists(target, { enabled: true });
+  const lists = useKinLists(target, { enabled: true, money: true });
   const agent = useKinAskAgent(target);
   const rates = useKinRates(target);
   const ratesAllowed = useAtomValue(kinClient.companyRead.permissionAtom(target.environmentId));

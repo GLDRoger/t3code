@@ -13,11 +13,12 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { KIN_WORK_DEFAULT_FILTER } from "./kinWork.ts";
 import {
   KIN_WORK_PAGE,
+  createKinListEntries,
   createKinListKeeper,
   createKinWorkList,
   type KinWorkList,
@@ -293,5 +294,58 @@ describe("createKinWorkList", () => {
     keeper.hide(again);
     clock += 10 * 60_000;
     expect(keeper.take("tasks", () => harness().list)).not.toBe(first);
+  });
+});
+
+describe("createKinListEntries", () => {
+  it("holds a quotes page through a task or invoice changing, and reads again for a quote", async () => {
+    let rows = kinWorkRowsStart(7);
+    const asked: Array<KinWorkListInput> = [];
+    const quote = (n: number): KinRecord => ({ ...record(n), key: `QT-${n}` });
+    const entries = createKinListEntries({
+      initial: { text: "" },
+      sameFilter: (a, b) => a.text === b.text,
+      query: () => ({ orgId, list: "quotes", open: true }),
+      read: (input) => {
+        asked.push(input);
+        return Promise.resolve(
+          AsyncResult.success({ ...page(1, 2, 2, 7), records: [quote(1), quote(2)] }),
+        );
+      },
+      onChange: () => {},
+      schedule: () => () => {},
+      rows: () => rows,
+    });
+    entries.start();
+    await vi.waitFor(() => expect(entries.getState().seq).toBe(7));
+    expect(asked).toHaveLength(1);
+
+    rows = kinApplyWorkRow(
+      rows,
+      { _tag: "upsert", seq: 8, list: "work", record: kinCompactRecord(record(9)), fresh: true },
+      orgId,
+    );
+    entries.changed(8);
+    rows = kinApplyWorkRow(
+      rows,
+      {
+        _tag: "upsert",
+        seq: 9,
+        list: "invoices",
+        record: kinCompactRecord({ ...record(3), key: "INV-3" }),
+      },
+      orgId,
+    );
+    entries.changed(9);
+    expect(asked).toHaveLength(1);
+    expect(entries.getState()).toMatchObject({ seq: 9, total: 2 });
+
+    rows = kinApplyWorkRow(
+      rows,
+      { _tag: "upsert", seq: 10, list: "quotes", record: kinCompactRecord(quote(1)) },
+      orgId,
+    );
+    entries.changed(10);
+    expect(asked).toHaveLength(2);
   });
 });

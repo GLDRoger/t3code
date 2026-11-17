@@ -415,6 +415,26 @@ export const makeDocsStream = Effect.fn("KinDocs.makeStream")(function* (
 ) {
   const team = yield* reader(people, input.orgId);
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
+  const sql = yield* SqlClient.SqlClient;
+  /**
+   * A teammate's listed docs, as last told: a project's people or holders moving shows or hides its
+   * docs with no change to them, and only a doc in here is ever named as gone.
+   */
+  const seen = new Set<string>();
+  /** The docs this teammate's Docs list shows now, by key. */
+  const listedKeys = Effect.fnUntraced(function* () {
+    const where = yield* listWhere(viewer, { orgId: input.orgId, ...DOCS_SHELF });
+    const rows = yield* sql<{ key: string }>`SELECT r.key FROM kin_records r
+      WHERE ${where} ORDER BY r.key`.pipe(workFailure);
+    return new Set(rows.map((one) => one.key));
+  });
+  /** `seen` as a fresh read lists them, after which the client holds that read. */
+  const reseen = Effect.fnUntraced(function* () {
+    seen.clear();
+    if (team === undefined || input.acceptRows !== true) return;
+    for (const key of yield* listedKeys()) seen.add(key);
+  });
+  yield* reseen();
   const plain = (seq: number, key?: string): KinDocsEvent => ({
     _tag: "changed",
     seq,
@@ -437,25 +457,59 @@ export const makeDocsStream = Effect.fn("KinDocs.makeStream")(function* (
     const seq = tick.team?.get(team);
     return seq === undefined ? null : { seq, key: tick.key };
   });
+  /**
+   * A teammate's docs a tick may have shown or hidden through a project: one that moved who holds
+   * work there, or a project's own change (its people, its lead). Each at their number.
+   */
+  const throughProjects = Effect.fnUntraced(function* (tick: Tick) {
+    if (team === undefined || tick.key === undefined || tick.key.startsWith(DOC_KEY)) return [];
+    const seq = tick.team?.get(team);
+    if (seq === undefined || ((tick.projects ?? []).length === 0 && tick.registerId !== "projects"))
+      return [];
+    const now = yield* listedKeys();
+    return [...new Set([...now, ...seen])]
+      .filter((key) => now.has(key) !== seen.has(key))
+      .map((key) => ({ seq, key, moved: true }));
+  });
   const burst = Effect.fnUntraced(function* (ticks: ReadonlyArray<Tick>) {
-    const changes = (yield* Effect.forEach(ticks, mine)).filter((one) => one !== null);
+    const changes: Array<{
+      readonly seq: number;
+      readonly key?: string;
+      readonly moved?: boolean;
+    }> = (yield* Effect.forEach(ticks, mine)).filter((one) => one !== null);
     if (input.acceptRows !== true) return changes.map((one) => plain(one.seq, one.key));
+    for (const tick of ticks) changes.push(...(yield* throughProjects(tick)));
     if (changes.length === 0) return [];
     if ((yield* reader(people, input.orgId)) !== team)
       return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
-    const keyed = new Map<string, number>();
-    for (const one of changes) if (one.key !== undefined) keyed.set(one.key, one.seq);
+    // A doc's own change goes out whatever it shows; one its project moved, only if that showed
+    // or hid it.
+    const keyed = new Map<string, { seq: number; moved: boolean }>();
+    for (const one of changes)
+      if (one.key !== undefined) {
+        const held = keyed.get(one.key);
+        keyed.set(one.key, {
+          seq: Math.max(held?.seq ?? 0, one.seq),
+          moved: (held?.moved ?? true) && one.moved === true,
+        });
+      }
     const latest = Math.max(...changes.map((one) => one.seq));
     // Too many to send whole, or a change no doc names: one read is cheaper and right.
-    if (keyed.size > DOCS_ROWS_BURST || changes.some((one) => one.key === undefined))
+    if (keyed.size > DOCS_ROWS_BURST || changes.some((one) => one.key === undefined)) {
+      yield* reseen();
       return [plain(latest)];
-    return yield* Effect.forEach(
-      [...keyed].sort((a, b) => a[1] - b[1]),
-      ([key, seq]) =>
-        listedOf(input.orgId, viewer, key).pipe(
-          Effect.map((listed) => ({ ...plain(seq, key), ...listed })),
-        ),
-    );
+    }
+    const out: Array<KinDocsEvent> = [];
+    for (const [key, { seq, moved }] of [...keyed].sort((a, b) => a[1].seq - b[1].seq)) {
+      const listed = yield* listedOf(input.orgId, viewer, key);
+      const was = seen.has(key);
+      const shown = "row" in listed;
+      if (shown) seen.add(key);
+      else seen.delete(key);
+      if (moved && shown === was) continue;
+      out.push({ ...plain(seq, key), ...listed });
+    }
+    return out;
   });
   return { burst };
 });

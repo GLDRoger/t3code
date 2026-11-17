@@ -177,7 +177,7 @@ export function KinWorkMoney(
   const { state, refresh } = useKinMoneySummary(props, { enabled: true, use: "screen" });
   const agent = useKinAskAgent(props);
   const rates = useKinRates(props);
-  const goals = useKinGoals(props, { enabled: true });
+  const goals = useKinGoals(props, { enabled: true, money: true });
   const canBudget = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(props.environmentId));
   const [adding, setAdding] = useState<"goal" | "budget" | "receipt" | null>(null);

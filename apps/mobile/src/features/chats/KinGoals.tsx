@@ -51,7 +51,7 @@ function GoalBar(props: {
 /** The company's goals, one folded row in Money; absent with none (Money's Add makes one). */
 export function KinGoals(props: KinWorkTarget & { readonly seq: number | null }) {
   const navigation = useNavigation();
-  const goals = useKinGoals(props, { enabled: true });
+  const goals = useKinGoals(props, { enabled: true, money: true });
   const now = new Date(useNowMinuteMs());
   if (goals.state._tag !== "ready") return null;
   const list = goals.state.value.goals;

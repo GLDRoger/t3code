@@ -17,6 +17,7 @@ import { appAtomRegistry } from "../../../state/atom-registry";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "./kinClient";
 import { kinHostConnected } from "./useKinHost";
+import { useKinMoneyLive } from "./useKinMoneyLive";
 import type { KinWorkTarget } from "./useKinWork";
 
 const none = <A>(): Atom.Atom<AsyncResult.AsyncResult<A, unknown>> =>
@@ -32,22 +33,33 @@ const outlookAtom = ({ environmentId, orgId }: KinWorkTarget) =>
 const budgetsAtom = ({ environmentId, orgId }: KinWorkTarget) =>
   kinClient.workBudgets({ environmentId, input: { orgId } });
 
-/** A Money answer, read again when its topic moves and whenever Work changes. */
+/**
+ * A Money answer: from Money's stream where the host streams it to this viewer, else read again
+ * when its topic moves and whenever a money list changes.
+ */
 function useAnswer<A>(
-  atom: Atom.Atom<AsyncResult.AsyncResult<A, unknown>>,
+  read: Atom.Atom<AsyncResult.AsyncResult<A, unknown>>,
+  live:
+    | {
+        readonly atom: Atom.Atom<AsyncResult.AsyncResult<A, unknown>>;
+        readonly refresh: () => void;
+      }
+    | null
+    | undefined,
   fallback: Atom.Atom<AsyncResult.AsyncResult<A, unknown>>,
   enabled: boolean,
 ) {
-  const state = kinWorkReadState(useAtomValue(enabled ? atom : fallback));
-  return { state, refresh: () => appAtomRegistry.refresh(atom) };
+  const atom = live?.atom ?? read;
+  const state = kinWorkReadState(useAtomValue(enabled && live !== undefined ? atom : fallback));
+  return { state, refresh: live?.refresh ?? (() => appAtomRegistry.refresh(atom)) };
 }
 
 export const useKinCash = (target: KinWorkTarget, enabled: boolean) =>
-  useAnswer(cashAtom(target), noCash, enabled);
+  useAnswer(cashAtom(target), useKinMoneyLive(target, "cash"), noCash, enabled);
 export const useKinOutlook = (target: KinWorkTarget, enabled: boolean) =>
-  useAnswer(outlookAtom(target), noOutlook, enabled);
+  useAnswer(outlookAtom(target), useKinMoneyLive(target, "outlook"), noOutlook, enabled);
 export const useKinBudgets = (target: KinWorkTarget, enabled: boolean) =>
-  useAnswer(budgetsAtom(target), noBudgets, enabled);
+  useAnswer(budgetsAtom(target), useKinMoneyLive(target, "budgets"), noBudgets, enabled);
 
 /** The owner's set, change and removal of a budget; says why when the host refuses. */
 export function useKinBudgetSet(target: KinWorkTarget) {
