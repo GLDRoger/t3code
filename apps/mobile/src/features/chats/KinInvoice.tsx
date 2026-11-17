@@ -72,8 +72,8 @@ import {
 import { KinLinesFields } from "./KinMoneyAnswers";
 import { kinClient } from "./state/kinClient";
 import {
+  useKinHomeCurrency,
   useKinMoneyActions,
-  useKinRates,
   useKinReceipts,
   useKinRecipes,
 } from "./state/useKinMoney";
@@ -789,7 +789,7 @@ function ReceiptForm(props: KinWorkTarget) {
   const navigation = useNavigation();
   const actions = useKinMoneyActions(props);
   // A plain number is in the home currency; a typed symbol or code still names its own.
-  const home = useKinRates(props)?.home ?? KIN_DEFAULT_HOME_CURRENCY;
+  const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
   const now = new Date(useNowMinuteMs());
   const today = kinWorkDayOf(now);
   const [draft, setDraft] = useState<KinAdvanceDraft>(() => kinAdvanceDraft(today));
