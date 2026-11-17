@@ -187,7 +187,7 @@ const rowsOf = Effect.fn("KinAgentChanges.rows")(function* (
         -- A link both ways is one change: the half back to the entry linked first isn't listed.
         AND NOT (c.kind = 'linked' AND EXISTS (SELECT 1 FROM kin_record_changes p
           WHERE p.org_id = c.org_id AND p.kind = 'linked' AND p.actor_kind = c.actor_kind
-            AND p.actor_id = c.actor_id AND p.at = c.at AND p.seq < c.seq
+            AND p.actor_id = c.actor_id AND p.seq < c.seq AND p.at BETWEEN c.at - 5000 AND c.at
             AND p.record_id = json_extract(c.fields_json, '$[0].to')
             AND json_extract(p.fields_json, '$[0].to') = c.record_id))
       ORDER BY c.seq DESC LIMIT ${AGENT_CHANGES_SHOWN}`;

@@ -2654,6 +2654,14 @@ it.effect(
         body: "Invented.",
       });
       yield* LeadDocs.link(scope, { key: brief.key, sourceEventId: "ask-event", to: ["W-1"] });
+      const sql = yield* SqlClient.SqlClient;
+      // Off the test clock, the half back is written a moment after the first.
+      const [w1] = yield* sql<{ id: string }>`SELECT record_id AS id FROM kin_records
+        WHERE org_id = ${orgId} AND key = 'W-1'`;
+      yield* sql`UPDATE kin_record_changes SET at = at + 2
+        WHERE org_id = ${orgId} AND record_id = ${w1!.id} AND kind = 'linked'`;
+      yield* sql`UPDATE kin_record_links SET created_at = created_at + 2
+        WHERE org_id = ${orgId} AND record_id = ${w1!.id} AND kind = 'record'`;
       const links = yield* ownerLevelAgentChanges(orgId, lead).pipe(
         Effect.map((all) => all.filter((change) => change.kind === "linked")),
       );
@@ -2662,7 +2670,6 @@ it.effect(
         [[brief.key, true]],
       );
       yield* undo(links[0]!.seq);
-      const sql = yield* SqlClient.SqlClient;
       const [left] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_record_links l
         JOIN kin_records r ON r.org_id = l.org_id AND r.key IN (${brief.key}, 'W-1')
         WHERE l.org_id = ${orgId} AND l.kind = 'record'

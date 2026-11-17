@@ -1752,14 +1752,24 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${orgId} AND record_id = ${recordId} AND kind = ${link.kind}
             AND created_at = ${link.at} AND COALESCE(label, target) = ${link.shown}`;
         if (made === undefined) return false;
+        // The half back is written in its own moment of the same call, so a few ms either side.
         const halves = [
-          { recordId, target: made.target },
-          ...(link.kind === "record" ? [{ recordId: made.target, target: recordId }] : []),
+          { recordId, target: made.target, from: link.at, to: link.at },
+          ...(link.kind === "record"
+            ? [
+                {
+                  recordId: made.target,
+                  target: recordId,
+                  from: link.at - 5000,
+                  to: link.at + 5000,
+                },
+              ]
+            : []),
         ];
         for (const half of halves) {
           const [gone] = yield* sql<{ shown: string }>`DELETE FROM kin_record_links
             WHERE org_id = ${orgId} AND record_id = ${half.recordId} AND kind = ${link.kind}
-              AND target = ${half.target} AND created_at = ${link.at}
+              AND target = ${half.target} AND created_at BETWEEN ${half.from} AND ${half.to}
             RETURNING COALESCE(label, target) AS shown`;
           const [row] = yield* sql<{ rev: number; key: string }>`SELECT rev, key FROM kin_records
             WHERE org_id = ${orgId} AND record_id = ${half.recordId}`;
