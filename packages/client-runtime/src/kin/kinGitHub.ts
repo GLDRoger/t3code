@@ -2,6 +2,8 @@ import {
   KinConnectionKey,
   type KinGitHubAgents,
   type KinGitHubAppAccount,
+  type KinGitHubAppReposResult,
+  type KinGitHubAppReposSetInput,
   type KinGitHubConnectInput,
   type KinGitHubInput,
   type KinGitHubRepo,
@@ -184,6 +186,8 @@ export const KIN_GITHUB_WATCH_COPY = {
   showRepos: (count: number) => `Show repos (${count})`,
   hideRepos: "Hide repos",
   loadFailed: "Couldn't load the repo list",
+  asApp: "As the App",
+  asYou: "As you",
 } as const;
 
 const plural = (count: number, one: string) => `${count} ${count === 1 ? one : `${one}s`}`;
@@ -253,6 +257,66 @@ export interface KinGitHubAccountRow {
     /** The page asks which repos: the hint under the rows says what to pick. */
     readonly picksRepos: boolean;
   } | null;
+  /** The App's repos here are picked one by one, and this login may pick them from Kin. */
+  readonly pickable: boolean;
+  readonly watched: number;
+  /** The installation's page on GitHub, offered when GitHub refuses a change made from Kin. */
+  readonly settingsUrl: string | null;
+}
+
+/** Choosing the App's repos one by one on an account, from Kin. */
+export const KIN_GITHUB_APP_REPOS_COPY = {
+  choose: (count: number) => `Choose repos (${count})`,
+  hide: "Hide repos",
+  hint: "Only the repos you pick. Kin changes them on GitHub with your login, and new repos aren't added.",
+  search: "Find a repo",
+  addAll: "Add all watched repos",
+  removeAll: "Remove all",
+  appOn: (repo: string) => `${repo}: the App works here`,
+  none: "No watched repo matches.",
+  openOnGitHub: "Open on GitHub",
+} as const;
+
+/** The account's watched repos that match `query`, by name. */
+export function kinGitHubAccountRepos(
+  repos: ReadonlyArray<KinGitHubRepo>,
+  account: string,
+  query: string,
+): ReadonlyArray<KinGitHubRepo> {
+  const prefix = `${account.toLowerCase()}/`;
+  const wanted = query.trim().toLowerCase();
+  return repos.filter(
+    (repo) =>
+      repo.watched &&
+      repo.repo.toLowerCase().startsWith(prefix) &&
+      (wanted === "" || repo.repo.toLowerCase().includes(wanted)),
+  );
+}
+
+/** Puts the App on repos of one account or takes it off, answered in plain words. */
+export function createKinGitHubAppRepoActions(options: {
+  readonly orgId: KinOrgId;
+  readonly set: (input: KinGitHubAppReposSetInput) => Sent<KinGitHubAppReposResult>;
+  readonly refresh: () => void;
+}) {
+  return async (
+    account: string,
+    repos: ReadonlyArray<string>,
+    on: boolean,
+  ): Promise<{ readonly changed: number; readonly problem: string | null }> => {
+    const result = await options.set({ orgId: options.orgId, account, repos: [...repos], on });
+    options.refresh();
+    return AsyncResult.isSuccess(result)
+      ? result.value
+      : {
+          changed: 0,
+          problem: kinFailureText(
+            squashAtomCommandFailure(result),
+            "Couldn't change where the App works.",
+            { device: "This device isn't allowed to change where Kin's GitHub App works." },
+          ),
+        };
+  };
 }
 
 const reposWord = (count: number) => plural(count, "watched repo");
@@ -265,6 +329,9 @@ export function kinGitHubAccountRows(agents: KinGitHubAgents): ReadonlyArray<Kin
     key: row.account.toLowerCase(),
     account: row.account,
     ...accountState(row, app, agents),
+    pickable: row.installation === "selected" && row.canManage !== false,
+    watched: row.watched,
+    settingsUrl: row.settingsUrl,
   }));
 }
 
@@ -272,7 +339,7 @@ function accountState(
   row: KinGitHubAppAccount,
   app: string,
   agents: KinGitHubAgents,
-): Omit<KinGitHubAccountRow, "key" | "account"> {
+): Omit<KinGitHubAccountRow, "key" | "account" | "pickable" | "watched" | "settingsUrl"> {
   const ownersOnly = `Only an owner of ${row.account} can change this on GitHub.`;
   const link = (label: string, url: string | null, picksRepos = true) =>
     url === null ? null : { label, url, picksRepos };

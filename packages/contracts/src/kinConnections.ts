@@ -460,11 +460,33 @@ export const KinGitHubRepo = Schema.Struct({
   fork: Schema.Boolean,
   /** An @-mention of the owner's own login here calls an agent too. */
   mentions: Schema.Boolean,
+  /** Who agents work as here: Kin's GitHub App where it reaches the repo, else the owner. */
+  agentsAs: Schema.optional(Schema.Literals(["app", "owner"])),
 });
 export type KinGitHubRepo = typeof KinGitHubRepo.Type;
 
-export const KinGitHubRepos = Schema.Struct({ repos: Schema.Array(KinGitHubRepo) });
+export const KinGitHubRepos = Schema.Struct({
+  repos: Schema.Array(KinGitHubRepo),
+  /** For an agent's own look: where Kin's GitHub App stands on each account, and its GitHub page. */
+  appAccounts: Schema.optional(Schema.Array(KinGitHubAppAccount)),
+});
 export type KinGitHubRepos = typeof KinGitHubRepos.Type;
+
+/** Puts Kin's GitHub App on these repos of one account, or takes it off, with the owner's login. */
+export const KinGitHubAppReposSetInput = Schema.Struct({
+  orgId: KinOrgId,
+  account: TrimmedNonEmptyString,
+  repos: Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(100)),
+  on: Schema.Boolean,
+});
+export type KinGitHubAppReposSetInput = typeof KinGitHubAppReposSetInput.Type;
+
+export const KinGitHubAppReposResult = Schema.Struct({
+  changed: NonNegativeInt,
+  /** Why GitHub refused the rest, in plain words; null when every repo changed. */
+  problem: Schema.NullOr(Schema.String),
+});
+export type KinGitHubAppReposResult = typeof KinGitHubAppReposResult.Type;
 
 /** One repo's switch; `repo` null sets every repo back to the default (watch everything). */
 export const KinGitHubRepoSetInput = Schema.Struct({
@@ -589,6 +611,11 @@ export const KinConnectionRpcs = [
     success: KinGitHubRepos,
     error: KinError,
   }),
+  Rpc.make("kin.github.app.repos.set", {
+    payload: KinGitHubAppReposSetInput,
+    success: KinGitHubAppReposResult,
+    error: KinError,
+  }),
 ] as const;
 
 // Owner-level settings (`KIN_RPC_ACCESS`): what outside services agents reach, and with what key.
@@ -614,4 +641,5 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.github.disconnect": AuthKinChatScope,
   "kin.github.repos": AuthKinChatScope,
   "kin.github.repos.set": AuthKinChatScope,
+  "kin.github.app.repos.set": AuthKinChatScope,
 } as const;

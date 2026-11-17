@@ -88,7 +88,7 @@ const parseGhApi = (out: string): ApiAnswer => {
 };
 
 export interface ApiRequest {
-  readonly method?: "GET" | "POST" | "PUT" | "PATCH";
+  readonly method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly path: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: unknown;

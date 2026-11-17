@@ -11,7 +11,9 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
+import { withAgentsAs } from "../../github/appRepos.ts";
 import { ghApiLayer, ownerGitHubReview } from "../../github/GitHubWatch.ts";
+import { agentsView, gitHubApp } from "../../github/KinGitHubApp.ts";
 import { isMemoryRepo, repoList, setRepo } from "../../github/githubWatchStore.ts";
 import { linkGithubItem } from "../../github/githubLink.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
@@ -299,8 +301,16 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       function* (input) {
         const lead = yield* resolveLead(yield* McpInvocationContext);
         yield* admitted(lead, "kin_github_watch", input);
-        const repos = yield* repoList(lead.orgId);
-        if (input.repo === undefined) return { repos: repos.slice(0, 100) };
+        const app = yield* gitHubApp;
+        const state = Option.isSome(app) ? yield* app.value.state() : ({ _tag: "none" } as const);
+        const repos = withAgentsAs(yield* repoList(lead.orgId), state);
+        if (input.repo === undefined) {
+          const accounts = (yield* agentsView(app, lead.orgId)).accounts;
+          return {
+            repos: repos.slice(0, 100),
+            ...(accounts === undefined ? {} : { appAccounts: accounts }),
+          };
+        }
         const named = input.repo.toLowerCase();
         if (yield* isMemoryRepo(named))
           return yield* new KinChatError({

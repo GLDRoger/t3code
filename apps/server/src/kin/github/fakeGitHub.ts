@@ -10,6 +10,8 @@ export interface FakeRepo {
   private: boolean;
   fork: boolean;
   push: boolean;
+  /** Admin on the repo, which GitHub wants before it adds or removes it on an installation. */
+  admin?: boolean;
 }
 export interface FakeItem {
   repo: string;
@@ -80,6 +82,8 @@ export interface FakeAccount {
 export interface FakeWorld {
   user: string;
   accounts?: FakeAccount[];
+  /** GitHub refuses the user's login on an installation's repos, as for a token it won't take there. */
+  installationEditsRefused?: boolean;
   /** Kin's GitHub App, when the test sets one up. */
   app?: FakeApp | null;
   now: number;
@@ -514,6 +518,49 @@ export class FakeGitHub {
           permissions: { push: repo.push },
         })),
       );
+    const edit = /^user\/installations\/(\d+)\/repositories\/(\d+)$/.exec(path);
+    if (edit !== null && bearer === undefined && (method === "PUT" || method === "DELETE")) {
+      const target = app?.installations.find((entry) => entry.id === Number(edit[1]));
+      const repo = this.world.repos.find(
+        (entry) => this.repoId(entry.full_name) === Number(edit[2]),
+      );
+      if (this.world.installationEditsRefused === true)
+        return {
+          status: 403,
+          headers: {},
+          body: { message: "Resource not accessible by personal access token" },
+        };
+      if (target === undefined || repo === undefined) return missing;
+      if (repo.admin === false)
+        return {
+          status: 403,
+          headers: {},
+          body: { message: "Must have admin rights to Repository." },
+        };
+      const name = repo.full_name;
+      const picked = target.repos.some((entry) => entry.toLowerCase() === name.toLowerCase());
+      const done: FakeAnswer = { status: 204, headers: {}, body: null };
+      if (method === "PUT") {
+        if (target.selection === "all" || picked) return { status: 304, headers: {}, body: null };
+        target.repos.push(name);
+        return done;
+      }
+      if (target.selection === "all")
+        return {
+          status: 422,
+          headers: {},
+          body: { message: "The application is installed on all repositories in this account." },
+        };
+      if (!picked) return { status: 304, headers: {}, body: null };
+      if (target.repos.length === 1)
+        return {
+          status: 422,
+          headers: {},
+          body: { message: "Cannot remove the last repository from this installation." },
+        };
+      target.repos = target.repos.filter((entry) => entry.toLowerCase() !== name.toLowerCase());
+      return done;
+    }
     if (method === "GET" && path === "user/memberships/orgs") {
       const orgs = new Map<string, FakeAccount>();
       for (const repo of this.world.repos) {
