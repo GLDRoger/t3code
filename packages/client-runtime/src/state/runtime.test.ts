@@ -1302,6 +1302,24 @@ describe("environment query lifecycle", () => {
           const registry = yield* mountEnvironmentQuery(harness.atom);
           expect(yield* readEnvironmentQuery(registry, harness.atom)).toBe(1);
 
+          // A reconnect on the same supervisor (server restart, network back) keeps the answer.
+          yield* SubscriptionRef.set(
+            harness.supervisorState,
+            queryConnectionState({ phase: "connecting", stage: "opening" }),
+          );
+          yield* Effect.yieldNow;
+          yield* SubscriptionRef.set(
+            harness.supervisorSession,
+            Option.some({ ...QUERY_RPC_SESSION }),
+          );
+          yield* SubscriptionRef.set(
+            harness.supervisorState,
+            queryConnectionState({ generation: 2 }),
+          );
+          yield* Effect.yieldNow;
+          expect(executions).toBe(1);
+          expect(Option.getOrNull(AsyncResult.value(registry.get(harness.atom)))).toBe(1);
+
           // Signed out and someone else paired on the same host: the first person's answer is gone
           // at once, not shown while the second person's is read.
           yield* harness.replaceSupervisor();
