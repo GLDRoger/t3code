@@ -1,26 +1,23 @@
 import type { KinMailAddress } from "@t3tools/contracts";
-import { McpSchema } from "effect/ai";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import * as Schema from "effect/Schema";
 
-import { KinGatewayError } from "./McpGateway.ts";
 import {
-  firstLines,
   isPlainAddress,
-  MAIL_TOOL,
+  type MailCalendarEvent,
+  type MailContext,
   type MailEvent,
-  type Mailbox,
-  type MailProvider,
-  ownAddress,
-  quoteOf,
-  receivedAmong,
+  type MailMessage,
+  type MailVendor,
 } from "./MailProvider.ts";
-import { htmlToText, looksLikeSignInMail, senderCheck, WITHHELD } from "./MailText.ts";
+import { htmlToText } from "./MailText.ts";
+import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
-import type { ListedTool } from "./Pinning.ts";
 
 /**
  * Microsoft's sign-in for work or school accounts in any organization and personal accounts.
@@ -54,165 +51,10 @@ const canSend = (granted: string | undefined) => {
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0/";
 const GRAPH = `${GRAPH_ROOT}me`;
 
-const read = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
-const write = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
-const max = (limit: number) => ({
-  type: "integer",
-  minimum: 1,
-  maximum: limit,
-  description: `At most ${limit}.`,
-});
-const pageToken = { type: "string", description: "The nextPage value of the previous answer." };
-const calendarId = {
-  type: "string",
-  description: "A calendar id; the account's main calendar when left out.",
+const MICROSOFT = {
+  name: "Microsoft",
+  refused: "The account may not allow this, or its organization blocked it.",
 };
-const addresses = (limit: number, description: string) => ({
-  type: "array",
-  items: { type: "string", description: "A plain address, such as ana@example.com." },
-  maxItems: limit,
-  description,
-});
-const attachments = {
-  type: "array",
-  items: { type: "string" },
-  maxItems: 5,
-  description:
-    "Kin's own files to attach, by key: an invoice, quote or receipt entry (its latest PDF) or a doc key.",
-};
-
-const tools = (
-  annotations: typeof read,
-  list: ReadonlyArray<{ readonly name: string } & Readonly<Record<string, unknown>>>,
-): ReadonlyArray<ListedTool> =>
-  list.map(({ name, ...rest }) => ({
-    name,
-    definition: { name, ...rest, annotations },
-    openWorld: false,
-  }));
-
-/** Kin's own Outlook tools: reads only, each pinned like any server's tools. */
-const MICROSOFT_TOOLS = tools(read, [
-  {
-    name: MAIL_TOOL.list,
-    title: "List mail",
-    description:
-      "List recent conversations in this Outlook account's inbox, newest first. Each says which account it is in and which of its addresses received it.",
-    inputSchema: { type: "object", properties: { max: max(25), pageToken } },
-  },
-  {
-    name: MAIL_TOOL.search,
-    title: "Search mail",
-    description:
-      "Search this Outlook account's mail with Outlook search words, for example from:ana@example.com subject:invoice received>=2026-11-01. With several Microsoft accounts, connection microsoft searches them all.",
-    inputSchema: {
-      type: "object",
-      properties: { query: { type: "string" }, max: max(25), pageToken },
-      required: ["query"],
-    },
-  },
-  {
-    name: MAIL_TOOL.read,
-    title: "Read a mail thread",
-    description:
-      "Read one Outlook conversation in this account: each message's sender, recipients, date, subject and text, and which of the account's addresses received it.",
-    inputSchema: {
-      type: "object",
-      properties: { threadId: { type: "string" } },
-      required: ["threadId"],
-    },
-  },
-  {
-    name: MAIL_TOOL.events,
-    title: "List calendar events",
-    description:
-      "List this account's Outlook calendar events between two times, soonest first. Without times, the next 7 days.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        timeMin: { type: "string", format: "date-time" },
-        timeMax: { type: "string", format: "date-time" },
-        query: { type: "string", description: "Words to match in the events." },
-        calendarId,
-        max: max(50),
-        pageToken,
-      },
-    },
-  },
-  {
-    name: MAIL_TOOL.event,
-    title: "Read a calendar event",
-    description: "Read one Outlook calendar event in full: time, place, guests and notes.",
-    inputSchema: {
-      type: "object",
-      properties: { eventId: { type: "string" }, calendarId },
-      required: ["eventId"],
-    },
-  },
-]);
-
-/** Kin's own Outlook tools that send: every call is a card the owner confirms. */
-const MICROSOFT_SEND_TOOLS = tools(write, [
-  {
-    name: MAIL_TOOL.send,
-    title: "Send an email",
-    description:
-      "Send a new plain-text email from this Outlook account. Pick the account, and from among its addresses, by what each is for. Nothing is sent until the owner taps Confirm on a card showing it in full.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        from: {
-          type: "string",
-          description:
-            "One of this account's addresses (kin_connection_tools lists them); its main address when left out.",
-        },
-        to: addresses(10, "Who it goes to; at least one."),
-        cc: addresses(10, "Who gets a copy."),
-        subject: { type: "string", maxLength: 300 },
-        body: { type: "string", maxLength: 20_000, description: "Plain text, in full." },
-        attachments,
-      },
-      required: ["to", "subject", "body"],
-    },
-  },
-  {
-    name: MAIL_TOOL.reply,
-    title: "Reply in a mail thread",
-    description:
-      "Reply in an Outlook conversation of this account, to whoever wrote last. It goes from the address the mail was sent to, in the same conversation, quoting the last message. Nothing is sent until the owner taps Confirm on a card showing it in full.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        threadId: { type: "string" },
-        body: { type: "string", maxLength: 20_000, description: "Plain text, in full." },
-        cc: addresses(10, "Who else gets a copy."),
-        attachments,
-      },
-      required: ["threadId", "body"],
-    },
-  },
-  {
-    name: MAIL_TOOL.saveEvent,
-    title: "Add or change a calendar event",
-    description:
-      "Add an event to this account's Outlook calendar, or change one with eventId, and send the invitations from it. Nothing is saved until the owner taps Confirm on a card showing it.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        eventId: { type: "string", description: "The event to change; leave out to add one." },
-        calendarId,
-        title: { type: "string", maxLength: 300 },
-        start: { type: "string", format: "date-time" },
-        end: { type: "string", format: "date-time" },
-        timeZone: { type: "string", description: "An IANA zone such as Asia/Kolkata." },
-        location: { type: "string", maxLength: 500 },
-        notes: { type: "string", maxLength: 8_000 },
-        invitees: addresses(50, "Who is invited; Outlook emails each one."),
-      },
-      required: ["title", "start", "end"],
-    },
-  },
-]);
 
 const field = (value: unknown, ...path: ReadonlyArray<string>): unknown =>
   path.reduce<unknown>(
@@ -221,16 +63,6 @@ const field = (value: unknown, ...path: ReadonlyArray<string>): unknown =>
   );
 const text = (value: unknown) => (typeof value === "string" ? value : undefined);
 const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ? value : []);
-const arg = (args: Readonly<Record<string, unknown>>, name: string) => {
-  const value = text(args[name])?.trim();
-  return value === "" ? undefined : value;
-};
-const limit = (args: Readonly<Record<string, unknown>>, top: number, fallback: number) => {
-  const value = Number(args.max);
-  return Number.isInteger(value) && value >= 1 ? Math.min(value, top) : fallback;
-};
-const failure = (reason: KinGatewayError["reason"], message: string) =>
-  new KinGatewayError({ reason, message });
 /** An OData string literal: single quotes doubled. */
 const odata = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
@@ -243,10 +75,9 @@ type Request = {
   readonly prefer?: string;
 };
 
-/** One Graph call; its error text is Microsoft's, so only the status reaches anyone. */
+/** One Graph call. */
 const api = Effect.fn("KinMicrosoft.api")(function* (
-  http: HttpClient.HttpClient,
-  token: string,
+  { http, token }: Pick<MailContext, "http" | "token">,
   url: string,
   request: Request = {},
 ) {
@@ -271,37 +102,11 @@ const api = Effect.fn("KinMicrosoft.api")(function* (
       Buffer.from(request.mime).toString("base64"),
       "text/plain",
     );
-  const response = yield* http
-    .execute(built)
-    .pipe(Effect.mapError(() => failure("unreachable", "Kin couldn't reach Microsoft.")));
-  if (response.status === 401)
-    return yield* failure("key_refused", "Microsoft refused the sign-in (401).");
-  if (response.status === 403)
-    return yield* failure(
-      "unreachable",
-      "Microsoft refused (403). The account may not allow this, or its organization blocked it.",
-    );
-  if (response.status === 404)
-    return yield* failure("protocol", "Microsoft has nothing with that id (404).");
-  if (response.status === 429)
-    return yield* failure("unreachable", "Microsoft says Kin is asking too often (429).");
-  if (response.status === 202 || response.status === 204) return undefined;
-  if (response.status !== 200 && response.status !== 201)
-    return yield* failure(
-      "unreachable",
-      `Microsoft answered with an error (HTTP ${response.status}).`,
-    );
-  return yield* response.json.pipe(
-    Effect.mapError(() => failure("protocol", "Microsoft sent an answer Kin couldn't read.")),
-  );
+  const response = yield* http.execute(built).pipe(Effect.mapError(() => unreached(MICROSOFT)));
+  return yield* vendorAnswer(MICROSOFT, response);
 });
 
 const nextPage = (page: unknown) => text(field(page, "@odata.nextLink")) ?? null;
-/** The agent's page token is the link Graph gave; anything else starts at the first page. */
-const pageOr = (args: Readonly<Record<string, unknown>>, first: string) => {
-  const token = arg(args, "pageToken");
-  return token === undefined ? { url: first, first: true } : { url: token, first: false };
-};
 
 const addressOf = (recipient: unknown) => text(field(recipient, "emailAddress", "address")) ?? null;
 const nameOf = (recipient: unknown) => {
@@ -323,16 +128,6 @@ const internetHeader = (message: unknown, name: string) =>
     .filter((one) => text(field(one, "name"))?.toLowerCase() === name.toLowerCase())
     .flatMap((one) => text(field(one, "value")) ?? []);
 
-const sentByMailbox = (mailbox: Mailbox, message: unknown) => {
-  const from = addressOf(field(message, "from"));
-  return from !== null && ownAddress(mailbox, from);
-};
-const receivedBy = (mailbox: Mailbox, message: unknown) =>
-  receivedAmong(mailbox, [
-    ...recipients(message, "toRecipients"),
-    ...recipients(message, "ccRecipients"),
-  ]);
-
 const bodyText = (message: unknown) => {
   const content = text(field(message, "body", "content")) ?? "";
   return text(field(message, "body", "contentType"))?.toLowerCase() === "text"
@@ -344,145 +139,45 @@ const SUMMARY =
   "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview";
 const FULL = `${SUMMARY},replyTo,internetMessageId,hasAttachments,body,internetMessageHeaders`;
 
-/** Graph lists messages; Kin shows conversations, newest first, one line each. */
-const threadsOf = (mailbox: Mailbox, messages: ReadonlyArray<unknown>, max: number) => {
-  const byConversation = new Map<string, Array<unknown>>();
-  for (const message of messages) {
-    const id = text(field(message, "conversationId"));
-    if (id === undefined) continue;
-    byConversation.set(id, [...(byConversation.get(id) ?? []), message]);
-  }
-  return [...byConversation.entries()].slice(0, max).map(([threadId, group]) => {
-    const last = group[0];
-    const incoming = group.find((message) => !sentByMailbox(mailbox, message)) ?? last;
-    const subject = text(field(last, "subject")) ?? "";
-    const preview = text(field(last, "bodyPreview")) ?? "";
-    return {
-      threadId,
-      account: mailbox.account,
-      receivedBy: receivedBy(mailbox, incoming),
-      subject,
-      from: nameOf(field(last, "from")),
-      date: text(field(last, "receivedDateTime")) ?? null,
-      messages: group.length,
-      unread: group.some((message) => field(message, "isRead") === false),
-      preview: looksLikeSignInMail(subject, preview) ? WITHHELD : preview.slice(0, 300),
-    };
-  });
-};
-
-const listThreads = Effect.fn("KinMicrosoft.listThreads")(function* (
-  http: HttpClient.HttpClient,
-  token: string,
-  mailbox: Mailbox,
-  args: Readonly<Record<string, unknown>>,
-  search: string | undefined,
-) {
-  const max = limit(args, 25, 10);
-  const page = pageOr(
-    args,
-    search === undefined ? `${GRAPH}/mailFolders/inbox/messages` : `${GRAPH}/messages`,
-  );
-  const answer = yield* api(http, token, page.url, {
-    params: page.first
-      ? {
-          $select: SUMMARY,
-          // Several messages can share a conversation, so a page reads more than it shows.
-          $top: String(Math.min(max * 3, 75)),
-          ...(search === undefined
-            ? { $orderby: "receivedDateTime desc" }
-            : { $search: `"${search.replace(/[\\"]/g, (char) => `\\${char}`)}"` }),
-        }
-      : {},
-  });
-  return {
-    account: mailbox.account,
-    threads: threadsOf(mailbox, list(field(answer, "value")), max),
-    nextPage: nextPage(answer),
-  };
-});
-
-const MESSAGE_CHARS = 12_000;
-
-const conversation = Effect.fn("KinMicrosoft.conversation")(function* (
-  http: HttpClient.HttpClient,
-  token: string,
-  mailbox: Mailbox,
-  threadId: string,
-) {
-  const answer = yield* api(http, token, `${GRAPH}/messages`, {
-    params: {
-      $filter: `conversationId eq ${odata(threadId)}`,
-      $select: FULL,
-      $top: "50",
-    },
-    prefer: 'outlook.body-content-type="html"',
-  });
-  const messages = list(field(answer, "value")).toSorted((a, b) =>
-    (text(field(a, "receivedDateTime")) ?? "").localeCompare(
-      text(field(b, "receivedDateTime")) ?? "",
-    ),
-  );
-  if (messages.length === 0)
-    return yield* failure(
-      "protocol",
-      `${mailbox.account ?? "This account"} has no thread ${threadId.slice(0, 40)}. Reply from the account the mail is in.`,
-    );
-  return messages;
-});
-
-const readThread = Effect.fn("KinMicrosoft.readThread")(function* (
-  http: HttpClient.HttpClient,
-  token: string,
-  mailbox: Mailbox,
-  threadId: string,
-) {
-  const all = yield* conversation(http, token, mailbox, threadId);
-  const incoming = all.findLast((message) => !sentByMailbox(mailbox, message)) ?? all.at(-1);
-  const messages = yield* Effect.forEach(
-    all,
-    (message) =>
-      Effect.gen(function* () {
-        const subject = text(field(message, "subject")) ?? "";
-        const body = bodyText(message);
-        const cut = body.length > MESSAGE_CHARS;
-        const files =
-          field(message, "hasAttachments") === true
-            ? yield* api(
-                http,
-                token,
-                `${GRAPH}/messages/${encodeURIComponent(text(field(message, "id")) ?? "")}/attachments`,
-                { params: { $select: "name,contentType,size" } },
-              ).pipe(Effect.orElseSucceed(() => undefined))
-            : undefined;
-        return {
-          from: nameOf(field(message, "from")),
-          to: recipientLine(message, "toRecipients"),
-          cc: recipientLine(message, "ccRecipients"),
-          date: text(field(message, "receivedDateTime")) ?? null,
-          subject,
-          senderCheck: senderCheck(internetHeader(message, "Authentication-Results")),
-          text: looksLikeSignInMail(subject, body)
-            ? WITHHELD
-            : cut
-              ? `${body.slice(0, MESSAGE_CHARS)}\n[cut: ${body.length - MESSAGE_CHARS} more characters]`
-              : body,
+const messageOf = (message: unknown, files?: unknown): MailMessage => ({
+  threadId: text(field(message, "conversationId")) ?? "",
+  from: nameOf(field(message, "from")),
+  fromAddress: addressOf(field(message, "from")),
+  to: recipients(message, "toRecipients"),
+  replyTo: recipients(message, "replyTo"),
+  toLine: recipientLine(message, "toRecipients"),
+  ccLine: recipientLine(message, "ccRecipients"),
+  deliveredTo: [...recipients(message, "toRecipients"), ...recipients(message, "ccRecipients")],
+  date: text(field(message, "receivedDateTime")) ?? null,
+  subject: text(field(message, "subject")) ?? "",
+  preview: text(field(message, "bodyPreview")) ?? "",
+  unread: field(message, "isRead") === false,
+  messageId: text(field(message, "internetMessageId")) ?? null,
+  references: internetHeader(message, "References")[0] ?? null,
+  authResults: internetHeader(message, "Authentication-Results"),
+  body:
+    field(message, "body") === undefined
+      ? null
+      : {
+          text: bodyText(message),
           attachments: list(field(files, "value")).map((file) => ({
             name: text(field(file, "name")) ?? "",
             type: text(field(file, "contentType")) ?? "unknown",
             bytes: typeof field(file, "size") === "number" ? (field(file, "size") as number) : null,
           })),
-        };
-      }),
-    { concurrency: 4 },
-  );
-  return {
-    threadId,
-    account: mailbox.account,
-    receivedBy: incoming === undefined ? mailbox.account : receivedBy(mailbox, incoming),
-    messages,
-  };
+        },
 });
+
+/** Graph lists messages, newest first; Kin shows conversations, each oldest message first. */
+const conversations = (messages: ReadonlyArray<unknown>, max: number) => {
+  const byConversation = new Map<string, Array<MailMessage>>();
+  for (const message of messages) {
+    const id = text(field(message, "conversationId"));
+    if (id === undefined) continue;
+    byConversation.set(id, [messageOf(message), ...(byConversation.get(id) ?? [])]);
+  }
+  return [...byConversation.values()].slice(0, max);
+};
 
 // Kin asks Graph for UTC, which it writes without an offset.
 const instant = (value: unknown) => {
@@ -493,7 +188,7 @@ const instant = (value: unknown) => {
     ? `${dateTime.replace(/\.\d+$/, "")}Z`
     : dateTime;
 };
-const eventSummary = (event: unknown) => ({
+const eventOf = (event: unknown): MailCalendarEvent => ({
   eventId: text(field(event, "id")) ?? "",
   summary: text(field(event, "subject")) ?? null,
   start: instant(field(event, "start")),
@@ -501,17 +196,17 @@ const eventSummary = (event: unknown) => ({
   allDay: field(event, "isAllDay") === true,
   location: text(field(event, "location", "displayName")) || null,
   organizer: addressOf(field(event, "organizer")),
-  guests: list(field(event, "attendees")).length,
-  status: field(event, "isCancelled") === true ? "cancelled" : "confirmed",
-});
-const eventDetail = (event: unknown) => ({
-  ...eventSummary(event),
-  notes: bodyText(event),
   guests: list(field(event, "attendees")).map((guest) => ({
     email: addressOf(guest),
     name: text(field(guest, "emailAddress", "name")) ?? null,
     response: text(field(guest, "status", "response")) ?? null,
   })),
+  // A delta round names a deleted event by its id alone.
+  status:
+    field(event, "@removed") !== undefined || field(event, "isCancelled") === true
+      ? "cancelled"
+      : "confirmed",
+  notes: bodyText(event),
   meeting: text(field(event, "onlineMeeting", "joinUrl")) ?? null,
   updated: text(field(event, "lastModifiedDateTime")) ?? null,
 });
@@ -521,87 +216,117 @@ const UTC = 'outlook.timezone="UTC"';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
-const calendarBase = (args: Readonly<Record<string, unknown>>) => {
-  const calendar = arg(args, "calendarId");
-  return calendar === undefined || calendar === "primary"
+const calendarBase = (calendarId: string | undefined) =>
+  calendarId === undefined || calendarId === "primary"
     ? GRAPH
-    : `${GRAPH}/calendars/${encodeURIComponent(calendar)}`;
-};
+    : `${GRAPH}/calendars/${encodeURIComponent(calendarId)}`;
+/** The agent's page token is the link Graph gave; anything else starts at the first page. */
+const pageOr = (pageToken: string | undefined, first: string) =>
+  pageToken === undefined ? { url: first, first: true } : { url: pageToken, first: false };
 
-/** Runs one Outlook tool and answers as an MCP result, so it is cut and quoted like any other. */
-const callMicrosoft = Effect.fn("KinMicrosoft.call")(function* (
-  http: HttpClient.HttpClient,
-  token: string,
-  mailbox: Mailbox,
-  tool: string,
-  args: Readonly<Record<string, unknown>>,
-  now: number,
-) {
-  const json = (value: unknown) =>
-    new McpSchema.CallToolResult({ content: [{ type: "text", text: JSON.stringify(value) }] });
-  const need = (name: string) => {
-    const value = arg(args, name);
-    return value === undefined
-      ? Effect.fail(failure("protocol", `${tool} needs ${name}.`))
-      : Effect.succeed(value);
-  };
-  switch (tool) {
-    case MAIL_TOOL.list:
-      return json(yield* listThreads(http, token, mailbox, args, undefined));
-    case MAIL_TOOL.search:
-      return json(yield* listThreads(http, token, mailbox, args, yield* need("query")));
-    case MAIL_TOOL.read:
-      return json(yield* readThread(http, token, mailbox, yield* need("threadId")));
-    case MAIL_TOOL.events: {
-      const page = pageOr(args, `${calendarBase(args)}/calendarView`);
-      const answer = yield* api(http, token, page.url, {
-        params: page.first
-          ? {
-              startDateTime: arg(args, "timeMin") ?? iso(now),
-              endDateTime: arg(args, "timeMax") ?? iso(now + 7 * DAY_MS),
-              $select: EVENT_FIELDS,
-              $orderby: "start/dateTime",
-              $top: String(limit(args, 50, 25)),
-            }
-          : {},
-        prefer: UTC,
-      });
-      // calendarView has no word search, so words match what each event shows.
-      const words = (arg(args, "query") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
-      const events = list(field(answer, "value")).filter((event) => {
-        const shown = [
-          text(field(event, "subject")),
-          text(field(event, "location", "displayName")),
-          text(field(event, "bodyPreview")),
-        ]
-          .join(" ")
-          .toLowerCase();
-        return words.every((word) => shown.includes(word));
-      });
-      return json({
-        account: mailbox.account,
-        events: events.map(eventSummary),
-        nextPage: nextPage(answer),
-      });
-    }
-    case MAIL_TOOL.event: {
-      const eventId = yield* need("eventId");
-      return json({
-        account: mailbox.account,
-        ...eventDetail(
-          yield* api(http, token, `${calendarBase(args)}/events/${encodeURIComponent(eventId)}`, {
-            prefer: `${UTC}, outlook.body-content-type="html"`,
-          }),
+const conversation = (context: MailContext, threadId: string, files: boolean) =>
+  api(context, `${GRAPH}/messages`, {
+    params: {
+      $filter: `conversationId eq ${odata(threadId)}`,
+      $select: FULL,
+      $top: "50",
+    },
+    prefer: 'outlook.body-content-type="html"',
+  }).pipe(
+    Effect.flatMap((answer) =>
+      Effect.forEach(
+        list(field(answer, "value")).toSorted((a, b) =>
+          (text(field(a, "receivedDateTime")) ?? "").localeCompare(
+            text(field(b, "receivedDateTime")) ?? "",
+          ),
         ),
+        (message) =>
+          files && field(message, "hasAttachments") === true
+            ? api(
+                context,
+                `${GRAPH}/messages/${encodeURIComponent(text(field(message, "id")) ?? "")}/attachments`,
+                { params: { $select: "name,contentType,size" } },
+              ).pipe(
+                Effect.orElseSucceed(() => undefined),
+                Effect.map((found) => messageOf(message, found)),
+              )
+            : Effect.succeed(messageOf(message)),
+        { concurrency: 4 },
+      ),
+    ),
+  );
+
+/**
+ * Changed, cancelled and deleted events, each occurrence of a series on its own: Graph's delta of
+ * the calendar view. Only a later round names deletions, so the cursor keeps the round's link and
+ * the end of its window; a round starts again near that end or when Graph forgot it (410).
+ */
+const DELTA_BACK = 30 * DAY_MS;
+const DELTA_AHEAD = 400 * DAY_MS;
+const DELTA_PAGES = 10;
+const DeltaCursor = Schema.fromJsonString(
+  Schema.Struct({ link: Schema.String, until: Schema.Number }),
+);
+const readDeltaCursor = Schema.decodeOption(DeltaCursor);
+const deltaCursor = (cursor: string | null) =>
+  cursor === null ? undefined : Option.getOrUndefined(readDeltaCursor(cursor));
+const deltaCursorText = Schema.encodeSync(DeltaCursor);
+const calendarChanges = Effect.fn("KinMicrosoft.calendarChanges")(function* (
+  context: MailContext,
+  since: number,
+  cursor: string | null,
+) {
+  const round = Effect.fn("KinMicrosoft.deltaRound")(function* (
+    held: { readonly link: string; readonly until: number } | undefined,
+  ) {
+    const until = held?.until ?? since + DELTA_AHEAD;
+    let url = held?.link ?? `${GRAPH}/calendarView/delta`;
+    let params: Request["params"] =
+      held === undefined ? { startDateTime: iso(since - DELTA_BACK), endDateTime: iso(until) } : {};
+    const events: Array<unknown> = [];
+    let link = held?.link;
+    for (let page = 0; page < DELTA_PAGES; page++) {
+      const answer = yield* api(context, url, {
+        params,
+        prefer: `${UTC}, odata.maxpagesize=50`,
       });
+      events.push(...list(field(answer, "value")));
+      const delta = text(field(answer, "@odata.deltaLink"));
+      const next = text(field(answer, "@odata.nextLink"));
+      link = delta ?? next ?? link;
+      if (delta !== undefined || next === undefined) break;
+      url = next;
+      params = {};
     }
-    default:
-      return yield* failure("protocol", `Microsoft has no tool named ${tool}.`);
-  }
+    return {
+      events,
+      cursor: link === undefined ? null : deltaCursorText({ link, until }),
+    };
+  });
+  const held = deltaCursor(cursor);
+  const found = yield* held === undefined || held.until - DELTA_BACK < since
+    ? round(undefined)
+    : round(held).pipe(
+        Effect.catchIf(
+          (error) => answeredWith(error, 410),
+          () => round(undefined),
+        ),
+      );
+  return {
+    events: found.events
+      .filter(
+        (event) =>
+          field(event, "@removed") !== undefined ||
+          Date.parse(text(field(event, "lastModifiedDateTime")) ?? "") >= since,
+      )
+      .slice(0, 50)
+      .map(eventOf),
+    cursor: found.cursor,
+  };
 });
 
 const profile = (http: HttpClient.HttpClient, token: string) =>
-  api(http, token, GRAPH, {
+  api({ http, token }, GRAPH, {
     params: { $select: "displayName,mail,userPrincipalName,proxyAddresses" },
   });
 const accountOf = (me: unknown) => {
@@ -638,95 +363,6 @@ const microsoftSendAs = Effect.fn("KinMicrosoft.sendAs")(function* (
   return addresses.slice(0, 20);
 });
 
-/** Mail that arrived in the inbox and calendar events changed since `since` (epoch ms). */
-const microsoftActivity = Effect.fn("KinMicrosoft.activity")(function* (
-  http: HttpClient.HttpClient,
-  token: string,
-  mailbox: Mailbox,
-  since: number,
-) {
-  const mail = yield* api(http, token, `${GRAPH}/mailFolders/inbox/messages`, {
-    params: {
-      $filter: `receivedDateTime ge ${iso(since)}`,
-      $orderby: "receivedDateTime desc",
-      $select: SUMMARY,
-      $top: "50",
-    },
-  });
-  const events = yield* api(http, token, `${GRAPH}/events`, {
-    params: {
-      $filter: `lastModifiedDateTime ge ${iso(since)}`,
-      $orderby: "lastModifiedDateTime desc",
-      $top: "50",
-    },
-    prefer: UTC,
-  });
-  return {
-    mail: threadsOf(mailbox, list(field(mail, "value")), 25).map(
-      ({ threadId, receivedBy, subject, from, date, unread }) => ({
-        threadId,
-        receivedBy,
-        subject,
-        from,
-        date,
-        unread,
-      }),
-    ),
-    calendar: list(field(events, "value")).map((event) => ({
-      eventId: text(field(event, "id")) ?? "",
-      summary: text(field(event, "subject")) ?? null,
-      start: instant(field(event, "start")),
-      status: field(event, "isCancelled") === true ? "cancelled" : "confirmed",
-      updated: text(field(event, "lastModifiedDateTime")) ?? null,
-    })),
-  };
-});
-
-const LINE_BREAK = /[\r\n]/;
-const MAX_RECIPIENTS = 10;
-
-/** The conversation's last message from someone else, read with this account's own token. */
-const replyTarget = Effect.fn("KinMicrosoft.replyTarget")(function* (
-  http: HttpClient.HttpClient,
-  token: string,
-  mailbox: Mailbox,
-  threadId: string,
-) {
-  const messages = yield* conversation(http, token, mailbox, threadId);
-  const mine = (message: unknown) => sentByMailbox(mailbox, message);
-  const last = messages.findLast((message) => !mine(message)) ?? messages.at(-1)!;
-  const to = mine(last)
-    ? recipients(last, "toRecipients")
-    : [recipients(last, "replyTo")[0] ?? addressOf(field(last, "from"))].flatMap(
-        (one) => one ?? [],
-      );
-  if (to.length === 0)
-    return yield* failure("protocol", "Kin couldn't tell who to reply to in that thread.");
-  const subject = (text(field(messages[0], "subject")) ?? "").replace(LINE_BREAK, " ").trim();
-  const messageId = text(field(last, "internetMessageId")) ?? null;
-  const references = [internetHeader(last, "References")[0] ?? null, messageId].filter(
-    (one) => one !== null,
-  );
-  const who = (nameOf(field(last, "from")) ?? "").replace(/[\r\n]+/g, " ").trim();
-  const date = text(field(last, "receivedDateTime")) ?? null;
-  const body = bodyText(last);
-  const withheld = looksLikeSignInMail(text(field(last, "subject")) ?? "", body);
-  return {
-    to: to.slice(0, MAX_RECIPIENTS),
-    subject: /^re:/i.test(subject) ? subject : `Re: ${subject}`,
-    inReplyTo: messageId,
-    references: references.length === 0 ? null : references.join(" "),
-    receivedAt: mine(last) ? addressOf(field(last, "from")) : receivedBy(mailbox, last),
-    thread: {
-      subject: subject.slice(0, 400),
-      replyingTo: who.slice(0, 400),
-      date: date === null ? null : date.slice(0, 100),
-      lines: withheld ? "" : firstLines(body),
-    },
-    quoted: withheld || body === "" ? null : quoteOf(date, who, body),
-  };
-});
-
 /** `In-Reply-To` of a message Kin built itself, which names the message the reply answers. */
 const inReplyToOf = (raw: string) =>
   /^In-Reply-To: *(\S+)\r?$/im.exec(raw.split(/\r?\n\r?\n/)[0] ?? "")?.[1] ?? null;
@@ -740,18 +376,14 @@ const sendMessage = Effect.fn("KinMicrosoft.sendMessage")(function* (
   token: string,
   message: { readonly raw: string; readonly threadId: string | null },
 ) {
+  const context = { http, token };
   // A new mail goes as a draft first, so its conversation is known for a later reply in it.
   if (message.threadId === null) {
-    const draft = yield* api(http, token, `${GRAPH}/messages`, {
-      method: "POST",
-      mime: message.raw,
-    });
+    const draft = yield* api(context, `${GRAPH}/messages`, { method: "POST", mime: message.raw });
     const id = text(field(draft, "id"));
     if (id === undefined)
       return yield* failure("protocol", "Microsoft didn't keep the mail to send.");
-    yield* api(http, token, `${GRAPH}/messages/${encodeURIComponent(id)}/send`, {
-      method: "POST",
-    });
+    yield* api(context, `${GRAPH}/messages/${encodeURIComponent(id)}/send`, { method: "POST" });
     return {
       messageId: null,
       threadId: text(field(draft, "conversationId")) ?? null,
@@ -762,7 +394,7 @@ const sendMessage = Effect.fn("KinMicrosoft.sendMessage")(function* (
   const found =
     answered === null
       ? undefined
-      : yield* api(http, token, `${GRAPH}/messages`, {
+      : yield* api(context, `${GRAPH}/messages`, {
           params: {
             $filter: `internetMessageId eq ${odata(answered)}`,
             $select: "id,conversationId",
@@ -775,7 +407,7 @@ const sendMessage = Effect.fn("KinMicrosoft.sendMessage")(function* (
   const id = text(field(target, "id"));
   if (id === undefined)
     return yield* failure("protocol", "Kin couldn't find the message this reply answers.");
-  yield* api(http, token, `${GRAPH}/messages/${encodeURIComponent(id)}/reply`, {
+  yield* api(context, `${GRAPH}/messages/${encodeURIComponent(id)}/reply`, {
     method: "POST",
     mime: message.raw,
   });
@@ -794,10 +426,7 @@ const saveEvent = Effect.fn("KinMicrosoft.saveEvent")(function* (
   token: string,
   event: MailEvent,
 ) {
-  const base =
-    event.calendarId === "primary"
-      ? GRAPH
-      : `${GRAPH}/calendars/${encodeURIComponent(event.calendarId)}`;
+  const base = calendarBase(event.calendarId);
   const body = {
     subject: event.title,
     start: utc(event.start),
@@ -810,8 +439,7 @@ const saveEvent = Effect.fn("KinMicrosoft.saveEvent")(function* (
     })),
   };
   const saved = yield* api(
-    http,
-    token,
+    { http, token },
     event.eventId === null
       ? `${base}/events`
       : `${base}/events/${encodeURIComponent(event.eventId)}`,
@@ -820,28 +448,117 @@ const saveEvent = Effect.fn("KinMicrosoft.saveEvent")(function* (
   return { messageId: null, threadId: null, eventId: text(field(saved, "id")) ?? event.eventId };
 });
 
-/** Outlook mail and calendar, for work or school and personal Microsoft accounts. */
-export const microsoftMail: MailProvider = {
+const microsoft: MailVendor = {
   preset: "microsoft",
-  name: "Microsoft",
+  name: MICROSOFT.name,
   mailService: "Outlook",
   calendarService: "Outlook Calendar",
+  refused: MICROSOFT.refused,
+  words: {
+    account: "this Outlook account",
+    threads: "conversations",
+    thread: "Outlook conversation",
+    aThread: "an Outlook conversation",
+    sameThread: "conversation",
+    search:
+      "Outlook search words, for example from:ana@example.com subject:invoice received>=2026-11-01",
+    calendarEvents: "this account's Outlook calendar events",
+    calendar: "Outlook calendar",
+    mainCalendar: "the account's main calendar",
+    inviter: "Outlook",
+  },
   signIn: {
     server: MICROSOFT_SERVER,
     scope: MICROSOFT_SCOPES,
     extra: { prompt: "select_account" },
-    clientId: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-    notClient:
-      "That isn't a Microsoft application ID. It looks like 00000000-0000-0000-0000-000000000000.",
   },
   canSend,
-  tools: MICROSOFT_TOOLS,
-  sendTools: MICROSOFT_SEND_TOOLS,
+  threads: (context, page) => {
+    const at = pageOr(
+      page.pageToken,
+      page.query === null ? `${GRAPH}/mailFolders/inbox/messages` : `${GRAPH}/messages`,
+    );
+    return api(context, at.url, {
+      params: at.first
+        ? {
+            $select: SUMMARY,
+            // Several messages can share a conversation, so a page reads more than it shows.
+            $top: String(Math.min(page.max * 3, 75)),
+            ...(page.query === null
+              ? { $orderby: "receivedDateTime desc" }
+              : { $search: `"${page.query.replace(/[\\"]/g, (char) => `\\${char}`)}"` }),
+          }
+        : {},
+    }).pipe(
+      Effect.map((answer) => ({
+        threads: conversations(list(field(answer, "value")), page.max),
+        nextPage: nextPage(answer),
+      })),
+    );
+  },
+  thread: conversation,
+  events: (context, query) => {
+    const at = pageOr(query.pageToken, `${calendarBase(query.calendarId)}/calendarView`);
+    return api(context, at.url, {
+      params: at.first
+        ? {
+            startDateTime: query.timeMin,
+            endDateTime: query.timeMax,
+            $select: EVENT_FIELDS,
+            $orderby: "start/dateTime",
+            $top: String(query.max),
+          }
+        : {},
+      prefer: UTC,
+    }).pipe(
+      Effect.map((answer) => {
+        // calendarView has no word search, so words match what each event shows.
+        const words = (query.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+        return {
+          events: list(field(answer, "value"))
+            .filter((event) => {
+              const shown = [
+                text(field(event, "subject")),
+                text(field(event, "location", "displayName")),
+                text(field(event, "bodyPreview")),
+              ]
+                .join(" ")
+                .toLowerCase();
+              return words.every((word) => shown.includes(word));
+            })
+            .map(eventOf),
+          nextPage: nextPage(answer),
+        };
+      }),
+    );
+  },
+  event: (context, calendarId, eventId) =>
+    api(context, `${calendarBase(calendarId)}/events/${encodeURIComponent(eventId)}`, {
+      prefer: `${UTC}, outlook.body-content-type="html"`,
+    }).pipe(Effect.map(eventOf)),
+  activity: (context, since, cursor) =>
+    Effect.all({
+      mail: api(context, `${GRAPH}/mailFolders/inbox/messages`, {
+        params: {
+          $filter: `receivedDateTime ge ${iso(since)}`,
+          $orderby: "receivedDateTime desc",
+          $select: SUMMARY,
+          $top: "50",
+        },
+      }),
+      calendar: calendarChanges(context, since, cursor),
+    }).pipe(
+      Effect.map(({ mail, calendar }) => ({
+        threads: conversations(list(field(mail, "value")), 25),
+        events: calendar.events,
+        cursor: calendar.cursor,
+      })),
+    ),
   account: (http, token) => profile(http, token).pipe(Effect.map(accountOf)),
   sendAs: microsoftSendAs,
-  call: callMicrosoft,
-  activity: microsoftActivity,
-  replyTarget,
   sendMessage,
   saveEvent,
 };
+
+/** Outlook mail and calendar, for work or school and personal Microsoft accounts. */
+export const microsoftMail = mailProvider(microsoft);

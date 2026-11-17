@@ -298,7 +298,7 @@ export const KinConnectionSignInStartInput = Schema.Struct({
     TrimmedNonEmptyString.check(Schema.isPattern(/^[\w.-]{1,100}(\/[\w.-]{1,100})?$/)),
   ),
   secretUrl: Schema.optional(KinConnectionKey),
-  /** Google: this account's own client, for a Workspace whose client is Internal to it. */
+  /** This account's own client, where its service's `accountClient` allows one. */
   client: Schema.optional(
     Schema.Struct({
       clientId: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
@@ -325,10 +325,45 @@ export const KinConnectionSignInFinishInput = Schema.Struct({
 });
 export type KinConnectionSignInFinishInput = typeof KinConnectionSignInFinishInput.Type;
 
-/** The owner's own sign-in client for a service (Google); `null` forgets it. */
+/**
+ * The services signed in to through a client the owner made there, and the one rule for what he
+ * pastes, read by the host and both apps. `accountClient`: one account may sign in with a client of
+ * its own, for a Workspace that keeps its client to itself. Microsoft can't: Kin signs in at its
+ * `common` endpoint, which an app kept to one organization is refused (AADSTS50194).
+ */
+const KIN_OWNER_CLIENT_SERVICES = ["google", "microsoft"] as const;
+export type KinOwnerClientService = (typeof KIN_OWNER_CLIENT_SERVICES)[number];
+export const KIN_SIGN_IN_CLIENTS: Readonly<
+  Record<
+    KinOwnerClientService,
+    {
+      readonly clientId: RegExp;
+      readonly notClientId: string;
+      readonly secret: "required" | "optional";
+      readonly accountClient: boolean;
+    }
+  >
+> = {
+  google: {
+    clientId: /^[\w.-]+\.apps\.googleusercontent\.com$/,
+    notClientId: "The client ID ends in .apps.googleusercontent.com.",
+    secret: "required",
+    accountClient: true,
+  },
+  microsoft: {
+    clientId: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    notClientId: "The application ID looks like 00000000-0000-0000-0000-000000000000.",
+    secret: "optional",
+    accountClient: false,
+  },
+};
+export const kinIsOwnerClientService = (service: string): service is KinOwnerClientService =>
+  (KIN_OWNER_CLIENT_SERVICES as ReadonlyArray<string>).includes(service);
+
+/** The owner's own sign-in client for a service; `null` forgets it. */
 export const KinConnectionSetSignInClientInput = Schema.Struct({
   orgId: KinOrgId,
-  service: Schema.Literals(["google", "microsoft"]),
+  service: Schema.Literals(KIN_OWNER_CLIENT_SERVICES),
   client: Schema.NullOr(
     Schema.Struct({
       clientId: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),

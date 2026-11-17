@@ -1,4 +1,4 @@
-import type { KinMailAddress } from "@t3tools/contracts";
+import type { KinMailAddress, KinOwnerClientService } from "@t3tools/contracts";
 import type { McpSchema } from "effect/ai";
 import type * as Effect from "effect/Effect";
 import type * as HttpClient from "effect/http/HttpClient";
@@ -59,6 +59,8 @@ export type ReplyTarget = {
 
 /** What arrived and changed since a time, as metadata only. */
 export type MailActivity = {
+  /** Where the vendor's change feed stopped, for the next read; null for a vendor that keeps none. */
+  readonly cursor: string | null;
   readonly mail: ReadonlyArray<{
     readonly threadId: string;
     readonly receivedBy: string | null;
@@ -96,9 +98,159 @@ export type Sent = {
 
 type Call<A> = Effect.Effect<A, KinGatewayError>;
 
+export type MailFile = {
+  readonly name: string;
+  readonly type: string;
+  readonly bytes: number | null;
+};
+
+/** One message as a vendor's mapping reads it. The shared tools see mail only through this. */
+export type MailMessage = {
+  readonly threadId: string;
+  /** The sender as the mail shows it, such as `Ana <ana@example.com>`. */
+  readonly from: string | null;
+  readonly fromAddress: string | null;
+  readonly to: ReadonlyArray<string>;
+  readonly replyTo: ReadonlyArray<string>;
+  readonly toLine: string | null;
+  readonly ccLine: string | null;
+  /** Every address it was delivered to, so the tools can say which of the account's got it. */
+  readonly deliveredTo: ReadonlyArray<string>;
+  readonly date: string | null;
+  readonly subject: string;
+  /** Plain text. */
+  readonly preview: string;
+  readonly unread: boolean;
+  readonly messageId: string | null;
+  readonly references: string | null;
+  readonly authResults: ReadonlyArray<string>;
+  /** Only on a whole read of the thread. */
+  readonly body: { readonly text: string; readonly attachments: ReadonlyArray<MailFile> } | null;
+};
+
+export type MailCalendarEvent = {
+  readonly eventId: string;
+  readonly summary: string | null;
+  readonly start: string | null;
+  readonly end: string | null;
+  readonly allDay: boolean;
+  readonly location: string | null;
+  readonly organizer: string | null;
+  readonly guests: ReadonlyArray<{
+    readonly email: string | null;
+    readonly name: string | null;
+    readonly response: string | null;
+  }>;
+  /** `cancelled` for a cancelled or deleted event. */
+  readonly status: string | null;
+  readonly notes: string;
+  readonly meeting: string | null;
+  readonly updated: string | null;
+};
+
+/** Threads, newest first, each with its messages oldest first. */
+export type MailThreads = ReadonlyArray<ReadonlyArray<MailMessage>>;
+
+export type MailContext = {
+  readonly http: HttpClient.HttpClient;
+  readonly token: string;
+  readonly mailbox: Mailbox;
+};
+
 /**
- * One mail provider (Google first). Everything else about accounts is the same for each: the
- * provider only signs in, lists its tools, reads, and sends what the owner confirmed.
+ * The few words in Kin's mail tool descriptions that name a vendor's own things. Everything else
+ * an agent reads about mail is the same for every vendor.
+ */
+export type MailToolWords = {
+  /** "this account", or with the service named, "this Outlook account". */
+  readonly account: string;
+  readonly threads: string;
+  readonly thread: string;
+  readonly aThread: string;
+  /** The thread word alone, in "in the same thread". */
+  readonly sameThread: string;
+  /** The search words and an example: "Gmail search words, for example …". */
+  readonly search: string;
+  readonly calendarEvents: string;
+  readonly calendar: string;
+  readonly mainCalendar: string;
+  /** Who emails the invitations. */
+  readonly inviter: string;
+};
+
+/**
+ * What a mail vendor brings: a small descriptor and its API mapping. Tools, arguments, errors,
+ * cutting and limits are Kin's own, the same for every vendor (`MailTools.ts`), and each vendor
+ * passes the one case table in `MailVendors.test.ts`.
+ */
+export interface MailVendor {
+  readonly preset: KinOwnerClientService;
+  /** Also the label of an account the owner didn't name. */
+  readonly name: string;
+  readonly mailService: string;
+  readonly calendarService: string;
+  /** What a 403 most likely means, said after "<name> refused (403).". */
+  readonly refused: string;
+  readonly words: MailToolWords;
+  readonly signIn: {
+    readonly server: AuthServer;
+    readonly scope: string;
+    readonly extra: Readonly<Record<string, string>>;
+  };
+  readonly canSend: (granted: string | undefined) => boolean;
+  /** A page of threads: the inbox when `query` is null, else what the vendor's search found. */
+  readonly threads: (
+    context: MailContext,
+    page: { readonly query: string | null; readonly max: number; readonly pageToken?: string },
+  ) => Call<{ readonly threads: MailThreads; readonly nextPage: string | null }>;
+  /** A thread's messages, oldest first, bodies included; none when the account hasn't it. */
+  readonly thread: (
+    context: MailContext,
+    threadId: string,
+    files: boolean,
+  ) => Call<ReadonlyArray<MailMessage>>;
+  readonly events: (
+    context: MailContext,
+    query: {
+      readonly timeMin: string;
+      readonly timeMax: string;
+      readonly query?: string;
+      readonly calendarId?: string;
+      readonly max: number;
+      readonly pageToken?: string;
+    },
+  ) => Call<{
+    readonly events: ReadonlyArray<MailCalendarEvent>;
+    readonly nextPage: string | null;
+  }>;
+  readonly event: (
+    context: MailContext,
+    calendarId: string | undefined,
+    eventId: string,
+  ) => Call<MailCalendarEvent>;
+  /**
+   * Inbox mail that arrived and events that changed, were cancelled or deleted since `since`,
+   * each occurrence of a series on its own. `cursor` is what the last read returned.
+   */
+  readonly activity: (
+    context: MailContext,
+    since: number,
+    cursor: string | null,
+  ) => Call<{
+    readonly threads: MailThreads;
+    readonly events: ReadonlyArray<MailCalendarEvent>;
+    readonly cursor: string | null;
+  }>;
+  readonly account: MailProvider["account"];
+  readonly sendAs: MailProvider["sendAs"];
+  readonly sendMessage: MailProvider["sendMessage"];
+  readonly saveEvent: MailProvider["saveEvent"];
+}
+
+/**
+ * One mail provider as the rest of Kin uses it, built from a vendor by `mailProvider`. Everything
+ * else about accounts is the same for each: the provider only signs in, lists its tools, reads,
+ * and sends what the owner confirmed.
  */
 export interface MailProvider {
   /** The connection preset this provider serves; also the name that reads every account. */
@@ -114,6 +266,8 @@ export interface MailProvider {
     /** Whether a client id the owner pasted is this provider's; the message when it isn't. */
     readonly clientId: RegExp;
     readonly notClient: string;
+    /** Whether one account may sign in with a client of its own. */
+    readonly accountClient: boolean;
   };
   /** Whether the granted scopes allow sending; an older sign-in may lack them. */
   readonly canSend: (granted: string | undefined) => boolean;
@@ -141,6 +295,7 @@ export interface MailProvider {
     token: string,
     mailbox: Mailbox,
     since: number,
+    cursor: string | null,
   ) => Call<MailActivity>;
   /** A thread of another account is not found: a reply stays in its own account. */
   readonly replyTarget: (

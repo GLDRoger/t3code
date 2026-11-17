@@ -2353,7 +2353,7 @@ describe("KinConnections Microsoft", () => {
             client: { clientId: "kin-app" },
           })
           .pipe(Effect.flip);
-        assert.include(badId.message, "Microsoft application ID");
+        assert.include(badId.message, "application ID looks like");
         yield* connections.setSignInClient(owner, {
           orgId,
           service: "microsoft",

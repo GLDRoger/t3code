@@ -265,6 +265,8 @@ function AddDialog(props: {
   const ownerClient =
     service !== undefined && kinIsOwnerClientService(service.service) ? service.service : null;
   const setup = signIn && !ownClient && (service?.needsSetup === true || changingClient);
+  const accountClient =
+    signIn && ownerClient !== null ? KIN_OWNER_CLIENT_SETUP[ownerClient].accountClient : null;
 
   const submit = async () => {
     if (busy || setup) return;
@@ -455,37 +457,41 @@ function AddDialog(props: {
                   >
                     {KIN_OWNER_CLIENT_SETUP[ownerClient].changeClient}
                   </Button>
-                  {ownerClient === "google" ? (
+                  {accountClient === null ? null : (
                     <Button
                       type="button"
                       size="xs"
                       variant="ghost"
                       onClick={() => setOwnClient(true)}
                     >
-                      {COPY.ownClient}
+                      {accountClient.label}
                     </Button>
-                  ) : null}
+                  )}
                 </div>
               ) : null}
-              {signIn && service?.service === "google" && ownClient ? (
+              {accountClient !== null && ownerClient !== null && ownClient ? (
                 <fieldset className="flex flex-col gap-3 rounded-md border border-border p-3">
                   <legend className="px-1 text-xs font-medium text-foreground">
-                    {COPY.ownClient}
+                    {accountClient.label}
                   </legend>
-                  <p className="text-xs text-muted-foreground">{COPY.ownClientDetail}</p>
+                  <p className="text-xs text-muted-foreground">{accountClient.detail}</p>
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor={ids.clientId}>{COPY.clientIdLabel}</Label>
+                    <Label htmlFor={ids.clientId}>
+                      {KIN_OWNER_CLIENT_SETUP[ownerClient].clientIdLabel}
+                    </Label>
                     <Input
                       id={ids.clientId}
                       value={draft.clientId}
-                      placeholder={KIN_OWNER_CLIENT_SETUP.google.clientIdPlaceholder}
+                      placeholder={KIN_OWNER_CLIENT_SETUP[ownerClient].clientIdPlaceholder}
                       autoComplete="off"
                       spellCheck={false}
                       onChange={(event) => setDraft({ ...draft, clientId: event.target.value })}
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor={ids.clientSecret}>{COPY.clientSecretLabel}</Label>
+                    <Label htmlFor={ids.clientSecret}>
+                      {KIN_OWNER_CLIENT_SETUP[ownerClient].secretLabel}
+                    </Label>
                     <Input
                       id={ids.clientSecret}
                       type="password"
@@ -505,7 +511,7 @@ function AddDialog(props: {
                       setDraft({ ...draft, clientId: "", clientSecret: "" });
                     }}
                   >
-                    Use the usual client
+                    {COPY.usualClient}
                   </Button>
                 </fieldset>
               ) : null}
