@@ -35,6 +35,7 @@ import {
 import { kinFeedMessages } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   initialKinFeedFollow,
+  kinRepinsEnd,
   kinFollowsEnd,
   resolveKinFeedFollow,
   type KinFeedFollowEvent,
@@ -765,8 +766,14 @@ function KinChatFeed(props: {
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- markRead is rebuilt each render; the ref carries the latest.
   }, [seesEnd, latestSeq, unread, connected, focused]);
 
-  const transition = (event: KinFeedFollowEvent) =>
-    setFollow((current) => resolveKinFeedFollow(current, event));
+  // Read by scroll listeners in the same frame as the person's input, before React renders.
+  const followRef = useRef(follow);
+  const transition = (event: KinFeedFollowEvent) => {
+    const next = resolveKinFeedFollow(followRef.current, event);
+    if (next === followRef.current) return;
+    followRef.current = next;
+    setFollow(next);
+  };
 
   const loadEarlier = () => {
     if (!canLoadEarlier || earlierPage === null || loading) return;
@@ -800,10 +807,12 @@ function KinChatFeed(props: {
 
   const checkEnd = () => {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
-    const end = { type: "end-check", isAtEnd } as const;
-    // Checked against this render's state first, so an ordinary scroll frame schedules nothing.
-    if (resolveKinFeedFollow(follow, end) !== follow) transition(end);
-    if (isAtEnd && latestSeq > follow.seenSeq) transition({ type: "seen", seq: latestSeq });
+    // The list skips its own re-pin while its opening scroll runs, so a message landing then
+    // would leave it short of the end; following, we pin it ourselves.
+    if (kinRepinsEnd(followRef.current, isAtEnd))
+      void listRef.current?.scrollToEnd({ animated: false });
+    transition({ type: "end-check", isAtEnd });
+    if (isAtEnd) transition({ type: "seen", seq: reading.current.latestSeq });
   };
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hears the person's own scrolling on the list's DOM node, and the list's re-pin to its end
   useEffect(() => {
@@ -820,17 +829,13 @@ function KinChatFeed(props: {
       });
       if (releases) transition({ type: "navigated", seq: reading.current.latestSeq });
     });
-    const unlisten = list.getState().listen("isAtEnd", (isAtEnd) => {
-      if (!isAtEnd) return;
-      transition({ type: "end-check", isAtEnd });
-      transition({ type: "seen", seq: reading.current.latestSeq });
-    });
+    const unlisten = list.getState().listen("isAtEnd", checkEnd);
     return () => {
       unlisten();
       unsubscribe();
       viewport.dispose();
     };
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition only calls setFollow, which is stable.
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- checkEnd and transition read only refs and the stable setFollow.
   }, []);
 
   const prefersReducedMotion =

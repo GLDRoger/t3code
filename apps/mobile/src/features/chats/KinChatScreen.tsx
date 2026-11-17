@@ -138,6 +138,7 @@ import { kinIntroVisible } from "@t3tools/client-runtime/kin/kinIntro";
 import {
   initialKinFeedFollow,
   kinFollowsEnd,
+  kinRepinsEnd,
   resolveKinFeedFollow,
   type KinFeedFollowEvent,
 } from "@t3tools/client-runtime/kin/kinFeedFollow";
@@ -1149,8 +1150,14 @@ function KinChatFeed(props: {
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- lists every value the effect reads; the rest are refs. The rule started flagging it once the feed grew.
   }, [markRead, seesEnd, latestSeq, unread, connected, focused]);
 
-  const transition = (event: KinFeedFollowEvent) =>
-    setFollow((current) => resolveKinFeedFollow(current, event));
+  // Read by scroll callbacks in the same frame as the reader's drag, before React renders.
+  const followRef = useRef(follow);
+  const transition = (event: KinFeedFollowEvent) => {
+    const next = resolveKinFeedFollow(followRef.current, event);
+    if (next === followRef.current) return;
+    followRef.current = next;
+    setFollow(next);
+  };
   const reconnect = useKinReconnect(props.environmentId);
   const notice = kinStaleNotice(
     { connected: props.connected, live: props.chat.live, savedAt: props.chat.savedAt },
@@ -1190,11 +1197,19 @@ function KinChatFeed(props: {
     });
   };
 
+  const pinToEnd = (animated: boolean) => {
+    // The list's own end, as maintainScrollAtEnd pins it: scrollToEnd counts the presence footer
+    // twice and overshoots by its height.
+    const list = listRef.current;
+    if (list === null) return;
+    const { contentLength, scrollLength } = list.getState();
+    void list.scrollToOffset({ offset: contentLength - scrollLength, animated });
+  };
   const checkEnd = () => {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
-    const end = { type: "end-check", isAtEnd } as const;
-    // Checked against this render's state first, so an ordinary scroll frame schedules nothing.
-    if (resolveKinFeedFollow(follow, end) !== follow) transition(end);
+    // The list skips its own re-pin while its opening scroll runs; following, pin it ourselves.
+    if (!dragging.current && kinRepinsEnd(followRef.current, isAtEnd)) pinToEnd(false);
+    transition({ type: "end-check", isAtEnd });
   };
   const leftEndByHand = () => transition({ type: "navigated", seq: reading.current.latestSeq });
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -1206,18 +1221,15 @@ function KinChatFeed(props: {
       offset < lastScroll.current.offset - 1 && content === lastScroll.current.content;
     lastScroll.current = { offset, content };
     if ((dragging.current || movedUp) && listRef.current?.getState().isAtEnd === false) {
-      if (kinFollowsEnd(follow)) leftEndByHand();
+      leftEndByHand();
     }
     checkEnd();
   };
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the list's own signal that it re-pinned to its end, which a scroll event can read a frame early
   useEffect(
-    () =>
-      listRef.current?.getState().listen("isAtEnd", (isAtEnd) => {
-        if (isAtEnd) transition({ type: "end-check", isAtEnd });
-      }),
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition only calls setFollow, which is stable.
+    () => listRef.current?.getState().listen("isAtEnd", checkEnd),
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- checkEnd and transition read only refs and the stable setFollow.
     [],
   );
 
@@ -1234,12 +1246,7 @@ function KinChatFeed(props: {
 
   const jumpToEnd = () => {
     transition({ type: "jump-to-end" });
-    // The list's own end, as maintainScrollAtEnd pins it: scrollToEnd counts the presence footer
-    // twice and overshoots by its height.
-    const list = listRef.current;
-    if (list === null) return;
-    const { contentLength, scrollLength } = list.getState();
-    void list.scrollToOffset({ offset: contentLength - scrollLength, animated: !reduceMotion });
+    pinToEnd(!reduceMotion);
   };
 
   const toggleRun = (runId: string) => {

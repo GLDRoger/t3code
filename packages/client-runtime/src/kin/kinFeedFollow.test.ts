@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   initialKinFeedFollow,
   kinFollowsEnd,
+  kinRepinsEnd,
   resolveKinFeedFollow,
   type KinFeedFollow,
   type KinFeedFollowEvent,
@@ -54,6 +55,13 @@ describe("resolveKinFeedFollow", () => {
     },
   ])("$name → follows $follows", ({ events, follows }) => {
     expect(kinFollowsEnd(run(events))).toBe(follows);
+  });
+
+  it("re-pins a following list that reads off its end, never one the person scrolled away", () => {
+    expect(kinRepinsEnd(run([left]), false)).toBe(true);
+    expect(kinRepinsEnd(run([left]), true)).toBe(false);
+    expect(kinRepinsEnd(run([scrolled()]), false)).toBe(false);
+    expect(kinRepinsEnd(run([{ type: "page-start" }]), false)).toBe(false);
   });
 
   it("counts only messages that arrive after the person scrolled away", () => {

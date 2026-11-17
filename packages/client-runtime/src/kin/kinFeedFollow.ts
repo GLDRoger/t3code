@@ -37,6 +37,10 @@ export const initialKinFeedFollow = (latestSeq: number): KinFeedFollow => ({
 
 export const kinFollowsEnd = (state: KinFeedFollow) => state.following && !state.holding;
 
+/** Following, and the list reads off its end: re-pin, since the list skips it during its opening scroll. */
+export const kinRepinsEnd = (state: KinFeedFollow, isAtEnd: boolean) =>
+  !isAtEnd && kinFollowsEnd(state);
+
 /** Returns `state` itself when nothing changes, so scroll events cost no render. */
 export function resolveKinFeedFollow(
   state: KinFeedFollow,
