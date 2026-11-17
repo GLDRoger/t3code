@@ -1,26 +1,43 @@
 import { createKinConnectionActions } from "@t3tools/client-runtime/kin/kinConnections";
-import type { EnvironmentId, KinConnectionSignInReturn, KinOrgId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  KIN_SIGN_IN_RETURN_BY_SCHEME,
+  type KinConnectionSignInReturn,
+  type KinOrgId,
+} from "@t3tools/contracts";
 import Constants from "expo-constants";
 import * as WebBrowser from "expo-web-browser";
 
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 
-const scheme = () => {
+const appScheme = () => {
   const value = Constants.expoConfig?.scheme;
-  return (Array.isArray(value) ? value[0] : value) ?? "t3code";
+  const scheme = Array.isArray(value) ? value[0] : value;
+  return scheme !== undefined && Object.hasOwn(KIN_SIGN_IN_RETURN_BY_SCHEME, scheme)
+    ? (scheme as keyof typeof KIN_SIGN_IN_RETURN_BY_SCHEME)
+    : undefined;
 };
 
-/** Which app the return page hands the sign-in back to: this build's own scheme. */
-export const kinSignInReturn = (): KinConnectionSignInReturn =>
-  scheme() === "t3code-dev" ? "app-dev" : scheme() === "t3code-preview" ? "app-preview" : "app";
+/**
+ * Which app the return page hands the sign-in back to: this build's own scheme. A scheme the
+ * page doesn't know gets the page's copy-and-paste fallback.
+ */
+export const kinSignInReturn = (): KinConnectionSignInReturn => {
+  const scheme = appScheme();
+  return scheme === undefined ? "web" : KIN_SIGN_IN_RETURN_BY_SCHEME[scheme];
+};
 
 /**
  * Opens the service's sign-in page in the in-app browser and waits for the return page to hand
  * the result back by this app's scheme. `null` when the owner closed it first.
  */
 export async function kinSignInInApp(authorizationUrl: string): Promise<string | null> {
-  const result = await WebBrowser.openAuthSessionAsync(authorizationUrl, `${scheme()}://kin-oauth`);
+  const scheme = appScheme();
+  const result = await WebBrowser.openAuthSessionAsync(
+    authorizationUrl,
+    scheme === undefined ? null : `${scheme}://kin-oauth`,
+  );
   return result.type === "success" ? result.url : null;
 }
 

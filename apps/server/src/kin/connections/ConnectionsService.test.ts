@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a fixture file's hash.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 // Loaded first: the chat and trigger modules import each other.
 import "../chat/KinChatService.ts";
 import { assert, describe, it } from "@effect/vitest";
@@ -7,6 +8,7 @@ import * as PlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  KIN_SIGN_IN_RETURN_BY_SCHEME,
   KinAgentId,
   KinChatError,
   KinConnectionId,
@@ -1438,6 +1440,33 @@ const signInSentry = (vendor: ReturnType<typeof makeVendor>) =>
   });
 
 describe("KinConnections sign-in", () => {
+  it("sends each phone app's sign-in back to that app's own scheme", () => {
+    const page = NodeFS.readFileSync(
+      new URL("../../../../../infra/kin-sign-in/kin/oauth/callback/index.html", import.meta.url),
+      "utf8",
+    );
+    const table = /var schemes = (\{[^}]*\});/.exec(page)?.[1] ?? "{}";
+    const schemes: Record<string, string> = JSON.parse(
+      table.replace(/(\w+):/g, '"$1":').replace(/,(\s*\})/, "$1"),
+    );
+    const sentTo = Object.fromEntries(
+      Object.values(KIN_SIGN_IN_RETURN_BY_SCHEME).map((returnTo) => [
+        returnTo,
+        schemes[Connections.RETURN_PREFIX[returnTo]],
+      ]),
+    );
+    assert.deepStrictEqual(
+      sentTo,
+      Object.fromEntries(
+        Object.entries(KIN_SIGN_IN_RETURN_BY_SCHEME).map(([scheme, returnTo]) => [
+          returnTo,
+          scheme,
+        ]),
+      ),
+    );
+    assert.strictEqual(schemes[Connections.RETURN_PREFIX.web], undefined);
+  });
+
   it.effect("signs in to a remote server, lists its tools and reads with the token", () =>
     withVendor({}, (vendor) =>
       Effect.gen(function* () {
