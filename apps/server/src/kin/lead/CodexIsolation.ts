@@ -144,6 +144,20 @@ const confinedThreadParams = (params: Params, userServers: ReadonlyArray<string>
   config: { ...kinServersOnly(params, userServers), ...CONFINED_CONFIG },
 });
 
+type UserConfig = {
+  readonly servers: ReadonlyArray<string>;
+  readonly provider: string | undefined;
+};
+
+/**
+ * gpt-6.1 searches through Codex's own `/alpha/search` call, which Codex makes only on OpenAI's
+ * provider unless a custom one says it serves it; the host's gateway does.
+ */
+const searchThrough = (provider: string | undefined): Readonly<Record<string, Json>> =>
+  provider === undefined || provider === "openai"
+    ? {}
+    : { [`model_providers.${provider}.supports_standalone_web_search`]: true };
+
 type Shell = { readonly path: string; readonly agentName: string | undefined };
 
 /** The env a Claude agent's session gets (`sessionEnvironment`), the signing `gh` first on PATH. */
@@ -166,11 +180,7 @@ const shellEnvironment = (shell: Shell) => ({
  * shortcut in codex-cli 0.169). Kin answers each ask from the turn as it is then
  * (`kinApprovals`); the guardian reviewer never does.
  */
-const fullSessionThreadParams = (
-  params: Params,
-  userServers: ReadonlyArray<string>,
-  shell: Shell,
-) => ({
+const fullSessionThreadParams = (params: Params, user: UserConfig, shell: Shell) => ({
   ...params,
   baseInstructions: codexFullSessionInstructions,
   developerInstructions: null,
@@ -178,8 +188,9 @@ const fullSessionThreadParams = (
   approvalsReviewer: "user",
   sandbox: "danger-full-access",
   config: {
-    ...kinServersOnly(params, userServers),
+    ...kinServersOnly(params, user.servers),
     ...FULL_SESSION_CONFIG,
+    ...searchThrough(user.provider),
     ...shellEnvironment(shell),
   },
 });
@@ -249,10 +260,11 @@ const withoutT3Guidance = (params: Params) => ({
   items: (Array.isArray(params.items) ? params.items : []).filter((item) => !isT3Guidance(item)),
 });
 
-/** The user's Codex MCP servers as Codex resolves them for this cwd (user and project layers). */
+/** The user's Codex MCP servers and model provider as Codex resolves them for this cwd. */
 const ConfigRead = Schema.Struct({
   config: Schema.Struct({
     mcp_servers: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
+    model_provider: Schema.optional(Schema.NullOr(Schema.String)),
   }),
 });
 const decodeConfigRead = Schema.decodeUnknownEffect(ConfigRead);
@@ -462,15 +474,18 @@ export const codexClientFactory = <E, R>(
             };
             return signed;
           });
-          const userServers = new Map<string, ReadonlyArray<string>>();
-          const servers = Effect.fn("KinCodexIsolation.servers")(function* (cwd: string) {
-            const known = userServers.get(cwd);
+          const userConfigs = new Map<string, UserConfig>();
+          const userConfig = Effect.fn("KinCodexIsolation.userConfig")(function* (cwd: string) {
+            const known = userConfigs.get(cwd);
             if (known !== undefined) return known;
             const answer = yield* client.raw.request("config/read", { cwd });
             const read = yield* decodeConfigRead(answer).pipe(Effect.orDie);
-            const names = Object.keys(read.config.mcp_servers ?? {});
-            userServers.set(cwd, names);
-            return names;
+            const found: UserConfig = {
+              servers: Object.keys(read.config.mcp_servers ?? {}),
+              provider: read.config.model_provider ?? undefined,
+            };
+            userConfigs.set(cwd, found);
+            return found;
           });
           // Each native thread of an agent, and each Codex sub-agent under one, answers to the T3
           // thread that started it.
@@ -500,10 +515,10 @@ export const codexClientFactory = <E, R>(
               };
               starting.set(thread, seat);
               if (typeof params.threadId === "string") seats.set(params.threadId, seat);
-              const names = yield* servers(cwd);
+              const user = yield* userConfig(cwd);
               return seat.full && Option.isSome(policy)
-                ? fullSessionThreadParams(params, names, yield* signing(policy.value, thread))
-                : confinedThreadParams(params, names);
+                ? fullSessionThreadParams(params, user, yield* signing(policy.value, thread))
+                : confinedThreadParams(params, user.servers);
             }
             if (Option.isNone(policy) || !(yield* policy.value.delegated(thread))) return null;
             return signedShellParams(params, yield* signing(policy.value, thread));

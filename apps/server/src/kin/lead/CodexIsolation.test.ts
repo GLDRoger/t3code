@@ -39,7 +39,12 @@ const recordingClient = (sent: Array<Sent>) =>
         Effect.sync(() => {
           sent.push({ method, params });
           return method === "config/read"
-            ? { config: { mcp_servers: { chrome: {}, sentry: {}, "t3-code": {} } } }
+            ? {
+                config: {
+                  mcp_servers: { chrome: {}, sentry: {}, "t3-code": {} },
+                  model_provider: "gateway",
+                },
+              }
             : {};
         }),
     },
@@ -373,6 +378,8 @@ it.effect(
       assert.strictEqual(config["features.unified_exec"], false);
       assert.strictEqual(config["skills.include_instructions"], false);
       assert.strictEqual(config["mcp_servers.chrome.enabled"], false);
+      // gpt-6.1's search is Codex's own call, made on a custom provider only when it says so.
+      assert.strictEqual(config["model_providers.gateway.supports_standalone_web_search"], true);
       // The signing gh first on PATH and the env a Claude agent's session keeps, nothing else.
       assert.strictEqual(
         config["shell_environment_policy.set.PATH"],
