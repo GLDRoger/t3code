@@ -66,7 +66,7 @@ import { KIN_PLACE_PATH } from "./kinPlaces";
 import type { KinAgentPageTarget } from "./kinAgentPageLink";
 import { KinLoadFailed } from "./KinWorkParts";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
-import { useKinHost } from "./useKinHost";
+import { useKinHost, useKinWorkingAgents } from "./useKinHost";
 import { useKinWorkDirectory } from "./useKinWork";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
@@ -112,6 +112,7 @@ function KinAgentSheet(props: { readonly target: KinAgentPageTarget }) {
   const closePage = () =>
     void navigate({ to: ".", search: ({ agent: _closed, ...rest }) => rest, replace: true });
   const can = useKinAgentPageCan(environmentId);
+  const working = useKinWorkingAgents(environmentId);
   const leads = Option.getOrNull(
     AsyncResult.value(useAtomValue(kinClient.leads({ environmentId, input: { orgId } }))),
   );
@@ -127,7 +128,10 @@ function KinAgentSheet(props: { readonly target: KinAgentPageTarget }) {
             <div className="flex min-w-0 flex-col">
               <SheetTitle>{name}</SheetTitle>
               {own === undefined ? null : (
-                <SheetDescription>{kinDomainLabel(own.domain)}</SheetDescription>
+                <SheetDescription>
+                  {kinDomainLabel(own.domain)}
+                  {working.has(agentId) ? " · Working now" : ""}
+                </SheetDescription>
               )}
             </div>
           </div>

@@ -43,6 +43,32 @@ export function kinDestinations(input: {
   ];
 }
 
+/**
+ * The dock to draw: the live one once the host has said who this is; until then the one this device
+ * last drew, so a cold start offline keeps its places; Chats alone with neither. Each place still
+ * reads live and says offline or loading, never refused, until the host answers.
+ */
+export function kinDockShown(input: {
+  readonly live: ReadonlyArray<KinDestination> | null;
+  readonly cached: ReadonlyArray<KinDestination> | null;
+}): { readonly tabs: ReadonlyArray<KinDestination>; readonly known: boolean } {
+  return { tabs: input.live ?? input.cached ?? ["chats"], known: input.live !== null };
+}
+
+/**
+ * The tab to show for the one the person is in. Only the host taking that place away moves them
+ * (`leave`: to Chats, for good); a place not known yet shows Chats meanwhile and comes back, and a
+ * place appearing never opens itself.
+ */
+export function kinDockSelection(input: {
+  readonly held: KinDestination;
+  readonly tabs: ReadonlyArray<KinDestination>;
+  readonly known: boolean;
+}): { readonly shown: KinDestination; readonly leave: boolean } {
+  if (input.tabs.includes(input.held)) return { shown: input.held, leave: false };
+  return { shown: "chats", leave: input.known };
+}
+
 export type KinSettingsPage =
   | "profile"
   | "notifications"

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { kinPlaceReach } from "./kinJoin.ts";
-import { kinDestinations, kinSettingsGroups, kinSettingsPageOf } from "./kinNavigation.ts";
+import {
+  kinDestinations,
+  kinDockSelection,
+  kinDockShown,
+  kinSettingsGroups,
+  kinSettingsPageOf,
+} from "./kinNavigation.ts";
 
 const none = { money: false, clients: false, docs: false };
 
@@ -41,6 +47,34 @@ describe("kinDestinations", () => {
     expect(
       kinDestinations({ work: true, refused: none, ownerLevel: false, reaches: null }),
     ).toEqual(["chats", "tasks"]);
+  });
+});
+
+describe("kinDockShown", () => {
+  const owner = ["chats", "tasks", "money", "clients", "docs"] as const;
+  it.each([
+    // live answer, device's last dock, drawn, known
+    ["live", owner, null, owner, true],
+    ["live replaces an older cache", ["chats", "tasks"], owner, ["chats", "tasks"], true],
+    ["cold start offline keeps the cached places", null, owner, owner, false],
+    ["nothing known and nothing cached", null, null, ["chats"], false],
+  ] as const)("%s", (_, live, cached, tabs, known) => {
+    expect(kinDockShown({ live, cached })).toEqual({ tabs, known });
+  });
+});
+
+describe("kinDockSelection", () => {
+  const member = ["chats", "tasks"] as const;
+  const withClients = ["chats", "tasks", "clients"] as const;
+  it.each([
+    // held, dock, known, shown, leave
+    ["in a place the host took away: leave for Chats", "clients", member, true, "chats", true],
+    ["in a place while it isn't known yet: stay", "clients", member, false, "chats", false],
+    ["in a place still there: stay", "clients", withClients, true, "clients", false],
+    ["elsewhere when a place is switched on: stay", "chats", withClients, true, "chats", false],
+    ["elsewhere while unknown: stay", "tasks", member, false, "tasks", false],
+  ] as const)("%s", (_, held, tabs, known, shown, leave) => {
+    expect(kinDockSelection({ held, tabs, known })).toEqual({ shown, leave });
   });
 });
 

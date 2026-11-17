@@ -5,6 +5,8 @@ import { appAtomRegistry } from "../../../state/atom-registry";
 import { kinClient, type KinSynced } from "./kinClient";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import type { KinInboxState } from "@t3tools/client-runtime/kin/kinInboxModel";
+import { kinWorkingAgents } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import type { EnvironmentId, KinAgentId } from "@t3tools/contracts";
 import {
   kinInboxScreenState,
   type KinInboxScreenState,
@@ -14,6 +16,12 @@ import { useKinHost } from "./useKinHost";
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
 
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
+
+/** The agents on a live run, from the chat list's live rows (`kinWorkingAgents`). */
+export function useKinWorkingAgents(environmentId: EnvironmentId): ReadonlySet<KinAgentId> {
+  const inbox = useAtomValue(kinClient.inbox({ environmentId, input: {} }));
+  return kinWorkingAgents(inbox._tag === "Success" ? inbox.value.value.chats : null);
+}
 
 /** The Kin host's inbox as one screen state, plus a retry for whichever read failed. */
 export function useKinInbox(): {

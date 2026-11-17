@@ -1,4 +1,5 @@
 import { kinGuardedRead, makeKinClient } from "@t3tools/client-runtime/kin/kinClient";
+import type { KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
 import { makeKinScreenReads } from "@t3tools/client-runtime/kin/kinScreenReads";
 import { createKinRpcCommand } from "@t3tools/client-runtime/kin/kinAccess";
 import { watchKinChatForPush } from "@t3tools/client-runtime/kin-push";
@@ -17,6 +18,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Atom } from "effect/reactivity";
 
@@ -40,6 +42,32 @@ export const kinCachedOrgsAtom = Atom.family((environmentId: EnvironmentId) =>
       }),
     )
     .pipe(Atom.withLabel(`kin:orgs-cache:${environmentId}`)),
+);
+
+const dockCache = persistQuery(
+  Schema.Array(Schema.Literals(["chats", "tasks", "money", "clients", "docs"])),
+);
+const DOCK_CACHE_KEY = "dock";
+
+/** The dock this device last drew from a live answer, for a cold start offline. */
+export const kinCachedDockAtom = Atom.family((environmentId: EnvironmentId) =>
+  connectionAtomRuntime
+    .atom(
+      Effect.gen(function* () {
+        const cached = yield* withKinCache(dockCache.load(environmentId, DOCK_CACHE_KEY));
+        return Option.getOrNull(cached);
+      }),
+    )
+    .pipe(Atom.withLabel(`kin:dock-cache:${environmentId}`)),
+);
+
+export const saveKinDockAtom = connectionAtomRuntime.fn(
+  (input: { readonly environmentId: EnvironmentId; readonly tabs: ReadonlyArray<KinDockTab> }) =>
+    withKinCache(dockCache.save(input.environmentId, DOCK_CACHE_KEY, input.tabs)).pipe(
+      Effect.andThen(
+        Effect.sync(() => appAtomRegistry.refresh(kinCachedDockAtom(input.environmentId))),
+      ),
+    ),
 );
 
 /** The shared Kin client, with this phone's device cache for the directory, chat list and chats. */

@@ -91,7 +91,7 @@ import {
 } from "./kinSettingsAddress";
 import { rememberKinTeammate } from "./kinTeammateMark";
 import { KinTeamView } from "./KinTeamView";
-import { useKinHost } from "./useKinHost";
+import { useKinHost, useKinWorkingAgents } from "./useKinHost";
 import { useKinOwnerLevel, useKinPlaceReach } from "./useKinOwnerLevel";
 
 const KIN_SETTINGS_TITLE = "Settings";
@@ -481,6 +481,7 @@ function KinSettingsAppearance() {
 function KinSettingsAgents(props: KinSettingsTarget) {
   const { environmentId, orgId } = props;
   const result = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
+  const working = useKinWorkingAgents(environmentId);
   const canAdd = useAtomValue(kinClient.leadCreate.permissionAtom(environmentId));
   const all = Option.getOrNull(AsyncResult.value(result))?.leads ?? null;
   const agents = all === null ? null : kinAgentGroups(all).active;
@@ -523,7 +524,7 @@ function KinSettingsAgents(props: KinSettingsTarget) {
                     {kinDomainLabel(agent.domain)}
                   </span>
                 </span>
-                {agent.working ? (
+                {working.has(agent.agentId) ? (
                   <span className="text-xs text-muted-foreground">Working</span>
                 ) : null}
               </Link>
