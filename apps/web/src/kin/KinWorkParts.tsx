@@ -44,9 +44,10 @@ import {
 } from "../components/ui/menu";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
-import type { KinGate } from "@t3tools/client-runtime/kin/kinAccess";
+import { KIN_GATE_FAILED, type KinGate } from "@t3tools/client-runtime/kin/kinAccess";
 import { KIN_OFFLINE_PAGE } from "@t3tools/client-runtime/kin/kinAnswers";
-import { useKinHostAt } from "./useKinHost";
+import { retryKinAccess } from "./kinClient";
+import { useKinHost, useKinHostAt } from "./useKinHost";
 
 /**
  * A titled block of a task, client or project, with an optional action beside the title. With
@@ -199,6 +200,7 @@ export function KinGateView(props: {
 }) {
   if (props.gate === "refused") return <KinWorkNotice {...props.refused} />;
   if (props.gate === "offline") return <KinWorkNotice {...(props.offline ?? KIN_OFFLINE_PAGE)} />;
+  if (props.gate === "failed") return <KinGateFailed />;
   return (
     <div
       className="mx-auto w-full max-w-3xl p-4"
@@ -207,6 +209,21 @@ export function KinGateView(props: {
     >
       <KinWorkRowSkeletons />
     </div>
+  );
+}
+
+/** A gate whose read of what this person may open failed, with a Retry of that read. */
+export function KinGateFailed(props: { readonly className?: string }) {
+  const host = useKinHost();
+  return (
+    <KinLoadFailed
+      what={KIN_GATE_FAILED}
+      cause={null}
+      onRetry={() => {
+        if (host._tag === "host") retryKinAccess(host.environmentId);
+      }}
+      className={cn("mx-auto w-full max-w-3xl p-4", props.className)}
+    />
   );
 }
 

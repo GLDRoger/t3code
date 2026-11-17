@@ -414,6 +414,8 @@ export function kinWorkScreenState(input: {
   readonly live: AsyncResult.AsyncResult<KinWorkLive, unknown>;
 }): KinWorkScreenState {
   if (input.allowed === "refused") return { _tag: "refused" };
+  if (input.allowed === "failed")
+    return input.link === "offline" ? { _tag: "offline" } : { _tag: "failed" };
   const { live } = input;
   if (AsyncResult.isFailure(live) && kinWorkFailuresOf(live.cause).some(kinWorkRefused))
     return { _tag: "refused" };

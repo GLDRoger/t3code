@@ -248,6 +248,16 @@ describe("kinWorkScreenState", () => {
       "loading",
     ],
     [
+      "scopes whose read failed on a live connection",
+      { allowed: "failed", link: "connected", live: AsyncResult.initial() },
+      "failed",
+    ],
+    [
+      "scopes whose read failed and no connection",
+      { allowed: "failed", link: "offline", live: AsyncResult.initial() },
+      "offline",
+    ],
+    [
       "counts that couldn't be read",
       { allowed: "granted", link: "connected", live: held(true) },
       "failed",

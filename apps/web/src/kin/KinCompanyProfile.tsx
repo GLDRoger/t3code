@@ -39,7 +39,7 @@ import { kinClient } from "./kinClient";
 import { kinHostConnected, useKinHost } from "./useKinHost";
 import { useKinCompanyProfile } from "./useKinMoney";
 import type { KinWorkTarget } from "./useKinWork";
-import { KinLoadFailed } from "./KinWorkParts";
+import { KinGateFailed, KinLoadFailed } from "./KinWorkParts";
 import { useKinGate } from "./useKinHost";
 import { KIN_OFFLINE_PAGE } from "@t3tools/client-runtime/kin/kinAnswers";
 
@@ -74,6 +74,7 @@ function Permitted(props: KinWorkTarget) {
   const { state, refresh } = useKinCompanyProfile(props, gate === null);
   if (gate === "refused" || state._tag === "refused") return <Notice {...KIN_COMPANY.onlyOwner} />;
   if (gate === "offline") return <Notice {...KIN_OFFLINE_PAGE} />;
+  if (gate === "failed") return <KinGateFailed />;
   if (state._tag === "loading") {
     return (
       <div className="flex flex-col gap-2 p-4" role="status" aria-label="Loading company details">

@@ -9,5 +9,6 @@ const kin = makeKinClient(connectionAtomRuntime, appAtomRegistry);
 
 export const kinClient = kin.kinClient;
 export const refreshKinAgents = kin.refreshKinAgents;
+export const retryKinAccess = kin.retryAccess;
 /** Which atom each data hook reads, and what a change reads again. */
 export const kinReads = makeKinScreenReads(kinClient, appAtomRegistry);
