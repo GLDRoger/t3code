@@ -5,7 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KIN_EXPORT_HOLDS, KIN_EXPORT_LEAVES, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -76,6 +76,15 @@ const rows = [
   { client: { source: "c1", name: "Invented Acme", gstin: "29AAAAA0000A1Z5", terms: "30 days" } },
   { client: { source: "c2", name: "Invented Paper Co", kind: "vendor", state: "dropped" } },
   { project: { source: "p1", name: "Website", client: "c1", target: "2026-12-01" } },
+  {
+    entry: {
+      source: "ct1",
+      list: "contacts",
+      title: "Invented Asha",
+      client: "c1",
+      fields: { role: "Finance", email: "asha@invented.example", phone: "+91 00000 00000" },
+    },
+  },
   {
     entry: {
       source: "t1",
@@ -264,20 +273,22 @@ describe("Download everything", () => {
       const zip = yield* unzip(bytes);
       assert.deepStrictEqual(
         [...zip.keys()],
-        [
-          "README.txt",
-          "kin.jsonl",
-          "contacts.jsonl",
-          "docs/D-1 Brand guide.md",
-          `docs/D-1/${ATTACHMENT}.png`,
-        ],
+        ["README.txt", "kin.jsonl", "docs/D-1 Brand guide.md", `docs/D-1/${ATTACHMENT}.png`],
       );
       assert.strictEqual(
         zip.get("docs/D-1 Brand guide.md")!.toString(),
         "# Brand guide\n\nUse the blue. kin-file:x\n",
       );
       assert.strictEqual(zip.get(`docs/D-1/${ATTACHMENT}.png`)!.toString(), "invented png");
-      assert.include(zip.get("README.txt")!.toString(), "Memory is kept in your memory repository");
+      // What it holds and leaves out reads the same in the zip, in Settings and in the user guide.
+      const guide = NodeFS.readFileSync(
+        NodePath.resolve(import.meta.dirname, "../../../../../docs/user/kin.md"),
+        "utf8",
+      ).replace(/\s+/g, " ");
+      for (const words of [KIN_EXPORT_HOLDS, KIN_EXPORT_LEAVES]) {
+        assert.include(zip.get("README.txt")!.toString(), words);
+        assert.include(guide, words);
+      }
 
       // Nothing kept outside the company's records leaves: no token, key, session or invite.
       assert.notInclude(bytes.toString("latin1"), CANARY);
@@ -300,7 +311,7 @@ describe("Download everything", () => {
         [restored.clients, restored.projects, restored.entries, restored.payments].map(
           (one) => one.create,
         ),
-        [2, 1, 5, 1],
+        [2, 1, 6, 1],
       );
 
       const before = yield* holdings(from);
