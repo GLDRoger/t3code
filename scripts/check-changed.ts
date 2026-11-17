@@ -490,7 +490,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   const command = (name: string, args: ReadonlyArray<string>) => ({ name, run: vp(args) });
   const compilerFiles = compilerApps.reduce((count, app) => count + app.names.length, 0);
 
-  // Kin's merge-survival, migration-number, instructions-version and shared-copy checks.
+  // Kin's merge-survival, migration-number, instructions-version, shared-copy and branding checks.
   const kinBranch = (yield* fs.exists(inRoot(MIGRATIONS)))
     ? [
         {

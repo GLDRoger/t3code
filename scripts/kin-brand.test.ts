@@ -66,9 +66,11 @@ const brand = (
     readonly check?: boolean;
     readonly updateDriftBaseline?: boolean;
     readonly guards?: ReadonlyArray<Guard>;
+    readonly scan?: boolean;
   } = {},
 ) =>
   kinBrand({
+    scan: options.scan ?? false,
     repoRoot: repo,
     target: Option.some(target),
     rules: Option.none(),
@@ -132,6 +134,10 @@ describe("kin-brand", () => {
       const { root, repo } = yield* makeRepo({ app });
       const message = yield* failure(brand(repo, path.join(root, "kin")));
       assert.include(message, 'app/name.ts:2 [scheme-link] "t3code://pair"');
+      // The scan that branch checks run finds it too, in place, without a copy.
+      const scanned = yield* failure(brand(repo, path.join(root, "scan"), { scan: true }));
+      assert.include(scanned, 'app/name.ts:2 [scheme-link] "t3code://pair"');
+      assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(path.join(root, "scan")));
 
       const allowed = yield* makeRepo({
         app,
