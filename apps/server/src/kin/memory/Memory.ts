@@ -39,7 +39,9 @@ import * as MemoryCache from "./MemoryCache.ts";
 import { mergeMemoryFiles, uniqueMergeBase } from "./merge.ts";
 import { buildIndex, indexIsStale } from "./buildIndex.ts";
 import { leadOwner, readableFiles } from "./quoteAccess.ts";
+import { gitHubApp } from "../github/KinGitHubApp.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
+import { memoryIdentity } from "./memoryIdentity.ts";
 import {
   MemoryItemError,
   memoryDateMillis as dateMillis,
@@ -343,6 +345,7 @@ interface BlobCache {
 const make = Effect.gen(function* () {
   const scanner = yield* SecretScan.KinSecretScan;
   const config = yield* MemoryConfig;
+  const app = yield* gitHubApp;
   const fs = yield* FileSystem.FileSystem;
   const { notify } = yield* MemoryRecoveryHooks;
   const vcs = yield* VcsProcess;
@@ -1752,10 +1755,7 @@ const make = Effect.gen(function* () {
                 ["commit-tree", tree, "-p", remote, "-p", head],
                 `kin: merge GitHub's memory at ${remote}\n`,
                 {
-                  GIT_AUTHOR_NAME: config.botName ?? "Kin Memory Bot",
-                  GIT_AUTHOR_EMAIL: config.botEmail ?? "kin-memory@localhost",
-                  GIT_COMMITTER_NAME: config.botName ?? "Kin Memory Bot",
-                  GIT_COMMITTER_EMAIL: config.botEmail ?? "kin-memory@localhost",
+                  ...(yield* memoryIdentity(config, app)),
                 },
               ).pipe(
                 Effect.mapError((cause) => new MemoryError({ orgId, operation: "rebase", cause })),
