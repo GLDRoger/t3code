@@ -12,6 +12,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as ServerConfig from "../../config.ts";
+import * as DocumentText from "../../provider/DocumentText.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
@@ -39,6 +40,7 @@ const external = Layer.mergeAll(
     lines: () => [],
   }),
   ServerConfig.layerTest(process.cwd(), { prefix: "kin-lead-layer-" }),
+  Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(VcsProcess.VcsProcess)({}),
 ).pipe(Layer.provideMerge(NodeServices.layer));
 
