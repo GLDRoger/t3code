@@ -1,11 +1,28 @@
 // @effect-diagnostics nodeBuiltinImport:off - Drives the runner's real child process against a temporary log.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
 
-import { compare, finding, firstError, gates, run } from "./kin-release-check.ts";
+import {
+  compare,
+  finding,
+  firstError,
+  gates,
+  modelsRan,
+  run,
+  stopChildren,
+  streamRemote,
+  unpackFixture,
+} from "./kin-release-check.ts";
+
+const tempDir = (prefix: string) => NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), prefix));
+const script = (path: string, body: string) => {
+  NodeFS.writeFileSync(path, `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
+  return path;
+};
 
 describe("kin release check", () => {
   it("gives the same failure the same fingerprint across runs, and a different one elsewhere", () => {
@@ -71,6 +88,120 @@ describe("kin release check", () => {
       const ran = await run(NodePath.join(dir, "stage.log"), "kin-release-no-such-program", []);
       assert.strictEqual(ran.code, 127);
       assert.include(ran.output, "ENOENT");
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("counts a model as checked only when check:changed ran it, not when it skipped without Java", () => {
+    const output = [
+      "send: skipped: Java not found (install Java 11+ to check this model).",
+      "reply: no rule broken",
+      "check:changed summary",
+      "  pass  kin model send  0.2s",
+      "  pass  kin model reply  4.1s",
+      "  FAIL  kin model checkin  2.0s",
+    ].join("\n");
+    assert.deepStrictEqual([...modelsRan(output)].toSorted(), ["checkin", "reply"]);
+  });
+
+  it("unpacks a remote run's fixture when this machine has no folder for the commit yet", () => {
+    const dir = tempDir("kin-release-fixture-");
+    try {
+      NodeFS.mkdirSync(NodePath.join(dir, "from", "fixture"), { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(dir, "from", "fixture", "statev2.sqlite"), "company");
+      const tarball = NodeChildProcess.spawnSync("tar", [
+        "-C",
+        NodePath.join(dir, "from"),
+        "-czf",
+        "-",
+        "fixture",
+      ]).stdout;
+      const fixture = NodePath.join(dir, "checks", "abcdef123456", "fixture");
+      assert.isTrue(unpackFixture(fixture, tarball));
+      assert.strictEqual(
+        NodeFS.readFileSync(NodePath.join(fixture, "statev2.sqlite"), "utf8"),
+        "company",
+      );
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops the ssh run with the other children when the check is cancelled", async () => {
+    const dir = tempDir("kin-release-ssh-");
+    try {
+      const never = NodePath.join(dir, "never");
+      NodeChildProcess.spawnSync("mkfifo", [never]);
+      // Blocks until someone writes, which nobody does: only a kill ends it.
+      const ssh = script(
+        NodePath.join(dir, "ssh"),
+        `echo $$ > "${dir}/pid"; read -r line < "${never}"`,
+      );
+      const ran = streamRemote(ssh, [], NodePath.join(dir, "remote.log"));
+      stopChildren();
+      assert.notStrictEqual((await ran).code, 0);
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a second remote run is busy while the first is still taking the lock, and reclaims a dead one", async () => {
+    const dir = tempDir("kin-release-lock-");
+    try {
+      NodeFS.mkdirSync(NodePath.join(dir, "scripts"));
+      NodeFS.copyFileSync(
+        NodePath.join(import.meta.dirname, "kin-release-remote.sh"),
+        NodePath.join(dir, "scripts", "kin-release-remote.sh"),
+      );
+      const bin = NodePath.join(dir, "bin");
+      NodeFS.mkdirSync(bin);
+      const held = NodePath.join(dir, "held");
+      const go = NodePath.join(dir, "go");
+      NodeChildProcess.spawnSync("mkfifo", [held, go]);
+      // The first run to take the lock stops right after the step that takes it, before anything else.
+      const pausing = (tool: string) =>
+        script(
+          NodePath.join(bin, tool),
+          [
+            `/bin/${tool} "$@" || exit $?`,
+            `if [[ "\${@: -1}" == *release-check* && ! -e "${dir}/paused" ]]; then`,
+            `  touch "${dir}/paused"; echo held > "${held}"; read -r line < "${go}"`,
+            "fi",
+          ].join("\n"),
+        );
+      pausing("mkdir");
+      pausing("ln");
+      // Past the lock a run fetches; this one says so and stops.
+      script(NodePath.join(bin, "git"), 'echo "entered $$"; exit 1');
+      const env = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        KIN_RELEASE_CHECK_DIR: dir,
+      };
+      const remote = NodePath.join(dir, "scripts", "kin-release-remote.sh");
+      const first = new Promise<number | null>((resolve) => {
+        const child = NodeChildProcess.spawn("bash", [remote, "abc123"], { env, stdio: "ignore" });
+        child.on("close", resolve);
+      });
+      NodeFS.readFileSync(held);
+      const second = NodeChildProcess.spawnSync("bash", [remote, "abc123"], {
+        env,
+        encoding: "utf8",
+      });
+      assert.strictEqual(second.status, 75, second.stdout);
+      assert.include(second.stdout, "busy");
+      NodeFS.writeFileSync(go, "go\n");
+      assert.strictEqual(await first, 76);
+      // An owner that is gone leaves its lock behind; the next run takes it over.
+      const gone = NodeChildProcess.spawnSync("bash", ["-c", "echo $$"], { encoding: "utf8" });
+      NodeFS.symlinkSync(gone.stdout.trim(), NodePath.join(dir, ".t3", "release-check.pid"));
+      const third = NodeChildProcess.spawnSync("bash", [remote, "abc123"], {
+        env,
+        encoding: "utf8",
+      });
+      assert.strictEqual(third.status, 76, third.stdout);
+      assert.include(third.stdout, "entered");
     } finally {
       NodeFS.rmSync(dir, { recursive: true, force: true });
     }

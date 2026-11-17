@@ -6,6 +6,11 @@ import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinOwnsDirectChat } from "@t3tools/client-runtime/kin/kinClearChat";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import { resolveTimelineIsAtEnd } from "../components/chat/MessagesTimeline.logic";
+import {
+  attachTimelineViewport,
+  navigationReleasesFollow,
+} from "../components/chat/timelineViewport";
 import {
   kinChatGoneCopy,
   buildKinFeedRows,
@@ -30,6 +35,7 @@ import {
 import { kinFeedMessages } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
   initialKinFeedFollow,
+  kinRepinsEnd,
   kinFollowsEnd,
   resolveKinFeedFollow,
   type KinFeedFollowEvent,
@@ -775,8 +781,14 @@ function KinChatFeed(props: {
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- markRead is rebuilt each render; the ref carries the latest.
   }, [seesEnd, latestSeq, unread, connected, focused]);
 
-  const transition = (event: KinFeedFollowEvent) =>
-    setFollow((current) => resolveKinFeedFollow(current, event));
+  // Read by scroll listeners in the same frame as the person's input, before React renders.
+  const followRef = useRef(follow);
+  const transition = (event: KinFeedFollowEvent) => {
+    const next = resolveKinFeedFollow(followRef.current, event);
+    if (next === followRef.current) return;
+    followRef.current = next;
+    setFollow(next);
+  };
 
   const loadEarlier = () => {
     if (!canLoadEarlier || earlierPage === null || loading) return;
@@ -810,20 +822,36 @@ function KinChatFeed(props: {
 
   const checkEnd = () => {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
-    if (isAtEnd !== follow.atEnd) transition({ type: "end-check", isAtEnd });
-    if (isAtEnd) transition({ type: "seen", seq: latestSeq });
+    // The list skips its own re-pin while its opening scroll runs, so a message landing then
+    // would leave it short of the end; following, we pin it ourselves.
+    if (kinRepinsEnd(followRef.current, isAtEnd))
+      void listRef.current?.scrollToEnd({ animated: false });
+    transition({ type: "end-check", isAtEnd });
+    if (isAtEnd) transition({ type: "seen", seq: reading.current.latestSeq });
   };
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- onScroll can read isAtEnd before the list re-pins, leaving follow off at the end; the list's own signal restores it
-  useEffect(
-    () =>
-      listRef.current?.getState().listen("isAtEnd", (isAtEnd) => {
-        if (!isAtEnd) return;
-        transition({ type: "end-check", isAtEnd });
-        transition({ type: "seen", seq: reading.current.latestSeq });
-      }),
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition only calls setFollow, which is stable.
-    [],
-  );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hears the person's own scrolling on the list's DOM node, and the list's re-pin to its end
+  useEffect(() => {
+    const list = listRef.current;
+    const scrollNode = list?.getScrollableNode();
+    if (!list || !(scrollNode instanceof HTMLElement)) return;
+    // The coding thread's own input listeners: only these let go of the end.
+    const viewport = attachTimelineViewport(scrollNode);
+    const unsubscribe = viewport.subscribe((navigation) => {
+      const state = list.getState();
+      const releases = navigationReleasesFollow(navigation, {
+        contentScrollsUp: () => state.scroll > 0,
+        awayFromEnd: () => resolveTimelineIsAtEnd(state) === false,
+      });
+      if (releases) transition({ type: "navigated", seq: reading.current.latestSeq });
+    });
+    const unlisten = list.getState().listen("isAtEnd", checkEnd);
+    return () => {
+      unlisten();
+      unsubscribe();
+      viewport.dispose();
+    };
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- checkEnd and transition read only refs and the stable setFollow.
+  }, []);
 
   const prefersReducedMotion =
     typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
