@@ -55,7 +55,7 @@ git clone -q "$ORIGIN" "$WORK/seed" 2>/dev/null
 turn "rev-$RUN" "gh pr review \$N --repo $REPO --comment --body 'Looks right: one small naming nit.'" \
   "Reviewed the hello PR ($RUN)."
 PR=$(world open "{\"repo\":\"$REPO\",\"pull\":true,\"author\":\"dev-teammate\",\"association\":\"MEMBER\",\"title\":\"Add hello\",\"body\":\"Adds hello.js [kv:rev-$RUN]\",\"headRef\":\"rename-$RUN\"}")
-sed -i '' "s/\\\$N/$PR/" "$VERIFY/turns/rev-$RUN.json"
+perl -pi -e "s/\\\$N/$PR/" "$VERIFY/turns/rev-$RUN.json"
 wait_for "select count(*) from kin_github_handled where trigger_key = 'review:${REPO}#$PR'" 1 \
   "the teammate's PR wasn't taken up for review"
 for _ in $(seq 1 60); do [[ -f "$VERIFY/turns/rev-$RUN.result.json" ]] && break; sleep 1; done
@@ -70,7 +70,7 @@ wait_for "select count(*) from kin_messages where author_kind = 'agent' and body
 
 # 2. "/kin please rename" on that PR: a commit on its branch, and a reply in the thread.
 turn "call-$RUN" "git clone -q '$ORIGIN' '$WORK/w' && cd '$WORK/w' && git checkout -q rename-$RUN &&
-sed -i '' s/helloName/greeting/ hello.js &&
+perl -pi -e s/helloName/greeting/ hello.js &&
 git -c user.name=invented-owner -c user.email=1+invented-owner@users.noreply.github.com commit -qam 'refactor: rename helloName to greeting' &&
 git push -q origin rename-$RUN &&
 gh pr comment $PR --repo $REPO --body \"Renamed helloName to greeting in \$(git rev-parse --short HEAD).\"" \
@@ -96,7 +96,7 @@ calls_on_pr=$(q "select count(*) from kin_github_handled where repo = '$REPO' an
 turn "label-$RUN" "cd '$WORK/seed' && gh pr create --title 'Add a shellcheck workflow' --body \"Closes #\$I\"" \
   "Opened a PR for the shellcheck issue."
 ISSUE=$(world open "{\"repo\":\"$REPO\",\"pull\":false,\"author\":\"dev-teammate\",\"association\":\"COLLABORATOR\",\"title\":\"Add a shellcheck workflow\",\"body\":\"CI should run shellcheck [kv:label-$RUN]\"}")
-sed -i '' "s/\\\$I/$ISSUE/" "$VERIFY/turns/label-$RUN.json"
+perl -pi -e "s/\\\$I/$ISSUE/" "$VERIFY/turns/label-$RUN.json"
 world label "{\"repo\":\"$REPO\",\"number\":$ISSUE,\"label\":\"kin\",\"actor\":\"dev-teammate\"}" >/dev/null
 for _ in $(seq 1 90); do [[ -f "$VERIFY/turns/label-$RUN.result.json" ]] && break; sleep 1; done
 [[ -f "$VERIFY/turns/label-$RUN.result.json" ]] || fail "the kin label didn't start a turn"
