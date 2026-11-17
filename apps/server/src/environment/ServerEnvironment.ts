@@ -182,6 +182,32 @@ const makeIdentity = Effect.gen(function* () {
   });
 });
 
+const decodeWebManifest = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({ file: Schema.String, isEntry: Schema.optional(Schema.Boolean) }),
+    ),
+  ),
+);
+
+/** The served bundle's entry file. Its content hash moves with any change to the bundle. */
+const readWebBuild = Effect.fn("ServerEnvironment.readWebBuild")(function* (
+  staticDir: string | undefined,
+) {
+  if (staticDir === undefined) return undefined;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* fileSystem.readFileString(path.join(staticDir, ".vite", "manifest.json")).pipe(
+    Effect.flatMap(decodeWebManifest),
+    Effect.map((manifest) => {
+      const entry = manifest["index.html"];
+      return entry?.isEntry === true && entry.file.trim() !== "" ? entry.file : undefined;
+    }),
+    Effect.orElseSucceed(() => undefined),
+  );
+});
+
 /** @public */
 export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
@@ -207,6 +233,7 @@ export const make = Effect.gen(function* () {
     serverSelfUpdate === "desktop-managed" && serverConfig.desktopTelemetryControlFd !== undefined;
 
   const databaseMigration = databaseMigrationHead(serverConfig.dbPath);
+  const webBuild = yield* readWebBuild(serverConfig.staticDir);
   const descriptor: ExecutionEnvironmentDescriptor = {
     environmentId,
     label,
@@ -218,6 +245,7 @@ export const make = Effect.gen(function* () {
     serverVersion: packageJson.version,
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     ...(databaseMigration === undefined ? {} : { databaseMigration }),
+    ...(webBuild === undefined ? {} : { webBuild }),
     capabilities: {
       repositoryIdentity: true,
       connectionProbe: true,
