@@ -5,7 +5,10 @@ import {
   KIN_RETIRED_LABEL,
   kinAgentGroups,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
-import { KIN_OPENAI_AGENTS, kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import {
+  KIN_OTHER_PROVIDER_AGENTS,
+  kinDomainLabel,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { EnvironmentId, KinOrgId, type ModelSelection } from "@t3tools/contracts";
 import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -157,7 +160,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
       {canAdd && agents !== null && agents.length > 0 ? (
         <>
           <KinAgentDefaults environmentId={environmentId} orgId={orgId} />
-          <KinOpenAiAgents environmentId={environmentId} />
+          <KinOtherProviderAgents environmentId={environmentId} />
         </>
       ) : null}
       {retired.length === 0 ? null : (
@@ -182,18 +185,18 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
   );
 }
 
-/** The host's experimental switch that lets agents run on Codex models too. */
-function KinOpenAiAgents(props: { readonly environmentId: EnvironmentId }) {
+/** The host's experimental switch that lets agents run on providers behind it. */
+function KinOtherProviderAgents(props: { readonly environmentId: EnvironmentId }) {
   const config = useEnvironmentServerConfig(props.environmentId);
   const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
-    label: "Kin agents on OpenAI models",
+    label: KIN_OTHER_PROVIDER_AGENTS.title,
     reportFailure: true,
   });
   if (config === null) return null;
   return (
-    <ListSection footer={KIN_OPENAI_AGENTS.detail}>
+    <ListSection footer={KIN_OTHER_PROVIDER_AGENTS.detail}>
       <ListToggleRow
-        label={KIN_OPENAI_AGENTS.title}
+        label={KIN_OTHER_PROVIDER_AGENTS.title}
         value={config.settings.kinNonClaudeAgents}
         onValueChange={(on) =>
           void updateSettings({

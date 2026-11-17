@@ -56,7 +56,7 @@ import {
   encodeLeadModel,
   isDevServer,
   leadModelProblem,
-  nonClaudeLeadModel,
+  leadProviderProblem,
 } from "./leadModels.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
@@ -249,12 +249,12 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
   const { owner } = yield* KinIdentity;
   const { orgId } = person;
   const model = input.model ?? (yield* defaultModel(orgId));
-  const notClaude = nonClaudeLeadModel(
+  const wrongProvider = leadProviderProblem(
     yield* (yield* ServerSettingsService).getSettings,
     model,
     yield* isDevServer,
   );
-  if (notClaude !== undefined) return yield* refuse("not_claude", notClaude);
+  if (wrongProvider !== undefined) return yield* refuse("not_claude", wrongProvider);
   return yield* transaction(
     sql,
     "KinLeadProvision.create",

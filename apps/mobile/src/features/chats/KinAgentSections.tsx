@@ -10,7 +10,10 @@ import {
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinDocMarkdown } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinCheckInLine } from "@t3tools/client-runtime/kin/kinCheckIns";
-import { kinLeadModelName } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import {
+  kinLeadModelName,
+  kinProviderLimitLine,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
@@ -126,6 +129,9 @@ function Models(props: {
     );
     props.onChanged();
   };
+  const limit = kinProviderLimitLine(
+    providers?.find((provider) => provider.instanceId === page.runsOn.instanceId)?.driver,
+  );
   const name = (selection: ModelSelection) =>
     kinAgentModelLine(kinLeadModelName(selection.model, providers), selection);
   return (
@@ -175,7 +181,9 @@ function Models(props: {
       >
         {problem ??
           (page.modelNote === null
-            ? `${KIN_AGENT_PAGE.modelDetail} ${kinAgentUsageLine(page.usedThisMonth)}`
+            ? [KIN_AGENT_PAGE.modelDetail, limit, kinAgentUsageLine(page.usedThisMonth)]
+                .filter(Boolean)
+                .join(" ")
             : `${page.modelNote} Now: ${name(page.runsOn)}.`)}
       </Text>
     </View>

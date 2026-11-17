@@ -60,7 +60,7 @@ import {
   companyDefaultModel,
   isDevServer,
   leadModelProblem,
-  nonClaudeLeadModel,
+  leadProviderProblem,
 } from "./leadModels.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { bootstrapLeadProject } from "./leadProject.ts";
@@ -795,9 +795,9 @@ const make = Effect.gen(function* () {
                 leadModelProblem(hostSettings, providers, candidate, devServer),
             });
             // Provisioning refuses these too; a row written another way still never launches.
-            const notClaude = nonClaudeLeadModel(hostSettings, modelSelection, devServer);
-            if (notClaude !== undefined)
-              return yield* new KinWakeupError({ orgId, agentId, cause: notClaude });
+            const wrongProvider = leadProviderProblem(hostSettings, modelSelection, devServer);
+            if (wrongProvider !== undefined)
+              return yield* new KinWakeupError({ orgId, agentId, cause: wrongProvider });
             // T3 starts the run that answers a finished task at once: own it before the slow
             // preparation below, so its first tool calls already find their turn.
             for (const event of events) {

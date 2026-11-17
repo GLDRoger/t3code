@@ -26,6 +26,19 @@ export const KIN_CAPABILITY_WORDS: Readonly<Record<KinCapability, string>> = {
   subAgents: "start sub-agents",
 };
 
+/**
+ * What Kin can't promise on a provider: its own config (skills, settings) still loads, tools the
+ * agent runs without asking can't be taken from a chat others read, or its shell inherits the
+ * server's environment. Such a provider stays dev-only.
+ */
+export type KinProviderLimit = "ownConfigLoads" | "ownToolsStay" | "hostEnvironment";
+
+/** "a, b or c": what a provider lacks, in the words the agent and its owner both read. */
+export const kinCantDo = (lacks: ReadonlyArray<KinCapability>) => {
+  const words = lacks.map((capability) => KIN_CAPABILITY_WORDS[capability]);
+  return words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`;
+};
+
 /** What clients and the host both know of a provider an agent may run on (`lead/turn/providers`). */
 export interface KinProviderFacts {
   /** T3's driver kind. */
@@ -39,6 +52,7 @@ export interface KinProviderFacts {
   readonly devOnly: boolean;
   /** Built-ins it lacks; the agent is told, and so is the owner on the agent's page. */
   readonly lacks: ReadonlyArray<KinCapability>;
+  readonly limits: ReadonlyArray<KinProviderLimit>;
 }
 
 export const KIN_PROVIDER_FACTS: ReadonlyArray<KinProviderFacts> = [
@@ -49,6 +63,7 @@ export const KIN_PROVIDER_FACTS: ReadonlyArray<KinProviderFacts> = [
     behindSwitch: false,
     devOnly: false,
     lacks: [],
+    limits: [],
   },
   {
     driver: "codex",
@@ -58,6 +73,7 @@ export const KIN_PROVIDER_FACTS: ReadonlyArray<KinProviderFacts> = [
     devOnly: false,
     // Under full access Codex sends stdin to an open session unasked (`stdin_approval.rs`).
     lacks: ["backgroundShell", "webFetch"],
+    limits: [],
   },
   {
     driver: "acpRegistry",
@@ -65,7 +81,9 @@ export const KIN_PROVIDER_FACTS: ReadonlyArray<KinProviderFacts> = [
     effortOption: "effort",
     behindSwitch: false,
     devOnly: true,
+    // Kin serves an ACP agent no built-ins; what it brings of its own, Kin sees only when it asks.
     lacks: [...KIN_CAPABILITIES],
+    limits: ["ownConfigLoads", "ownToolsStay", "hostEnvironment"],
   },
 ];
 

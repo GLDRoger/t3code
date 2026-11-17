@@ -51,6 +51,7 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
@@ -188,6 +189,14 @@ export interface AcpAdapterV2RuntimeInput {
   readonly onOutgoingResponse?: AcpSessionRuntime.AcpSessionRuntimeOptions["onOutgoingResponse"];
   readonly onIncomingRequest?: AcpSessionRuntime.AcpSessionRuntimeOptions["onIncomingRequest"];
 }
+
+export type AcpMakeRuntime = AcpAdapterV2Flavor["makeRuntime"];
+
+/** Lets the server shape each ACP session it opens (Kin plans its agents' sessions here). */
+export const AcpSessionShaper = Context.Reference<(make: AcpMakeRuntime) => AcpMakeRuntime>(
+  "@t3tools/provider-acp/AcpSessionShaper",
+  { defaultValue: () => (make) => make },
+);
 
 export type AcpAdapterV2NativeLogging = Pick<
   AcpSessionRuntime.AcpSessionRuntimeOptions,
@@ -1685,6 +1694,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
   const host = yield* ProviderHost.ProviderHost;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const { flavor, selfInvocation: self } = options;
+  const makeRuntime = (yield* AcpSessionShaper)(flavor.makeRuntime);
   const readMcpContext = (threadId: ThreadId | null) =>
     threadId === null
       ? Effect.succeed(acpMcpContext(undefined, self, flavor.mcpOverHttp))
@@ -6889,17 +6899,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           runtimeMcpBridge = yield* makeRuntimeMcpBridge(mcpContext, runtimeScope);
           const runtimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
           openAgentRequests = new Set();
-          runtime = yield* flavor
-            .makeRuntime(
-              makeRuntimeInput(runtimeGeneration, openAgentRequests, mcpContext, resumeSessionId),
-            )
-            .pipe(
-              Effect.provideService(Scope.Scope, runtimeScope),
-              Effect.provideService(SecureRandom.SecureRandom, random),
-              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-              Effect.provideService(AgentScope, agentScope),
-              Effect.provideService(AgentScopeThreadId, threadId ?? undefined),
-            );
+          runtime = yield* makeRuntime(
+            makeRuntimeInput(runtimeGeneration, openAgentRequests, mcpContext, resumeSessionId),
+          ).pipe(
+            Effect.provideService(Scope.Scope, runtimeScope),
+            Effect.provideService(SecureRandom.SecureRandom, random),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+            Effect.provideService(AgentScope, agentScope),
+            Effect.provideService(AgentScopeThreadId, threadId ?? undefined),
+          );
         });
 
         const startAcpRuntime = Effect.fnUntraced(function* (
@@ -6964,23 +6972,21 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const startup = Effect.gen(function* () {
             const mcpContext = yield* readMcpContext(threadId);
             replacementMcpBridge = yield* makeRuntimeMcpBridge(mcpContext, replacementScope);
-            const replacementRuntime = yield* flavor
-              .makeRuntime(
-                makeRuntimeInput(
-                  replacementGeneration,
-                  replacementAgentRequests,
-                  mcpContext,
-                  undefined,
-                  handleCandidateTermination,
-                ),
-              )
-              .pipe(
-                Effect.provideService(Scope.Scope, replacementScope),
-                Effect.provideService(SecureRandom.SecureRandom, random),
-                Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-                Effect.provideService(AgentScope, agentScope),
-                Effect.provideService(AgentScopeThreadId, threadId ?? undefined),
-              );
+            const replacementRuntime = yield* makeRuntime(
+              makeRuntimeInput(
+                replacementGeneration,
+                replacementAgentRequests,
+                mcpContext,
+                undefined,
+                handleCandidateTermination,
+              ),
+            ).pipe(
+              Effect.provideService(Scope.Scope, replacementScope),
+              Effect.provideService(SecureRandom.SecureRandom, random),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+              Effect.provideService(AgentScope, agentScope),
+              Effect.provideService(AgentScopeThreadId, threadId ?? undefined),
+            );
             yield* replacementRuntime.handleSessionUpdate((notification) =>
               Effect.suspend(() => handleCandidateSessionUpdate(notification)),
             );
