@@ -15,10 +15,12 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   KIN_MEMORY_NO_EDITS,
+  KIN_MEMORY_TEAM_SWITCH,
   createKinMemoryActions,
   kinMemoryEntrySummary,
   kinMemoryStarted,
   kinMemoryView,
+  kinTeamMemoryView,
   type KinMemoryEdits,
 } from "./kinMemoryScreen.ts";
 
@@ -72,6 +74,7 @@ function harness(list: KinMemoryListResult) {
       }));
     },
     forget: (input) => answer(() => ({ itemId: input.itemId })),
+    setTeamMemory: (input) => answer(() => ({ teamMemory: input.on })),
     update: (change) => {
       edits = change(edits);
     },
@@ -247,6 +250,35 @@ describe("what the owner's leads remember", () => {
     expect(states(listOf([item("a", "suggested"), item("b", "only_owner")]), host.edits())).toEqual(
       { a: "suggested", b: "only_owner" },
     );
+  });
+
+  it("says whether teammates' chats use team memory, and flips it with a way back", async () => {
+    const off = { items: [item("ours", "team")], teamMemory: false } satisfies KinMemoryListResult;
+    const teamHint = (list: KinMemoryListResult, edits: KinMemoryEdits) =>
+      kinMemoryView(list, edits, "").rows.find((row) => row.type === "section")?.hint;
+    expect(kinTeamMemoryView(off, KIN_MEMORY_NO_EDITS)).toMatchObject({ on: false, busy: false });
+    expect(teamHint(off, KIN_MEMORY_NO_EDITS)).toBe(KIN_MEMORY_TEAM_SWITCH.off);
+    // An older host doesn't say, so no switch and today's words.
+    expect(kinTeamMemoryView(listOf([item("ours", "team")]), KIN_MEMORY_NO_EDITS)).toBeNull();
+
+    const host = harness(off);
+    const turning = host.actions.setTeamMemory(off, true);
+    expect(kinTeamMemoryView(off, host.edits())).toMatchObject({ on: true, busy: true });
+    host.release(true);
+    await turning;
+    expect(kinTeamMemoryView(off, host.edits())).toMatchObject({ on: true, busy: false });
+    expect(teamHint(off, host.edits())).toBe(
+      "Your agents can use these when they work with teammates.",
+    );
+    expect(host.refreshes()).toBe(1);
+    // The next read is the truth.
+    expect(kinTeamMemoryView({ ...off, teamMemory: false }, host.edits())?.on).toBe(false);
+
+    const refused = host.actions.setTeamMemory(off, true);
+    host.release(false);
+    await refused;
+    expect(kinTeamMemoryView(off, host.edits())?.on).toBe(false);
+    expect(host.edits().problem).toBe(`${KIN_MEMORY_TEAM_SWITCH.failed} ${KIN_BUSY}`);
   });
 
   it("drops a forgotten item at once and puts it back when the host refuses", async () => {

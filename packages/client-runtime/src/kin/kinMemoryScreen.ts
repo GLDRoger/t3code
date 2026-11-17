@@ -10,6 +10,8 @@ import {
   type KinMemoryItemId,
   type KinMemoryListItem,
   type KinMemoryListResult,
+  type KinMemorySetTeamMemoryInput,
+  type KinMemorySetTeamMemoryResult,
   type KinMemorySetVisibilityInput,
   type KinMemorySetVisibilityResult,
   type KinMemoryVisibility,
@@ -46,6 +48,13 @@ export const KIN_MEMORY_FORGOTTEN = {
   count: (n: number) => (n === 0 ? "None" : String(n)),
   restore: "Restore",
   failed: "Couldn't bring that back.",
+};
+/** The owner's switch for whether agents use team memory in chats with teammates. */
+export const KIN_MEMORY_TEAM_SWITCH = {
+  label: "Agents use team memory in chats with teammates",
+  on: "They use only what's under The team can know. The rest stays with you.",
+  off: "Teammates' chats don't use memory yet. Your own chats do.",
+  failed: "Couldn't change team memory.",
 };
 const SHARE = "Let the team know";
 const KEEP = "Keep to myself";
@@ -164,6 +173,8 @@ export interface KinMemoryEdits {
   readonly settledOver: KinMemoryListResult | null;
   /** The last tap that didn't go through, in words for the owner. */
   readonly problem: string | null;
+  /** The switch as last flipped, shown until a list read after the host's answer says so. */
+  readonly teamMemory: { readonly on: boolean; readonly over: KinMemoryListResult | null } | null;
 }
 
 export const KIN_MEMORY_NO_EDITS: KinMemoryEdits = {
@@ -171,7 +182,34 @@ export const KIN_MEMORY_NO_EDITS: KinMemoryEdits = {
   settled: new Map(),
   settledOver: null,
   problem: null,
+  teamMemory: null,
 };
+
+/** The switch for this list: null from an older host that doesn't say. */
+export interface KinTeamMemoryView {
+  readonly on: boolean;
+  readonly label: string;
+  readonly detail: string;
+  readonly busy: boolean;
+}
+
+export function kinTeamMemoryView(
+  list: KinMemoryListResult,
+  edits: KinMemoryEdits,
+): KinTeamMemoryView | null {
+  if (list.teamMemory === undefined) return null;
+  const flipped = edits.teamMemory;
+  const on =
+    flipped !== null && (flipped.over === null || flipped.over === list)
+      ? flipped.on
+      : list.teamMemory;
+  return {
+    on,
+    label: KIN_MEMORY_TEAM_SWITCH.label,
+    detail: on ? KIN_MEMORY_TEAM_SWITCH.on : KIN_MEMORY_TEAM_SWITCH.off,
+    busy: flipped !== null && flipped.over === null,
+  };
+}
 
 const without = <V>(map: ReadonlyMap<string, V>, ids: ReadonlyArray<string>) => {
   const next = new Map(map);
@@ -341,6 +379,7 @@ export function kinMemoryView(
   const found =
     words.length === 0 ? items : items.filter(({ item, origin }) => matches(item, origin, words));
   const rows: Array<KinMemoryRow> = [];
+  const teamOff = kinTeamMemoryView(list, edits)?.on === false;
   for (const section of SECTIONS) {
     const inSection = found.filter(({ state }) => state === section.state);
     if (inSection.length === 0) continue;
@@ -348,6 +387,8 @@ export function kinMemoryView(
       type: "section",
       key: `section:${section.state}`,
       ...section,
+      // Kept here, the screen says what a teammate's turn really gets.
+      hint: section.state === "team" && teamOff ? KIN_MEMORY_TEAM_SWITCH.off : section.hint,
       count: inSection.length,
     });
     for (const { item, state, origin } of inSection) {
@@ -421,6 +462,9 @@ export function createKinMemoryActions(options: {
     input: KinMemoryConfirmSuggestionsInput,
   ) => Sent<KinMemoryConfirmSuggestionsResult>;
   readonly forget: (input: KinMemoryForgetInput) => Sent<KinMemoryForgetResult>;
+  readonly setTeamMemory: (
+    input: KinMemorySetTeamMemoryInput,
+  ) => Sent<KinMemorySetTeamMemoryResult>;
   readonly update: (change: (edits: KinMemoryEdits) => KinMemoryEdits) => void;
   readonly refresh: () => void;
 }) {
@@ -486,6 +530,24 @@ export function createKinMemoryActions(options: {
           ? { answered: [{ itemId: result.value.itemId, visibility: "forgotten" as const }] }
           : { failed: squashAtomCommandFailure(result) };
       }),
+    /** The owner's switch: shown flipped at once, back with the reason if the host refuses. */
+    setTeamMemory: async (list: KinMemoryListResult, on: boolean) => {
+      update((edits) => ({ ...edits, teamMemory: { on, over: null }, problem: null }));
+      const result = await options.setTeamMemory({ orgId, on });
+      update((edits) =>
+        AsyncResult.isSuccess(result)
+          ? { ...edits, teamMemory: { on: result.value.teamMemory, over: list } }
+          : {
+              ...edits,
+              teamMemory: null,
+              problem: kinFailureText(
+                squashAtomCommandFailure(result),
+                KIN_MEMORY_TEAM_SWITCH.failed,
+              ),
+            },
+      );
+      if (inFlight === 0) options.refresh();
+    },
     dismissProblem: () => update((edits) => ({ ...edits, problem: null })),
   };
 }

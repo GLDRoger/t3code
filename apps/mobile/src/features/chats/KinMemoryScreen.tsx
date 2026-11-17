@@ -14,6 +14,7 @@ import {
   createKinMemoryActions,
   kinMemoryEntrySummary,
   kinMemoryView,
+  kinTeamMemoryView,
   type KinMemoryActions,
   type KinMemoryConfirmAll,
   type KinMemoryOriginView,
@@ -47,6 +48,8 @@ import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ListRow } from "../../components/ui/ListRow";
+import { ListSection } from "../../components/ui/ListSection";
+import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { KinListBanner } from "./components/KinListBanner";
 import { KinFoldSection } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
@@ -146,6 +149,10 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
   const setVisibility = useAtomCommand(kinClient.memorySetVisibility, { reportFailure: false });
   const confirm = useAtomCommand(kinClient.memoryConfirm, { reportFailure: false });
   const forget = useAtomCommand(kinClient.memoryForget, { reportFailure: false });
+  const setTeamMemory = useAtomCommand(kinClient.memorySetTeamMemory, { reportFailure: false });
+  const canSetTeamMemory = useAtomValue(
+    kinClient.memorySetTeamMemory.permissionAtom(environmentId),
+  );
   const [edits, setEdits] = useState(KIN_MEMORY_NO_EDITS);
   const [search, setSearch] = useState("");
   // Whose words and which agent an item names; until these arrive a row says "a teammate" or "an agent".
@@ -165,6 +172,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
       setVisibility: (input) => setVisibility({ environmentId, input }),
       confirmSuggestions: (input) => confirm({ environmentId, input }),
       forget: (input) => forget({ environmentId, input }),
+      setTeamMemory: (input) => setTeamMemory({ environmentId, input }),
       update: setEdits,
       refresh: () => appAtomRegistry.refresh(listAtom),
     }),
@@ -178,6 +186,19 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
           people: Option.getOrNull(AsyncResult.value(people))?.people ?? [],
           agents: Option.getOrNull(AsyncResult.value(agents))?.leads ?? [],
         });
+  const team = list === null ? null : kinTeamMemoryView(list, edits);
+  const teamSwitch =
+    list === null || team === null ? null : (
+      <ListSection>
+        <ListToggleRow
+          label={team.label}
+          description={team.detail}
+          value={team.on}
+          disabled={!canSetTeamMemory || team.busy}
+          onValueChange={(on) => void actions.setTeamMemory(list, on)}
+        />
+      </ListSection>
+    );
   const message = !allowed ? (
     <EmptyState
       variant="plain"
@@ -240,6 +261,10 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
           >
+            {view?.total === 0 ? teamSwitch : null}
+            {view?.total === 0 && edits.problem !== null ? (
+              <ErrorBanner message={edits.problem} />
+            ) : null}
             {message}
             {view?.total === 0 ? (
               <KinMemoryForgotten
@@ -265,9 +290,10 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
             estimatedItemSize={96}
             recycleItems
             ListHeaderComponent={
-              edits.problem === null ? null : (
-                <View className="px-4 pt-3">
-                  <ErrorBanner message={edits.problem} />
+              edits.problem === null && teamSwitch === null ? null : (
+                <View className="gap-3 px-4 pt-3">
+                  {teamSwitch}
+                  {edits.problem === null ? null : <ErrorBanner message={edits.problem} />}
                 </View>
               )
             }
