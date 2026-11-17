@@ -104,10 +104,13 @@ export const repoList = Effect.fn("KinGitHubWatchStore.repos")(function* (orgId:
     .toSorted((a, b) => a.repo.localeCompare(b.repo));
 });
 
+/** As saved; `review` goes out as `open` with `needsReview`, which a phone older than it ignores. */
+export type GuardState = KinGitHubBranchGuard["state"] | "review";
+
 export interface GuardRow {
   readonly repo: string;
   readonly branch: string;
-  readonly state: KinGitHubBranchGuard["state"];
+  readonly state: GuardState;
   readonly problem: KinGitHubBranchGuard["problem"] | null;
   readonly byKin: number;
   readonly kinRulesetId: number | null;
@@ -135,9 +138,10 @@ export const withGuards = Effect.fn("KinGitHubWatchStore.withGuards")(function* 
       : {
           ...repo,
           guard: {
-            state: row.state,
+            state: row.state === "review" ? "open" : row.state,
             branch: row.branch,
             byKin: row.byKin === 1,
+            ...(row.state === "review" ? { needsReview: true } : {}),
             ...(row.problem === null || row.problem === undefined ? {} : { problem: row.problem }),
           },
         };
@@ -197,6 +201,9 @@ export const watchSummary = Effect.fn("KinGitHubWatchStore.summary")(function* (
     checkedAt: row.checkedAt,
     handledToday: handled?.count ?? 0,
     problem: row.problem,
-    open: watched.filter((repo) => guards.get(repo.repo.toLowerCase())?.state === "open").length,
+    open: watched.filter((repo) => {
+      const state = guards.get(repo.repo.toLowerCase())?.state;
+      return state === "open" || state === "review";
+    }).length,
   } satisfies KinGitHubWatch;
 });

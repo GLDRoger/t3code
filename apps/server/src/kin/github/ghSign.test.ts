@@ -10,6 +10,7 @@ import {
   AGENT_POSTS_FILE,
   agentShellScripts,
   APP_IDENTITY_FILE,
+  APP_REPOS_FOLDER,
   APP_TOKENS_FOLDER,
   OWNER_USES_FILE,
 } from "./ghSign.ts";
@@ -23,7 +24,7 @@ const APP_TOKEN = "ghs_invented_app_token";
  * A scratch agent shell: Kin's scripts first on PATH, a stand-in gh that prints the token it got and
  * each argument on its own line (and the owner's login for git), and the real git.
  */
-const makeShell = (options: { app?: boolean } = {}) => {
+const makeShell = (options: { app?: boolean; picked?: ReadonlyArray<string> } = {}) => {
   const dir = NodeFS.realpathSync(NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "kin-shell-")));
   const shims = NodePath.join(dir, "shims");
   const app = NodePath.join(dir, "app");
@@ -49,6 +50,13 @@ const makeShell = (options: { app?: boolean } = {}) => {
     NodeFS.writeFileSync(NodePath.join(app, APP_TOKENS_FOLDER, "invented-co"), APP_TOKEN, {
       mode: 0o600,
     });
+    if (options.picked !== undefined) {
+      NodeFS.mkdirSync(NodePath.join(app, APP_REPOS_FOLDER));
+      NodeFS.writeFileSync(
+        NodePath.join(app, APP_REPOS_FOLDER, "invented-co"),
+        options.picked.map((repo) => `${repo}\n`).join(""),
+      );
+    }
   }
   const globalConfig = NodePath.join(dir, "gitconfig");
   // The owner's own git setup: his name, and gh as the credential helper, as `gh auth setup-git` writes.
@@ -472,6 +480,22 @@ describe("the gh a Kin agent's shell runs", () => {
       ]),
     ).toBe(APP_TOKEN);
     expect(tokenFor(["pr", "create", "-R", "elsewhere/x", "--body", "y"])).toBe("");
+  });
+
+  it("acts as the owner on a repo taken off the App's selection while others of its account stay", () => {
+    using shell = makeShell({ app: true, picked: ["invented-co/kept"] });
+    const tokenFor = (args: ReadonlyArray<string>) =>
+      shell.tokenOf(shell.run("gh", args, { name: "Tech lead" }).stdout);
+    expect(tokenFor(["pr", "view", "1", "-R", "Invented-Co/Kept"])).toBe(APP_TOKEN);
+    expect(tokenFor(["pr", "view", "1", "-R", "invented-co/removed"])).toBe("");
+    expect(tokenFor(["api", "repos/invented-co/removed/pulls"])).toBe("");
+    const fill = (url: string) =>
+      shell.run("git", ["credential", "fill"], { stdin: `url=${url}\n\n`, name: "Tech lead" })
+        .stdout;
+    expect(fill("https://github.com/invented-co/kept.git")).toContain(`password=${APP_TOKEN}`);
+    expect(fill("https://github.com/invented-co/removed.git")).toContain(
+      "username=owner\npassword=owner-login",
+    );
   });
 
   it("acts as the owner, as before, while the App isn't set up", () => {

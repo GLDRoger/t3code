@@ -5,7 +5,7 @@ import {
   KIN_WORK_ASSIGN,
   KIN_WORK_GONE,
   KIN_WORK_ITEM_FAILED,
-  KIN_WORK_ONLY_OWNER,
+  kinWorkOnlyOwner,
   createKinWorkActions,
   kinWorkAssignees,
   kinWorkItemState,
@@ -37,6 +37,8 @@ import {
   useKinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
+import { useKinGate } from "./state/useKinHost";
+import { KinGateView } from "./components/KinWorkPieces";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -83,11 +85,14 @@ type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey };
 
 function KinWorkAssignGate(props: ItemTarget) {
   const navigation = useNavigation();
-  const allowed = useAtomValue(kinClient.workAssign.permissionAtom(props.environmentId));
-  if (!allowed) {
+  const gate = useKinGate(
+    kinClient.workAssign.permissionStateAtom(props.environmentId),
+    props.environmentId,
+  );
+  if (gate !== null) {
     return (
       <Frame onClose={() => navigation.goBack()}>
-        <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+        <KinGateView gate={gate} refused={kinWorkOnlyOwner("tasks")} label="Task" />
       </Frame>
     );
   }

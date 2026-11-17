@@ -43,6 +43,8 @@ import {
 } from "../components/ui/menu";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn } from "../lib/utils";
+import type { KinGate } from "@t3tools/client-runtime/kin/kinAccess";
+import { KIN_OFFLINE_PAGE } from "@t3tools/client-runtime/kin/kinAnswers";
 
 /**
  * A titled block of a task, client or project, with an optional action beside the title. With
@@ -162,6 +164,27 @@ export function KinLoadFailed(props: {
           {KIN_RETRY}
         </Button>
       ) : null}
+    </div>
+  );
+}
+
+/** A gated page before its reads: skeleton rows, offline, or the page's own refusal. */
+export function KinGateView(props: {
+  readonly gate: Exclude<KinGate, null>;
+  readonly refused: { readonly title: string; readonly detail: string };
+  readonly offline?: { readonly title: string; readonly detail: string };
+  /** What is loading, for screen readers. */
+  readonly label: string;
+}) {
+  if (props.gate === "refused") return <KinWorkNotice {...props.refused} />;
+  if (props.gate === "offline") return <KinWorkNotice {...(props.offline ?? KIN_OFFLINE_PAGE)} />;
+  return (
+    <div
+      className="mx-auto w-full max-w-3xl p-4"
+      role="status"
+      aria-label={`Loading ${props.label}`}
+    >
+      <KinWorkRowSkeletons />
     </div>
   );
 }

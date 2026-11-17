@@ -14,6 +14,11 @@ export const APP_IDENTITY_FILE = "identity";
 export const APP_TOKENS_FOLDER = "tokens";
 /** One tab-separated line per `kin-as-owner` run; Kin reads on from where it last stopped. */
 export const OWNER_USES_FILE = "owner-uses.log";
+/**
+ * For an installation on selected repos, one file per account listing them, one `owner/name` a
+ * line, lowercased; absent where the App is on all the account's repos.
+ */
+export const APP_REPOS_FOLDER = "repos";
 /** One line per text an agent's gh sent, as when and a hash (`agentMark.ts` `postKey`). */
 export const AGENT_POSTS_FILE = "agent-posts.log";
 const POLICY_FILE = "gh-policy.mjs";
@@ -75,11 +80,14 @@ APP=${shellQuote(paths.app)}
 ${REPO_OF}
 [ -x "$NODE" ] || { echo "kin: Kin's GitHub guard can't run here (no Node.js), so gh didn't run." >&2; exit 1; }
 if [ -z "$KIN_AS_OWNER" ] && [ -s "$APP/${APP_IDENTITY_FILE}" ]; then
-  acct=$(kin_repo "$@" | tr 'A-Z' 'a-z'); acct="\${acct%%/*}"
+  full=$(kin_repo "$@" | tr 'A-Z' 'a-z'); acct="\${full%%/*}"
   case "$acct" in *[!a-z0-9-]*) acct="" ;; esac
   T=""
   if [ -n "$acct" ]; then
-    [ -s "$APP/${APP_TOKENS_FOLDER}/$acct" ] && T=$(cat "$APP/${APP_TOKENS_FOLDER}/$acct")
+    if [ -s "$APP/${APP_TOKENS_FOLDER}/$acct" ] &&
+      { [ ! -e "$APP/${APP_REPOS_FOLDER}/$acct" ] || grep -qxF "$full" "$APP/${APP_REPOS_FOLDER}/$acct"; }; then
+      T=$(cat "$APP/${APP_TOKENS_FOLDER}/$acct")
+    fi
   else
     set -- "$APP/${APP_TOKENS_FOLDER}"/* -- "$@"
     if [ "$2" = -- ] && [ -s "$1" ]; then T=$(cat "$1"); fi
@@ -193,17 +201,19 @@ exit 0
 
 /** git's credential helper while the App is set up: its token, else the owner's gh login. */
 const credentialScript = (paths: AgentShellPaths) => `#!/bin/sh
-# Written by Kin. Hands git Kin's GitHub App token for the repo's account, or the owner's gh login
-# where the App isn't installed. Stores nothing.
+# Written by Kin. Hands git Kin's GitHub App token for the repo's account where the App is on the
+# repo, or the owner's gh login elsewhere. Stores nothing.
 REAL=${shellQuote(paths.realGh)}
 APP=${shellQuote(paths.app)}
 [ "$1" = get ] || exit 0
 input=$(cat)
 host=$(printf '%s\\n' "$input" | sed -n 's/^host=//p')
 path=$(printf '%s\\n' "$input" | sed -n 's/^path=//p')
-acct=$(printf '%s' "\${path%%/*}" | tr 'A-Z' 'a-z')
+full=$(printf '%s' "$path" | tr 'A-Z' 'a-z')
+acct="\${full%%/*}"; name="\${full#*/}"; name="\${name%%/*}"; full="$acct/\${name%.git}"
 case "$acct" in *[!a-z0-9-]*) acct="" ;; esac
-if [ "$host" = github.com ] && [ -n "$acct" ] && [ -s "$APP/${APP_TOKENS_FOLDER}/$acct" ]; then
+if [ "$host" = github.com ] && [ -n "$acct" ] && [ -s "$APP/${APP_TOKENS_FOLDER}/$acct" ] &&
+  { [ ! -e "$APP/${APP_REPOS_FOLDER}/$acct" ] || grep -qxF "$full" "$APP/${APP_REPOS_FOLDER}/$acct"; }; then
   printf 'username=x-access-token\\npassword=%s\\n' "$(cat "$APP/${APP_TOKENS_FOLDER}/$acct")"
   exit 0
 fi

@@ -697,7 +697,7 @@ function useGuardActions(environmentId: EnvironmentId, orgId: KinOrgId, refresh:
   return { busy, outcome, run };
 }
 
-/** "N watched repos have an unprotected main branch", what protecting does, and Protect all. */
+/** "N watched repos have main branches that aren't closed to Kin's App", what protecting does, and Protect all. */
 function ProtectAll(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;

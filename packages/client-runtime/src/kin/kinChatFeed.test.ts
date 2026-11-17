@@ -953,6 +953,16 @@ describe("kinChatScreenState", () => {
       "ready",
     );
     expect(kinChatScreenState(host(false), null)._tag).toBe("offline");
+    const connecting = { ...host(false), connecting: true } as KinHost;
+    expect(kinChatScreenState(connecting, null)._tag).toBe("loading");
+    expect(kinChatScreenState(connecting, AsyncResult.initial(true))._tag).toBe("loading");
+    expect(kinChatScreenState(connecting, synced(feed(all.slice(0, 3)), false))).toMatchObject({
+      _tag: "ready",
+      offline: false,
+    });
+    expect(kinChatScreenState(host(false), synced(feed(all.slice(0, 3)), false))).toMatchObject({
+      offline: true,
+    });
     expect(kinChatScreenState(host(true), null)._tag).toBe("loading");
     expect(kinChatScreenState(host(true), synced({ ...emptyKinChat, left: true }))).toEqual({
       _tag: "gone",
