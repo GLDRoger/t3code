@@ -591,10 +591,9 @@ export function KinLeadProfileView({
           </View>
         ) : (
           lead.tracking.map((item, index) => (
-            <View
-              key={`${item.kind}:${item.dueAt ?? ""}:${item.chatId ?? ""}:${item.title}`}
-              className={index === 0 ? undefined : "border-t border-border-subtle"}
-            >
+            // Titles can repeat and items carry no id; the host's order is stable.
+            // oxlint-disable-next-line react/no-array-index-key
+            <View key={index} className={index === 0 ? undefined : "border-t border-border-subtle"}>
               <ListRowLayout label={item.title} description={kinLeadTrackingDetail(item)} />
             </View>
           ))
