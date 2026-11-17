@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { hookDecision } from "../../../claudeConfinement.testkit.ts";
 import type { ProviderFake } from "../conformance.testkit.ts";
+import { KIN_DEFERRED_TOOLS } from "../../deferredTools.ts";
 import { claude } from "./claude.ts";
 
 const Runner = ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
@@ -12,12 +13,14 @@ const Runner = ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
 /** Claude's session is one options object; the fake records what Kin hands the SDK. */
 export const claudeFake: ProviderFake = {
   driver: claude.driver,
-  open: ({ thread, cwd, environment }) =>
+  // The second predates tool_reference blocks: Claude Code lists every tool for it itself.
+  models: ["claude-opus-5-5", "claude-3-5-haiku"],
+  open: ({ thread, cwd, model, environment }) =>
     Effect.gen(function* () {
       const original = ClaudeAdapterV2.makeClaudeQueryOptions({
         modelSelection: {
           instanceId: ProviderInstanceId.make("claudeAgent"),
-          model: "claude-opus-5-5",
+          model,
         },
         nativeThreadId: "native",
         resume: false,
@@ -68,7 +71,9 @@ export const claudeFake: ProviderFake = {
         kinToolsUpFront:
           servers.length > 0 &&
           servers.every((server) => "alwaysLoad" in server && server.alwaysLoad === true),
-        // Each rare tool carries `deferredMeta` (`deferredTools.ts`), so ToolSearch finds it.
+        // Each rare tool carries `deferredMeta` (`deferredTools.ts`); Claude Code holds it back
+        // only while ToolSearch is on, and turns that off itself for a model without it.
+        heldBack: searchable ? [...KIN_DEFERRED_TOOLS] : [],
         deferredFindable: searchable,
         personalConfig: !(
           options.settingSources?.length === 0 &&

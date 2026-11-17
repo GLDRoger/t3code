@@ -111,6 +111,8 @@ const install = <E, R>(base: Layer.Layer<never, E, R>) =>
                     cwd: input.cwd,
                     driver: DRIVER,
                     path: input.processEnvironment?.PATH ?? environment.PATH,
+                    // ACP lists every MCP tool up front: there is no search to find one by.
+                    toolLookup: false,
                   });
             if (plan === undefined || plan.seat === "dream") return yield* make(input);
             const confined = plan.seat === "confined";

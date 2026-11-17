@@ -15,7 +15,9 @@ export interface Observed {
   readonly instructions: string | undefined;
   /** Kin's tools are listed up front, not each looked up before use. */
   readonly kinToolsUpFront: boolean;
-  /** Kin's rare tools are held back, and the model can still find and call them. */
+  /** Kin tools the session doesn't list up front. */
+  readonly heldBack: ReadonlyArray<string>;
+  /** The held-back tools are ones the model in use can find and call. */
   readonly deferredFindable: boolean;
   /** Any of the user's own skills, settings, plugins or MCP servers can reach the session. */
   readonly personalConfig: boolean;
@@ -41,9 +43,12 @@ export interface Observed {
  */
 export interface ProviderFake {
   readonly driver: string;
+  /** Models the provider runs, the first its default; one its catalog lacks, if it has a catalog. */
+  readonly models: ReadonlyArray<string>;
   readonly open: (input: {
     readonly thread: string;
     readonly cwd: string;
+    readonly model: string;
     /** The host's environment, Kin's secrets included, as the provider would inherit it. */
     readonly environment: Readonly<Record<string, string>>;
   }) => Effect.Effect<Observed, never, ServerConfig | FileSystem.FileSystem | Path.Path>;

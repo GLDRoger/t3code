@@ -40,12 +40,21 @@ export interface KinSessionPlan {
   readonly thread: ThreadId;
   /** The whole system prompt for `owner` and `confined`; the provider's own otherwise. */
   readonly instructions: string | undefined;
-  /** Kin tools that wait to be searched for; every other Kin tool loads up front. */
+  /** Kin tools that wait to be searched for (`kinDeferredTools`); every other one loads up front. */
   readonly deferredTools: ReadonlySet<string>;
   readonly shell: KinShell | undefined;
   /** Why a built-in call is refused now, as the line the model reads; undefined admits it. */
   readonly refusal: Effect.Effect<string | undefined>;
 }
+
+const NOTHING_DEFERRED: ReadonlySet<string> = new Set();
+
+/**
+ * A rare tool waits to be searched for only when the model in use can look one up; otherwise every
+ * tool the session is allowed loads up front, so none is ever out of reach.
+ */
+const kinDeferredTools = (toolLookup: boolean) =>
+  toolLookup ? KIN_DEFERRED_TOOLS : NOTHING_DEFERRED;
 
 /** GPT agents rarely asked with a card or made the Confirm card (evals, Nov 2026); true for all. */
 const ALL_MODELS_NOTE =
@@ -86,6 +95,8 @@ export class KinSessions extends Context.Service<
       readonly driver: string;
       /** The PATH the provider would give its shell. */
       readonly path: string | undefined;
+      /** The provider says the model in use can look a deferred tool up. */
+      readonly toolLookup: boolean;
     }) => Effect.Effect<KinSessionPlan | undefined>;
   }
 >()("t3/kin/lead/turn/session/KinSessions") {
@@ -154,6 +165,7 @@ export class KinSessions extends Context.Service<
         readonly cwd: string | undefined;
         readonly driver: string;
         readonly path: string | undefined;
+        readonly toolLookup: boolean;
       }) {
         const { threadId: thread, cwd } = input;
         const isKin =
@@ -165,7 +177,7 @@ export class KinSessions extends Context.Service<
         const delegated =
           !isDream && Option.isSome(policy) && (yield* policy.value.delegated(thread));
         if (!isKin && !delegated) return undefined;
-        const base = { thread, deferredTools: KIN_DEFERRED_TOOLS };
+        const base = { thread, deferredTools: kinDeferredTools(input.toolLookup) };
         if (delegated && Option.isSome(policy))
           return {
             ...base,

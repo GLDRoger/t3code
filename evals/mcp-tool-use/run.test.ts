@@ -400,6 +400,23 @@ it("grades Kin calls as the agent made them and a card as its message", () => {
   });
   assert.deepEqual(failed({ textMust: ["Wednesday"] }, run([ask])), []);
   assert.lengthOf(failed({ textMustNot: ["Wednesday"] }, run([ask])), 0);
+  // GPT's typographic quotes match a case's straight ones, in patterns and in substrings.
+  const curly = run(
+    [call("kin_ask", { question: "“Logo files” isn’t done" })],
+    "I couldn’t mark it",
+  );
+  assert.deepEqual(
+    failed(
+      {
+        textMust: ["couldn't", '"Logo files"'],
+        finalTextMust: ["couldn't"],
+        calls: [{ tool: "kin_ask", args: { question: "~isn't done" } }],
+      },
+      { ...curly, finalText: "I couldn’t mark it" },
+    ),
+    [],
+  );
+  assert.lengthOf(failed({ textMustNot: ["couldn't"] }, curly), 1);
 });
 
 it("asks a Kin turn that owed words and said none once, as Kin's rescue does", () => {

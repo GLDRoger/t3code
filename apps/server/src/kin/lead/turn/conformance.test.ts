@@ -61,12 +61,18 @@ const open = (
     readonly cwd?: (stateDir: string) => string;
     readonly refusal?: (thread: ThreadId) => string | undefined;
     readonly enabled?: boolean;
+    readonly model?: string;
   } = {},
 ) =>
   Effect.gen(function* () {
     const { stateDir } = yield* ServerConfig.ServerConfig;
     const cwd = options.cwd?.(stateDir) ?? `${stateDir}/kin/demo-a/memory-read`;
-    return yield* fake.open({ thread, cwd, environment: host });
+    return yield* fake.open({
+      thread,
+      cwd,
+      model: options.model ?? fake.models[0] ?? "",
+      environment: host,
+    });
   }).pipe(
     Effect.provide(
       Layer.merge(
@@ -191,6 +197,22 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
           refused: SESSION_REFUSAL.outside,
         });
       }).pipe(Effect.provide(layer(`kin-conformance-delegated-${driver}-`))),
+  );
+
+  it.effect(
+    "on every model the provider runs, one its catalog lacks included, no Kin tool a chat allows is out of reach: a rare one waits only where the model can look it up",
+    () =>
+      Effect.gen(function* () {
+        for (const model of fake.models)
+          for (const thread of ["kin:tech", "kin-shared:tech"]) {
+            const session = yield* open(fake, thread, { model });
+            assert.isTrue(session.kinToolsUpFront, `${model} ${thread}`);
+            assert.isTrue(
+              session.heldBack.length === 0 || session.deferredFindable,
+              `${model} ${thread} holds back ${session.heldBack.join(", ")}`,
+            );
+          }
+      }).pipe(Effect.provide(layer(`kin-conformance-lookup-${driver}-`))),
   );
 
   it.effect("any other thread, and every thread with Kin off, is left as T3 made it", () =>

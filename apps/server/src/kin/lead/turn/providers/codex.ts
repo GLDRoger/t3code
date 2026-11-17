@@ -2,6 +2,7 @@ import { ThreadId } from "@t3tools/contracts";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as CodexErrors from "effect-codex-app-server/errors";
+import type * as CodexSchema from "effect-codex-app-server/schema";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -76,12 +77,17 @@ const isServer = (value: Json | undefined): value is Server =>
 /**
  * Kin's tools as a Claude lead gets them. A model with tool search (gpt-6.1) defers every MCP tool
  * unless its server says otherwise, so the agent would look up each tool before using it. Kin's
- * endpoint shows up front, minus the rare tools, which a second mount of it leaves deferred.
+ * endpoint shows up front, minus the plan's deferred tools, which a second mount of it leaves
+ * deferred; with none deferred there is no second mount.
  */
 const kinToolLoading = (config: Record<string, Json>, deferred: ReadonlySet<string>) => {
   const kin = config["mcp_servers.t3-code"];
   if (!isServer(kin)) return;
   const rare = [...deferred];
+  if (rare.length === 0) {
+    config["mcp_servers.t3-code"] = { ...kin, omit_tools_from: ["deferred"] };
+    return;
+  }
   const disabled = Array.isArray(kin.disabled_tools) ? kin.disabled_tools : [];
   const { disabled_tools: _, ...endpoint } = kin;
   config["mcp_servers.t3-code"] = {
@@ -125,6 +131,24 @@ const searchThrough = (provider: string | undefined): Readonly<Record<string, Js
   provider === undefined || provider === "openai"
     ? {}
     : { [`model_providers.${provider}.supports_standalone_web_search`]: true };
+
+/**
+ * A model Codex's catalog lacks gets Codex's fallback metadata, which has no tool search
+ * (codex-cli 0.169), so a deferred tool would be out of its reach.
+ */
+const listCatalog = Effect.fn("KinCodex.catalog")(function* (client: Client) {
+  const models = new Set<string>();
+  let cursor: string | null | undefined;
+  do {
+    const page: CodexSchema.V2ModelListResponse = yield* client.request("model/list", {
+      includeHidden: true,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const model of page.data) models.add(model.model);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return models;
+});
 
 /** The env a Claude agent's session gets (`sessionEnvironment`), the signing `gh` first on PATH. */
 const shellEnvironment = (shell: KinShell) => ({
@@ -392,6 +416,10 @@ const install = <E, R>(base: Layer.Layer<CodexAdapterV2.CodexAppServerClientFact
             userConfigs.set(cwd, found);
             return found;
           });
+          // A catalog that can't be read knows no model: every tool goes up front.
+          const catalog = yield* Effect.cached(
+            listCatalog(client).pipe(Effect.orElseSucceed(() => new Set<string>())),
+          );
           const seats = new Map<string, KinSessionPlan>();
           const starting = new Map<ThreadId, KinSessionPlan>();
           yield* client.handleServerNotification("thread/started", ({ thread }) =>
@@ -413,6 +441,7 @@ const install = <E, R>(base: Layer.Layer<CodexAdapterV2.CodexAppServerClientFact
               cwd: cwd ?? undefined,
               driver: DRIVER,
               path: input.environment.PATH,
+              toolLookup: typeof params.model === "string" && (yield* catalog).has(params.model),
             });
             if (plan === undefined || plan.seat === "dream") return null;
             starting.set(thread, plan);
