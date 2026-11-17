@@ -327,7 +327,7 @@ function KinExportRows(props: KinWorkTarget) {
     <ListSection title={KIN_COMPANY.export.title}>
       <View className="gap-1 px-4 py-3">
         <Text className="text-sm text-foreground-muted">{KIN_COMPANY.export.detail}</Text>
-        <Text className="text-sm text-foreground-muted">{KIN_COMPANY.export.memory}.</Text>
+        <Text className="text-sm text-foreground-muted">{KIN_COMPANY.export.leaves}</Text>
       </View>
       <ListActionRow
         icon="square.and.arrow.up"

@@ -28,6 +28,14 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]
 
 say() { echo "update.sh: $*" >&2; }
 
+# `sudo -iu kin` starts no user session, so point systemctl at kin's user manager.
+user_bus() {
+  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+}
+# What a stopped server's message tells the owner to run, from any kin shell.
+STATUS="XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user status kin-server"
+
 # Highest migration id in a build's source: the T3 ones (NNN_Name.ts) and Kin's (KNNN_Name.ts).
 build_heads() {
   local t3 kin
@@ -227,7 +235,7 @@ deploy() {
     elif restore_previous "$previous" && systemctl --user start kin-server; then
       say "the server runs $previous again."
     else
-      say "couldn't put $previous back; kin-server is stopped. See systemctl --user status kin-server."
+      say "couldn't put $previous back; kin-server is stopped. See $STATUS."
     fi
     return 1
   fi
@@ -257,15 +265,15 @@ deploy() {
     # No link either, so a reboot can't start the previous build on the migrated database.
     restore_previous "$previous" || true
     rm -f "$CURRENT"
-    say "ROLLBACK STOPPED: kin-server is NOT running and its data is intact. Good copy from before the update: $BACKUP. Database $sha migrated: $MIGRATED. Free disk space, then run: bash -c 'source \"\$1\" && BACKUP=\"\$2\" && restore_db \"\$3\" && switch_to \"\$4\"' _ '$SELF' '$BACKUP' '$sha' '$previous' && systemctl --user start kin-server"
+    say "ROLLBACK STOPPED: kin-server is NOT running and its data is intact. Good copy from before the update: $BACKUP. Database $sha migrated: $MIGRATED. Free disk space, then run: bash -c 'source \"\$1\" && user_bus && BACKUP=\"\$2\" && restore_db \"\$3\" && switch_to \"\$4\" && systemctl --user start kin-server' _ '$SELF' '$BACKUP' '$sha' '$previous'"
     return 1
   fi
   if ! restore_previous "$previous"; then
-    say "rollback to $previous failed; kin-server is stopped. See systemctl --user status kin-server."
+    say "rollback to $previous failed; kin-server is stopped. See $STATUS."
     return 1
   fi
   if ! systemctl --user restart kin-server; then
-    say "rollback restart failed; kin-server is stopped. See systemctl --user status kin-server."
+    say "rollback restart failed; kin-server is stopped. See $STATUS."
     return 1
   fi
   say "rolled back to $previous. $build is kept for inspection until the next good update."
@@ -275,9 +283,7 @@ deploy() {
 main() {
   set -euo pipefail
   [ "$(id -un)" = kin ] || { say "run this as kin, not $(id -un)."; exit 1; }
-  # `sudo -iu kin` starts no user session, so point systemctl at kin's user manager.
-  export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-  export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+  user_bus
 
   # Read only KIN_REPO: sourcing the file would replace this shell's PATH with the unit's.
   local KIN_REPO=""

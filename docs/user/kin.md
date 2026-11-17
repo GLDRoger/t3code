@@ -491,19 +491,25 @@ To give agents characters you wrote yourself, see
 
 ### Taking your data out
 
-**Settings → Company details → Download everything** (the owner only) saves one zip: your clients,
-projects, every list's entries with their payments, each doc as it reads now, and the files docs
-and entries hold. On the phone, the same row downloads the zip and opens the share sheet.
+**Settings → Company details → Download everything** (the owner only) saves the company as one zip. On the phone,
+the same row downloads the zip and opens the share sheet.
 
-`kin.jsonl` inside it is the file [Kin's import](./kin-import.md) reads, so a new Kin can take
-the company back. On the computer running it, unzip the file, then:
+Your clients, contacts, projects, every list with its entries and their payments, each doc as it
+reads now, and the files entries and docs hold, in one zip. Kin's import makes the clients,
+contacts, projects and entries again; the docs and files are there to keep.
+
+It is not a full backup. Not in it: memory, which stays in your memory repository; chats; people
+and their access; agents and their characters; check-ins and reminders; connections, social
+accounts and their posts; budgets, bank statements and company details; settings; project repos
+and members; and who holds each entry, how it repeats and its history. Keys, tokens, sign-in
+sessions, pairing codes and bank details never leave.
+
+`kin.jsonl` inside it is the file [Kin's import](./kin-import.md) reads. On the computer running a
+new Kin, unzip the file, then:
 
 ```sh
 t3 kin import --file kin.jsonl          # what it would make
 t3 kin import --file kin.jsonl --apply
 ```
 
-What comes back is owned by whoever imports it; who did what and each entry's history stay behind,
-and so do contacts (they're in `contacts.jsonl` to keep). Memory isn't in the zip: it is kept in
-your memory repository. The zip never holds connection tokens, keys, sign-in sessions, pairing
-codes, invites or push tokens.
+What comes back is owned by whoever imports it.
