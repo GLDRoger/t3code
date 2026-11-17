@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { configuredRepositories, githubRepoOf } from "../memory/MemoryConfig.ts";
 import { ownerZone } from "../work/recordRows.ts";
 
 /**
@@ -44,11 +45,26 @@ export const watchRow = Effect.fn("KinGitHubWatchStore.row")(function* (orgId: K
   return row;
 });
 
-/** Every repo the poll found, with the owner's switches applied; sorted by name. */
+/**
+ * The repos Kin keeps memory in, lowercased. Kin's own memory PRs there are opened under the
+ * owner's login, so watching one would wake an agent for every memory write it makes.
+ */
+const memoryRepos = Effect.gen(function* () {
+  const memory = yield* configuredRepositories;
+  return new Set(memory.flatMap((entry) => githubRepoOf(entry.repoUrl)?.toLowerCase() ?? []));
+}).pipe(Effect.orElseSucceed(() => new Set<string>()));
+
+export const isMemoryRepo = (repo: string) =>
+  memoryRepos.pipe(Effect.map((memory) => memory.has(repo.trim().toLowerCase())));
+
+/** Every repo the poll found, with the owner's switches applied; sorted by name. Never memory. */
 export const repoList = Effect.fn("KinGitHubWatchStore.repos")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
   const row = yield* watchRow(orgId);
-  const known = Option.getOrElse(decodeKnown(row?.reposJson ?? "[]"), () => []);
+  const memory = yield* memoryRepos;
+  const known = Option.getOrElse(decodeKnown(row?.reposJson ?? "[]"), () => []).filter(
+    (entry) => !memory.has(entry.repo.toLowerCase()),
+  );
   const prefs = yield* sql<{ repo: string; watched: number | null; mentions: number }>`
     SELECT repo, watched, mentions FROM kin_github_repo_prefs WHERE org_id = ${orgId}
     ORDER BY repo`;

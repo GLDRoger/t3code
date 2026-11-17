@@ -12,7 +12,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { ghApiLayer, ownerGitHubReview } from "../../github/GitHubWatch.ts";
-import { repoList, setRepo } from "../../github/githubWatchStore.ts";
+import { isMemoryRepo, repoList, setRepo } from "../../github/githubWatchStore.ts";
 import { linkGithubItem } from "../../github/githubLink.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
@@ -302,6 +302,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         const repos = yield* repoList(lead.orgId);
         if (input.repo === undefined) return { repos: repos.slice(0, 100) };
         const named = input.repo.toLowerCase();
+        if (yield* isMemoryRepo(named))
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message:
+              "That is Kin's memory repo. Kin never watches it: its own memory PRs would wake an agent for every memory write.",
+          });
         if (!repos.some((repo) => repo.repo.toLowerCase() === named))
           return yield* new KinChatError({
             reason: "not_found",

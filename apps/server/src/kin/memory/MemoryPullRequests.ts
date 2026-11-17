@@ -9,6 +9,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { type ApiAnswer, KinGitHubApi } from "../github/GitHubWatch.ts";
+import { WRITE_BRANCH_PREFIX } from "./MemoryConfig.ts";
 
 // GitHub Actions' app id: a `memory-check` run from any other app doesn't count.
 const GITHUB_ACTIONS_INTEGRATION_ID = 15368;
@@ -114,7 +115,6 @@ interface MovedReviewPullRequest {
   readonly closed: boolean;
 }
 
-export const WRITE_BRANCH_PREFIX = "kin/write/";
 export const REVIEW_BRANCH_SUFFIX = "-review";
 
 /**
