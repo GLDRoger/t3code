@@ -22,15 +22,21 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinServer } from "../KinServer.ts";
 import type { ApiAnswer, ApiRequest } from "./GitHubWatch.ts";
-import { readStoredApp, type StoredApp } from "./appStore.ts";
+import {
+  readSeedTaken,
+  readStoredApp,
+  type StoredApp,
+  writeSeedTaken,
+  writeStoredApp,
+} from "./appStore.ts";
 import { APP_IDENTITY_FILE, APP_TOKENS_FOLDER, GH_APP_FOLDER, OWNER_USES_FILE } from "./ghSign.ts";
 import { type KnownRepo, knownRepos, repoList, watchRow } from "./githubWatchStore.ts";
 import { KinGitHubAppKey } from "./appKey.ts";
 
 /**
- * Kin's GitHub App, so agents' commits, PRs, comments and reviews show the App as author. Its key
- * stays in the host keyring and in this process; agents' shells get only one-hour installation
- * tokens, which this keeps fresh as files `ghSign.ts` reads. Without an App, agents act as the owner.
+ * Kin's GitHub App: agents' shells get only one-hour installation tokens, kept fresh as files
+ * `ghSign.ts` reads; without an App, agents act as the owner. `KIN_GITHUB_APP_ID` is only a seed:
+ * the first look that reaches GitHub adopts it into Settings' record, which owns it from then on.
  */
 
 const API = "https://api.github.com";
@@ -91,7 +97,14 @@ const decodeApp = Schema.decodeUnknownOption(
     slug: Schema.String,
     name: Schema.String,
     // An enterprise owner has a slug and no login.
-    owner: Schema.optional(Schema.NullOr(Schema.Struct({ login: Schema.optional(Schema.String) }))),
+    owner: Schema.optional(
+      Schema.NullOr(
+        Schema.Struct({
+          login: Schema.optional(Schema.String),
+          type: Schema.optional(Schema.String),
+        }),
+      ),
+    ),
   }),
 );
 const decodeUser = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Int }));
@@ -146,6 +159,9 @@ interface Described {
   readonly installUrl: string;
   /** The account that owns the App, lowercased; null for an enterprise. */
   readonly owner: string | null;
+  /** The same account in GitHub's own casing, for people to read. */
+  readonly ownerLogin: string | null;
+  readonly ownerOrg: boolean;
   /** False when GitHub hides the App from anyone else: then it installs only on `owner`. */
   readonly public: boolean | null;
   readonly installations: ReadonlyArray<Installation>;
@@ -185,10 +201,13 @@ export class KinGitHubApp extends Context.Service<
     readonly refresh: () => Effect.Effect<void>;
     /** Looks at the App on GitHub now, as after the owner changed where it is installed. */
     readonly lookAgain: () => Effect.Effect<void>;
-    /** Where the App is named: the host's env, Kin's Settings (and when, by whom), or nowhere. */
+    /**
+     * Where the App is named: Settings' record, the host's environment while Kin hasn't yet reached
+     * GitHub to adopt it (`seed`), or nowhere.
+     */
     readonly origin?: () => Effect.Effect<
-      | { readonly source: "host" }
       | { readonly source: "kin"; readonly app: StoredApp }
+      | { readonly source: "seed" }
       | { readonly source: "none" }
     >;
   }
@@ -277,15 +296,27 @@ export const make = Effect.gen(function* () {
   /** The last shortfall logged, so a failure that lasts is logged once, not every look. */
   let loggedProblem: string | null = null;
 
-  /** The host's `KIN_GITHUB_APP_ID`, else the App made in Settings. */
-  const appIdNow = Effect.fn("KinGitHubApp.appId")(function* () {
-    if (Option.isSome(config.appId)) return config.appId;
-    const stored = yield* readStoredApp.pipe(
+  const withFiles = <A, E>(
+    effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | ServerConfig>,
+  ) =>
+    effect.pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig, serverConfig),
     );
-    return Option.map(stored, (app) => String(app.appId));
+
+  /** Settings' App, else the host environment's while Settings hasn't adopted or dropped it. */
+  const named = Effect.fn("KinGitHubApp.named")(function* () {
+    const stored = yield* withFiles(readStoredApp);
+    if (Option.isSome(stored))
+      return { appId: String(stored.value.appId), stored: stored.value } as const;
+    if (Option.isNone(config.appId)) return undefined;
+    if ((yield* withFiles(readSeedTaken)) === config.appId.value) return undefined;
+    return { appId: config.appId.value, stored: null } as const;
+  });
+
+  const appIdNow = Effect.fn("KinGitHubApp.appId")(function* () {
+    return Option.fromNullishOr((yield* named())?.appId);
   });
 
   const request = Effect.fn("KinGitHubApp.request")(function* (
@@ -362,7 +393,10 @@ export const make = Effect.gen(function* () {
   });
 
   /** What GitHub says of the App now, or where it fell short. */
-  const describe = Effect.fn("KinGitHubApp.describe")(function* (appId: string) {
+  const describe = Effect.fn("KinGitHubApp.describe")(function* (
+    appId: string,
+    namedBot: string | undefined,
+  ) {
     const appToken = yield* jwt(appId).pipe(Effect.orElseSucceed(() => undefined));
     if (appToken === undefined)
       return {
@@ -377,7 +411,7 @@ export const make = Effect.gen(function* () {
     const app = yield* request(appToken, { path: "app" });
     const about = app.status === 200 ? decodeApp(app.body) : Option.none();
     if (Option.isNone(about)) return short("about the App", app.status);
-    const botLogin = Option.getOrElse(config.botLogin, () => `${about.value.slug}[bot]`);
+    const botLogin = namedBot ?? `${about.value.slug}[bot]`;
     const installations: Array<Installation> = [];
     for (let page = 1; page <= MAX_PAGES; page++) {
       const answer = yield* request(appToken, {
@@ -457,6 +491,8 @@ export const make = Effect.gen(function* () {
         slug: about.value.slug,
         installUrl: `https://github.com/apps/${about.value.slug}/installations/new`,
         owner: about.value.owner?.login?.toLowerCase() ?? null,
+        ownerLogin: about.value.owner?.login ?? null,
+        ownerOrg: about.value.owner?.type === "Organization",
         public: visibility.public,
         installations,
       },
@@ -511,17 +547,40 @@ export const make = Effect.gen(function* () {
     if (added > 0) yield* refreshObserver.touch(orgId, "connections");
   });
 
+  /** The host's App becomes Settings' own, so Disconnect and making another work as for any. */
+  const adopt = Effect.fn("KinGitHubApp.adopt")(function* (appId: string, app: Described) {
+    yield* withFiles(
+      writeStoredApp({
+        appId: Number(appId),
+        slug: app.slug,
+        name: app.name,
+        owner: app.ownerLogin ?? "",
+        botLogin: app.botLogin,
+        at: null,
+        by: null,
+      }),
+    );
+    yield* withFiles(writeSeedTaken(appId));
+    yield* Effect.logInfo("Kin's Settings now hold the GitHub App the host's environment named", {
+      appId,
+    });
+  });
+
   const refresh = Effect.fn("KinGitHubApp.refresh")(
     function* () {
       const now = yield* Clock.currentTimeMillis;
       const before = yield* Ref.get(current);
       let state = before;
-      const appId = yield* appIdNow();
-      if (Option.isNone(appId)) state = { _tag: "none" };
+      const app = yield* named();
+      const appId = Option.fromNullishOr(app?.appId);
+      if (app === undefined || Option.isNone(appId)) state = { _tag: "none" };
       else {
         const last = yield* Ref.get(describedAt);
         if (last === null || now - last >= DESCRIBE_EVERY_MS || before._tag !== "ok") {
-          const described = yield* describe(appId.value);
+          const described = yield* describe(
+            appId.value,
+            app.stored === null ? Option.getOrUndefined(config.botLogin) : app.stored.botLogin,
+          );
           if (described._tag === "short") {
             const problem = shortfallProblem(described);
             if (problem !== loggedProblem)
@@ -536,6 +595,14 @@ export const make = Effect.gen(function* () {
             loggedProblem = null;
             state = described;
             yield* Ref.set(describedAt, now);
+            if (app.stored === null && described._tag === "ok")
+              yield* adopt(appId.value, described.app).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Kin couldn't adopt the host's GitHub App into Settings", {
+                    cause,
+                  }),
+                ),
+              );
           }
         }
         if (state._tag === "ok") {
@@ -599,15 +666,11 @@ export const make = Effect.gen(function* () {
   });
 
   const origin = Effect.fn("KinGitHubApp.origin")(function* () {
-    if (Option.isSome(config.appId)) return { source: "host" } as const;
-    const stored = yield* readStoredApp.pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(Path.Path, path),
-      Effect.provideService(ServerConfig, serverConfig),
-    );
-    return Option.isSome(stored)
-      ? ({ source: "kin", app: stored.value } as const)
-      : ({ source: "none" } as const);
+    const app = yield* named();
+    if (app === undefined) return { source: "none" } as const;
+    return app.stored === null
+      ? ({ source: "seed" } as const)
+      : ({ source: "kin", app: app.stored } as const);
   });
 
   return KinGitHubApp.of({ state, on, refresh, lookAgain, origin });
@@ -658,9 +721,18 @@ export const agentsView = Effect.fn("KinGitHubApp.agentsView")(function* (
       : [];
   const known = state._tag === "ok" ? yield* knownRepos(orgId) : [];
   const origin =
-    Option.isSome(app) && app.value.origin !== undefined
-      ? yield* app.value.origin()
-      : ({ source: "host" } as const);
+    Option.isSome(app) && app.value.origin !== undefined ? yield* app.value.origin() : undefined;
+  const elsewhere =
+    state._tag === "ok"
+      ? (() => {
+          const watchedSet = new Set(watched.map((repo) => repo.toLowerCase()));
+          return new Set(
+            state.app.installations.flatMap((entry) =>
+              [...entry.repos].filter((repo) => !watchedSet.has(repo)),
+            ),
+          ).size;
+        })()
+      : undefined;
   const login = state._tag === "ok" ? ((yield* watchRow(orgId))?.login ?? null) : null;
   return {
     as: state._tag === "ok" ? "app" : "owner",
@@ -673,31 +745,41 @@ export const agentsView = Effect.fn("KinGitHubApp.agentsView")(function* (
         }
       : {}),
     problem: state._tag === "broken" ? state.problem : null,
-    ...(origin.source === "none"
-      ? { canCreate: true }
-      : origin.source === "kin"
-        ? {
+    ...(origin === undefined
+      ? {}
+      : origin.source === "none"
+        ? { canCreate: true }
+        : {
             setUp: {
               source: "kin" as const,
-              name: origin.app.name,
-              at: origin.app.at,
-              by: origin.app.by,
-              settingsUrl: `https://github.com/settings/apps/${origin.app.slug}`,
+              name: origin.source === "kin" ? origin.app.name : null,
+              at: origin.source === "kin" ? origin.app.at : null,
+              by: origin.source === "kin" ? origin.app.by : null,
+              settingsUrl:
+                origin.source === "kin"
+                  ? appSettingsPage(
+                      origin.app.slug,
+                      state._tag === "ok" ? state.app.ownerOrg : false,
+                      origin.app.owner,
+                    )
+                  : null,
             },
-          }
-        : state._tag === "none"
-          ? {}
-          : {
-              setUp: { source: "host" as const, name: null, at: null, by: null, settingsUrl: null },
-            }),
+          }),
     watched: watched.length,
     installed: installed.length,
+    ...(elsewhere === undefined ? {} : { elsewhere }),
     without: watched.filter((repo) => !installed.includes(repo)).slice(0, 20),
     ownerUses: uses,
   } satisfies KinGitHubAgents;
 });
 
 const ownerOf = (repo: string) => repo.split("/")[0]?.toLowerCase() ?? "";
+
+/** The App's own settings on GitHub: under the organisation when one owns it. */
+export const appSettingsPage = (slug: string, ownerOrg: boolean, owner: string) =>
+  ownerOrg && owner !== ""
+    ? `https://github.com/organizations/${owner}/settings/apps/${slug}`
+    : `https://github.com/settings/apps/${slug}`;
 
 /**
  * Where the App stands on each account with watched repos, and the one GitHub page that changes
@@ -727,6 +809,7 @@ const appAccounts = (
     if (organisation === undefined) return {};
     const repos = watched.filter((repo) => ownerOf(repo) === account);
     const installation = app.installations.find((item) => item.account === account);
+    const watchedHere = new Set(repos.map((repo) => repo.toLowerCase()));
     accounts.push({
       account: name,
       organisation,
@@ -751,21 +834,20 @@ const appAccounts = (
         app.public !== false ||
         app.owner === null ||
         app.owner === account,
+      elsewhere: [...(installation?.repos ?? [])].filter((repo) => !watchedHere.has(repo)).length,
     });
   }
   const owner = app.owner;
   const ownerSettings =
-    owner === null || manages(owner) !== true
+    owner === null || app.ownerLogin === null || manages(owner) !== true
       ? undefined
-      : owner === user || facts.get(owner)?.ownerOrg === false
-        ? `https://github.com/settings/apps/${app.slug}`
-        : `https://github.com/organizations/${names.get(owner) ?? owner}/settings/apps/${app.slug}`;
+      : appSettingsPage(app.slug, app.ownerOrg, app.ownerLogin);
   return {
     accounts: accounts.toSorted(
       (a, b) =>
         Number(a.organisation) - Number(b.organisation) || a.account.localeCompare(b.account),
     ),
-    ...(owner === null ? {} : { appOwner: owner }),
+    ...(app.ownerLogin === null ? {} : { appOwner: app.ownerLogin }),
     ...(ownerSettings === undefined ? {} : { appSettingsUrl: ownerSettings }),
   };
 };
