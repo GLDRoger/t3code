@@ -9,11 +9,13 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { ServerConfig } from "../../config.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
@@ -22,19 +24,23 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { githubClosed } from "../work/githubEntries.ts";
-import { isAgentText, signed } from "./agentMark.ts";
+import { agentPostKeys, signed } from "./agentMark.ts";
+import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import {
   decideTriggers,
+  isAgentsOwn,
   type ThreadComment,
   type ThreadSnapshot,
   type Trigger,
 } from "./githubTriggers.ts";
-import { companyRepo, repoList, watchRow } from "./githubWatchStore.ts";
+import { companyRepo, knownRepos, type KnownRepo, repoList, watchRow } from "./githubWatchStore.ts";
+import { gitHubApp } from "./KinGitHubApp.ts";
 
 /**
  * Watches GitHub with the owner's own login: notifications and his own events, both conditional, so
  * an unchanged look costs no rate limit. Each trigger is stored once, in the same transaction as the
- * event that wakes an agent, so a restart or a re-read never handles it twice.
+ * event that wakes an agent, so a restart or a re-read never handles it twice. What Kin posts itself
+ * goes out as its GitHub App where the App is installed (`KinGitHubApp.ts`).
  */
 
 const MINUTE = 60_000;
@@ -46,6 +52,8 @@ const REPOS_EVERY_MS = 6 * HOUR;
 const OVERLAP_MS = 5 * MINUTE;
 /** After downtime: older triggers are stored as stale, and one look wakes at most this many. */
 const STALE_MS = 24 * HOUR;
+/** How long an agent's sent text is known as its own; triggers older than a day are stale anyway. */
+const POSTS_KEPT_MS = 7 * 24 * HOUR;
 export const WAKES_PER_LOOK = 10;
 const THREADS_PER_LOOK = 30;
 /** Replies an agent makes in one issue or PR in an hour before it stops and says so. */
@@ -85,7 +93,7 @@ const parseGhApi = (out: string): ApiAnswer => {
 };
 
 export interface ApiRequest {
-  readonly method?: "GET" | "POST" | "PUT" | "PATCH";
+  readonly method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly path: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: unknown;
@@ -165,9 +173,14 @@ const OwnEvent = Schema.Struct({
   }),
 });
 const RepoEntry = Schema.Struct({
+  id: Schema.optional(Schema.Int),
   full_name: Schema.String,
   fork: Schema.Boolean,
-  owner: Login,
+  owner: Schema.Struct({
+    login: Schema.String,
+    id: Schema.optional(Schema.Int),
+    type: Schema.optional(Schema.String),
+  }),
   permissions: Schema.optional(Schema.Struct({ push: Schema.Boolean })),
 });
 const Issue = Schema.Struct({
@@ -212,6 +225,11 @@ const CheckRuns = Schema.Struct({
 const decodeNotifications = Schema.decodeUnknownOption(Schema.Array(Notification));
 const decodeEvents = Schema.decodeUnknownOption(Schema.Array(OwnEvent));
 const decodeRepos = Schema.decodeUnknownOption(Schema.Array(RepoEntry));
+const decodeMemberships = Schema.decodeUnknownOption(
+  Schema.Array(
+    Schema.Struct({ role: Schema.String, organization: Schema.Struct({ login: Schema.String }) }),
+  ),
+);
 const decodeIssue = Schema.decodeUnknownOption(Issue);
 const decodePull = Schema.decodeUnknownOption(Pull);
 const decodeComments = Schema.decodeUnknownOption(Schema.Array(Comment));
@@ -251,6 +269,28 @@ export const make = Effect.gen(function* () {
   const queue = yield* KinEventQueue.KinEventQueue;
   const records = yield* Effect.serviceOption(KinRecords);
   const refresh = yield* KinRefreshObserver;
+  const app = yield* gitHubApp;
+  const config = yield* Effect.serviceOption(ServerConfig);
+  const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
+  /** What agents' shells sent this past week (`ghSign.ts`): their words, signed or not. */
+  const agentPosts = Effect.gen(function* () {
+    if (Option.isNone(config) || Option.isNone(fileSystem)) return undefined;
+    const log = yield* fileSystem.value
+      .readFileString(`${config.value.stateDir}/kin/${GH_APP_FOLDER}/${AGENT_POSTS_FILE}`)
+      .pipe(Effect.orElseSucceed(() => ""));
+    const now = yield* Clock.currentTimeMillis;
+    return agentPostKeys(log, Math.floor((now - POSTS_KEPT_MS) / 1000));
+  });
+  const botLogin = Effect.gen(function* () {
+    if (Option.isNone(app)) return undefined;
+    const state = yield* app.value.state();
+    return state._tag === "ok" ? state.app.botLogin : undefined;
+  });
+  /** Kin's own writes on a repo: as the App where it is installed, else as the owner. */
+  const writer = Effect.fn("KinGitHubWatch.writer")(function* (repo: string) {
+    const asApp = Option.isSome(app) ? yield* app.value.on(repo) : undefined;
+    return asApp?.call ?? api.call;
+  });
 
   const get = (path: string, headers?: Record<string, string>) =>
     api.call({ path, ...(headers === undefined ? {} : { headers }) });
@@ -262,7 +302,18 @@ export const make = Effect.gen(function* () {
     now: number,
   ) {
     const owners = new Set([account.login, ...account.orgs].map((name) => name.toLowerCase()));
-    const found: Array<{ repo: string; fork: boolean }> = [];
+    // Only an organisation's owners can put an App on it; unknown when GitHub won't say.
+    const memberships = yield* get("user/memberships/orgs?state=active&per_page=100");
+    const roles = memberships.status === 200 ? decodeMemberships(memberships.body) : Option.none();
+    const ownsOrg = (login: string) =>
+      Option.map(roles, (list) =>
+        list.some(
+          (entry) =>
+            entry.role === "admin" &&
+            entry.organization.login.toLowerCase() === login.toLowerCase(),
+        ),
+      ).pipe(Option.getOrUndefined);
+    const found: Array<KnownRepo> = [];
     for (let page = 1; page <= 5; page++) {
       const answer = yield* get(
         `user/repos?per_page=100&page=${page}&affiliation=owner,organization_member&sort=pushed`,
@@ -271,7 +322,17 @@ export const make = Effect.gen(function* () {
       if (Option.isNone(repos)) return answer;
       for (const repo of repos.value)
         if (repo.permissions?.push !== false && owners.has(repo.owner.login.toLowerCase()))
-          found.push({ repo: repo.full_name, fork: repo.fork });
+          found.push({
+            repo: repo.full_name,
+            fork: repo.fork,
+            ...(repo.id === undefined ? {} : { id: repo.id }),
+            ...(repo.owner.id === undefined ? {} : { ownerId: repo.owner.id }),
+            ...(repo.owner.type === "Organization"
+              ? { ownerOrg: true, ownerAdmin: ownsOrg(repo.owner.login) }
+              : repo.owner.type === "User"
+                ? { ownerOrg: false }
+                : {}),
+          });
       if (repos.value.length < 100) break;
     }
     yield* sql`UPDATE kin_github_watch SET repos_json = ${toJson(found)},
@@ -471,16 +532,19 @@ export const make = Effect.gen(function* () {
   });
 
   const react = (repo: string, number: number, trigger: Trigger) =>
-    api
-      .call({
-        method: "POST",
-        path:
-          trigger.reactTo.type === "issue"
-            ? `repos/${repo}/issues/${number}/reactions`
-            : `repos/${repo}/${trigger.reactTo.kind === "issue" ? "issues" : "pulls"}/comments/${trigger.reactTo.id}/reactions`,
-        body: { content: "eyes" },
-      })
-      .pipe(Effect.asVoid);
+    writer(repo).pipe(
+      Effect.flatMap((call) =>
+        call({
+          method: "POST",
+          path:
+            trigger.reactTo.type === "issue"
+              ? `repos/${repo}/issues/${number}/reactions`
+              : `repos/${repo}/${trigger.reactTo.kind === "issue" ? "issues" : "pulls"}/comments/${trigger.reactTo.id}/reactions`,
+          body: { content: "eyes" },
+        }),
+      ),
+      Effect.asVoid,
+    );
 
   /** One plain comment when a thread's hourly cap stops an agent; at most one an hour. */
   const capComment = Effect.fn("KinGitHubWatch.capComment")(function* (
@@ -495,7 +559,8 @@ export const make = Effect.gen(function* () {
       VALUES (${orgId}, ${key}, ${thread.repo.toLowerCase()}, ${thread.number}, NULL, 'note', ${now})
       ON CONFLICT DO NOTHING RETURNING trigger_key`;
     if (inserted.length === 0) return;
-    yield* api.call({
+    const call = yield* writer(thread.repo);
+    yield* call({
       method: "POST",
       path: `repos/${thread.repo}/issues/${thread.number}/comments`,
       body: { body: signed(capNote(PER_THREAD_HOURLY), agentName) },
@@ -530,7 +595,9 @@ export const make = Effect.gen(function* () {
         Effect.andThen(row?.problem === null ? refresh.touch(orgId, "connections") : Effect.void),
       );
     let reposChanged = false;
-    if (row.reposAt === null || now - row.reposAt > REPOS_EVERY_MS) {
+    // Repos stored before Kin kept each one's id and account are read again now.
+    const factsMissing = (yield* knownRepos(orgId)).some((entry) => entry.id === undefined);
+    if (row.reposAt === null || now - row.reposAt > REPOS_EVERY_MS || factsMissing) {
       const before = row.reposJson;
       const failed = yield* refreshRepos(orgId, account, now);
       if (failed !== undefined) return yield* fail(failed);
@@ -589,6 +656,8 @@ export const make = Effect.gen(function* () {
       note(pull.repo, pull.number);
 
     const agents = yield* agentsOf(orgId);
+    const bot = yield* botLogin;
+    const posts = yield* agentPosts;
     const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN });
     let woken = 0;
     let later = false;
@@ -611,7 +680,7 @@ export const make = Effect.gen(function* () {
             Effect.logWarning("Kin couldn't close Work entries for a merge", { cause }),
           ),
         );
-      if (current.item === "pull" && isAgentText(current.body)) {
+      if (current.item === "pull" && isAgentsOwn(current.body, current.author, bot, posts)) {
         const failing = current.open ? yield* failingChecks(orgId, current) : undefined;
         if (!current.open)
           yield* sql`UPDATE kin_github_agent_pulls SET open = 0
@@ -646,6 +715,8 @@ export const make = Effect.gen(function* () {
         mentions: watched.get(current.repo.toLowerCase())?.mentions ?? false,
         since: row.startedAt,
         draftSeen: draft !== undefined,
+        botLogin: bot,
+        agentPosts: posts,
       });
       for (const trigger of triggers) {
         const agentId = agents.some((agent) => agent.agentId === trigger.agentId)
@@ -732,8 +803,8 @@ export const make = Effect.gen(function* () {
 });
 
 /**
- * Posts a review as the owner on one of the company's repos, signed by the agent: what
- * `kin_github_review` does once the owner's GitHub is connected. Other people's repos are asked first.
+ * Posts a review on one of the company's repos, signed by the agent: as Kin's GitHub App where it
+ * is installed and can, else as the owner. Other people's repos are asked first.
  */
 const ownerReview = Effect.fn("KinGitHubWatch.review")(
   function* (input: {
@@ -761,22 +832,28 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
     const pullAnswer = yield* get(`repos/${ours.repo}/issues/${input.number}`);
     const issue = pullAnswer.status === 200 ? decodeIssue(pullAnswer.body) : Option.none();
     const account = yield* api.connected();
-    // GitHub refuses changes requested on one's own PR: the owner's own PRs get a comment.
-    const event =
+    const app = yield* gitHubApp;
+    const asApp = Option.isSome(app) ? yield* app.value.on(ours.repo) : undefined;
+    // GitHub refuses changes requested on one's own PR: a PR by whoever posts gets a comment.
+    const eventAs = (login: string | undefined) =>
       Option.isSome(issue) &&
-      account !== null &&
-      issue.value.user?.login.toLowerCase() === account.login.toLowerCase()
+      login !== undefined &&
+      issue.value.user?.login.toLowerCase() === login.toLowerCase()
         ? "COMMENT"
         : input.event;
     const body = signed(input.body, input.agentName);
-    const send = (comments: typeof input.comments) =>
-      api.call({
+    const post = (
+      call: KinGitHubApi["Service"]["call"],
+      event: "COMMENT" | "REQUEST_CHANGES",
+      comments: typeof input.comments,
+    ) =>
+      call({
         method: "POST",
         path: `repos/${ours.repo}/pulls/${input.number}/reviews`,
         body: {
           body,
           event,
-          // The watch reads inline comments as the owner's own words: each carries the marker.
+          // Inline comments carry the marker too, so the watch knows them under either login.
           comments: comments.map((comment) => ({
             ...comment,
             body: signed(comment.body, input.agentName),
@@ -784,9 +861,14 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
           })),
         },
       });
-    let answer = yield* send(input.comments);
-    if (answer.status === 422 && input.comments.length > 0)
-      answer = yield* api.call({
+    const postAll = Effect.fn("KinGitHubWatch.postReview")(function* (
+      call: KinGitHubApi["Service"]["call"],
+      login: string | undefined,
+    ) {
+      const event = eventAs(login);
+      const answer = yield* post(call, event, input.comments);
+      if (answer.status !== 422 || input.comments.length === 0) return answer;
+      return yield* call({
         method: "POST",
         path: `repos/${ours.repo}/pulls/${input.number}/reviews`,
         body: {
@@ -799,6 +881,14 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
           event,
         },
       });
+    });
+    let answer =
+      asApp === undefined
+        ? yield* postAll(api.call, account?.login)
+        : yield* postAll(asApp.call, asApp.login);
+    // Where the App can't write, the owner's login posts it, and the agent says so.
+    const fellBack = asApp !== undefined && (answer.status === 403 || answer.status === 404);
+    if (fellBack) answer = yield* postAll(api.call, account?.login);
     const url =
       typeof answer.body === "object" && answer.body !== null
         ? Reflect.get(answer.body, "html_url")
@@ -808,7 +898,7 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
         reason: "unavailable",
         message: `GitHub didn't post the review (${problemOf(answer)})`,
       });
-    return url;
+    return { url, asOwner: fellBack };
   },
   Effect.catchTags({
     SqlError: () =>
@@ -866,7 +956,7 @@ export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(f
     WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`.pipe(
     Effect.orElseSucceed(() => []),
   );
-  const url = yield* ownerReview({
+  const posted = yield* ownerReview({
     orgId: lead.orgId,
     agentName: named?.name ?? "Agent",
     repo: input.repo,
@@ -877,7 +967,9 @@ export const ownerGitHubReview = Effect.fn("KinGitHubWatch.ownerGitHubReview")(f
   });
   return {
     status: "posted" as const,
-    url,
-    next: "Posted on the PR. Tell the owner in one line with the link.",
+    url: posted.url,
+    next: posted.asOwner
+      ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as him."
+      : "Posted on the PR. Tell the owner in one line with the link.",
   };
 });

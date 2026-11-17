@@ -2,6 +2,8 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import * as ServerConfig from "../../config.ts";
+import * as DocumentText from "../../provider/DocumentText.ts";
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
@@ -2389,6 +2391,10 @@ describe("WakeupRunner", () => {
             Layer.mock(ServerSettings.ServerSettingsService)({}),
             Layer.mock(KinIssuedTokens.KinIssuedTokens)({}),
             Layer.mock(KinLeadPrompt)({ build: () => Effect.succeed("unused") }),
+            Layer.mock(DocumentText.DocumentText)({}),
+            ServerConfig.layerTest(process.cwd(), { prefix: "kin-startup-" }).pipe(
+              Layer.provide(NodeServices.layer),
+            ),
             Layer.effect(MemoryConfig.MemoryConfig, Effect.die("invalid memory config")),
             Layer.mock(VcsProcess.VcsProcess)({}),
             NodeServices.layer,

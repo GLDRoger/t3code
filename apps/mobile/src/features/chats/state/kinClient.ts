@@ -614,6 +614,12 @@ export const kinClient = {
     tag: "kin.lead.pause",
     concurrency: { mode: "singleFlight", key: ({ input }) => input.agentId },
   }),
+  /** Puts back one change an agent made, from its page. */
+  agentUndoChange: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:agent:undoChange",
+    tag: "kin.lead.undoChange",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.agentId}:${input.seq}` },
+  }),
   leadResume: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:lead:resume",
     tag: "kin.lead.resume",
@@ -822,6 +828,19 @@ export const kinClient = {
   githubReposSet: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:github-repos:set",
     tag: "kin.github.repos.set",
+  }),
+  githubAppCreate: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:github-app:create",
+    tag: "kin.github.app.create",
+  }),
+  githubAppDisconnect: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:github-app:disconnect",
+    tag: "kin.github.app.disconnect",
+  }),
+  githubAppReposSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:github-app-repos:set",
+    tag: "kin.github.app.repos.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:github-app` },
   }),
   /** Starts the code sign-in, or connects with a pasted token, which travels once, redacted. */
   githubStart: createKinRpcCommand(connectionAtomRuntime, {
@@ -1234,6 +1253,11 @@ export const kinClient = {
   workUpdate: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:update",
     tag: "kin.work.update",
+  }),
+  /** Every open task someone holds, to someone else; `dryRun` counts them first. */
+  workHandOver: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:handOver",
+    tag: "kin.work.handOver",
   }),
   /** The holder gives a task back to whoever gave it. */
   workHandBack: createKinRpcCommand(connectionAtomRuntime, {

@@ -58,6 +58,7 @@ import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import { PRESETS } from "./registers.ts";
+import { ownerLevelAgentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
 // Invented org, people and work only; nothing here reads a real database or memory.
@@ -494,6 +495,8 @@ it.effect(
         "kin.work.create",
         "kin.work.assign",
         "kin.work.handBack",
+        // Their own; the owner level anyone's (`handOver`).
+        "kin.work.handOver",
         "kin.work.update",
         // Its lead too; the service refuses anyone else (`teamGuard`).
         "kin.work.projectPeople",
@@ -502,7 +505,7 @@ it.effect(
         ...Object.values(KIN_WORK_WS_METHODS),
         ...KinFinanceRpcs.map((rpc) => rpc._tag),
       ];
-      assert.lengthOf(methods, 41);
+      assert.lengthOf(methods, 42);
       for (const method of methods)
         assert.strictEqual(kinRpcAccess(method) === "person", teammate.has(method), method);
     }).pipe(Effect.provide(layer)),
@@ -1566,6 +1569,25 @@ it.effect(
         (one) => one.title === weekly.title && one.state === "open",
       );
       assert.deepInclude(next, { shared: true, repeat: { every: "days", days: 7 } });
+      // One the owner gave them is theirs to work on; how it repeats stays with whoever gave it.
+      const handed = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: check the stock list",
+        dueAt: "2026-12-04",
+        dueAllDay: true,
+        owner: { _tag: "person", personId: mateId },
+        clientRequestId: "handed",
+      });
+      assert.isFalse((yield* OwnerWork.get([mate], { orgId, key: handed.key })).can?.repeat);
+      assert.deepInclude(
+        yield* Effect.flip(
+          OwnerWork.update([mate], { orgId, key: handed.key, rev: handed.rev, repeat: monthly }),
+        ),
+        {
+          reason: "not_allowed",
+          message: "Only the owner, a co-owner or whoever gave the task changes how it repeats.",
+        },
+      );
       // A task the owner shared with them is theirs to read, not to change.
       yield* OwnerWork.share([owner], { orgId, keys: [owners.key], shared: true });
       const seen = yield* OwnerWork.get([mate], { orgId, key: owners.key });
@@ -2562,6 +2584,188 @@ it.effect(
           `Owner added you to ${portal.key} Invented portal.`,
           `Owner made you the lead of ${portal.key} Invented portal.`,
         ],
+      );
+    }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
+);
+
+// Walk 6 (Nov 2026): no one place listed what one agent changed, nor undid one change of it.
+it.effect(
+  "an agent's page lists its changes; Undo puts back one, recorded as the person's, and never over a later change",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn();
+      const scope = scopeOf(lead);
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented: pricing page" }, { title: "Invented: brochure" }],
+      });
+      yield* LeadWork.update(scope, {
+        key: "W-1",
+        sourceEventId: "ask-event",
+        title: "Invented: pricing v2",
+      });
+      yield* LeadWork.update(scope, { key: "W-2", sourceEventId: "ask-event", state: "doing" });
+      const changes = yield* ownerLevelAgentChanges(orgId, lead);
+      assert.deepStrictEqual(
+        changes.map((change) => [change.key, change.kind, change.undo, change.since]),
+        [
+          ["W-2", "updated", true, false],
+          ["W-1", "updated", true, false],
+          ["W-2", "created", false, true],
+          ["W-1", "created", false, true],
+        ],
+      );
+      const undo = (seq: number) =>
+        ownerLevelUndoAgentChange({ orgId, agentId: lead, seq, by: ownerId });
+      yield* undo(changes[1]!.seq);
+      const back = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
+      assert.strictEqual(back.title, "Invented: pricing page");
+      assert.deepStrictEqual(back.changes[0]!.by, { _tag: "person", personId: ownerId });
+      // Undone once, it changed since: a second Undo is refused, not put back again.
+      assert.include(yield* Effect.flip(undo(changes[1]!.seq)), { reason: "invalid_state" });
+      // The page says it was put back, not that something else changed it.
+      assert.deepInclude((yield* ownerLevelAgentChanges(orgId, lead))[1]!, {
+        undo: false,
+        since: true,
+        undone: true,
+      });
+      // Someone else's change since the agent's: refused too.
+      const w2 = yield* OwnerWork.get([owner], { orgId, key: "W-2" });
+      yield* OwnerWork.update([owner], {
+        orgId,
+        key: "W-2",
+        rev: w2.rev,
+        title: "Invented: brochure, final",
+      });
+      assert.include(yield* Effect.flip(undo(changes[0]!.seq)), { reason: "invalid_state" });
+      // Another agent's change isn't on this page.
+      assert.include(
+        yield* Effect.flip(
+          ownerLevelUndoAgentChange({ orgId, agentId: other, seq: changes[0]!.seq, by: ownerId }),
+        ),
+        { reason: "not_found" },
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+// Walk 5 (Nov 2026): someone off for a week had their tasks moved one by one.
+it.effect(
+  "give all open tasks to someone: one move each, one message, undone by giving those back; a teammate gives only their own",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* mateMayMessage;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+        VALUES (${orgId}, ${lead}, ${ownerId}, ${at})`;
+      // Midday on the company's clock and hers, so what she is told arrives now.
+      yield* TestClock.setTime(Date.parse("2026-11-16T12:00:00.000Z"));
+      const meeraId = KinPersonId.make("meera");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES (${meeraId}, ${orgId}, 'meera', 'Meera', ${at}, 'co_owner')`;
+      const meera = { _tag: "person" as const, orgId, personId: meeraId };
+      const mateHolds = { _tag: "person" as const, personId: mateId };
+      const meeraHolds = { _tag: "person" as const, personId: meeraId };
+      const keys = yield* Effect.forEach(
+        ["Invented: copy", "Invented: icons", "Invented: done one"],
+        (title) =>
+          OwnerWork.create([owner], {
+            orgId,
+            title,
+            owner: mateHolds,
+            clientRequestId: title,
+          }).pipe(Effect.map((made) => made.key)),
+      );
+      // One repeats and is open to everyone on the team; both go with it, as they are.
+      const weekly = { every: "days" as const, days: 7 };
+      const first = (yield* OwnerWork.get([owner], { orgId, key: keys[0]! })).rev;
+      yield* OwnerWork.update([owner], {
+        orgId,
+        key: keys[0]!,
+        rev: first,
+        dueAt: "2026-11-20",
+        dueAllDay: true,
+        repeat: weekly,
+      });
+      yield* OwnerWork.share([owner], { orgId, keys: [keys[0]!], shared: true });
+      const keepsItsWay = Effect.fn(function* () {
+        assert.deepInclude(yield* OwnerWork.get([owner], { orgId, key: keys[0]! }), {
+          shared: true,
+          repeat: weekly,
+        });
+      });
+      const done = (yield* OwnerWork.get([owner], { orgId, key: keys[2]! })).rev;
+      yield* OwnerWork.update([owner], { orgId, key: keys[2]!, rev: done, state: "done" });
+      const told = sql<{ body: string }>`SELECT body FROM kin_messages
+        WHERE chat_id = 'mate-chat' AND message_id LIKE 'kin-assign-%' ORDER BY seq`;
+      const before = (yield* told).length;
+      // A teammate gives away only their own.
+      assert.include(
+        yield* Effect.flip(
+          OwnerWork.handOver([mate], {
+            orgId,
+            from: { _tag: "person", personId: ownerId },
+            to: mateHolds,
+          }),
+        ),
+        { reason: "not_allowed" },
+      );
+      // The count first, before anyone is chosen, then the move: open ones only, each recorded as a reassignment.
+      assert.deepStrictEqual(
+        yield* OwnerWork.handOver([meera], {
+          orgId,
+          from: mateHolds,
+          to: mateHolds,
+          dryRun: true,
+        }),
+        { keys: [keys[0], keys[1]], kept: 0 },
+      );
+      const moved = yield* OwnerWork.handOver([meera], { orgId, from: mateHolds, to: meeraHolds });
+      assert.deepStrictEqual(moved, { keys: [keys[0], keys[1]], kept: 0 });
+      for (const key of moved.keys) {
+        const task = yield* OwnerWork.get([owner], { orgId, key });
+        assert.deepStrictEqual(task.owner, meeraHolds);
+        assert.deepInclude(task.changes[0]!.fields, {
+          field: "owner",
+          from: `person:${mateId}`,
+          to: `person:${meeraId}`,
+        });
+      }
+      assert.deepStrictEqual(
+        (yield* OwnerWork.get([owner], { orgId, key: keys[2]! })).owner,
+        mateHolds,
+      );
+      yield* keepsItsWay();
+      // Told once for both.
+      const after = (yield* told).slice(before).map((row) => row.body);
+      assert.lengthOf(after, 1);
+      assert.include(after[0], keys[0]!);
+      assert.include(after[0], keys[1]!);
+      // Undo gives exactly those back.
+      yield* OwnerWork.assign([owner], { orgId, key: keys[2]!, to: meeraHolds }).pipe(
+        Effect.ignore,
+      );
+      assert.deepStrictEqual(
+        yield* OwnerWork.handOver([meera], {
+          orgId,
+          from: meeraHolds,
+          to: mateHolds,
+          keys: moved.keys,
+        }),
+        { keys: moved.keys, kept: 0 },
+      );
+      for (const key of moved.keys)
+        assert.deepStrictEqual((yield* OwnerWork.get([owner], { orgId, key })).owner, mateHolds);
+      yield* keepsItsWay();
+      // Her own, to the owner.
+      assert.deepStrictEqual(
+        (yield* OwnerWork.handOver([mate], {
+          orgId,
+          from: mateHolds,
+          to: { _tag: "person", personId: ownerId },
+        })).keys,
+        moved.keys,
       );
     }).pipe(Effect.provide(Layer.provideMerge(ChatRepository.layer, layer))),
 );

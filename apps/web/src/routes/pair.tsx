@@ -9,7 +9,7 @@ import {
 import { Button } from "../components/ui/button";
 import { StandalonePage, StandalonePageHeader } from "../components/ui/standalone-page";
 import { peekPairingTokenFromUrl } from "../environments/primary";
-import { KIN_ACCESS_ENDED, wasKinTeammate } from "../kin/kinTeammateMark";
+import { kinAccessEnded, wasKinTeammate } from "../kin/kinTeammateMark";
 
 export const Route = createFileRoute("/pair")({
   beforeLoad: async ({ context }) => {
@@ -56,15 +56,12 @@ function PairRouteView() {
 /** A Kin teammate whose session ended hears that, and whom to ask, before any pairing form. */
 function KinAccessEndedGate(props: { readonly children: React.ReactNode }) {
   const [ended] = useState(() => wasKinTeammate() && peekPairingTokenFromUrl() === null);
+  const [copy] = useState(kinAccessEnded);
   const [pairAnyway, setPairAnyway] = useState(false);
   if (!ended || pairAnyway) return props.children;
   return (
     <StandalonePage>
-      <StandalonePageHeader
-        context="Kin"
-        title={KIN_ACCESS_ENDED.title}
-        description={KIN_ACCESS_ENDED.detail}
-      />
+      <StandalonePageHeader context="Kin" title={copy.title} description={copy.detail} />
       <Button variant="ghost" size="sm" className="mt-6" onClick={() => setPairAnyway(true)}>
         Pair with a token instead
       </Button>

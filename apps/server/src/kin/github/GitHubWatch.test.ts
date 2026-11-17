@@ -1,20 +1,26 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { KinEvent, KinOrgId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import { ServerConfig } from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { isAgentText, signed } from "./agentMark.ts";
+import { isAgentText, postKey, signed } from "./agentMark.ts";
 import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
+import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
+import { KinGitHubApp } from "./KinGitHubApp.ts";
+import { BOT_EMAIL, BOT_LOGIN, installApp } from "./KinGitHubApp.testkit.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
-import { isMemoryRepo, repoList, setRepo, watchSummary } from "./githubWatchStore.ts";
+import { isMemoryRepo, knownRepos, repoList, setRepo, watchSummary } from "./githubWatchStore.ts";
 import { WRITE_BRANCH_PREFIX } from "../memory/MemoryConfig.ts";
 
 const orgId = KinOrgId.make("org-gh");
@@ -43,6 +49,31 @@ const seed = Effect.gen(function* () {
   }
 });
 
+/** One call to the fake, as `gh api` makes it, or with the App's installation token. */
+const fakeCall =
+  (github: FakeGitHub, token?: string): GitHubWatch.KinGitHubApi["Service"]["call"] =>
+  (request) =>
+    Effect.sync(() => {
+      const headers = Object.fromEntries(
+        Object.entries({
+          ...request.headers,
+          ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+        }).map(([name, value]) => [name.toLowerCase(), value]),
+      );
+      const answer = github.handle(
+        request.method ?? "GET",
+        request.path,
+        headers,
+        (request.body ?? {}) as Record<string, unknown>,
+      );
+      return {
+        status: answer.status,
+        headers: answer.headers,
+        body: typeof answer.body === "string" ? null : answer.body,
+        text: typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body),
+      };
+    });
+
 /** The fake as `gh api` serves it to the watch. */
 const fakeApi = (github: FakeGitHub) =>
   Layer.succeed(GitHubWatch.KinGitHubApi, {
@@ -52,25 +83,55 @@ const fakeApi = (github: FakeGitHub) =>
           ? { login: github.world.user, orgs: ["invented-co"] }
           : { login: github.world.user, orgs: [] },
       ),
-    call: (request) =>
-      Effect.sync(() => {
-        const headers = Object.fromEntries(
-          Object.entries(request.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]),
-        );
-        const answer = github.handle(
-          request.method ?? "GET",
-          request.path,
-          headers,
-          (request.body ?? {}) as Record<string, unknown>,
-        );
-        return {
-          status: answer.status,
-          headers: answer.headers,
-          body: typeof answer.body === "string" ? null : answer.body,
-          text: typeof answer.body === "string" ? answer.body : JSON.stringify(answer.body),
-        };
-      }),
+    call: fakeCall(github),
   });
+
+const APP_TOKEN = "ghs_watch_test";
+
+/** Kin's GitHub App, installed on REPO, posting through the fake with its own token. */
+const fakeApp = (github: FakeGitHub) => {
+  installApp(github, [{ id: 7, account: "invented-co", repos: [REPO], permissions: {} }]);
+  github.world.app!.minted.push({
+    token: APP_TOKEN,
+    installation: 7,
+    expiresAt: Number.MAX_SAFE_INTEGER,
+    permissions: {},
+  });
+  return Layer.succeed(KinGitHubApp, {
+    state: () =>
+      Effect.succeed({
+        _tag: "ok",
+        app: {
+          name: "Invented Kin",
+          botLogin: BOT_LOGIN,
+          botEmail: BOT_EMAIL,
+          slug: "invented-kin",
+          installUrl: "https://github.com/apps/invented-kin/installations/new",
+          owner: "invented-owner",
+          public: true,
+          installations: [
+            {
+              id: 7,
+              account: "invented-co",
+              selection: "selected",
+              suspended: false,
+              settingsUrl: null,
+              permissions: {},
+              repos: new Set([REPO]),
+            },
+          ],
+        },
+      }),
+    on: (repo) =>
+      Effect.succeed(
+        repo.toLowerCase() === REPO
+          ? { login: BOT_LOGIN, call: fakeCall(github, APP_TOKEN) }
+          : undefined,
+      ),
+    refresh: () => Effect.void,
+    lookAgain: () => Effect.void,
+  });
+};
 
 const database = KinPersistence.layer.pipe(
   Layer.provideMerge(Sqlite.layerMemory),
@@ -84,15 +145,18 @@ const database = KinPersistence.layer.pipe(
       }),
     ),
   ),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-github-watch-" })),
+  Layer.provideMerge(NodeServices.layer),
 );
 
-const setup = () => {
+const setup = (options: { readonly app?: boolean } = {}) => {
   const github = new FakeGitHub(emptyWorld("invented-owner", T0));
   github.addRepo({ full_name: REPO, private: false });
   github.addRepo({ full_name: "invented-co/old-fork", fork: true });
   const layer = GitHubWatch.layer.pipe(
     Layer.provideMerge(KinEventQueue.layer),
     Layer.provideMerge(fakeApi(github)),
+    Layer.provideMerge(options.app === true ? fakeApp(github) : Layer.empty),
     Layer.provideMerge(database),
   );
   return { github, layer };
@@ -151,7 +215,7 @@ describe("KinGitHubWatch", () => {
       assert.strictEqual(review!.pull?.ownersOwn, false);
       assert.isUndefined(review!.pull?.diff);
       assert.deepStrictEqual(github.world.reactions, [
-        { on: `${REPO}/issues/${number}/reactions`, content: "eyes" },
+        { on: `${REPO}/issues/${number}/reactions`, content: "eyes", by: "invented-owner" },
       ]);
 
       github.world.calls.length = 0;
@@ -219,6 +283,21 @@ describe("KinGitHubWatch", () => {
           author: "teammate-a",
           association: "MEMBER",
           body: "/kin please rename X",
+        });
+        // An agent's own words as the owner, unsigned: its gh recorded sending them.
+        const { stateDir } = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(`${stateDir}/kin/${GH_APP_FOLDER}`, { recursive: true });
+        yield* fs.writeFileString(
+          `${stateDir}/kin/${GH_APP_FOLDER}/${AGENT_POSTS_FILE}`,
+          `${Math.floor(T0 / 1000)}\t${postKey("/kin rename it all\n")}\n`,
+        );
+        github.comment({
+          repo: REPO,
+          number: issue,
+          author: "invented-owner",
+          association: "OWNER",
+          body: "/kin rename it all",
         });
         github.comment({
           repo: REPO,
@@ -301,6 +380,121 @@ describe("KinGitHubWatch", () => {
       assert.isTrue(yield* isMemoryRepo(MEMORY_REPO.toUpperCase()));
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect("keeps what GitHub says of each repo's account, for the App's rows", () => {
+    const { github, layer } = setup();
+    github.world.accounts = [
+      { login: "invented-co", id: 7001, type: "Organization", role: "member" },
+      { login: "invented-owner", id: 7000, type: "User" },
+    ];
+    github.addRepo({ full_name: "invented-owner/notes" });
+    return Effect.gen(function* () {
+      yield* start(github);
+      yield* look(github);
+      const facts = (yield* knownRepos(orgId)).map(({ fork: _fork, id: _id, ...rest }) => rest);
+      assert.deepStrictEqual(facts, [
+        { repo: REPO, ownerId: 7001, ownerOrg: true, ownerAdmin: false },
+        { repo: "invented-co/old-fork", ownerId: 7001, ownerOrg: true, ownerAdmin: false },
+        { repo: "invented-owner/notes", ownerId: 7000, ownerOrg: false },
+      ]);
+      // Repos stored by a Kin from before it kept these facts are read again on the next look,
+      // not after the six-hourly refresh.
+      const sql = yield* SqlClient.SqlClient;
+      const old = JSON.stringify(facts.map(({ repo }) => ({ repo, fork: false })));
+      yield* sql`UPDATE kin_github_watch SET repos_json = ${old} WHERE org_id = ${orgId}`;
+      yield* look(github);
+      assert.deepStrictEqual(
+        (yield* knownRepos(orgId)).map(({ fork: _fork, id: _id, ...rest }) => rest),
+        facts,
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "nothing Kin's GitHub App writes wakes an agent, except its own PR's failing checks",
+    () => {
+      const { github, layer } = setup({ app: true });
+      return Effect.gen(function* () {
+        yield* start(github);
+        // The App's own PR, unsigned, with the kin label and calls in its title and body.
+        const pr = github.openItem({
+          repo: REPO,
+          pull: true,
+          author: BOT_LOGIN,
+          association: "NONE",
+          title: "Tech lead, fix the flaky test",
+          body: "/kin take a look",
+          labels: ["kin"],
+        });
+        // Its comment and inline comment, whatever association GitHub gives the bot.
+        github.comment({
+          repo: REPO,
+          number: pr,
+          author: BOT_LOGIN,
+          association: "MEMBER",
+          body: "/kin rerun the checks",
+        });
+        github.comment({
+          repo: REPO,
+          number: pr,
+          author: BOT_LOGIN,
+          association: "COLLABORATOR",
+          body: "Tech lead: tighten this",
+          path: "src/a.ts",
+          line: 3,
+        });
+        // Its review on a teammate's PR, unsigned, with an inline call.
+        const theirs = github.openItem({
+          repo: REPO,
+          pull: true,
+          author: "teammate-a",
+          association: "COLLABORATOR",
+          title: "Add a hello script",
+        });
+        yield* fakeCall(
+          github,
+          APP_TOKEN,
+        )({
+          method: "POST",
+          path: `repos/${REPO}/pulls/${theirs}/reviews`,
+          body: {
+            event: "COMMENT",
+            body: "/kin looks fine",
+            comments: [{ path: "hello.sh", line: 1, body: "Finance, what does this cost?" }],
+          },
+        });
+        // And a memory landing it opened.
+        github.openItem({
+          repo: REPO,
+          pull: true,
+          author: BOT_LOGIN,
+          association: "NONE",
+          title: "kin: memory",
+          headRef: `${WRITE_BRANCH_PREFIX}land/0123456789ab`,
+        });
+        yield* look(github);
+        // Only the teammate's PR is reviewed; its 👀 goes out as the App.
+        assert.deepStrictEqual(
+          (yield* events).map((trigger) => [trigger.kind, trigger.number]),
+          [["review", theirs]],
+        );
+        assert.deepStrictEqual(
+          github.world.reactions.map((reaction) => reaction.by),
+          [BOT_LOGIN],
+        );
+        // Checks failing on its own PR are the one thing that wakes the Tech lead.
+        github.setChecks({ repo: REPO, number: pr, failing: ["test"] });
+        yield* look(github);
+        assert.sameDeepMembers(
+          (yield* events).map((trigger) => [trigger.kind, trigger.number, trigger.agentId]),
+          [
+            ["review", theirs, "tech"],
+            ["checks", pr, "tech"],
+          ],
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("a stranger's PR is read for the agent, which gets no shell for it", () => {
     const { github, layer } = setup();

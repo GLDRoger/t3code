@@ -18,7 +18,9 @@ import {
   MemoryRecoveryHooks,
   MemorySyncConflict,
 } from "./Memory.ts";
+import { gitHubApp } from "../github/KinGitHubApp.ts";
 import { MemoryConfig, WRITE_BRANCH_PREFIX } from "./MemoryConfig.ts";
+import { memoryIdentity } from "./memoryIdentity.ts";
 import { MemoryPullRequests, REVIEW_BRANCH_SUFFIX } from "./MemoryPullRequests.ts";
 import { readCommit, readTree, verifyTree } from "./objects.ts";
 
@@ -82,12 +84,8 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const vcs = yield* VcsProcess;
   const main = config.defaultBranch ?? "main";
-  const identity = {
-    GIT_AUTHOR_NAME: config.botName ?? "Kin Memory Bot",
-    GIT_AUTHOR_EMAIL: config.botEmail ?? "kin-memory@localhost",
-    GIT_COMMITTER_NAME: config.botName ?? "Kin Memory Bot",
-    GIT_COMMITTER_EMAIL: config.botEmail ?? "kin-memory@localhost",
-  };
+  const app = yield* gitHubApp;
+  const identity = () => memoryIdentity(config, app);
   // The local head each org's landing stopped on; a new head, or a restart, tries again. With no
   // head, the failure came before one was read, and every signal tries again.
   const stuck = new Map<
@@ -195,7 +193,7 @@ const make = Effect.gen(function* () {
               .pipe(
                 Effect.mapError((cause) => new MemoryError({ orgId, operation: "land", cause })),
               );
-            const env = { ...identity, GIT_INDEX_FILE: `${temporary}/index` };
+            const env = { ...(yield* identity()), GIT_INDEX_FILE: `${temporary}/index` };
             yield* git(orgId, writer, ["read-tree", remote], env);
             yield* git(
               orgId,
@@ -290,7 +288,7 @@ const make = Effect.gen(function* () {
       orgId,
       writer,
       ["commit-tree", tree, "-p", remote.head],
-      identity,
+      yield* identity(),
       message,
     );
     const branch = `${WRITE_BRANCH_PREFIX}land/${batch.slice(0, 12)}`;
@@ -338,7 +336,7 @@ const make = Effect.gen(function* () {
       orgId,
       writer,
       ["commit-tree", tree, "-p", commit, "-p", local],
-      identity,
+      yield* identity(),
       `kin: landed ${local} as ${commit}\n`,
     );
     const before = yield* git(orgId, writer, ["rev-parse", "--verify", "--quiet", LANDED_REF]).pipe(

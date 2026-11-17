@@ -13,6 +13,7 @@ import {
 import { KIN_BRAND } from "@t3tools/client-runtime/kin/kinBrand";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
+import { kinZoneName } from "@t3tools/client-runtime/kin/kinTimeZone";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { EnvironmentId, KinOrgId, type KinCompanyProfile } from "@t3tools/contracts";
@@ -280,7 +281,7 @@ function CompanyTimeZone(props: KinWorkTarget) {
     <ListSection title={KIN_COMPANY.timeZone}>
       <ListRowLayout
         icon="clock"
-        label={zone.timeZone}
+        label={kinZoneName(zone.timeZone)}
         description={
           zone.fromHost === true ? KIN_COMPANY.timeZoneFromHost : KIN_COMPANY.timeZoneUse
         }
@@ -326,7 +327,7 @@ function KinExportRows(props: KinWorkTarget) {
     <ListSection title={KIN_COMPANY.export.title}>
       <View className="gap-1 px-4 py-3">
         <Text className="text-sm text-foreground-muted">{KIN_COMPANY.export.detail}</Text>
-        <Text className="text-sm text-foreground-muted">{KIN_COMPANY.export.memory}.</Text>
+        <Text className="text-sm text-foreground-muted">{KIN_COMPANY.export.leaves}</Text>
       </View>
       <ListActionRow
         icon="square.and.arrow.up"

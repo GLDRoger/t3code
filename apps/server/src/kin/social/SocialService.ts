@@ -378,20 +378,21 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     if (one === undefined || one.orgId !== input.orgId || one.expiresAt <= now)
       return yield* invalid("That check ran out. Paste the key again.");
     held.delete(input.checkId);
-    // Two checks may have passed before either was saved.
-    const taken = (yield* ownerLevelGroups(one.orgId)).find(
-      (group) =>
-        group.groupId !== one.groupId &&
-        (group.profileId === one.profileId || group.partyId === one.partyId),
-    );
-    if (taken !== undefined)
-      return yield* invalid(
-        `${taken.profileId === one.profileId ? "That profile" : one.label} is already connected as ${taken.label}. One profile is one group.`,
+    const takenBy = (groups: ReadonlyArray<GroupRow>) =>
+      groups.find(
+        (group) =>
+          group.groupId !== one.groupId &&
+          (group.profileId === one.profileId || group.partyId === one.partyId),
       );
     const groupId = one.groupId ?? newId("sg_");
-    yield* secrets.setSocialKey(groupId, one.key);
-    yield* Effect.gen(function* () {
-      if (one.groupId === undefined)
+    const fresh = one.groupId === undefined;
+    // No row names a new group's key yet; a reconnection's key replaces a live one, so it waits for the save.
+    if (fresh) yield* secrets.setSocialKey(groupId, one.key);
+    // Two checks, or two saves, may have passed before either was saved: the save itself decides.
+    const save = Effect.gen(function* () {
+      const taken = takenBy(yield* ownerLevelGroups(one.orgId));
+      if (taken !== undefined) return taken;
+      if (fresh)
         yield* sql`INSERT INTO kin_social_groups (org_id, group_id, party_id, service, profile_id,
               profile_name, accounts_json, problem, checked_at, created_at)
             VALUES (${one.orgId}, ${groupId}, ${one.partyId}, ${provider.service}, ${one.profileId},
@@ -401,10 +402,27 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
               profile_name = ${one.profileName}, accounts_json = ${encodeAccounts(one.accounts)},
               problem = NULL, checked_at = ${now}
             WHERE org_id = ${one.orgId} AND group_id = ${groupId} AND removed_at IS NULL`;
-    }).pipe(
+      return undefined;
+    });
+    let taken = yield* save.pipe(
       sql.withTransaction,
-      Effect.mapError(() => unavailable("Kin couldn't save the accounts.")),
+      Effect.orElseSucceed(() => "failed" as const),
     );
+    if (taken === "failed") {
+      // The live-profile and live-party indexes refuse what slipped past another save's read.
+      taken = takenBy(yield* ownerLevelGroups(one.orgId).pipe(Effect.orElseSucceed(() => [])));
+      if (taken === undefined) {
+        if (fresh) yield* secrets.removeSocialKey(groupId).pipe(Effect.ignore);
+        return yield* unavailable("Kin couldn't save the accounts.");
+      }
+    }
+    if (taken !== undefined) {
+      if (fresh) yield* secrets.removeSocialKey(groupId).pipe(Effect.ignore);
+      return yield* invalid(
+        `${taken.profileId === one.profileId ? "That profile" : one.label} is already connected as ${taken.label}. One profile is one group.`,
+      );
+    }
+    if (!fresh) yield* secrets.setSocialKey(groupId, one.key);
     // Every other device showing Connections reads them again.
     yield* refreshes.touch(input.orgId, "connections");
     return yield* view(input.orgId);

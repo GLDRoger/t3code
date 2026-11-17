@@ -384,6 +384,71 @@ export const KinGitHubWatch = Schema.Struct({
 });
 export type KinGitHubWatch = typeof KinGitHubWatch.Type;
 
+/** One command an agent ran as the owner's own login with `kin-as-owner`, secrets taken out. */
+export const KinGitHubOwnerUse = Schema.Struct({
+  at: NonNegativeInt,
+  agent: Schema.NullOr(Schema.String),
+  repo: Schema.NullOr(Schema.String),
+  command: Schema.String,
+});
+export type KinGitHubOwnerUse = typeof KinGitHubOwnerUse.Type;
+
+/** One GitHub account with watched repos, and where Kin's App stands on it. */
+export const KinGitHubAppAccount = Schema.Struct({
+  account: TrimmedNonEmptyString,
+  organisation: Schema.Boolean,
+  watched: NonNegativeInt,
+  /** Watched repos of this account the App reaches. */
+  covered: NonNegativeInt,
+  installation: Schema.Literals(["all", "selected", "none", "suspended"]),
+  /** The installation's page on GitHub, where its repos are picked or it is unsuspended. */
+  settingsUrl: Schema.NullOr(Schema.String),
+  /** GitHub's install page for this account, when there is no installation. */
+  installUrl: Schema.NullOr(Schema.String),
+  /** Whether the connected login may change the App here: null when GitHub didn't say. */
+  canManage: Schema.NullOr(Schema.Boolean),
+  /** False when the App is private to another account, so GitHub can't install it here. */
+  installable: Schema.Boolean,
+});
+export type KinGitHubAppAccount = typeof KinGitHubAppAccount.Type;
+
+/** Who agents act as on GitHub: Kin's GitHub App where it is installed, else the owner. */
+export const KinGitHubAgents = Schema.Struct({
+  as: Schema.Literals(["app", "owner"]),
+  /** The App's name and bot login on GitHub, and where to install it on more repos, while it works. */
+  appName: Schema.optional(Schema.String),
+  botLogin: Schema.optional(Schema.String),
+  installUrl: Schema.optional(Schema.String),
+  /** Why an App set up on this computer isn't working, in plain words. */
+  problem: Schema.NullOr(Schema.String),
+  /** Watched repos, and how many of them the App is installed on. */
+  watched: NonNegativeInt,
+  installed: NonNegativeInt,
+  /** Watched repos without the App, where work goes out as the owner; at most 20. */
+  without: Schema.Array(Schema.String),
+  /** The latest commands agents ran as the owner, newest first; at most 5. */
+  ownerUses: Schema.Array(KinGitHubOwnerUse),
+  /** No App is named anywhere, so the owner may make one from Settings. */
+  canCreate: Schema.optional(Schema.Boolean),
+  /** Where the App was set up: in Kin's Settings (by whom, when) or on the host itself. */
+  setUp: Schema.optional(
+    Schema.Struct({
+      source: Schema.Literals(["kin", "host"]),
+      name: Schema.NullOr(Schema.String),
+      at: Schema.NullOr(NonNegativeInt),
+      by: Schema.NullOr(Schema.String),
+      /** The App's own settings on GitHub, where it can be deleted. */
+      settingsUrl: Schema.NullOr(Schema.String),
+    }),
+  ),
+  /** One row per account with watched repos; absent when Kin can't tell the accounts. */
+  accounts: Schema.optional(Schema.Array(KinGitHubAppAccount)),
+  /** The account that owns the App, and its settings page when the login can open it. */
+  appOwner: Schema.optional(Schema.String),
+  appSettingsUrl: Schema.optional(Schema.String),
+});
+export type KinGitHubAgents = typeof KinGitHubAgents.Type;
+
 export const KinGitHubStatus = Schema.Struct({
   orgId: KinOrgId,
   account: Schema.NullOr(KinGitHubAccount),
@@ -392,6 +457,8 @@ export const KinGitHubStatus = Schema.Struct({
   failed: Schema.NullOr(Schema.String),
   /** Present while connected; an older server sends none. */
   watch: Schema.optional(KinGitHubWatch),
+  /** Present on a server with Kin's GitHub App support; an older one sends none. */
+  agents: Schema.optional(KinGitHubAgents),
 });
 export type KinGitHubStatus = typeof KinGitHubStatus.Type;
 
@@ -406,11 +473,47 @@ export const KinGitHubRepo = Schema.Struct({
   fork: Schema.Boolean,
   /** An @-mention of the owner's own login here calls an agent too. */
   mentions: Schema.Boolean,
+  /** Who agents work as here: Kin's GitHub App where it reaches the repo, else the owner. */
+  agentsAs: Schema.optional(Schema.Literals(["app", "owner"])),
 });
 export type KinGitHubRepo = typeof KinGitHubRepo.Type;
 
-export const KinGitHubRepos = Schema.Struct({ repos: Schema.Array(KinGitHubRepo) });
+export const KinGitHubRepos = Schema.Struct({
+  repos: Schema.Array(KinGitHubRepo),
+  /** For an agent's own look: where Kin's GitHub App stands on each account, and its GitHub page. */
+  appAccounts: Schema.optional(Schema.Array(KinGitHubAppAccount)),
+});
 export type KinGitHubRepos = typeof KinGitHubRepos.Type;
+
+/** Puts Kin's GitHub App on these repos of one account, or takes it off, with the owner's login. */
+export const KinGitHubAppReposSetInput = Schema.Struct({
+  orgId: KinOrgId,
+  account: TrimmedNonEmptyString,
+  repos: Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(100)),
+  on: Schema.Boolean,
+});
+export type KinGitHubAppReposSetInput = typeof KinGitHubAppReposSetInput.Type;
+
+export const KinGitHubAppReposResult = Schema.Struct({
+  changed: NonNegativeInt,
+  /** Why GitHub refused the rest, in plain words; null when every repo changed. */
+  problem: Schema.NullOr(Schema.String),
+});
+export type KinGitHubAppReposResult = typeof KinGitHubAppReposResult.Type;
+
+export const KinGitHubAppCreateStart = Schema.Struct({
+  /** The page on Kin's server that posts the manifest to GitHub, with its one-hour state. */
+  path: Schema.String,
+  /** The name it suggests; GitHub App names are global, so the owner may change it. */
+  name: Schema.String,
+});
+export type KinGitHubAppCreateStart = typeof KinGitHubAppCreateStart.Type;
+
+export const KinGitHubAppDisconnected = Schema.Struct({
+  /** Where the App can still be deleted on GitHub. */
+  settingsUrl: Schema.NullOr(Schema.String),
+});
+export type KinGitHubAppDisconnected = typeof KinGitHubAppDisconnected.Type;
 
 /** One repo's switch; `repo` null sets every repo back to the default (watch everything). */
 export const KinGitHubRepoSetInput = Schema.Struct({
@@ -535,6 +638,21 @@ export const KinConnectionRpcs = [
     success: KinGitHubRepos,
     error: KinError,
   }),
+  Rpc.make("kin.github.app.create", {
+    payload: KinGitHubInput,
+    success: KinGitHubAppCreateStart,
+    error: KinError,
+  }),
+  Rpc.make("kin.github.app.disconnect", {
+    payload: KinGitHubInput,
+    success: KinGitHubAppDisconnected,
+    error: KinError,
+  }),
+  Rpc.make("kin.github.app.repos.set", {
+    payload: KinGitHubAppReposSetInput,
+    success: KinGitHubAppReposResult,
+    error: KinError,
+  }),
 ] as const;
 
 // Owner-level settings (`KIN_RPC_ACCESS`): what outside services agents reach, and with what key.
@@ -560,4 +678,7 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.github.disconnect": AuthKinChatScope,
   "kin.github.repos": AuthKinChatScope,
   "kin.github.repos.set": AuthKinChatScope,
+  "kin.github.app.repos.set": AuthKinChatScope,
+  "kin.github.app.create": AuthKinChatScope,
+  "kin.github.app.disconnect": AuthKinChatScope,
 } as const;

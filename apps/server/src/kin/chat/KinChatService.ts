@@ -47,6 +47,7 @@ import {
   type KinDiscussionId,
   type KinMessage,
   type KinMessageRelay,
+  type KinMessageWhen,
   type KinMessagesMarkReadInput,
   type KinChatsMuteInput,
   type KinChatsClearInput,
@@ -179,6 +180,8 @@ export class KinChatService extends Context.Service<
       readonly discussionId?: KinDiscussionId;
       /** Shown, but never pushed or counted as unread. */
       readonly silent?: true;
+      /** The time `body` names, which each reader's client puts on their own clock. */
+      readonly when?: KinMessageWhen;
     }) => Effect.Effect<
       { readonly message: KinMessage; readonly waiting: KinWaitingItem | null },
       ServiceError
@@ -1432,6 +1435,7 @@ const make = Effect.gen(function* () {
         ...(input.relay === undefined ? {} : { relay: input.relay }),
         ...(input.discussionId === undefined ? {} : { discussionId: input.discussionId }),
         ...(input.silent === undefined ? {} : { silent: input.silent }),
+        ...(input.when === undefined ? {} : { when: input.when }),
         intent: null,
         mentions: [],
         replyTo: null,

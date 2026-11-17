@@ -334,8 +334,16 @@ async function web(instance: Instance, person: string, args: Args) {
       const width = Number(flag(args, "width") ?? "1280");
       const height = Number(flag(args, "height") ?? "900");
       const scheme = args.flags.has("dark") ? "dark" : args.flags.has("light") ? "light" : null;
-      await Web.view(session, { width, height, colorScheme: scheme });
-      console.log(`view ${width}×${height}${scheme === null ? "" : ` ${scheme}`}`);
+      const zone = flag(args, "zone");
+      await Web.view(session, {
+        width,
+        height,
+        colorScheme: scheme,
+        ...(zone === undefined ? {} : { zone }),
+      });
+      console.log(
+        `view ${width}×${height}${scheme === null ? "" : ` ${scheme}`}${zone === undefined ? "" : ` ${zone}`}`,
+      );
       return;
     }
     default:

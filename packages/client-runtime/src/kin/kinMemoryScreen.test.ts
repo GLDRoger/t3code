@@ -110,6 +110,11 @@ describe("what the owner's leads remember", () => {
     expect(kinMemoryEntrySummary(listOf([item("asked", "suggested")]))).toBe(
       "1 thing is waiting for your yes",
     );
+    // A short list has no search box, unless it opened searched (a search result): then the box
+    // shows, so the search can be cleared.
+    const few = listOf([item("mine", "only_owner")]);
+    expect(kinMemoryView(few, KIN_MEMORY_NO_EDITS, "").searchable).toBe(false);
+    expect(kinMemoryView(few, KIN_MEMORY_NO_EDITS, "words").searchable).toBe(true);
   });
 
   it("says where each thing came from, and nothing a host or a message doesn't give", () => {

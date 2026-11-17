@@ -55,7 +55,12 @@ import { KinFoldSection } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 
-export type KinMemoryParams = { readonly environmentId: string; readonly orgId: string };
+export type KinMemoryParams = {
+  readonly environmentId: string;
+  readonly orgId: string;
+  /** What the list opens filtered to, from a search result. */
+  readonly find?: string;
+};
 
 interface KinMemoryTarget {
   readonly environmentId: EnvironmentId;
@@ -138,10 +143,21 @@ export function KinMemoryScreen({ route }: StaticScreenProps<KinMemoryParams>) {
       </View>
     );
   }
-  return <KinMemoryBody environmentId={environmentId} orgId={orgId} />;
+  return (
+    <KinMemoryBody
+      key={route.params.find ?? ""}
+      environmentId={environmentId}
+      orgId={orgId}
+      {...(route.params.find === undefined ? {} : { find: route.params.find })}
+    />
+  );
 }
 
-function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
+function KinMemoryBody({
+  environmentId,
+  orgId,
+  find,
+}: KinMemoryTarget & { readonly find?: string }) {
   const navigation = useNavigation();
   const allowed = useAtomValue(kinClient.memorySetVisibility.permissionAtom(environmentId));
   const listAtom = kinClient.memory({ environmentId, input: { orgId } });
@@ -154,7 +170,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
     kinClient.memorySetTeamMemory.permissionAtom(environmentId),
   );
   const [edits, setEdits] = useState(KIN_MEMORY_NO_EDITS);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(find ?? "");
   // Whose words and which agent an item names; until these arrive a row says "a teammate" or "an agent".
   const people = useAtomValue(
     allowed ? kinClient.people({ environmentId, input: { orgId } }) : noPeopleAtom,

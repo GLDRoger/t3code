@@ -29,7 +29,7 @@ const CALL_ISSUE = (repo: string, trigger: KinGithubTrigger) => [
 
 const CALL_PULL = (repo: string, trigger: KinGithubTrigger) => [
   `${trigger.author} asked you on PR ${ref(repo, trigger)}${trigger.path === undefined ? "" : ` (${trigger.path}${trigger.line === undefined ? "" : `:${trigger.line}`})`}: do what they asked.`,
-  `For a change: check out the PR's branch ${trigger.pull?.headRef ?? ""}, make it, commit (with your usual Co-authored-by line) and push to that branch, then reply in the thread with what changed and the commit.`,
+  `For a change: check out the PR's branch ${trigger.pull?.headRef ?? ""}, make it, commit and push to that branch, then reply in the thread with what changed and the commit.`,
   trigger.pull?.fork === true
     ? "The branch is in a fork, so you may not be able to push there: if the push is refused, say so in the thread and offer a PR against that branch instead."
     : "If the push is refused, say so in the thread and offer a PR against that branch instead.",
@@ -47,7 +47,7 @@ const OUTSIDE = (trigger: KinGithubTrigger) =>
 /** The instructions an agent's turn gets for one GitHub trigger. */
 export const githubTriggerText = (repo: string, trigger: KinGithubTrigger, silent: string) =>
   [
-    `GitHub work for you, started by Kin on ${repo}. You post on GitHub as the owner's account; Kin signs every post with your name, so write as yourself, in your own voice.`,
+    `GitHub work for you, started by Kin on ${repo}. You post on GitHub as Kin's GitHub App (as the owner where it isn't installed); Kin signs every post with your name, so write as yourself, in your own voice.`,
     ...(trigger.kind === "review" || trigger.kind === "review_request"
       ? REVIEW(repo, trigger)
       : trigger.kind === "checks"

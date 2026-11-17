@@ -14,6 +14,8 @@ const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "koffi",
   "@koromix/",
   "@napi-rs/keyring",
+  // pdf.js draws PDF pages for Kin turns on its Skia canvas, a prebuilt addon per platform.
+  "@napi-rs/canvas",
   "@clerk/electron-passkeys",
   "node-gyp-build",
   "node-addon-api",

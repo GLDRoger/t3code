@@ -173,6 +173,9 @@ const samples = {
     { kind: "sent_by", agentId: "agent-1" },
     { kind: "reply_from", agentId: "agent-1" },
   ],
+  KinMessageWhen: [
+    { at: "2026-11-17T04:30:00.000Z", zone: "Asia/Kolkata", text: "10:00 their time" },
+  ],
   KinWidgetId: ["widget-1"],
   KinWaitingId: ["waiting-1"],
   KinWakeupId: ["wakeup-1"],

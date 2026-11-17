@@ -6,6 +6,7 @@ import {
   KinChatId,
   type KinEvent,
   KinMessageId,
+  type KinMessageWhen,
   type KinOrgId,
   type KinPersonId,
   type KinWakeupId,
@@ -295,10 +296,15 @@ const make = Effect.gen(function* () {
             FROM kin_people p WHERE org_id = ${orgId} AND person_id = ${reader}`;
     const own = person === undefined || person.owner === 1 ? null : validZone(person.zone);
     const timeZone = own ?? (yield* cache.ownerTimeZone(orgId));
-    return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone })
+    const text = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone })
       .format(at)
       .replace(/\s?AM$/, " am")
       .replace(/\s?PM$/, " pm");
+    // Each reader's client says it on their own clock; the body keeps this one for older ones.
+    return {
+      text,
+      when: { at: DateTime.formatIso(DateTime.makeUnsafe(at)), zone: timeZone, text },
+    };
   });
   const system = Effect.fn("KinBudget.system")(function* (input: {
     readonly orgId: KinOrgId;
@@ -307,6 +313,7 @@ const make = Effect.gen(function* () {
     readonly messageId: string;
     readonly body: string;
     readonly now: number;
+    readonly when?: KinMessageWhen;
   }) {
     // Said once: a second hold in the same turn and chat has nothing new to say.
     const said = yield* sql`SELECT 1 FROM kin_messages
@@ -321,6 +328,7 @@ const make = Effect.gen(function* () {
         author: { _tag: "system" },
         kind: "text",
         body: input.body,
+        ...(input.when === undefined ? {} : { when: input.when }),
         intent: null,
         mentions: [],
         replyTo: null,
@@ -361,7 +369,7 @@ const make = Effect.gen(function* () {
     const [state] = yield* sql<{ sent: number | null }>`SELECT ${sql(column)} AS sent
       FROM kin_budget WHERE org_id = ${orgId} AND day = ${day}`;
     if (state?.sent != null) return;
-    const at = yield* clock(orgId, nextReset);
+    const { text: at, when } = yield* clock(orgId, nextReset);
     const held = yield* waiting(orgId);
     const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
     const list = held.agents
@@ -398,6 +406,7 @@ const make = Effect.gen(function* () {
       messageId: `kin-budget${heldBy === "org" ? "" : `-${heldBy}`}:${orgId}:${day}`,
       body,
       now,
+      when,
     });
     // Marked only once its line is stored, in the same transaction.
     if (posted)
@@ -581,7 +590,7 @@ const make = Effect.gen(function* () {
             if (!chats.has(chatId) || chats.get(chatId) === undefined) chats.set(chatId, asker);
           }
           for (const [chatId, asker] of chats) {
-            const at = yield* clock(input.orgId, input.nextReset, asker);
+            const { text: at, when } = yield* clock(input.orgId, input.nextReset, asker);
             yield* system({
               orgId: input.orgId,
               chatId: KinChatId.make(chatId),
@@ -589,6 +598,7 @@ const make = Effect.gen(function* () {
               messageId: `kin-waiting:${input.wakeupId}:${chatId}`,
               body: `${lead.name} will pick this up at ${at}: ${why}.`,
               now,
+              when,
             });
           }
         }

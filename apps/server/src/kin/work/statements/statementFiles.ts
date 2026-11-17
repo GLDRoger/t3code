@@ -142,6 +142,19 @@ export const readStatementFile = async (
   };
 };
 
+/** Any PDF's text layer as laid-out pages, for an agent whose model can't take the file itself. */
+export const readPdfPages = async (bytes: Uint8Array): Promise<ReadonlyArray<string> | Failure> => {
+  if (bytes.byteLength > STATEMENT_CAPS.bytes)
+    return { _tag: "unreadable", reason: "The PDF is larger than 25 MB." };
+  if (!startsWith(bytes, PDF)) return { _tag: "unreadable", reason: "This isn't a PDF." };
+  const read = await pdfLines(bytes, undefined, true).catch((error: unknown) => {
+    if (isTooLarge(error)) return tooLarge(error.reason);
+    throw error;
+  });
+  if (!Array.isArray(read)) return read as Failure;
+  return (read as ReadonlyArray<ReadonlyArray<Line>>).map((lines) => pageText(lines).text);
+};
+
 // Helvetica's average advance at a statement's usual 8 to 9 points, so columns line up as text.
 const POINTS_PER_CHARACTER = 4;
 /** A page as text: each line's cells at their columns, so a reader can tell the columns apart. */
@@ -440,7 +453,7 @@ const ascii85Decoded = (data: Uint8Array) => {
  * filters, names in any form; a filter this can't decode ends the check for that stream. Only a
  * first line: the reader process's own memory bound is what holds.
  */
-const inflatedTooFar = (bytes: Uint8Array): string | undefined => {
+export const inflatedTooFar = (bytes: Uint8Array): string | undefined => {
   const text = NodeBuffer.Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
     "latin1",
   );

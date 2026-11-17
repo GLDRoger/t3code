@@ -35,7 +35,7 @@ No module in `apps/mobile/package.json` creates Secure Enclave or Keystore keys,
 export const KinActionClass = Schema.Literals(["read", "talk", "work", "privileged"]);
 
 export const KinActionKind = Schema.Literals([
-  // retired with the GitHub App: no handler, so an approved one is voided
+  // retired with the owner's merge token: no handler, so an approved one is voided
   "merge_pull_request",
   "delete_branch",
   // executed through the registry (section 6); only set_level has a handler today
@@ -359,11 +359,13 @@ export const KinProvenance = Schema.Struct({
 
 ### 10. GitHub
 
-Kin has no GitHub identity of its own. Its GitHub work runs on the owner's login, connected from the phone at Settings → Connections → GitHub (`gh auth login` by device code, then `gh auth setup-git`, as the server's OS user). Owner-only turns that have read no outside text use `gh` in their shell; `kin_github_review`, `kin_github_watch` and `kin_github_link` show only while that login is connected; the watch polls the owner's repos and wakes the lead on a `/kin` comment (triggers spec). Signing out stops all of it.
+Kin watches GitHub with the owner's login, connected from the phone at Settings → Connections → GitHub (`gh auth login` by device code, then `gh auth setup-git`, as the server's OS user). Owner-only turns that have read no outside text get a shell; `kin_github_review`, `kin_github_watch` and `kin_github_link` show only while that login is connected; the watch polls the owner's repos and wakes the lead on a `/kin` comment (triggers spec). Signing out stops all of it.
 
-Kin never merges code. The owner merges on GitHub, so branch protection is whatever the owner sets there; Kin doesn't apply or check rulesets. Kin's own memory repo is the exception (triggers spec, memory repo guard rails). Comments Kin posts carry the agent's signature line (`ghSign.ts`), since they go out under the owner's name.
+Agents write as Kin's GitHub App when `KIN_GITHUB_APP_ID` and its `kin-github-app` keyring item are set (`KinGitHubApp.ts`). The server keeps the key and mints one-hour installation tokens without administration, secrets, members, hooks or organization permissions, so a token can't change who has access; it writes them, with the bot's identity, to files the agent shell's `gh`, `git` and credential helper read (`ghSign.ts`). Repos without an installation fall through to the owner's login. `kin-as-owner <command>` runs one command as the owner, and the server records each run (agent, repo, command with secrets stripped) for Connections. Kin's own posts (reviews, reactions, memory PRs) use the App where installed and the owner otherwise.
 
-The GitHub App, its installation tokens, the owner's merge token, the bot login, the App's webhook and `scripts/kin-github-app.ts` and `scripts/kin-rulesets.ts` were removed. `ops/kin/host/README.md` says how to retire them on a host.
+Kin never merges code or approves. The shell's `gh` refuses merging, approving and settings changes under either identity; under the owner that refusal is the only wall, since the shell runs as the server's OS user. Branch protection is whatever the owner sets on GitHub; Kin doesn't apply or check rulesets. Kin's own memory repo is the exception (triggers spec, memory repo guard rails). Comments and PR bodies carry the agent's signature line.
+
+The App's webhook, the owner's merge token, `RequestAction` handlers, `scripts/kin-github-app.ts` and `scripts/kin-rulesets.ts` stay removed.
 
 ### 11. Audit
 

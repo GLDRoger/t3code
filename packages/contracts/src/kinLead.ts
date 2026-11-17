@@ -4,9 +4,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import {
+  IsoDateTime,
   MessageId,
   NodeId,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ScheduledTaskId,
   ThreadId,
@@ -199,6 +201,32 @@ export const KinLeadUpdateInput = Schema.Struct({
 });
 export type KinLeadUpdateInput = typeof KinLeadUpdateInput.Type;
 
+/**
+ * One change an agent made to a record, as its history keeps it. `undo` is whether Kin can put
+ * back what it replaced now: never once it changed `since`, nor for a change Kin can't reverse
+ * on its own (list details, amounts, a doc's text).
+ */
+export const KinAgentChange = Schema.Struct({
+  seq: PositiveInt,
+  at: IsoDateTime,
+  key: KinRecordKey,
+  title: Schema.String,
+  registerId: Schema.String,
+  kind: Schema.Literals(["created", "updated", "linked"]),
+  fields: Schema.Array(
+    Schema.Struct({
+      field: Schema.String,
+      from: Schema.NullOr(Schema.String),
+      to: Schema.NullOr(Schema.String),
+    }),
+  ),
+  undo: Schema.Boolean,
+  /** Changed again after this one, by anyone: what it shows is no longer what the record holds. */
+  since: Schema.Boolean,
+  /** The change after it put back what this one replaced. */
+  undone: Schema.optional(Schema.Boolean),
+});
+export type KinAgentChange = typeof KinAgentChange.Type;
 export const KinAgentPageInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });
 export type KinAgentPageInput = typeof KinAgentPageInput.Type;
 /**
@@ -229,8 +257,17 @@ export const KinAgentPage = Schema.Struct({
   ),
   // Live playbooks, which every agent follows.
   playbooks: Schema.Array(Schema.Struct({ key: KinRecordKey, title: Schema.String })),
+  // Its last record changes, newest first; absent from older hosts.
+  changed: Schema.optional(Schema.Array(KinAgentChange)),
 });
 export type KinAgentPage = typeof KinAgentPage.Type;
+/** Puts back what one of the agent's changes replaced (`KinAgentChange.undo`). */
+export const KinAgentUndoChangeInput = Schema.Struct({
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+  seq: PositiveInt,
+});
+export type KinAgentUndoChangeInput = typeof KinAgentUndoChangeInput.Type;
 /** A new character for one agent, written over the old as a version its history keeps. */
 export const KinAgentCharacterSetInput = Schema.Struct({
   orgId: KinOrgId,

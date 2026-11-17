@@ -25,7 +25,9 @@ import { KinPurgePush, hardenedGitEnv, scrubbedGitEnv, type PurgeRefUpdate } fro
 import { parseFrontMatter } from "./frontMatter.ts";
 import { memoryGit } from "./git.ts";
 import { Memory, type MemoryHistoryRewrite } from "./Memory.ts";
+import { gitHubApp } from "../github/KinGitHubApp.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
+import { memoryIdentity } from "./memoryIdentity.ts";
 import { readObjects } from "./objects.ts";
 import { KinSecretScan, type SecretFinding } from "./secretScan.ts";
 
@@ -286,6 +288,7 @@ export const PurgeExecutorGate = Context.Reference<boolean>(
 const make = Effect.gen(function* () {
   const memory = yield* Memory;
   const config = yield* MemoryConfig;
+  const app = yield* gitHubApp;
   const scanner = yield* KinSecretScan;
   const pusher = yield* KinPurgePush;
   const queue = yield* KinPurgeQueue;
@@ -583,10 +586,7 @@ const make = Effect.gen(function* () {
     const date = `${Math.floor(now / 1000)} +0000`;
     const env = {
       GIT_INDEX_FILE: `${work}/tombstone-index`,
-      GIT_AUTHOR_NAME: config.botName ?? "Kin Memory Bot",
-      GIT_AUTHOR_EMAIL: config.botEmail ?? "kin-memory@localhost",
-      GIT_COMMITTER_NAME: config.botName ?? "Kin Memory Bot",
-      GIT_COMMITTER_EMAIL: config.botEmail ?? "kin-memory@localhost",
+      ...(yield* memoryIdentity(config, app)),
       GIT_AUTHOR_DATE: date,
       GIT_COMMITTER_DATE: date,
     };

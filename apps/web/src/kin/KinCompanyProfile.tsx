@@ -304,7 +304,7 @@ function KinExportSection(props: KinWorkTarget) {
           {state === "preparing" ? KIN_COMPANY.export.preparing : KIN_COMPANY.export.action}
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">{KIN_COMPANY.export.memory}.</p>
+      <p className="text-xs text-muted-foreground">{KIN_COMPANY.export.leaves}</p>
       {state === "started" ? (
         <p role="status" className="text-xs text-muted-foreground">
           {KIN_COMPANY.export.started}

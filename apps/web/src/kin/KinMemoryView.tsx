@@ -57,7 +57,7 @@ interface KinMemoryTarget {
 }
 
 /** What the owner's leads remember, and who may know each thing. */
-export function KinMemoryView(props: KinMemoryTarget) {
+export function KinMemoryView(props: KinMemoryTarget & { readonly find?: string }) {
   const allowed = useAtomValue(kinClient.memorySetVisibility.permissionAtom(props.environmentId));
   return (
     <>
@@ -77,7 +77,11 @@ export function KinMemoryView(props: KinMemoryTarget) {
   );
 }
 
-function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
+function KinMemoryBody({
+  environmentId,
+  orgId,
+  find,
+}: KinMemoryTarget & { readonly find?: string }) {
   const listAtom = kinClient.memory({ environmentId, input: { orgId } });
   const result = useAtomValue(listAtom);
   const setVisibility = useAtomCommand(kinClient.memorySetVisibility, { reportFailure: false });
@@ -89,7 +93,7 @@ function KinMemoryBody({ environmentId, orgId }: KinMemoryTarget) {
   );
   const [forgetting, setForgetting] = useState<KinMemoryItemView | null>(null);
   const [edits, setEdits] = useState(KIN_MEMORY_NO_EDITS);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(find ?? "");
   // Whose words and which agent an item names; until these arrive a row says "a teammate" or "an agent".
   const people = useAtomValue(kinClient.people({ environmentId, input: { orgId } }));
   const agents = useAtomValue(

@@ -300,9 +300,15 @@ it.effect(
       assert.strictEqual(full?.env?.KIN_AGENT_NAME, "Tech lead");
       assert.strictEqual(full?.env?.ENABLE_TOOL_SEARCH, "true");
       assert.include(
-        yield* fs.readFileString(`${signing}/gh`),
-        "REAL='/kin-home/kin-tools/gh-pinned/gh'",
+        yield* fs.readFileString(`${signing}/gh-policy.mjs`),
+        'const REAL = "/kin-home/kin-tools/gh-pinned/gh";',
       );
+      // git and the owner switch beside it, reading the App's files from Kin's own folder.
+      for (const name of ["git", "git-credential-kin", "kin-as-owner"])
+        assert.include(
+          yield* fs.readFileString(`${signing}/${name}`),
+          `APP='${stateDir}/kin/gh-app'`,
+        );
       const footerOff = (options: typeof full) =>
         typeof options?.settings === "object" &&
         options.settings.includeCoAuthoredBy === false &&

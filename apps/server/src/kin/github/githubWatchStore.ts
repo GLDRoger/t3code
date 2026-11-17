@@ -19,8 +19,29 @@ import { ownerZone } from "../work/recordRows.ts";
  * the agent's `kin_github_watch`.
  */
 
-const KnownRepo = Schema.Struct({ repo: Schema.String, fork: Schema.Boolean });
+/**
+ * A repo the poll found, with what GitHub said of its account: its id, whether it is an
+ * organisation, and whether the owner's login owns that organisation. Older rows hold only the first two fields.
+ */
+const KnownRepo = Schema.Struct({
+  repo: Schema.String,
+  fork: Schema.Boolean,
+  id: Schema.optional(Schema.Int),
+  ownerId: Schema.optional(Schema.Int),
+  ownerOrg: Schema.optional(Schema.Boolean),
+  ownerAdmin: Schema.optional(Schema.Boolean),
+});
+export type KnownRepo = typeof KnownRepo.Type;
 const decodeKnown = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(KnownRepo)));
+
+/** The repos the last poll found, as stored, memory repos left out. */
+export const knownRepos = Effect.fn("KinGitHubWatchStore.knownRepos")(function* (orgId: KinOrgId) {
+  const row = yield* watchRow(orgId);
+  const memory = yield* memoryRepos;
+  return Option.getOrElse(decodeKnown(row?.reposJson ?? "[]"), () => []).filter(
+    (entry) => !memory.has(entry.repo.toLowerCase()),
+  );
+});
 
 export interface WatchRow {
   readonly login: string | null;
@@ -46,8 +67,8 @@ export const watchRow = Effect.fn("KinGitHubWatchStore.row")(function* (orgId: K
 });
 
 /**
- * The repos Kin keeps memory in, lowercased. Kin's own memory PRs there are opened under the
- * owner's login, so watching one would wake an agent for every memory write it makes.
+ * The repos Kin keeps memory in, lowercased. Kin opens its own memory PRs there, as its App or the
+ * owner, so watching one would wake an agent for every memory write it makes.
  */
 const memoryRepos = Effect.gen(function* () {
   const memory = yield* configuredRepositories;
@@ -60,11 +81,7 @@ export const isMemoryRepo = (repo: string) =>
 /** Every repo the poll found, with the owner's switches applied; sorted by name. Never memory. */
 export const repoList = Effect.fn("KinGitHubWatchStore.repos")(function* (orgId: KinOrgId) {
   const sql = yield* SqlClient.SqlClient;
-  const row = yield* watchRow(orgId);
-  const memory = yield* memoryRepos;
-  const known = Option.getOrElse(decodeKnown(row?.reposJson ?? "[]"), () => []).filter(
-    (entry) => !memory.has(entry.repo.toLowerCase()),
-  );
+  const known = yield* knownRepos(orgId);
   const prefs = yield* sql<{ repo: string; watched: number | null; mentions: number }>`
     SELECT repo, watched, mentions FROM kin_github_repo_prefs WHERE org_id = ${orgId}
     ORDER BY repo`;
