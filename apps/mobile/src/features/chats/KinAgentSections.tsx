@@ -220,7 +220,7 @@ function Character(props: {
               label="History and restore"
               icon="clock"
               onPress={() =>
-                navigation.navigate("KinDoc", { environmentId, orgId, doc: character.key })
+                navigation.navigate("KinDocHistory", { environmentId, orgId, doc: character.key })
               }
             />
           </View>

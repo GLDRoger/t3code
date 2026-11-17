@@ -11,11 +11,11 @@ const ASKED: Record<TurnKind, string> = {
   decider:
     "It's your call. Argue, ask, or decide with end decide once it's settled; don't settle too early.",
   pitch_in:
-    "Nobody asked you, but this touches your lane. Speak only if you have something new: a fact, a risk, a better idea. Otherwise pass: end the turn without team_say.",
+    "Nobody asked you, but this touches your lane. Speak only if you have something new: a fact, figure or risk nobody said; a view or an idea isn't new. Otherwise pass: end the turn without team_say.",
   chair:
     "Chair check: call it now (end decide, or end park), or pass to let them go on to the limit.",
   object:
-    "A decision was made. If it's wrong for your lane, object once (intent objection) and say why; otherwise pass.",
+    "A decision was made. If it's wrong for your lane, object once with team_say (intent objection) and say why; otherwise pass.",
   closing:
     "Closing turn at the limit: decide (end decide), park it (end park: where it stands, the default and when), or bring it to the owner if it's his to decide (end bring). You must end it.",
 };

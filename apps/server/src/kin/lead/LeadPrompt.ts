@@ -1272,17 +1272,19 @@ export class KinLeadPrompt extends Context.Service<
             ? []
             : [
                 sharedPart(
-                  `Your reply goes to chat ${encoded(input.lane.chatId)}${
-                    laneChat === undefined
-                      ? ""
-                      : laneChat.kind === "direct"
-                        ? ownerOnly
-                          ? ", your direct chat with the owner"
-                          : ", your direct chat with a teammate"
-                        : laneChat.title === null
-                          ? ", a group"
-                          : `, the group ${encoded(laneChat.title)}`
-                  }.`,
+                  inTeamRoom
+                    ? `This turn is in the Team room, chat ${encoded(input.lane.chatId)}. Your plain text goes nowhere: speak only with team_say, and pass by ending the turn without it.`
+                    : `Your reply goes to chat ${encoded(input.lane.chatId)}${
+                        laneChat === undefined
+                          ? ""
+                          : laneChat.kind === "direct"
+                            ? ownerOnly
+                              ? ", your direct chat with the owner"
+                              : ", your direct chat with a teammate"
+                            : laneChat.title === null
+                              ? ", a group"
+                              : `, the group ${encoded(laneChat.title)}`
+                      }.`,
                 ),
                 ...(room === undefined || laneChat === undefined
                   ? []
@@ -1869,7 +1871,9 @@ function groupLine(
   });
   const more = here.length - named.length;
   return [
-    `In this group: ${named.join(", ")}${more > 0 ? `, and ${more} more` : ""}. Everyone in it reads your reply.`,
+    `In this group: ${named.join(", ")}${more > 0 ? `, and ${more} more` : ""}. ${
+      teamRoom ? "They read only what you say with team_say." : "Everyone in it reads your reply."
+    }`,
     ...(teamRoom
       ? []
       : [

@@ -149,7 +149,7 @@ const answerOf = (response: unknown): unknown => {
 /** "$event" and "$chat" become the event the turn answers and the chat it replies to. */
 function filler(before: string, prompt: string) {
   const eventId = [...before.matchAll(/"event"\s*:\s*"([^"]+)"/g)].at(-1)?.[1];
-  const chatId = /Your reply goes to chat "([^"]+)"/.exec(prompt)?.[1];
+  const chatId = /(?:Your reply goes to chat|in the Team room, chat) "([^"]+)"/.exec(prompt)?.[1];
   const fill = (value: unknown): unknown =>
     value === "$event"
       ? eventId

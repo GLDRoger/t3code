@@ -100,21 +100,20 @@ function useKinAgentPageCan(environmentId: EnvironmentId) {
   });
 }
 
-/**
- * Mounted once on Kin's page, like the lead form. An address with no company in it (bare `/kin`,
- * where Settings → Agents links from) opens the page on Kin's own host and company.
- */
+/** Mounted once on Kin's page, like the lead form. */
 export function KinAgentPageHost() {
   const { agent } = useSearch({ from: "/_chat/kin" });
   const params = useParams({ strict: false });
-  const fallback = kinNewLeadTarget(useKinHost());
-  if (agent === undefined) return null;
-  const at =
-    params.environmentId !== undefined && params.orgId !== undefined
-      ? { environmentId: params.environmentId as EnvironmentId, orgId: KinOrgId.make(params.orgId) }
-      : fallback;
-  if (at === null) return null;
-  const target = { environmentId: at.environmentId, orgId: at.orgId, agentId: agent };
+  // The bare Chats screen names no place: the link opens on this Kin's own host, as the dock does.
+  const host = kinNewLeadTarget(useKinHost());
+  const environmentId = params.environmentId ?? host?.environmentId;
+  const orgId = params.orgId ?? host?.orgId;
+  if (agent === undefined || environmentId === undefined || orgId === undefined) return null;
+  const target = {
+    environmentId: environmentId as EnvironmentId,
+    orgId: KinOrgId.make(orgId),
+    agentId: agent,
+  };
   return <KinAgentSheet key={agent} target={target} />;
 }
 
