@@ -201,6 +201,8 @@ export async function startServer(instance: Instance): Promise<InstanceState> {
     KIN_VERIFY_DIR: instance.meta,
     KIN_DEV_FAKE_GITHUB: fakeGitHub,
     KIN_DEV_FAKE_SOCIAL: "1",
+    // Ports hash from this, not the checkout path, so instances of one checkout can run side by side.
+    T3CODE_DEV_INSTANCE: `kin-verify-${instance.name}`,
   };
   // Dev is single-origin; baking an origin in breaks remote browsers (AGENTS.md).
   delete env.VITE_HTTP_URL;

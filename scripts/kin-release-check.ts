@@ -5,6 +5,7 @@
 //
 //   node scripts/kin-release-check.ts [--quick|--full] [--against <commit|findings.json>] [--out <dir>]
 //        [--base <ref>] [--only <stage,...>] [--keep-going] [--fuzz-time 2m] [--keep-traces]
+//        [--lifecycle-workers N]
 //   node scripts/kin-release-check.ts --mark-released <commit> [--from <findings.json>]
 //
 // Outputs (findings.json, summary.md, report.html, logs) go to --out, by default
@@ -123,6 +124,12 @@ export const gates = (findingItem: Finding, isNew: boolean) =>
 const git = (...args: string[]) =>
   NodeChildProcess.execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
 const short = (sha: string) => sha.slice(0, 12);
+/** Each worker runs a server, a web build and a Chrome per person: about three cores each. */
+export const lifecycleWorkersOf = (flag: string | undefined) => {
+  const asked = flag === undefined ? Number.NaN : Number(flag);
+  if (Number.isInteger(asked) && asked >= 1) return asked;
+  return Math.min(4, Math.max(1, Math.floor(NodeOS.availableParallelism() / 3)));
+};
 const checkDir = () =>
   NodePath.resolve(
     process.env.KIN_RELEASE_CHECK_DIR ??
@@ -249,7 +256,10 @@ interface Context {
   readonly previousRelease: string | undefined;
   readonly fuzzTime: string;
   readonly keepTraces: boolean;
+  readonly lifecycleWorkers: number;
   readonly report: Findings;
+  /** Models `check:changed` already ran in this run's static stage, so `models` skips them. */
+  readonly modelsChecked: Set<string>;
 }
 
 const kv = (ctx: Context, stage: Stage, instance: string, ...args: string[]) =>
@@ -272,6 +282,8 @@ const staticChecks = async (ctx: Context): Promise<Finding[]> => {
   const failed = [
     ...output.matchAll(/^\s+(FAIL|TIMEOUT)\s+(.+?)\s+(?:[\d.]+s|killed after \d+s)$/gm),
   ].map(([, outcome, step]) => finding("static", "check:changed", step!, "-", outcome!));
+  for (const [, name] of output.matchAll(/^\s+(?:pass|FAIL)\s+kin model (\w+)\s/gm))
+    ctx.modelsChecked.add(name!);
   if (code !== 0 && failed.length === 0)
     failed.push(
       finding(
@@ -285,9 +297,11 @@ const staticChecks = async (ctx: Context): Promise<Finding[]> => {
   return failed;
 };
 
-const models = async (ctx: Context): Promise<Finding[]> => {
+const models = async (ctx: Context): Promise<Finding[] | string> => {
   const found: Finding[] = [];
-  for (const name of MODELS) {
+  const left = MODELS.filter((name) => !ctx.modelsChecked.has(name));
+  if (left.length === 0) return `checked by static's check:changed: ${MODELS.join(", ")}`;
+  for (const name of left) {
     const { code, output } = await run(ctx.log("models"), process.execPath, [
       NodePath.join(ROOT, "scripts", "kin-model.ts"),
       name,
@@ -366,29 +380,65 @@ const lifecycleFindings = (stage: Stage, output: string, check: string) => {
   return found;
 };
 
+/** One instance per worker; the first keeps the company the next release's migration starts from. */
+export const lifecycleInstances = (workers: number) =>
+  Array.from({ length: workers }, (_, index) =>
+    index === 0 ? "release-check" : `release-check-${index + 1}`,
+  );
+
+/** Every lifecycle script, shared out to the workers through a queue: each takes the next one left. */
 const lifecycle = async (ctx: Context): Promise<Finding[]> => {
-  const instance = "release-check";
+  const instances = lifecycleInstances(ctx.lifecycleWorkers);
+  const queue = NodePath.join(ctx.out, "lifecycle-queue");
+  NodeFS.rmSync(queue, { recursive: true, force: true });
+  NodeFS.mkdirSync(NodePath.join(queue, "todo"), { recursive: true });
+  const listed = await run(ctx.log("lifecycle"), "bash", [
+    NodePath.join(LIFECYCLE, "run-all.sh"),
+    "--list",
+  ]);
+  listed.output
+    .split("\n")
+    .filter(Boolean)
+    .forEach((name, index) =>
+      NodeFS.writeFileSync(
+        NodePath.join(queue, "todo", `${String(index).padStart(3, "0")}-${name}`),
+        "",
+      ),
+    );
   try {
-    const { code, output } = await run(ctx.log("lifecycle"), "bash", [
-      NodePath.join(LIFECYCLE, "run-all.sh"),
-      "--instance",
-      instance,
-    ]);
+    const ran = await Promise.all(
+      instances.map((instance) =>
+        run(NodePath.join(ctx.out, `lifecycle-${instance}.log`), "bash", [
+          NodePath.join(LIFECYCLE, "run-all.sh"),
+          "--instance",
+          instance,
+          "--queue",
+          queue,
+        ]),
+      ),
+    );
+    const output = ran.map((one) => one.output).join("\n");
+    NodeFS.appendFileSync(ctx.log("lifecycle"), output);
     const found = lifecycleFindings("lifecycle", output, "run-all");
-    if (code !== 0 && found.length === 0)
-      found.push(
-        finding(
-          "lifecycle",
-          "run-all",
-          "up",
-          "-",
-          output.trim().split("\n").at(-1) ?? `exit ${code}`,
-        ),
-      );
-    if (ctx.report.mode === "full") keepFixture(ctx, instance);
+    ran.forEach(({ code, output: own }, index) => {
+      if (code !== 0 && lifecycleFindings("lifecycle", own, "run-all").length === 0)
+        found.push(
+          finding(
+            "lifecycle",
+            "run-all",
+            "up",
+            "-",
+            `${instances[index]}: ${own.trim().split("\n").at(-1) ?? `exit ${code}`}`,
+          ),
+        );
+    });
+    const left = NodeFS.readdirSync(NodePath.join(queue, "todo"));
+    for (const file of left)
+      found.push(finding("lifecycle", "run-all", file.replace(/^\d+-/, ""), "-", "never ran"));
+    if (ctx.report.mode === "full") keepFixture(ctx, instances[0]!);
     return found;
   } finally {
-    await kv(ctx, "lifecycle", instance, "down", "--wipe");
+    for (const instance of instances) await kv(ctx, "lifecycle", instance, "down", "--wipe");
   }
 };
 
@@ -683,7 +733,9 @@ const check = async (args: Record<string, string | boolean | undefined>) => {
     previousRelease,
     fuzzTime: (args["fuzz-time"] as string | undefined) ?? "2m",
     keepTraces: Boolean(args["keep-traces"]),
+    lifecycleWorkers: lifecycleWorkersOf(args["lifecycle-workers"] as string | undefined),
     report,
+    modelsChecked: new Set(),
   };
   const previousFingerprints = new Set(against.findings.map((one) => one.fingerprint));
   let stopped: string | undefined;
@@ -786,6 +838,7 @@ if (import.meta.main) {
       "keep-going": { type: "boolean" },
       "keep-traces": { type: "boolean" },
       "fuzz-time": { type: "string" },
+      "lifecycle-workers": { type: "string" },
       "mark-released": { type: "string" },
       from: { type: "string" },
     },
@@ -793,7 +846,10 @@ if (import.meta.main) {
   for (const signal of ["SIGINT", "SIGTERM"] as const)
     process.on(signal, () => {
       stopChildren();
-      for (const instance of ["release-check", "release-migrate"])
+      for (const instance of [
+        ...lifecycleInstances(lifecycleWorkersOf(values["lifecycle-workers"])),
+        "release-migrate",
+      ])
         NodeChildProcess.spawnSync(
           process.execPath,
           [NodePath.join(ROOT, "scripts", "kin-verify.ts"), "--instance", instance, "down"],

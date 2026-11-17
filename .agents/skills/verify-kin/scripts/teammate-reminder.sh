@@ -3,7 +3,7 @@
 # rings her phone, and she taps Done herself. Her own reminders she moves and cancels by asking; the
 # owner's she can't. A reminder for someone else, or one that starts work, is refused on her
 # turn. Due, her card offers Change, Snooze and Tomorrow 9:00 too, and each works for her. Waits
-# about a minute of real time: stored reminders keep their own due time, so `kv clock advance`
+# up to 20 seconds of real time: stored reminders keep their own due time, so `kv clock advance`
 # would leave them stale.
 source "$(dirname "$0")/lib.sh"
 q() { kv db "$1" | tail -n +2 | tail -1; }
@@ -13,7 +13,7 @@ CHAT="$(q "select chat_id from kin_chats where direct_key = '$ZOYA:$CHIEF'")"
 OWNER_CHAT="$(q "select owner_chat_id from kin_leads where agent_id = '$CHIEF'")"
 WHAT="Proof m$RUN: send the Lumen mockups"
 at() { node -e 'process.stdout.write(new Date(Date.now()+(+process.argv[1])*1000).toISOString().replace("Z","+00:00"))' "$1"; }
-DUE="$(at 60)"
+DUE="$(at 20)"
 # defer <what> <onDue> <chat> <say> [replaces] [as]
 defer() {
   local input="{\"what\":\"$1\",\"due\":\"${LATER:-$DUE}\",\"onDue\":\"$2\",\"chatId\":\"$3\",\"sourceEventId\":\"\$event\"${5:+,\"replaces\":\"$5\"}}"
