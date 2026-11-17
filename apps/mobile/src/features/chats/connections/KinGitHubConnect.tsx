@@ -4,13 +4,21 @@ import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   createKinGitHubActions,
   createKinGitHubRepoActions,
+  KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_COPY as COPY,
   KIN_GITHUB_WATCH_COPY as WATCH,
+  kinGitHubAgentsView,
   kinGitHubRow,
   kinGitHubSheet,
   kinGitHubWatchLine,
 } from "@t3tools/client-runtime/kin/kinGitHub";
-import type { EnvironmentId, KinGitHubRepo, KinGitHubWatch, KinOrgId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  KinGitHubAgents,
+  KinGitHubRepo,
+  KinGitHubWatch,
+  KinOrgId,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -23,6 +31,7 @@ import * as Dialog from "../../../components/ui/Dialog";
 import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { ListRow } from "../../../components/ui/ListRow";
+import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { ListSection } from "../../../components/ui/ListSection";
 import { ListToggleRow } from "../../../components/ui/ListToggleRow";
 import { Notice } from "../../../components/ui/Notice";
@@ -136,7 +145,41 @@ export function KinGitHubSection(props: {
       {status.account?.problem === null && status.watch !== undefined ? (
         <WatchedRepos target={props.target} watch={status.watch} />
       ) : null}
+      {status.agents === undefined ? null : <AgentIdentity agents={status.agents} login={login} />}
     </View>
+  );
+}
+
+/** Who agents work as on GitHub, where the App is missing, and what they lately did as the owner. */
+function AgentIdentity(props: { readonly agents: KinGitHubAgents; readonly login: string | null }) {
+  const view = kinGitHubAgentsView(props.agents, props.login, useNowMinuteMs());
+  const installUrl = view.installUrl;
+  return (
+    <>
+      <ListSection title={AGENTS.title} footer={view.detail}>
+        <ListRowLayout label={view.headline} />
+        {installUrl === null ? null : (
+          <View className="border-t border-border-subtle">
+            <ListActionRow
+              label={AGENTS.install}
+              onPress={() => void Linking.openURL(installUrl)}
+            />
+          </View>
+        )}
+      </ListSection>
+      {view.uses.length === 0 ? null : (
+        <ListSection title={AGENTS.usesTitle}>
+          {view.uses.map((use, index) => (
+            <View
+              key={use.key}
+              className={index === 0 ? undefined : "border-t border-border-subtle"}
+            >
+              <ListRowLayout label={use.command} description={use.line} />
+            </View>
+          ))}
+        </ListSection>
+      )}
+    </>
   );
 }
 

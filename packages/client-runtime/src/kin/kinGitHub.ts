@@ -1,5 +1,6 @@
 import {
   KinConnectionKey,
+  type KinGitHubAgents,
   type KinGitHubConnectInput,
   type KinGitHubInput,
   type KinGitHubRepo,
@@ -23,7 +24,7 @@ import type { KinConnectionTone } from "./kinConnections.ts";
 export const KIN_GITHUB_COPY = {
   title: "GitHub",
   intro:
-    "Your own GitHub login on your Kin's computer. Agents can then clone, push and open pull requests as you, on any repository your account can reach.",
+    "Your own GitHub login on your Kin's computer. Kin watches your repositories with it, and agents can clone, push and open pull requests on any repository your account can reach.",
   connect: "Connect",
   reconnect: "Reconnect",
   disconnect: "Disconnect",
@@ -226,4 +227,71 @@ export function createKinGitHubRepoActions(options: {
     mentions: (repo: KinGitHubRepo, mentions: boolean) => run({ repo: repo.repo, mentions }),
     everything: () => run({ repo: null }),
   };
+}
+
+/** Who agents act as on GitHub, under the GitHub row. */
+export const KIN_GITHUB_AGENTS_COPY = {
+  title: "Agents on GitHub",
+  install: "Install on more repos",
+  usesTitle: "Done as you lately",
+} as const;
+
+export interface KinGitHubAgentsView {
+  readonly headline: string;
+  readonly detail: string;
+  /** Where to install the App on more repos; null while there is no App. */
+  readonly installUrl: string | null;
+  /** The latest commands agents ran as the owner, newest first. */
+  readonly uses: ReadonlyArray<{
+    readonly key: string;
+    readonly line: string;
+    readonly command: string;
+  }>;
+}
+
+const repoList = (repos: ReadonlyArray<string>, total: number) => {
+  const named = repos.slice(0, 3);
+  const more = total - named.length;
+  if (more > 0) return `${named.join(", ")} and ${plural(more, "more repo")}`;
+  return named.length <= 1
+    ? named.join("")
+    : `${named.slice(0, -1).join(", ")} and ${named.at(-1)}`;
+};
+
+/** "Agents work on GitHub as Kin by Ambermill on 3 of 5 watched repos.", and what that means for the rest. */
+export function kinGitHubAgentsView(
+  agents: KinGitHubAgents,
+  ownerLogin: string | null,
+  now: number,
+): KinGitHubAgentsView {
+  const you = ownerLogin === null ? "you" : `you (${ownerLogin})`;
+  const uses = agents.ownerUses.map((use, index) => ({
+    key: `${use.at}-${index}`,
+    line: `${use.agent ?? "An agent"}${use.repo === null ? "" : ` on ${use.repo}`}, ${ago(use.at, now)}`,
+    command: use.command,
+  }));
+  const app = agents.appName ?? "Kin's GitHub App";
+  if (agents.as === "owner")
+    return {
+      headline: `Agents work on GitHub as ${you}.`,
+      detail:
+        agents.problem ??
+        "Kin has no GitHub App on this computer, so their commits, pull requests and reviews carry your name, signed with the agent's.",
+      installUrl: null,
+      uses,
+    };
+  const missing = agents.watched - agents.installed;
+  const headline =
+    agents.watched === 0
+      ? `Agents work on GitHub as ${app} wherever it is installed.`
+      : agents.installed === 0
+        ? `${app} isn't installed on any watched repo yet, so agents work there as ${you}.`
+        : missing === 0
+          ? `Agents work on GitHub as ${app} on ${agents.watched === 1 ? "your watched repo" : `all ${agents.watched} watched repos`}.`
+          : `Agents work on GitHub as ${app} on ${agents.installed} of ${agents.watched} watched repos.`;
+  const detail =
+    agents.installed > 0 && missing > 0
+      ? `On ${repoList(agents.without, missing)}, their work goes out as ${you}. An agent also works as you, one command at a time, when the App can't do something or you ask it to.`
+      : "Their commits, pull requests and reviews show the App as the author. An agent works as you, one command at a time, only when the App can't do something or you ask it to.";
+  return { headline, detail, installUrl: agents.installUrl ?? null, uses };
 }
