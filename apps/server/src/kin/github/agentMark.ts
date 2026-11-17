@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - a plain synchronous hash, as the agent's gh computes it.
+import * as NodeCrypto from "node:crypto";
+
 /**
  * Everything a Kin agent posts on GitHub ends with one visible line naming the agent and a hidden
  * marker, so a reader knows it was the agent and Kin's GitHub watch never reacts to its own words.
@@ -24,3 +27,20 @@ export const signed = (body: string, agentName: string) =>
   isAgentText(body)
     ? body
     : `${body.trimEnd()}${body.trim() === "" ? "" : "\n\n"}${signatureLine(agentName)}\n${markerOf(agentName)}`;
+
+/**
+ * The key an agent's gh records for each text it sends (`ghPolicy.ts`), signed or not, so the watch
+ * knows the agent's own words even when GitHub shows them without the marker.
+ */
+export const postKey = (text: string) =>
+  NodeCrypto.createHash("sha256").update(text.replace(/\r\n?/g, "\n").trim()).digest("hex");
+
+/** The keys in an `agent-posts.log`, from lines written at or after `since` (unix seconds). */
+export const agentPostKeys = (log: string, since: number): ReadonlySet<string> => {
+  const keys = new Set<string>();
+  for (const line of log.split("\n")) {
+    const [at, key] = line.split("\t");
+    if (key !== undefined && /^[0-9a-f]{64}$/.test(key) && Number(at) >= since) keys.add(key);
+  }
+  return keys;
+};

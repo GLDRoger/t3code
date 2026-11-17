@@ -1,7 +1,9 @@
+import { ghPolicyScript } from "./ghPolicy.ts";
+
 /**
- * What a Kin agent's shell finds first on PATH (POSIX sh): `gh` and `git` that act as Kin's GitHub
- * App from the files `KinGitHubApp.ts` keeps in `gh-app` (as the owner when there are none), git's
- * credential helper, and `kin-as-owner`, which runs one recorded command as the owner.
+ * What a Kin agent's shell finds first on PATH: `gh` and `git` acting as Kin's GitHub App (as the
+ * owner without one), git's credential helper and pre-push guard, and `kin-as-owner`. They hold an
+ * agent to Kin's rules but are no wall: the same shell can read the tokens they use.
  */
 
 /** Where Kin keeps the App's identity, tokens and the owner-login record, under its state folder. */
@@ -12,6 +14,10 @@ export const APP_IDENTITY_FILE = "identity";
 export const APP_TOKENS_FOLDER = "tokens";
 /** One tab-separated line per `kin-as-owner` run; Kin reads on from where it last stopped. */
 export const OWNER_USES_FILE = "owner-uses.log";
+/** One line per text an agent's gh sent, as when and a hash (`agentMark.ts` `postKey`). */
+export const AGENT_POSTS_FILE = "agent-posts.log";
+const POLICY_FILE = "gh-policy.mjs";
+const PRE_PUSH_HOOK = "pre-push";
 const AS_OWNER_COMMAND = "kin-as-owner";
 const COMMIT_TRAILER = "Kin-Agent";
 
@@ -22,6 +28,8 @@ export interface AgentShellPaths {
   readonly app: string;
   /** The pinned gh these call. */
   readonly realGh: string;
+  /** The Node that runs `ghPolicy.ts`'s program: the server's own. */
+  readonly node: string;
 }
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
@@ -58,79 +66,14 @@ const REPO_OF = `kin_repo() {
   return 0
 }`;
 
-/**
- * Kin agents never merge, approve, or change a repo's settings, access or secrets, under the App
- * or the owner's login. The App's token can't change settings at all (`KinGitHubApp.ts`); this
- * stops the rest before gh runs.
- */
-const REFUSALS = `refuse() { printf 'kin: %s\\n' "$1" >&2; exit 1; }
-NO_MERGE="Kin agents don't merge pull requests: tell the owner it is ready and he merges it."
-NO_APPROVE="Kin agents don't approve pull requests: comment or request changes instead."
-NO_SETTINGS="Kin agents don't change a repository's settings, access or secrets: ask the owner."
-case "$1 $2" in
-  "pr merge") refuse "$NO_MERGE" ;;
-  "pr review") for a do case "$a" in --approve|-a) refuse "$NO_APPROVE" ;; esac; done ;;
-  "repo edit"|"repo delete"|"repo rename"|"repo archive"|"repo unarchive"|"secret set"|"secret delete"|"secret remove"|"variable set"|"variable delete"|"variable remove")
-    refuse "$NO_SETTINGS" ;;
-  "api "*)
-    M=""; P=""; F=""; HASF=""; nx=""; first=1
-    for a do
-      if [ -n "$first" ]; then first=""; continue; fi
-      case "$nx" in
-        m) M="$a"; nx=""; continue ;;
-        f) F="$F $a"; HASF=1; nx=""; continue ;;
-        i) HASF=1; if [ "$a" != - ] && [ -f "$a" ]; then F="$F $(cat "$a")"; fi; nx=""; continue ;;
-        s) nx=""; continue ;;
-      esac
-      case "$a" in
-        -X|--method) nx=m ;;
-        -X*) M="\${a#-X}" ;;
-        --method=*) M="\${a#--method=}" ;;
-        -f|-F|--field|--raw-field) nx=f ;;
-        --field=*|--raw-field=*) F="$F \${a#*=}"; HASF=1 ;;
-        --input) nx=i ;;
-        -H|--header|-q|--jq|-t|--template|--cache|--hostname|-p|--preview) nx=s ;;
-        -*) ;;
-        *) [ -n "$P" ] || P="\${a#/}" ;;
-      esac
-    done
-    [ -n "$M" ] || { if [ -n "$HASF" ]; then M=POST; else M=GET; fi; }
-    M=$(printf '%s' "$M" | tr 'a-z' 'A-Z')
-    case "$P" in
-      graphql)
-        case "$F" in *mutation*)
-          case "$F" in
-            *mergePullRequest*|*enablePullRequestAutoMerge*|*mergeBranch*) refuse "$NO_MERGE" ;;
-            *APPROVE*) refuse "$NO_APPROVE" ;;
-            *updateRepository*|*BranchProtectionRule*|*Ruleset*|*Collaborator*|*updateTeam*) refuse "$NO_SETTINGS" ;;
-          esac ;;
-        esac ;;
-      *)
-        if [ "$M" != GET ]; then
-          case "$P" in
-            */pulls/*/merge|*/merges) refuse "$NO_MERGE" ;;
-            */reviews|*/reviews/*/events) case "$F" in *APPROVE*) refuse "$NO_APPROVE" ;; esac ;;
-            repos/*/*/*)
-              case "$P" in
-                */collaborators*|*/invitations*|*/branches/*/protection*|*/rulesets*|*/hooks*|*/keys*|*/environments*|*/actions/secrets*|*/actions/variables*|*/actions/permissions*|*/transfer|*/vulnerability-alerts|*/automated-security-fixes)
-                  refuse "$NO_SETTINGS" ;;
-              esac ;;
-            repos/*/*) refuse "$NO_SETTINGS" ;;
-            orgs/*/repos) ;;
-            orgs/*|teams/*) refuse "$NO_SETTINGS" ;;
-          esac
-        fi ;;
-    esac ;;
-esac`;
-
-/** The `gh` in front of the pinned one: refuses, picks the App's token, signs, runs the real gh. */
+/** The `gh` in front of the pinned one: picks the App's token, then runs Kin's policy (`ghPolicy.ts`). */
 const ghSignScript = (paths: AgentShellPaths) => `#!/bin/sh
-# Written by Kin. A Kin agent's gh: acts as Kin's GitHub App where it is installed, signs what the
-# agent posts, then runs the real gh.
-REAL=${shellQuote(paths.realGh)}
+# Written by Kin. A Kin agent's gh: acts as Kin's GitHub App where it is installed, and lets through
+# only the GitHub writes Kin agents make, signed (${POLICY_FILE}).
+NODE=${shellQuote(paths.node)}
 APP=${shellQuote(paths.app)}
-${REFUSALS}
 ${REPO_OF}
+[ -x "$NODE" ] || { echo "kin: Kin's GitHub guard can't run here (no Node.js), so gh didn't run." >&2; exit 1; }
 if [ -z "$KIN_AS_OWNER" ] && [ -s "$APP/${APP_IDENTITY_FILE}" ]; then
   acct=$(kin_repo "$@" | tr 'A-Z' 'a-z'); acct="\${acct%%/*}"
   case "$acct" in *[!a-z0-9-]*) acct="" ;; esac
@@ -144,59 +87,7 @@ if [ -z "$KIN_AS_OWNER" ] && [ -s "$APP/${APP_IDENTITY_FILE}" ]; then
   fi
   if [ -n "$T" ]; then GH_TOKEN="$T"; export GH_TOKEN; fi
 fi
-NAME="$KIN_AGENT_NAME"
-[ -n "$NAME" ] || exec "$REAL" "$@"
-SLUG=$(printf '%s' "$NAME" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-//; s/-$//')
-[ -n "$SLUG" ] || SLUG=agent
-SIGN="_$NAME, via Kin_
-<!-- kin-agent: $SLUG -->"
-sign() {
-  case "$1" in
-    *"<!-- kin-agent:"*) printf '%s' "$1" ;;
-    *[![:space:]]*) printf '%s\\n\\n%s' "$(printf '%s' "$1")" "$SIGN" ;;
-    *) printf '%s' "$SIGN" ;;
-  esac
-}
-case "$1 $2" in
-  "pr create"|"issue create"|"pr comment"|"issue comment"|"pr review"|"pr edit"|"issue edit") KIND=post ;;
-  "api "*) KIND=api ;;
-  *) exec "$REAL" "$@" ;;
-esac
-HAS_BODY=""; FILL=""; NEXT=""
-for a do
-  shift
-  case "$NEXT" in
-    body) set -- "$@" "$(sign "$a")"; NEXT=""; continue ;;
-    file) if [ "$a" = "-" ]; then text=$(cat); else text=$(cat "$a"); fi
-          set -- "$@" "$(sign "$text")"; NEXT=""; continue ;;
-    field) case "$a" in body=*) a="body=$(sign "\${a#body=}")" ;; esac
-           set -- "$@" "$a"; NEXT=""; continue ;;
-  esac
-  if [ "$KIND" = api ]; then
-    case "$a" in
-      -f|-F|--field|--raw-field) NEXT=field ;;
-    esac
-    set -- "$@" "$a"; continue
-  fi
-  case "$a" in
-    --body|-b) HAS_BODY=1; NEXT=body; set -- "$@" "$a" ;;
-    --body=*) HAS_BODY=1; set -- "$@" "--body=$(sign "\${a#--body=}")" ;;
-    --body-file|-F) HAS_BODY=1; NEXT=file; set -- "$@" "--body" ;;
-    --body-file=*) HAS_BODY=1; f="\${a#--body-file=}"
-      if [ "$f" = "-" ]; then text=$(cat); else text=$(cat "$f"); fi
-      set -- "$@" "--body" "$(sign "$text")" ;;
-    --fill|--fill-first|--fill-verbose|-f) FILL=1; set -- "$@" "$a" ;;
-    *) set -- "$@" "$a" ;;
-  esac
-done
-if [ "$KIND" = post ] && [ -z "$HAS_BODY" ]; then
-  case "$1 $2" in
-    "pr create") if [ -n "$FILL" ]; then set -- "$@" --body "$(sign "$(git log -1 --format=%b 2>/dev/null)")"
-                 else set -- "$@" --body "$SIGN"; fi ;;
-    "issue create") set -- "$@" --body "$SIGN" ;;
-  esac
-fi
-exec "$REAL" "$@"
+ELECTRON_RUN_AS_NODE=1 exec "$NODE" ${shellQuote(`${paths.shims}/${POLICY_FILE}`)} "$@"
 `;
 
 /** The `git` in front of the real one, found on PATH without this folder. */
@@ -211,22 +102,37 @@ IFS=:
 for d in $PATH; do [ "$d" = "$HERE" ] || P="\${P:+$P:}$d"; done
 unset IFS
 REAL=$(PATH="$P" command -v git) || { echo "kin: there is no git on this machine's PATH" >&2; exit 127; }
-at=0; i=0; nx=""
+at=0; sub=""; i=0; nx=""
 for a do
   i=$((i + 1))
   if [ -n "$nx" ]; then nx=""; continue; fi
   case "$a" in
     -c|-C|--git-dir|--work-tree|--namespace|--config-env) nx=1 ;;
     -*) ;;
-    *) [ "$a" = commit ] && at=$i; break ;;
+    *) at=$i; sub="$a"; break ;;
   esac
 done
-if [ "$at" -gt 0 ] && [ -n "$KIN_AGENT_NAME" ] && "$REAL" commit -h 2>&1 | grep -q -- --trailer; then
+# A push, or an alias for one, runs Kin's pre-push guard first (\`${PRE_PUSH_HOOK}\`).
+guard=""
+case "$sub" in
+  push) guard=1 ;;
+  "") ;;
+  *) case "$("$REAL" config --get "alias.$sub" 2>/dev/null)" in push|push[[:space:]]*) guard=1 ;; esac ;;
+esac
+trailer=""
+if [ "$sub" = commit ] && [ -n "$KIN_AGENT_NAME" ] && "$REAL" commit -h 2>&1 | grep -q -- --trailer; then
+  trailer=1
+fi
+if [ -n "$guard$trailer" ]; then
   i=0
   for a do
     i=$((i + 1)); shift
+    [ "$i" -eq "$at" ] && [ -n "$guard" ] && set -- "$@" -c "core.hooksPath=$HERE"
+    if [ "$i" -gt "$at" ] && [ -n "$guard" ] && [ "$a" = --no-verify ]; then
+      KIN_SKIP_REPO_HOOKS=1; export KIN_SKIP_REPO_HOOKS; continue
+    fi
     set -- "$@" "$a"
-    [ "$i" -eq "$at" ] && set -- "$@" --trailer "${COMMIT_TRAILER}: $KIN_AGENT_NAME"
+    [ "$i" -eq "$at" ] && [ -n "$trailer" ] && set -- "$@" --trailer "${COMMIT_TRAILER}: $KIN_AGENT_NAME"
   done
 fi
 if [ -z "$KIN_AS_OWNER" ] && [ -s "$APP/${APP_IDENTITY_FILE}" ]; then
@@ -238,6 +144,50 @@ if [ -z "$KIN_AS_OWNER" ] && [ -s "$APP/${APP_IDENTITY_FILE}" ]; then
     -c url.https://github.com/.insteadOf=ssh://git@github.com/ "$@"
 fi
 exec "$REAL" "$@"
+`;
+
+/**
+ * git's pre-push hook while a Kin agent pushes: git hands it every ref it resolved, so no spelling
+ * of a push gets past it. A push may create, update or delete branches other than the remote's
+ * default; then the repository's own pre-push hook runs.
+ */
+const prePushScript = () => `#!/bin/sh
+# Written by Kin. Before a Kin agent's git push: refuses one that changes the remote's default
+# branch, or pushes a tag or any other ref, then runs the repository's own pre-push hook.
+input=$(cat)
+remote="$1"; url="$2"
+def=$(git symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null)
+def="\${def#"$remote"/}"
+[ -n "$def" ] || def=$(git ls-remote --symref "$url" HEAD 2>/dev/null |
+  sed -n 's#^ref: refs/heads/\\([^[:space:]]*\\)[[:space:]]*HEAD$#\\1#p')
+refs() {
+  while read -r lref lsha rref rsha; do
+    [ -n "$rref" ] || continue
+    case "$rref" in
+      refs/heads/*)
+        b="\${rref#refs/heads/}"
+        if [ -n "$def" ]; then [ "$b" != "$def" ] || { echo default; return; }
+        else case "$b" in main|master) echo default; return ;; esac; fi ;;
+      *) echo other; return ;;
+    esac
+  done
+}
+verdict=$(printf '%s\\n' "$input" | refs)
+case "$verdict" in
+  default)
+    echo "kin: Kin agents don't push to a repository's default branch (\${def:-main}): push a branch and open a pull request; the owner merges it." >&2
+    exit 1 ;;
+  other)
+    echo "kin: Kin agents push branches only, never tags or other refs: ask the owner." >&2
+    exit 1 ;;
+esac
+[ -z "$KIN_SKIP_REPO_HOOKS" ] || exit 0
+hooks=$(env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT git rev-parse --git-path hooks 2>/dev/null)
+if [ -n "$hooks" ] && [ -x "$hooks/pre-push" ] && ! [ "$hooks/pre-push" -ef "$0" ]; then
+  printf '%s\\n' "$input" | "$hooks/pre-push" "$@"
+  exit $?
+fi
+exit 0
 `;
 
 /** git's credential helper while the App is set up: its token, else the owner's gh login. */
@@ -284,7 +234,16 @@ exec "$@"
 export const agentShellScripts = (paths: AgentShellPaths) =>
   [
     { name: "gh", text: ghSignScript(paths) },
+    {
+      name: POLICY_FILE,
+      text: ghPolicyScript({
+        realGh: paths.realGh,
+        app: paths.app,
+        postsFile: `${paths.app}/${AGENT_POSTS_FILE}`,
+      }),
+    },
     { name: "git", text: gitScript(paths) },
+    { name: PRE_PUSH_HOOK, text: prePushScript() },
     { name: "git-credential-kin", text: credentialScript(paths) },
     { name: AS_OWNER_COMMAND, text: asOwnerScript(paths) },
   ] as const;

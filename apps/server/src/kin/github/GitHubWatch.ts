@@ -9,11 +9,13 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { ServerConfig } from "../../config.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
@@ -22,7 +24,8 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { githubClosed } from "../work/githubEntries.ts";
-import { signed } from "./agentMark.ts";
+import { agentPostKeys, signed } from "./agentMark.ts";
+import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import {
   decideTriggers,
   isAgentsOwn,
@@ -49,6 +52,8 @@ const REPOS_EVERY_MS = 6 * HOUR;
 const OVERLAP_MS = 5 * MINUTE;
 /** After downtime: older triggers are stored as stale, and one look wakes at most this many. */
 const STALE_MS = 24 * HOUR;
+/** How long an agent's sent text is known as its own; triggers older than a day are stale anyway. */
+const POSTS_KEPT_MS = 7 * 24 * HOUR;
 export const WAKES_PER_LOOK = 10;
 const THREADS_PER_LOOK = 30;
 /** Replies an agent makes in one issue or PR in an hour before it stops and says so. */
@@ -265,6 +270,17 @@ export const make = Effect.gen(function* () {
   const records = yield* Effect.serviceOption(KinRecords);
   const refresh = yield* KinRefreshObserver;
   const app = yield* gitHubApp;
+  const config = yield* Effect.serviceOption(ServerConfig);
+  const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
+  /** What agents' shells sent this past week (`ghSign.ts`): their words, signed or not. */
+  const agentPosts = Effect.gen(function* () {
+    if (Option.isNone(config) || Option.isNone(fileSystem)) return undefined;
+    const log = yield* fileSystem.value
+      .readFileString(`${config.value.stateDir}/kin/${GH_APP_FOLDER}/${AGENT_POSTS_FILE}`)
+      .pipe(Effect.orElseSucceed(() => ""));
+    const now = yield* Clock.currentTimeMillis;
+    return agentPostKeys(log, Math.floor((now - POSTS_KEPT_MS) / 1000));
+  });
   const botLogin = Effect.gen(function* () {
     if (Option.isNone(app)) return undefined;
     const state = yield* app.value.state();
@@ -639,6 +655,7 @@ export const make = Effect.gen(function* () {
 
     const agents = yield* agentsOf(orgId);
     const bot = yield* botLogin;
+    const posts = yield* agentPosts;
     const lead = yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN });
     let woken = 0;
     let later = false;
@@ -661,7 +678,7 @@ export const make = Effect.gen(function* () {
             Effect.logWarning("Kin couldn't close Work entries for a merge", { cause }),
           ),
         );
-      if (current.item === "pull" && isAgentsOwn(current.body, current.author, bot)) {
+      if (current.item === "pull" && isAgentsOwn(current.body, current.author, bot, posts)) {
         const failing = current.open ? yield* failingChecks(orgId, current) : undefined;
         if (!current.open)
           yield* sql`UPDATE kin_github_agent_pulls SET open = 0
@@ -697,6 +714,7 @@ export const make = Effect.gen(function* () {
         since: row.startedAt,
         draftSeen: draft !== undefined,
         botLogin: bot,
+        agentPosts: posts,
       });
       for (const trigger of triggers) {
         const agentId = agents.some((agent) => agent.agentId === trigger.agentId)
