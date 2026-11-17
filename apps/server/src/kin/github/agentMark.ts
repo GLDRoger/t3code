@@ -7,26 +7,26 @@ import * as NodeCrypto from "node:crypto";
  */
 const MARKER = /<!--\s*kin-agent:/i;
 
-const slug = (name: string) =>
-  name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "") || "agent";
-
-/** The visible line, "_Tech lead, via Kin_": italic on GitHub. */
-const signatureLine = (agentName: string) => `_${agentName.trim() || "Agent"}, via Kin_`;
-
-const markerOf = (agentName: string) => `<!-- kin-agent: ${slug(agentName)} -->`;
-
 /** Whether text carries an agent's marker: Kin's own words, never a trigger. */
 export const isAgentText = (text: string | null | undefined) =>
   text !== null && text !== undefined && MARKER.test(text);
 
-/** `body` with the agent's signature and marker at its end, once. */
-export const signed = (body: string, agentName: string) =>
-  isAgentText(body)
-    ? body
-    : `${body.trimEnd()}${body.trim() === "" ? "" : "\n\n"}${signatureLine(agentName)}\n${markerOf(agentName)}`;
+/**
+ * `body` with "_Tech lead, via Kin_" (italic on GitHub) and the marker at its end, once; a blank
+ * name signs as Agent, never not at all. The one definition: an agent's gh runs this function's
+ * own source (`ghPolicy.ts`), so it must reference nothing outside itself.
+ */
+export function signed(body: string, agentName: string): string {
+  if (/<!--\s*kin-agent:/i.test(body)) return body;
+  const name = agentName.trim() || "Agent";
+  const slug =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "agent";
+  const gap = body.trim() === "" ? "" : "\n\n";
+  return body.trimEnd() + gap + "_" + name + ", via Kin_\n<!-- kin-agent: " + slug + " -->";
+}
 
 /**
  * The key an agent's gh records for each text it sends (`ghPolicy.ts`), signed or not, so the watch

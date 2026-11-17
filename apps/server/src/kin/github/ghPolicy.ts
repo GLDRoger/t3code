@@ -1,4 +1,6 @@
 // @effect-diagnostics globalJsonInEffect:off - JSON string literals embed paths safely into generated JavaScript.
+import { signed } from "./agentMark.ts";
+
 /**
  * The program behind a Kin agent's `gh` (`ghSign.ts` runs it with the server's own Node). It reads
  * the whole request each command would send and lets a GitHub write through only when it is one
@@ -246,14 +248,9 @@ const refuse = (message) => {
   process.exit(1);
 };
 
-// The signature and marker, exactly as agentMark.ts writes them.
-const NAME = (process.env.KIN_AGENT_NAME || "").trim() || "Agent";
-const SLUG = NAME.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent";
-const SIGNATURE = "_" + NAME + ", via Kin_\n<!-- kin-agent: " + SLUG + " -->";
-const MARKER = /<!--\s*kin-agent:/i;
 const posted = [];
 const sign = (text) => {
-  const out = MARKER.test(text) ? text : text.trimEnd() + (text.trim() === "" ? "" : "\n\n") + SIGNATURE;
+  const out = signed(text, process.env.KIN_AGENT_NAME || "");
   posted.push(text, out);
   return out;
 };
@@ -314,6 +311,10 @@ const flagSpec = (text) => {
   return { long, short };
 };
 
+// pflag's ParseBool.
+const boolOf = (text) =>
+  ["1", "t", "T", "TRUE", "true", "True"].includes(text) ? true : ["0", "f", "F", "FALSE", "false", "False"].includes(text) ? false : undefined;
+
 // Arguments as pflag reads them: --name value, --name=value, -s value, -svalue, -s=value, -abc.
 const parseFlags = (tokens, spec) => {
   const flags = [];
@@ -333,7 +334,11 @@ const parseFlags = (tokens, spec) => {
         if (eq >= 0) flags.push([name, token.slice(eq + 1)]);
         else if (i + 1 < tokens.length) flags.push([name, tokens[++i]]);
         else return { error: token };
-      } else flags.push([name, eq < 0 ? true : token.slice(eq + 1)]);
+      } else {
+        const on = eq < 0 ? true : boolOf(token.slice(eq + 1));
+        if (on === undefined) return { error: token };
+        flags.push([name, on]);
+      }
       continue;
     }
     if (token.startsWith("-") && token.length > 1) {
@@ -349,7 +354,9 @@ const parseFlags = (tokens, spec) => {
           break;
         }
         if (token[j + 1] === "=" && token.length > j + 2) {
-          flags.push([name, token.slice(j + 2)]);
+          const on = boolOf(token.slice(j + 2));
+          if (on === undefined) return { error: token };
+          flags.push([name, on]);
           break;
         }
         flags.push([name, true]);
@@ -360,24 +367,25 @@ const parseFlags = (tokens, spec) => {
   }
   return { flags, positionals };
 };
-const isOn = (value) => value === true || !/^(0|f|false)$/i.test(String(value));
 const valuesOf = (flags, name) => flags.filter((flag) => flag[0] === name).map((flag) => flag[1]);
-const isOnAny = (flags, name) => valuesOf(flags, name).some(isOn);
+// A repeated bool flag is what its last occurrence says, as in pflag.
+const isOn = (flags, name) => valuesOf(flags, name).at(-1) === true;
+// Value flags as two arguments, which pflag reads the same whatever the value starts with.
 const flagArgs = (flags) =>
-  flags.map(([name, value]) => (value === true ? "--" + name : "--" + name + "=" + value));
+  flags.flatMap(([name, value]) => (value === true ? ["--" + name] : value === false ? ["--" + name + "=false"] : ["--" + name, value]));
 
 // gh pr/issue/label/run writes: read every flag, sign the text, send exactly what was read.
 const subcommand = (command, tokens) => {
   const parsed = parseFlags(tokens, flagSpec(WRITE_FLAGS[command]));
   if (parsed.error) refuse(unreadable("gh " + command + " " + parsed.error));
   if (parsed.positionals.some((arg) => arg.startsWith("-"))) refuse(unreadable("an argument starting with -"));
-  if (isOnAny(parsed.flags, "help")) return run([...command.split(" "), ...tokens]);
+  if (isOn(parsed.flags, "help")) return run([...command.split(" "), ...tokens]);
   for (const name of ["editor", "web", "recover", "template"])
     if (valuesOf(parsed.flags, name).length > 0)
       refuse(unreadable("--" + name + " writes text Kin can't sign; pass it with --body or --body-file"));
   if (command === "pr review") {
     if (valuesOf(parsed.flags, "approve").length > 0) refuse(NO_APPROVE);
-    const modes = ["comment", "request-changes"].filter((name) => isOnAny(parsed.flags, name));
+    const modes = ["comment", "request-changes"].filter((name) => isOn(parsed.flags, name));
     if (modes.length !== 1) refuse(unknown("a review without exactly one of --comment or --request-changes"));
   }
   const textFlag = ["pr close", "pr reopen", "issue close", "issue reopen"].includes(command) ? "comment" : "body";
@@ -389,10 +397,10 @@ const subcommand = (command, tokens) => {
     else flags.push([name, value]);
   }
   const needsText =
-    ["pr comment", "issue comment", "pr review"].includes(command) && !isOnAny(parsed.flags, "delete-last");
+    ["pr comment", "issue comment", "pr review"].includes(command) && !isOn(parsed.flags, "delete-last");
   if (text === undefined && needsText) refuse(unreadable("no --body or --body-file; Kin signs only text it is given"));
   if (text === undefined && (command === "pr create" || command === "issue create")) {
-    const fill = ["fill", "fill-first", "fill-verbose"].some((name) => isOnAny(parsed.flags, name));
+    const fill = ["fill", "fill-first", "fill-verbose"].some((name) => isOn(parsed.flags, name));
     text = "";
     if (fill) text = spawnSync("git", ["log", "-1", "--format=%b"], { encoding: "utf8" }).stdout?.trim() ?? "";
   }
@@ -792,7 +800,7 @@ const api = (tokens) => {
   const parsed = parseFlags(tokens, flagSpec(API_FLAGS));
   if (parsed.error) refuse(unreadable("gh api " + parsed.error));
   const { flags } = parsed;
-  if (isOnAny(flags, "help")) return run(["api", ...tokens]);
+  if (isOn(flags, "help")) return run(["api", ...tokens]);
   if (parsed.positionals.length !== 1 || parsed.positionals[0].startsWith("-")) refuse(unreadable("gh api takes one endpoint"));
   const endpoint = parsed.positionals[0];
   const raw = valuesOf(flags, "raw-field");
@@ -813,7 +821,7 @@ const api = (tokens) => {
   const passthrough = flags.filter(([name]) => !["method", "field", "raw-field", "input"].includes(name));
   const graphql = path === "graphql";
   if (!graphql && (method === "GET" || method === "HEAD"))
-    return run(["api", endpoint, "--method=" + method, ...flagArgs(flags.filter(([name]) => name !== "method"))]);
+    return run(["api", endpoint, "--method", method, ...flagArgs(flags.filter(([name]) => name !== "method"))]);
 
   let payload;
   let query;
@@ -846,12 +854,12 @@ const api = (tokens) => {
     if (operations.some((operation) => operation.type === "subscription")) refuse(unknown("a GraphQL subscription"));
     const mutations = operations.filter((operation) => operation.type === "mutation");
     if (mutations.length === 0) {
-      if (input !== undefined) return run(["api", "graphql", "--method=POST", "--input=-", ...flagArgs(passthrough)], JSON.stringify(payload));
+      if (input !== undefined) return run(["api", "graphql", "--method", "POST", "--input", "-", ...flagArgs(passthrough)], JSON.stringify(payload));
       const others = [
         ...raw.filter((field) => !field.startsWith("query=")).map((field) => ["raw-field", field]),
         ...typed.filter((field) => !field.startsWith("query=")).map((field) => ["field", field]),
       ];
-      return run(["api", "graphql", "--method=POST", "--raw-field=query=" + query, ...flagArgs([...others, ...passthrough])]);
+      return run(["api", "graphql", "--method", "POST", "--raw-field", "query=" + query, ...flagArgs([...others, ...passthrough])]);
     }
     if (payload === undefined) {
       const fields = buildFields(raw, typed);
@@ -891,7 +899,7 @@ const api = (tokens) => {
     if (name === "header" && !/^\s*(accept|x-github-api-version|content-type)\s*:/i.test(String(value)))
       refuse(unreadable("the header " + String(value).split(":")[0]));
   record();
-  run(["api", graphql ? "graphql" : endpoint, "--method=" + (graphql ? "POST" : method), "--input=-", ...flagArgs(passthrough)], JSON.stringify(payload));
+  run(["api", graphql ? "graphql" : endpoint, "--method", graphql ? "POST" : method, "--input", "-", ...flagArgs(passthrough)], JSON.stringify(payload));
 };
 
 const main = (args) => {
@@ -944,4 +952,5 @@ const WRITE_FLAGS = ${JSON.stringify(WRITE_FLAGS)};
 const API_FLAGS = ${JSON.stringify(API_FLAGS)};
 const REST_WRITES = ${JSON.stringify(REST_WRITES)};
 const GRAPHQL_WRITES = new Set(${JSON.stringify(GRAPHQL_WRITES)});
+const signed = ${signed.toString()};
 ${POLICY_BODY}`;

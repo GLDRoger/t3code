@@ -296,12 +296,12 @@ const POST_FORMS: ReadonlyArray<{
     form: "gh pr comment --body-file -",
     args: ["pr", "comment", "3", "--body-file", "-"],
     stdin: WORDS,
-    landed: ({ args }) => args.at(-1)!.replace(/^--body=/, ""),
+    landed: ({ args }) => args.at(-1)!,
   },
   {
     form: "gh pr review --comment -b",
     args: ["pr", "review", "3", "--comment", "-b", WORDS],
-    landed: ({ args }) => args.at(-1)!.replace(/^--body=/, ""),
+    landed: ({ args }) => args.at(-1)!,
   },
 ];
 
@@ -354,38 +354,73 @@ describe("the gh a Kin agent's shell runs", () => {
     expect(run(["pr", "create", "--title", "Add hello", "--body", "Closes #1"])).toEqual([
       "pr",
       "create",
-      "--title=Add hello",
-      `--body=${signed("Closes #1", name)}`,
+      "--title",
+      "Add hello",
+      "--body",
+      signed("Closes #1", name),
     ]);
-    expect(run(["issue", "comment", "3", "-b", "On it."]).at(-1)).toBe(
-      `--body=${signed("On it.", name)}`,
-    );
+    expect(run(["issue", "comment", "3", "-b", "On it."]).at(-1)).toBe(signed("On it.", name));
     expect(run(["pr", "review", "2", "--comment", "--body=Looks right."]).at(-1)).toBe(
-      `--body=${signed("Looks right.", name)}`,
+      signed("Looks right.", name),
+    );
+    // pflag reads the last of a repeated flag, and so does Kin: this isn't --help.
+    expect(run(["pr", "comment", "2", "--help", "--help=false", "-b", "Hi."]).at(-1)).toBe(
+      signed("Hi.", name),
     );
     expect(run(["pr", "comment", "2", "--body-file", "body.md"]).at(-1)).toBe(
-      `--body=${signed("From a file.", name)}`,
+      signed("From a file.", name),
     );
     expect(run(["pr", "comment", "2", "-F", "-"], "From stdin.").at(-1)).toBe(
-      `--body=${signed("From stdin.", name)}`,
+      signed("From stdin.", name),
     );
     expect(run(["issue", "close", "3", "-c", "Fixed in #4."]).at(-1)).toBe(
-      `--comment=${signed("Fixed in #4.", name)}`,
+      signed("Fixed in #4.", name),
     );
     // No body given: an issue still ends with the signature.
-    expect(run(["issue", "create", "--title", "Flaky test"]).at(-1)).toBe(
-      `--body=${signed("", name)}`,
-    );
+    expect(run(["issue", "create", "--title", "Flaky test"]).at(-1)).toBe(signed("", name));
     const api = shell.gh(["api", "repos/a/b/issues/3/comments", "-f", "body=Via the API."], {
       name,
     }).stdout;
     expect(shell.argsOf(api)).toEqual([
       "api",
       "repos/a/b/issues/3/comments",
-      "--method=POST",
-      "--input=-",
+      "--method",
+      "POST",
+      "--input",
+      "-",
     ]);
     expect(shell.sentOf(api)).toEqual({ body: signed("Via the API.", name) });
+  });
+
+  it("signs exactly as Kin's own signed(), the one definition, never leaving a body unsigned", async () => {
+    using shell = makeShell();
+    const cases: ReadonlyArray<readonly [body: string, name: string | undefined]> = [
+      ["On it.", "Tech lead"],
+      ["On it.", ""],
+      ["On it.", "   "],
+      ["On it.", undefined],
+      ["", "Tech lead"],
+      ["  \n", ""],
+      ["Line one\r\nline two\n\n", "Growth & PR"],
+      ["Done.", "Ünïcode Lead"],
+      [signed("Already signed.", "Finance"), "Tech lead"],
+      ["Has a <!-- KIN-AGENT: x --> marker", ""],
+    ];
+    const results = await Promise.all(
+      cases.map(([body, name]) =>
+        shell.runAsync("gh", ["pr", "comment", "3", "--body-file", "-"], {
+          stdin: body,
+          ...(name === undefined ? {} : { name }),
+        }),
+      ),
+    );
+    cases.forEach(([body, name], index) => {
+      const label = JSON.stringify([body, name]);
+      expect(results[index]!.status, `${label}: ${results[index]!.stderr}`).toBe(0);
+      const sent = shell.argsOf(results[index]!.stdout).at(-1)!;
+      expect(sent, label).toBe(signed(body, name ?? ""));
+      expect(sent, label).toMatch(/<!-- kin-agent: [a-z0-9-]+ -->$|<!-- KIN-AGENT/);
+    });
   });
 
   it("signs once, passes reads untouched, and signs as Agent with no name", () => {
@@ -394,7 +429,7 @@ describe("the gh a Kin agent's shell runs", () => {
     const run = (args: ReadonlyArray<string>, who?: string) =>
       shell.gh(args, who === undefined ? {} : { name: who }).stdout;
     expect(shell.argsOf(run(["pr", "comment", "2", "--body", already], AGENT)).at(-1)).toBe(
-      `--body=${already}`,
+      already,
     );
     expect(shell.argsOf(run(["pr", "view", "2", "--json", "body"], AGENT))).toEqual([
       "pr",
@@ -406,9 +441,7 @@ describe("the gh a Kin agent's shell runs", () => {
     expect(
       shell.sentOf(run(["api", "-X", "PATCH", "repos/a/b/pulls/2", "-f", "title=Rename"])),
     ).toEqual({ title: "Rename" });
-    expect(shell.argsOf(run(["pr", "create", "--body", "Plain"])).at(-1)).toBe(
-      `--body=${signed("Plain", "")}`,
-    );
+    expect(shell.argsOf(run(["pr", "create", "--body", "Plain"])).at(-1)).toBe(signed("Plain", ""));
   });
 
   it("acts as Kin's GitHub App on an account it is installed on, and as the owner elsewhere", () => {
@@ -871,7 +904,7 @@ describe("kin-as-owner", () => {
       { name: "Tech lead" },
     );
     expect(shell.tokenOf(result.stdout)).toBe("");
-    expect(shell.argsOf(result.stdout).at(-1)).toBe(`--body=${signed("Done.", "Tech lead")}`);
+    expect(shell.argsOf(result.stdout).at(-1)).toBe(signed("Done.", "Tech lead"));
     const [use] = shell.ownerUses();
     expect(use).toHaveLength(5);
     expect(Number(use![0])).toBeGreaterThan(0);
