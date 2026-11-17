@@ -26,6 +26,8 @@ FILES=(/etc/sudoers.d/kin-worker /usr/local/sbin/kin-worker)
 MOUNT=/opt/kin-current
 
 say() { echo "retire-workers.sh: $*" >&2; }
+# `sudo -iu kin` starts no user session, so the restart names kin's user manager, as update.sh's hints do.
+restart_hint() { echo "XDG_RUNTIME_DIR=/run/user/$(id -u "$KIN_USER") systemctl --user restart kin-server"; }
 die() {
   say "$*"
   exit 1
@@ -51,8 +53,8 @@ leftovers() {
   say "left in kin's own files, which this never edits; in a kin shell (sudo -iu $KIN_USER):"
   echo "  - kin environment list, then kin environment unlink <id> for the worker server at 127.0.0.1:3874" >&2
   echo "  - delete the KIN_WORKER_* lines from ~/.t3/service.env" >&2
-  echo "  - then restart kin-server: systemctl --user restart kin-server" >&2
-  echo "  - keep KIN_GITHUB_APP_ID, KIN_GITHUB_BOT_LOGIN and the kin-github-app keyring item: agents work on GitHub as the App" >&2
+  echo "  - then restart kin-server: $(restart_hint)" >&2
+  echo "  - keep Kin's GitHub App: until Kin Settings → Connections → GitHub shows it, keep KIN_GITHUB_APP_ID, KIN_GITHUB_BOT_LOGIN and the kin-github-app keyring item, which Kin adopts it from" >&2
   if runuser -u "$KIN_USER" -- git -C "$REPO" merge-base --is-ancestor "$HOOKS_RETIRED_IN" "$sha" 2>/dev/null; then
     echo "  - delete the owner-merge key, which nothing reads now: secret-tool clear service kin-owner-merge" >&2
     echo "  - in Kin, Settings → Scheduled tasks: delete \"Kin · GitHub App · …\" (it already starts nothing)" >&2
