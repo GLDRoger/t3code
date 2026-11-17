@@ -1,4 +1,5 @@
 import type {
+  KinGitHubBranchGuard,
   KinGitHubRepo,
   KinGitHubRepoSetInput,
   KinGitHubWatch,
@@ -30,6 +31,9 @@ const KnownRepo = Schema.Struct({
   ownerId: Schema.optional(Schema.Int),
   ownerOrg: Schema.optional(Schema.Boolean),
   ownerAdmin: Schema.optional(Schema.Boolean),
+  /** The default branch, and whether the owner's login is an admin of the repo. */
+  branch: Schema.optional(Schema.String),
+  admin: Schema.optional(Schema.Boolean),
 });
 export type KnownRepo = typeof KnownRepo.Type;
 const decodeKnown = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(KnownRepo)));
@@ -100,6 +104,46 @@ export const repoList = Effect.fn("KinGitHubWatchStore.repos")(function* (orgId:
     .toSorted((a, b) => a.repo.localeCompare(b.repo));
 });
 
+export interface GuardRow {
+  readonly repo: string;
+  readonly branch: string;
+  readonly state: KinGitHubBranchGuard["state"];
+  readonly problem: KinGitHubBranchGuard["problem"] | null;
+  readonly byKin: number;
+  readonly kinRulesetId: number | null;
+}
+
+/** What the last refresh read of each repo's default branch, by lowercased repo. */
+export const guardRows = Effect.fn("KinGitHubWatchStore.guards")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<GuardRow>`SELECT repo, branch, state, problem, by_kin AS "byKin",
+      kin_ruleset_id AS "kinRulesetId"
+    FROM kin_github_branch_guards WHERE org_id = ${orgId} ORDER BY repo`;
+  return new Map(rows.map((row) => [row.repo, row]));
+});
+
+/** Each watched repo with its default branch's protection, once a refresh has read it. */
+export const withGuards = Effect.fn("KinGitHubWatchStore.withGuards")(function* (
+  orgId: KinOrgId,
+  repos: ReadonlyArray<KinGitHubRepo>,
+) {
+  const guards = yield* guardRows(orgId);
+  return repos.map((repo): KinGitHubRepo => {
+    const row = repo.watched ? guards.get(repo.repo.toLowerCase()) : undefined;
+    return row === undefined
+      ? repo
+      : {
+          ...repo,
+          guard: {
+            state: row.state,
+            branch: row.branch,
+            byKin: row.byKin === 1,
+            ...(row.problem === null || row.problem === undefined ? {} : { problem: row.problem }),
+          },
+        };
+  });
+});
+
 /** A repo of the company's (the owner's or his organisations', where he can push), if it is one. */
 export const companyRepo = Effect.fn("KinGitHubWatchStore.companyRepo")(function* (
   orgId: KinOrgId,
@@ -146,10 +190,13 @@ export const watchSummary = Effect.fn("KinGitHubWatchStore.summary")(function* (
   );
   const [handled] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
     FROM kin_github_handled WHERE org_id = ${orgId} AND outcome = 'woke' AND at >= ${midnight}`;
+  const watched = (yield* repoList(orgId)).filter((repo) => repo.watched);
+  const guards = yield* guardRows(orgId);
   return {
-    repos: (yield* repoList(orgId)).filter((repo) => repo.watched).length,
+    repos: watched.length,
     checkedAt: row.checkedAt,
     handledToday: handled?.count ?? 0,
     problem: row.problem,
+    open: watched.filter((repo) => guards.get(repo.repo.toLowerCase())?.state === "open").length,
   } satisfies KinGitHubWatch;
 });

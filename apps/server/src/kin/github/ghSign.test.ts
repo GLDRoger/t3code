@@ -64,8 +64,8 @@ const makeShell = (options: { app?: boolean } = {}) => {
       "",
     ].join("\n"),
   );
-  const env = (name?: string): NodeJS.ProcessEnv => ({
-    PATH: `${shims}:${process.env.PATH}`,
+  const env = (name?: string, path = `${shims}:${process.env.PATH}`): NodeJS.ProcessEnv => ({
+    PATH: path,
     HOME: dir,
     GIT_CONFIG_GLOBAL: globalConfig,
     GIT_CONFIG_NOSYSTEM: "1",
@@ -74,12 +74,12 @@ const makeShell = (options: { app?: boolean } = {}) => {
   const run = (
     command: string,
     args: ReadonlyArray<string>,
-    options: { name?: string; stdin?: string; cwd?: string } = {},
+    options: { name?: string; stdin?: string; cwd?: string; path?: string } = {},
   ) =>
     NodeChildProcess.spawnSync(command, [...args], {
       cwd: options.cwd ?? dir,
       input: options.stdin ?? "",
-      env: env(options.name),
+      env: env(options.name, options.path),
       encoding: "utf8",
     });
   /** The same, without blocking, so a table of commands runs side by side. */
@@ -140,6 +140,8 @@ const makeShell = (options: { app?: boolean } = {}) => {
   return {
     dir,
     app,
+    shims,
+    realGh,
     run,
     runAsync,
     gh,
@@ -880,6 +882,14 @@ describe("the git a Kin agent's shell runs", () => {
       expect(git("push", "origin", "v1").stderr).toContain("kin: Kin agents push branches only");
       expect(plain(["rev-parse", "main"], origin).stdout).toBe(mainBefore);
       expect(plain(["tag", "--list"], origin).stdout).toBe("");
+      // As the owner, only what ran is listed: the commit, the tag and the two branch pushes.
+      if (command[0] === "kin-as-owner")
+        expect(shell.ownerUses().map((use) => use[4]?.split(" ")[1])).toEqual([
+          "commit",
+          "tag",
+          "push",
+          "push",
+        ]);
     }
   });
 
@@ -933,6 +943,45 @@ describe("kin-as-owner", () => {
       "invented-co/app",
       "git status --short",
     ]);
+  });
+
+  it("runs Kin's guarded gh and git by their own paths, wherever they are on PATH", () => {
+    using shell = makeShell({ app: true });
+    // An unguarded gh and git found ahead of Kin's folder.
+    const ahead = NodePath.join(shell.dir, "ahead");
+    NodeFS.mkdirSync(ahead);
+    NodeFS.symlinkSync(shell.realGh, NodePath.join(ahead, "gh"));
+    const realGit = NodeChildProcess.execFileSync("sh", ["-c", "command -v git"], {
+      encoding: "utf8",
+    }).trim();
+    NodeFS.symlinkSync(realGit, NodePath.join(ahead, "git"));
+    const path = `${ahead}:${shell.shims}:${process.env.PATH}`;
+    const merged = shell.run("kin-as-owner", ["gh", "pr", "merge", "3", "--squash"], {
+      name: "Tech lead",
+      path,
+    });
+    expect(merged.status).toBe(1);
+    expect(merged.stderr).toMatch(/^kin: Kin agents don't merge/);
+    const repo = shell.checkout();
+    shell.run("kin-as-owner", ["git", "commit", "-q", "-m", "Add a readme"], {
+      cwd: repo,
+      name: "Tech lead",
+      path,
+    });
+    expect(shell.run("git", ["log", "-1", "--format=%B"], { cwd: repo }).stdout.trim()).toBe(
+      "Add a readme\n\nKin-Agent: Tech lead",
+    );
+  });
+
+  it("records only what ran: a command Kin's guard refuses isn't listed as done", () => {
+    using shell = makeShell({ app: true });
+    const refused = shell.run("kin-as-owner", ["gh", "pr", "merge", "3"], { name: "Tech lead" });
+    expect(refused.status).toBe(1);
+    expect(shell.ownerUses()).toEqual([]);
+    shell.run("kin-as-owner", ["gh", "pr", "list", "-R", "invented-co/app"], {
+      name: "Tech lead",
+    });
+    expect(shell.ownerUses().map((use) => use[4])).toEqual(["gh pr list -R invented-co/app"]);
   });
 
   it("refuses to run what Kin can't record", () => {

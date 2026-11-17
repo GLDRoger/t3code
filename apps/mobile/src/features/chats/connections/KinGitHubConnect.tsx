@@ -6,16 +6,21 @@ import {
   createKinGitHubRepoActions,
   createKinGitHubAppRepoActions,
   createKinGitHubAppSetupActions,
+  createKinGitHubGuardActions,
   KIN_GITHUB_APP_SETUP_COPY as SETUP,
   kinGitHubAppCreatePath,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_APP_REPOS_COPY as PICK,
   KIN_GITHUB_COPY as COPY,
+  KIN_GITHUB_GUARD_COPY as GUARD,
+  type KinGitHubGuardOutcome,
   KIN_GITHUB_WATCH_COPY as WATCH,
   kinGitHubAccountRepos,
   kinGitHubAccountRows,
   kinGitHubAccountsHint,
   kinGitHubAgentsView,
+  kinGitHubGuardAction,
+  kinGitHubGuardLine,
   kinGitHubRow,
   kinGitHubSheet,
   kinGitHubWatchLine,
@@ -332,11 +337,16 @@ function WatchedRepos(props: {
   const { target, watch } = props;
   const [open, setOpen] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const guard = useGuardActions(target);
   const line = kinGitHubWatchLine(watch, useNowMinuteMs());
   return (
     <>
       {watch.problem === null ? null : <Notice tone="danger" message={watch.problem} />}
       {problem === null ? null : <ErrorBanner message={problem} />}
+      {guard.notice}
+      {(watch.open ?? 0) > 0 ? (
+        <ProtectAll target={target} open={watch.open ?? 0} guard={guard} />
+      ) : null}
       <ListSection title={WATCH.reposTitle} footer={open ? `${line}\n\n${WATCH.reposHint}` : line}>
         {open ? <RepoRows target={target} onProblem={setProblem} /> : null}
         <ListActionRow
@@ -446,12 +456,81 @@ function AccountRepos(props: {
   );
 }
 
+function useGuardActions(target: KinConnectionsTarget) {
+  const { environmentId, orgId } = target;
+  const reload = useAtomRefresh(kinClient.githubRepos({ environmentId, input: { orgId } }));
+  const reloadStatus = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const set = useAtomCommand(kinClient.githubGuardSet, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<KinGitHubGuardOutcome | null>(null);
+  const change = createKinGitHubGuardActions({
+    orgId,
+    set: (input) => set({ environmentId, input }),
+    refresh: () => {
+      reload();
+      reloadStatus();
+    },
+  });
+  const run = (repos: ReadonlyArray<string>, on: boolean, all = false) => {
+    if (busy || repos.length === 0) return;
+    setBusy(true);
+    setOutcome(null);
+    void change(repos, on, all).then((answer) => {
+      setBusy(false);
+      setOutcome(answer);
+    });
+  };
+  const notice =
+    outcome === null || (outcome.summary === null && outcome.problems.length === 0) ? null : (
+      <Notice
+        tone={outcome.problems.length === 0 ? "default" : "danger"}
+        message={[outcome.summary, ...outcome.problems].filter(Boolean).join("\n")}
+      />
+    );
+  return { busy, run, notice };
+}
+
+/** "N watched repos let Kin's App change their main branch", what protecting does, and Protect all. */
+function ProtectAll(props: {
+  readonly target: KinConnectionsTarget;
+  readonly open: number;
+  readonly guard: ReturnType<typeof useGuardActions>;
+}) {
+  const { environmentId, orgId } = props.target;
+  const { guard } = props;
+  const repos =
+    Option.getOrNull(
+      AsyncResult.value(useAtomValue(kinClient.githubRepos({ environmentId, input: { orgId } }))),
+    )?.repos ?? [];
+  const open = repos.filter((repo) => kinGitHubGuardAction(repo.guard) === "protect");
+  return (
+    <>
+      <ListSection footer={GUARD.truth}>
+        <ListActionRow
+          label={GUARD.protectAll}
+          description={GUARD.open(props.open)}
+          loading={guard.busy}
+          disabled={open.length === 0}
+          onPress={() =>
+            guard.run(
+              open.map((repo) => repo.repo),
+              true,
+              true,
+            )
+          }
+        />
+      </ListSection>
+    </>
+  );
+}
+
 /** "Fork · Your @-mention calls an agent", or nothing. */
 function repoNote(repo: KinGitHubRepo): string | undefined {
   const parts: Array<string> = [];
   if (repo.agentsAs !== undefined) parts.push(repo.agentsAs === "app" ? WATCH.asApp : WATCH.asYou);
   if (repo.fork) parts.push(WATCH.fork);
   if (repo.mentions) parts.push(WATCH.mentions);
+  if (repo.guard !== undefined) parts.push(kinGitHubGuardLine(repo.guard));
   return parts.length === 0 ? undefined : parts.join(" · ");
 }
 
@@ -471,6 +550,7 @@ function RepoRows(props: {
   });
   const settle = (outcome: Awaited<ReturnType<typeof actions.everything>>) =>
     props.onProblem(outcome.ok ? null : outcome.problem);
+  const guard = useGuardActions(props.target);
   const repos = Option.getOrNull(AsyncResult.value(result))?.repos ?? null;
   if (repos === null)
     return AsyncResult.isFailure(result) ? (
@@ -487,15 +567,28 @@ function RepoRows(props: {
           <Text className="text-foreground-muted">{WATCH.noRepos}</Text>
         </View>
       ) : null}
-      {repos.map((repo) => (
-        <ListToggleRow
-          key={repo.repo}
-          label={repo.repo}
-          description={repoNote(repo)}
-          value={repo.watched}
-          onValueChange={(watched) => void actions.watch(repo, watched).then(settle)}
-        />
-      ))}
+      {guard.notice}
+      {repos.map((repo) => {
+        const action = kinGitHubGuardAction(repo.guard);
+        return (
+          <View key={repo.repo}>
+            <ListToggleRow
+              label={repo.repo}
+              description={repoNote(repo)}
+              value={repo.watched}
+              onValueChange={(watched) => void actions.watch(repo, watched).then(settle)}
+            />
+            {action === null ? null : (
+              <ListActionRow
+                label={action === "protect" ? GUARD.protect : GUARD.remove}
+                description={repo.repo}
+                disabled={guard.busy}
+                onPress={() => guard.run([repo.repo], action === "protect")}
+              />
+            )}
+          </View>
+        );
+      })}
       {repos.some((repo) => !repo.watched && !repo.fork) ? (
         <ListActionRow
           label={WATCH.watchEverything}

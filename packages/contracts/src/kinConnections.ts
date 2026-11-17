@@ -381,8 +381,35 @@ export const KinGitHubWatch = Schema.Struct({
   handledToday: NonNegativeInt,
   /** Why the last look failed and how to fix it, in plain words; null when it worked. */
   problem: Schema.NullOr(Schema.String),
+  /** Watched repos whose default branch Kin's App could change; an older server sends none. */
+  open: Schema.optional(NonNegativeInt),
 });
 export type KinGitHubWatch = typeof KinGitHubWatch.Type;
+
+/** Why Kin can't tell, or can't change, a repo's protection. */
+export const KinGitHubGuardProblem = Schema.Literals([
+  "no_admin",
+  "plan",
+  "no_access",
+  "unreachable",
+  "not_kin",
+  "refused",
+]);
+export type KinGitHubGuardProblem = typeof KinGitHubGuardProblem.Type;
+
+/**
+ * Whether Kin's GitHub App can change a watched repo's default branch, as the last repo refresh
+ * read it with the owner's login. `byKin`: the protection is the ruleset Kin made, the only one it
+ * removes.
+ */
+export const KinGitHubBranchGuard = Schema.Struct({
+  state: Schema.Literals(["protected", "open", "unknown"]),
+  branch: Schema.String,
+  byKin: Schema.Boolean,
+  /** Why it is unknown. */
+  problem: Schema.optional(KinGitHubGuardProblem),
+});
+export type KinGitHubBranchGuard = typeof KinGitHubBranchGuard.Type;
 
 /** One command an agent ran as the owner's own login with `kin-as-owner`, secrets taken out. */
 export const KinGitHubOwnerUse = Schema.Struct({
@@ -482,6 +509,8 @@ export const KinGitHubRepo = Schema.Struct({
   mentions: Schema.Boolean,
   /** Who agents work as here: Kin's GitHub App where it reaches the repo, else the owner. */
   agentsAs: Schema.optional(Schema.Literals(["app", "owner"])),
+  /** Watched repos once Kin has read them; an older server sends none. */
+  guard: Schema.optional(KinGitHubBranchGuard),
 });
 export type KinGitHubRepo = typeof KinGitHubRepo.Type;
 
@@ -521,6 +550,27 @@ export const KinGitHubAppDisconnected = Schema.Struct({
   settingsUrl: Schema.NullOr(Schema.String),
 });
 export type KinGitHubAppDisconnected = typeof KinGitHubAppDisconnected.Type;
+
+/** Protects these repos' default branch from Kin's App with a ruleset, or removes Kin's own. */
+export const KinGitHubGuardSetInput = Schema.Struct({
+  orgId: KinOrgId,
+  repos: Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(100)),
+  on: Schema.Boolean,
+});
+export type KinGitHubGuardSetInput = typeof KinGitHubGuardSetInput.Type;
+
+export const KinGitHubGuardSetResult = Schema.Struct({
+  changed: NonNegativeInt,
+  /** Each repo GitHub or Kin refused, why, and GitHub's own words when it gave some. */
+  failed: Schema.Array(
+    Schema.Struct({
+      repo: Schema.String,
+      problem: KinGitHubGuardProblem,
+      said: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+export type KinGitHubGuardSetResult = typeof KinGitHubGuardSetResult.Type;
 
 /** One repo's switch; `repo` null sets every repo back to the default (watch everything). */
 export const KinGitHubRepoSetInput = Schema.Struct({
@@ -660,6 +710,11 @@ export const KinConnectionRpcs = [
     success: KinGitHubAppReposResult,
     error: KinError,
   }),
+  Rpc.make("kin.github.guard.set", {
+    payload: KinGitHubGuardSetInput,
+    success: KinGitHubGuardSetResult,
+    error: KinError,
+  }),
 ] as const;
 
 // Owner-level settings (`KIN_RPC_ACCESS`): what outside services agents reach, and with what key.
@@ -686,6 +741,7 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.github.repos": AuthKinChatScope,
   "kin.github.repos.set": AuthKinChatScope,
   "kin.github.app.repos.set": AuthKinChatScope,
+  "kin.github.guard.set": AuthKinChatScope,
   "kin.github.app.create": AuthKinChatScope,
   "kin.github.app.disconnect": AuthKinChatScope,
 } as const;

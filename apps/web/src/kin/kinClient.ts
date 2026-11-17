@@ -610,6 +610,11 @@ export const kinClient = {
     tag: "kin.github.app.repos.set",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:github-app` },
   }),
+  githubGuardSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:github-guard:set",
+    tag: "kin.github.guard.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:github-guard` },
+  }),
   /** Starts the code sign-in, or connects with a pasted token, which travels once, redacted. */
   githubStart: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:github:start",
