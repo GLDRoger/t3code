@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { KinEvent, KinOrgId } from "@t3tools/contracts";
+import { KinEvent, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -17,10 +17,18 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { isAgentText, postKey, signed } from "./agentMark.ts";
 import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
 import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
+import { KIN_RULESET_NAME, setGuards } from "./branchGuard.ts";
 import { KinGitHubApp } from "./KinGitHubApp.ts";
 import { BOT_EMAIL, BOT_LOGIN, installApp } from "./KinGitHubApp.testkit.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
-import { isMemoryRepo, knownRepos, repoList, setRepo, watchSummary } from "./githubWatchStore.ts";
+import {
+  isMemoryRepo,
+  knownRepos,
+  repoList,
+  setRepo,
+  watchSummary,
+  withGuards,
+} from "./githubWatchStore.ts";
 import { WRITE_BRANCH_PREFIX } from "../memory/MemoryConfig.ts";
 
 const orgId = KinOrgId.make("org-gh");
@@ -394,10 +402,17 @@ describe("KinGitHubWatch", () => {
       yield* start(github);
       yield* look(github);
       const facts = (yield* knownRepos(orgId)).map(({ fork: _fork, id: _id, ...rest }) => rest);
+      const repoFacts = { branch: "main", admin: true };
       assert.deepStrictEqual(facts, [
-        { repo: REPO, ownerId: 7001, ownerOrg: true, ownerAdmin: false },
-        { repo: "invented-co/old-fork", ownerId: 7001, ownerOrg: true, ownerAdmin: false },
-        { repo: "invented-owner/notes", ownerId: 7000, ownerOrg: false },
+        { repo: REPO, ownerId: 7001, ownerOrg: true, ownerAdmin: false, ...repoFacts },
+        {
+          repo: "invented-co/old-fork",
+          ownerId: 7001,
+          ownerOrg: true,
+          ownerAdmin: false,
+          ...repoFacts,
+        },
+        { repo: "invented-owner/notes", ownerId: 7000, ownerOrg: false, ...repoFacts },
       ]);
       // Repos stored by a Kin from before it kept these facts are read again on the next look,
       // not after the six-hourly refresh.
@@ -700,4 +715,186 @@ describe("KinGitHubWatch", () => {
       }),
     );
   });
+});
+
+describe("protecting a watched repo's default branch from Kin's App", () => {
+  const owner = { _tag: "person" as const, orgId, personId: KinPersonId.make("owner") };
+  const OWN_RULES = "invented-co/rules";
+  const CLASSIC = "invented-co/reviewed";
+  const PAID = "invented-owner/notes";
+  const FREE = "invented-owner/private";
+  const NOT_ADMIN = "invented-co/shared";
+  /** Six watched repos as GitHub holds them: open, protected by the owner two ways, and three Kin can't change. */
+  const world = (github: FakeGitHub) => {
+    github.world.accounts = [
+      { login: "invented-co", id: 7001, type: "Organization", role: "admin" },
+      { login: "invented-owner", id: 7000, type: "User" },
+    ];
+    github.addRepo({
+      full_name: OWN_RULES,
+      default_branch: "trunk",
+      rulesets: [
+        {
+          id: 41,
+          name: "Owner's reviews",
+          target: "branch",
+          enforcement: "active",
+          include: ["~DEFAULT_BRANCH"],
+          exclude: [],
+          rules: [{ type: "pull_request", parameters: { required_approving_review_count: 1 } }],
+          bypass: [],
+        },
+      ],
+    });
+    github.addRepo({
+      full_name: CLASSIC,
+      classic: { required_pull_request_reviews: { required_approving_review_count: 2 } },
+    });
+    github.addRepo({ full_name: PAID });
+    github.addRepo({ full_name: FREE, planLimited: true });
+    github.addRepo({ full_name: NOT_ADMIN, admin: false });
+  };
+  const guards = Effect.gen(function* () {
+    const repos = yield* withGuards(orgId, yield* repoList(orgId));
+    return Object.fromEntries(
+      repos.flatMap((repo) => (repo.guard ? [[repo.repo, repo.guard]] : [])),
+    );
+  });
+  const set = (github: FakeGitHub, repos: ReadonlyArray<string>, on: boolean) =>
+    setGuards(fakeCall(github), owner, { orgId, repos, on });
+
+  it.effect("reads each watched repo once on the refresh, and counts the open ones", () => {
+    const { github, layer } = setup();
+    world(github);
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(T0);
+      yield* seed;
+      yield* (yield* GitHubWatch.KinGitHubWatch).poll(orgId, { force: true });
+      assert.deepStrictEqual(yield* guards, {
+        [REPO]: { state: "open", branch: "main", byKin: false },
+        [OWN_RULES]: { state: "protected", branch: "trunk", byKin: false },
+        [CLASSIC]: { state: "protected", branch: "main", byKin: false },
+        [PAID]: { state: "open", branch: "main", byKin: false },
+        [FREE]: { state: "unknown", branch: "main", byKin: false, problem: "plan" },
+        [NOT_ADMIN]: { state: "unknown", branch: "main", byKin: false, problem: "no_admin" },
+      });
+      // The unwatched fork isn't read; classic protection only where rules didn't answer.
+      const reads = github.world.calls.filter((call) => /rules|protection/.test(call));
+      assert.lengthOf(
+        reads.filter((call) => call.includes("/rules/")),
+        6,
+      );
+      assert.sameMembers(
+        reads.filter((call) => call.endsWith("/protection")),
+        [REPO, CLASSIC, PAID].map((repo) => `GET repos/${repo}/branches/main/protection`),
+      );
+      assert.strictEqual((yield* watchSummary(orgId, T0))?.open, 2);
+      // A look before the next refresh reads none of it again.
+      github.world.calls.length = 0;
+      yield* look(github);
+      assert.isFalse(github.world.calls.some((call) => /rules|protection/.test(call)));
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect(
+    "Protect writes Kin's ruleset, the App can't merge and the owner can; Remove takes only Kin's",
+    () => {
+      const { github, layer } = setup({ app: true });
+      world(github);
+      const told: Array<string> = [];
+      return Effect.gen(function* () {
+        yield* start(github);
+        const merging = github.openItem({
+          repo: REPO,
+          pull: true,
+          author: BOT_LOGIN,
+          association: "NONE",
+          title: "An agent's change",
+        });
+        const asApp = fakeCall(github, APP_TOKEN);
+        // The App holds no admin: it can't write a ruleset, so it can't lift Kin's either.
+        assert.strictEqual(
+          (yield* asApp({ method: "POST", path: `repos/${REPO}/rulesets`, body: {} })).status,
+          403,
+        );
+
+        const all = yield* set(github, [REPO, PAID, FREE, NOT_ADMIN], true);
+        assert.strictEqual(all.changed, 2);
+        assert.deepStrictEqual(all.failed, [
+          {
+            repo: FREE,
+            problem: "plan",
+            said: "Upgrade to GitHub Pro or make this repository public to enable this feature.",
+          },
+          { repo: NOT_ADMIN, problem: "no_admin", said: "Must have admin rights to Repository." },
+        ]);
+        const kinSet = (repo: string) =>
+          github.world.repos
+            .find((entry) => entry.full_name === repo)!
+            .rulesets!.find((entry) => entry.name === KIN_RULESET_NAME)!;
+        assert.deepStrictEqual(kinSet(REPO).rules, [
+          { type: "update", parameters: { update_allows_fetch_and_merge: false } },
+          { type: "deletion" },
+          { type: "non_fast_forward" },
+        ]);
+        assert.deepStrictEqual(kinSet(REPO).include, ["~DEFAULT_BRANCH"]);
+        assert.deepStrictEqual(
+          kinSet(REPO).bypass.map((entry) => entry.actor_type),
+          ["RepositoryRole", "OrganizationAdmin"],
+        );
+        // A personal repo has no organisation owners to let through.
+        assert.deepStrictEqual(kinSet(PAID).bypass, [
+          { actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always" },
+        ]);
+        assert.include((yield* guards)[REPO], { state: "protected", byKin: true });
+        assert.strictEqual((yield* watchSummary(orgId, T0))?.open, 0);
+
+        const merge = { method: "PUT" as const, path: `repos/${REPO}/pulls/${merging}/merge` };
+        assert.strictEqual((yield* asApp(merge)).status, 405);
+        assert.strictEqual((yield* fakeCall(github)(merge)).status, 200);
+
+        // Asking again changes nothing on GitHub.
+        const calls = github.world.calls.length;
+        assert.deepStrictEqual(yield* set(github, [REPO], true), { changed: 0, failed: [] });
+        assert.strictEqual(github.world.calls.length, calls);
+
+        // The owner's own protection is never Kin's to remove.
+        assert.deepStrictEqual(yield* set(github, [OWN_RULES], false), {
+          changed: 0,
+          failed: [{ repo: OWN_RULES, problem: "not_kin", said: null }],
+        });
+        assert.lengthOf(
+          github.world.repos.find((entry) => entry.full_name === OWN_RULES)!.rulesets!,
+          1,
+        );
+
+        assert.deepStrictEqual(yield* set(github, [REPO], false), { changed: 1, failed: [] });
+        assert.isUndefined(
+          github.world.repos
+            .find((entry) => entry.full_name === REPO)!
+            .rulesets!.find((entry) => entry.name === KIN_RULESET_NAME),
+        );
+        assert.deepStrictEqual((yield* guards)[REPO], {
+          state: "open",
+          branch: "main",
+          byKin: false,
+        });
+        assert.deepStrictEqual(told.slice(-1), ["connections"]);
+
+        const sql = yield* SqlClient.SqlClient;
+        const recorded = yield* sql<{ repo: string; command: string }>`SELECT repo, command
+          FROM kin_github_owner_uses WHERE use_id LIKE 'guard-%' ORDER BY at, use_id`;
+        assert.deepStrictEqual(recorded.map((entry) => entry.command).toSorted(), [
+          "Protected main from Kin's App in Settings",
+          "Protected main from Kin's App in Settings",
+          "Removed Kin's protection of main in Settings",
+        ]);
+      }).pipe(
+        Effect.provide(layer),
+        Effect.provideService(KinRefreshObserver, {
+          touch: (_org, topic) => Effect.sync(() => void told.push(topic)),
+        }),
+      );
+    },
+  );
 });

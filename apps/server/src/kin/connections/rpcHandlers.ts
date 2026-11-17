@@ -21,10 +21,11 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinConnections } from "./ConnectionsService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { repoList, setRepo, watchSummary } from "../github/githubWatchStore.ts";
+import { setGuards } from "../github/branchGuard.ts";
+import { repoList, setRepo, watchSummary, withGuards } from "../github/githubWatchStore.ts";
 import { setAppRepos, withAgentsAs } from "../github/appRepos.ts";
 import { KinGitHubAppSetup } from "../github/appSetup.ts";
-import { ghApiLayer } from "../github/GitHubWatch.ts";
+import { ghApiLayer, KinGitHubApi } from "../github/GitHubWatch.ts";
 import { agentsView, KinGitHubApp } from "../github/KinGitHubApp.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
 
@@ -137,7 +138,7 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       watching(
         input.orgId,
         Effect.gen(function* () {
-          const repos = yield* repoList(input.orgId);
+          const repos = yield* withGuards(input.orgId, yield* repoList(input.orgId));
           const app = appOf();
           return {
             repos: Option.isNone(app) ? repos : withAgentsAs(repos, yield* app.value.state()),
@@ -180,6 +181,31 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
               new KinChatError({
                 reason: "unavailable",
                 message: "Kin couldn't record the change to its GitHub App.",
+              }),
+            ),
+        }),
+      );
+    }),
+    "kin.github.guard.set": Effect.fn("KinBranchGuard.set.rpc")(function* (input) {
+      const people = yield* github((g, found) =>
+        g.status(found, { orgId: input.orgId }).pipe(Effect.as(found)),
+      );
+      const person = people.find((entry) => entry.orgId === input.orgId);
+      if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* disabled;
+      if (person === undefined)
+        return yield* new KinChatError({ reason: "not_allowed", message: "Only the owner can." });
+      const services = kin.value.services.value;
+      return yield* KinGitHubApi.use((api) => setGuards(api.call, person, input)).pipe(
+        Effect.provide(ghApiLayer),
+        Effect.provideService(KinGitHubLogin, Context.get(services, KinGitHubLogin)),
+        Effect.provideService(SqlClient.SqlClient, Context.get(services, SqlClient.SqlClient)),
+        Effect.provideService(KinRefreshObserver, Context.get(services, KinRefreshObserver)),
+        Effect.catchTags({
+          SqlError: () =>
+            Effect.fail(
+              new KinChatError({
+                reason: "unavailable",
+                message: "Kin couldn't record the change to the repos' protection.",
               }),
             ),
         }),
