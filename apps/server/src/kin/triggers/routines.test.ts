@@ -277,6 +277,49 @@ it.effect("the owner's time zone reschedules routines from the defaults; only he
   }).pipe(Effect.provide(OwnerTimeZone.layer.pipe(Layer.provideMerge(fixture())))),
 );
 
+// Walk 6 (Nov 2026): changing the company's quiet hours left what was already held on the old ones.
+it.effect("a change to the company's quiet hours moves what is held for its people", () =>
+  Effect.gen(function* () {
+    yield* seed();
+    const routines = yield* Routines.KinRoutines;
+    const sql = yield* SqlClient.SqlClient;
+    yield* TestClock.setTime(Date.parse("2026-11-09T01:00:00.000Z"));
+    const night = { ...settings, timeZone: "UTC", quietHours: { from: "22:00", to: "07:00" } };
+    yield* routines.configure(night);
+    // A teammate on the company's clock, holding nothing to working hours; one line waits for
+    // 07:00, one for a time of its own (a nudge for 09:00).
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+      hold_outside_hours) VALUES ('zoya-a', ${orgA}, 'zoya', 'Zoya', '2026-11-07T00:00:00.000Z', 0)`;
+    for (const [id, at] of [
+      ["quiet", "2026-11-09T07:00:00.000Z"],
+      ["own", "2026-11-09T09:00:00.000Z"],
+    ] as const)
+      yield* sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind, body,
+        audience, held_at, deliver_at)
+      VALUES (${id}, ${orgA}, ${`chat-${orgA}`}, 'zoya-a', ${id}, 'Invented line', 'chat',
+        ${Date.parse("2026-11-09T01:00:00.000Z")}, ${Date.parse(at)})`;
+    const held = sql<{ id: string; at: string }>`SELECT hold_id AS id, deliver_at AS at
+      FROM kin_held_posts WHERE org_id = ${orgA} ORDER BY hold_id`;
+    yield* routines.configure({ ...night, quietHours: { from: "22:00", to: "05:00" } });
+    assert.deepStrictEqual(
+      (yield* held).map((row) => [row.id, new Date(Number(row.at)).toISOString()]),
+      [
+        ["own", "2026-11-09T09:00:00.000Z"],
+        ["quiet", "2026-11-09T05:00:00.000Z"],
+      ],
+    );
+    // Hours that already ended let it go at once.
+    yield* routines.configure({ ...night, quietHours: { from: "22:00", to: "00:30" } });
+    assert.deepStrictEqual(
+      (yield* held).map((row) => [row.id, new Date(Number(row.at)).toISOString()]),
+      [
+        ["own", "2026-11-09T09:00:00.000Z"],
+        ["quiet", "2026-11-09T01:00:00.000Z"],
+      ],
+    );
+  }).pipe(Effect.provide(fixture())),
+);
+
 it.effect.each(["transient", "decode", "expired"] as const)(
   "handles a %s failure without blocking the following good fire",
   (failure) =>

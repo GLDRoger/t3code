@@ -973,6 +973,49 @@ it.effect(
       });
       assert.deepInclude(renamed, { displayName: "Asha Rao", roleTags: ["design"] });
       assert.deepStrictEqual(renamed.workHours, hours);
+      // Away until a day: the owner sets it for her, a teammate can't, and it says so to everyone
+      // and to agents; "I'm back" clears it, and so does the day coming on her own clock.
+      assert.propertyVal(
+        yield* service
+          .updateProfile(ravi.session, {
+            orgId,
+            personId: asha.person.personId,
+            awayUntil: "2026-11-19",
+          })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      yield* TestClock.setTime(Date.parse("2026-11-16T12:00:00.000Z"));
+      const away = yield* service.updateProfile(ownerSession, {
+        orgId,
+        personId: asha.person.personId,
+        awayUntil: "2026-11-19",
+      });
+      assert.propertyVal(away, "awayUntil", "2026-11-19");
+      const awaySeen = (yield* service.profiles(ravi.session, orgId)).profiles.find(
+        (profile) => profile.personId === asha.person.personId,
+      );
+      assert.propertyVal(awaySeen, "awayUntil", "2026-11-19");
+      const agentsRead = yield* readPeople({
+        orgId,
+        agentId: KinAgentId.make("none"),
+        wakeupId: "none",
+      });
+      assert.include(agentsRead.quoted, '"awayUntil":"2026-11-19"');
+      // Midnight in Kolkata, still the 18th in London: she is back on her own calendar.
+      yield* TestClock.setTime(Date.parse("2026-11-18T18:30:00.000Z"));
+      const back = (yield* service.profiles(ravi.session, orgId)).profiles.find(
+        (profile) => profile.personId === asha.person.personId,
+      );
+      assert.notProperty(back, "awayUntil");
+      yield* TestClock.setTime(Date.parse("2026-11-16T12:00:00.000Z"));
+      const cleared = yield* service.updateProfile(asha.session, {
+        orgId,
+        personId: asha.person.personId,
+        awayUntil: null,
+      });
+      assert.notProperty(cleared, "awayUntil");
       // Everyone in the org reads everyone's.
       const seen = yield* service.profiles(ravi.session, orgId);
       assert.strictEqual(seen.ownerPersonId, owner.personId);
