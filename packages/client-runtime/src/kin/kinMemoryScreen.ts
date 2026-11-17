@@ -54,6 +54,8 @@ export const KIN_MEMORY_TEAM_SWITCH = {
   label: "Agents use team memory in chats with teammates",
   on: "They use only what's under The team can know. The rest stays with you.",
   off: "Teammates' chats don't use memory yet. Your own chats do.",
+  /** The team's group while the switch is off. */
+  offHint: "Teammates' chats don't use these until team memory is on.",
   failed: "Couldn't change team memory.",
 };
 const SHARE = "Let the team know";
@@ -388,7 +390,7 @@ export function kinMemoryView(
       key: `section:${section.state}`,
       ...section,
       // Kept here, the screen says what a teammate's turn really gets.
-      hint: section.state === "team" && teamOff ? KIN_MEMORY_TEAM_SWITCH.off : section.hint,
+      hint: section.state === "team" && teamOff ? KIN_MEMORY_TEAM_SWITCH.offHint : section.hint,
       count: inSection.length,
     });
     for (const { item, state, origin } of inSection) {

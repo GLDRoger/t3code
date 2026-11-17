@@ -257,7 +257,7 @@ describe("what the owner's leads remember", () => {
     const teamHint = (list: KinMemoryListResult, edits: KinMemoryEdits) =>
       kinMemoryView(list, edits, "").rows.find((row) => row.type === "section")?.hint;
     expect(kinTeamMemoryView(off, KIN_MEMORY_NO_EDITS)).toMatchObject({ on: false, busy: false });
-    expect(teamHint(off, KIN_MEMORY_NO_EDITS)).toBe(KIN_MEMORY_TEAM_SWITCH.off);
+    expect(teamHint(off, KIN_MEMORY_NO_EDITS)).toBe(KIN_MEMORY_TEAM_SWITCH.offHint);
     // An older host doesn't say, so no switch and today's words.
     expect(kinTeamMemoryView(listOf([item("ours", "team")]), KIN_MEMORY_NO_EDITS)).toBeNull();
 
