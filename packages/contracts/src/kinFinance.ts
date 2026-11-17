@@ -491,6 +491,18 @@ export const KinCompanyProfile = Schema.Struct({
 export type KinCompanyProfile = typeof KinCompanyProfile.Type;
 export const KinCompanyProfileInput = Schema.Struct({ orgId: KinOrgId });
 export type KinCompanyProfileInput = typeof KinCompanyProfileInput.Type;
+
+/** Where "Download everything" streams the company's zip from; the link's token is the credential. */
+export const KIN_EXPORT_ROUTE = "/api/kin/export";
+export const KinExportLinkInput = Schema.Struct({ orgId: KinOrgId });
+export type KinExportLinkInput = typeof KinExportLinkInput.Type;
+/** A relative link, good for minutes and for the session that asked for it. */
+export const KinExportLink = Schema.Struct({
+  url: Schema.String,
+  fileName: Schema.String,
+  expiresAt: Schema.String,
+});
+export type KinExportLink = typeof KinExportLink.Type;
 /** Only the fields given change; `null` clears one. A stale `rev` is a conflict. */
 export const KinCompanyProfileSetInput = Schema.Struct({
   orgId: KinOrgId,
@@ -546,11 +558,17 @@ const KIN_FINANCE_WS_METHODS = {
   unvoid: "kin.work.unvoid",
   receipts: "kin.work.receipts",
   makeReceipt: "kin.work.makeReceipt",
+  exportLink: "kin.work.exportLink",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 // Owner only, on the server; a chat-only session is refused before any handler runs.
 export const KinFinanceRpcs = [
+  Rpc.make(KIN_FINANCE_WS_METHODS.exportLink, {
+    payload: KinExportLinkInput,
+    success: KinExportLink,
+    error,
+  }),
   Rpc.make(KIN_FINANCE_WS_METHODS.lists, {
     payload: KinListsInput,
     success: KinListsResult,
@@ -644,4 +662,6 @@ export const KIN_FINANCE_RPC_SCOPES = {
   [KIN_FINANCE_WS_METHODS.receipts]: AuthKinChatScope,
   // A receipt is an entry with a number, like issuing one.
   [KIN_FINANCE_WS_METHODS.makeReceipt]: AuthKinChatScope,
+  // Everything the company keeps, to the owner alone; the zip comes over HTTP, not the socket.
+  [KIN_FINANCE_WS_METHODS.exportLink]: AuthKinChatScope,
 } as const;
