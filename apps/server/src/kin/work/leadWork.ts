@@ -977,14 +977,16 @@ const ownersInput = (input: object, also: ReadonlyArray<string> = []) =>
     (field) => (input as Record<string, unknown>)[field] !== undefined,
   );
 
-/** A row as a teammate's own Work shows it: no client, project, money, list fields or labels. */
+/**
+ * A row as a teammate's own Work shows it: no client, project, money, list fields or labels. How
+ * a task repeats stays, as their screen shows it, so whoever gave it can see what they set.
+ */
 const teamRow = ({
   client: _client,
   project: _project,
   amount: _amount,
   balance: _balance,
   date: _date,
-  repeat: _repeat,
   fields: _fields,
   listName: _listName,
   stateLabel: _stateLabel,

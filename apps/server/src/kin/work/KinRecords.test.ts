@@ -1518,23 +1518,55 @@ it.effect(
         state: "open",
       });
       assert.include(reopened, { state: "open" });
-      for (const owned of [
-        { sensitive: true },
-        { amount: { minor: 100, currency: "INR" } },
-        { repeat: { every: "month" as const } },
-      ])
+      for (const owned of [{ sensitive: true }, { amount: { minor: 100, currency: "INR" } }])
         assert.deepInclude(
           yield* Effect.flip(
             OwnerWork.update([mate], { orgId, key: filed.key, rev: reopened.rev, ...owned }),
           ),
           { reason: "not_allowed", message: "Only the owner or a co-owner changes that." },
         );
+      // Whoever gave a task says whether it comes back, once it has a day to come back from.
+      assert.isTrue(reopened.can?.repeat);
+      const monthly = { every: "month" as const };
+      assert.include(
+        yield* Effect.flip(
+          OwnerWork.update([mate], { orgId, key: filed.key, rev: reopened.rev, repeat: monthly }),
+        ),
+        { message: "A repeating entry needs a due date or a date to repeat from." },
+      );
+      const repeating = yield* OwnerWork.update([mate], {
+        orgId,
+        key: filed.key,
+        rev: reopened.rev,
+        dueAt: "2026-12-01",
+        dueAllDay: true,
+        repeat: monthly,
+      });
+      assert.deepStrictEqual(repeating.repeat, monthly);
+      const stopped = yield* OwnerWork.update([mate], {
+        orgId,
+        key: filed.key,
+        rev: repeating.rev,
+        repeat: null,
+      });
+      assert.isUndefined(stopped.repeat);
+      const weekly = yield* OwnerWork.create([mate], {
+        orgId,
+        title: "Invented: send the weekly note",
+        dueAt: "2026-12-04",
+        dueAllDay: true,
+        repeat: { every: "days", days: 7 },
+        clientRequestId: "weekly",
+      });
+      assert.deepStrictEqual(weekly.repeat, { every: "days", days: 7 });
       // A task the owner shared with them is theirs to read, not to change.
       yield* OwnerWork.share([owner], { orgId, keys: [owners.key], shared: true });
       const seen = yield* OwnerWork.get([mate], { orgId, key: owners.key });
+      assert.isFalse(seen.can?.repeat);
       for (const change of [
         OwnerWork.update([mate], { orgId, key: owners.key, rev: seen.rev, state: "done" }),
         OwnerWork.assign([mate], { orgId, key: owners.key, to: null }),
+        OwnerWork.update([mate], { orgId, key: owners.key, rev: seen.rev, repeat: monthly }),
       ])
         assert.include(yield* change.pipe(Effect.asVoid, Effect.flip), { reason: "not_allowed" });
       // Given to the owner, it stays theirs to change: they gave it.

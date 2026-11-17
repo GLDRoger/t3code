@@ -5,6 +5,7 @@ import type {
   KinRecordKey,
   KinRecordSide,
   KinRecordState,
+  KinRepeatRule,
   KinWorkAssignInput,
   KinWorkConfirmInput,
   KinWorkPrincipal,
@@ -16,6 +17,7 @@ import {
   KIN_WORK_NOTES_MAX,
   KIN_WORK_TITLE_MAX,
   kinWorkClosed,
+  kinRepeatText,
   kinWorkName,
   kinWorkNewest,
   kinWorkSamePrincipal,
@@ -55,7 +57,9 @@ export type KinWorkAction =
       readonly side?: KinRecordSide;
     }
   /** The task's own label; its client or project can still keep it private. */
-  | { readonly type: "private"; readonly private: boolean };
+  | { readonly type: "private"; readonly private: boolean }
+  /** How it comes back once closed, from its due date; null stops it. */
+  | { readonly type: "repeat"; readonly rule: KinRepeatRule | null };
 
 export const KIN_WORK_OFFLINE_CHANGE = "You're offline. Changes need a connection.";
 export const KIN_WORK_EDIT_CHANGED =
@@ -123,6 +127,7 @@ type Patch = Partial<
     | "working"
     | "side"
     | "sensitive"
+    | "repeat"
   >
 >;
 
@@ -271,6 +276,8 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
       return action.party === null ? "Taken off its client." : "Taken out of its project.";
     case "private":
       return action.private ? "Kept private." : "No longer private.";
+    case "repeat":
+      return action.rule === null ? "No longer repeats." : `${kinRepeatText(action.rule)}.`;
   }
 }
 
@@ -322,6 +329,8 @@ function patchOf(record: KinRecord, action: KinWorkAction, names: KinWorkNames):
       return action.side === undefined ? {} : { side: action.side };
     case "private":
       return { sensitive: action.private };
+    case "repeat":
+      return { repeat: action.rule ?? undefined };
   }
 }
 
@@ -412,6 +421,8 @@ export function createKinWorkChanges(options: {
         );
       case "private":
         return kinWorkSettled(await options.update({ ...at, sensitive: action.private }));
+      case "repeat":
+        return kinWorkSettled(await options.update({ ...at, repeat: action.rule }));
     }
   };
 

@@ -283,6 +283,14 @@ describe("kinWorkItemView", () => {
             kind: "updated",
             fields: [{ field: "dueAllDay", from: "false", to: "true" }],
           },
+          {
+            seq: 1.5,
+            at,
+            by: me,
+            via: "owner",
+            kind: "updated",
+            fields: [{ field: "repeat", from: null, to: "every month" }],
+          },
           { seq: 1, at, by: me, via: "owner", kind: "created", fields: [] },
         ],
       }),
@@ -298,6 +306,7 @@ describe("kinWorkItemView", () => {
       "Tech lead marked it waiting on Priya",
       "You gave it to Tech lead",
       "Tech lead updated it",
+      "You set it to repeat every month",
       "You added this",
     ]);
   });
@@ -620,6 +629,10 @@ describe("kinWorkRow", () => {
     expect(kinWorkRow(record({ party, project }), names, now, { party, project: null }).about).toBe(
       "Invented app",
     );
+    // A repeating task says so on its row while it is open.
+    const monthly = record({ project, repeat: { every: "month" } });
+    expect(kinWorkRow(monthly, names, now).line).toBe("You · Every month · Invented app");
+    expect(kinWorkRow({ ...monthly, state: "done" }, names, now).line).not.toContain("Every");
     // A host from before clients sends none of it: the row and the ways in show nothing new.
     expect(kinWorkRow(record(), names, now).line).toBe("You");
     expect(kinWorkHostClients(null)).toBe(false);

@@ -126,6 +126,8 @@ export const KinRecordCan = Schema.Struct({
   share: Schema.Boolean,
   /** Keep or decline an agent's suggestion. */
   confirm: Schema.Boolean,
+  /** Set how a task repeats, or turn it off; absent from older hosts. */
+  repeat: Schema.optional(Schema.Boolean),
 });
 export type KinRecordCan = typeof KinRecordCan.Type;
 
@@ -567,6 +569,8 @@ export const KinWorkCreateInput = Schema.Struct({
   /** `theirs` when the client owes it and the owner is whoever chases. Default `ours`. */
   side: Schema.optional(KinRecordSide),
   repo: Schema.optional(KinRepoName),
+  /** A task that comes back: when it closes, the next one is made from its due date. */
+  repeat: Schema.optional(KinRepeatRule),
   /** A retry with the same id returns the same entry. */
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
