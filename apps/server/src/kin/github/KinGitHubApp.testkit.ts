@@ -23,6 +23,9 @@ const Json = Schema.fromJsonString(Schema.Unknown);
 const parse = Schema.decodeUnknownSync(Json);
 const json = Schema.encodeSync(Json);
 
+/** The invented App key as the secret store keeps it. */
+export const appKeyJson = () => json({ privateKeyPem });
+
 /** Kin's GitHub App, installed where `installations` say, in the fake GitHub's world. */
 export const installApp = (github: FakeGitHub, installations: FakeApp["installations"]) => {
   github.world.app = {

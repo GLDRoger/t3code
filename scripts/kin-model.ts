@@ -475,6 +475,8 @@ const runTlc = async (
       file,
       [
         ...prefix,
+        // TLC unpacks Naturals.tla and friends into java.io.tmpdir; a shared one races between runs.
+        `-Djava.io.tmpdir=${work}`,
         "-XX:+UseParallelGC",
         "-cp",
         jar,

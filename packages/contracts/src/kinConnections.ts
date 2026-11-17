@@ -409,6 +409,8 @@ export const KinGitHubAppAccount = Schema.Struct({
   canManage: Schema.NullOr(Schema.Boolean),
   /** False when the App is private to another account, so GitHub can't install it here. */
   installable: Schema.Boolean,
+  /** Repos of this account the App reaches that Kin doesn't watch, such as the memory repo. */
+  elsewhere: Schema.optional(NonNegativeInt),
 });
 export type KinGitHubAppAccount = typeof KinGitHubAppAccount.Type;
 
@@ -424,13 +426,18 @@ export const KinGitHubAgents = Schema.Struct({
   /** Watched repos, and how many of them the App is installed on. */
   watched: NonNegativeInt,
   installed: NonNegativeInt,
+  /** Repos the App reaches that Kin doesn't watch, such as the memory repo. */
+  elsewhere: Schema.optional(NonNegativeInt),
   /** Watched repos without the App, where work goes out as the owner; at most 20. */
   without: Schema.Array(Schema.String),
   /** The latest commands agents ran as the owner, newest first; at most 5. */
   ownerUses: Schema.Array(KinGitHubOwnerUse),
   /** No App is named anywhere, so the owner may make one from Settings. */
   canCreate: Schema.optional(Schema.Boolean),
-  /** Where the App was set up: in Kin's Settings (by whom, when) or on the host itself. */
+  /**
+   * The App Settings holds: who made it there and when, both null for one adopted from the host's
+   * environment. `host` comes only from servers older than that adoption.
+   */
   setUp: Schema.optional(
     Schema.Struct({
       source: Schema.Literals(["kin", "host"]),

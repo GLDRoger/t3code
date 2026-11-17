@@ -174,7 +174,7 @@ If your browser can't reach GitHub and Kin in one go, or you already have an App
 
    Then delete the `.pem`.
 
-3. Add `KIN_GITHUB_APP_ID=<app id>` and `KIN_GITHUB_BOT_LOGIN=<app slug>[bot]` to `~/.t3/service.env`, then `systemctl --user restart kin-server`. An App named here outranks one made in Settings, and is changed only here.
+3. Add `KIN_GITHUB_APP_ID=<app id>` and `KIN_GITHUB_BOT_LOGIN=<app slug>[bot]` to `~/.t3/service.env`, then `systemctl --user restart kin-server`. At its next start Kin adopts the App into Settings → Connections, which owns it from then on: Disconnect and making another work there, and a Disconnect stays after a restart even with these lines still set.
 
 The key stays in the server; agents' shells only ever hold one-hour tokens. Hosts that kept the key in kin's keyring (the `kin-github-app` item) keep working: when the secret store has no key, Kin reads that item and copies it into the store once. The item stays in the keyring; once Connections shows the App working you may delete it, or keep it as a spare.
 

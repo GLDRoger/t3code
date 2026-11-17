@@ -22,7 +22,9 @@ pair="$(kv as zoya rpc kin.chats.withPerson "{\"personId\":\"$ARJUN\"}" |
   node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).chatId))')"
 kv as zoya rpc kin.messages.send "{\"chatId\":\"$pair\",\"clientMessageId\":\"gone-$RUN\",\"body\":\"Proof g$RUN: see you Monday\"}" >/dev/null
 zoya_list() { kv as zoya web open home >/dev/null && kv as zoya web snapshot --full; }
-expect_in "$(zoya_list)" "Arjun Rao" "Zoya's chat with Arjun isn't on her list"
+# His chat's own row, not another chat's preview that names him.
+ROW='link "Arjun Rao,'
+expect_in "$(zoya_list)" "$ROW" "Zoya's chat with Arjun isn't on her list"
 
 wakeups="$(q "select count(*) from kin_wakeups")"
 kv as owner web open "/kin?settings=team" >/dev/null
@@ -46,7 +48,7 @@ expect_in "$needs" "whose access was removed" "Needs you doesn't show $task held
 sleep 5
 [[ "$(q "select count(*) from kin_wakeups")" == "$wakeups" ]] || fail "an agent started work when Arjun was removed"
 
-expect_not_in "$(zoya_list)" "Arjun Rao" "Zoya's chat with Arjun stayed listed after his access ended"
+expect_not_in "$(zoya_list)" "$ROW" "Zoya's chat with Arjun stayed listed after his access ended"
 
 kv as arjun web open /kin >/dev/null || true
 kv as arjun web wait "Your access to Kin has ended" >/dev/null ||
@@ -72,5 +74,5 @@ kv as arjun web open chat:chief >/dev/null
 kv as arjun web wait "$SAID" >/dev/null || fail "Arjun's chat came back without its history"
 kv as arjun web open tasks >/dev/null
 kv as arjun web wait "$TITLE" >/dev/null || fail "Arjun's task isn't his after he came back"
-expect_in "$(zoya_list)" "Arjun Rao" "Zoya's chat with Arjun didn't come back when he did"
+expect_in "$(zoya_list)" "$ROW" "Zoya's chat with Arjun didn't come back when he did"
 pass "removing Arjun from his page in web Settings kept $task his, under Needs you, with no agent started; his browser said his access ended and Zoya's chat with him left her list; a new link brought back his level, chat history and task, and that chat"

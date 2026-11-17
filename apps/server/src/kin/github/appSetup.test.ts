@@ -21,7 +21,7 @@ import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as AppKey from "./appKey.ts";
 import { KinKeychain } from "./Keychain.ts";
 import { KinGitHubApp, KinGitHubAppConfig, make as makeApp } from "./KinGitHubApp.ts";
-import { fakeHttp } from "./KinGitHubApp.testkit.ts";
+import { appKeyJson, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
 
 const orgId = KinOrgId.make("org-setup");
 const T0 = Date.UTC(2026, 10, 17, 9, 0, 0);
@@ -69,12 +69,18 @@ const setup = (options: { readonly hostAppId?: string } = {}) =>
       }),
       Layer.succeed(KinRefreshObserver, { touch: () => Effect.void }),
     );
-    const app = yield* makeApp.pipe(Effect.provide(services));
-    const flow = yield* Setup.make.pipe(
-      Effect.provide(services),
-      Effect.provideService(KinGitHubApp, app),
-    );
-    return { github, kept, app, flow };
+    /** Kin starting, as at boot or after a restart over the same state. */
+    const boot = Effect.gen(function* () {
+      const app = yield* makeApp.pipe(Effect.provide(services));
+      const flow = yield* Setup.make.pipe(
+        Effect.provide(services),
+        Effect.provideService(KinGitHubApp, app),
+      );
+      yield* app.refresh();
+      return { app, flow };
+    });
+    const { app, flow } = yield* boot;
+    return { github, kept, store, app, flow, boot };
   });
 
 const layer = KinPersistence.layer.pipe(
@@ -199,14 +205,54 @@ describe("making Kin's GitHub App from Settings", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("an App the host names keeps working, and can't be disconnected from Settings", () =>
-    Effect.gen(function* () {
-      const { flow } = yield* setup({ hostAppId: "9001" });
-      assert.match((yield* Effect.flip(flow.start([owner], orgId))).message, /already has/);
-      assert.match(
-        (yield* Effect.flip(flow.disconnect([owner], orgId))).message,
-        /KIN_GITHUB_APP_ID/,
-      );
-    }).pipe(Effect.provide(layer)),
+  it.effect(
+    "an App the host's environment names is adopted once; Settings owns it after, and its Disconnect outlives a restart",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { stateDir } = yield* ServerConfig;
+        const file = `${stateDir}/kin/gh-app/app.json`;
+        const { github, kept, store, boot } = yield* setup({ hostAppId: "9001" });
+        // A host set up through its environment, its key already copied into the store.
+        installApp(github, []);
+        github.world.accounts = [{ login: "Invented-Owner", id: 7000, type: "User" }];
+        yield* store.set(AppKey.appKeyName("9001"), new TextEncoder().encode(appKeyJson()));
+        const first = yield* boot;
+        assert.strictEqual((yield* first.app.state())._tag, "ok");
+        assert.deepStrictEqual(JSON.parse(yield* fs.readFileString(file)), {
+          appId: 9001,
+          slug: "invented-kin",
+          name: "Invented Kin",
+          owner: "Invented-Owner",
+          botLogin: "invented-kin[bot]",
+          at: null,
+          by: null,
+        });
+        assert.strictEqual((yield* first.app.origin!()).source, "kin");
+        assert.match((yield* Effect.flip(first.flow.start([owner], orgId))).message, /already has/);
+
+        assert.deepStrictEqual(yield* first.flow.disconnect([owner], orgId), {
+          settingsUrl: "https://github.com/settings/apps/invented-kin",
+        });
+        assert.isTrue(Option.isNone(yield* kept("9001")));
+        // The environment still names the App; a restart leaves it disconnected.
+        const second = yield* boot;
+        assert.deepStrictEqual(yield* second.app.origin!(), { source: "none" });
+        assert.deepStrictEqual(yield* second.app.state(), { _tag: "none" });
+        assert.isFalse(yield* fs.exists(file));
+
+        // A new App made in Settings stays Kin's App across the next start too.
+        github.world.manifestCodes = {
+          "code-1": { name: "Kin for Invented Studio", slug: "kin-for-invented-studio" },
+        };
+        const state = new URL(
+          (yield* second.flow.start([owner], orgId)).path,
+          ORIGIN,
+        ).searchParams.get("state")!;
+        assert.isTrue((yield* second.flow.complete(state, "code-1")).ok);
+        const third = yield* boot;
+        const origin = yield* third.app.origin!();
+        assert.strictEqual(origin.source === "kin" ? origin.app.appId : null, 9100);
+      }).pipe(Effect.provide(layer)),
   );
 });
