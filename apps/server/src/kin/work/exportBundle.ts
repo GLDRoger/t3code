@@ -181,7 +181,7 @@ const listSpec = (def: ListDef): ImportList => {
   const preset = (Object.hasOwn(PRESETS, def.id) ? PRESETS[def.id as PresetId] : undefined) as
     | (typeof PRESETS)[PresetId]
     | undefined;
-  const fields = def.fields.flatMap((one) => {
+  const fields = def.fields.flatMap((one): Array<NonNullable<ImportList["fields"]>[number]> => {
     if (one.retired === true) return [];
     const had = preset?.fields.find((field) => field.key === one.key);
     if (had !== undefined) {

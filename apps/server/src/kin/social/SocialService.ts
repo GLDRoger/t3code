@@ -406,7 +406,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     });
     let taken = yield* save.pipe(
       sql.withTransaction,
-      Effect.catch(() => Effect.succeed("failed" as const)),
+      Effect.orElseSucceed(() => "failed" as const),
     );
     if (taken === "failed") {
       // The live-profile and live-party indexes refuse what slipped past another save's read.

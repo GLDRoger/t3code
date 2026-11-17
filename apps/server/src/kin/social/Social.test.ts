@@ -289,10 +289,9 @@ it.effect("connects groups only with a key limited to one profile, owner-level o
       ]);
       assert.deepEqual([...keys.keys()], [bound[0]!.groupId], "the refused save keeps no key");
       // The database refuses a second live binding, new or moved by a reconnection.
-      const refused = (statement: Effect.Effect<unknown, SqlError.SqlError>) =>
+      const refused = <A>(statement: Effect.Effect<A, SqlError.SqlError>) =>
         statement.pipe(
-          Effect.flip,
-          Effect.map((error) => String(error.cause)),
+          Effect.match({ onFailure: (error) => String(error.cause), onSuccess: () => "saved" }),
         );
       assert.match(
         yield* refused(sql`INSERT INTO kin_social_groups (org_id, group_id, party_id, service,
