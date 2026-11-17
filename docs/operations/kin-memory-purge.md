@@ -29,4 +29,4 @@ Last, resume the org's queue. Until LEAD-11 builds the org pause there is no ope
 
 1. Set `kin-main` to `enforcement: disabled` (repo Settings, Rules, Rulesets).
 2. Let the purge push.
-3. Re-apply with `node scripts/kin-rulesets.ts --repo GLDRoger/kin-memory`, then run it with `--check`. The queue resumes only once `--check` passes; a leftover `disabled` shows as drift.
+3. Set `kin-main` back to `enforcement: active`, and check on that same page that its rules and empty bypass list are unchanged. Resume the queue only after that.

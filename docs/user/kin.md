@@ -113,8 +113,8 @@ Open an agent in Chats and write to it as you would to a colleague: "what's late
   to the agent you asked, in your chat with it. Ask it to tell a teammate something and it arrives
   in their chat as **Sent by** you, via the agent, and their answer comes back to you the same way.
 - **It does engineering work.** An agent that looks after engineering reads your GitHub repos, pull
-  requests and checks, reviews pull requests, and starts coding work in T3 Code. It never merges
-  without the owner's approval.
+  requests and checks, reviews pull requests, and starts coding work in T3 Code. It never merges:
+  when a pull request is approved and green, it tells you it's ready and you merge it.
 
 **Waiting on you** in Chats collects what needs your answer. An agent's open question shows there with
 its default and day, and you can answer it right there.
@@ -153,7 +153,7 @@ card, and typing "yes" in the chat doesn't count:
 - recording money received for a receipt that has no payment yet;
 - changing the company details.
 
-Merging a pull request, and changing what an agent may do, need more: an approval with Face ID on a
+Changing what an agent may do needs more: an approval with Face ID on a
 phone set up under **Settings → Approvals** in the Kin app. Until one is set up, nothing that needs
 approval can happen.
 
@@ -364,8 +364,7 @@ Kin watches every repo yours or your organizations' unless you say "leave acme/s
 **Settings → Connections → GitHub** shows how many repos it watches, when it last checked and how
 much it handled today; **Show repos** lists them with a switch each, and **Watch every repo** undoes
 the switches. Forks of other people's repos start off. If a check fails, the row says why and how to
-fix it. While the login is connected, the GitHub App's webhook, if you set one up, no longer starts
-agents.
+fix it.
 
 To try pull requests in a browser on Ubuntu 23.10 or later, run `t3 browser setup` once as root.
 
