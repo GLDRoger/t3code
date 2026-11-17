@@ -78,6 +78,7 @@ expect_in "$(kv push sent | rg "/eeeeee" | rg -F "Reminder: $WHAT" || true)" "Re
 
 # Due, her card offers every tap, and each one works for her.
 kv as zoya web open chat:chief >/dev/null
+kv as zoya web wait "Tomorrow 9:00" >/dev/null || fail "Zoya's due reminder card never showed"
 card="$(kv as zoya web snapshot --full)"
 for name in "Change this with your agent" "Snooze this reminder for 10 minutes" \
   "Snooze this reminder for an hour" "Snooze this reminder to tomorrow at 9:00" "Mark this reminder done"; do
