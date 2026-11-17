@@ -6,6 +6,11 @@ import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinOwnsDirectChat } from "@t3tools/client-runtime/kin/kinClearChat";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import { resolveTimelineIsAtEnd } from "../components/chat/MessagesTimeline.logic";
+import {
+  attachTimelineViewport,
+  navigationReleasesFollow,
+} from "../components/chat/timelineViewport";
 import {
   kinChatGoneCopy,
   buildKinFeedRows,
@@ -795,20 +800,38 @@ function KinChatFeed(props: {
 
   const checkEnd = () => {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
-    if (isAtEnd !== follow.atEnd) transition({ type: "end-check", isAtEnd });
-    if (isAtEnd) transition({ type: "seen", seq: latestSeq });
+    const end = { type: "end-check", isAtEnd } as const;
+    // Checked against this render's state first, so an ordinary scroll frame schedules nothing.
+    if (resolveKinFeedFollow(follow, end) !== follow) transition(end);
+    if (isAtEnd && latestSeq > follow.seenSeq) transition({ type: "seen", seq: latestSeq });
   };
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- onScroll can read isAtEnd before the list re-pins, leaving follow off at the end; the list's own signal restores it
-  useEffect(
-    () =>
-      listRef.current?.getState().listen("isAtEnd", (isAtEnd) => {
-        if (!isAtEnd) return;
-        transition({ type: "end-check", isAtEnd });
-        transition({ type: "seen", seq: reading.current.latestSeq });
-      }),
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- hears the person's own scrolling on the list's DOM node, and the list's re-pin to its end
+  useEffect(() => {
+    const list = listRef.current;
+    const scrollNode = list?.getScrollableNode();
+    if (!list || !(scrollNode instanceof HTMLElement)) return;
+    // The coding thread's own input listeners: only these let go of the end.
+    const viewport = attachTimelineViewport(scrollNode);
+    const unsubscribe = viewport.subscribe((navigation) => {
+      const state = list.getState();
+      const releases = navigationReleasesFollow(navigation, {
+        contentScrollsUp: () => state.scroll > 0,
+        awayFromEnd: () => resolveTimelineIsAtEnd(state) === false,
+      });
+      if (releases) transition({ type: "navigated", seq: reading.current.latestSeq });
+    });
+    const unlisten = list.getState().listen("isAtEnd", (isAtEnd) => {
+      if (!isAtEnd) return;
+      transition({ type: "end-check", isAtEnd });
+      transition({ type: "seen", seq: reading.current.latestSeq });
+    });
+    return () => {
+      unlisten();
+      unsubscribe();
+      viewport.dispose();
+    };
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition only calls setFollow, which is stable.
-    [],
-  );
+  }, []);
 
   const prefersReducedMotion =
     typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;

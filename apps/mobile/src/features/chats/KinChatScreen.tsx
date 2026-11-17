@@ -957,9 +957,7 @@ function KinChatFeed(props: {
   const listRef = useRef<LegendListRef>(null);
   const editorRef = useRef<ComposerEditorHandle>(null);
   const composerRef = useRef<KinComposerHandle>(null);
-  // Set by the reader's own send: until the list settles at the end, or the reader scrolls up, a
-  // scroll event read while a tall new bubble lays out can't turn following off.
-  const pinnedToEnd = useRef(false);
+  const dragging = useRef(false);
   const lastScroll = useRef({ offset: 0, content: 0 });
   const markedSeq = useRef(0);
   const attemptedSeq = useRef(0);
@@ -1194,27 +1192,29 @@ function KinChatFeed(props: {
 
   const checkEnd = () => {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
-    if (!isAtEnd && pinnedToEnd.current) return;
-    if (isAtEnd !== follow.atEnd) transition({ type: "end-check", isAtEnd });
+    const end = { type: "end-check", isAtEnd } as const;
+    // Checked against this render's state first, so an ordinary scroll frame schedules nothing.
+    if (resolveKinFeedFollow(follow, end) !== follow) transition(end);
   };
+  const leftEndByHand = () => transition({ type: "navigated", seq: reading.current.latestSeq });
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const offset = event.nativeEvent.contentOffset.y;
     const content = event.nativeEvent.contentSize.height;
-    // Up with nothing new below: the reader moved (status bar tap, VoiceOver), not the layout.
-    if (offset < lastScroll.current.offset && content <= lastScroll.current.content) {
-      pinnedToEnd.current = false;
-    }
+    // Only the reader lets go of the end: a drag, or a move up with the content unchanged (VoiceOver,
+    // a scroll command). A layout, a late measure or the list's own re-pin never does.
+    const movedUp =
+      offset < lastScroll.current.offset - 1 && content === lastScroll.current.content;
     lastScroll.current = { offset, content };
+    if ((dragging.current || movedUp) && listRef.current?.getState().isAtEnd === false) {
+      if (kinFollowsEnd(follow)) leftEndByHand();
+    }
     checkEnd();
   };
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- onScroll can read isAtEnd before the list re-pins, leaving follow off at the end; the list's own signal restores it
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the list's own signal that it re-pinned to its end, which a scroll event can read a frame early
   useEffect(
     () =>
       listRef.current?.getState().listen("isAtEnd", (isAtEnd) => {
-        // The own message reached the host and the end shows: ordinary following from here.
-        const outbox = appAtomRegistry.get(kinOutbox.chatAtom(props.environmentId, props.chatId));
-        if (isAtEnd && outbox.length === 0) pinnedToEnd.current = false;
         if (isAtEnd) transition({ type: "end-check", isAtEnd });
       }),
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition only calls setFollow, which is stable.
@@ -1240,11 +1240,6 @@ function KinChatFeed(props: {
     if (list === null) return;
     const { contentLength, scrollLength } = list.getState();
     void list.scrollToOffset({ offset: contentLength - scrollLength, animated: !reduceMotion });
-  };
-
-  const followOwnSend = () => {
-    pinnedToEnd.current = true;
-    jumpToEnd();
   };
 
   const toggleRun = (runId: string) => {
@@ -1274,7 +1269,7 @@ function KinChatFeed(props: {
       })
       .then((queued) => {
         if (queued._tag !== "queued") return;
-        followOwnSend();
+        jumpToEnd();
         void deliverKinOutbox();
       })
       .finally(() => {
@@ -1440,7 +1435,7 @@ function KinChatFeed(props: {
       recipient={props.direct && props.agentName === null ? null : props.title}
       connected={props.connected}
       bottomInset={composerInset}
-      onSend={followOwnSend}
+      onSend={jumpToEnd}
       onFocusChange={onComposerFocus}
       editorRef={editorRef}
       ref={composerRef}
@@ -1611,16 +1606,25 @@ function KinChatFeed(props: {
         maintainVisibleContentPosition={followsEnd ? false : { data: true, size: true }}
         onScroll={onScroll}
         onScrollToTop={() => {
-          pinnedToEnd.current = false;
+          leftEndByHand();
           checkEnd();
         }}
         viewabilityConfigCallbackPairs={seenPairs}
         onScrollBeginDrag={() => {
-          pinnedToEnd.current = false;
+          dragging.current = true;
           transition({ type: "drag-begin" });
         }}
-        onScrollEndDrag={checkEnd}
-        onMomentumScrollEnd={checkEnd}
+        onScrollEndDrag={() => {
+          dragging.current = false;
+          checkEnd();
+        }}
+        onMomentumScrollBegin={() => {
+          dragging.current = true;
+        }}
+        onMomentumScrollEnd={() => {
+          dragging.current = false;
+          checkEnd();
+        }}
         scrollEventThrottle={32}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
