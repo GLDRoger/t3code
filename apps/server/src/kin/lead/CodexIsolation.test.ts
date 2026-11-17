@@ -25,6 +25,7 @@ import { pdf } from "../work/statements/statementPdf.testkit.ts";
 import { SESSION_REFUSAL } from "./Audience.ts";
 import { KIN_DEFERRED_TOOLS } from "./deferredTools.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
+import { PDF_PAGE_IMAGES } from "./pdfPageImages.ts";
 import { KinServer, type Services as KinServices } from "../KinServer.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -530,39 +531,116 @@ it.effect(
     ),
 );
 
+type Item = { readonly type: string; readonly text?: string; readonly url?: string };
+const JPEG_PAGE = /^data:image\/jpeg;base64,\/9j\//;
+const pageImages = (items: ReadonlyArray<Item>) =>
+  items.filter((item) => item.type === "image" && JPEG_PAGE.test(item.url ?? ""));
+
 it.effect(
-  "a PDF attached to a Kin turn on Codex reaches the model as its text, as Claude reads it; a path outside Kin's attachments is never read",
+  "a Kin turn on Codex gets an attached PDF's text and its pages as images, in every chat, as Claude reads a document; an attached image stays an image; a path outside Kin's attachments is never read",
   () =>
     Effect.gen(function* () {
       const { stateDir, attachmentsDir } = yield* ServerConfig.ServerConfig;
       const fs = yield* FileSystem.FileSystem;
       yield* fs.makeDirectory(attachmentsDir, { recursive: true });
       const contract = `${attachmentsDir}/contract.pdf`;
+      const scan = `${attachmentsDir}/scan.pdf`;
       const outside = `${stateDir}/elsewhere.pdf`;
       const bytes = pdf([[[{ x: 72, text: "Retainer: 40 hours a month" }]]]);
       yield* fs.writeFile(contract, bytes);
       yield* fs.writeFile(outside, bytes);
-      const said = (path: string, name: string) =>
-        `Read this\n\n[Attached file "${name}" is saved at: ${path}]`;
+      // A scanned page: a picture and no text layer.
+      yield* fs.writeFile(
+        scan,
+        pdf([[]], undefined, {
+          dict: "",
+          data: new TextEncoder().encode("0 0 1 rg 0 0 638 842 re f"),
+        }),
+      );
+      const said = (path: string, name: string) => `[Attached file "${name}" is saved at: ${path}]`;
+      const photo = { type: "image", url: "data:image/png;base64,iVBORw0KGgo=" };
       const input = [
         {
           type: "text",
-          text: `${said(contract, "Contract.pdf")}\n\n${said(outside, "Other.pdf")}`,
+          text: `Read these\n\n${said(contract, "Contract.pdf")}\n\n${said(scan, "Lease.pdf")}\n\n${said(outside, "Other.pdf")}`,
         },
+        photo,
       ];
       for (const threadId of ["kin-shared:finance", "kin:finance"]) {
         const sent = yield* session(threadId, `${stateDir}/kin/demo-a/memory-read`, true, input);
         const turn = sent.find(({ method }) => method === "turn/start");
-        const items = turn?.params.input as ReadonlyArray<{ text: string }>;
-        assert.lengthOf(items, 2, threadId);
-        assert.deepStrictEqual(items[0], input[0]);
-        assert.match(items[1]!.text, /^\[Text of the attached PDF "Contract\.pdf", 1 pages\]/);
-        assert.include(items[1]!.text, "Retainer: 40 hours a month");
-        assert.notInclude(items[1]!.text, "Other.pdf");
+        const items = turn?.params.input as ReadonlyArray<Item>;
+        assert.deepStrictEqual(items.slice(0, 2), input, threadId);
+        const texts = items.flatMap((item) => (item.type === "text" ? [item.text ?? ""] : []));
+        assert.match(texts[1]!, /^\[Text of the attached PDF "Contract\.pdf", 1 pages\]/);
+        assert.include(texts[1]!, "Retainer: 40 hours a month");
+        assert.include(texts.join("\n"), '[Page 1 of 1 of "Contract.pdf"]');
+        assert.match(
+          texts.join("\n"),
+          /"Lease\.pdf" has no text layer: its pages follow as images/,
+        );
+        assert.include(texts.join("\n"), '[Page 1 of 1 of "Lease.pdf"]');
+        assert.notInclude(texts.slice(1).join("\n"), "Other.pdf");
+        const pages = pageImages(items);
+        assert.lengthOf(pages, 2, threadId);
+        // The scanned page is drawn as it is (blue), not as an empty or black frame.
+        const { loadImage, createCanvas } = yield* Effect.promise(() => import("@napi-rs/canvas"));
+        const image = yield* Effect.promise(() =>
+          loadImage(Buffer.from(pages[1]!.url!.split(",")[1]!, "base64")),
+        );
+        const sheet = createCanvas(image.width, image.height);
+        const context = sheet.getContext("2d");
+        context.drawImage(image, 0, 0);
+        const [red, green, blue] = context.getImageData(
+          image.width / 2,
+          image.height / 2,
+          1,
+          1,
+        ).data;
+        assert.isBelow(red!, 40);
+        assert.isBelow(green!, 40);
+        assert.isAbove(blue!, 200);
+        assert.strictEqual(Math.max(image.width, image.height), 1568);
       }
     }).pipe(
       Effect.provide(
         ServerConfig.layerTest(process.cwd(), { prefix: "kin-codex-pdf-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
+);
+
+it.effect(
+  "a turn's PDFs past its page images say which pages were left out, so the agent can ask for them",
+  () =>
+    Effect.gen(function* () {
+      const { stateDir, attachmentsDir } = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(attachmentsDir, { recursive: true });
+      const shelves = `${attachmentsDir}/shelves.pdf`;
+      const count = PDF_PAGE_IMAGES.pagesPerTurn + 2;
+      yield* fs.writeFile(
+        shelves,
+        pdf(Array.from({ length: count }, (_, index) => [[{ x: 72, text: `Shelf ${index + 1}` }]])),
+      );
+      const input = [
+        {
+          type: "text",
+          text: `Count these\n\n[Attached file "Shelves.pdf" is saved at: ${shelves}]`,
+        },
+      ];
+      const sent = yield* session("kin:finance", `${stateDir}/kin/demo-a/memory-read`, true, input);
+      const items = sent.find(({ method }) => method === "turn/start")?.params
+        .input as ReadonlyArray<Item>;
+      assert.lengthOf(pageImages(items), PDF_PAGE_IMAGES.pagesPerTurn);
+      assert.strictEqual(
+        items.at(-1)?.text,
+        `[Pages ${PDF_PAGE_IMAGES.pagesPerTurn + 1} to ${count} of "Shelves.pdf" were left out as images (their text is above). To see them, ask for those pages as their own file.]`,
+      );
+    }).pipe(
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "kin-codex-pdf-cut-" }).pipe(
           Layer.provideMerge(NodeServices.layer),
         ),
       ),

@@ -453,7 +453,7 @@ const ascii85Decoded = (data: Uint8Array) => {
  * filters, names in any form; a filter this can't decode ends the check for that stream. Only a
  * first line: the reader process's own memory bound is what holds.
  */
-const inflatedTooFar = (bytes: Uint8Array): string | undefined => {
+export const inflatedTooFar = (bytes: Uint8Array): string | undefined => {
   const text = NodeBuffer.Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
     "latin1",
   );

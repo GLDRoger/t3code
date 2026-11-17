@@ -19,6 +19,12 @@ import { KinEnabled, layer as kinEnabledLayer } from "../KinEnabled.ts";
 import { threadPrefix as dreamThreadPrefix } from "../dreaming/DreamIsolation.ts";
 import { readPdfPages } from "../work/statements/statementFiles.ts";
 import { KIN_DEFERRED_TOOLS } from "./deferredTools.ts";
+import {
+  PDF_PAGE_IMAGES,
+  type PageBudget,
+  renderPdfPages,
+  type RenderedPages,
+} from "./pdfPageImages.ts";
 import { instructions } from "./instructions.ts";
 import { SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "./Audience.ts";
 import { GH_SIGN_FOLDER } from "./LeadIsolation.ts";
@@ -235,18 +241,46 @@ const ATTACHED_PDF = /\[Attached \w+ "([^"\n]+)" is saved at: ([^\n]+?\.pdf)\]/g
 /** About 50k tokens: a long contract, not a book. */
 const PDF_TEXT_CHARS = 200_000;
 
-const pdfText = (name: string, read: Awaited<ReturnType<typeof readPdfPages>>) => {
-  if ("_tag" in read)
-    return `[Kin couldn't read the attached PDF "${name}": ${
-      read._tag === "scanned"
-        ? "it is scanned pages with no text layer. Ask for photos of the pages."
-        : read._tag === "unreadable"
-          ? read.reason
-          : "it is password-protected."
-    }]`;
-  const pages = read.map((page, index) => `--- Page ${index + 1} ---\n${page}`).join("\n");
-  const cut = pages.length > PDF_TEXT_CHARS;
-  return `[Text of the attached PDF "${name}", ${read.length} pages${cut ? `, cut at ${PDF_TEXT_CHARS} characters` : ""}]\n${cut ? pages.slice(0, PDF_TEXT_CHARS) : pages}\n[End of "${name}"]`;
+type Read = Awaited<ReturnType<typeof readPdfPages>>;
+const said = (text: string) => ({ type: "text", text, text_elements: [] });
+
+/** What Claude's document block gives it: the PDF's text, then its pages as pictures. */
+const pdfInput = (name: string, read: Read, drawn: RenderedPages | undefined) => {
+  const hasText = !("_tag" in read);
+  const pictures = drawn?.images ?? [];
+  const lead = hasText
+    ? (() => {
+        const pages = read.map((page, index) => `--- Page ${index + 1} ---\n${page}`).join("\n");
+        const cut = pages.length > PDF_TEXT_CHARS;
+        return `[Text of the attached PDF "${name}", ${read.length} pages${cut ? `, cut at ${PDF_TEXT_CHARS} characters` : ""}]\n${cut ? pages.slice(0, PDF_TEXT_CHARS) : pages}\n[End of "${name}"]`;
+      })()
+    : read._tag === "scanned" && pictures.length > 0
+      ? `[The attached PDF "${name}" has no text layer: its pages follow as images.]`
+      : `[Kin couldn't read the attached PDF "${name}": ${
+          read._tag === "scanned"
+            ? "it is scanned pages with no text layer, and they couldn't be drawn here. Ask for photos of the pages."
+            : read._tag === "unreadable"
+              ? read.reason
+              : "it is password-protected."
+        }]`;
+  const total = drawn?.pageCount ?? 0;
+  const shown = pictures.length;
+  const leftOut =
+    drawn === undefined || shown >= total
+      ? []
+      : [
+          said(
+            `[${shown + 1 === total ? `Page ${total}` : `Pages ${shown + 1} to ${total}`} of "${name}" were left out as images${hasText ? " (their text is above)" : ""}. To see them, ask for those pages as their own file.]`,
+          ),
+        ];
+  return [
+    said(lead),
+    ...pictures.flatMap((jpeg, index) => [
+      said(`[Page ${index + 1} of ${total} of "${name}"]`),
+      { type: "image", url: `data:image/jpeg;base64,${jpeg}` },
+    ]),
+    ...leftOut,
+  ];
 };
 
 /** After a compaction T3 puts its thread guidance back (`restoreAdditionalContext`); not on Kin's. */
@@ -430,8 +464,11 @@ export const codexClientFactory = <E, R>(
           within(yield* real(kinDirectory), yield* real(cwd))
         );
       });
-      /** Claude reads an attached PDF as a document; Codex takes no file, so its text joins the turn. */
-      const withPdfText = Effect.fn("KinCodexIsolation.withPdfText")(function* (params: Params) {
+      /**
+       * Claude reads an attached PDF as a document, text and page images, in every chat; Codex
+       * takes no file, so Kin adds both to the turn, within one page budget for the turn.
+       */
+      const withPdfs = Effect.fn("KinCodexIsolation.withPdfs")(function* (params: Params) {
         const input = Array.isArray(params.input) ? (params.input as ReadonlyArray<unknown>) : [];
         const attached = input.flatMap((item) => {
           const text = (item as { type?: unknown; text?: unknown }).text;
@@ -439,15 +476,26 @@ export const codexClientFactory = <E, R>(
         });
         if (attached.length === 0) return params;
         const attachments = yield* real(config.attachmentsDir);
-        const texts = yield* Effect.forEach(attached, ([, name = "", file = ""]) =>
+        const budget: PageBudget = {
+          pages: PDF_PAGE_IMAGES.pagesPerTurn,
+          bytes: PDF_PAGE_IMAGES.bytesPerTurn,
+        };
+        const added = yield* Effect.forEach(attached, ([, name = "", file = ""]) =>
           Effect.gen(function* () {
             if (!within(attachments, yield* real(file))) return [];
             const bytes = yield* fs.readFile(file);
-            const read = yield* Effect.promise(() => readPdfPages(bytes));
-            return [{ type: "text", text: pdfText(name, read), text_elements: [] }];
+            const read = yield* Effect.tryPromise({
+              try: () => readPdfPages(bytes),
+              catch: () => "unreadable" as const,
+            });
+            const drawn = yield* Effect.tryPromise({
+              try: () => renderPdfPages(bytes, budget),
+              catch: () => "unreadable" as const,
+            }).pipe(Effect.orElseSucceed(() => undefined));
+            return pdfInput(name, read, drawn);
           }).pipe(Effect.orElseSucceed(() => [])),
         );
-        return { ...params, input: [...input, ...texts.flat()] };
+        return { ...params, input: [...input, ...added.flat()] };
       });
       const kin = yield* Effect.serviceOption(KinServer);
       const policy = Option.flatMap(kin, (server) =>
@@ -543,7 +591,7 @@ export const codexClientFactory = <E, R>(
               if (TURN_INPUT.has(method))
                 return seat === undefined
                   ? Effect.succeed(null)
-                  : withPdfText(
+                  : withPdfs(
                       method === "turn/steer"
                         ? params
                         : seat.full

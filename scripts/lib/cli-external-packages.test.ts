@@ -37,6 +37,8 @@ describe("shouldBundleCliDependency", () => {
       "@yuuang/ffi-rs-win32-x64-msvc",
       "@ff-labs/fff-node",
       "@napi-rs/keyring",
+      "@napi-rs/canvas",
+      "@napi-rs/canvas-linux-x64-gnu",
       "transcribe-cpp",
       "@transcribe-cpp/win32-x64-cpu-vulkan",
       "koffi",
