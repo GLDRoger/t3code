@@ -13,7 +13,7 @@ SCRIPTS=("$@")
   member-request-to-owner private-task-hidden member-no-money send-card-once overdue-invoice-reminder
   checkin-new-agent lead-adds-milestone owner-money-forms private-client-unnamed team-room-discussion
   character-and-undo github-delegated-task work-change-five-people member-attaches-file agent-page
-  project-people-loop member-sees-agent-name lead-undoes-only-me open-questions github-events
+  project-people-loop member-sees-agent-name lead-undoes-only-me open-questions github-events github-protect-branch
   member-messages-teammate member-refused-client member-suggests-playbook quote-invoice-loop
   social-week
   hours-two-zones relay-marked asker-is-giver remove-and-bring-back teammate-reminder

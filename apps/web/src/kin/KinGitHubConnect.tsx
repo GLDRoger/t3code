@@ -5,16 +5,21 @@ import {
   createKinGitHubRepoActions,
   createKinGitHubAppRepoActions,
   createKinGitHubAppSetupActions,
+  createKinGitHubGuardActions,
   KIN_GITHUB_APP_SETUP_COPY as SETUP,
   kinGitHubAppCreatePath,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_APP_REPOS_COPY as PICK,
   KIN_GITHUB_COPY as COPY,
+  KIN_GITHUB_GUARD_COPY as GUARD,
+  type KinGitHubGuardOutcome,
   KIN_GITHUB_WATCH_COPY as WATCH,
   kinGitHubAccountRepos,
   kinGitHubAccountRows,
   kinGitHubAccountsHint,
   kinGitHubAgentsView,
+  kinGitHubGuardAction,
+  kinGitHubGuardLine,
   kinGitHubRow,
   kinGitHubSheet,
   kinGitHubWatchLine,
@@ -609,6 +614,12 @@ function WatchedRepos(props: {
   const { environmentId, orgId, status } = props;
   const [open, setOpen] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const reloadRepos = useAtomRefresh(kinClient.githubRepos({ environmentId, input: { orgId } }));
+  const reloadStatus = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const guard = useGuardActions(environmentId, orgId, () => {
+    reloadRepos();
+    reloadStatus();
+  });
   const watch = status.watch;
   if (watch === undefined) return null;
   return (
@@ -619,6 +630,15 @@ function WatchedRepos(props: {
           <AlertDescription>{watch.problem}</AlertDescription>
         </Alert>
       )}
+      {(watch.open ?? 0) > 0 ? (
+        <ProtectAll
+          environmentId={environmentId}
+          orgId={orgId}
+          open={watch.open ?? 0}
+          guard={guard}
+        />
+      ) : null}
+      <GuardOutcome outcome={guard.outcome} />
       <div>
         <Button size="xs" variant="outline" onClick={() => setOpen(!open)} aria-expanded={open}>
           {open ? WATCH.hideRepos : WATCH.showRepos(watch.repos)}
@@ -632,6 +652,86 @@ function WatchedRepos(props: {
           <AlertDescription>{problem}</AlertDescription>
         </Alert>
       )}
+    </div>
+  );
+}
+
+/** The protection's answer: how many worked, then each repo that didn't and why. */
+function GuardOutcome(props: { readonly outcome: KinGitHubGuardOutcome | null }) {
+  const { outcome } = props;
+  if (outcome === null || (outcome.summary === null && outcome.problems.length === 0)) return null;
+  return (
+    <Alert variant={outcome.problems.length === 0 ? "success" : "error"}>
+      <AlertDescription>
+        {outcome.summary === null ? null : <p>{outcome.summary}</p>}
+        {outcome.problems.length === 0 ? null : (
+          <ul className="flex flex-col gap-1">
+            {outcome.problems.map((problem) => (
+              <li key={problem}>{problem}</li>
+            ))}
+          </ul>
+        )}
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function useGuardActions(environmentId: EnvironmentId, orgId: KinOrgId, refresh: () => void) {
+  const set = useAtomCommand(kinClient.githubGuardSet, { reportFailure: false });
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<KinGitHubGuardOutcome | null>(null);
+  const change = createKinGitHubGuardActions({
+    orgId,
+    set: (input) => set({ environmentId, input }),
+    refresh,
+  });
+  const run = (repos: ReadonlyArray<string>, on: boolean, all = false) => {
+    if (busy || repos.length === 0) return;
+    setBusy(true);
+    setOutcome(null);
+    void change(repos, on, all).then((answer) => {
+      setBusy(false);
+      setOutcome(answer);
+    });
+  };
+  return { busy, outcome, run };
+}
+
+/** "N watched repos let Kin's App change their main branch", what protecting does, and Protect all. */
+function ProtectAll(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly open: number;
+  readonly guard: ReturnType<typeof useGuardActions>;
+}) {
+  const { environmentId, orgId, guard } = props;
+  const reposAtom = kinClient.githubRepos({ environmentId, input: { orgId } });
+  const repos = Option.getOrNull(AsyncResult.value(useAtomValue(reposAtom)))?.repos ?? null;
+  const open = (repos ?? []).filter((repo) => kinGitHubGuardAction(repo.guard) === "protect");
+  return (
+    <div className="flex flex-col gap-2 rounded-md border px-3 py-2.5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+        <div className="flex min-w-0 flex-col gap-1">
+          <p className="text-sm font-medium">{GUARD.open(props.open)}</p>
+          <p className="text-xs text-muted-foreground">{GUARD.truth}</p>
+        </div>
+        <div className="shrink-0">
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={guard.busy || open.length === 0}
+            onClick={() =>
+              guard.run(
+                open.map((repo) => repo.repo),
+                true,
+                true,
+              )
+            }
+          >
+            {GUARD.protectAll}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -650,6 +750,11 @@ function RepoList(props: {
     orgId,
     set: (input) => set({ environmentId, input }),
     refresh: reload,
+  });
+  const reloadStatus = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const guard = useGuardActions(environmentId, orgId, () => {
+    reload();
+    reloadStatus();
   });
   const repos = Option.getOrNull(AsyncResult.value(result))?.repos ?? null;
   const settle = (outcome: Awaited<ReturnType<typeof actions.everything>>) =>
@@ -680,7 +785,7 @@ function RepoList(props: {
                 <span className="truncate text-sm">{repo.repo}</span>
                 {repo.fork ? <Badge variant="outline">{WATCH.fork}</Badge> : null}
               </div>
-              {repo.mentions || repo.agentsAs !== undefined ? (
+              {repo.mentions || repo.agentsAs !== undefined || repo.guard !== undefined ? (
                 <span className="text-xs text-muted-foreground">
                   {[
                     repo.agentsAs === undefined
@@ -689,11 +794,26 @@ function RepoList(props: {
                         ? WATCH.asApp
                         : WATCH.asYou,
                     repo.mentions ? WATCH.mentions : null,
+                    repo.guard === undefined ? null : kinGitHubGuardLine(repo.guard),
                   ]
                     .filter(Boolean)
                     .join(". ")}
                 </span>
               ) : null}
+              {kinGitHubGuardAction(repo.guard) === null ? null : (
+                <div className="pt-1.5">
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={guard.busy}
+                    onClick={() =>
+                      guard.run([repo.repo], kinGitHubGuardAction(repo.guard) === "protect")
+                    }
+                  >
+                    {kinGitHubGuardAction(repo.guard) === "protect" ? GUARD.protect : GUARD.remove}
+                  </Button>
+                </div>
+              )}
             </div>
             <Switch
               size="sm"
@@ -704,6 +824,7 @@ function RepoList(props: {
           </li>
         ))}
       </ul>
+      <GuardOutcome outcome={guard.outcome} />
       {repos.some((repo) => !repo.watched && !repo.fork) ? (
         <div>
           <Button
