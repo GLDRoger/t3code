@@ -87,13 +87,15 @@ const fakeCall =
     });
 
 /** The fake as `gh api` serves it to the watch. */
-const fakeApi = (github: FakeGitHub) =>
+const fakeApi = (github: FakeGitHub, signedIn: () => boolean) =>
   Layer.succeed(GitHubWatch.KinGitHubApi, {
     connected: () =>
-      Effect.succeed(
-        github.world.down === null
-          ? { login: github.world.user, orgs: ["invented-co"] }
-          : { login: github.world.user, orgs: [] },
+      Effect.sync(() =>
+        !signedIn()
+          ? null
+          : github.world.down === null
+            ? { login: github.world.user, orgs: ["invented-co"] }
+            : { login: github.world.user, orgs: [] },
       ),
     call: fakeCall(github),
   });
@@ -163,13 +165,13 @@ const database = KinPersistence.layer.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
-const setup = (options: { readonly app?: boolean } = {}) => {
+const setup = (options: { readonly app?: boolean; readonly signedIn?: () => boolean } = {}) => {
   const github = new FakeGitHub(emptyWorld("invented-owner", T0));
   github.addRepo({ full_name: REPO, private: false });
   github.addRepo({ full_name: "invented-co/old-fork", fork: true });
   const layer = GitHubWatch.layer.pipe(
     Layer.provideMerge(KinEventQueue.layer),
-    Layer.provideMerge(fakeApi(github)),
+    Layer.provideMerge(fakeApi(github, options.signedIn ?? (() => true))),
     Layer.provideMerge(options.app === true ? fakeApp(github) : Layer.empty),
     Layer.provideMerge(database),
   );
@@ -459,6 +461,29 @@ describe("KinGitHubWatch", () => {
       );
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect(
+    "a repo list that came back empty, or a login signed in again, is read on the next look, not in six hours",
+    () => {
+      let signedIn = true;
+      const { github, layer } = setup({ signedIn: () => signedIn });
+      github.world.repos = [];
+      return Effect.gen(function* () {
+        const listed = Effect.map(knownRepos(orgId), (repos) => repos.map((entry) => entry.repo));
+        yield* start(github);
+        assert.deepStrictEqual(yield* listed, []);
+        github.addRepo({ full_name: REPO });
+        yield* look(github);
+        assert.deepStrictEqual(yield* listed, [REPO]);
+        signedIn = false;
+        yield* look(github);
+        github.addRepo({ full_name: "invented-owner/notes" });
+        signedIn = true;
+        yield* look(github);
+        assert.deepStrictEqual(yield* listed, [REPO, "invented-owner/notes"]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect(
     "nothing Kin's GitHub App writes wakes an agent, except its own PR's failing checks",
