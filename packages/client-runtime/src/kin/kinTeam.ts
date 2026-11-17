@@ -109,6 +109,20 @@ const kinLoadLine = (load: { readonly open: number; readonly late: number }) =>
       ? `${load.open} open`
       : `${load.open} open, ${load.late} late`;
 
+/**
+ * Open-task counts come with the profiles, which avatars keep alive and only people changes move.
+ * A screen showing counts calls this with Work's task change number (null while Work isn't live);
+ * true means read the profiles again. One per app, so screens stacked on each other read once.
+ */
+export function kinOpenCountsFollower(): (key: string, seq: number | null) => boolean {
+  const read = new Map<string, number>();
+  return (key, seq) => {
+    if (seq === null || read.get(key) === seq) return false;
+    read.set(key, seq);
+    return true;
+  };
+}
+
 /** The places a member's switches turn on, in the order the dock shows them. */
 export const KIN_PLACE_SWITCHES = [
   {

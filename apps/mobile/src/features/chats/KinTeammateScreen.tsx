@@ -68,7 +68,7 @@ import { KinAwaySection, KinHandOverRow } from "./components/KinAway";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { kinClient } from "./state/kinClient";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
-import { useKinProfiles } from "./state/useKinProfiles";
+import { useKinOpenCounts, useKinProfiles } from "./state/useKinProfiles";
 
 export type KinTeammateParams = {
   readonly environmentId: string;
@@ -187,6 +187,7 @@ function KinTeammateDetails(props: {
   const offered = kinTeammateActions(teammate, props.viewer);
   // The host says whose profile this reader may change: the owner's and a co-owner's alike.
   const profiles = useKinProfiles(props.target.environmentId, props.target.orgId).held;
+  useKinOpenCounts(props.target);
   const profile = profiles?.profiles.find((held) => held.personId === teammate.personId) ?? null;
   const mayEdit = profile?.canEdit ?? props.viewer === "owner";
   const openTasks = kinOwnerLevel(props.viewer) ? (profile?.load?.open ?? 0) : 0;

@@ -18,6 +18,7 @@ import {
   createKinTeamActions,
   kinInviteLink,
   kinInviteLinkLocalOnly,
+  kinOpenCountsFollower,
   kinTeamEntrySummary,
   kinTeamView,
   kinTeammateActions,
@@ -256,5 +257,23 @@ describe("createKinTeamActions", () => {
     expect(yes.seen.map((edits) => edits.removed.has(tomas))).toEqual([true, false]);
     expect(yes.calls).toEqual(["remove:tomas", "refresh"]);
     expect(states(yes.edits())).toContainEqual(["Tomas", "no_access", "i-tomas"]);
+  });
+});
+
+describe("kinOpenCountsFollower", () => {
+  it("reads the counts again when a task change lands, once per change for every open screen", () => {
+    const follow = kinOpenCountsFollower();
+    // [company, Work's task change number or null while it isn't live, read again?]
+    const steps: ReadonlyArray<readonly [string, number | null, boolean]> = [
+      ["a", null, false], // Work not live yet: nothing to follow
+      ["a", 4, true], // first seen: the counts may predate it (avatars keep them alive)
+      ["a", 4, false], // a second screen showing counts over the first
+      ["a", 5, true], // a task finished
+      ["a", null, false], // offline: keep what is shown
+      ["a", 5, false], // back, nothing moved
+      ["b", 5, true], // another company follows on its own
+      ["a", 2, true], // the stream started over
+    ];
+    expect(steps.map(([key, seq]) => follow(key, seq))).toEqual(steps.map(([, , read]) => read));
   });
 });
