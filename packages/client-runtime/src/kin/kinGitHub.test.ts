@@ -1,8 +1,12 @@
 import { KinOrgId, type KinGitHubAppAccount, type KinGitHubStatus } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import { AsyncResult } from "effect/reactivity";
 
 import {
+  createKinGitHubGuardActions,
   kinGitHubAccountRepos,
+  kinGitHubGuardAction,
+  kinGitHubGuardLine,
   kinGitHubAccountRows,
   kinGitHubAccountsHint,
   kinGitHubAgentsView,
@@ -334,5 +338,49 @@ describe("kinGitHubAccountRepos", () => {
     expect(
       kinGitHubAccountRepos(repos, "invented-owner", " NOT").map((entry) => entry.repo),
     ).toEqual(["invented-owner/notes"]);
+  });
+});
+
+describe("protecting a repo's main branch from Kin's App", () => {
+  it("says each state on the row and offers only Kin's own protection to remove", () => {
+    const rows = [
+      { state: "open", branch: "main", byKin: false },
+      { state: "protected", branch: "main", byKin: true },
+      { state: "protected", branch: "trunk", byKin: false },
+      { state: "unknown", branch: "main", byKin: false, problem: "plan" },
+      { state: "unknown", branch: "main", byKin: false, problem: "no_admin" },
+    ] as const;
+    expect(rows.map((guard) => [kinGitHubGuardLine(guard), kinGitHubGuardAction(guard)])).toEqual([
+      ["Kin's App can change main", "protect"],
+      ["main protected by Kin", "remove"],
+      ["trunk protected by your rules", null],
+      ["GitHub's plan offers no protection for main here", null],
+      ["Protecting main takes admin on this repo", null],
+    ]);
+    expect(kinGitHubGuardAction(undefined)).toBeNull();
+  });
+
+  it("Protect all says how many worked and names each one that didn't, and why", async () => {
+    const protect = createKinGitHubGuardActions({
+      orgId: KinOrgId.make("org"),
+      set: async () =>
+        AsyncResult.success({
+          changed: 2,
+          failed: [
+            { repo: "invented-owner/private", problem: "plan" as const, said: null },
+            { repo: "invented-co/shared", problem: "no_admin" as const, said: null },
+          ],
+        }),
+      refresh: () => {},
+    });
+    expect(
+      await protect(["a/1", "a/2", "invented-owner/private", "invented-co/shared"], true),
+    ).toEqual({
+      summary: "Protected 2 of 4. Not protected:",
+      problems: [
+        "invented-owner/private: GitHub offers no protection on this repo with its plan. Make it public or upgrade on GitHub.",
+        "invented-co/shared: GitHub takes this only from an admin of the repo, and your login isn't one.",
+      ],
+    });
   });
 });

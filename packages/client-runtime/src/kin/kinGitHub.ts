@@ -7,7 +7,10 @@ import {
   type KinGitHubAppDisconnected,
   type KinGitHubAppReposResult,
   type KinGitHubAppReposSetInput,
+  type KinGitHubBranchGuard,
   type KinGitHubConnectInput,
+  type KinGitHubGuardSetInput,
+  type KinGitHubGuardSetResult,
   type KinGitHubInput,
   type KinGitHubRepo,
   type KinGitHubRepos,
@@ -269,6 +272,107 @@ export function createKinGitHubRepoActions(options: {
     watch: (repo: KinGitHubRepo, watched: boolean) => run({ repo: repo.repo, watched }),
     mentions: (repo: KinGitHubRepo, mentions: boolean) => run({ repo: repo.repo, mentions }),
     everything: () => run({ repo: null }),
+  };
+}
+
+/** Whether Kin's GitHub App can change a watched repo's main branch, and the owner's switch. */
+export const KIN_GITHUB_GUARD_COPY = {
+  open: (count: number) =>
+    count === 1
+      ? "1 watched repo lets Kin's App change its main branch."
+      : `${count} watched repos let Kin's App change their main branch.`,
+  truth:
+    "Protecting a repo stops Kin's App from changing its main branch, and you still merge and push as today. When an agent works as you, only Kin's guard on its tools stands.",
+  protect: "Protect",
+  protectAll: "Protect all",
+  remove: "Remove Kin's protection",
+} as const;
+
+/** The state on a repo's row: open, protected and by whom, or why Kin can't tell. */
+export function kinGitHubGuardLine(guard: KinGitHubBranchGuard): string {
+  const branch = guard.branch;
+  if (guard.state === "protected")
+    return guard.byKin ? `${branch} protected by Kin` : `${branch} protected by your rules`;
+  if (guard.state === "open") return `Kin's App can change ${branch}`;
+  switch (guard.problem) {
+    case "plan":
+      return `GitHub's plan offers no protection for ${branch} here`;
+    case "no_admin":
+      return `Protecting ${branch} takes admin on this repo`;
+    case "unreachable":
+      return `Kin couldn't reach GitHub to check ${branch}`;
+    default:
+      return `GitHub doesn't show ${branch}'s rules to your login`;
+  }
+}
+
+/** The one button a repo's row offers for its protection, if any. */
+export const kinGitHubGuardAction = (guard: KinGitHubBranchGuard | undefined) =>
+  guard === undefined
+    ? null
+    : guard.state === "open"
+      ? ("protect" as const)
+      : guard.state === "protected" && guard.byKin
+        ? ("remove" as const)
+        : null;
+
+/** Why one repo wasn't changed, as one sentence. */
+function kinGitHubGuardRefusal(failed: KinGitHubGuardSetResult["failed"][number]): string {
+  const { repo } = failed;
+  switch (failed.problem) {
+    case "plan":
+      return `${repo}: GitHub offers no protection on this repo with its plan. Make it public or upgrade on GitHub.`;
+    case "no_admin":
+      return `${repo}: GitHub takes this only from an admin of the repo, and your login isn't one.`;
+    case "no_access":
+      return `${repo}: GitHub doesn't show this repo to your login.`;
+    case "unreachable":
+      return `${repo}: Kin couldn't reach GitHub, so nothing changed.`;
+    case "not_kin":
+      return `${repo}: this protection isn't Kin's, so Kin leaves it as it is.`;
+    case "refused":
+      return failed.said === null
+        ? `${repo}: GitHub refused.`
+        : `${repo}: GitHub refused and said "${failed.said}".`;
+  }
+}
+
+export interface KinGitHubGuardOutcome {
+  /** "Protected 3 of 4." when more than one repo was asked; null for one. */
+  readonly summary: string | null;
+  /** One sentence for each repo that wasn't changed. */
+  readonly problems: ReadonlyArray<string>;
+}
+
+/** Protect or Remove Kin's protection, answered in plain words. */
+export function createKinGitHubGuardActions(options: {
+  readonly orgId: KinOrgId;
+  readonly set: (input: KinGitHubGuardSetInput) => Sent<KinGitHubGuardSetResult>;
+  readonly refresh: () => void;
+}) {
+  return async (repos: ReadonlyArray<string>, on: boolean): Promise<KinGitHubGuardOutcome> => {
+    const result = await options.set({ orgId: options.orgId, repos: [...repos], on });
+    options.refresh();
+    if (!AsyncResult.isSuccess(result))
+      return {
+        summary: null,
+        problems: [
+          kinFailureText(squashAtomCommandFailure(result), "Couldn't change the protection.", {
+            device: "This device isn't allowed to change your repos' protection.",
+          }),
+        ],
+      };
+    const { changed, failed } = result.value;
+    const total = changed + failed.length;
+    return {
+      summary:
+        repos.length < 2
+          ? null
+          : failed.length === 0
+            ? `Protected ${plural(changed, "repo")}.`
+            : `Protected ${changed} of ${total}. Not protected:`,
+      problems: failed.map(kinGitHubGuardRefusal),
+    };
   };
 }
 
