@@ -48,16 +48,7 @@ import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
 import { KinVisualRpcs, KIN_VISUAL_RPC_SCOPES } from "./kinVisual.ts";
 import { KinConnectionRpcs, KIN_CONNECTION_RPC_SCOPES } from "./kinConnections.ts";
 import { KinSocialRpcs, KIN_SOCIAL_RPC_SCOPES } from "./kinSocial.ts";
-import {
-  KinGithubWebhookOrgInput,
-  KinGithubWebhookSecretInput,
-  KinGithubWebhookSetup,
-  KinGithubWebhookSetupInput,
-  KinGithubWebhookStatus,
-  KinOwnerTimeZone,
-  KinOwnerTimeZoneGetInput,
-  KinOwnerTimeZoneRead,
-} from "./kinTriggers.ts";
+import { KinOwnerTimeZone, KinOwnerTimeZoneGetInput, KinOwnerTimeZoneRead } from "./kinTriggers.ts";
 import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 
 const KinError = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -153,33 +144,6 @@ const KinLeadRpcs = [
     error: KinError,
   }),
 ] as const;
-export const KinGithubWebhookRpcs = [
-  Rpc.make("kin.webhooks.github.setup", {
-    payload: KinGithubWebhookSetupInput,
-    success: KinGithubWebhookSetup,
-    error: KinError,
-  }),
-  Rpc.make("kin.webhooks.github.setSecret", {
-    payload: KinGithubWebhookSecretInput,
-    success: KinGithubWebhookSetup,
-    error: KinError,
-  }),
-  Rpc.make("kin.webhooks.github.rotate", {
-    payload: KinGithubWebhookOrgInput,
-    success: KinGithubWebhookSetup,
-    error: KinError,
-  }),
-  Rpc.make("kin.webhooks.github.remove", {
-    payload: KinGithubWebhookOrgInput,
-    success: Schema.Struct({}),
-    error: KinError,
-  }),
-  Rpc.make("kin.webhooks.github.status", {
-    payload: KinGithubWebhookOrgInput,
-    success: KinGithubWebhookStatus,
-    error: KinError,
-  }),
-] as const;
 // The zone routines, deferrals, notices and due times use: any member reads it, the owner sets it.
 // Unset reads as the host's zone, marked `fromHost`.
 const KinTimeZoneRpcs = [
@@ -213,7 +177,6 @@ export const KinRpcs = [
   ...KinFinanceRpcs,
   ...KinMoneyAnswerRpcs,
   ...KinStatementRpcs,
-  ...KinGithubWebhookRpcs,
   ...KinPushRpcs,
   ...KinPeopleRpcs,
   ...KinConnectionRpcs,
@@ -267,11 +230,6 @@ export const KIN_RPC_SCOPES = {
   "kin.groups.setCompany": AuthKinChatScope,
   "kin.triggers.getTimeZone": AuthKinChatScope,
   "kin.triggers.setTimeZone": AuthKinChatScope,
-  "kin.webhooks.github.setup": AuthKinChatScope,
-  "kin.webhooks.github.setSecret": AuthKinChatScope,
-  "kin.webhooks.github.rotate": AuthKinChatScope,
-  "kin.webhooks.github.remove": AuthKinChatScope,
-  "kin.webhooks.github.status": AuthKinChatScope,
 } as const;
 
 /**
@@ -419,11 +377,6 @@ const KIN_RPC_ACCESS = {
   "kin.work.statementRows": "owner_level",
   "kin.work.statementPasswords": "owner_level",
   "kin.work.statementForgetAccount": "owner_level",
-  "kin.webhooks.github.setup": "owner_level",
-  "kin.webhooks.github.setSecret": "owner_level",
-  "kin.webhooks.github.rotate": "owner_level",
-  "kin.webhooks.github.remove": "owner_level",
-  "kin.webhooks.github.status": "owner_level",
   "kin.push.registerDevice": "person",
   "kin.push.unregisterDevice": "person",
   "kin.push.watch": "person",
@@ -652,11 +605,6 @@ export const KIN_RPC_AGGREGATES = {
   "kin.visuals.hosts.remove": "kin-chat",
   "kin.triggers.getTimeZone": "kin-triggers",
   "kin.triggers.setTimeZone": "kin-triggers",
-  "kin.webhooks.github.setup": "kin-webhooks",
-  "kin.webhooks.github.setSecret": "kin-webhooks",
-  "kin.webhooks.github.rotate": "kin-webhooks",
-  "kin.webhooks.github.remove": "kin-webhooks",
-  "kin.webhooks.github.status": "kin-webhooks",
   "kin.connections.list": "kin-connections",
   "kin.connections.get": "kin-connections",
   "kin.connections.add": "kin-connections",

@@ -450,9 +450,6 @@ export const recordedAudience = Effect.fn("KinAudience.recordedAudience")(functi
   return row?.audience === "owner_only" ? ("owner_only" as const) : ("shared" as const);
 });
 
-/** What a lead may say when a shared chat asks for something only the owner's turns have. */
-export const SHARED_GITHUB =
-  "You don't read GitHub in chats with other people. Answer from this chat alone.";
 export const SHARED_OTHER_CHAT =
   "In a chat with other people you read only the chat you were asked in.";
 export const OTHERS_CHAT = "You read only chats everyone you are working for here is in.";

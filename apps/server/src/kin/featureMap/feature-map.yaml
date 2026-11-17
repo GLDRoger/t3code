@@ -159,26 +159,18 @@ features:
       - apps/server/src/kin/contract/delegateTask.kin-contract.test.ts
 
   - id: github
-    name: GitHub repos, pull requests, runs and reviews
+    name: GitHub reviews, linked issues and events
     tab: chats
     web: [chat]
     phone: [tab:chats, KinChat]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    note: Through the agent, on repos linked to a project.
-    tools:
-      [
-        kin_github_repos,
-        kin_github_prs,
-        kin_github_pr,
-        kin_github_runs,
-        kin_github_review,
-        kin_github_link,
-        kin_github_watch,
-      ]
+    note: >-
+      Through the agent, as the owner's GitHub login (Settings, Connections); it reads repos, PRs
+      and runs with gh.
+    tools: [kin_github_review, kin_github_link, kin_github_watch]
     proof:
-      - apps/server/src/kin/github/KinRepoReads.test.ts
-      - apps/server/src/kin/github/PullRequestCare.test.ts
       - apps/server/src/kin/github/GitHubWatch.test.ts
+      - apps/server/src/kin/triggers/githubReaders.test.ts
       - .agents/skills/verify-kin/scripts/github-events.sh
 
   - id: come-back-later
@@ -207,7 +199,6 @@ features:
     note: >-
       Waiting on you lists each approval on both; the phone shows the card right there, the web
       opens the chat it is in.
-    tools: [request_action]
     proof:
       - apps/server/src/kin/approvals/PendingActions.test.ts
       - apps/server/src/kin/approvals/ActionExecutor.test.ts

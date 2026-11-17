@@ -296,18 +296,6 @@ const seed = Effect.gen(function* () {
   yield* sql`PRAGMA foreign_keys = ON`;
 });
 
-// Open PRs as webhooks left them: #1 opened at B with a review asked at B + 2 days and failing
-// checks; #2 approved and green from B + 1 day.
-const seedPulls = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  yield* sql`INSERT INTO kin_pull_requests (org_id, repo, number, title, author, url, state,
-      head_sha, opened_at, review_requested_at, review, checks, checks_sha, ready_at, updated_at)
-    VALUES (${orgId}, 'acme/app', 1, 'Invented fix', 'mate', 'https://github.com/acme/app/pull/1',
-      'open', 'sha-1', ${B}, ${B + 2 * DAY}, NULL, 'failure', 'sha-1', NULL, ${B}),
-      (${orgId}, 'acme/app', 2, 'Invented feature', 'mate', 'https://github.com/acme/app/pull/2',
-      'open', 'sha-2', ${B}, NULL, 'approved', 'success', 'sha-2', ${B + DAY}, ${B})`;
-});
-
 const read = (at: number, viewer: KinPulse.Viewer = { _tag: "owner" }) =>
   KinPulse.read({ orgId, at, viewer, includeHandled: true, limit: 200 });
 
@@ -337,11 +325,6 @@ const SENSES: ReadonlyArray<readonly [string, string, number]> = [
   ["client_waiting_on_us", "C-1", B + 5 * DAY + 24 * HOUR],
   // ₹1L of ₹10L: behind once a straight line would be past ₹1.25L (20 % under it).
   ["goal_behind", "G-1", B + 3.75 * DAY],
-  // PRs: open past the playbook's 72 hours, a review asked 24 hours ago, failing, ready.
-  ["pr_open_long", "acme/app#1", B + 72 * HOUR],
-  ["pr_review_waiting", "acme/app#1", B + 3 * DAY],
-  ["pr_failing", "acme/app#1", B],
-  ["pr_ready", "acme/app#2", B + DAY],
   // A retainer's renews-on day, 14 days ahead by default (end of 20 Dec).
   ["renewal_due", "P-1", B + 36 * DAY - 1],
   ["project_no_plan", "P-2", B - 29 * DAY],
@@ -362,7 +345,6 @@ describe("KinPulse", () => {
   it.effect("each sense is absent a minute before its line and present at it", () =>
     Effect.gen(function* () {
       yield* seed;
-      yield* seedPulls;
       for (const [sense, subject, at] of SENSES) {
         assert.lengthOf(
           keyed((yield* read(at - MINUTE)).facts, sense, subject),

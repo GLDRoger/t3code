@@ -6,7 +6,6 @@ import {
   KinTriggerFireId,
   KinTriggerId,
   KinTriggerSettings,
-  KinWebhookSource,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
@@ -45,7 +44,6 @@ const decodeTrigger = Schema.decodeSync(KinTrigger);
 const decodeTriggerId = Schema.decodeSync(KinTriggerId);
 const decodeFire = Schema.decodeSync(KinTriggerFired);
 const decodeFireId = Schema.decodeSync(KinTriggerFireId);
-const decodeSource = Schema.decodeEffect(KinWebhookSource);
 const decodeSettings = Schema.decodeEffect(KinTriggerSettings);
 const isFireConflict = Schema.is(KinTriggerStore.KinTriggerFireConflict);
 
@@ -436,7 +434,7 @@ describe("KinTriggerStore", () => {
       Effect.gen(function* () {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
-        const source = yield* decodeSource({
+        const source = {
           id: "source",
           orgId: orgA,
           repo: "owner/repo",
@@ -445,7 +443,7 @@ describe("KinTriggerStore", () => {
           githubHookId: null,
           botLogin: "kin[bot]",
           status: "active",
-        });
+        };
         yield* sql`
       INSERT INTO kin_webhook_sources (source_id, org_id, repo, scheduled_task_id, inbox_thread_id, github_hook_id, bot_login, status)
       VALUES (${source.id}, ${source.orgId}, ${source.repo}, ${source.scheduledTaskId}, ${source.inboxThreadId}, ${source.githubHookId}, ${source.botLogin}, ${source.status})

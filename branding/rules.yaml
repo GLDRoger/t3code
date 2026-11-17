@@ -635,7 +635,6 @@ leaks:
         - ops/kin/host/kin
         - ops/kin/host/kin-server.service
         - ops/kin/host/update.sh
-        - apps/server/src/kin/cli/githubWebhook.ts
     - reason: Message attribution enum on the wire; peers and stored threads use this value.
       leak: scheme-name
       text: "^t3code$"

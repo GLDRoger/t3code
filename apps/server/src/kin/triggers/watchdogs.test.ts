@@ -1,19 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
-import {
-  KIN_GITHUB_APP_SOURCE,
-  KinEvent,
-  KinOrgId,
-  KinWebhookSource,
-  ManagedPolicyDocument,
-  MemoryItemHead,
-} from "@t3tools/contracts";
+import { KinEvent, KinOrgId, MemoryItemHead } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -21,7 +13,6 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
-import type * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
@@ -29,18 +20,10 @@ import * as Chat from "../chat/KinChatService.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import * as GithubEvents from "./githubEvents.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 import * as Watchdogs from "./watchdogs.ts";
-import {
-  projection,
-  signedRequest,
-  timestamp,
-  waitForDispatch,
-  webhookTask,
-  withScheduledTasks,
-} from "./webhooks.testkit.ts";
+import { projection, timestamp } from "./threadProjection.testkit.ts";
 
 const NOW = 1794009600000;
 const HOUR = 60 * 60 * 1000;
@@ -49,17 +32,6 @@ const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const orgId = KinOrgId.make("org-a");
 const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
 const decodeEvent = Schema.decodeSync(Schema.fromJsonString(KinEvent));
-const decodePolicy = Schema.decodeEffect(ManagedPolicyDocument);
-const source = Schema.decodeSync(KinWebhookSource)({
-  id: KIN_GITHUB_APP_SOURCE,
-  orgId,
-  repo: KIN_GITHUB_APP_SOURCE,
-  scheduledTaskId: `task-${orgId}`,
-  inboxThreadId: `inbox-${orgId}`,
-  githubHookId: null,
-  botLogin: "kin[bot]",
-  status: "active",
-});
 
 const item = (id: string, overrides: Record<string, unknown> = {}) =>
   decodeHead({
@@ -142,6 +114,13 @@ const putRecheck = (delivery: string) =>
     return fireId;
   });
 
+/** The owner's watch covers `Owner/Repo`, as the poller would have stored it. */
+const watching = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at, repos_json)
+    VALUES (${orgId}, 'owner-gh', 0, 0, 0, ${JSON.stringify([{ repo: "Owner/Repo", fork: false }])})`;
+});
+
 const pendingRechecks = Effect.gen(function* () {
   const inbox = yield* KinTriggerInbox.KinTriggerInbox;
   return (yield* inbox.listPending(orgId, 100, undefined, ["github_recheck"])).length;
@@ -214,7 +193,6 @@ function services(harness: Harness) {
   return Layer.mergeAll(
     memory,
     Chat.layer.pipe(Layer.provideMerge(Hub.layer)),
-    Layer.succeed(GithubEvents.KinGithubRepoScope, { repos: ["Owner/Repo"] }),
     Layer.succeed(Scheduler.Scheduler, {
       register: Effect.fn("KinWatchdogsTest.register")(function* <E, R>(
         name: string,
@@ -292,7 +270,7 @@ describe("github_recheck", () => {
   const halfDone = item("two-links", {
     links: ["https://github.com/owner/repo/issues/7", "https://github.com/owner/repo/issues/8"],
   });
-  const outOfScope = item("elsewhere", { links: ["https://github.com/other/repo/issues/7"] });
+  const otherRepo = item("elsewhere", { links: ["https://github.com/other/repo/issues/7"] });
   const condition = item("when-212-merges", {
     kind: "deferral",
     path: "deferrals/when-212-merges.md",
@@ -303,20 +281,26 @@ describe("github_recheck", () => {
   it.effect(
     "queues a code-only watchdog event naming the commitment and the closed issue as evidence",
     () =>
-      run([closesIssue, mergesPr, halfDone, outOfScope, condition], () =>
+      run([closesIssue, mergesPr, halfDone, otherRepo, condition], () =>
         Effect.gen(function* () {
+          yield* watching;
           const service = yield* build;
           yield* putRecheck("1");
           const reads: Array<string> = [];
           yield* service.run("github_recheck", orgId).pipe(withGithub(fakeGithub(states, reads)));
 
-          // One batched read for the scoped repo; the out-of-scope link is never read.
-          assert.deepEqual(reads, ["owner/repo:7,8,9,212"]);
+          // One batched read per repo; the condition reads the owner's watched repo.
+          assert.deepEqual(reads, ["other/repo:7", "owner/repo:7,8,9,212"]);
           assert.deepEqual(yield* watchdogEvents, [
             {
               finding:
                 "GitHub state shows condition met (read from GitHub by code): https://github.com/Owner/Repo/pull/212 is merged.",
               itemIds: ["when-212-merges"],
+            },
+            {
+              finding:
+                "Verified on GitHub by code: https://github.com/other/repo/issues/7 is closed. Mark commitment elsewhere done and record that link as its evidence.",
+              itemIds: ["elsewhere"],
             },
             {
               finding:
@@ -334,8 +318,8 @@ describe("github_recheck", () => {
           // A later sweep reads again but queues nothing new for the same findings.
           yield* putRecheck("2");
           yield* service.run("github_recheck", orgId).pipe(withGithub(fakeGithub(states, reads)));
-          assert.equal(reads.length, 2);
-          assert.equal((yield* watchdogEvents).length, 3);
+          assert.equal(reads.length, 4);
+          assert.equal((yield* watchdogEvents).length, 4);
           assert.equal(yield* pendingRechecks, 0);
         }),
       ),
@@ -501,124 +485,6 @@ it.effect("index_freshness rebuilds INDEX.md once it is 36 hours old", () =>
 );
 
 describe("trigger_reconcile", () => {
-  const sourceStatus = Effect.gen(function* () {
-    const store = yield* KinTriggerStore.KinTriggerStore;
-    return (yield* store.getSource(orgId, source.id))?.status;
-  });
-  const registered = <E, R>(
-    body: (
-      tasks: ScheduledTaskService.ScheduledTaskService["Service"],
-      reconcile: Effect.Effect<void>,
-      taskId: string,
-    ) => Effect.Effect<void, E, R>,
-  ) =>
-    run([], () =>
-      withScheduledTasks((tasks) =>
-        Effect.gen(function* () {
-          const { task } = yield* tasks.upsert(
-            yield* webhookTask(source.scheduledTaskId, `project-${orgId}`),
-          );
-          const store = yield* KinTriggerStore.KinTriggerStore;
-          yield* store.registerSource(source);
-          yield* store.bindSecret(orgId, source.id, Redacted.make("test-secret"));
-          yield* TestClock.adjust("1 second");
-          const service = yield* build;
-          yield* body(tasks, service.run("trigger_reconcile", orgId).pipe(Effect.orDie), task.id);
-        }),
-      ),
-    );
-
-  it.effect("reports a paused task without re-enabling it, then sees it resume", () =>
-    registered((tasks, reconcile, taskId) =>
-      Effect.gen(function* () {
-        yield* reconcile;
-        assert.equal(yield* sourceStatus, "active");
-        assert.deepEqual(yield* notices, []);
-
-        yield* tasks.setEnabled({ id: source.scheduledTaskId, enabled: false });
-        yield* reconcile;
-        yield* reconcile;
-        assert.equal(yield* sourceStatus, "paused_in_t3");
-        const listed = (yield* tasks.list()).tasks.find((task) => task.id === taskId);
-        assert.equal(listed?.enabled, false);
-        assert.lengthOf(yield* notices, 1);
-        assert.include((yield* notices)[0], "Kin won't turn it back on");
-
-        // The owner turns it on in T3; the sink takes deliveries before the next reconcile.
-        const { task } = yield* tasks.setEnabled({ id: source.scheduledTaskId, enabled: true });
-        yield* waitForDispatch(
-          tasks.triggerWebhook(
-            signedRequest(task, "gh-1", {
-              action: "opened",
-              repository: { full_name: "owner/repo" },
-              sender: { login: "alice" },
-              pull_request: { number: 1 },
-            }),
-          ),
-        );
-        const inbox = yield* KinTriggerInbox.KinTriggerInbox;
-        assert.lengthOf(yield* inbox.listPending(orgId, 10, undefined, ["github"]), 1);
-        yield* reconcile;
-        assert.equal(yield* sourceStatus, "active");
-        assert.deepEqual((yield* notices).at(-1), "GitHub events reach Kin again.");
-      }),
-    ),
-  );
-
-  it.effect("reports a swapped secret once per binding and a deleted task as missing", () =>
-    registered((tasks, reconcile) =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`UPDATE scheduled_tasks SET webhook_secret = 'agent-chosen-secret'
-          WHERE task_id = ${source.scheduledTaskId}`;
-        yield* reconcile;
-        yield* reconcile;
-        assert.equal(yield* sourceStatus, "active");
-        assert.lengthOf(yield* notices, 1);
-        assert.include((yield* notices)[0], "a secret Kin didn't bind");
-        const bound = yield* sql<{ hash: string }>`SELECT secret_sha256 AS hash
-          FROM kin_webhook_sources WHERE org_id = ${orgId} AND source_id = ${source.id}`;
-        assert.isString(bound[0]?.hash);
-
-        yield* tasks.delete({ id: source.scheduledTaskId });
-        yield* reconcile;
-        assert.equal(yield* sourceStatus, "missing");
-        assert.include((yield* notices).at(-1), "was deleted");
-      }),
-    ),
-  );
-
-  it.effect("reports a task blocked by managed policy", () =>
-    run([], () =>
-      Effect.gen(function* () {
-        yield* withScheduledTasks((tasks) =>
-          Effect.gen(function* () {
-            yield* tasks.upsert(yield* webhookTask(source.scheduledTaskId, `project-${orgId}`));
-            const store = yield* KinTriggerStore.KinTriggerStore;
-            yield* store.registerSource(source);
-            yield* store.bindSecret(orgId, source.id, Redacted.make("test-secret"));
-          }),
-        );
-        const policy = yield* decodePolicy({
-          schemaVersion: 1,
-          organization: "Kin",
-          limits: { webhookTasks: false },
-        });
-        yield* withScheduledTasks(
-          () =>
-            Effect.gen(function* () {
-              const service = yield* build;
-              yield* service.run("trigger_reconcile", orgId);
-            }),
-          undefined,
-          policy,
-        );
-        assert.equal(yield* sourceStatus, "blocked_by_policy");
-        assert.include((yield* notices)[0], "managed policy");
-      }),
-    ),
-  );
-
   it.effect("re-arms open deferrals from memory", () =>
     run(
       [

@@ -2,8 +2,8 @@
 (* Kin watching one GitHub thread with the owner's login: things happen on it (a teammate's PR, a
    teammate's /kin, a stranger's /kin, the agent's own signed reply), Kin looks, decides, wakes an
    agent once, reacts once, and the agent's reply lands back on the thread. The server can stop at
-   any point and the App's webhook can deliver the same event. Each action names the code it
-   stands for (paths under apps/server/src/kin). One action is one transaction. *)
+   any point. Each action names the code it stands for (paths under apps/server/src/kin). One
+   action is one transaction. *)
 EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS Broken,
@@ -19,7 +19,7 @@ VARIABLES
   cursor,     \* kin_github_watch.since_at: everything up to here was weighed
   handled,    \* kin_github_handled: the trigger keys stored, whatever the outcome
   capped,     \* those stored as "capped": stopped for the hour, with the note
-  wakes,      \* per thing, the agent wake-ups (kin_events) it caused, from either source
+  wakes,      \* per thing, the agent wake-ups (kin_events) it caused
   pending,    \* wake-ups queued and not yet run
   reactions,  \* per thing, the 👀 Kin put on it
   phase,      \* idle, looking (between StartLook and EndLook)
@@ -30,10 +30,10 @@ VARIABLES
   react,      \* the thing just woken, owed its 👀 (0 when none)
   hourWakes,  \* wake-ups on the thread this hour
   notes,      \* "stopped for the hour" comments this hour (one hour: its end resets both)
-  stops, hooks
+  stops
 
 vars == <<thread, cursor, handled, capped, wakes, pending, reactions, phase, upTo, at, woken, later, react,
-          hourWakes, notes, stops, hooks>>
+          hourWakes, notes, stops>>
 
 Things == 1..MaxThings
 
@@ -49,14 +49,14 @@ Init ==
   /\ thread = <<>> /\ cursor = 0 /\ handled = {} /\ capped = {} /\ wakes = [i \in Things |-> 0]
   /\ pending = {} /\ reactions = [i \in Things |-> 0]
   /\ phase = "idle" /\ upTo = 0 /\ at = 1 /\ woken = 0 /\ later = FALSE /\ react = 0
-  /\ hourWakes = 0 /\ notes = 0 /\ stops = 0 /\ hooks = {}
+  /\ hourWakes = 0 /\ notes = 0 /\ stops = 0
 
 (* People act on GitHub, whether Kin is running or not. *)
 Happen(k) ==
   /\ Len(thread) < MaxThings
   /\ thread' = Append(thread, k)
   /\ UNCHANGED <<capped, cursor, handled, wakes, pending, reactions, phase, upTo, at, woken, later, react,
-                 hourWakes, notes, stops, hooks>>
+                 hourWakes, notes, stops>>
 
 (* github/GitHubWatch.ts poll: notifications since the cursor (If-Modified-Since) and the owner's
    own events (If-None-Match) say what changed; the look reads the thread as it is now. *)
@@ -65,8 +65,7 @@ StartLook ==
   /\ phase' = "looking" /\ upTo' = Len(thread) /\ at' = cursor + 1 /\ woken' = 0 /\ later' = FALSE
   \* Moving the cursor before weighing: a stop mid-look loses what was left.
   /\ cursor' = IF Broken = "cursor-first" THEN Len(thread) ELSE cursor
-  /\ UNCHANGED <<capped, thread, handled, wakes, pending, reactions, react, hourWakes, notes, stops,
-                 hooks>>
+  /\ UNCHANGED <<capped, thread, handled, wakes, pending, reactions, react, hourWakes, notes, stops>>
 
 (* GitHubWatch.ts handle: in one transaction, skip a stored key; over the look's cap leave it for
    the next look (nothing stored); over the thread's hour stop it ("capped", one note); else store
@@ -74,10 +73,10 @@ StartLook ==
 Weigh ==
   /\ phase = "looking" /\ at <= upTo /\ react = 0
   /\ LET k == thread[at] IN
-     IF ~Trigger(k) \/ (at \in handled /\ Broken # "react-each-look")
+     IF ~Trigger(k) \/ (at \in handled /\ Broken \notin {"react-each-look", "wake-each-look"})
      THEN /\ at' = at + 1
           /\ UNCHANGED <<handled, wakes, pending, woken, later, react, hourWakes, notes, capped>>
-     ELSE IF at \in handled
+     ELSE IF at \in handled /\ Broken = "react-each-look"
      \* The broken variant reacts again to what an earlier look already handled.
      THEN /\ at' = at + 1 /\ react' = at
           /\ UNCHANGED <<handled, wakes, pending, woken, later, hourWakes, notes, capped>>
@@ -97,7 +96,7 @@ Weigh ==
           /\ woken' = woken + 1 /\ hourWakes' = hourWakes + 1
           /\ at' = at + 1 /\ react' = at
           /\ UNCHANGED <<later, notes, capped>>
-  /\ UNCHANGED <<thread, cursor, reactions, phase, upTo, stops, hooks>>
+  /\ UNCHANGED <<thread, cursor, reactions, phase, upTo, stops>>
 
 (* GitHubWatch.ts react: the 👀, after the commit; a stop before it leaves none. *)
 React ==
@@ -105,7 +104,7 @@ React ==
   /\ reactions' = [reactions EXCEPT ![react] = @ + 1]
   /\ react' = 0
   /\ UNCHANGED <<capped, thread, cursor, handled, wakes, pending, phase, upTo, at, woken, later, hourWakes,
-                 notes, stops, hooks>>
+                 notes, stops>>
 
 (* The end of a look: the cursor moves only when nothing was left for the next look. *)
 EndLook ==
@@ -113,7 +112,7 @@ EndLook ==
   /\ cursor' = IF later THEN cursor ELSE upTo
   /\ phase' = "idle"
   /\ UNCHANGED <<capped, thread, handled, wakes, pending, reactions, upTo, at, woken, later, react,
-                 hourWakes, notes, stops, hooks>>
+                 hourWakes, notes, stops>>
 
 (* The agent's turn (lead/WakeupRunner.ts): it answers on GitHub, signed (github/ghSign.ts), so its
    reply is on the thread with the marker. *)
@@ -122,30 +121,19 @@ Turn(i) ==
   /\ pending' = pending \ {i}
   /\ thread' = IF Len(thread) < MaxThings THEN Append(thread, "own") ELSE thread
   /\ UNCHANGED <<capped, cursor, handled, wakes, reactions, phase, upTo, at, woken, later, react, hourWakes,
-                 notes, stops, hooks>>
-
-(* triggers/githubEvents.ts: the App's webhook for the same thing. While the watch is on it marks
-   the delivery consumed and wakes no one. *)
-Webhook(i) ==
-  /\ i <= Len(thread) /\ i \notin hooks /\ Inside(thread[i])
-  /\ hooks' = hooks \cup {i}
-  /\ IF Broken = "webhook-on"
-     THEN /\ wakes' = [wakes EXCEPT ![i] = @ + 1] /\ pending' = pending \cup {i}
-     ELSE UNCHANGED <<wakes, pending>>
-  /\ UNCHANGED <<capped, thread, cursor, handled, reactions, phase, upTo, at, woken, later, react,
-                 hourWakes, notes, stops>>
+                 notes, stops>>
 
 (* The server stops anywhere and starts again: what was stored stays, the look in hand is gone. *)
 Stop ==
   /\ stops < MaxStops
   /\ stops' = stops + 1
   /\ phase' = "idle" /\ react' = 0 /\ upTo' = 0 /\ at' = 1 /\ woken' = 0 /\ later' = FALSE
-  /\ UNCHANGED <<capped, thread, cursor, handled, wakes, pending, reactions, hourWakes, notes, hooks>>
+  /\ UNCHANGED <<capped, thread, cursor, handled, wakes, pending, reactions, hourWakes, notes>>
 
 Next ==
   \/ \E k \in Kinds : Happen(k)
   \/ StartLook \/ Weigh \/ React \/ EndLook \/ Stop
-  \/ \E i \in Things : Turn(i) \/ Webhook(i)
+  \/ \E i \in Things : Turn(i)
 
 Spec == Init /\ [][Next]_vars
 

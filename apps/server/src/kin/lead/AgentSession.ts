@@ -1,5 +1,4 @@
 import type { KinAgentId, KinOrgId, ThreadId } from "@t3tools/contracts";
-import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -163,16 +162,9 @@ export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
   Effect.orElseSucceed((): string | undefined => undefined),
 );
 
-/**
- * Kin's GitHub tools answer only "not connected" without the Kin App (`layer.ts` `repoReads`),
- * except the ones that work through the owner's own login.
- */
+/** Kin's GitHub tools work through the owner's own login, so they show only while it's connected. */
 const isKinGitHubTool = (name: string) => name.startsWith("kin_github_");
-const LOGIN_GITHUB_TOOLS = new Set(["kin_github_review", "kin_github_watch"]);
-const kinAppConfigured = Config.option(Config.String("KIN_GITHUB_APP_ID")).pipe(
-  Effect.map(Option.isSome),
-  Effect.orElseSucceed(() => false),
-);
+const LOGIN_GITHUB_TOOLS = new Set(["kin_github_review", "kin_github_watch", "kin_github_link"]);
 const loginConnected = Effect.gen(function* () {
   const kin = yield* Effect.serviceOption(KinServer);
   if (Option.isNone(kin) || Option.isNone(kin.value.services)) return false;
@@ -190,8 +182,7 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
 ) {
   const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
   if (shared && !listedOnSharedThread(name)) return false;
-  if (isKinGitHubTool(name))
-    return (yield* kinAppConfigured) || (LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected));
+  if (isKinGitHubTool(name)) return LOGIN_GITHUB_TOOLS.has(name) && (yield* loginConnected);
   if (isSocialTool(name)) return yield* onSocialSeat(threadId);
   if (!isT3Tool(name)) return true;
   return leadT3Tools.has(name) && !shared;

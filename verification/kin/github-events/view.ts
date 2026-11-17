@@ -4,11 +4,11 @@ type Vars = Record<string, Value>;
 export const title = "Kin watching GitHub with your login";
 
 export const guide =
-  "Each box is where Kin's watch stands: waiting for its next look at GitHub, or partway through one. Each arrow is something that happens: a teammate opens a PR or writes /kin, a stranger writes /kin, Kin weighs one thing it read, an agent answers on GitHub, the App's webhook delivers the same thing, the server stops and starts again. Red boxes are where a rule below breaks.";
+  "Each box is where Kin's watch stands: waiting for its next look at GitHub, or partway through one. Each arrow is something that happens: a teammate opens a PR or writes /kin, a stranger writes /kin, Kin weighs one thing it read, an agent answers on GitHub, the server stops and starts again. Red boxes are where a rule below breaks.";
 
 export const rules: Record<string, string> = {
   OnceEach:
-    "Each thing on GitHub wakes an agent at most once, whether Kin read it on several looks, stopped halfway through one, or the App's webhook delivered it too.",
+    "Each thing on GitHub wakes an agent at most once, whether Kin read it on several looks or stopped halfway through one.",
   NoneLost:
     "Once Kin has caught up, every teammate's PR and /kin either woke an agent or was stopped for the hour with a note: none is lost to a stop, a busy look, or the cap.",
   OutsideStartsNothing:
@@ -30,9 +30,9 @@ export const variants = [
     what: "past the per-look cap a trigger is stored as handled without waking anyone (the code before this change)",
   },
   {
-    name: "webhook-on",
+    name: "wake-each-look",
     breaks: "OnceEach",
-    what: "the App's webhook still wakes an agent while the login watch is on",
+    what: "a look doesn't skip a trigger an earlier look stored, so a re-read wakes an agent again",
   },
   {
     name: "no-marker",
@@ -107,8 +107,6 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return to["cursor"] === from["cursor"] ? "The look ends, its cursor held" : "The look ends";
     case "Turn":
       return "The agent answers on GitHub, signed";
-    case "Webhook":
-      return "The App's webhook delivers it too";
     case "Stop":
       return "The server stops and starts again";
     default:
@@ -130,14 +128,12 @@ export const charts = [
           : "Looking"
         : "Waiting for the next look",
     step: (action: string, from: Vars, to: Vars) =>
-      action === "Happen" || action === "Turn" || action === "Webhook"
-        ? null
-        : step(action, from, to),
+      action === "Happen" || action === "Turn" ? null : step(action, from, to),
   },
   {
     title: "The first thing on the thread",
     guide:
-      "Each box is where the first thing on the thread stands. A teammate's PR or /kin wakes an agent once, and its signed answer starts nothing. A stranger's /kin is read and passed over. The App's webhook delivering it too changes nothing.",
+      "Each box is where the first thing on the thread stands. A teammate's PR or /kin wakes an agent once, and its signed answer starts nothing. A stranger's /kin is read and passed over.",
     state: (vars: Vars) => {
       const first = list(vars["thread"]).map(String)[0];
       if (first === undefined) return "Nothing on the thread yet";

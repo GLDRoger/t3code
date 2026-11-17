@@ -87,17 +87,11 @@ export const OUTSIDE_TOOLS = {
   memory_write: "allowed",
   kin_journal: "allowed",
   memory_label: "allowed",
-  kin_github_repos: "allowed",
-  kin_github_prs: "allowed",
-  kin_github_pr: "allowed",
-  kin_github_runs: "allowed",
   // Posts on its own only to the company's repos; anywhere else on the owner's Confirm.
   kin_github_review: "allowed",
   kin_github_link: "allowed",
   // Outside text could tell Kin to stop watching a repo.
   kin_github_watch: "refused",
-  // The owner reads and signs the exact payload.
-  request_action: "allowed",
   records_query: "allowed",
   record_get: "allowed",
   record_create: "allowed",

@@ -32,8 +32,6 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
-import { notConnectedLayer as repoReadsOff } from "../github/KinRepoReads.ts";
-import { notConnectedLayer as pullRequestCareOff } from "../github/PullRequestCare.ts";
 import * as Kin from "../layer.ts";
 import { agentServices } from "../mcp/KinChatToolkit.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
@@ -86,8 +84,6 @@ const kinServices = Layer.unwrap(
           Effect.succeed({ itemId: KinMemoryItemId.make(`def-${input.what}`) }),
         cancel: (_scope, input) => Effect.succeed({ itemId: input.itemId }),
       }),
-      repoReadsOff,
-      pullRequestCareOff,
     ).pipe(Layer.provideMerge(Layer.succeedContext(services)));
   }),
 );

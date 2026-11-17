@@ -239,16 +239,12 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)kin_visual$/, "Putting a visual together"],
   [/(?:^|__|\.)kin_schedule$/, "Setting up a schedule"],
   [/(?:^|__|\.)kin_cancel$/, "Cancelling it"],
-  [/(?:^|__|\.)kin_github_repos$/, "Checking your repos"],
-  [/(?:^|__|\.)kin_github_prs?$/, "Checking pull requests"],
-  [/(?:^|__|\.)kin_github_runs$/, "Checking the builds"],
   [/(?:^|__|\.)kin_github_review$/, "Reviewing a pull request"],
   [/(?:^|__|\.)kin_github_link$/, "Linking GitHub to Work"],
   [/(?:^|__|\.)kin_github_watch$/, "Checking which repos Kin watches"],
   [/(?:^|__|\.)kin_github_\w+$/, "Checking GitHub"],
   [/(?:^|__|\.)kin_chat_read$/, "Reading the chat"],
   [/(?:^|__|\.)kin_chat_post$/, "Writing"],
-  [/(?:^|__|\.)request_action$/, "Asking for your approval"],
   [/(?:^|__|\.)(?:kin_react|kin_journal)$/, null],
 ];
 export function toolLabel(item: OrchestrationV2TurnItem): string | null {

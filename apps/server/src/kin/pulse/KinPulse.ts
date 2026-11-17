@@ -35,7 +35,6 @@ import { matchName } from "../work/nameMatch.ts";
 import { viewSees } from "../work/teamView.ts";
 import { clientSenses } from "./senses/clients.ts";
 import { goalSenses } from "./senses/goals.ts";
-import { codeSenses } from "./senses/code.ts";
 import { moneySenses } from "./senses/money.ts";
 import { projectSenses } from "./senses/projects.ts";
 import { iso, type SenseContext, type SensedFact } from "./senses/shared.ts";
@@ -96,7 +95,6 @@ const sense = Effect.fn("KinPulse.sense")(function* (orgId: KinOrgId, at: number
     ...(yield* systemSenses(ctx)),
     ...(yield* clientSenses(ctx)),
     ...(yield* goalSenses(ctx)),
-    ...(yield* codeSenses(ctx)),
     ...(yield* projectSenses(ctx)),
   ];
   return facts.toSorted(

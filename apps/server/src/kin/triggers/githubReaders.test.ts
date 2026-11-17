@@ -1,31 +1,26 @@
 // @effect-diagnostics nodeBuiltinImport:off -- reads GitHub's vendored GraphQL schema.
 import * as NodeFS from "node:fs";
 
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { KinOrgId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Logger from "effect/Logger";
-import * as Redacted from "effect/Redacted";
-import * as References from "effect/References";
 import * as TestClock from "effect/testing/TestClock";
-import { HttpClient } from "effect/http";
+import * as SqlClient from "effect/sql/SqlClient";
 import { buildSchema, parse, validate } from "graphql";
 
-import * as KinGitHubApp from "../github/KinGitHubApp.ts";
-import { fakeGitHub, type FakeAnswer, type RecordedRequest } from "../github/testFakes.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
+import { type ApiRequest, KinGitHubApi } from "../github/GitHubWatch.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinDeferralGithubReader, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
-import { KinGithubRepoScope } from "./githubEvents.ts";
 import * as RoutineContent from "../lead/RoutineContent.ts";
 import * as GithubReaders from "./githubReaders.ts";
 import { KinWatchdogGithubReader } from "./watchdogs.ts";
 
 const orgId = KinOrgId.make("org-1");
 const REPO = "GLDRoger/t3code";
-const TOKEN = "ghs_reader_token_never_shown";
 const NOW = Date.UTC(2026, 10, 8, 12);
 
 const more = { pageInfo: { hasNextPage: false } };
@@ -93,8 +88,14 @@ const fixtures = new Map<number, unknown>([
   ],
 ]);
 
+interface FakeAnswer {
+  readonly status: number;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly body: unknown;
+}
+
 /** GraphQL answers from `fixtures`; numbers it lacks come back null with NOT_FOUND, as GitHub does. */
-const graphql = (request: RecordedRequest): FakeAnswer => {
+const graphql = (request: ApiRequest): FakeAnswer => {
   const body = request.body;
   const query =
     typeof body === "object" && body !== null && "query" in body && typeof body.query === "string"
@@ -114,35 +115,45 @@ const graphql = (request: RecordedRequest): FakeAnswer => {
   };
 };
 
-const setup = (
-  route: (request: RecordedRequest) => FakeAnswer = graphql,
-  client?: Layer.Layer<HttpClient.HttpClient>,
-) => {
-  const mints: Array<Parameters<KinGitHubApp.KinGitHubApp["Service"]["installationToken"]>[0]> = [];
-  const github = fakeGitHub(route);
-  const app = Layer.succeed(
-    KinGitHubApp.KinGitHubApp,
-    KinGitHubApp.KinGitHubApp.of({
-      app: Effect.die("unused"),
-      installations: Effect.die("unused"),
-      patchHookConfig: () => Effect.die("unused"),
-      installationToken: (input) => {
-        mints.push(input);
-        return Effect.succeed({
-          token: Redacted.make(TOKEN),
-          repo: input.repo,
-          expiresAt: "2026-11-08T13:00:00Z",
-          permissions: { ...input.permissions, metadata: "read" },
-        });
-      },
+const database = KinPersistence.layer.pipe(
+  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+);
+
+/** The owner's watch covers `REPO`, as the poller would have stored it. */
+const watching = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at, repos_json)
+    VALUES (${orgId}, 'owner', 0, 0, 0, ${JSON.stringify([{ repo: REPO, fork: false }])})`;
+});
+
+/** GitHub as the owner's `gh` login, answering from `route`; `hang` never answers. */
+const setup = (route: (request: ApiRequest) => FakeAnswer = graphql, hang = false) => {
+  const requests: Array<ApiRequest> = [];
+  const api = Layer.succeed(
+    KinGitHubApi,
+    KinGitHubApi.of({
+      connected: () => Effect.succeed({ login: "owner", orgs: [] }),
+      call: (request) =>
+        hang
+          ? Effect.never
+          : Effect.sync(() => {
+              requests.push(request);
+              const answer = route(request);
+              return {
+                status: answer.status,
+                headers: answer.headers ?? {},
+                body: answer.body,
+                text: "",
+              };
+            }),
     }),
   );
   const layer = GithubReaders.readersLayer.pipe(
-    Layer.provide(app),
-    Layer.provide(client ?? github.layer),
-    Layer.provide(Layer.succeed(KinGithubRepoScope, { repos: [REPO] })),
+    Layer.provideMerge(api),
+    Layer.provideMerge(database),
   );
-  return { mints, requests: github.requests, layer };
+  return { requests, layer };
 };
 
 const readers = Effect.gen(function* () {
@@ -172,8 +183,8 @@ describe("Kin GitHub readers", () => {
     );
   });
 
-  it.effect("reads a merged PR and a closed issue with one batched query and one token", () => {
-    const { mints, requests, layer } = setup();
+  it.effect("reads a merged PR and a closed issue with one batched query as the owner", () => {
+    const { requests, layer } = setup();
     return Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const { watchdog } = yield* readers;
@@ -220,17 +231,9 @@ describe("Kin GitHub readers", () => {
 
       assert.deepStrictEqual(
         requests.map(({ method, path }) => `${method} ${path}`),
-        Array.from({ length: 5 }, () => "POST /graphql"),
+        Array.from({ length: 5 }, () => "POST graphql"),
       );
-      assert.equal(requests[0]?.authorization, `Bearer ${TOKEN}`);
       assert.deepInclude(requests[0]?.body, { variables: { owner: "GLDRoger", name: "t3code" } });
-      assert.deepStrictEqual(mints, [
-        { repo: REPO, permissions: { issues: "read", pull_requests: "read" }, holder: "server" },
-      ]);
-      // Reused until five minutes before it expires, then minted again.
-      yield* TestClock.adjust("56 minutes");
-      yield* watchdog.readRepo(orgId, REPO, [9]);
-      assert.lengthOf(mints, 2);
     }).pipe(Effect.provide(layer));
   });
 
@@ -242,7 +245,7 @@ describe("Kin GitHub readers", () => {
       isDraft,
       reviewRequests: { nodes: [{ requestedReviewer: { login } }, { requestedReviewer: {} }] },
     });
-    const { mints, layer } = setup(() => ({
+    const { layer } = setup(() => ({
       status: 200,
       body: {
         data: {
@@ -258,6 +261,7 @@ describe("Kin GitHub readers", () => {
     }));
     return Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
+      yield* watching;
       const reader = yield* RoutineContent.KinRoutineGithubReader;
       assert.isNotNull(reader);
       assert.deepStrictEqual(yield* reader!.read(orgId, "owner"), {
@@ -269,33 +273,15 @@ describe("Kin GitHub readers", () => {
         truncatedRepos: 1,
         repos: 1,
       });
-      assert.deepStrictEqual(mints[0]?.permissions, {
-        contents: "read",
-        pull_requests: "read",
-        checks: "read",
-        statuses: "read",
-      });
     }).pipe(Effect.provide(layer));
   });
 
   it.effect("counts an unreadable repo instead of failing the brief", () => {
     const { layer } = setup(() => ({ status: 502, body: {} }));
     return Effect.gen(function* () {
+      yield* watching;
       const reader = yield* RoutineContent.KinRoutineGithubReader;
       assert.deepInclude(yield* reader!.read(orgId, "owner"), { failedRepos: 1, reviews: [] });
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("fails closed for a repo outside KIN_GITHUB_REPOS without calling GitHub", () => {
-    const { mints, requests, layer } = setup();
-    return Effect.gen(function* () {
-      const { deferral, watchdog } = yield* readers;
-      const read = yield* watchdog.readRepo(orgId, "other/repo", [7]).pipe(Effect.flip);
-      assert.equal(read.reason, "unavailable");
-      const one = yield* deferral.readRepo(orgId, "other/repo", [7]).pipe(Effect.flip);
-      assert.equal(one.reason, "unavailable");
-      assert.lengthOf(requests, 0);
-      assert.lengthOf(mints, 0);
     }).pipe(Effect.provide(layer));
   });
 
@@ -332,11 +318,7 @@ describe("Kin GitHub readers", () => {
   );
 
   it.effect("gives every deferral link one shared budget", () => {
-    const hanging = Layer.succeed(
-      HttpClient.HttpClient,
-      HttpClient.make(() => Effect.never),
-    );
-    const { layer } = setup(graphql, hanging);
+    const { layer } = setup(graphql, true);
     return Effect.gen(function* () {
       const read = yield* readGithubLinkSets(orgId, [
         ["GLDRoger/t3code#7"],
@@ -347,76 +329,14 @@ describe("Kin GitHub readers", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("keeps the token out of logs and errors", () => {
-    const lines: Array<string> = [];
-    const logger = Logger.layer(
-      [Logger.make(({ message }) => lines.push(JSON.stringify(message)))],
-      { mergeWithExisting: false },
-    );
-    let call = 0;
-    const answers: ReadonlyArray<FakeAnswer> = [
-      { status: 401, body: { message: "Bad credentials" } },
-      { status: 429, headers: { "retry-after": "60" }, body: { message: "slow down" } },
-      { status: 403, body: { message: "Resource not accessible by integration" } },
-      { status: 500, body: { message: "boom" } },
-    ];
-    const { mints, requests, layer } = setup(() => answers[call++ % answers.length]!);
+  it.effect("reads nothing without the owner's GitHub login: deferrals ask", () => {
+    const { layer } = setup(() => ({ status: 0, body: null }));
     return Effect.gen(function* () {
-      yield* TestClock.setTime(NOW);
-      const { deferral, watchdog } = yield* readers;
-      const errors = [
-        yield* watchdog.readRepo(orgId, REPO, [7]).pipe(Effect.flip),
-        yield* watchdog.readRepo(orgId, REPO, [7]).pipe(Effect.flip),
-        yield* deferral.readRepo(orgId, REPO, [7]).pipe(Effect.flip),
-        yield* deferral.readRepo(orgId, REPO, [7]).pipe(Effect.flip),
-      ];
-      // The 401 and the integration 403 drop the cached token, so the next read mints; a 429 keeps it.
-      assert.lengthOf(mints, 3);
-      assert.isTrue(requests.every((request) => request.authorization === `Bearer ${TOKEN}`));
-      assert.isNotEmpty(lines);
-      for (const text of [
-        ...lines,
-        ...errors.flatMap((error) => [JSON.stringify(error), String(error), error.message]),
-      ])
-        assert.notInclude(text, TOKEN);
-    }).pipe(
-      Effect.provide(Layer.merge(layer, logger)),
-      Effect.provideService(References.MinimumLogLevel, "Debug"),
-    );
-  });
-
-  it.effect.each([
-    { name: "no App id", config: {} },
-    // A missing KIN_GITHUB_OWNER_LOGIN fails the App's scope, so the keychain is never read.
-    { name: "an App that can't be built", config: { KIN_GITHUB_APP_ID: "123456" } },
-  ])("keeps the fail-closed defaults with one warning for $name", ({ config }) => {
-    const warnings: Array<string> = [];
-    const logger = Logger.layer(
-      [
-        Logger.make(({ message, logLevel }) => {
-          if (logLevel === "Warn") warnings.push(String(message));
-        }),
-      ],
-      { mergeWithExisting: false },
-    );
-    return Effect.gen(function* () {
-      assert.isNull(yield* KinWatchdogGithubReader);
-      const read = yield* (yield* KinDeferralGithubReader)
-        .readRepo(orgId, REPO, [7])
-        .pipe(Effect.flip);
-      assert.equal(read.reason, "unavailable");
-      assert.lengthOf(
-        warnings.filter((warning) => warning.includes("Kin GitHub reads are off")),
-        1,
+      const { deferral } = yield* readers;
+      assert.equal(
+        (yield* deferral.readRepo(orgId, REPO, [7]).pipe(Effect.flip)).reason,
+        "unavailable",
       );
-    }).pipe(
-      Effect.provide(
-        GithubReaders.layer.pipe(
-          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(config))),
-          Layer.provide(NodeServices.layer),
-          Layer.provideMerge(logger),
-        ),
-      ),
-    );
+    }).pipe(Effect.provide(layer));
   });
 });

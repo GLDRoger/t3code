@@ -9,7 +9,6 @@ import { type ChoiceAnswerHandler, KinChatService } from "../chat/KinChatService
 import { KinConnections, type StaleAsk } from "../connections/ConnectionsService.ts";
 import { answerCard } from "../questions/openQuestions.ts";
 import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
-import { answerReviewCard } from "../github/PullRequestCare.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
 import { answerCurrencyCard } from "./statements/statementReview.ts";
 
@@ -28,13 +27,6 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
     widgetId: input.widget.widgetId,
     personId: input.personId,
     label: input.option.label,
-    now: input.now,
-  });
-  yield* answerReviewCard({
-    orgId: input.orgId,
-    widgetId: input.widget.widgetId,
-    personId: input.personId,
-    confirmed: input.option.kind === "yes",
     now: input.now,
   });
   const currency = yield* answerCurrencyCard({

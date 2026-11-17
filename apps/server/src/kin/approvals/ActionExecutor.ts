@@ -32,7 +32,6 @@ import {
   type KinOutcome,
 } from "./ActionHandlers.ts";
 import { KinAudit } from "./Audit.ts";
-import { CredentialHygiene } from "./CredentialHygiene.ts";
 import { KinExecutionNotices, type KinExecutionOutcome } from "./ExecutionNotices.ts";
 import { KinOrgRoles } from "./GrantPorts.ts";
 import { grantMatchesRecord } from "./grantFacts.ts";
@@ -52,7 +51,7 @@ const NOT_DONE_AFTER_MS = 2 * 60 * 1000;
 export type KinExecuteResult =
   /** Not `approved` with a live grant, or another executor claimed it first. */
   | { readonly _tag: "skipped" }
-  /** The stop switch, the credential check or a missing configuration holds it until it lapses. */
+  /** The stop switch or a missing configuration holds it until it lapses. */
   | { readonly _tag: "held"; readonly reason: string }
   | { readonly _tag: "voided"; readonly reason: string }
   | { readonly _tag: "finished"; readonly outcome: KinExecutionOutcome; readonly error?: string }
@@ -102,7 +101,6 @@ export const make = Effect.gen(function* () {
   const pending = yield* KinPendingActions;
   const ledger = yield* KinExecutionLedger;
   const handlers = yield* KinActionHandlers;
-  const hygiene = yield* CredentialHygiene;
   const roles = yield* KinOrgRoles;
   const audit = yield* KinAudit;
   const notices = yield* KinExecutionNotices;
@@ -194,18 +192,16 @@ export const make = Effect.gen(function* () {
   const held = Effect.fnUntraced(function* (
     action: KinPendingAction,
     reason: string,
-    failures?: string,
   ): Effect.fn.Return<KinExecuteResult> {
-    const why = failures === undefined ? reason : `${reason}: ${failures}`;
-    if (holds.get(action.id) !== why) {
-      holds.set(action.id, why);
+    if (holds.get(action.id) !== reason) {
+      holds.set(action.id, reason);
       yield* audit
         .append({
           orgId: action.orgId,
-          event: failures === undefined ? "execution_held" : "credential_check_failed",
+          event: "execution_held",
           actionId: action.id,
           kind: action.kind,
-          result: failures ?? `held: ${reason}`,
+          result: `held: ${reason}`,
         })
         .pipe(Effect.catch((error) => Effect.logWarning("Kin audit not written", error)));
     }
@@ -299,19 +295,6 @@ export const make = Effect.gen(function* () {
       );
     // Everything but the live read happens first, so nothing sits between that read and the write.
     const steps = Effect.gen(function* () {
-      const pass = handler.credentialCheck
-        ? Option.some(
-            yield* hygiene.requirePassing(action.orgId).pipe(
-              Effect.mapError(
-                (error) =>
-                  new KinExecError({
-                    reason: "credential_check_failed",
-                    detail: error.failures.join(","),
-                  }),
-              ),
-            ),
-          )
-        : Option.none();
       const usable = yield* ledger
         .signingKeyUsable(refOf(action))
         .pipe(Effect.mapError(() => new KinExecError({ reason: "unavailable", detail: "keys" })));
@@ -332,7 +315,7 @@ export const make = Effect.gen(function* () {
         return yield* new KinExecError({ reason: "unavailable", detail: "ledger" });
       writeStartedAt = at;
       return yield* handler
-        .run(action, { grant, payload: payloadOf(grant), pass })
+        .run(action, { grant, payload: payloadOf(grant) })
         .pipe(
           Effect.catchDefect(() =>
             Effect.fail(new KinExecError({ reason: "unknown_outcome", detail: "handler defect" })),
@@ -395,12 +378,6 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.option);
     if (Option.isNone(owner)) return yield* held(action, "roles_unavailable");
     if (!owner.value) return yield* voided("approver_not_owner");
-    // Checked before the claim too, so a misconfigured host holds the grant instead of spending it.
-    if (handler.value.credentialCheck) {
-      const check = yield* hygiene.requirePassing(action.orgId).pipe(Effect.flip, Effect.option);
-      if (Option.isSome(check))
-        return yield* held(action, "credential_check_failed", check.value.failures.join(","));
-    }
     // 3. The stored grant verifies against its sealed key and binds this action.
     if (!(yield* grantVerifies(action, grant))) {
       yield* Effect.logWarning("Kin executor: an approved action's grant doesn't verify.", {
