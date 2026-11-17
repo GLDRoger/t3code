@@ -1,18 +1,22 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { KinEvent, KinOrgId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import { ServerConfig } from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { isAgentText, signed } from "./agentMark.ts";
+import { isAgentText, postKey, signed } from "./agentMark.ts";
 import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
+import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import { KinGitHubApp } from "./KinGitHubApp.ts";
 import { BOT_EMAIL, BOT_LOGIN, installApp } from "./KinGitHubApp.testkit.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
@@ -141,6 +145,8 @@ const database = KinPersistence.layer.pipe(
       }),
     ),
   ),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-github-watch-" })),
+  Layer.provideMerge(NodeServices.layer),
 );
 
 const setup = (options: { readonly app?: boolean } = {}) => {
@@ -277,6 +283,21 @@ describe("KinGitHubWatch", () => {
           author: "teammate-a",
           association: "MEMBER",
           body: "/kin please rename X",
+        });
+        // An agent's own words as the owner, unsigned: its gh recorded sending them.
+        const { stateDir } = yield* ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(`${stateDir}/kin/${GH_APP_FOLDER}`, { recursive: true });
+        yield* fs.writeFileString(
+          `${stateDir}/kin/${GH_APP_FOLDER}/${AGENT_POSTS_FILE}`,
+          `${Math.floor(T0 / 1000)}\t${postKey("/kin rename it all\n")}\n`,
+        );
+        github.comment({
+          repo: REPO,
+          number: issue,
+          author: "invented-owner",
+          association: "OWNER",
+          body: "/kin rename it all",
         });
         github.comment({
           repo: REPO,

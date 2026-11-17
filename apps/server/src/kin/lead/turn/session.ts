@@ -1,3 +1,4 @@
+import { resolveNodeExecutable } from "@t3tools/shared/nodeRuntime";
 import {
   KIN_CAPABILITY_WORDS,
   type KinCapability,
@@ -124,10 +125,15 @@ export class KinSessions extends Context.Service<
           yield* fs.makeDirectory(signDirectory, { recursive: true });
           // The pinned gh's folder comes first (AgentSession.sessionPolicyLayer).
           const pinned = policy.value.toolDirectories[0] ?? "";
+          // Without a Node to run its policy, the agent's gh refuses every command.
+          const node = yield* resolveNodeExecutable("Kin's GitHub guard").pipe(
+            Effect.orElseSucceed(() => ""),
+          );
           for (const script of agentShellScripts({
             shims: signDirectory,
             app: path.join(kinDirectory, GH_APP_FOLDER),
             realGh: path.join(pinned, "gh"),
+            node,
           })) {
             const file = path.join(signDirectory, script.name);
             yield* fs.writeFileString(file, script.text);
