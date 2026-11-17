@@ -17,6 +17,7 @@ import {
   type KinConnectionSetKeyInput,
   type KinConnectionSetSignInClientInput,
   type KinConnectionSignInFinishInput,
+  type KinConnectionSignInReturn,
   type KinConnectionSignInStart,
   type KinConnectionSignInStartInput,
   type KinConnectionSetReachInput,
@@ -145,7 +146,15 @@ const SIGN_IN_TTL = Duration.minutes(10);
 /** How long before an access token's expiry Kin refreshes it. */
 const REFRESH_EARLY = Duration.minutes(1);
 // The return page reads only this prefix of `state` to pick where to hand the result back.
-const RETURN_PREFIX = { web: "w", app: "a", "app-dev": "d", "app-preview": "p" } as const;
+export const RETURN_PREFIX = {
+  web: "w",
+  app: "a",
+  "app-dev": "d",
+  "app-preview": "p",
+  "t3-app": "ta",
+  "t3-app-dev": "td",
+  "t3-app-preview": "tp",
+} as const satisfies Record<KinConnectionSignInReturn, string>;
 
 /** A pasted client secret, or none: Microsoft's public clients have no secret. */
 const secretOf = (secret: Redacted.Redacted<string> | undefined) => {

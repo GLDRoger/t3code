@@ -285,8 +285,30 @@ export const KinConnectionCalls = Schema.Struct({
 export type KinConnectionCalls = typeof KinConnectionCalls.Type;
 
 /** Where the sign-in page hands the result back: the browser that opened it, or the app. */
-export const KinConnectionSignInReturn = Schema.Literals(["web", "app", "app-dev", "app-preview"]);
+export const KinConnectionSignInReturn = Schema.Literals([
+  "web",
+  "app",
+  "app-dev",
+  "app-preview",
+  "t3-app",
+  "t3-app-dev",
+  "t3-app-preview",
+]);
 export type KinConnectionSignInReturn = typeof KinConnectionSignInReturn.Type;
+
+/**
+ * Every phone app scheme, of the Kin build and of the unbranded app, and the return value that
+ * sends a sign-in back to it. The return page redirects only to these. Builds before the
+ * unbranded values existed send `app` whatever their scheme, so `app` stays Kin's.
+ */
+export const KIN_SIGN_IN_RETURN_BY_SCHEME = {
+  kin: "app",
+  "kin-dev": "app-dev",
+  "kin-preview": "app-preview",
+  t3code: "t3-app",
+  "t3code-dev": "t3-app-dev",
+  "t3code-preview": "t3-app-preview",
+} as const satisfies Record<string, Exclude<KinConnectionSignInReturn, "web">>;
 
 /** Starts a sign-in: for a new connection (`service`), or again for one (`connectionId`). */
 export const KinConnectionSignInStartInput = Schema.Struct({

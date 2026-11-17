@@ -76,7 +76,14 @@
           if (value !== null) kept.set(key, value);
         });
         var response = location.origin + location.pathname + "?" + kept.toString();
-        var schemes = { a: "t3code", d: "t3code-dev", p: "t3code-preview" };
+        var schemes = {
+          a: "kin",
+          d: "kin-dev",
+          p: "kin-preview",
+          ta: "t3code",
+          td: "t3code-dev",
+          tp: "t3code-preview",
+        };
         var scheme = schemes[(kept.get("state") || "").split(".")[0]];
         var show = function (title, detail, copy) {
           document.getElementById("title").textContent = title;
