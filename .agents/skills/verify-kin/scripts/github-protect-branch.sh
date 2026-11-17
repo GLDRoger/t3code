@@ -19,7 +19,7 @@ const repo = process.argv[1];
 const text = require("node:fs").readFileSync(0, "utf8");
 const found = JSON.parse(text.slice(text.indexOf("{"))).repos.find((entry) => entry.repo === repo);
 const g = found?.guard;
-process.stdout.write(g === undefined ? "none" : `${g.state} ${g.byKin} ${g.problem ?? "-"}`);' "$1"
+process.stdout.write(g === undefined ? "none" : `${g.state} ${g.byKin} ${g.problem ?? "-"}${g.needsReview ? " review" : ""}`);' "$1"
 }
 rulesets() { world show | node -e '
 const repo = process.argv[1];
@@ -52,7 +52,8 @@ fi
 [[ "$(guard "$OPEN_OWN")" == "open false -" ]] || fail "$OPEN_OWN reads $(guard "$OPEN_OWN"), not open"
 [[ "$(guard "$FREE")" == "unknown false plan" ]] || fail "$FREE reads $(guard "$FREE"), not the plan's limit"
 [[ "$(guard "$EMPTY")" == "unknown false no_branch" ]] || fail "$EMPTY reads $(guard "$EMPTY"), not that it has no branch yet"
-[[ "$(guard "$OWN_RULES")" == "protected false -" ]] || fail "$OWN_RULES reads $(guard "$OWN_RULES"), not the owner's own"
+# A required review alone doesn't keep the App out: it merges once someone approves.
+[[ "$(guard "$OWN_RULES")" == "open false - review" ]] || fail "$OWN_RULES reads $(guard "$OWN_RULES"), not open once reviewed"
 expect_in "$(kv as owner rpc kin.github.connect.status '{}')" '"open":' "the watch line has no count of open repos"
 
 # A member can't reach it; the owner's Protect all protects two and names the third.
@@ -76,4 +77,4 @@ expect_in "$REMOVED" '"changed":1' "Remove didn't take Kin's protection off"
 [[ "$(guard "$OPEN_ORG")" == "open false -" ]] || fail "$OPEN_ORG doesn't read open again"
 [[ "$(q "select count(*) from kin_github_owner_uses where use_id like 'guard-%' and repo in ('$OPEN_ORG', '$OPEN_OWN')")" == 3 ]] ||
   fail "the three changes aren't in Done as you lately"
-pass "Connections reads open, the plan's limit and the owner's own rules; a member is refused; Protect all protects two and names the third; Remove takes off Kin's ruleset only"
+pass "Connections reads open, the plan's limit and the owner's review-only rules as open once approved; a member is refused; Protect all protects two and names the third; Remove takes off Kin's ruleset only"

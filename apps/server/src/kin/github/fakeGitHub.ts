@@ -33,6 +33,8 @@ export interface FakeRuleset {
   exclude: string[];
   rules: { type: string; parameters?: Record<string, unknown> }[];
   bypass: { actor_id: number | null; actor_type: string; bypass_mode: string }[];
+  /** GitHub shows `bypass_actors` only to a login that may edit the ruleset, as an org's owners. */
+  bypassHidden?: boolean;
 }
 
 const PLAN_LIMIT = "Upgrade to GitHub Pro or make this repository public to enable this feature.";
@@ -433,23 +435,49 @@ export class FakeGitHub {
       );
       if (item === undefined || !item.pull) return answer(404, { message: "Not Found" });
       const owner = this.account(name.split("/")[0]!);
+      const appId = this.world.app?.id;
       const bypasses = (set: FakeRuleset) =>
-        !asInstallation &&
-        set.bypass.some(
-          (entry) =>
-            (entry.actor_type === "RepositoryRole" &&
-              entry.actor_id === 5 &&
-              repo.admin !== false) ||
-            (entry.actor_type === "OrganizationAdmin" &&
-              owner.type === "Organization" &&
-              owner.role !== "member"),
+        set.bypass.some((entry) =>
+          asInstallation
+            ? entry.actor_type === "Integration" && entry.actor_id === appId
+            : (entry.actor_type === "RepositoryRole" &&
+                entry.actor_id === 5 &&
+                repo.admin !== false) ||
+              (entry.actor_type === "OrganizationAdmin" &&
+                owner.type === "Organization" &&
+                owner.role !== "member"),
         );
-      const blocked = this.rulesOn(repo, repo.default_branch ?? "main").some(
-        (set) => set.rules.some((rule) => rule.type === "update") && !bypasses(set),
+      const inForce = this.rulesOn(repo, repo.default_branch ?? "main").filter(
+        (set) => !bypasses(set),
       );
-      if (blocked)
+      if (inForce.some((set) => set.rules.some((rule) => rule.type === "update")))
         return answer(405, {
           message: "Repository rule violations found\n\nCannot update this protected ref.\n\n",
+        });
+      const approvals = new Set(
+        this.world.reviews
+          .filter(
+            (review) =>
+              review.repo.toLowerCase() === name.toLowerCase() &&
+              review.number === item.number &&
+              review.event === "APPROVE" &&
+              review.user !== item.user,
+          )
+          .map((review) => review.user),
+      ).size;
+      const required = Math.max(
+        0,
+        ...inForce.flatMap((set) =>
+          set.rules.map((rule) =>
+            rule.type === "pull_request"
+              ? Number(rule.parameters?.required_approving_review_count ?? 0)
+              : 0,
+          ),
+        ),
+      );
+      if (approvals < required)
+        return answer(405, {
+          message: `Repository rule violations found\n\nAt least ${required} approving review is required by reviewers with write access.\n\n`,
         });
       this.merge({ repo: item.repo, number: item.number, actor });
       return answer(200, { merged: true, message: "Pull Request successfully merged" });
@@ -469,6 +497,24 @@ export class FakeGitHub {
           })),
         ),
       );
+    }
+    const shown = /^rulesets\/(\d+)$/.exec(rest);
+    const set =
+      shown === null ? undefined : repo.rulesets?.find((entry) => entry.id === Number(shown[1]));
+    if (shown !== null && method === "GET") {
+      if (set === undefined) return answer(404, { message: "Not Found" });
+      const editor = !asInstallation && repo.admin !== false && set.bypassHidden !== true;
+      return answer(200, {
+        id: set.id,
+        name: set.name,
+        target: set.target,
+        source_type: "Repository",
+        source: repo.full_name,
+        enforcement: set.enforcement,
+        conditions: { ref_name: { exclude: set.exclude, include: set.include } },
+        rules: set.rules,
+        ...(editor ? { bypass_actors: set.bypass } : {}),
+      });
     }
     // Writing rules, and reading classic protection, take admin; the App holds no such permission.
     if (asInstallation) return refused("Resource not accessible by integration");

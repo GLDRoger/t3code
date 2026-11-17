@@ -348,6 +348,11 @@ describe("protecting a repo's main branch from Kin's App", () => {
       [{ state: "open", branch: "main", byKin: false }, "app"],
       [{ state: "open", branch: "main", byKin: false }, "owner"],
       [{ state: "open", branch: "main", byKin: false }, undefined],
+      // A required review alone: the App merges once someone approves, so Protect stays.
+      [{ state: "open", branch: "main", byKin: false, needsReview: true }, "app"],
+      [{ state: "open", branch: "trunk", byKin: false, needsReview: true }, "owner"],
+      // Kin's ruleset, edited on GitHub to let the App through: Protect makes it again.
+      [{ state: "open", branch: "main", byKin: true, needsReview: true }, "app"],
       [{ state: "protected", branch: "main", byKin: true }, "app"],
       [{ state: "protected", branch: "trunk", byKin: false }, "owner"],
       [{ state: "unknown", branch: "main", byKin: false, problem: "plan" }, "owner"],
@@ -368,6 +373,9 @@ describe("protecting a repo's main branch from Kin's App", () => {
       ["main unprotected: Kin's App can change it", "protect"],
       ["main unprotected; the App isn't on this repo", "protect"],
       ["main unprotected; the App isn't on this repo", "protect"],
+      ["main needs a review, but Kin's App can merge once approved", "protect"],
+      ["trunk needs a review; the App isn't on this repo", "protect"],
+      ["main needs a review, but Kin's App can merge once approved", "protect"],
       ["Kin protects main", "remove"],
       ["Your rules protect trunk", null],
       ["GitHub's plan offers no protection for main here", null],
@@ -387,9 +395,13 @@ describe("protecting a repo's main branch from Kin's App", () => {
         guard: { state: "open", branch: "main", byKin: false },
       }),
     ).toBeNull();
-    // One count for both kinds of unprotected branch, true whether or not the App is on the repo.
-    expect(KIN_GITHUB_GUARD_COPY.open(1)).toBe("1 watched repo has an unprotected main branch.");
-    expect(KIN_GITHUB_GUARD_COPY.open(3)).toBe("3 watched repos have an unprotected main branch.");
+    // One count for open and review-only branches, true whether or not the App is on the repo.
+    expect(KIN_GITHUB_GUARD_COPY.open(1)).toBe(
+      "1 watched repo has a main branch that isn't closed to Kin's App.",
+    );
+    expect(KIN_GITHUB_GUARD_COPY.open(3)).toBe(
+      "3 watched repos have main branches that aren't closed to Kin's App.",
+    );
   });
 
   it("Protect all says how many worked and names each one that didn't, and why", async () => {
