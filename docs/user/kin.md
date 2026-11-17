@@ -346,8 +346,12 @@ settings. Your host guide says how to set one up.
 watched repos, saying whether the App is on all its repositories, only some, or none. To cover
 everything, tap the row's button: it opens the exact GitHub page, where you choose **All
 repositories** and save; repos you make later are covered too, and the row updates within a minute.
-Only an organization's owners can put the App on it; if you aren't one, GitHub sends them your
-request. An App that is private to one account can't go on another until you make it public in its
+To keep the App to some repos instead, choose **Only select repositories** there; then **Choose
+repos** on the row lets you switch it on or off per repo, or add or remove all watched repos at
+once, from Kin, with your GitHub login (GitHub asks for admin on each repo; if it refuses, Kin says
+why and links to the page). Each repo in the watched list says whether agents work there as the App
+or as you. Only an organization's owners can put the App on it; if you aren't one, GitHub sends
+them your request. An App that is private to one account can't go on another until you make it public in its
 settings on GitHub. The section also lists the last few things done as you.
 
 #### When things happen on GitHub

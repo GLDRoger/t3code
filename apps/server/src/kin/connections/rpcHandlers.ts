@@ -22,6 +22,8 @@ import { KinServer } from "../KinServer.ts";
 import { KinConnections } from "./ConnectionsService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { repoList, setRepo, watchSummary } from "../github/githubWatchStore.ts";
+import { setAppRepos, withAgentsAs } from "../github/appRepos.ts";
+import { ghApiLayer } from "../github/GitHubWatch.ts";
 import { agentsView, KinGitHubApp } from "../github/KinGitHubApp.ts";
 import { KinGitHubLogin } from "./GitHubLogin.ts";
 
@@ -116,6 +118,10 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
           Effect.map((agents) => ({ ...status, agents })),
           Effect.orElseSucceed(() => status),
         );
+  const appOf = () =>
+    Option.isNone(kin) || Option.isNone(kin.value.services)
+      ? Option.none<KinGitHubApp["Service"]>()
+      : Context.getOption(kin.value.services.value, KinGitHubApp);
   return group.of({
     "kin.github.connect.status": (input) =>
       github((g, people) => g.status(people, input)).pipe(
@@ -123,7 +129,43 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
         Effect.flatMap(withAgents),
       ),
     "kin.github.repos": (input) =>
-      watching(input.orgId, repoList(input.orgId).pipe(Effect.map((repos) => ({ repos })))),
+      watching(
+        input.orgId,
+        Effect.gen(function* () {
+          const repos = yield* repoList(input.orgId);
+          const app = appOf();
+          return {
+            repos: Option.isNone(app) ? repos : withAgentsAs(repos, yield* app.value.state()),
+          };
+        }),
+      ),
+    "kin.github.app.repos.set": Effect.fn("KinGitHubApp.setRepos.rpc")(function* (input) {
+      const people = yield* github((g, found) =>
+        g.status(found, { orgId: input.orgId }).pipe(Effect.as(found)),
+      );
+      const app = appOf();
+      const person = people.find((entry) => entry.orgId === input.orgId);
+      if (Option.isNone(kin) || Option.isNone(kin.value.services) || Option.isNone(app))
+        return yield* disabled;
+      if (person === undefined)
+        return yield* new KinChatError({ reason: "not_allowed", message: "Only the owner can." });
+      const services = kin.value.services.value;
+      return yield* setAppRepos(app.value, person, input).pipe(
+        Effect.provide(ghApiLayer),
+        Effect.provideService(KinGitHubLogin, Context.get(services, KinGitHubLogin)),
+        Effect.provideService(SqlClient.SqlClient, Context.get(services, SqlClient.SqlClient)),
+        Effect.provideService(KinRefreshObserver, Context.get(services, KinRefreshObserver)),
+        Effect.catchTags({
+          SqlError: () =>
+            Effect.fail(
+              new KinChatError({
+                reason: "unavailable",
+                message: "Kin couldn't record the change to its GitHub App.",
+              }),
+            ),
+        }),
+      );
+    }),
     "kin.github.repos.set": (input) =>
       watching(
         input.orgId,

@@ -2,6 +2,7 @@ import { KinOrgId, type KinGitHubAppAccount, type KinGitHubStatus } from "@t3too
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  kinGitHubAccountRepos,
   kinGitHubAccountRows,
   kinGitHubAccountsHint,
   kinGitHubAgentsView,
@@ -173,6 +174,10 @@ describe("kinGitHubAccountRows", () => {
     expect(kinGitHubAccountsHint(rows)).toBe(
       "On GitHub, choose All repositories, then confirm. New repos are covered too.",
     );
+    expect(rows.map((entry) => entry.pickable)).toEqual([true, false]);
+    expect(
+      kinGitHubAccountRows({ ...agents, accounts: [{ ...row, canManage: false }] })[0]?.pickable,
+    ).toBe(false);
     // With rows, GitHub's generic install page is not offered as well.
     expect(kinGitHubAgentsView({ ...agents, accounts: [row, org] }, null, 0).installUrl).toBeNull();
   });
@@ -232,5 +237,30 @@ describe("kinGitHubAccountRows", () => {
     const { accounts: _accounts, ...unknown } = { ...agents, accounts: undefined };
     expect(kinGitHubAccountRows(unknown)).toEqual([]);
     expect(kinGitHubAgentsView(unknown, null, 0).installUrl).toBe(agents.installUrl);
+  });
+});
+
+describe("kinGitHubAccountRepos", () => {
+  it("lists one account's watched repos, found by name", () => {
+    const repo = (name: string, watched = true) => ({
+      repo: name,
+      watched,
+      fork: false,
+      mentions: false,
+    });
+    const repos = [
+      repo("invented-owner/blog"),
+      repo("invented-owner/notes"),
+      repo("invented-owner/old", false),
+      repo("invented-co/site"),
+      repo("invented-owner-two/x"),
+    ];
+    expect(kinGitHubAccountRepos(repos, "Invented-Owner", "").map((entry) => entry.repo)).toEqual([
+      "invented-owner/blog",
+      "invented-owner/notes",
+    ]);
+    expect(
+      kinGitHubAccountRepos(repos, "invented-owner", " NOT").map((entry) => entry.repo),
+    ).toEqual(["invented-owner/notes"]);
   });
 });

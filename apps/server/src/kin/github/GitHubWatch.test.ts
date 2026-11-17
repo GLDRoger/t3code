@@ -125,6 +125,7 @@ const fakeApp = (github: FakeGitHub) => {
           : undefined,
       ),
     refresh: () => Effect.void,
+    lookAgain: () => Effect.void,
   });
 };
 
