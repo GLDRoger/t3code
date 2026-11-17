@@ -1,8 +1,16 @@
-import { ProviderInstanceId, type ProviderOptionDescriptor } from "@t3tools/contracts";
+import {
+  type KinAgentChange,
+  KinRecordKey,
+  ProviderInstanceId,
+  type ProviderOptionDescriptor,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   kinAdviseEffort,
+  KIN_AGENT_CHANGES,
+  kinAgentChangeLine,
+  kinAgentChangeOffer,
   kinAgentPageCan,
   kinAgentUsageLine,
   kinEffortOffAdvice,
@@ -78,5 +86,100 @@ describe("Kin's effort advice", () => {
     expect(kinWithMediumEffort(at(), models)).toEqual(at("medium"));
     expect(kinWithMediumEffort(at("xhigh"), models)).toEqual(at("xhigh"));
     expect(kinWithMediumEffort(at(), [])).toEqual(at());
+  });
+});
+
+describe("kinAgentChangeLine and kinAgentChangeOffer", () => {
+  const change = (over: Partial<KinAgentChange>): KinAgentChange => ({
+    seq: 1,
+    at: "2026-11-17T10:00:00.000Z",
+    key: KinRecordKey.make("D-3"),
+    title: "Invented chase notes",
+    registerId: "docs",
+    kind: "linked",
+    fields: [{ field: "record", from: null, to: "rec-9" }],
+    undo: false,
+    since: false,
+    ...over,
+  });
+  const end = { key: KinRecordKey.make("W-8"), title: "Invented harbour invoice" };
+  const C = KIN_AGENT_CHANGES;
+  it.each([
+    [
+      "a live link names its other end",
+      { linkedTo: end, undo: true },
+      "Linked D-3 Invented chase notes to W-8 Invented harbour invoice",
+      { kind: "undo", done: C.linkUndone },
+    ],
+    [
+      "a removed link says so",
+      { linkedTo: end, undone: true },
+      "Linked D-3 Invented chase notes to W-8 Invented harbour invoice",
+      { kind: "undone", text: C.linkGone },
+    ],
+    [
+      "an end the viewer can't see is not named",
+      { linkedTo: null, undo: true },
+      `Linked D-3 Invented chase notes to ${C.unseenEnd}`,
+      { kind: "undo", done: C.linkUndone },
+    ],
+    [
+      "a long other end is shortened",
+      { linkedTo: { ...end, title: "Invented harbour invoice for the long autumn season" } },
+      "Linked D-3 Invented chase notes to W-8 Invented harbour invoice for the lo…",
+      { kind: "none" },
+    ],
+    [
+      "a pull request names its label",
+      { fields: [{ field: "pull_request", from: null, to: "PR #12" }], undo: true },
+      "Linked D-3 Invented chase notes to PR #12",
+      { kind: "undo", done: C.linkUndone },
+    ],
+    [
+      "an older host's link, said as before and never 'changed since'",
+      { since: true },
+      "Linked D-3 Invented chase notes",
+      { kind: "none" },
+    ],
+    [
+      "an add with only links after it",
+      { kind: "created", fields: [], since: true, linkedSince: true },
+      "Added D-3 Invented chase notes",
+      { kind: "since", text: C.linkedSinceDetail },
+    ],
+    [
+      "an add changed after",
+      { kind: "created", fields: [], since: true },
+      "Added D-3 Invented chase notes",
+      { kind: "since", text: C.sinceDetail },
+    ],
+    [
+      "an add Kin never takes back",
+      { kind: "created", fields: [] },
+      "Added D-3 Invented chase notes",
+      { kind: "manual", text: C.manualAddDetail },
+    ],
+    [
+      "a field put back",
+      { kind: "updated", fields: [{ field: "title", from: "Old", to: "New" }], undone: true },
+      "D-3 Invented chase notes: title Old → New",
+      { kind: "undone", text: C.undone },
+    ],
+    [
+      "a field changed again after",
+      { kind: "updated", fields: [{ field: "state", from: "open", to: "doing" }], since: true },
+      "D-3 Invented chase notes: status open → doing",
+      { kind: "since", text: C.sinceDetail },
+    ],
+    [
+      "an amount Kin can't put back",
+      { kind: "updated", fields: [{ field: "amount", from: "10", to: "12" }] },
+      "D-3 Invented chase notes: amount 10 → 12",
+      { kind: "manual", text: C.manualDetail },
+    ],
+  ] as const)("%s", (_case, over, line, offer) => {
+    const one = change(over as Partial<KinAgentChange>);
+    expect(kinAgentChangeLine(one, new Map())).toBe(line);
+    expect(kinAgentChangeOffer(one)).toEqual(offer);
   });
 });

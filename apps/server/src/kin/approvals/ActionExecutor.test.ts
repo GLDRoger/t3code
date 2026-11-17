@@ -1351,6 +1351,11 @@ describe("KinActionExecutor", () => {
         "workspace/WorkspaceSearchIndex.ts",
         ["const requireForFff = NodeModule.createRequire(import.meta.url);"],
       ],
+      // Finds pdf.js's font and colour-map folders; loads no code.
+      [
+        "kin/lead/turn/pdfPageImages.ts",
+        ['NodeModule.createRequire(import.meta.url).resolve("pdfjs-dist/package.json"),'],
+      ],
       // Source text for the speech worker, a separate Node process.
       [
         "speech/native.ts",

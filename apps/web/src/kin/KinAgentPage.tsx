@@ -34,7 +34,7 @@ import {
   type ModelSelection,
   formatKinWhen,
 } from "@t3tools/contracts";
-import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useParams, useRouter, useSearch } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
@@ -58,6 +58,7 @@ import { KinRestoreAgent, KinRetireAgent } from "./KinAgentRetire";
 import { KinAgentModelPicker, useKinAgentModels } from "./KinAgentModelPicker";
 import { KinAvatar } from "./KinAvatar";
 import { prefillKinDraft } from "./kinDraft";
+import { openKinSettingsInstead } from "./kinSettingsAddress";
 import { kinClient, refreshKinAgents } from "./kinClient";
 import { KinAgentSection, KinLeadAccess } from "./KinLeadAccess";
 import { kinLeadFormAtom } from "./kinLeadForm";
@@ -100,6 +101,7 @@ export function KinAgentPageHost() {
 function KinAgentSheet(props: { readonly target: KinAgentPageTarget }) {
   const { environmentId, orgId, agentId } = props.target;
   const navigate = useNavigate();
+  const router = useRouter();
   const closePage = () =>
     void navigate({ to: ".", search: ({ agent: _closed, ...rest }) => rest, replace: true });
   const can = useKinAgentPageCan(environmentId);
@@ -134,6 +136,7 @@ function KinAgentSheet(props: { readonly target: KinAgentPageTarget }) {
               }
               personId={null}
               onClose={closePage}
+              onOpenSettings={(section) => openKinSettingsInstead(router.history, section, "agent")}
             />
           ) : contact === undefined ? (
             <p className="text-sm text-muted-foreground">
@@ -182,6 +185,8 @@ export function KinAgentDetails(props: {
   readonly activeAgents: number;
   readonly personId: string | null;
   readonly onClose: () => void;
+  /** Kin's Settings dialog on a section, in place of this agent's details. */
+  readonly onOpenSettings: (section: "check-ins" | "connections") => void;
 }) {
   const { environmentId, orgId, agentId } = props;
   const pageAtom = kinClient.agentPage({ environmentId, input: { orgId, agentId } });
@@ -217,6 +222,7 @@ function AgentPageBody(props: {
   readonly activeAgents: number;
   readonly personId: string | null;
   readonly onClose: () => void;
+  readonly onOpenSettings: (section: "check-ins" | "connections") => void;
   readonly onChanged: () => void;
 }) {
   const { environmentId, orgId, page } = props;
@@ -303,7 +309,12 @@ function AgentPageBody(props: {
       </KinAgentSection>
       <AgentModels {...props} retired={retired} />
       <AgentCharacter {...props} retired={retired} onRewrite={openChatWith} />
-      <AgentCheckIns environmentId={environmentId} orgId={orgId} page={page} />
+      <AgentCheckIns
+        environmentId={environmentId}
+        orgId={orgId}
+        page={page}
+        onOpenSettings={props.onOpenSettings}
+      />
       {canShare ? (
         <KinLeadAccess lead={lead} environmentId={environmentId} personId={props.personId} />
       ) : null}
@@ -330,12 +341,7 @@ function AgentPageBody(props: {
         title={KIN_AGENT_PAGE.reach}
         action={
           isChatOnlySession() ? null : (
-            <Button
-              size="xs"
-              variant="ghost"
-              render={<Link to="/settings/kin-connections" />}
-              onClick={props.onClose}
-            >
+            <Button size="xs" variant="ghost" onClick={() => props.onOpenSettings("connections")}>
               Connections
             </Button>
           )
@@ -626,6 +632,7 @@ function AgentCheckIns(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly page: KinAgentPage;
+  readonly onOpenSettings: (section: "check-ins") => void;
 }) {
   const { environmentId, orgId, page } = props;
   const result = useAtomValue(kinClient.checkIns({ environmentId, input: { orgId } }));
@@ -636,17 +643,7 @@ function AgentCheckIns(props: {
     <KinAgentSection
       title={KIN_AGENT_PAGE.checkIns}
       action={
-        <Button
-          size="xs"
-          variant="ghost"
-          render={
-            isChatOnlySession() ? (
-              <Link to="/kin/$environmentId/$orgId/settings" params={{ environmentId, orgId }} />
-            ) : (
-              <Link to="/settings/check-ins" />
-            )
-          }
-        >
+        <Button size="xs" variant="ghost" onClick={() => props.onOpenSettings("check-ins")}>
           Change
         </Button>
       }
@@ -740,7 +737,7 @@ function AgentChanged(props: {
   const names = new Map([...directory.people, ...directory.agents]);
   const [busy, setBusy] = useState<number | null>(null);
   const [said, setSaid] = useState<{ readonly seq: number; readonly text: string } | null>(null);
-  const run = async (seq: number) => {
+  const run = async (seq: number, done: string) => {
     setBusy(seq);
     const outcome = await undo({ environmentId, input: { orgId, agentId: props.agentId, seq } });
     setBusy(null);
@@ -748,7 +745,7 @@ function AgentChanged(props: {
       seq,
       text: AsyncResult.isFailure(outcome)
         ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_CHANGES.failed)
-        : KIN_AGENT_CHANGES.undone,
+        : done,
     });
     props.onChanged();
   };
@@ -783,18 +780,12 @@ function AgentChanged(props: {
                       variant="outline"
                       disabled={busy !== null}
                       aria-busy={busy === change.seq}
-                      onClick={() => void run(change.seq)}
+                      onClick={() => void run(change.seq, offer.done)}
                     >
                       {busy === change.seq ? KIN_AGENT_CHANGES.undoing : KIN_AGENT_CHANGES.undo}
                     </Button>
-                  ) : offer.kind === "undone" ? (
+                  ) : offer.kind !== "undo" && offer.kind !== "none" ? (
                     <span className="text-xs text-muted-foreground">{offer.text}</span>
-                  ) : offer.kind === "since" || offer.kind === "manual" ? (
-                    <span className="text-xs text-muted-foreground">
-                      {offer.kind === "since"
-                        ? KIN_AGENT_CHANGES.sinceDetail
-                        : KIN_AGENT_CHANGES.manualDetail}
-                    </span>
                   ) : null}
                   {said?.seq === change.seq && offer.kind !== "undone" ? (
                     <span role="status" className="text-xs text-muted-foreground">

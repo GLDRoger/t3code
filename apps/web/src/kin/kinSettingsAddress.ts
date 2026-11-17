@@ -67,6 +67,22 @@ export function openKinMemoryInstead(history: RouterHistory, find: string, dialo
   );
 }
 
+/** Settings on `section` in place of the dialog `dialogParam` names; Back brings that dialog back. */
+export function openKinSettingsInstead(
+  history: RouterHistory,
+  section: string,
+  dialogParam: string,
+) {
+  const { pathname, search, hash, state } = history.location;
+  const params = new URLSearchParams(search);
+  params.delete(dialogParam);
+  const rest = params.toString();
+  history.push(withSection(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, section), {
+    ...state,
+    kinSettingsPushed: true,
+  });
+}
+
 export function closeKinSettings(history: RouterHistory): void {
   const { pathname, search, hash, state } = history.location;
   if (state.kinSettingsPushed === true) return history.back();

@@ -67,6 +67,7 @@ import {
   callable,
   changed,
   connectionById,
+  connectionEverById,
   connectionView,
   liveConnections,
   resolveConnection,
@@ -92,7 +93,7 @@ import {
   type Mailbox,
   type MailProvider,
 } from "./MailProvider.ts";
-import { mailProviderOf } from "./mailProviders.ts";
+import { MAIL_PRESETS, mailProviderOf } from "./mailProviders.ts";
 import * as OAuth from "./OAuth.ts";
 import { instructionsDigest, pinDigest, reconcile, suggestedMode } from "./Pinning.ts";
 import {
@@ -101,7 +102,6 @@ import {
   DEFAULT_SIGN_IN_ADDRESS,
   KEY_PRESETS,
   keyHeaderValue,
-  OWNER_CLIENT_PRESETS,
   SERVICES,
   SIGN_IN_PRESETS,
 } from "./presets.ts";
@@ -193,7 +193,7 @@ export const KinConnectionToolsResult = Schema.Struct({
         connection: Schema.String,
         label: Schema.String,
         service: Schema.String,
-        /** The signed-in account, such as a Gmail address, and the addresses it sends as. */
+        /** The signed-in account, such as a mail address, and the addresses it sends as. */
         account: Schema.optional(Schema.String),
         sendsAs: Schema.optional(Schema.Array(Schema.String)),
         /** The owner's own line on what the account is for. */
@@ -246,6 +246,8 @@ export type KinConnectionActivity =
       readonly since: number;
       readonly until: number;
       readonly account: string | null;
+      /** Where the vendor's calendar feed stopped; `activitySeen` keeps it with `until`. */
+      readonly cursor: string | null;
       readonly mail: ReadonlyArray<{
         readonly threadId: string;
         readonly receivedBy: string | null;
@@ -379,6 +381,7 @@ export class KinConnections extends Context.Service<
       orgId: KinOrgId,
       connectionId: string,
       until: number,
+      cursor?: string | null,
     ) => Effect.Effect<void, KinChatError>;
     readonly tools: Lead<typeof KinConnectionToolsInput.Type, typeof KinConnectionToolsResult.Type>;
     readonly call: Lead<typeof KinConnectionCallInput.Type, typeof KinConnectionCallResult.Type>;
@@ -544,7 +547,7 @@ const make = Effect.gen(function* () {
   /** A service that signs in with the owner's own client shows "Needs setup" until it is saved. */
   const servicesFor = Effect.fn("KinConnections.services")(function* () {
     const missing = new Set<string>();
-    for (const service of OWNER_CLIENT_PRESETS) {
+    for (const service of MAIL_PRESETS) {
       const saved = yield* secrets.getClient(service).pipe(Effect.orElseSucceed(Option.none));
       if (Option.isNone(saved)) missing.add(service);
     }
@@ -1156,6 +1159,11 @@ const make = Effect.gen(function* () {
       let secretUrl: string | undefined;
       const provider = mailProviderOf({ kind: preset.kind, preset: service });
       if (provider !== undefined) {
+        if (input.client !== undefined && !provider.signIn.accountClient)
+          return yield* fail(
+            "invalid_state",
+            `Every ${preset.label} account signs in with the one app set up in Settings.`,
+          );
         if (input.client !== undefined && !provider.signIn.clientId.test(input.client.clientId))
           return yield* fail("invalid_state", provider.signIn.notClient);
         const shared = Option.getOrUndefined(yield* secrets.getClient(service));
@@ -1444,7 +1452,10 @@ const make = Effect.gen(function* () {
     connectionId: string,
   ) {
     const row = yield* live(orgId, connectionId);
-    const [cursor] = yield* sql<{ checkedUntil: number }>`SELECT checked_until AS "checkedUntil"
+    const [cursor] = yield* sql<{
+      checkedUntil: number;
+      calendarCursor: string | null;
+    }>`SELECT checked_until AS "checkedUntil", calendar_cursor AS "calendarCursor"
         FROM kin_connection_cursors WHERE org_id = ${orgId} AND connection_id = ${connectionId}
         ORDER BY connection_id`;
     const since = cursor?.checkedUntil ?? row.createdAt;
@@ -1464,17 +1475,24 @@ const make = Effect.gen(function* () {
           ? yield* withSignIn(orgId, row, (force) =>
               signInOf(orgId, row, force).pipe(
                 Effect.flatMap((secret) =>
-                  provider.activity(http, secret.accessToken, mailboxOf(row), since),
+                  provider.activity(
+                    http,
+                    secret.accessToken,
+                    mailboxOf(row),
+                    since,
+                    cursor?.calendarCursor ?? null,
+                  ),
                 ),
               ),
             )
-          : { mail: [], calendar: [] };
+          : { mail: [], calendar: [], cursor: cursor?.calendarCursor ?? null };
       return {
         _tag: "mail",
         connectionId: row.connectionId,
         since,
         until,
         account: row.accountLabel,
+        cursor: found.cursor,
         mail: mail ? found.mail : [],
         calendar: calendar ? found.calendar : [],
       } as const;
@@ -1504,13 +1522,18 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     connectionId: string,
     until: number,
+    cursor?: string | null,
   ) {
     yield* live(orgId, connectionId);
     const now = yield* Clock.currentTimeMillis;
-    yield* sql`INSERT INTO kin_connection_cursors (org_id, connection_id, checked_until, updated_at)
-        VALUES (${orgId}, ${connectionId}, ${until}, ${now})
+    const calendar = cursor ?? null;
+    yield* sql`INSERT INTO kin_connection_cursors (org_id, connection_id, checked_until, updated_at,
+          calendar_cursor)
+        VALUES (${orgId}, ${connectionId}, ${until}, ${now}, ${calendar})
         ON CONFLICT (org_id, connection_id) DO UPDATE SET
-          checked_until = MAX(checked_until, excluded.checked_until), updated_at = excluded.updated_at`;
+          checked_until = MAX(checked_until, excluded.checked_until), updated_at = excluded.updated_at,
+          calendar_cursor = CASE WHEN excluded.checked_until >= checked_until
+            THEN COALESCE(excluded.calendar_cursor, calendar_cursor) ELSE calendar_cursor END`;
   }, settle);
 
   type Turn = Effect.Success<ReturnType<typeof resolveLead>>;
@@ -2312,14 +2335,15 @@ const make = Effect.gen(function* () {
           _tag: "stale" as const,
           askId: row.askId,
           reason: told,
-          fresh: owes
-            ? {
-                prepared,
-                row,
-                label: connection?.label ?? "Gmail",
-                account: connection?.accountLabel ?? null,
-              }
-            : undefined,
+          fresh:
+            owes && connection !== undefined
+              ? {
+                  prepared,
+                  row,
+                  label: connection.label,
+                  account: connection?.accountLabel ?? null,
+                }
+              : undefined,
         };
       }
       yield* decide("sending", null);
@@ -2366,7 +2390,9 @@ const make = Effect.gen(function* () {
       JOIN kin_connections c ON c.org_id = k.org_id AND c.connection_id = k.connection_id
       WHERE k.org_id = ${orgId} AND k.ask_id = ${stale.row.askId}
       ON CONFLICT (org_id, ask_id) DO NOTHING`;
-    const mail = connection === undefined ? undefined : mailProviderOf(connection);
+    const named =
+      connection ?? (yield* connectionEverById(orgId, stale.row.connectionId).pipe(provideSql));
+    const mail = named === undefined ? undefined : mailProviderOf(named);
     const card = sendCard({
       clock: {
         zone: yield* ownerZone(orgId).pipe(provideSql),
@@ -2604,7 +2630,12 @@ const make = Effect.gen(function* () {
         yield* settled(orgId, row.askId);
         continue;
       }
-      const connection = yield* connectionById(orgId, row.connectionId).pipe(provideSql);
+      // A connection removed since keeps its name on the card that still owes the mail.
+      const connection = yield* connectionEverById(orgId, row.connectionId).pipe(provideSql);
+      if (connection === undefined) {
+        yield* settled(orgId, row.askId);
+        continue;
+      }
       outcomes.push({
         widgetId: row.widgetId,
         state: "failed",
@@ -2612,8 +2643,8 @@ const make = Effect.gen(function* () {
         fresh: {
           prepared,
           row,
-          label: connection?.label ?? "Gmail",
-          account: connection?.accountLabel ?? null,
+          label: connection.label,
+          account: connection.accountLabel,
         },
       });
     }
