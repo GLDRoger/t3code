@@ -2,11 +2,11 @@ import {
   KIN_PULSE_LATER_SENSES,
   KinChatError,
   type KinOrgId,
-  type KinPulseEvent,
   type KinPulseHandleInput,
   type KinPulseListInput,
   type KinPulseScreenRead,
   type KinPulseSubscribeInput,
+  kinPulseApply,
   kinPulseDiff,
   kinPulsePage,
 } from "@t3tools/contracts";
@@ -16,6 +16,7 @@ import * as Stream from "effect/Stream";
 
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
+import { coalesced, hashedLive, viewHash } from "../hashedLive.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
@@ -80,19 +81,6 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
     : { ...read, ...kinPulsePage(facts, input.limit) };
 });
 
-/** Names what a screen holds by its text: cyrb53, as hex. */
-export const viewHash = (text: string) => {
-  let h1 = 0xdeadbeef;
-  let h2 = 0x41c6ce57;
-  for (let index = 0; index < text.length; index += 1) {
-    const code = text.charCodeAt(index);
-    h1 = Math.imul(h1 ^ code, 2654435761);
-    h2 = Math.imul(h2 ^ code, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
-};
 /** Names a page by what a screen shows of it (not `asOf`). */
 const pulseHash = (read: KinPulseScreenRead) =>
   viewHash(JSON.stringify([read.total, read.facts, read.outline ?? null]));
@@ -134,23 +122,16 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinPulse
         Stream.filter((moved) => moved),
         Stream.map(() => -1),
       );
-      let sent: KinPulseScreenRead | null = null;
-      return Stream.merge(pulse, work).pipe(
-        // A burst during a read is one more read.
-        Stream.buffer({ capacity: 1, strategy: "sliding" }),
-        Stream.mapEffect(() => read(people, listInput)),
-        Stream.map((next): ReadonlyArray<KinPulseEvent> => {
-          const hash = pulseHash(next);
-          const before = sent;
-          sent = next;
-          if (before === null)
-            return [
-              held === hash ? { _tag: "current", hash } : { _tag: "snapshot", read: next, hash },
-            ];
-          const change = kinPulseDiff(before, next);
-          return change === null ? [] : [{ _tag: "changed", ...change, hash }];
-        }),
-        Stream.flattenIterable,
+      const live = hashedLive({
+        held,
+        hash: pulseHash,
+        snapshot: (page: KinPulseScreenRead, hash) =>
+          ({ _tag: "snapshot", read: page, hash }) as const,
+        diff: kinPulseDiff,
+        apply: kinPulseApply,
+      });
+      return coalesced(Stream.merge(pulse, work), () =>
+        read(people, listInput).pipe(Effect.map(live.next)),
       );
     }),
   );

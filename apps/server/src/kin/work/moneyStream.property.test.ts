@@ -11,15 +11,23 @@ import {
   type KinMoneyPart,
   KinOrgId,
   KinPersonId,
+  type KinPulseEvent,
+  type KinPulseScreenRead,
   kinMoneyApply,
   kinMoneySettled,
+  kinPulseApply,
 } from "@t3tools/contracts";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Duration from "effect/Duration";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -32,10 +40,12 @@ import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
+import * as Pulse from "../pulse/people.ts";
 import * as Goals from "./goals.ts";
 import * as KinImport from "./KinImport.ts";
 import * as KinRecords from "./KinRecords.ts";
-import { demandOfTick, makeMoneyStream, type MoneyDemand } from "./moneyStream.ts";
+import { demandOfTick, makeMoneyStream, type MoneyDemand, subscribe } from "./moneyStream.ts";
 import * as Money from "./ownerMoney.ts";
 import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as Work from "./ownerWork.ts";
@@ -408,5 +418,146 @@ describe("Money's live stream", () => {
     [history],
     ([ops]) => moneyCase(ops).pipe(Effect.provide(testLayer)),
     { arbitrary: { runs: 25 } },
+  );
+});
+
+/** One hashed live read on a co-owner's screen: how to open it, fold it, and read it fresh. */
+type HashedRow<Event extends { readonly _tag: string; readonly hash: string }, Held, View, E, R> = {
+  readonly name: string;
+  readonly open: (held: string | undefined) => Stream.Stream<Event, E, R>;
+  readonly snapshot: (event: Event) => Held | undefined;
+  readonly fold: (held: Held, event: Event) => Held;
+  readonly view: (held: Held) => View;
+  readonly fresh: Effect.Effect<View, E, R>;
+  /** Owner level lost: the stream is refused, or narrows to what a member sees. */
+  readonly lost: "refused" | "narrowed";
+};
+
+const settle = TestClock.adjust(Duration.sum(RefreshHub.KIN_REFRESH_SETTLE, Duration.millis(100)));
+
+/** Change, no change, reconnect and a lost level, through one row's real `subscribe`. */
+const hashedCase = Effect.fn("HashedLiveTest.case")(function* <
+  Event extends { readonly _tag: string; readonly hash: string },
+  Held,
+  View,
+  E,
+  R,
+>(row: HashedRow<Event, Held, View, E, R>) {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords.KinRecords;
+  const heard = yield* Queue.unbounded<
+    Event | { readonly _tag: "ended"; readonly refused: boolean }
+  >();
+  const fiber = yield* row.open(undefined).pipe(
+    Stream.runForEach((event) => Queue.offer(heard, event)),
+    Effect.exit,
+    Effect.flatMap((exit) => Queue.offer(heard, { _tag: "ended", refused: Exit.isFailure(exit) })),
+    Effect.forkScoped,
+  );
+  const take = Effect.fn("HashedLiveTest.take")(function* (what: string) {
+    const event = yield* Queue.take(heard);
+    if (event._tag === "ended")
+      return yield* Effect.die(new Error(`${row.name}: ended at ${what}`));
+    return event as Event;
+  });
+  const first = yield* take("open");
+  let held = row.snapshot(first);
+  if (held === undefined) return assert.fail(`${row.name}: opens with ${first._tag}`);
+  let hash = first.hash;
+  assert.deepStrictEqual(row.view(held), yield* row.fresh, `${row.name}: opens fresh`);
+
+  // No change: a task renamed moves no figure and no fact.
+  const [task] = yield* sql<{ key: string; rev: number }>`SELECT key, rev FROM kin_records
+    WHERE org_id = ${orgId} AND register_id = 'work' ORDER BY key LIMIT 1`;
+  if (task !== undefined)
+    yield* Work.update(as("owner"), {
+      orgId,
+      key: task.key as never,
+      rev: task.rev,
+      title: `Invented: renamed for ${row.name}`,
+    });
+  yield* KinPulse.tick(orgId, NOW + 30_000);
+  yield* settle;
+
+  // A change: the most overdue invoice paid. The next event is this one, not one for the rename.
+  const [unpaid] = yield* sql<{ key: string; minor: number }>`SELECT key, amount_minor AS minor
+    FROM kin_records WHERE org_id = ${orgId} AND register_id = 'invoices' AND state = 'waiting'
+    ORDER BY due_at LIMIT 1`;
+  yield* Money.recordPayment(as("owner"), {
+    orgId,
+    key: unpaid!.key as never,
+    amount: { minor: unpaid!.minor, currency: "INR" },
+    paidOn: day(0),
+    clientRequestId: `hashed-live:${row.name}`,
+  });
+  yield* KinPulse.tick(orgId, NOW + 60_000);
+  yield* settle;
+  const change = yield* take("change");
+  assert.strictEqual(change._tag, "changed", `${row.name}: a change is sent`);
+  assert.notStrictEqual(change.hash, hash, `${row.name}: nothing was sent for no change`);
+  held = row.fold(held, change);
+  hash = change.hash;
+  assert.deepStrictEqual(row.view(held), yield* row.fresh, `${row.name}: folds fresh`);
+
+  // Reconnect, nothing moved: the hash held is current. A stale one gets the whole again.
+  const again = yield* Stream.runHead(row.open(hash)).pipe(Effect.map(Option.getOrThrow));
+  assert.deepStrictEqual(again, { _tag: "current", hash }, `${row.name}: resumes current`);
+  const stale = yield* Stream.runHead(row.open("00000000000000")).pipe(
+    Effect.map(Option.getOrThrow),
+  );
+  assert.strictEqual(stale._tag, "snapshot", `${row.name}: a stale hash`);
+
+  // Owner level lost mid-stream.
+  yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'cora'`;
+  yield* records.peopleMoved(orgId, ["cora"]);
+  yield* settle;
+  const after = yield* Queue.take(heard);
+  if (row.lost === "refused")
+    assert.deepStrictEqual(after, { _tag: "ended", refused: true }, `${row.name}: refused`);
+  else {
+    if (after._tag === "ended") return assert.fail(`${row.name}: ended on a lost level`);
+    assert.strictEqual(after._tag, "changed", `${row.name}: narrows`);
+    assert.deepStrictEqual(
+      row.view(row.fold(held, after as Event)),
+      yield* row.fresh,
+      `${row.name}: as a member`,
+    );
+  }
+  yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = 'cora'`;
+  yield* records.peopleMoved(orgId, ["cora"]);
+  yield* Fiber.interrupt(fiber);
+});
+
+const page = { orgId, includeHandled: false } as const;
+const heldIn = (held: string | undefined) => (held === undefined ? {} : { held });
+
+// Both hashed live reads (`hashedLive.ts`), one row each, through the same steps.
+describe("Hashed live reads", () => {
+  it.effect(
+    "Money and Needs attention send a change, nothing for no change, current on reconnect, and stop at a lost level",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* KinPulse.tick(orgId, NOW);
+        yield* hashedCase({
+          name: "money",
+          open: (held) => subscribe(as("cora"), { orgId, parts: KIN_MONEY_PARTS, ...heldIn(held) }),
+          snapshot: (event: KinMoneyEvent) => (event._tag === "snapshot" ? event.live : undefined),
+          fold: (held, event) => (event._tag === "changed" ? kinMoneyApply(held, event) : held),
+          view: timeless,
+          fresh: freshOf("cora").pipe(Effect.map(timeless)),
+          lost: "refused",
+        });
+        const view = ({ asOf: _, ...read }: KinPulseScreenRead) => read;
+        yield* hashedCase({
+          name: "attention",
+          open: (held) => Pulse.subscribe(as("cora"), { ...page, ...heldIn(held) }),
+          snapshot: (event: KinPulseEvent) => (event._tag === "snapshot" ? event.read : undefined),
+          fold: (held, event) => (event._tag === "changed" ? kinPulseApply(held, event) : held),
+          view,
+          fresh: Pulse.read(as("cora"), page).pipe(Effect.map(view)),
+          lost: "narrowed",
+        });
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 });

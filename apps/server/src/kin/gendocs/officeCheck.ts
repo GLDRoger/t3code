@@ -1,31 +1,17 @@
-// @effect-diagnostics nodeBuiltinImport:off -- a bounded, streaming inflate of each part; Effect has no zlib.
-import * as NodeZlib from "node:zlib";
-
 import { SaxesParser, type SaxesTagNS } from "saxes";
 
+import { openZip, refuse, Refusal, ZIP_CAPS, type ZipCaps } from "../files/zipParts.ts";
 import { svgProblem } from "./svgCheck.ts";
 
-// Whether an XLSX, DOCX or PPTX is only a document: its ZIP read under caps, each XML part inflated
-// a chunk at a time into an event parser. Macros, embedded objects, ActiveX, templates, data
+// Whether an XLSX, DOCX or PPTX is only a document: its ZIP read under Kin's caps, each XML part
+// inflated a chunk at a time into an event parser. Macros, embedded objects, ActiveX, templates, data
 // connections, fields and formulas that fetch or run, and outside links but web or email
 // hyperlinks are refused. Hyperlinks stay: they open only when the reader clicks one.
 
 export type OfficeKind = "xlsx" | "docx" | "pptx";
 
-export const OFFICE_CAPS = {
-  entries: 2_000,
-  entryBytes: 256 * 1024 * 1024,
-  totalBytes: 1024 * 1024 * 1024,
-  /** XML Kin parses: per part, and across the file. A part streams, so neither is held whole. */
-  partBytes: 256 * 1024 * 1024,
-  inflatedBytes: 512 * 1024 * 1024,
-  /** An SVG image inside is checked as one text, so it stays small. */
-  svgBytes: 16 * 1024 * 1024,
-  /** Past this, a part unpacks to far more than real XML does: a ZIP bomb, not a sheet. */
-  ratio: 500,
-  commentBytes: 1024,
-};
-export type OfficeCaps = typeof OFFICE_CAPS;
+/** An SVG image inside is checked as one text, so it stays small. */
+const SVG_BYTES = 16 * 1024 * 1024;
 const CHUNK = 64 * 1024;
 /** One tag with its attributes, one formula or one field instruction: no real document's is near. */
 const HELD_CHARS = 1024 * 1024;
@@ -51,252 +37,6 @@ const CONTENT_TYPES = "http://schemas.openxmlformats.org/package/2006/content-ty
 const RELATIONSHIPS = "http://schemas.openxmlformats.org/package/2006/relationships";
 const XMLNS = "http://www.w3.org/2000/xmlns/";
 
-const EOCD = 0x06054b50;
-const CENTRAL = 0x02014b50;
-const LOCAL = 0x04034b50;
-const DESCRIPTOR = 0x08074b50;
-const ZIP64_LOCATOR = 0x07064b50;
-const ZIP64_EXTRA = 0x0001;
-const UNICODE_PATH_EXTRA = 0x7075;
-// Encrypted, data descriptor, strong encryption, UTF-8 name: what changes how a part is read.
-const READ_FLAGS = 0x0001 | 0x0008 | 0x0040 | 0x0800;
-
-type Entry = {
-  readonly name: string;
-  readonly flags: number;
-  readonly method: number;
-  readonly crc: number;
-  readonly packed: number;
-  readonly size: number;
-  readonly offset: number;
-};
-
-// @effect-diagnostics-next-line extendsNativeError:off - a local throw sentinel inside one pure check.
-class Refusal extends Error {
-  readonly reason: string;
-  constructor(reason: string) {
-    super(reason);
-    this.reason = reason;
-  }
-}
-const refuse = (reason: string): never => {
-  throw new Refusal(reason);
-};
-
-const quoted = (name: string) => JSON.stringify(name.slice(0, 80));
-
-const decodeName = (bytes: Uint8Array) => {
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return refuse("a part name that isn't UTF-8");
-  }
-};
-
-/** A header's extra fields by id, each once, filling the extra area exactly. */
-const extraFields = (extra: Buffer) => {
-  const fields = new Map<number, Buffer>();
-  for (let at = 0; at < extra.length;) {
-    if (at + 4 > extra.length) return refuse("has a broken ZIP extra field");
-    const id = extra.readUInt16LE(at);
-    const end = at + 4 + extra.readUInt16LE(at + 2);
-    if (end > extra.length || fields.has(id)) return refuse("has a broken ZIP extra field");
-    fields.set(id, extra.subarray(at + 4, end));
-    at = end;
-  }
-  if (fields.has(ZIP64_EXTRA)) return refuse("a ZIP64 part");
-  return fields;
-};
-
-/** A header's part name, refused when its raw bytes, flags and Unicode-path field disagree. */
-const headerName = (raw: Buffer, flags: number, extra: Buffer) => {
-  if ((flags & 0x0800) === 0 && raw.some((byte) => byte >= 0x80))
-    return refuse(`has a part name that isn't marked as UTF-8`);
-  const name = decodeName(raw);
-  const unicode = extraFields(extra).get(UNICODE_PATH_EXTRA);
-  if (unicode !== undefined && (unicode.length < 5 || decodeName(unicode.subarray(5)) !== name))
-    return refuse(`has a part with two different names, one of them ${quoted(name)}`);
-  return name;
-};
-
-/** The ZIP's directory, checked: one end record, no ZIP64, no gaps, no odd or repeated names. */
-const directory = (bytes: Buffer) => {
-  const floor = Math.max(0, bytes.length - 22 - OFFICE_CAPS.commentBytes);
-  let end = -1;
-  for (let at = bytes.length - 22; at >= floor; at -= 1)
-    if (bytes.readUInt32LE(at) === EOCD) {
-      end = at;
-      break;
-    }
-  if (end === -1) return refuse("no ZIP directory at its end");
-  if (end + 22 + bytes.readUInt16LE(end + 20) !== bytes.length)
-    return refuse("data after its ZIP directory");
-  if (end >= 20 && bytes.readUInt32LE(end - 20) === ZIP64_LOCATOR)
-    return refuse("a ZIP64 directory");
-  const disk = bytes.readUInt16LE(end + 4);
-  const startDisk = bytes.readUInt16LE(end + 6);
-  const here = bytes.readUInt16LE(end + 8);
-  const count = bytes.readUInt16LE(end + 10);
-  const size = bytes.readUInt32LE(end + 12);
-  const start = bytes.readUInt32LE(end + 16);
-  if (disk !== 0 || startDisk !== 0 || here !== count) return refuse("a split ZIP");
-  if (count === 0xffff || size === 0xffffffff || start === 0xffffffff)
-    return refuse("a ZIP64 directory");
-  if (count > OFFICE_CAPS.entries) return refuse(`more than ${OFFICE_CAPS.entries} parts`);
-  if (start + size !== end) return refuse("data between its parts and its ZIP directory");
-  const entries: Array<Entry> = [];
-  const names = new Set<string>();
-  let total = 0;
-  let at = start;
-  for (let index = 0; index < count; index += 1) {
-    if (at + 46 > end || bytes.readUInt32LE(at) !== CENTRAL)
-      return refuse("a broken ZIP directory");
-    const flags = bytes.readUInt16LE(at + 8);
-    const method = bytes.readUInt16LE(at + 10);
-    const crc = bytes.readUInt32LE(at + 16);
-    const packed = bytes.readUInt32LE(at + 20);
-    const entrySize = bytes.readUInt32LE(at + 24);
-    const nameLength = bytes.readUInt16LE(at + 28);
-    const extraLength = bytes.readUInt16LE(at + 30);
-    const commentLength = bytes.readUInt16LE(at + 32);
-    const offset = bytes.readUInt32LE(at + 42);
-    const next = at + 46 + nameLength + extraLength + commentLength;
-    if (next > end) return refuse("a broken ZIP directory");
-    if ((flags & 0x0001) !== 0 || (flags & 0x0040) !== 0) return refuse("an encrypted part");
-    if (method !== 0 && method !== 8) return refuse("a part packed in a way Kin doesn't read");
-    if (packed === 0xffffffff || entrySize === 0xffffffff || offset === 0xffffffff)
-      return refuse("a ZIP64 part");
-    const name = headerName(
-      bytes.subarray(at + 46, at + 46 + nameLength),
-      flags,
-      bytes.subarray(at + 46 + nameLength, at + 46 + nameLength + extraLength),
-    );
-    // Office and Windows read a name the same after case, Unicode form and trailing dots or spaces.
-    if (
-      name.length === 0 ||
-      name.startsWith("/") ||
-      /[\\\0:]/.test(name) ||
-      name.split("/").some((part) => /[. ]$/.test(part))
-    )
-      return refuse(`a part named ${quoted(name)}`);
-    const key = name.toLowerCase().normalize("NFC");
-    if (names.has(key)) return refuse(`two parts named ${quoted(name)}`);
-    names.add(key);
-    if (entrySize > OFFICE_CAPS.entryBytes) return refuse("a part over the size cap");
-    total += entrySize;
-    if (total > OFFICE_CAPS.totalBytes) return refuse("parts over the size cap together");
-    entries.push({ name, flags, method, crc, packed, size: entrySize, offset });
-    at = next;
-  }
-  if (at !== end) return refuse("a broken ZIP directory");
-  // Parts sit back to back from the first byte to the directory: nothing hides between them.
-  let previous = 0;
-  for (const entry of entries.toSorted((left, right) => left.offset - right.offset)) {
-    const head = entry.offset;
-    if (head !== previous || head + 30 > start || bytes.readUInt32LE(head) !== LOCAL)
-      return refuse("data between its parts");
-    const flags = bytes.readUInt16LE(head + 6);
-    if ((flags & 0x0001) !== 0) return refuse("an encrypted part");
-    const nameLength = bytes.readUInt16LE(head + 26);
-    const extraLength = bytes.readUInt16LE(head + 28);
-    const data = head + 30 + nameLength + extraLength;
-    if (data > start) return refuse("a broken ZIP part");
-    const local = headerName(
-      bytes.subarray(head + 30, head + 30 + nameLength),
-      flags,
-      bytes.subarray(head + 30 + nameLength, data),
-    );
-    if (local !== entry.name || data + entry.packed > start) return refuse("a broken ZIP part");
-    const disagree = `has a part, ${quoted(entry.name)}, whose two ZIP headers disagree`;
-    if (((flags ^ entry.flags) & READ_FLAGS) !== 0 || bytes.readUInt16LE(head + 8) !== entry.method)
-      return refuse(disagree);
-    const described = (flags & 0x0008) !== 0;
-    for (const [at, expected] of [
-      [head + 14, entry.crc],
-      [head + 18, entry.packed],
-      [head + 22, entry.size],
-    ] as const) {
-      const value = bytes.readUInt32LE(at);
-      if (value !== expected && !(described && value === 0)) return refuse(disagree);
-    }
-    previous = data + entry.packed;
-    if (described) {
-      // The descriptor after the bytes, with or without its optional signature.
-      const signed = previous + 16 <= start && bytes.readUInt32LE(previous) === DESCRIPTOR;
-      const fields = signed ? previous + 4 : previous;
-      if (
-        fields + 12 > start ||
-        bytes.readUInt32LE(fields) !== entry.crc ||
-        bytes.readUInt32LE(fields + 4) !== entry.packed ||
-        bytes.readUInt32LE(fields + 8) !== entry.size
-      )
-        return refuse(`has a part, ${quoted(entry.name)}, whose sizes after its data disagree`);
-      previous = fields + 12;
-    }
-  }
-  if (previous !== start) return refuse("data between its parts and its ZIP directory");
-  return entries;
-};
-
-/** One part's bytes, inflated a chunk at a time into `sink`, its size and CRC checked as they come. */
-const streamPart = (bytes: Buffer, entry: Entry, sink: (text: string) => void) =>
-  new Promise<void>((resolve, reject) => {
-    const head = entry.offset;
-    const data = head + 30 + bytes.readUInt16LE(head + 26) + bytes.readUInt16LE(head + 28);
-    const packed = bytes.subarray(data, data + entry.packed);
-    const mismatch = `${entry.name} doesn't match its ZIP directory`;
-    const decoder = new TextDecoder("utf-8");
-    let size = 0;
-    let crc = 0;
-    let done = false;
-    const fail = (error: unknown) => {
-      if (done) return;
-      done = true;
-      inflater?.destroy();
-      reject(error instanceof Refusal ? error : new Refusal(`${entry.name} doesn't unpack`));
-    };
-    const take = (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > entry.size) refuse(mismatch);
-      crc = NodeZlib.crc32(chunk, crc);
-      sink(decoder.decode(chunk, { stream: true }));
-    };
-    const finish = () => {
-      sink(decoder.decode());
-      if (size !== entry.size || crc !== entry.crc) refuse(mismatch);
-      done = true;
-      resolve();
-    };
-    const inflater =
-      entry.method === 0 ? undefined : NodeZlib.createInflateRaw({ chunkSize: CHUNK });
-    try {
-      if (inflater === undefined) {
-        for (let at = 0; at < packed.length; at += CHUNK) take(packed.subarray(at, at + CHUNK));
-        return finish();
-      }
-    } catch (error) {
-      return fail(error);
-    }
-    inflater.on("data", (chunk: Buffer) => {
-      if (done) return;
-      try {
-        take(chunk);
-      } catch (error) {
-        fail(error);
-      }
-    });
-    inflater.on("error", fail);
-    inflater.on("end", () => {
-      if (done) return;
-      try {
-        finish();
-      } catch (error) {
-        fail(error);
-      }
-    });
-    inflater.end(packed);
-  });
-
 type Handlers = {
   readonly open: (tag: SaxesTagNS) => void;
   readonly text?: (text: string) => void;
@@ -313,7 +53,7 @@ type Source = (handlers: Handlers) => Promise<void>;
  */
 const parser = (part: string, handlers: Handlers) => {
   const parser = new SaxesParser({ xmlns: true, position: false });
-  const broken = () => refuse(`${part} isn't well-formed XML`);
+  const broken = () => refuse(`has ${part}, which isn't well-formed XML`);
   let held = 0;
   let inTag = false;
   const handed = () => {
@@ -686,42 +426,33 @@ const bodyProblem = async (kind: OfficeKind, read: Source, part: string) => {
 const XML_TYPE = /[/+]xml$/i;
 const SVG_TYPE = /^image\/svg\+xml$/i;
 
-/** Why these bytes aren't a plain `kind` document, or `undefined` when they are. */
+/** Why these bytes aren't a plain `kind` document, as a phrase completing "it …", or `undefined`. */
 export const officeProblem = async (
   kind: OfficeKind,
   input: Uint8Array,
-  caps: OfficeCaps = OFFICE_CAPS,
+  caps: ZipCaps = ZIP_CAPS,
 ): Promise<string | undefined> => {
-  const bytes = Buffer.from(input.buffer, input.byteOffset, input.byteLength);
   try {
-    const entries = directory(bytes);
+    const zip = openZip(input, caps);
+    const entries = zip.parts;
     const byName = new Map(entries.map((entry) => [entry.name, entry]));
     const main = MAIN[kind];
-    if (!byName.has(main.part)) return refuse(`no ${main.part}`);
+    if (!byName.has(main.part)) return refuse(`has no ${main.part}`);
     const active = entries.find((entry) => ACTIVE_PART.test(entry.name));
     if (active !== undefined)
       return refuse(`carries ${active.name}, which runs, embeds or fetches content`);
     const types = byName.get("[Content_Types].xml");
-    if (types === undefined) return refuse("no [Content_Types].xml");
-    let budget = caps.inflatedBytes;
-    const admit = (entry: Entry, cap: number) => {
-      if (entry.size > cap) refuse(`has ${entry.name}, which is too large for Kin to check`);
-      if (entry.size > 1024 * 1024 && entry.size > Math.max(entry.packed, 1) * caps.ratio)
-        refuse(`has ${entry.name}, which unpacks to far more than any real document does`);
-      if (entry.size > budget) refuse("has more XML than Kin checks in one file");
-      budget -= entry.size;
-    };
+    if (types === undefined) return refuse("has no [Content_Types].xml");
     const source =
-      (entry: Entry): Source =>
+      (entry: (typeof entries)[number]): Source =>
       async (handlers) => {
-        admit(entry, caps.partBytes);
         const xml = parser(entry.name, handlers);
-        await streamPart(bytes, entry, xml.write);
+        await zip.stream(entry, xml.write);
         xml.close();
       };
     const typeOf = await contentTypes(source(types), types.name);
     if (typeOf(main.part) !== main.type)
-      return refuse(`its ${main.part} isn't a plain ${kind.toUpperCase()}`);
+      return refuse(`has ${main.part}, which isn't a plain ${kind.toUpperCase()}'s main part`);
     const rest = entries.filter((entry) => entry !== types && !entry.name.endsWith("/"));
     for (const entry of rest)
       if (entry.name.toLowerCase().endsWith(".rels"))
@@ -730,9 +461,10 @@ export const officeProblem = async (
       if (entry.name.toLowerCase().endsWith(".rels")) continue;
       const type = typeOf(entry.name) ?? "";
       if (SVG_TYPE.test(type) || entry.name.toLowerCase().endsWith(".svg")) {
-        admit(entry, caps.svgBytes);
+        if (entry.size > SVG_BYTES)
+          refuse(`has ${entry.name}, which is too large for Kin to check`);
         const chunks: Array<string> = [];
-        await streamPart(bytes, entry, (text) => chunks.push(text));
+        await zip.stream(entry, (text) => chunks.push(text));
         const problem = svgProblem(chunks.join(""));
         if (problem !== undefined) refuse(`has ${entry.name}, an SVG with ${problem}`);
       } else if (XML_TYPE.test(type) || entry.name.toLowerCase().endsWith(".xml"))
@@ -741,6 +473,6 @@ export const officeProblem = async (
     return undefined;
   } catch (error) {
     if (error instanceof Refusal) return error.reason;
-    return "its ZIP couldn't be read";
+    return "has a ZIP Kin couldn't read";
   }
 };

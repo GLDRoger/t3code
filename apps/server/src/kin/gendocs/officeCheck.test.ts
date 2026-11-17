@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 
-import { OFFICE_CAPS, officeProblem } from "./officeCheck.ts";
+import { ZIP_CAPS, ZIP_TOO_LARGE } from "../files/zipParts.ts";
+import { officeProblem } from "./officeCheck.ts";
 import { typeMismatch } from "./returnPath.ts";
 import { toXlsx } from "./tables.ts";
 import { type Part, relationship, rels, types, zip } from "./zip.testkit.ts";
@@ -274,44 +275,49 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
       ]),
       "declares application/vnd.ms-word.document.macroEnabled.main+xml, which runs, embeds or fetches content",
     ],
-    ["the wrong main part", "xlsx", docx([]), "no xl/workbook.xml"],
-    ["an encrypted part", "docx", zip(docxParts(), { flags: 1 }), "an encrypted part"],
+    ["the wrong main part", "xlsx", docx([]), "has no xl/workbook.xml"],
+    ["an encrypted part", "docx", zip(docxParts(), { flags: 1 }), "has an encrypted part"],
     [
       "a CRC that lies",
       "docx",
       zip(docxParts(), { crc: 1 }),
-      "[Content_Types].xml doesn't match its ZIP directory",
+      "has [Content_Types].xml, which doesn't match its ZIP directory",
     ],
     [
       "a climbing name",
       "docx",
       zip([...docxParts(), ["../../x.xml", "<x/>"]]),
-      'a part named "../../x.xml"',
+      'has a part named "../../x.xml"',
     ],
-    ["a rooted name", "docx", zip([...docxParts(), ["/x.xml", "<x/>"]]), 'a part named "/x.xml"'],
+    [
+      "a rooted name",
+      "docx",
+      zip([...docxParts(), ["/x.xml", "<x/>"]]),
+      'has a part named "/x.xml"',
+    ],
     [
       "a backslash name",
       "docx",
       zip([...docxParts(), ["word\\x.xml", "<x/>"]]),
-      'a part named "word\\\\x.xml"',
+      'has a part named "word\\\\x.xml"',
     ],
     [
       "two parts with one name",
       "docx",
       zip([...docxParts(), ["WORD/document.xml", "<x/>"]]),
-      'two parts named "WORD/document.xml"',
+      'has two parts named "WORD/document.xml"',
     ],
     [
       "data after the directory",
       "docx",
       zip(docxParts(), { after: Buffer.from("<html>") }),
-      "data after its ZIP directory",
+      "has data after its ZIP directory",
     ],
     [
       "data before the directory",
       "docx",
       zip(docxParts(), { before: Buffer.from("smuggled") }),
-      "data between its parts and its ZIP directory",
+      "has data between its parts and its ZIP directory",
     ],
     [
       "a ZIP64 locator",
@@ -322,25 +328,25 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
         bytes.writeUInt32LE(0x07064b50, bytes.length - 42);
         return bytes;
       })(),
-      "a ZIP64 directory",
+      "has a ZIP64 directory",
     ],
     [
       "a DOCTYPE in a part",
       "docx",
       docx([], [["x/_rels/y.rels", '<!DOCTYPE r [<!ENTITY a "b">]><r/>']]),
-      "x/_rels/y.rels isn't well-formed XML",
+      "has x/_rels/y.rels, which isn't well-formed XML",
     ],
     [
       "too many parts",
       "docx",
       zip([...docxParts(), ...Array.from({ length: 2000 }, (_, i): Part => [`x/${i}.xml`, ""])]),
-      "more than 2000 parts",
+      "unpacks to more than Kin reads in one file",
     ],
     [
       "a part that unpacks far past its packed size",
       "docx",
       docx([], [["big/_rels/a.rels", " ".repeat(5 * 1024 * 1024)]]),
-      "has big/_rels/a.rels, which unpacks to far more than any real document does",
+      "unpacks to more than Kin reads in one file",
     ],
     [
       "a foreign TargetMode shadowing the real one",
@@ -462,19 +468,19 @@ it("refuses Office files that run, embed or load anything, and ZIPs it can't tru
       zip([...docxParts(), ["word/caf\u00e9.xml", "<x/>"], ["word/cafe\u0301.xml", "<x/>"]], {
         flags: 0x0800,
       }),
-      'two parts named "word/cafe\u0301.xml"',
+      'has two parts named "word/cafe\u0301.xml"',
     ],
     [
       "a name with a trailing dot",
       "docx",
       zip([...docxParts(), ["word/document.xml.", "<x/>"]]),
-      'a part named "word/document.xml."',
+      'has a part named "word/document.xml."',
     ],
     [
       "a folder with a trailing space",
       "docx",
       zip([...docxParts(), ["word /document.xml", "<x/>"]]),
-      'a part named "word /document.xml"',
+      'has a part named "word /document.xml"',
     ],
     [
       "a Unicode-path name that disagrees",
@@ -712,12 +718,12 @@ it("streams a sheet of real size, and refuses a part or a file past the budget",
   assert.isUndefined(await typeMismatch("xlsx", book));
   const mib = 1024 * 1024;
   assert.strictEqual(
-    await officeProblem("xlsx", book, { ...OFFICE_CAPS, partBytes: 32 * mib }),
-    "has xl/worksheets/sheet2.xml, which is too large for Kin to check",
+    await officeProblem("xlsx", book, { ...ZIP_CAPS, entryBytes: 32 * mib }),
+    ZIP_TOO_LARGE,
   );
   assert.strictEqual(
-    await officeProblem("xlsx", book, { ...OFFICE_CAPS, inflatedBytes: 40 * mib }),
-    "has more XML than Kin checks in one file",
+    await officeProblem("xlsx", book, { ...ZIP_CAPS, totalBytes: 40 * mib }),
+    ZIP_TOO_LARGE,
   );
   // No one value is held whole past what a real file has: a tag, a formula, a run of text.
   let seed = 7;

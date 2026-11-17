@@ -1,6 +1,5 @@
 import {
   KIN_MONEY_PARTS,
-  type KinMoneyEvent,
   type KinMoneyLive,
   type KinMoneyPart,
   type KinMoneySubscribeInput,
@@ -15,7 +14,7 @@ import * as Stream from "effect/Stream";
 
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
-import { viewHash } from "../pulse/people.ts";
+import { coalesced, hashedLive, viewHash } from "../hashedLive.ts";
 import * as Goals from "./goals.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
 import * as Money from "./ownerMoney.ts";
@@ -23,9 +22,8 @@ import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
 import { theOwner } from "./ownerWork.ts";
 
 /**
- * `kin.money.subscribe`: T3's skip-unchanged for derived state. Each part is the owner's own read,
- * built again when something that can move it changes and sent only when it differs from what this
- * viewer last got. Owner level only, checked again before every build.
+ * `kin.money.subscribe`, a hashed live read (`hashedLive.ts`): each part is the owner's own read,
+ * built again when something that can move it changes. Owner level only, checked before every build.
  */
 
 /** The parts a burst asks to build again. */
@@ -85,7 +83,13 @@ export const makeMoneyStream = Effect.fn("KinMoneyStream.make")(function* (
   const { orgId } = input;
   const asked = new Set(input.parts);
   yield* theOwner(people, orgId);
-  let sent: KinMoneyLive = {};
+  const live = hashedLive({
+    held: input.held,
+    hash: hashOf,
+    snapshot: (held: KinMoneyLive, hash) => ({ _tag: "snapshot", live: held, hash }) as const,
+    diff: kinMoneyDiff,
+    apply: (held, change) => kinMoneyApply(held, { ...change, _tag: "changed", hash: "" }),
+  });
 
   const build = Effect.fn("KinMoneyStream.build")(function* (part: KinMoneyPart) {
     switch (part) {
@@ -110,31 +114,16 @@ export const makeMoneyStream = Effect.fn("KinMoneyStream.make")(function* (
       Effect.map((built): KinMoneyLive => Object.assign({}, ...built)),
     );
 
-  const start = Effect.fn("KinMoneyStream.start")(function* (): Effect.fn.Return<
-    KinMoneyEvent,
-    Effect.Error<ReturnType<typeof buildAll>>,
-    Effect.Services<ReturnType<typeof buildAll>>
-  > {
-    sent = yield* buildAll(KIN_MONEY_PARTS.filter((part) => asked.has(part)));
-    const hash = hashOf(sent);
-    return input.held === hash
-      ? ({ _tag: "current", hash } satisfies KinMoneyEvent)
-      : ({ _tag: "snapshot", live: sent, hash } satisfies KinMoneyEvent);
+  const start = Effect.fn("KinMoneyStream.start")(function* () {
+    return live.first(yield* buildAll(KIN_MONEY_PARTS.filter((part) => asked.has(part))));
   });
 
   const apply = Effect.fn("KinMoneyStream.apply")(function* (demand: MoneyDemand) {
     const parts = KIN_MONEY_PARTS.filter((part) => asked.has(part) && demand.has(part));
-    const none: ReadonlyArray<KinMoneyEvent> = [];
-    if (parts.length === 0) return none;
+    if (parts.length === 0) return [];
     // Someone no longer owner level gets nothing more; their client subscribes again and is refused.
     yield* theOwner(people, orgId);
-    const next = yield* buildAll(parts);
-    const change = kinMoneyDiff(sent, next);
-    if (change === null) return none;
-    const event = { _tag: "changed", ...change, hash: "" } as const;
-    sent = kinMoneyApply(sent, event);
-    const out: ReadonlyArray<KinMoneyEvent> = [{ ...event, hash: hashOf(sent) }];
-    return out;
+    return live.next(yield* buildAll(parts));
   });
 
   return { start, apply };
@@ -167,30 +156,16 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinMoney
           return before === null ? NOTHING : demandOfTopics(before, now);
         }),
       );
-      let pending: Array<MoneyDemand | typeof START> = [];
-      return Stream.merge(ticks, moved).pipe(
-        Stream.filter((one) => one === START || (started && one.size > 0)),
-        Stream.map((one) => {
-          pending.push(one);
-        }),
-        // A burst during a build is one more build, of everything it asked for. Untraced: the
-        // start and apply inside carry the spans.
-        Stream.buffer({ capacity: 1, strategy: "sliding" }),
-        Stream.mapEffect(
-          Effect.fnUntraced(function* () {
-            const none: ReadonlyArray<KinMoneyEvent> = [];
-            if (pending.length === 0) return none;
-            // The first build answers at once; a change waits a moment for the rest of its burst.
-            if (!pending.includes(START)) yield* Effect.sleep(BATCH_WINDOW);
-            const taken = pending;
-            pending = [];
-            if (taken.includes(START)) return [yield* session.start()];
-            return yield* session.apply(
-              joined(taken.filter((one): one is MoneyDemand => one !== START)),
-            );
-          }),
+      return coalesced(
+        Stream.merge(ticks, moved).pipe(
+          Stream.filter((one) => one === START || (started && one.size > 0)),
         ),
-        Stream.flattenIterable,
+        (asked) =>
+          asked.includes(START)
+            ? session.start().pipe(Effect.map((event) => [event]))
+            : session.apply(joined(asked.filter((one): one is MoneyDemand => one !== START))),
+        // The first build answers at once; a change waits a moment for the rest of its burst.
+        (asked) => (asked.includes(START) ? undefined : BATCH_WINDOW),
       );
     }),
   );
