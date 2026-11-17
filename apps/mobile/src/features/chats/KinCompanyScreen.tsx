@@ -298,26 +298,29 @@ function KinExportRows(props: KinWorkTarget) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   if (!allowed) return null;
-  const download = async () => {
+  const share = async () => {
+    if (Option.isNone(connection)) return kinFailureText(null, KIN_COMPANY.export.failed);
+    const result = await link({ environmentId, input: { orgId } });
+    if (result._tag === "Failure")
+      return kinFailureText(squashAtomCommandFailure(result), KIN_COMPANY.export.failed);
+    const url = resolveAssetUrl(connection.value.httpBaseUrl, result.value.url);
+    if (url === null) return kinFailureText(null, KIN_COMPANY.export.failed);
+    await downloadAndShareAttachment({
+      url,
+      attachment: { name: result.value.fileName, mimeType: "application/zip" },
+      signal: new AbortController().signal,
+    });
+    return null;
+  };
+  const download = () => {
     setBusy(true);
     setProblem(null);
-    const failed = (cause: unknown) => setProblem(kinFailureText(cause, KIN_COMPANY.export.failed));
-    try {
-      if (Option.isNone(connection)) return failed(null);
-      const result = await link({ environmentId, input: { orgId } });
-      if (result._tag === "Failure") return failed(squashAtomCommandFailure(result));
-      const url = resolveAssetUrl(connection.value.httpBaseUrl, result.value.url);
-      if (url === null) return failed(null);
-      await downloadAndShareAttachment({
-        url,
-        attachment: { name: result.value.fileName, mimeType: "application/zip" },
-        signal: new AbortController().signal,
+    void share()
+      .catch((cause: unknown) => kinFailureText(cause, KIN_COMPANY.export.failed))
+      .then((failed) => {
+        setProblem(failed);
+        setBusy(false);
       });
-    } catch (cause) {
-      failed(cause);
-    } finally {
-      setBusy(false);
-    }
   };
   return (
     <ListSection title={KIN_COMPANY.export.title}>
@@ -330,7 +333,7 @@ function KinExportRows(props: KinWorkTarget) {
         label={busy ? KIN_COMPANY.export.preparing : KIN_COMPANY.export.share}
         disabled={busy}
         loading={busy}
-        onPress={() => void download()}
+        onPress={download}
       />
       {problem === null ? null : <Notice message={problem} tone="danger" />}
     </ListSection>

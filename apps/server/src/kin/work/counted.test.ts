@@ -27,6 +27,8 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "work/KinRecords.ts": 3,
   // The columns each pulse sense selects; every sense that reads money applies the rule itself.
   "pulse/senses/shared.ts": 1,
+  // Download everything: each entry's own amount and payments, copied out as they are, never summed.
+  "work/exportBundle.ts": 2,
   // One settlement's parts, read to check a retry.
   "work/leadMoney.ts": 1,
   // A statement's own rows, and the entries and recorded payments one row may match.
