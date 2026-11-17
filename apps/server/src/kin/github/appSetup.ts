@@ -304,11 +304,13 @@ export const make = Effect.gen(function* () {
     return {
       settingsUrl: Option.isNone(stored)
         ? null
-        : appSettingsPage(
-            stored.value.slug,
-            state._tag === "ok" && state.app.ownerOrg,
-            stored.value.owner,
-          ),
+        : state._tag === "ok"
+          ? appSettingsPage(
+              state.app.slug,
+              state.app.ownerOrg,
+              state.app.ownerLogin ?? stored.value.owner,
+            )
+          : appSettingsPage(stored.value.slug, false, stored.value.owner),
     };
   });
 

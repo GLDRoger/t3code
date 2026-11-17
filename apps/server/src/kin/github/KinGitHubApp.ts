@@ -757,11 +757,13 @@ export const agentsView = Effect.fn("KinGitHubApp.agentsView")(function* (
               by: origin.source === "kin" ? origin.app.by : null,
               settingsUrl:
                 origin.source === "kin"
-                  ? appSettingsPage(
-                      origin.app.slug,
-                      state._tag === "ok" ? state.app.ownerOrg : false,
-                      origin.app.owner,
-                    )
+                  ? state._tag === "ok"
+                    ? appSettingsPage(
+                        state.app.slug,
+                        state.app.ownerOrg,
+                        state.app.ownerLogin ?? origin.app.owner,
+                      )
+                    : appSettingsPage(origin.app.slug, false, origin.app.owner)
                   : null,
             },
           }),

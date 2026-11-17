@@ -384,6 +384,17 @@ describe("the App's row for each account with watched repos", () => {
             ],
           ],
         );
+        // Moved to the organisation on GitHub: its settings are under the organisation now.
+        github.world.app!.owner = "invented-co";
+        yield* app.lookAgain();
+        const moved = yield* rows(app);
+        assert.deepStrictEqual(
+          [moved.appOwner, moved.appSettingsUrl],
+          [
+            "invented-co",
+            "https://github.com/organizations/invented-co/settings/apps/invented-kin",
+          ],
+        );
       }).pipe(Effect.provide(layer)),
   );
 
