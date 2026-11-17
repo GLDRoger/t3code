@@ -306,6 +306,10 @@ export const TEAM_REFUSED = new KinChatError({
   reason: "not_allowed",
   message: "Only the owner or a co-owner changes that.",
 });
+const REPEAT_REFUSED = new KinChatError({
+  reason: "not_allowed",
+  message: "Only the owner, a co-owner or whoever gave the task changes how it repeats.",
+});
 const noLongerTeam = new KinChatError({
   reason: "not_allowed",
   message: "Only the owner or a co-owner can do that in Work.",
@@ -414,6 +418,13 @@ const teamRule = (facts: TeamFacts, write: TeamWrite): KinChatError | undefined 
       ? (typeof unmarked.list === "string" ? unmarked.list : "work") === "work"
       : facts.seen?.registerId === "work" && facts.seen.gave === 1;
   const input = task ? { ...unmarked, repeat: undefined } : unmarked;
+  if (
+    !task &&
+    unmarked.repeat !== undefined &&
+    row !== undefined &&
+    facts.seen?.registerId === "work"
+  )
+    return REPEAT_REFUSED;
   if (row !== undefined && facts.led.has(row.recordId as KinRecordId) && peopleOnly(input))
     return facts.seen === null || facts.seen === undefined ? notFound(row.key) : undefined;
   const intoLed = input.projectId === undefined || facts.led.has(input.projectId as KinRecordId);

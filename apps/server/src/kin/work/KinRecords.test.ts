@@ -1569,6 +1569,25 @@ it.effect(
         (one) => one.title === weekly.title && one.state === "open",
       );
       assert.deepInclude(next, { shared: true, repeat: { every: "days", days: 7 } });
+      // One the owner gave them is theirs to work on; how it repeats stays with whoever gave it.
+      const handed = yield* OwnerWork.create([owner], {
+        orgId,
+        title: "Invented: check the stock list",
+        dueAt: "2026-12-04",
+        dueAllDay: true,
+        owner: { _tag: "person", personId: mateId },
+        clientRequestId: "handed",
+      });
+      assert.isFalse((yield* OwnerWork.get([mate], { orgId, key: handed.key })).can?.repeat);
+      assert.deepInclude(
+        yield* Effect.flip(
+          OwnerWork.update([mate], { orgId, key: handed.key, rev: handed.rev, repeat: monthly }),
+        ),
+        {
+          reason: "not_allowed",
+          message: "Only the owner, a co-owner or whoever gave the task changes how it repeats.",
+        },
+      );
       // A task the owner shared with them is theirs to read, not to change.
       yield* OwnerWork.share([owner], { orgId, keys: [owners.key], shared: true });
       const seen = yield* OwnerWork.get([mate], { orgId, key: owners.key });
@@ -2653,6 +2672,24 @@ it.effect(
             clientRequestId: title,
           })).key,
         );
+      // One repeats and is open to everyone on the team; both go with it, as they are.
+      const weekly = { every: "days" as const, days: 7 };
+      const first = (yield* OwnerWork.get([owner], { orgId, key: keys[0]! })).rev;
+      yield* OwnerWork.update([owner], {
+        orgId,
+        key: keys[0]!,
+        rev: first,
+        dueAt: "2026-11-20",
+        dueAllDay: true,
+        repeat: weekly,
+      });
+      yield* OwnerWork.share([owner], { orgId, keys: [keys[0]!], shared: true });
+      const keepsItsWay = Effect.fn(function* () {
+        assert.deepInclude(yield* OwnerWork.get([owner], { orgId, key: keys[0]! }), {
+          shared: true,
+          repeat: weekly,
+        });
+      });
       const done = (yield* OwnerWork.get([owner], { orgId, key: keys[2]! })).rev;
       yield* OwnerWork.update([owner], { orgId, key: keys[2]!, rev: done, state: "done" });
       const told = sql<{ body: string }>`SELECT body FROM kin_messages
@@ -2694,6 +2731,7 @@ it.effect(
         (yield* OwnerWork.get([owner], { orgId, key: keys[2]! })).owner,
         mateHolds,
       );
+      yield* keepsItsWay();
       // Told once for both.
       const after = (yield* told).slice(before).map((row) => row.body);
       assert.lengthOf(after, 1);
@@ -2714,6 +2752,7 @@ it.effect(
       );
       for (const key of moved.keys)
         assert.deepStrictEqual((yield* OwnerWork.get([owner], { orgId, key })).owner, mateHolds);
+      yield* keepsItsWay();
       // Her own, to the owner.
       assert.deepStrictEqual(
         (yield* OwnerWork.handOver([mate], {
