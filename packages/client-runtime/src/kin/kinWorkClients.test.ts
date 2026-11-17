@@ -98,6 +98,7 @@ describe("kinProjectPeopleChoices", () => {
     githubLogin: null,
   });
   it("offers teammates then agents at work, never one already on it or retired", () => {
+    // Arjun holds a task in it after being taken off: listed, not on it, so offered again.
     const finance = KinAgentId.make("finance");
     const chief = KinAgentId.make("chief");
     const old = KinAgentId.make("old");
@@ -112,8 +113,9 @@ describe("kinProjectPeopleChoices", () => {
         retired: new Set([old]),
       },
       on: [
-        { _tag: "person", personId: KinPersonId.make("zoya") },
-        { _tag: "agent", agentId: finance },
+        { who: { _tag: "person", personId: KinPersonId.make("zoya") }, onIt: true },
+        { who: { _tag: "agent", agentId: finance }, onIt: true },
+        { who: { _tag: "person", personId: KinPersonId.make("arjun") }, onIt: false },
       ],
     });
     expect(choices.map((one) => one.name)).toEqual(["Arjun", "Dev", "Chief of staff"]);

@@ -136,7 +136,7 @@ export function KinProjectPeopleSection(
 export function KinProjectPeoplePicker(props: {
   readonly people: ReadonlyArray<KinPerson> | null;
   readonly names: KinWorkNames;
-  readonly on: ReadonlyArray<KinWorkPrincipal>;
+  readonly on: Parameters<typeof kinProjectPeopleChoices>[0]["on"];
   readonly picked: ReadonlyArray<KinWorkPrincipal>;
   readonly disabled?: boolean;
   readonly onChange: (picked: ReadonlyArray<KinWorkPrincipal>) => void;
@@ -269,7 +269,7 @@ function KinProjectPeopleAdd(props: KinWorkTarget & { readonly projectKey: KinRe
       <KinProjectPeoplePicker
         people={directory.people}
         names={directory.names}
-        on={view.people.map((row) => row.who)}
+        on={view.people}
         picked={picked}
         disabled={busy || !view.changesPeople}
         onChange={setPicked}

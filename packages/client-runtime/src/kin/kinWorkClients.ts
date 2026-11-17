@@ -74,14 +74,17 @@ export const KIN_PROJECT_PEOPLE = {
 export function kinProjectPeopleChoices(input: {
   readonly people: ReadonlyArray<KinPerson> | null;
   readonly names: Pick<KinWorkNames, "agents" | "retired">;
-  readonly on: ReadonlyArray<KinWorkPrincipal>;
+  /** The project's People rows; someone listed only for a task they hold isn't on it. */
+  readonly on: ReadonlyArray<{ readonly who: KinWorkPrincipal; readonly onIt: boolean }>;
 }): ReadonlyArray<{
   readonly who: KinWorkPrincipal;
   readonly key: string;
   readonly name: string;
   readonly agent: boolean;
 }> {
-  const taken = new Set(input.on.map(kinWorkPrincipalKey));
+  const taken = new Set(
+    input.on.filter((row) => row.onIt).map((row) => kinWorkPrincipalKey(row.who)),
+  );
   const people = (input.people ?? []).map((person) => ({
     who: { _tag: "person", personId: person.personId } as const,
     name: person.displayName,
@@ -822,6 +825,8 @@ export interface KinProjectPageView {
     readonly line: string;
     /** On it by name, not by leading it or holding a task in it: theirs to take off. */
     readonly member: boolean;
+    /** On it by name or by leading it, so not offered under Add people. */
+    readonly onIt: boolean;
   }>;
   /** This reader may put people on it and take them off (the host's `can`). */
   readonly changesPeople: boolean;
@@ -1010,6 +1015,7 @@ export function kinProjectPageView(
       name: kinWorkName(one.who, names),
       avatar: kinWorkAvatar(one.who),
       member: one.member && !one.lead,
+      onIt: one.member || one.lead,
       line: [
         one.lead ? "Lead" : one.member ? "Member" : null,
         one.open === 0
