@@ -6,11 +6,15 @@ import { expect, layer as withLayer } from "@effect/vitest";
 import {
   KIN_REFRESH_TOPICS,
   KinChatError,
+  KinDocsEvent,
   KinDocsRpcs,
   KinFinanceRpcs,
   KinOrgId,
   KinPersonId,
   KinPulseRpcs,
+  KinPulseEvent,
+  type KinPulseScreenRead,
+  kinPulseApply,
   KinRefreshes,
   KinWorkEvent,
   KinWorkRpcs,
@@ -20,6 +24,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -215,6 +220,8 @@ const SCHEMAS = {
   lists: successOf(KinFinanceRpcs, "kin.work.lists"),
   docs: successOf(KinDocsRpcs, "kin.docs.list"),
   pulse: successOf(KinPulseRpcs, "kin.pulse.read"),
+  pulseEvent: KinPulseEvent,
+  docsEvent: KinDocsEvent,
   refreshes: KinRefreshes,
 };
 
@@ -501,6 +508,53 @@ const rowsChange = Effect.fn("KinWireBudget.rowsChange")(function* () {
 });
 
 /**
+ * One doc rewritten: what each viewer's docs feed sends for it. With rows the Docs list patches
+ * from the change itself; without, it reads its page again (`docsPage`).
+ */
+const docChange = Effect.fn("KinWireBudget.docChange")(function* () {
+  const records = yield* KinRecords.KinRecords;
+  const sql = yield* SqlClient.SqlClient;
+  const pull = yield* Stream.toPull(records.changes(orgId));
+  yield* pull;
+  const measured: Record<string, number> = {};
+  const sessions = yield* Effect.forEach(VIEWERS, ([name, personId]) =>
+    Effect.map(OwnerDocs.makeDocsStream(as(personId), { orgId, acceptRows: true }), (session) => ({
+      name,
+      session,
+    })),
+  );
+  const [doc] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+    WHERE org_id = ${orgId} AND register_id = 'docs' AND json_extract(fields_json, '$.home') = 'company'
+    ORDER BY key LIMIT 1`;
+  yield* Docs.replaceBody(
+    orgId,
+    ownerWriter,
+    {},
+    { key: doc!.key },
+    {
+      body: "# Invented doc 1\n\nWhat was agreed, now with the venue's new date.\n",
+      summary: "Rewritten",
+      originKey: "wire-budget:doc:rewrite",
+    },
+  );
+  const ticks: Array<KinRecords.Tick> = [];
+  while (!ticks.some((tick) => tick.key === doc!.key)) ticks.push(...(yield* pull));
+  for (const { name, session } of sessions) {
+    const events = yield* session.burst(ticks);
+    measured[`docs.${name}.rewrite.bytes`] = events.reduce(
+      (sum, event) => sum + wireBytes(SCHEMAS.docsEvent, event),
+      0,
+    );
+    measured[`docs.${name}.rewrite.reads`] = events.some(
+      (event) => event.key !== undefined && event.row === undefined && event.unlisted !== true,
+    )
+      ? 1
+      : 0;
+  }
+  return measured;
+});
+
+/**
  * A reconnect with nothing changed: each viewer's refresh revisions heard again. A topic that
  * reads differently is one their screens read again; the bytes are what resubscribing costs.
  */
@@ -521,15 +575,16 @@ const reconnect = Effect.fn("KinWireBudget.reconnect")(function* () {
 
 /**
  * One fact in Needs attention moves (a task due soon is done): what each viewer's home is sent
- * for it. Today the pulse topic moves and each screen reads its first page again.
+ * for it over `kin.pulse.subscribe`, and that the page folded from it is a fresh read's.
  */
 const attentionMove = Effect.fn("KinWireBudget.attentionMove")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const measured: Record<string, number> = {};
   yield* KinPulse.tick(orgId, NOW);
+  const page = { orgId, includeHandled: true, limit: 8 } as const;
   const about = (people: ReadonlyArray<PersonIdentity>) =>
-    Pulse.read(people, { orgId, includeHandled: true, limit: 8 }).pipe(
-      Effect.map((page) => ("outline" in page ? (page.outline?.records ?? []) : [])),
+    Pulse.read(people, page).pipe(
+      Effect.map((read) => ("outline" in read ? (read.outline?.records ?? []) : [])),
     );
   // A task the member holds that needs attention, so every viewer's page moves.
   const named = new Set(yield* about(as(memberId)));
@@ -540,13 +595,36 @@ const attentionMove = Effect.fn("KinWireBudget.attentionMove")(function* () {
   if (soon === undefined)
     return yield* Effect.die(new Error("No task of the member's needs attention."));
   expect(yield* about(as(ownerId))).toContain(soon.key);
+  const watching = yield* Effect.forEach(VIEWERS, ([name, personId]) =>
+    Effect.gen(function* () {
+      const events = yield* Queue.unbounded<KinPulseEvent>();
+      yield* Pulse.subscribe(as(personId), page).pipe(
+        Stream.runForEach((event) => Queue.offer(events, event)),
+        Effect.forkScoped,
+      );
+      const first = yield* Queue.take(events);
+      if (first._tag !== "snapshot") return yield* Effect.die(new Error("No first page."));
+      return { name, personId, events, held: first.read };
+    }),
+  );
   yield* Work.update(as(ownerId), { orgId, key: soon.key, rev: soon.rev, state: "done" });
   yield* KinPulse.tick(orgId, NOW + 60_000);
+  yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
   expect(yield* about(as(ownerId))).not.toContain(soon.key);
-  for (const [name, personId] of VIEWERS) {
-    const page = yield* Pulse.read(as(personId), { orgId, includeHandled: true, limit: 8 });
-    measured[`attention.${name}.reads`] = 1;
-    measured[`attention.${name}.bytes`] = wireBytes(SCHEMAS.pulse, page);
+  for (const { name, personId, events, held } of watching) {
+    const change = yield* Queue.take(events);
+    if (change._tag !== "changed") return yield* Effect.die(new Error(`${name}: no change`));
+    const folded: KinPulseScreenRead = kinPulseApply(held, change);
+    const fresh = yield* Pulse.read(as(personId), page);
+    expect({ ...folded, asOf: fresh.asOf }, `${name} folds to a fresh read`).toEqual(fresh);
+    measured[`attention.${name}.reads`] = 0;
+    measured[`attention.${name}.bytes`] = wireBytes(SCHEMAS.pulseEvent, change);
+    // A new session that names the page held, nothing having moved since.
+    const resumed = yield* Stream.runHead(
+      Pulse.subscribe(as(personId), { ...page, held: change.hash }),
+    ).pipe(Effect.map(Option.getOrThrow));
+    expect(resumed._tag, `${name} resumes`).toBe("current");
+    measured[`reconnect.${name}.pulseBytes`] = wireBytes(SCHEMAS.pulseEvent, resumed);
   }
   return measured;
 });
@@ -578,8 +656,9 @@ withLayer(layer)("Kin wire budget", (it) => {
       }
       Object.assign(measured, yield* oneChange(rereadBytes));
       Object.assign(measured, yield* Effect.scoped(rowsChange()));
+      Object.assign(measured, yield* Effect.scoped(docChange()));
       Object.assign(measured, yield* reconnect());
-      Object.assign(measured, yield* attentionMove());
+      Object.assign(measured, yield* Effect.scoped(attentionMove()));
 
       expect(over, `Unpaged Kin reads over ${UNPAGED_CEILING} bytes: page them.`).toEqual([]);
       expect(

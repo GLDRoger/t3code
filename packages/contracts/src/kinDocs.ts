@@ -468,13 +468,25 @@ export const KinRecipeDefaultResult = Schema.Struct({
 });
 export type KinRecipeDefaultResult = typeof KinRecipeDefaultResult.Type;
 
-export const KinDocsSubscribeInput = Schema.Struct({ orgId: KinOrgId });
+export const KinDocsSubscribeInput = Schema.Struct({
+  orgId: KinOrgId,
+  /** Each change to a doc also says how it stands in the Docs list (`row` or `unlisted`). */
+  acceptRows: Schema.optional(Schema.Boolean),
+});
 export type KinDocsSubscribeInput = typeof KinDocsSubscribeInput.Type;
-/** The latest change number now, then again after each change to a doc. A client refetches. */
+/**
+ * The latest change number now, then again after each change to a doc. With `acceptRows`, a
+ * change to one doc also carries it as the Docs list shows this viewer unfiltered (not archived, no
+ * recipe files, slim latest), or `unlisted` when it isn't there, and that list's `total`. A client
+ * patches that list from them and reads anything else again.
+ */
 export const KinDocsEvent = Schema.Union([
   Schema.TaggedStruct("changed", {
     seq: NonNegativeInt,
     key: Schema.optional(KinRecordKey),
+    row: Schema.optional(KinDocListRow),
+    unlisted: Schema.optional(Schema.Literal(true)),
+    total: Schema.optional(NonNegativeInt),
   }),
 ]);
 export type KinDocsEvent = typeof KinDocsEvent.Type;

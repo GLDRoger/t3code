@@ -10,6 +10,8 @@ import {
   type KinDocRenderInput,
   type KinDocRenderResult,
   type KinDocsListInput,
+  type KinDocsEvent,
+  type KinDocsSubscribeInput,
   type KinOrgId,
   type KinRecipeClearLabelResult,
   type KinRecipeDefaultInput,
@@ -25,6 +27,7 @@ import {
   kinSlimDocRow,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -37,7 +40,7 @@ import { KinWorkspace } from "../gendocs/workspace.ts";
 import { changedSections, outlineOf, patchOf } from "./docBody.ts";
 import { docEmbeds } from "./docFiles.ts";
 import * as Docs from "./docs.ts";
-import { KinRecords } from "./KinRecords.ts";
+import { KinRecords, type Tick } from "./KinRecords.ts";
 import { LISTS } from "./lists.ts";
 import { inList, ownerWriter, theOwner, viewerOf } from "./ownerWork.ts";
 import {
@@ -51,8 +54,8 @@ import {
 import { search as runSearch } from "./search.ts";
 import {
   KIN_OWNER_LEVEL,
-  personSees,
   placesOf,
+  seenBy,
   teamSeq,
   teamVisible,
   viewerOfPeople,
@@ -136,63 +139,75 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
   } satisfies KinDocDetail;
 });
 
+/** Which docs `input` lists for `viewer`. */
+const listWhere = Effect.fn("KinDocs.listWhere")(function* (
+  viewer: KinViewer,
+  input: Omit<KinDocsListInput, "cursor" | "limit" | "acceptSlimLatest">,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const partyId =
+    input.party === undefined
+      ? undefined
+      : (yield* inList(input.orgId, input.party, "clients")).recordId;
+  const projectId =
+    input.project === undefined
+      ? undefined
+      : (yield* inList(input.orgId, input.project, "projects")).recordId;
+  const text = input.text?.trim().toLowerCase() ?? "";
+  return sql.and([
+    sql`r.org_id = ${input.orgId}`,
+    sql`r.register_id = 'docs'`,
+    seenBy(sql, viewer),
+    input.archived === true ? sql`r.state = 'dropped'` : sql`r.state != 'dropped'`,
+    ...(partyId === undefined ? [] : [sql`r.party_id = ${partyId}`]),
+    ...(projectId === undefined ? [] : [sql`r.project_id = ${projectId}`]),
+    ...(input.owner === undefined
+      ? []
+      : [sql`r.owner_kind = ${input.owner._tag} AND r.owner_id = ${principalId(input.owner)}`]),
+    ...(input.kind === undefined
+      ? []
+      : input.kind === "other"
+        ? [sql`(r.category IS NULL OR r.category = 'other')`]
+        : [sql`r.category = ${input.kind}`]),
+    ...(input.home === undefined
+      ? []
+      : [
+          sql`r.party_id IS NULL AND r.project_id IS NULL`,
+          input.home === "company"
+            ? sql`json_extract(r.fields_json, '$.home') = 'company'`
+            : sql`json_extract(r.fields_json, '$.home') IS NOT 'company'`,
+        ]),
+    ...(input.files === undefined
+      ? []
+      : [
+          sql`${input.files ? sql`` : sql`NOT `}EXISTS (SELECT 1 FROM kin_doc_versions f
+              WHERE f.org_id = r.org_id AND f.record_id = r.record_id AND f.body_kind = 'file')`,
+        ]),
+    ...(text === ""
+      ? []
+      : [
+          sql`(instr(lower(r.title), ${text}) > 0 OR EXISTS (SELECT 1 FROM kin_doc_versions v
+              WHERE v.org_id = r.org_id AND v.record_id = r.record_id
+                AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
+                  WHERE w.org_id = r.org_id AND w.record_id = r.record_id)
+                AND instr(lower(v.body), ${text}) > 0))`,
+        ]),
+    ...(input.changedSince === undefined
+      ? []
+      : [sql`r.updated_at >= ${Date.parse(input.changedSince)}`]),
+  ]);
+});
+
 export const list = Effect.fn("KinDocs.list")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinDocsListInput) {
     const team = yield* reader(people, input.orgId);
     const sql = yield* SqlClient.SqlClient;
     const records = yield* KinRecords;
     const offset = yield* offsetOf(input.cursor);
-    const partyId =
-      input.party === undefined
-        ? undefined
-        : (yield* inList(input.orgId, input.party, "clients")).recordId;
-    const projectId =
-      input.project === undefined
-        ? undefined
-        : (yield* inList(input.orgId, input.project, "projects")).recordId;
-    const text = input.text?.trim().toLowerCase() ?? "";
-    const where = sql.and([
-      sql`r.org_id = ${input.orgId}`,
-      sql`r.register_id = 'docs'`,
-      ...(team === undefined ? [] : [personSees(sql, team)]),
-      input.archived === true ? sql`r.state = 'dropped'` : sql`r.state != 'dropped'`,
-      ...(partyId === undefined ? [] : [sql`r.party_id = ${partyId}`]),
-      ...(projectId === undefined ? [] : [sql`r.project_id = ${projectId}`]),
-      ...(input.owner === undefined
-        ? []
-        : [sql`r.owner_kind = ${input.owner._tag} AND r.owner_id = ${principalId(input.owner)}`]),
-      ...(input.kind === undefined
-        ? []
-        : input.kind === "other"
-          ? [sql`(r.category IS NULL OR r.category = 'other')`]
-          : [sql`r.category = ${input.kind}`]),
-      ...(input.home === undefined
-        ? []
-        : [
-            sql`r.party_id IS NULL AND r.project_id IS NULL`,
-            input.home === "company"
-              ? sql`json_extract(r.fields_json, '$.home') = 'company'`
-              : sql`json_extract(r.fields_json, '$.home') IS NOT 'company'`,
-          ]),
-      ...(input.files === undefined
-        ? []
-        : [
-            sql`${input.files ? sql`` : sql`NOT `}EXISTS (SELECT 1 FROM kin_doc_versions f
-              WHERE f.org_id = r.org_id AND f.record_id = r.record_id AND f.body_kind = 'file')`,
-          ]),
-      ...(text === ""
-        ? []
-        : [
-            sql`(instr(lower(r.title), ${text}) > 0 OR EXISTS (SELECT 1 FROM kin_doc_versions v
-              WHERE v.org_id = r.org_id AND v.record_id = r.record_id
-                AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
-                  WHERE w.org_id = r.org_id AND w.record_id = r.record_id)
-                AND instr(lower(v.body), ${text}) > 0))`,
-          ]),
-      ...(input.changedSince === undefined
-        ? []
-        : [sql`r.updated_at >= ${Date.parse(input.changedSince)}`]),
-    ]);
+    const where = yield* listWhere(
+      team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
+      input,
+    );
     const limit = input.limit ?? 50;
     const [count] = yield* sql<{
       total: number;
@@ -356,37 +371,106 @@ export const search = Effect.fn("KinDocs.search")(
 );
 
 const DOC_KEY = `${LISTS.docs.prefix}-`;
-export const subscribe = (
+/** The Docs list a screen opens on, which `acceptRows` keeps current: not archived, no files. */
+const DOCS_SHELF = { archived: false, files: false } as const;
+/** As Work's stream: a burst is read once, and past this many docs it is read again whole. */
+const DOCS_BATCH = 512;
+const DOCS_BATCH_WINDOW = Duration.millis(50);
+const DOCS_ROWS_BURST = 16;
+
+/** One doc as the unfiltered Docs list shows this viewer, or `unlisted`, and that list's total. */
+const listedOf = Effect.fn("KinDocs.listedOf")(
+  function* (orgId: KinOrgId, viewer: KinViewer, key: string) {
+    const sql = yield* SqlClient.SqlClient;
+    const where = yield* listWhere(viewer, { orgId, ...DOCS_SHELF });
+    const [count] = yield* sql<{
+      total: number;
+    }>`SELECT COUNT(*) AS total FROM kin_records r WHERE ${where}`;
+    const [row] = yield* sql<Parameters<typeof Docs.toDocRow>[0]>`${selectRecords(sql)}
+      WHERE ${sql.and([where, sql`r.key = ${key}`])}`;
+    const version =
+      row === undefined
+        ? undefined
+        : (yield* Docs.latestOf(orgId, [row.recordId])).get(row.recordId);
+    const now = yield* Clock.currentTimeMillis;
+    return {
+      total: count?.total ?? 0,
+      ...(row === undefined || version === undefined
+        ? { unlisted: true as const }
+        : { row: kinSlimDocRow(Docs.toDocRow(row, version, now)) }),
+    };
+  },
+  Effect.catchTags({ SqlError: () => unavailable }),
+);
+
+/**
+ * One subscriber's side of `kin.docs.subscribe`: what a burst of ticks tells them. A teammate's
+ * own number moves only for docs they saw before or see after (`teamPairs`). With `acceptRows`
+ * each doc's change carries it as the Docs list shows them (`listedOf`); their access is checked
+ * again for each burst, and a change to it ends the stream, so rows never outlive it.
+ */
+export const makeDocsStream = Effect.fn("KinDocs.makeStream")(function* (
   people: ReadonlyArray<PersonIdentity>,
-  input: { readonly orgId: KinOrgId },
-) =>
+  input: KinDocsSubscribeInput,
+) {
+  const team = yield* reader(people, input.orgId);
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]);
+  const plain = (seq: number, key?: string): KinDocsEvent => ({
+    _tag: "changed",
+    seq,
+    ...(key === undefined ? {} : { key: KinRecordKey.make(key) }),
+  });
+  /** This viewer's number and doc for `tick`; null when it touched no doc they see. */
+  const mine = Effect.fnUntraced(function* (
+    tick: Tick,
+  ): Effect.fn.Return<
+    { readonly seq: number; readonly key?: string } | null,
+    KinChatError,
+    SqlClient.SqlClient
+  > {
+    if (tick.key !== undefined && !tick.key.startsWith(DOC_KEY)) return null;
+    if (tick.key === undefined)
+      return {
+        seq: team === undefined ? tick.seq : yield* teamSeq(input.orgId, team).pipe(workFailure),
+      };
+    if (team === undefined) return { seq: tick.seq, key: tick.key };
+    const seq = tick.team?.get(team);
+    return seq === undefined ? null : { seq, key: tick.key };
+  });
+  const burst = Effect.fnUntraced(function* (ticks: ReadonlyArray<Tick>) {
+    const changes = (yield* Effect.forEach(ticks, mine)).filter((one) => one !== null);
+    if (input.acceptRows !== true) return changes.map((one) => plain(one.seq, one.key));
+    if (changes.length === 0) return [];
+    if ((yield* reader(people, input.orgId)) !== team)
+      return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+    const keyed = new Map<string, number>();
+    for (const one of changes) if (one.key !== undefined) keyed.set(one.key, one.seq);
+    const latest = Math.max(...changes.map((one) => one.seq));
+    // Too many to send whole, or a change no doc names: one read is cheaper and right.
+    if (keyed.size > DOCS_ROWS_BURST || changes.some((one) => one.key === undefined))
+      return [plain(latest)];
+    return yield* Effect.forEach(
+      [...keyed].sort((a, b) => a[1] - b[1]),
+      ([key, seq]) =>
+        listedOf(input.orgId, viewer, key).pipe(
+          Effect.map((listed) => ({ ...plain(seq, key), ...listed })),
+        ),
+    );
+  });
+  return { burst };
+});
+
+/** `kin.docs.subscribe`: the change number now, then each burst of changes (`makeDocsStream`). */
+export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinDocsSubscribeInput) =>
   Stream.unwrap(
     Effect.gen(function* () {
-      const team = yield* reader(people, input.orgId);
-      const records = yield* KinRecords;
-      const docs = records
-        .changes(input.orgId)
-        .pipe(Stream.filter((tick) => tick.key === undefined || tick.key.startsWith(DOC_KEY)));
-      if (team === undefined)
-        return docs.pipe(
-          Stream.map((tick) => ({
-            _tag: "changed" as const,
-            seq: tick.seq,
-            ...(tick.key === undefined ? {} : { key: tick.key }),
-          })),
-        );
-      // Their own change number, moved only by docs they saw before or see after (`teamPairs`).
-      return docs.pipe(
-        Stream.mapEffect((tick) =>
-          Effect.gen(function* () {
-            if (tick.key === undefined)
-              return [{ _tag: "changed" as const, seq: yield* teamSeq(input.orgId, team) }];
-            const seq = tick.team?.get(team);
-            return seq === undefined ? [] : [{ _tag: "changed" as const, seq, key: tick.key }];
-          }).pipe(workFailure),
-        ),
-        Stream.flattenIterable,
-      );
+      const session = yield* makeDocsStream(people, input);
+      const ticks = (yield* KinRecords).changes(input.orgId);
+      return (
+        input.acceptRows === true
+          ? ticks.pipe(Stream.groupedWithin(DOCS_BATCH, DOCS_BATCH_WINDOW))
+          : ticks.pipe(Stream.map((tick) => [tick]))
+      ).pipe(Stream.mapEffect(session.burst), Stream.flattenIterable);
     }),
   );
 

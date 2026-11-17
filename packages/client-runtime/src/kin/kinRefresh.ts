@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  KIN_STREAMS,
   KinOrgId,
   KinRefreshes,
   KinRefreshesSubscribeInput,
@@ -94,7 +95,18 @@ export function kinRefreshTriggers(
       Atom.withLabel(`${KIN_REFRESHES_LABEL}:${topic}:${environmentId}`),
     );
   });
-  const keyOf = (topic: KinRefreshTopic, target: Target) =>
+  /** Whether the host streams `name` (`KinRefreshes.streams`); null until it has said. */
+  const serves = Atom.family((key: string) => {
+    const [environmentId, orgId, name] = parse(key);
+    return Atom.make((get) => {
+      const result = get(revisions({ environmentId, input: { orgId } }));
+      // No revisions to read: the reads that follow moves are all there is.
+      if (AsyncResult.isFailure(result)) return false;
+      const held = AsyncResult.getOrElse(result, () => null);
+      return held === null ? null : (held.streams ?? []).includes(name);
+    }).pipe(Atom.withLabel(`${KIN_REFRESHES_LABEL}:serves:${name}:${environmentId}`));
+  });
+  const keyOf = (topic: string, target: Target) =>
     JSON.stringify([target.environmentId, target.input.orgId, topic]);
   return Object.assign(
     (topic: KinRefreshTopic) => (target: Target) => family(keyOf(topic, target)),
@@ -102,6 +114,8 @@ export function kinRefreshTriggers(
       /** How often a topic has moved since this client first heard it; for a read over several orgs. */
       moves: (topic: KinRefreshTopic) => (target: Target) => moves(keyOf(topic, target)),
       unresumed,
+      serves: (name: (typeof KIN_STREAMS)[number]) => (target: Target) =>
+        serves(keyOf(name, target)),
     },
   );
 }

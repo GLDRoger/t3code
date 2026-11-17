@@ -395,6 +395,7 @@ const KIN_RPC_ACCESS = {
   "kin.refreshes.subscribe": "person",
   // Needs attention and goals: the service shows a member only what they may see.
   "kin.pulse.read": "person",
+  "kin.pulse.subscribe": "person",
   "kin.pulse.handle": "person",
   "kin.goals.list": "person",
   "kin.goals.save": "owner_level",
@@ -459,6 +460,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.refreshes.subscribe": "kin-refreshes",
   "kin.refreshes.announce": "kin-refreshes",
   "kin.pulse.read": "kin-pulse",
+  "kin.pulse.subscribe": "kin-pulse",
   "kin.pulse.handle": "kin-pulse",
   "kin.goals.list": "kin-pulse",
   "kin.goals.save": "kin-pulse",

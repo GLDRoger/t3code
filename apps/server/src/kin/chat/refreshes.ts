@@ -1,4 +1,5 @@
 import {
+  KIN_STREAMS,
   KinChatError,
   kinOwnerLevel,
   type KinRefreshes,
@@ -80,7 +81,7 @@ export const subscribeRefreshes = (
           Effect.gen(function* () {
             if (kinOwnerLevel(yield* kind)) {
               heard = undefined;
-              return { ...now, boot: hub.boot } satisfies KinRefreshes;
+              return { ...now, boot: hub.boot, streams: KIN_STREAMS } satisfies KinRefreshes;
             }
             if (heard === undefined || heard.leads !== now.leads || heard.people !== now.people)
               leads = hub.counted(counter("leads"), yield* view);
@@ -97,6 +98,7 @@ export const subscribeRefreshes = (
               pulse: now.pulse,
               workLists: lists,
               boot: hub.boot,
+              streams: KIN_STREAMS,
             } satisfies KinRefreshes;
           }),
         ),

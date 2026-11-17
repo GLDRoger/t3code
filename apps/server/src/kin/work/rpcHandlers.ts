@@ -319,6 +319,7 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.pulse.read": Effect.fn("KinPulse.rpc.read")(function* (input) {
         return yield* call((people) => Pulse.read(people, input));
       }),
+      "kin.pulse.subscribe": (input) => stream((people) => Pulse.subscribe(people, input)),
       "kin.pulse.handle": Effect.fn("KinPulse.rpc.handle")(function* (input) {
         return yield* call((people) => Pulse.handle(people, input));
       }),
