@@ -439,6 +439,19 @@ export class FakeGitHub {
           event: String(body.event ?? "COMMENT"),
           body: String(body.body ?? ""),
         });
+        const inlines: ReadonlyArray<Record<string, unknown>> = Array.isArray(body.comments)
+          ? body.comments
+          : [];
+        for (const inline of inlines)
+          this.comment({
+            repo,
+            number: Number(found[1]),
+            author: this.world.user,
+            association: "OWNER",
+            body: String(inline.body ?? ""),
+            path: String(inline.path ?? ""),
+            line: Number(inline.line ?? 1),
+          });
         return ok({
           id,
           html_url: `https://github.com/${repo}/pull/${found[1]}#pullrequestreview-${id}`,

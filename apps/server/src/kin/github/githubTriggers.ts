@@ -1,3 +1,4 @@
+import { WRITE_BRANCH_PREFIX } from "../memory/MemoryConfig.ts";
 import { isAgentText } from "./agentMark.ts";
 
 /**
@@ -142,6 +143,8 @@ export const decideTriggers = (
   thread: ThreadSnapshot,
   context: DecideContext,
 ): ReadonlyArray<Trigger> => {
+  // Kin's memory writes land through PRs under the owner's login with no marker.
+  if (thread.pull?.headRef.startsWith(WRITE_BRANCH_PREFIX) === true) return [];
   const at = `${thread.repo.toLowerCase()}#${thread.number}`;
   const agentsOwn = isAgentText(thread.body);
   const itemInside = isInside(thread.association);

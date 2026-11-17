@@ -18,12 +18,8 @@ import {
   MemoryRecoveryHooks,
   MemorySyncConflict,
 } from "./Memory.ts";
-import { MemoryConfig } from "./MemoryConfig.ts";
-import {
-  MemoryPullRequests,
-  REVIEW_BRANCH_SUFFIX,
-  WRITE_BRANCH_PREFIX,
-} from "./MemoryPullRequests.ts";
+import { MemoryConfig, WRITE_BRANCH_PREFIX } from "./MemoryConfig.ts";
+import { MemoryPullRequests, REVIEW_BRANCH_SUFFIX } from "./MemoryPullRequests.ts";
 import { readCommit, readTree, verifyTree } from "./objects.ts";
 
 /** Where a wake-up's changes on owner-reviewed paths wait for the lander; named `<agent>/<id>-<sha12>`. */

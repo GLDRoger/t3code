@@ -763,7 +763,16 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
       api.call({
         method: "POST",
         path: `repos/${ours.repo}/pulls/${input.number}/reviews`,
-        body: { body, event, comments: comments.map((comment) => ({ ...comment, side: "RIGHT" })) },
+        body: {
+          body,
+          event,
+          // The watch reads inline comments as the owner's own words: each carries the marker.
+          comments: comments.map((comment) => ({
+            ...comment,
+            body: signed(comment.body, input.agentName),
+            side: "RIGHT",
+          })),
+        },
       });
     let answer = yield* send(input.comments);
     if (answer.status === 422 && input.comments.length > 0)

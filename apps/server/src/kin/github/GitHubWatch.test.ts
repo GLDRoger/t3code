@@ -13,12 +13,14 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { isAgentText, signed } from "./agentMark.ts";
 import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
-import { setRepo, watchSummary } from "./githubWatchStore.ts";
+import { isMemoryRepo, repoList, setRepo, watchSummary } from "./githubWatchStore.ts";
+import { WRITE_BRANCH_PREFIX } from "../memory/MemoryConfig.ts";
 
 const orgId = KinOrgId.make("org-gh");
 const T0 = Date.UTC(2026, 10, 16, 9, 0, 0);
 const MINUTE = 60_000;
 const REPO = "invented-co/app";
+const MEMORY_REPO = "invented-co/kin-memory";
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(KinEvent));
 
 const seed = Effect.gen(function* () {
@@ -71,7 +73,16 @@ const fakeApi = (github: FakeGitHub) =>
 
 const database = KinPersistence.layer.pipe(
   Layer.provideMerge(Sqlite.layerMemory),
-  Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+  Layer.provideMerge(
+    ConfigProvider.layer(
+      ConfigProvider.fromUnknown({
+        KIN_ENABLED: true,
+        KIN_MEMORY_REPOSITORIES: JSON.stringify([
+          { orgId, repoUrl: `https://github.com/${MEMORY_REPO}.git` },
+        ]),
+      }),
+    ),
+  ),
 );
 
 const setup = () => {
@@ -150,6 +161,19 @@ describe("KinGitHubWatch", () => {
         "GET notifications",
         "GET users/invented-owner/events",
       ]);
+
+      // The agent's review posts under the owner's login; its inline words call no one.
+      yield* GitHubWatch.ownerGitHubReview(
+        { orgId, agentId: "tech" },
+        {
+          repo: REPO,
+          number,
+          body: "Looks right.",
+          comments: [{ path: "hello.sh", line: 1, body: "/kin rename this too" }],
+        },
+      );
+      yield* look(github);
+      assert.lengthOf(yield* events, 1);
     }).pipe(Effect.provide(layer));
   });
 
@@ -242,6 +266,40 @@ describe("KinGitHubWatch", () => {
       }).pipe(Effect.provide(layer));
     },
   );
+
+  it.effect("Kin's own memory PRs never wake anyone, in the memory repo or any other", () => {
+    const { github, layer } = setup();
+    github.addRepo({ full_name: MEMORY_REPO, private: true });
+    return Effect.gen(function* () {
+      yield* start(github);
+      // A memory landing, opened by server code under the owner's login without the marker.
+      github.openItem({
+        repo: MEMORY_REPO,
+        pull: true,
+        author: "invented-owner",
+        association: "OWNER",
+        title: "kin: memory from this server up to 0123456789ab",
+        headRef: `${WRITE_BRANCH_PREFIX}land/0123456789ab`,
+      });
+      github.openItem({
+        repo: REPO,
+        pull: true,
+        author: "invented-owner",
+        association: "OWNER",
+        title: "kin: memory",
+        headRef: `${WRITE_BRANCH_PREFIX}land/ba9876543210`,
+      });
+      yield* look(github);
+      assert.lengthOf(yield* events, 0);
+      assert.deepStrictEqual(github.world.reactions, []);
+      assert.deepStrictEqual(github.world.comments, []);
+      assert.notInclude(
+        (yield* repoList(orgId)).map((repo) => repo.repo),
+        MEMORY_REPO,
+      );
+      assert.isTrue(yield* isMemoryRepo(MEMORY_REPO.toUpperCase()));
+    }).pipe(Effect.provide(layer));
+  });
 
   it.effect("a stranger's PR is read for the agent, which gets no shell for it", () => {
     const { github, layer } = setup();

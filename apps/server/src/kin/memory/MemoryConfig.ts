@@ -10,6 +10,9 @@ import * as Schema from "effect/Schema";
 import { ServerConfig } from "../../config.ts";
 import { isCredentialHelperReference, isSshCommandReference } from "./purgePush.ts";
 
+/** Every branch Kin pushes memory through; a PR from one is Kin's own and never wakes an agent. */
+export const WRITE_BRANCH_PREFIX = "kin/write/";
+
 export class MemoryConfig extends Context.Service<
   MemoryConfig,
   {
