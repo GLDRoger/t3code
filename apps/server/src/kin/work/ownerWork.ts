@@ -183,6 +183,7 @@ const NOTHING: KinRecordCan = {
   unmark: false,
   share: false,
   confirm: false,
+  repeat: false,
 };
 
 type CanEntry = Pick<KinRecord, "recordId" | "key" | "state" | "owner" | "confirmed"> &
@@ -228,6 +229,7 @@ const cansOf = Effect.fn("KinWork.cansOf")(function* (
         unmark: edits,
         share: !UNSHARED.has(entry.registerId),
         confirm: edits && !entry.confirmed && open,
+        repeat: entry.registerId === "work",
       };
       return [entry.recordId, can] as const;
     }),
@@ -442,7 +444,9 @@ export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
       ]).pipe(workFailure)
     : new Set<string>();
   return shown.map(({ row, record: whole }): KinRecord => {
-    const record = { ...whole, can: can(whole.recordId) };
+    // Only the task's own sheet sets a repeat, so its rows don't carry the answer.
+    const { repeat: _repeat, ...rowCan } = can(whole.recordId);
+    const record = { ...whole, can: rowCan };
     if (viewer.teammate && plainTask(row, led)) return teamRecordIn(record, projects);
     const fields = isBuiltIn(row.registerId) ? {} : parseFields(row.fieldsJson);
     return Object.keys(fields).length === 0 ? record : { ...record, fields };
@@ -732,6 +736,7 @@ export const create = Effect.fn("KinWork.create")(function* (
       ...(projectId === undefined ? {} : { projectId }),
       ...(input.side === undefined ? {} : { side: input.side }),
       ...(input.repo === undefined ? {} : { repo: input.repo }),
+      ...(input.repeat === undefined || milestone ? {} : { repeat: input.repeat }),
     });
     return {
       row,

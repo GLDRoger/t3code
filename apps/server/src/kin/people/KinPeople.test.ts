@@ -403,7 +403,11 @@ it.effect(
       });
       const joined = () =>
         service.list(ownerSession, orgId).pipe(Effect.map((list) => [...list.joined].sort()));
-      assert.deepEqual(yield* joined(), [personId, other.person.personId].sort());
+      // The owner is always reachable: their own session is never a teammate binding.
+      assert.deepEqual(
+        yield* joined(),
+        [identity.owner.personId, personId, other.person.personId].sort(),
+      );
 
       const member = yield* sessions.verify(first.accessToken);
       assert.propertyVal(
@@ -460,7 +464,7 @@ it.effect(
         "reason",
         "not_found",
       );
-      assert.deepEqual(yield* joined(), [other.person.personId]);
+      assert.deepEqual(yield* joined(), [identity.owner.personId, other.person.personId].sort());
       const list = yield* service.list(ownerSession, orgId);
       assert.include(
         list.people.map((held) => held.personId),
@@ -478,7 +482,6 @@ it.effect(
       );
       const still = (yield* records.get(orgId, task.key))!;
       assert.deepEqual([still.ownerKind, still.ownerId], ["person", personId]);
-      assert.deepEqual(yield* joined(), [personId, other.person.personId].sort());
     }).pipe(Effect.provide(layer)),
 );
 

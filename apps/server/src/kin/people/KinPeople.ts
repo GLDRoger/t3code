@@ -467,6 +467,10 @@ export const make = Effect.gen(function* () {
       AND a.expires_at > ${now} ORDER BY b.person_id`.pipe(
       Effect.mapError(toPersistenceSqlError("KinPeople.joined")),
     );
+    // The owner opens Kin from their own session, never a teammate's binding, and is always there.
+    const reachable = [
+      ...new Set([identity.owner.personId, ...joined.map((row) => row.personId)]),
+    ].toSorted();
     const people = rows.map(decodePerson);
     // A member reads who is on the team, as their profiles already say, and who the owner is;
     // everyone else's access and places stay the owner's.
@@ -477,10 +481,10 @@ export const make = Effect.gen(function* () {
           ...(access === "owner" ? { access } : {}),
           githubLogin: null,
         })),
-        joined: joined.map((row) => row.personId),
+        joined: reachable,
       };
     const places = yield* Effect.forEach(people, (one) => placesFor(orgId, one.personId));
-    return { people, joined: joined.map((row) => row.personId), places };
+    return { people, joined: reachable, places };
   });
   const placesFor = Effect.fn("KinPeople.placesFor")(function* (
     orgId: KinOrgId,

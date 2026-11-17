@@ -11,6 +11,7 @@ import {
   type KinRecord,
   type KinRecordChange,
   type KinRecordCan,
+  type KinRepeatRule,
   type KinRecordDetail,
   type KinRecordKey,
   type KinRecordLink,
@@ -534,6 +535,39 @@ export function kinWorkRowMarked(row: KinWorkRowView, mark: KinWorkMark | null):
   };
 }
 
+/** "Every month", "Every week", "Every 10 days". */
+export const kinRepeatText = (rule: KinRepeatRule): string =>
+  rule.every === "days"
+    ? rule.days === 1
+      ? "Every day"
+      : rule.days === 7
+        ? "Every week"
+        : `Every ${rule.days} days`
+    : `Every ${rule.every}`;
+
+/** A task's Repeats row: what it says, and the rules offered (any other an agent set still shows). */
+export const KIN_WORK_REPEAT = {
+  label: "Repeats",
+  never: "Doesn't repeat",
+  stop: "Stop repeating",
+  needsDue: "Give it a due date first: the next one is made from it.",
+  /** Said once, beside the row: a repeat makes the next task, never the money in it. */
+  note: "When it's closed, the next one is made from its due date.",
+  choices: [
+    { label: "Every week", rule: { every: "days", days: 7 } },
+    { label: "Every 2 weeks", rule: { every: "days", days: 14 } },
+    { label: "Every month", rule: { every: "month" } },
+    { label: "Every quarter", rule: { every: "quarter" } },
+    { label: "Every year", rule: { every: "year" } },
+  ] satisfies ReadonlyArray<{ readonly label: string; readonly rule: KinRepeatRule }>,
+};
+
+/** Whether two rules are the same, for marking the one a task has. */
+export const kinSameRepeat = (a: KinRepeatRule | null, b: KinRepeatRule | null): boolean =>
+  a === null || b === null
+    ? a === b
+    : a.every === b.every && (a.every !== "days" || (b.every === "days" && a.days === b.days));
+
 export const kinWorkClosed = (state: KinRecordState) => state === "done" || state === "dropped";
 
 export function kinWorkRow(
@@ -544,16 +578,15 @@ export function kinWorkRow(
   within?: Pick<KinWorkFilter, "party" | "project"> & { readonly sided?: true },
 ): KinWorkRowView {
   const owner = kinWorkName(record.owner, names);
-  // Inside a project the page already names its client, so its rows don't.
+  // The project, for everyone who is sent it; its client only when there is none. Inside a
+  // project the page already names its client, so its rows don't.
   const inProject = within?.project != null && record.project?.key === within.project.key;
   const about = inProject
     ? null
-    : record.party !== undefined && record.party.key !== within?.party?.key
-      ? record.party.title
-      : record.project !== undefined &&
-          record.project.key !== within?.project?.key &&
-          record.party === undefined
-        ? record.project.title
+    : record.project !== undefined
+      ? record.project.title
+      : record.party !== undefined && record.party.key !== within?.party?.key
+        ? record.party.title
         : null;
   const status = record.working ? "Working on it now" : statusText(record, names);
   const day = kinWorkClosed(record.state) ? null : kinWorkDueText(record, names, now);
@@ -577,6 +610,9 @@ export function kinWorkRow(
   // the empty circle already says.
   const detail = [
     due,
+    record.repeat === undefined || kinWorkClosed(record.state)
+      ? null
+      : kinRepeatText(record.repeat),
     record.state === "open" && !record.working ? null : status,
     about,
     record.side === "theirs" && !kinWorkClosed(record.state) && within?.sided !== true
@@ -811,6 +847,8 @@ export interface KinWorkItemView {
   readonly markedBy: KinPersonId | null;
   /** What the host lets this reader do to it: a control shows only when it is here. */
   readonly can: KinRecordCan;
+  /** How it comes back once closed, as a rule and in words; null when it doesn't. */
+  readonly repeat: { readonly rule: KinRepeatRule; readonly text: string } | null;
 }
 
 /** How private something is, and what to say about it beside the label. */
@@ -1081,6 +1119,9 @@ export function kinWorkChangeText(
   if (["role", "email", "phone"].some((name) => field(name) !== undefined))
     clauses.push("changed their details");
   if (field("repos") !== undefined) clauses.push("changed its repos");
+  const repeat = field("repeat");
+  if (repeat !== undefined)
+    clauses.push(repeat.to === null ? "stopped it repeating" : `set it to repeat ${repeat.to}`);
   const side = field("side")?.to;
   if (side === "theirs") clauses.push("marked it as theirs to do");
   else if (side === "ours") clauses.push("marked it as ours to do");
@@ -1328,6 +1369,8 @@ export function kinWorkItemView(
     shared: item.shared === true,
     markedBy: item.markedBy ?? null,
     can,
+    repeat:
+      item.repeat === undefined ? null : { rule: item.repeat, text: kinRepeatText(item.repeat) },
   };
 }
 
@@ -1491,6 +1534,8 @@ export interface KinWorkDraft {
   readonly project: KinWorkRef | null;
   /** `theirs` when the client owes it and the owner is whoever chases. */
   readonly side: KinRecordSide;
+  /** How it comes back once closed; null when it doesn't. */
+  readonly repeat: KinRepeatRule | null;
 }
 
 export const KIN_WORK_NO_DRAFT: KinWorkDraft = {
@@ -1501,6 +1546,7 @@ export const KIN_WORK_NO_DRAFT: KinWorkDraft = {
   party: null,
   project: null,
   side: "ours",
+  repeat: null,
 };
 
 /** A form opened from a client or a project starts out about it. */
@@ -1606,6 +1652,8 @@ export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
     return { ok: false, problem: "Those notes are too long. Say the rest in chat." };
   if (draft.due !== null && !dayPattern.test(draft.due))
     return { ok: false, problem: "That date doesn't look right." };
+  if (draft.repeat !== null && draft.due === null)
+    return { ok: false, problem: KIN_WORK_REPEAT.needsDue };
   return {
     ok: true,
     input: {
@@ -1617,6 +1665,7 @@ export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
       ...(draft.project === null ? {} : { project: draft.project.key }),
       // Whose move it is only means something between us and a client.
       ...(draft.side === "theirs" && draft.party !== null ? { side: "theirs" as const } : {}),
+      ...(draft.repeat === null ? {} : { repeat: draft.repeat }),
     },
   };
 }
