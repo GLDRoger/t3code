@@ -329,3 +329,19 @@ export function kinChatReadOnly(
 export function kinChatReadOnlyLine(leadName: string | null): string {
   return `You can read this chat, but you can no longer message ${leadName ?? "this agent"}.`;
 }
+
+/** The owner's list of agents, and what a teammate is shown of one. */
+export const KIN_AGENTS_COPY = {
+  accessFailed: "Couldn't load who can message it.",
+  seesIntro: (intro: string) => `They see its name and this: ${intro}`,
+  charterExample: "Handles billing questions and invoices.",
+  charterLabel: "What it's responsible for",
+  removeAccess: (person: string, agent: string) =>
+    `${person} keeps their chat with ${agent} to read, but can't send it anything more. You can add them back any time.`,
+  nameOnly: "They see its name only. Add what teammates see when you edit this agent.",
+  none: "You have no agents yet.",
+  explain:
+    "An agent looks after one part of the company, such as engineering or finance, and you talk to it in a chat.",
+  loadFailed: "Couldn't load your agents.",
+  teammateViewHint: "Optional. People you let message this agent see this and nothing above.",
+} as const;

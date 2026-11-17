@@ -66,7 +66,7 @@ import {
   kinPendingRefAtom,
   kinPendingRefKey,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import { KIN_MESSAGE_MAX_LENGTH } from "@t3tools/client-runtime/kin/kinOutbox";
+import { KIN_MESSAGE_MAX_LENGTH, KIN_COMPOSER_COPY } from "@t3tools/client-runtime/kin/kinOutbox";
 import { SymbolView } from "../../../components/ui/AppSymbol";
 import { Chip } from "../../../components/ui/Chip";
 import { deliverKinOutbox, kinOutbox } from "../state/kinOutboxDelivery";
@@ -234,9 +234,12 @@ export function KinComposer({
     uploadBlock === null &&
     (!hasAttachments || props.connected);
   const hint = tooLong
-    ? `Too long to send: ${lengthFormat.format(length)} of ${lengthFormat.format(KIN_MESSAGE_MAX_LENGTH)} characters.`
+    ? KIN_COMPOSER_COPY.tooLong(
+        lengthFormat.format(length),
+        lengthFormat.format(KIN_MESSAGE_MAX_LENGTH),
+      )
     : full
-      ? "Too many unsent messages. Wait for them to go out."
+      ? KIN_COMPOSER_COPY.tooMany
       : uploadBlock !== null
         ? `${uploadBlock}.`
         : hasAttachments && !props.connected
@@ -332,7 +335,7 @@ export function KinComposer({
       {mention === null || showsDictation ? null : (
         <View
           accessibilityRole="menu"
-          accessibilityLabel="Agents you can ask"
+          accessibilityLabel={KIN_COMPOSER_COPY.agentsYouCanAsk}
           className="flex-row flex-wrap gap-2 px-1 pb-1"
         >
           {mention.matches.map((lead) => (

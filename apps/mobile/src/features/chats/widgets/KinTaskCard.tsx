@@ -1,3 +1,4 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { memo } from "react";
 import { Pressable, View } from "react-native";
 
@@ -74,7 +75,7 @@ export const KinTaskCard = memo(function KinTaskCard(props: {
       )}
       {task.unknownEnvironment ? (
         <Text textRole="footnote" className="text-foreground-muted">
-          That thread is on an environment this phone doesn't know.
+          {KIN_DEVICE_COPY.unknownEnvironment("phone")}
         </Text>
       ) : null}
       {task.pullRequests.length === 0 && task.model === null ? null : (

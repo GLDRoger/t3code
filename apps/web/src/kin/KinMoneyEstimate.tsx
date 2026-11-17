@@ -68,9 +68,7 @@ export function KinEstimateText(props: {
               {line}
             </p>
           ))}
-          <p className="text-muted-foreground">
-            Exact figures, invoices and exports stay in their own currency.
-          </p>
+          <p className="text-muted-foreground">{KIN_CURRENCY.exactStays}</p>
         </div>
       </PopoverPopup>
     </Popover>
@@ -145,7 +143,7 @@ export function KinRatesDialog(
               </div>
             ) : (
               <KinLoadFailed
-                what={"Couldn't load the rates"}
+                what={KIN_CURRENCY.ratesFailed}
                 cause={state._tag === "failed" ? state.cause : null}
                 onRetry={profile.refresh}
               />
@@ -217,9 +215,7 @@ function KinRatesForm(
               {KIN_CURRENCY.homeCurrency}: {profile.homeCurrency}
             </h3>
             {profile.rates.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No rates yet, so no foreign amount shows an estimate.
-              </p>
+              <p className="text-sm text-muted-foreground">{KIN_CURRENCY.noRates}</p>
             ) : (
               <ul className="flex flex-col">
                 {profile.rates.map((rate) => (
@@ -348,7 +344,7 @@ export function KinInvoiceCurrency(
       {settled === null ? (
         props.settled ? (
           <p className="text-xs text-muted-foreground">
-            Paid in {view.currency}. No bank row is linked yet, so the rupees received aren't known.
+            {KIN_CURRENCY.paidUnlinked(view.currency)}
           </p>
         ) : null
       ) : (
@@ -362,7 +358,7 @@ export function KinInvoiceCurrency(
           <KinSetRateButton
             {...props}
             currencies={[view.currency]}
-            label="Use this rate for estimates"
+            label={KIN_CURRENCY.rateForEstimates}
             start={settled.impliedRate}
           />
         </div>

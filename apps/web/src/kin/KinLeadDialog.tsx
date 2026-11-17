@@ -15,6 +15,7 @@ import {
   kinLeadDraftOf,
   kinLeadSaveProblem,
   kinLeadStartingModel,
+  KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import type { ModelSelection } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -226,7 +227,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                 </p>
               </div>
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor={charterId}>What it's responsible for</Label>
+                <Label htmlFor={charterId}>{KIN_AGENTS_COPY.charterLabel}</Label>
                 <Textarea
                   id={charterId}
                   rows={5}
@@ -275,7 +276,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                   rows={2}
                   value={intro}
                   aria-invalid={intro.length > KIN_LEAD_INTRO_MAX}
-                  placeholder="Handles billing questions and invoices."
+                  placeholder={KIN_AGENTS_COPY.charterExample}
                   onChange={(event) => setIntro(event.target.value)}
                 />
                 <p
@@ -287,7 +288,7 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
                 >
                   {intro.length > KIN_LEAD_INTRO_MAX
                     ? `${intro.length - KIN_LEAD_INTRO_MAX} characters too long.`
-                    : "Optional. People you let message this agent see this and nothing above."}
+                    : KIN_AGENTS_COPY.teammateViewHint}
                 </p>
               </div>
               {lead === null ? (

@@ -138,7 +138,7 @@ export function KinTemplateRows(props: KinWorkTarget) {
         <KinWorkLoading label="Loading templates" />
       ) : state._tag !== "ready" ? (
         <KinLoadFailed
-          title="Couldn't load your templates"
+          title={KIN_TEMPLATES.loadFailed}
           cause={state._tag === "failed" ? state.cause : null}
           onRetry={recipes.refresh}
         />

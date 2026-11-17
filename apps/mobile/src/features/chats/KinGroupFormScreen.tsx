@@ -14,6 +14,7 @@ import {
   KIN_GROUP_PEOPLE_NOTE,
   kinGroupNameCheck,
   kinGroupProblem,
+  KIN_GROUP_FORM,
 } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -291,7 +292,7 @@ function GroupForm(props: {
               className="items-center py-8"
               accessible
               accessibilityRole="progressbar"
-              accessibilityLabel="Loading your agents and people"
+              accessibilityLabel={KIN_GROUP_FORM.loading}
             >
               <AppActivityIndicator />
             </View>
@@ -300,11 +301,7 @@ function GroupForm(props: {
               {leads.length === 0 ? null : (
                 <ListSection
                   title="Agents"
-                  footer={
-                    creating
-                      ? "The first agent you pick answers when a message names no one. Name another with @ to ask it instead."
-                      : undefined
-                  }
+                  footer={creating ? KIN_GROUP_FORM.answersHint : undefined}
                 >
                   {leads.map((lead, index) => (
                     <SelectionRow
@@ -313,7 +310,7 @@ function GroupForm(props: {
                       title={lead.name}
                       subtitle={
                         agentIds[0] === lead.agentId && creating
-                          ? "Answers when no one is named"
+                          ? KIN_GROUP_FORM.answers
                           : kinDomainLabel(lead.domain)
                       }
                       leading={<KinAvatar avatar={kinAgentAvatar(lead.agentId)} size="small" />}
@@ -357,7 +354,7 @@ function GroupForm(props: {
                   detail={
                     creating
                       ? "Make an agent, or add a teammate from Team in your chat list. You can still make the group and add them later."
-                      : "Every agent and person you could add is in this group."
+                      : KIN_GROUP_FORM.allAdded
                   }
                 />
               ) : null}

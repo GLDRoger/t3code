@@ -15,6 +15,7 @@ import { kinZoneName } from "./kinTimeZone.ts";
 export { KIN_PROFILE_NAME_MAX, KIN_PROFILE_SKILLS_MAX, KIN_PROFILE_TALK_MAX };
 
 export const KIN_PROFILE_COPY = {
+  skillsExample: "SwiftUI, App Store releases",
   title: "Profile",
   mine: "Your profile",
   edit: "Edit profile",

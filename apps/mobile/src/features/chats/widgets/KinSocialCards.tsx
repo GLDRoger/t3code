@@ -12,6 +12,7 @@ import {
   type KinSocialPostTone,
   type KinSocialPostView,
   type KinSocialWeekView,
+  KIN_SOCIAL_COPY,
 } from "@t3tools/client-runtime/kin/kinSocial";
 import { kinFailure } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -147,7 +148,7 @@ function MediaThumb(props: {
         <ExpoImage
           source={assetImageSource(props.environmentId, resource, uri)}
           contentFit="cover"
-          accessibilityLabel={`Picture for this post: ${media.name}`}
+          accessibilityLabel={KIN_SOCIAL_COPY.postPicture(media.name)}
           style={{ width: "100%", height: "100%" }}
           onError={() => setFailed(true)}
         />

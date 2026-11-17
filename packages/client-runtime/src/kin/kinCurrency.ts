@@ -20,6 +20,12 @@ import { kinMinorDigits, kinMoneyText } from "./kinLists.ts";
  */
 
 export const KIN_CURRENCY = {
+  ratesFailed: "Couldn't load the rates",
+  exactStays: "Exact figures, invoices and exports stay in their own currency.",
+  paidUnlinked: (currency: string) =>
+    `Paid in ${currency}. No bank row is linked yet, so the rupees received aren't known.`,
+  noRates: "No rates yet, so no foreign amount shows an estimate.",
+  rateForEstimates: "Use this rate for estimates",
   setRate: "Set a rate",
   rates: "Exchange rates",
   ratesDetail:

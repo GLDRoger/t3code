@@ -48,6 +48,8 @@ import {
  */
 
 export const KIN_LISTS = {
+  listGone: "This list isn't here",
+  goneDetail: "It may have been renamed. Open Docs to see the lists there are.",
   title: "Lists",
   search: "Search this list",
   loadFailed: "Couldn't load your lists",

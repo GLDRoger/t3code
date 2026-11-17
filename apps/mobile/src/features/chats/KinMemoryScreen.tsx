@@ -19,6 +19,7 @@ import {
   type KinMemoryConfirmAll,
   type KinMemoryOriginView,
   type KinMemoryRow,
+  KIN_MEMORY_COPY,
 } from "@t3tools/client-runtime/kin/kinMemoryScreen";
 import {
   EnvironmentId,
@@ -218,8 +219,8 @@ function KinMemoryBody({
   const message = !allowed ? (
     <EmptyState
       variant="plain"
-      title="Only the owner can open this"
-      detail="What the agents remember is shown to the person who runs this workspace."
+      title={KIN_MEMORY_COPY.ownerOnly}
+      detail={KIN_MEMORY_COPY.ownerOnlyDetail}
     />
   ) : list === null || view === null ? (
     AsyncResult.isFailure(result) ? (
@@ -233,7 +234,7 @@ function KinMemoryBody({
         className="items-center py-12"
         accessible
         accessibilityRole="progressbar"
-        accessibilityLabel="Loading what your agents remember"
+        accessibilityLabel={KIN_MEMORY_COPY.loading}
       >
         <AppActivityIndicator />
       </View>

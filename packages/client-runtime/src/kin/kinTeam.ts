@@ -32,6 +32,8 @@ export const KIN_TEAM_LOAD_FAILED = "Couldn't load your team";
 export const KIN_TEAMMATE_NAME_MAX = 80;
 
 export const KIN_TEAM_ADD_COPY = {
+  linkDropped: (name: string) =>
+    `The connection dropped before the link could be shown. Make a new link for ${name} from Team once you're back online.`,
   title: "Add a teammate",
   detail:
     "Kin makes a link for you to send them. Opening it lets them chat with you and with the agents and groups you add them to. They can't see your code or settings.",
@@ -578,3 +580,11 @@ export function createKinTeamActions(options: {
 }
 
 export type KinTeamActions = ReturnType<typeof createKinTeamActions>;
+
+/** A teammate's page. */
+export const KIN_TEAM_COPY = {
+  canDo: "What they can do",
+  canSee: "What they can see",
+  openAgentToChange: (name: string) => `Open an agent to change whether ${name} can message it.`,
+  sharedAlways: "Tasks shared with the team, always.",
+} as const;

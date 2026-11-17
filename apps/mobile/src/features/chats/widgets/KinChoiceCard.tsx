@@ -1,3 +1,5 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
+import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinPersonId } from "@t3tools/contracts";
@@ -198,7 +200,7 @@ function ChoiceImage(props: {
     >
       {failed ? (
         <Text textRole="footnote" className="text-center text-white">
-          The picture couldn't load. Open the chat to see the file.
+          {KIN_CARD_COPY.pictureFailed}
         </Text>
       ) : uri === null ? (
         <AppActivityIndicator />
@@ -206,7 +208,7 @@ function ChoiceImage(props: {
         <ExpoImage
           source={assetImageSource(props.environmentId, resource, uri)}
           contentFit="contain"
-          accessibilityLabel="The picture this question is about"
+          accessibilityLabel={KIN_CARD_COPY.choicePicture}
           style={{ width: "100%", height: "100%" }}
           onError={() => {
             if (retried.current) return setFailed(true);
@@ -343,7 +345,7 @@ export const KinChoiceCard = memo(function KinChoiceCard(props: {
         </Text>
       ) : !canAct ? (
         <Text textRole="footnote" className="text-foreground-muted">
-          This phone can't answer here. Pair it again with the computer that runs T3 Code.
+          {KIN_DEVICE_COPY.cantAct("phone", "answer")}
         </Text>
       ) : (
         <>

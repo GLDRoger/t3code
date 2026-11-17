@@ -259,12 +259,12 @@ function ConnectionRecord(props: {
                         </Text>
                         {row.change.inputsChanged ? (
                           <Text textRole="footnote" className="text-foreground">
-                            What it takes changed too.
+                            {COPY.inputsChanged}
                           </Text>
                         ) : null}
                         {row.change.labelsChanged ? (
                           <Text textRole="footnote" className="text-foreground">
-                            What the service says it does changed too.
+                            {COPY.describedChanged}
                           </Text>
                         ) : null}
                       </View>

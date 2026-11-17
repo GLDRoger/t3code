@@ -53,12 +53,7 @@ export function KinEstimateText(props: {
       accessibilityLabel={`${props.text}, ${KIN_CURRENCY.estimate.toLowerCase()}`}
       accessibilityHint="Says which rate it uses"
       hitSlop={6}
-      onPress={() =>
-        Alert.alert(
-          KIN_CURRENCY.estimate,
-          `${basis}\n\nExact figures, invoices and exports stay in their own currency.`,
-        )
-      }
+      onPress={() => Alert.alert(KIN_CURRENCY.estimate, `${basis}\n\n${KIN_CURRENCY.exactStays}`)}
       className={cn("active:opacity-60", props.align === "end" && "items-end")}
     >
       <Text textRole="footnote" className="tabular-nums text-foreground-muted">
@@ -228,7 +223,7 @@ function KinRatesForm(
       <ListSection title={`${KIN_CURRENCY.homeCurrency}: ${profile.homeCurrency}`}>
         {profile.rates.length === 0 ? (
           <Text textRole="body" className="px-4 py-3 text-foreground-muted">
-            No rates yet, so no foreign amount shows an estimate.
+            {KIN_CURRENCY.noRates}
           </Text>
         ) : (
           profile.rates.map((rate) => (
@@ -353,7 +348,7 @@ export function KinInvoiceCurrency(
       {settled === null ? (
         props.settled ? (
           <Text textRole="footnote" className="text-foreground-muted">
-            Paid in {view.currency}. No bank row is linked yet, so the rupees received aren't known.
+            {KIN_CURRENCY.paidUnlinked(view.currency)}
           </Text>
         ) : null
       ) : (
@@ -379,7 +374,7 @@ export function KinInvoiceCurrency(
               className="min-h-8 justify-center self-start active:opacity-60"
             >
               <Text textRole="footnote" className="font-t3-medium text-accent-foreground">
-                Use this rate for estimates
+                {KIN_CURRENCY.rateForEstimates}
               </Text>
             </Pressable>
           ) : null}

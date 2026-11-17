@@ -563,7 +563,7 @@ function KinProfileForm(props: {
           id="kin-profile-skills"
           value={draft.skills}
           maxLength={KIN_PROFILE_SKILLS_MAX}
-          placeholder="SwiftUI, App Store releases"
+          placeholder={KIN_PROFILE_COPY.skillsExample}
           onChange={(event) => set({ skills: event.target.value })}
         />
         <p className="text-xs text-muted-foreground">{KIN_PROFILE_COPY.skillsHint}</p>

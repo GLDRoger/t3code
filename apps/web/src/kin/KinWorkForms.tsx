@@ -904,7 +904,7 @@ export function KinMilestoneDialog(
           id={ids.name}
           value={name}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder="Beta to the client"
+          placeholder={KIN_WORK_FORM_COPY.milestoneExample}
           autoComplete="off"
           autoFocus
           onChange={(event) => setName(event.target.value)}

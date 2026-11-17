@@ -1,3 +1,4 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_PEOPLE_CHAT, kinPeopleChatWith } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { kinAwayLine } from "@t3tools/client-runtime/kin/kinAway";
 import { openKinProfile } from "./KinProfileSheet";
@@ -24,6 +25,7 @@ import {
   type KinFeedRow,
   type KinFeedViewer,
   type KinPaging,
+  KIN_CHAT_COPY,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinFeedMessages } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import {
@@ -61,6 +63,7 @@ import {
   KIN_MESSAGE_MAX_LENGTH,
   splitKinOutbox,
   type KinOutboxEntry,
+  KIN_COMPOSER_COPY,
 } from "@t3tools/client-runtime/kin/kinOutbox";
 import {
   kinReactionChips,
@@ -353,7 +356,7 @@ export function KinChatView(props: {
             ? null
             : away === null
               ? KIN_PEOPLE_CHAT.privacy
-              : `${away}. Kin holds what can wait until then.`)
+              : KIN_CHAT_COPY.awayHolds(away))
         }
         muted={muted}
         onOpenProfile={
@@ -514,11 +517,11 @@ const STATE_COPY: Record<
   },
   unpaired: {
     title: "This browser isn't connected to that server",
-    detail: "Pair it with the server that runs Kin to open this chat.",
+    detail: KIN_DEVICE_COPY.pairToOpen,
   },
   unauthorized: {
-    title: "This browser can't read Kin chats",
-    detail: "Pair it again with the server that runs Kin.",
+    title: KIN_DEVICE_COPY.cantReadChats("browser"),
+    detail: KIN_DEVICE_COPY.pairAgain,
   },
   noIdentity: {
     title: "Kin doesn't know who you are on this server yet",
@@ -781,7 +784,7 @@ function KinChatFeed(props: {
               exhausted: !exit.value.hasMore,
               request: null,
             }
-          : { ...current, request: null, error: "Couldn't load earlier messages." },
+          : { ...current, request: null, error: KIN_CHAT_COPY.earlierFailed },
       );
       transition({
         type: "page-settled",
@@ -1029,7 +1032,7 @@ function KinChatFeed(props: {
                 {retiredEmpty !== null
                   ? retiredEmpty.detail
                   : props.agentName === null
-                    ? "Messages in this chat show up here."
+                    ? KIN_CHAT_COPY.empty
                     : (props.about ?? "Your first message starts the chat.")}
               </EmptyDescription>
             </EmptyHeader>
@@ -1081,7 +1084,7 @@ function KinChatFeed(props: {
               size="sm-pill"
               variant="glass"
               className="pointer-events-auto"
-              aria-label={`${unseen} new ${unseen === 1 ? "message" : "messages"}. Scroll to the latest.`}
+              aria-label={KIN_CHAT_COPY.unseen(unseen)}
               onClick={jumpToEnd}
             >
               <ArrowDownIcon />
@@ -1264,9 +1267,12 @@ function KinComposer(props: {
   const hasContent = length > 0 || files.count > 0;
   const canSend = hasContent && !tooLong && !full && files.blockReason === null && !sending;
   const hint = tooLong
-    ? `Too long to send: ${lengthFormat.format(length)} of ${lengthFormat.format(KIN_MESSAGE_MAX_LENGTH)} characters.`
+    ? KIN_COMPOSER_COPY.tooLong(
+        lengthFormat.format(length),
+        lengthFormat.format(KIN_MESSAGE_MAX_LENGTH),
+      )
     : full
-      ? "Too many unsent messages. Wait for them to go out."
+      ? KIN_COMPOSER_COPY.tooMany
       : files.blockReason;
   const notice = hint ?? files.refusal;
 
@@ -1364,7 +1370,7 @@ function KinComposer(props: {
         <div
           id={mentionListId}
           role="listbox"
-          aria-label="Agents you can ask"
+          aria-label={KIN_COMPOSER_COPY.agentsYouCanAsk}
           className="flex flex-wrap gap-1.5 px-1"
         >
           {mention.matches.map((lead, index) => (

@@ -1,9 +1,13 @@
+import { KIN_CHAT_COPY } from "@t3tools/client-runtime/kin/kinChatFeed";
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
+import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
 import {
   kinChatListRowLabel,
   kinChatListRows,
   KIN_TEAMMATE_WELCOME,
   type KinChatListRow,
   kinRoomLine,
+  KIN_CHATS_EMPTY,
 } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
@@ -68,8 +72,8 @@ const STATE_COPY: Record<
     detail: "Connect to a T3 server that runs Kin to see your chats.",
   },
   unauthorized: {
-    title: "This browser can't read Kin chats",
-    detail: "Pair it again with the server that runs Kin.",
+    title: KIN_DEVICE_COPY.cantReadChats("browser"),
+    detail: KIN_DEVICE_COPY.pairAgain,
   },
   noIdentity: {
     title: "Kin doesn't know who you are on this server yet",
@@ -154,7 +158,7 @@ export function KinChatList() {
           <Empty size="compact">
             <EmptyHeader>
               <EmptyTitle>No chats yet</EmptyTitle>
-              <EmptyDescription>Chats with your agents show up here.</EmptyDescription>
+              <EmptyDescription>{KIN_CHATS_EMPTY.none}</EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : (
@@ -483,7 +487,7 @@ function KinWaiting(props: {
                     {row.label} · {row.chatTitle}
                   </span>
                   <span className="line-clamp-2 text-xs text-muted-foreground">
-                    {row.text ?? `Open the chat with ${row.chatTitle}`}
+                    {row.text ?? KIN_CHAT_COPY.openChatWith(row.chatTitle)}
                   </span>
                   {item.reason === "approval" ? <ApproveOnPhone /> : null}
                 </Link>
@@ -506,12 +510,10 @@ function KinFirstAgent(props: { readonly target: KinLeadFormTarget }) {
     <Empty size="compact">
       <EmptyHeader>
         <EmptyTitle>
-          {canAddLead ? "Create your first agent" : KIN_TEAMMATE_WELCOME.title}
+          {canAddLead ? KIN_CHATS_EMPTY.firstAgent : KIN_TEAMMATE_WELCOME.title}
         </EmptyTitle>
         <EmptyDescription>
-          {canAddLead
-            ? "Start with a Chief of staff: your front door for everything. You chat with it like a colleague, and it passes work to the agents you add later."
-            : KIN_TEAMMATE_WELCOME.detail}
+          {canAddLead ? KIN_CHATS_EMPTY.chiefPitch : KIN_TEAMMATE_WELCOME.detail}
         </EmptyDescription>
       </EmptyHeader>
       {canAddLead ? (
@@ -520,7 +522,7 @@ function KinFirstAgent(props: { readonly target: KinLeadFormTarget }) {
           onClick={() => openKinLeadForm({ ...props.target, suggested: KIN_CHIEF_OF_STAFF })}
         >
           <SparklesIcon />
-          Create Chief of staff
+          {KIN_MONEY.createChief}
         </Button>
       ) : null}
     </Empty>

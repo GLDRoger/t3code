@@ -173,10 +173,7 @@ function InviteLink(props: {
       <DialogPanel>
         {link === null || connection === null ? (
           <Alert variant="error">
-            <AlertDescription>
-              The connection dropped before the link could be shown. Make a new link for{" "}
-              {invite.displayName} from Team once you're back online.
-            </AlertDescription>
+            <AlertDescription>{KIN_TEAM_ADD_COPY.linkDropped(invite.displayName)}</AlertDescription>
           </Alert>
         ) : (
           <div className="flex flex-col gap-3">

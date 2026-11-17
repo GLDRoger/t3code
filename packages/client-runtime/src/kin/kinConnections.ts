@@ -36,6 +36,8 @@ import { KIN_SERVICE_SLOW, KIN_SERVICE_UNREACHED, kinFailureText } from "./kinAn
  * form's check, and the add and remove flows. Web and mobile only draw what this returns.
  */
 export const KIN_CONNECTIONS_COPY = {
+  describedChanged: "What the service says it does changed too.",
+  inputsChanged: "What it takes changed too.",
   title: "Connections",
   rowDetail: "Outside services your agents can read from.",
   intro:

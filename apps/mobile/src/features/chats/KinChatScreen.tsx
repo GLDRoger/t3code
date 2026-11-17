@@ -1,3 +1,4 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_PEOPLE_CHAT, kinPeopleChatWith } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { kinAwayLine } from "@t3tools/client-runtime/kin/kinAway";
 import { kinAccessEndedCopy } from "@t3tools/client-runtime/kin/kinJoin";
@@ -126,6 +127,7 @@ import {
   type KinFeedRow,
   type KinFeedViewer,
   type KinPaging,
+  KIN_CHAT_COPY,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinFeedMessages } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { useLocalDayStartMs } from "./state/useLocalDayStartMs";
@@ -395,10 +397,7 @@ function KinLiveChat(props: {
           environmentId === null || summary === undefined || pairWith === null
             ? null
             : {
-                privacy:
-                  away === null
-                    ? KIN_PEOPLE_CHAT.privacy
-                    : `${away}. Kin holds what can wait until then.`,
+                privacy: away === null ? KIN_PEOPLE_CHAT.privacy : KIN_CHAT_COPY.awayHolds(away),
                 open: () =>
                   navigation.navigate("KinProfile", {
                     environmentId,
@@ -844,7 +843,7 @@ function KinChatStateView(props: {
               : {
                   // Never paired and removed look the same here: no record of that server.
                   title: "This phone isn't paired with that server",
-                  detail: "Pair it with the server this chat is on to open it.",
+                  detail: KIN_DEVICE_COPY.pairToOpen,
                   actionLabel: "Open environments",
                   onAction: () => navigation.navigate("SettingsEnvironments"),
                 })}
@@ -865,8 +864,8 @@ function KinChatStateView(props: {
             {...(KIN_ONLY
               ? KIN_ONLY_UNAUTHORIZED
               : {
-                  title: "This phone can't read Kin chats",
-                  detail: "Pair it again with the computer that runs T3 Code.",
+                  title: KIN_DEVICE_COPY.cantReadChats("phone"),
+                  detail: KIN_DEVICE_COPY.pairAgain,
                 })}
           />
         );
@@ -1184,7 +1183,7 @@ function KinChatFeed(props: {
               exhausted: !exit.value.hasMore,
               request: null,
             }
-          : { ...current, request: null, error: "Couldn't load earlier messages." },
+          : { ...current, request: null, error: KIN_CHAT_COPY.earlierFailed },
       );
       transition({
         type: "page-settled",
@@ -1533,7 +1532,7 @@ function KinChatFeed(props: {
               retiredEmpty !== null
                 ? retiredEmpty.detail
                 : props.agentName === null && !props.direct
-                  ? "Messages in this chat show up here."
+                  ? KIN_CHAT_COPY.empty
                   : (props.about ?? "It reads every message here.")
             }
           />
@@ -1655,7 +1654,7 @@ function KinChatFeed(props: {
                 variant="pill"
                 icon="chevron.down"
                 label="New messages"
-                accessibilityLabel={`${unseen} new ${unseen === 1 ? "message" : "messages"}. Scroll to the latest.`}
+                accessibilityLabel={KIN_CHAT_COPY.unseen(unseen)}
                 onPress={jumpToEnd}
               />
             </View>

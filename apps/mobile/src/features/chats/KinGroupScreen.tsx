@@ -19,6 +19,7 @@ import {
   kinGroupNameCheck,
   kinGroupProblem,
   type KinGroupMemberView,
+  KIN_GROUP_FORM,
 } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinChatMuted } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -287,7 +288,7 @@ function KinGroupDetails(props: {
   const askDelete = () =>
     Dialog.confirm({
       title: `Delete ${title}?`,
-      message: "The group closes for everyone in it. This can't be undone.",
+      message: KIN_GROUP_FORM.closeDetail,
       confirmText: "Delete group",
       destructive: true,
       onConfirm: () =>
@@ -317,14 +318,7 @@ function KinGroupDetails(props: {
         </View>
       </View>
       {problem === null ? null : <ErrorBanner message={problem} />}
-      <ListSection
-        title="Members"
-        footer={
-          leads.length === 0
-            ? "No agent is in this group, so messages here get no answer from one."
-            : undefined
-        }
-      >
+      <ListSection title="Members" footer={leads.length === 0 ? KIN_GROUP_FORM.noAgent : undefined}>
         {members.map((member, index) => {
           const removable = canChange && member.kind !== "owner";
           const row = (
@@ -358,7 +352,7 @@ function KinGroupDetails(props: {
         {canChange ? (
           <View className="border-t border-border-subtle">
             <ListActionRow
-              label="Add agents or people"
+              label={KIN_GROUP_FORM.addMembers}
               icon="plus"
               disabled={busy !== null}
               onPress={() => navigation.navigate("KinGroupForm", { environmentId, orgId, chatId })}
@@ -368,10 +362,10 @@ function KinGroupDetails(props: {
       </ListSection>
       {canChange && (answerers.length > 1 || (silent !== null && answerers.length > 0)) ? (
         <ListSection
-          title="Answers when no one is named"
+          title={KIN_GROUP_FORM.answers}
           footer={
             silent === null
-              ? "Name another agent with @ in a message to ask it instead."
+              ? KIN_GROUP_FORM.nameAnother
               : `${silent.name} is retired, so nobody answers until you choose another agent.`
           }
         >

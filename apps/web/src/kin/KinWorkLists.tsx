@@ -109,12 +109,8 @@ export function KinWorkListPage(
     const retry = state._tag !== "ready" && failure.retry;
     return (
       <KinWorkNotice
-        title={state._tag === "ready" ? "This list isn't here" : KIN_LISTS.loadFailed}
-        detail={
-          state._tag === "ready"
-            ? "It may have been renamed. Open Docs to see the lists there are."
-            : failure.text.trim()
-        }
+        title={state._tag === "ready" ? KIN_LISTS.listGone : KIN_LISTS.loadFailed}
+        detail={state._tag === "ready" ? KIN_LISTS.goneDetail : failure.text.trim()}
         action={
           <Button size="sm" variant="outline" onClick={retry ? lists.refresh : props.onGone}>
             {retry ? KIN_RETRY : "Open Docs"}

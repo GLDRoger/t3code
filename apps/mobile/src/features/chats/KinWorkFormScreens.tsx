@@ -1018,7 +1018,7 @@ function MilestoneForm(props: KinWorkTarget & { readonly project: KinRecordKey }
           autoFocus
           disabled={saving}
           maxLength={KIN_WORK_FORM_LIMITS.name}
-          placeholder="Beta to the client"
+          placeholder={KIN_WORK_FORM_COPY.milestoneExample}
           onChangeText={setName}
         />
         <KinWorkTextField

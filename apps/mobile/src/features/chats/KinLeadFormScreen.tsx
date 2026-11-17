@@ -25,6 +25,7 @@ import {
   kinLeadSaveProblem,
   kinLeadStartingModel,
   type KinLeadDraft,
+  KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Option from "effect/Option";
@@ -158,7 +159,7 @@ function EditLead(props: {
       ) : (
         <EmptyState
           variant="plain"
-          title="Couldn't load this agent"
+          title={KIN_AGENT_PAGE.loadFailed}
           detail="Close this and open the agent again."
         />
       )}
@@ -380,10 +381,10 @@ function LeadForm(props: {
         />
       </View>
       <View className="gap-2">
-        <ListSection title="What it's responsible for">
+        <ListSection title={KIN_AGENTS_COPY.charterLabel}>
           <TextInput
             multiline
-            accessibilityLabel="What it's responsible for"
+            accessibilityLabel={KIN_AGENTS_COPY.charterLabel}
             value={draft.charter}
             editable={allowed && !saving}
             maxLength={KIN_LEAD_CHARTER_MAX}
@@ -470,7 +471,7 @@ function LeadForm(props: {
             editable={allowed && !saving}
             maxLength={KIN_LEAD_INTRO_MAX}
             onChangeText={(intro) => set({ intro })}
-            placeholder="Handles billing questions and invoices."
+            placeholder={KIN_AGENTS_COPY.charterExample}
             placeholderTextColorClassName="accent-placeholder"
             textAlignVertical="top"
             className="min-h-20 px-4 py-3 font-sans text-base leading-normal text-foreground"
@@ -478,7 +479,7 @@ function LeadForm(props: {
         </ListSection>
         <Note
           problem={problem?.field === "intro" ? problem.text : null}
-          hint="Optional. People you let message this agent see this and nothing above."
+          hint={KIN_AGENTS_COPY.teammateViewHint}
         />
       </View>
     </FormFrame>

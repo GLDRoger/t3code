@@ -214,7 +214,7 @@ export function KinSubscriptionsPage(
   const rates = useKinRates(props);
   const def = kinSubscriptionsList(kinListsOf(lists));
   if (lists.state._tag === "refused")
-    return <KinWorkNotice title="Not available" detail="Money is kept by whoever runs this Kin." />;
+    return <KinWorkNotice title="Not available" detail={KIN_SUBSCRIPTIONS.moneyKept} />;
   if (lists.state._tag !== "ready")
     return lists.state._tag === "loading" ? (
       <div

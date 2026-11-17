@@ -322,11 +322,7 @@ function KinSubscriptionsGate(props: KinWorkTarget) {
   if (work._tag === "refused" || lists.state._tag === "refused")
     return (
       <Frame target={props} onBack={back}>
-        <EmptyState
-          variant="plain"
-          title="Not available"
-          detail="Money is kept by whoever runs this Kin."
-        />
+        <EmptyState variant="plain" title="Not available" detail={KIN_SUBSCRIPTIONS.moneyKept} />
       </Frame>
     );
   if (!ready || lists.state._tag !== "ready")

@@ -42,6 +42,7 @@ const PLACE_MAX = 60;
 export const KIN_WORK_FORM_LIMITS = { name: NAME_MAX, short: SHORT_MAX, notes: NOTES_MAX };
 
 export const KIN_WORK_FORM_COPY = {
+  milestoneExample: "Beta to the client",
   save: "Save",
   cancel: "Cancel",
   openExisting: "Open it",
