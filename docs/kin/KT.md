@@ -87,7 +87,7 @@ Set up the repo as upstream's [development runbook](../operations/development.md
      --model claudeAgent:<model>
    ```
 
-   **A lead must run on Claude.** Only Claude sessions get the lead's no-shell tool set, so creation refuses any other provider. Workers can use any provider.
+   **A lead must run on Claude.** Only Claude sessions get the lead's no-shell tool set, so creation refuses any other provider. Delegated tasks can use any provider.
 
 Real lead turns cost money. Use the cheapest Claude model while developing.
 

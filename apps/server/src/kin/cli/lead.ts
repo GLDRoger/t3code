@@ -6,7 +6,6 @@ import {
   KinLeadDomain,
   KinPersonId,
   ModelSelection,
-  ProjectId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Console from "effect/Console";
@@ -118,7 +117,6 @@ const describe = (lead: Provision.LeadSummary) =>
     `  owner chat ${lead.ownerChatId}, created by ${lead.createdByPersonId ?? "unknown"}`,
     `  charter ${lead.charter === "" ? "none" : JSON.stringify(lead.charter)}`,
     `  model ${lead.model.instanceId}:${lead.model.model}`,
-    `  projects ${lead.workerProjects.length === 0 ? "none" : lead.workerProjects.join(", ")}`,
     `  ${lead.retiredAt === null ? "live" : `retired ${lead.retiredAt}`}`,
   ].join("\n");
 
@@ -161,14 +159,6 @@ const charterFlag = Flag.String("charter").pipe(
   ),
 );
 
-const workerProjectsFlag = Flag.String("project").pipe(
-  Flag.withSchema(ProjectId),
-  Flag.withDescription(
-    "A project whose pull requests the agent may ask the owner to merge. Repeat for more.",
-  ),
-  Flag.atLeast(0),
-);
-
 const createCommand = Command.make("create", {
   ...authLocationFlags,
   session: Flag.String("session").pipe(
@@ -190,7 +180,6 @@ const createCommand = Command.make("create", {
   domain: domainFlag.pipe(Flag.withDefault("engineering")),
   charter: charterFlag.pipe(Flag.withDefault("")),
   model: modelFlag,
-  workerProjects: workerProjectsFlag,
   json: jsonFlag,
 }).pipe(
   Command.withDescription(
@@ -207,7 +196,7 @@ const createCommand = Command.make("create", {
           domain: flags.domain,
           charter: flags.charter,
           model,
-          workerProjects: flags.workerProjects,
+          workerProjects: [],
         });
         if (flags.json) return yield* Console.log(encodeJson(result));
         yield* Console.log(
@@ -286,29 +275,6 @@ const restoreCommand = Command.make("restore", {
   ),
 );
 
-const projectsCommand = Command.make("projects", {
-  ...authLocationFlags,
-  agentId: Argument.String("agent-id").pipe(
-    Argument.withSchema(KinAgentId),
-    Argument.withDescription("The agent's id, from `kin lead list`."),
-  ),
-  workerProjects: workerProjectsFlag,
-  json: jsonFlag,
-}).pipe(
-  Command.withDescription(
-    "Replace the projects whose pull requests a live agent may ask the owner to merge. Pass none to clear them. Applies to its next tool call.",
-  ),
-  Command.withHandler((flags) =>
-    runOnHost(flags, (provision) =>
-      Effect.gen(function* () {
-        const result = yield* provision.setWorkerProjects(flags.agentId, flags.workerProjects);
-        if (flags.json) return yield* Console.log(encodeJson(result));
-        yield* Console.log(`Updated projects:\n${describe(result.lead)}`);
-      }),
-    ),
-  ),
-);
-
 const charterCommand = Command.make("charter", {
   ...authLocationFlags,
   agentId: Argument.String("agent-id").pipe(
@@ -341,14 +307,13 @@ export const kinCommand = Command.make("kin").pipe(
   Command.withSubcommands([
     Command.make("lead").pipe(
       Command.withDescription(
-        "Create, list and retire this host's Kin agents, and set their projects, charters and characters.",
+        "Create, list and retire this host's Kin agents, and set their charters and characters.",
       ),
       Command.withSubcommands([
         createCommand,
         listCommand,
         retireCommand,
         restoreCommand,
-        projectsCommand,
         charterCommand,
         characterCommand,
       ]),
