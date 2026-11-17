@@ -710,10 +710,9 @@ export const make = Effect.fnUntraced(function*({ model, config: providerConfig 
         ...apiConfig,
         input: messages,
         include: include.size > 0 ? Array.from(include) : undefined,
-        text: {
-          verbosity: config.text?.verbosity ?? undefined,
-          format: responseFormat
-        }
+        text: responseFormat !== undefined || config.text?.verbosity !== undefined
+          ? { verbosity: config.text?.verbosity, format: responseFormat }
+          : undefined
       }
       if (tools) request.tools = tools
       if (toolChoice) request.tool_choice = toolChoice
@@ -1055,6 +1054,17 @@ const prepareMessages = Effect.fnUntraced(
                   break
                 }
 
+                const result = part.providerExecuted
+                  ? providerExecutedParts.find((candidate): candidate is Prompt.ToolResultPart =>
+                    candidate.type === "tool-result" && candidate.id === part.id && candidate.name === part.name
+                  )
+                  : undefined
+
+                // The paired result emits the single stored-item reference
+                if (useItemReferences && Predicate.isNotUndefined(result)) {
+                  break
+                }
+
                 if (useItemReferences && Predicate.isNotNull(id)) {
                   messages.push({ type: "item_reference", id })
                   break
@@ -1066,10 +1076,7 @@ const prepareMessages = Effect.fnUntraced(
                   ) {
                     break
                   }
-                  const result = providerExecutedParts.find((candidate) =>
-                    candidate.type === "tool-result" && candidate.id === part.id && candidate.name === part.name
-                  )
-                  if (Predicate.isUndefined(result) || result.type !== "tool-result") {
+                  if (Predicate.isUndefined(result)) {
                     return yield* unreplayableProviderItem(part.name, part.id)
                   }
                   if (
@@ -1305,7 +1312,7 @@ const prepareMessages = Effect.fnUntraced(
                 id,
                 type: "shell_call_output",
                 call_id: part.id,
-                output: part.result as any,
+                output: getShellOutput(part),
                 ...(Predicate.isNotNull(status) ? { status } : {})
               })
               continue
@@ -1316,7 +1323,7 @@ const prepareMessages = Effect.fnUntraced(
                 id,
                 type: "local_shell_call_output",
                 call_id: part.id,
-                output: part.result as any,
+                output: getShellOutput(part),
                 ...(Predicate.isNotNull(status) ? { status } : {})
               })
               continue
@@ -1639,6 +1646,10 @@ const makeResponse = Effect.fnUntraced(
         }
 
         case "message": {
+          // Commentary text would be joined with the final answer and break JSON decoding
+          if (options.responseFormat.type === "json" && part.phase === "commentary") {
+            break
+          }
           for (const contentPart of part.content) {
             switch (contentPart.type) {
               case "output_text": {
@@ -2141,7 +2152,7 @@ const makeStreamResponse = Effect.fnUntraced(
               case "shell_call": {
                 const toolName = toolNameMapper.getCustomName("shell")
                 activeToolCalls[event.output_index] = {
-                  id: event.item.id ?? event.item.call_id,
+                  id: event.item.call_id,
                   name: toolName
                 }
                 break
@@ -2462,7 +2473,7 @@ const makeStreamResponse = Effect.fnUntraced(
                 const toolName = toolNameMapper.getCustomName("shell")
                 parts.push({
                   type: "tool-call",
-                  id: event.item.id ?? event.item.call_id,
+                  id: event.item.call_id,
                   name: toolName,
                   params: { action: event.item.action },
                   metadata: { openai: makeItemIdMetadata(event.item.id) }
@@ -3162,6 +3173,8 @@ const getStatus = (
 const getEncryptedContent = (
   part: Prompt.ReasoningPart
 ): string | null => part.options.openai?.encryptedContent ?? null
+// Shell tool successes are `{ output }`; failure results are passed through unchanged
+const getShellOutput = (part: Prompt.ToolResultPart): any => part.isFailure ? part.result : (part.result as any).output
 
 const getImageDetail = (part: Prompt.FilePart): ImageDetail => part.options.openai?.imageDetail ?? "auto"
 
@@ -3214,7 +3227,7 @@ const tryToolJsonSchema = <T extends Tool.Any>(tool: T, method: string) =>
 const prepareResponseFormat = Effect.fnUntraced(function*({ config, options }: {
   readonly config: typeof Config.Service
   readonly options: LanguageModel.ProviderOptions
-}): Effect.fn.Return<typeof OpenAiSchema.TextResponseFormatConfiguration.Encoded, AiError.AiError> {
+}): Effect.fn.Return<typeof OpenAiSchema.TextResponseFormatConfiguration.Encoded | undefined, AiError.AiError> {
   if (options.responseFormat.type === "json") {
     const name = options.responseFormat.objectName
     const schema = options.responseFormat.schema
@@ -3227,7 +3240,7 @@ const prepareResponseFormat = Effect.fnUntraced(function*({ config, options }: {
       strict: config.strictJsonSchema ?? true
     }
   }
-  return { type: "text" }
+  return undefined
 })
 
 // Default new model names to reasoning without extending an allowlist.
@@ -3405,7 +3418,10 @@ const transformToolCallParams = Effect.fnUntraced(function*(
     Schema.decodeEffect(codec)(toolParams) as Effect.Effect<unknown, Schema.SchemaError>
   ).pipe(
     Effect.flatMap((decoded) =>
-      Schema.encodeUnknownEffect(tool.parametersSchema)(decoded) as Effect.Effect<unknown, Schema.SchemaError>
+      Schema.encodeUnknownEffect(Schema.toCodecJson(tool.parametersSchema))(decoded) as Effect.Effect<
+        unknown,
+        Schema.SchemaError
+      >
     ),
     Effect.orElseSucceed(() => toolParams)
   )
