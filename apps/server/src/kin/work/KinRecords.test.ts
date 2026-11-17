@@ -2559,26 +2559,26 @@ it.effect(
       yield* sql`UPDATE kin_wakeups SET audience = 'owner_only' WHERE wakeup_id = 'wake'`;
       yield* LeadWork.assign(scope, {
         sourceEventId: "ask-event",
-        tasks: [{ key: "W-1", to: "Mate" }],
+        tasks: [{ key: "W-1", to: "Mate", reason: "Invented: on leave" }],
       });
       yield* LeadWork.assign(scope, {
         sourceEventId: "ask-event",
-        tasks: [{ key: "W-1", to: "Lead lead" }],
+        tasks: [{ key: "W-1", to: "Lead lead", reason: "Invented: quicker" }],
       });
       assert.deepStrictEqual(
         (yield* notices).slice(givenOn).map((row) => row.body),
         [
           "Owner gave you W-1 Invented: draft the onboarding copy.",
           "Owner gave W-1 Invented: draft the onboarding copy to Mate Two.",
-          "Lead lead gave you W-1 Invented: draft the onboarding copy.",
-          "Lead lead took over W-1 Invented: draft the onboarding copy.",
+          "Lead lead gave you W-1 Invented: draft the onboarding copy. Why: Invented: on leave.",
+          "Lead lead took over W-1 Invented: draft the onboarding copy: Invented: quicker.",
         ],
       );
       assert.deepStrictEqual(
         (yield* mateTwoNotices).map((row) => row.body),
         [
           "Owner gave you W-1 Invented: draft the onboarding copy.",
-          "Lead lead gave W-1 Invented: draft the onboarding copy to Mate.",
+          "Lead lead gave W-1 Invented: draft the onboarding copy to Mate: Invented: on leave.",
         ],
       );
       // Run 4: a meeting already held is recorded, one to come is attended: neither is a task.
