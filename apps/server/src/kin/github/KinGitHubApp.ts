@@ -22,6 +22,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinServer } from "../KinServer.ts";
 import type { ApiAnswer, ApiRequest } from "./GitHubWatch.ts";
+import { readStoredApp, type StoredApp } from "./appStore.ts";
 import { APP_IDENTITY_FILE, APP_TOKENS_FOLDER, GH_APP_FOLDER, OWNER_USES_FILE } from "./ghSign.ts";
 import { type KnownRepo, knownRepos, repoList, watchRow } from "./githubWatchStore.ts";
 import { KinKeychain } from "./Keychain.ts";
@@ -184,6 +185,12 @@ export class KinGitHubApp extends Context.Service<
     readonly refresh: () => Effect.Effect<void>;
     /** Looks at the App on GitHub now, as after the owner changed where it is installed. */
     readonly lookAgain: () => Effect.Effect<void>;
+    /** Where the App is named: the host's env, Kin's Settings (and when, by whom), or nowhere. */
+    readonly origin?: () => Effect.Effect<
+      | { readonly source: "host" }
+      | { readonly source: "kin"; readonly app: StoredApp }
+      | { readonly source: "none" }
+    >;
   }
 >()("t3/kin/github/KinGitHubApp") {}
 
@@ -251,7 +258,8 @@ export const make = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const { stateDir } = yield* ServerConfig;
+  const serverConfig = yield* ServerConfig;
+  const { stateDir } = serverConfig;
   const sql = yield* SqlClient.SqlClient;
   const identity = yield* KinIdentity;
   const refreshObserver = yield* KinRefreshObserver;
@@ -268,6 +276,17 @@ export const make = Effect.gen(function* () {
   let visibility: { readonly at: number; readonly public: boolean | null } | null = null;
   /** The last shortfall logged, so a failure that lasts is logged once, not every look. */
   let loggedProblem: string | null = null;
+
+  /** The host's `KIN_GITHUB_APP_ID`, else the App made in Settings. */
+  const appIdNow = Effect.fn("KinGitHubApp.appId")(function* () {
+    if (Option.isSome(config.appId)) return config.appId;
+    const stored = yield* readStoredApp.pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(ServerConfig, serverConfig),
+    );
+    return Option.map(stored, (app) => String(app.appId));
+  });
 
   const request = Effect.fn("KinGitHubApp.request")(function* (
     token: Redacted.Redacted<string> | undefined,
@@ -312,7 +331,11 @@ export const make = Effect.gen(function* () {
     const secrets = Option.flatMap(stored, (value) => decodeSecrets(Redacted.value(value)));
     if (Option.isNone(secrets)) return undefined;
     const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-    return signAppJwt(appId, secrets.value.privateKeyPem, now);
+    // A key node can't read fails this look, never the loop that runs it.
+    return yield* Effect.try({
+      try: () => signAppJwt(appId, secrets.value.privateKeyPem, now),
+      catch: () => "unreadable key" as const,
+    }).pipe(Effect.orElseSucceed(() => undefined));
   });
 
   const mint = Effect.fn("KinGitHubApp.mint")(function* (
@@ -493,11 +516,12 @@ export const make = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const before = yield* Ref.get(current);
       let state = before;
-      if (Option.isNone(config.appId)) state = { _tag: "none" };
+      const appId = yield* appIdNow();
+      if (Option.isNone(appId)) state = { _tag: "none" };
       else {
         const last = yield* Ref.get(describedAt);
         if (last === null || now - last >= DESCRIBE_EVERY_MS || before._tag !== "ok") {
-          const described = yield* describe(config.appId.value);
+          const described = yield* describe(appId.value);
           if (described._tag === "short") {
             const problem = shortfallProblem(described);
             if (problem !== loggedProblem)
@@ -515,9 +539,7 @@ export const make = Effect.gen(function* () {
           }
         }
         if (state._tag === "ok") {
-          const appToken = yield* jwt(config.appId.value).pipe(
-            Effect.orElseSucceed(() => undefined),
-          );
+          const appToken = yield* jwt(appId.value).pipe(Effect.orElseSucceed(() => undefined));
           for (const installation of state.app.installations) {
             const held = tokens.get(installation.id);
             if (
@@ -547,14 +569,15 @@ export const make = Effect.gen(function* () {
 
   const on = Effect.fn("KinGitHubApp.on")(function* (repo: string) {
     const state = yield* Ref.get(current);
-    if (state._tag !== "ok" || Option.isNone(config.appId)) return undefined;
+    const appId = yield* appIdNow();
+    if (state._tag !== "ok" || Option.isNone(appId)) return undefined;
     const wanted = repo.trim().toLowerCase();
     const installation = state.app.installations.find((entry) => entry.repos.has(wanted));
     if (installation === undefined) return undefined;
     const now = yield* Clock.currentTimeMillis;
     let held = tokens.get(installation.id);
     if (held === undefined || held.expiresAt - now < 5 * MINUTE) {
-      const appToken = yield* jwt(config.appId.value).pipe(Effect.orElseSucceed(() => undefined));
+      const appToken = yield* jwt(appId.value).pipe(Effect.orElseSucceed(() => undefined));
       held = appToken === undefined ? undefined : yield* mint(appToken, installation);
     }
     if (held === undefined) return undefined;
@@ -571,10 +594,23 @@ export const make = Effect.gen(function* () {
 
   const lookAgain = Effect.fn("KinGitHubApp.lookAgain")(function* () {
     yield* Ref.set(describedAt, null);
+    visibility = null;
     yield* refresh();
   });
 
-  return KinGitHubApp.of({ state, on, refresh, lookAgain });
+  const origin = Effect.fn("KinGitHubApp.origin")(function* () {
+    if (Option.isSome(config.appId)) return { source: "host" } as const;
+    const stored = yield* readStoredApp.pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(ServerConfig, serverConfig),
+    );
+    return Option.isSome(stored)
+      ? ({ source: "kin", app: stored.value } as const)
+      : ({ source: "none" } as const);
+  });
+
+  return KinGitHubApp.of({ state, on, refresh, lookAgain, origin });
 });
 
 /** Looks once at startup and then every 30 seconds, for as long as Kin runs. */
@@ -621,6 +657,10 @@ export const agentsView = Effect.fn("KinGitHubApp.agentsView")(function* (
         )
       : [];
   const known = state._tag === "ok" ? yield* knownRepos(orgId) : [];
+  const origin =
+    Option.isSome(app) && app.value.origin !== undefined
+      ? yield* app.value.origin()
+      : ({ source: "host" } as const);
   const login = state._tag === "ok" ? ((yield* watchRow(orgId))?.login ?? null) : null;
   return {
     as: state._tag === "ok" ? "app" : "owner",
@@ -633,6 +673,23 @@ export const agentsView = Effect.fn("KinGitHubApp.agentsView")(function* (
         }
       : {}),
     problem: state._tag === "broken" ? state.problem : null,
+    ...(origin.source === "none"
+      ? { canCreate: true }
+      : origin.source === "kin"
+        ? {
+            setUp: {
+              source: "kin" as const,
+              name: origin.app.name,
+              at: origin.app.at,
+              by: origin.app.by,
+              settingsUrl: `https://github.com/settings/apps/${origin.app.slug}`,
+            },
+          }
+        : state._tag === "none"
+          ? {}
+          : {
+              setUp: { source: "host" as const, name: null, at: null, by: null, settingsUrl: null },
+            }),
     watched: watched.length,
     installed: installed.length,
     without: watched.filter((repo) => !installed.includes(repo)).slice(0, 20),

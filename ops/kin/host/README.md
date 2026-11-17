@@ -161,11 +161,12 @@ Kin watches your repos with your own login, held by `gh` on this host. In the Ki
 
 With a GitHub App set up, agents' commits, pushes, pull requests, comments and reviews show the App as author, with the agent's name on each commit (`Kin-Agent:`) and post. Repos the App isn't installed on, and any command an agent runs with `kin-as-owner`, go out as you; Connections lists those runs. Without an App, everything goes out as you. The App never gets a way to approve, merge or change settings: Kin asks GitHub for tokens without those permissions.
 
-To set one up:
+To set one up, open **Settings → Connections → GitHub → Create Kin's GitHub App** as the owner or a co-owner. Kin names it ("Kin for <company>", which you can change), sends your browser to GitHub with the App filled in (no webhook; Contents, Pull requests, Issues and Checks read and write; Actions and Metadata read), and when you choose **Create GitHub App** GitHub sends you back. Kin keeps the key in kin's keyring and starts using the App straight away, with no restart. Then install it from the account rows. The keyring needs a Secret Service kin's headless session unlocks unprompted, such as `gnome-keyring-daemon` with an empty-password `login` keyring; Connections says when there is none. The App is made public when you watch an organisation's repos, since a private App installs only on the account that owns it. **Disconnect the App** makes Kin forget the App and its key; the App itself stays on GitHub until you delete it from its settings page, which Kin links to.
 
-1. On GitHub, Settings → Developer settings → GitHub Apps → New GitHub App. No webhook. Repository permissions: Contents, Pull requests, Issues and Checks read and write; Metadata read. Generate a private key.
-2. To use it on organisations too, make it public (its settings → Advanced): a private App installs only on the account that owns it. Then install it from Connections, which has a row and a link per account.
-3. As kin, store the key in kin's keyring, which needs a Secret Service its headless session unlocks unprompted, such as `gnome-keyring-daemon` with an empty-password `login` keyring (Connections says when Kin can't read it). From `~/t3code/apps/server`:
+If your browser can't reach GitHub and Kin in one go, or you already have an App, set it up by hand:
+
+1. On GitHub, Settings → Developer settings → GitHub Apps → New GitHub App, with the permissions above and no webhook. Make it public (its settings → Advanced) to use it on organisations. Generate a private key.
+2. As kin, store the key in kin's keyring. From `~/t3code/apps/server`:
 
    ```bash
    APP_ID=<app id> KEY=<path to the .pem> node -e 'const fs = require("fs"); const { Entry } = require("@napi-rs/keyring"); const json = JSON.stringify({ privateKeyPem: fs.readFileSync(process.env.KEY, "utf8") }); new Entry("kin-github-app", process.env.APP_ID).setPassword("kin-b64:" + Buffer.from(json).toString("base64"))'
@@ -173,7 +174,7 @@ To set one up:
 
    Then delete the `.pem`.
 
-4. Add `KIN_GITHUB_APP_ID=<app id>` and `KIN_GITHUB_BOT_LOGIN=<app slug>[bot]` to `~/.t3/service.env`, then `systemctl --user restart kin-server`.
+3. Add `KIN_GITHUB_APP_ID=<app id>` and `KIN_GITHUB_BOT_LOGIN=<app slug>[bot]` to `~/.t3/service.env`, then `systemctl --user restart kin-server`. An App named here outranks one made in Settings, and is changed only here.
 
 The key stays in the server; agents' shells only ever hold one-hour tokens.
 

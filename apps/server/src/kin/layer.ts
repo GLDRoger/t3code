@@ -42,6 +42,7 @@ import * as GhTool from "./connections/ghTool.ts";
 import * as GitHubLogin from "./connections/GitHubLogin.ts";
 import { devAppStandIn } from "./github/devAppStandIn.ts";
 import * as KinGitHubApp from "./github/KinGitHubApp.ts";
+import * as KinGitHubAppSetup from "./github/appSetup.ts";
 import * as Keychain from "./github/Keychain.ts";
 import * as AgentSession from "./lead/AgentSession.ts";
 import * as Workspace from "./gendocs/workspace.ts";
@@ -140,7 +141,9 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Layer.provide(DevFakeMail.egress),
           // Kin's GitHub App: the identity agents' shells and Kin's own GitHub writes use.
           Layer.provideMerge(
-            KinGitHubApp.layer.pipe(
+            KinGitHubAppSetup.layer.pipe(
+              Layer.provideMerge(KinGitHubApp.layer),
+              Layer.provide(KinGitHubApp.KinGitHubAppConfig.layer),
               Layer.provide(
                 Layer.unwrap(
                   Config.String("KIN_DEV_FAKE_GITHUB").pipe(

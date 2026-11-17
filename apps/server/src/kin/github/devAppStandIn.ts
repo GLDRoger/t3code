@@ -47,13 +47,23 @@ export const devAppStandIn = (directory: string) => {
       NodeFS.rmSync(lock, { recursive: true, force: true });
     }
   };
+  const kept = new Map<string, Redacted.Redacted<string>>();
   const privateKeyPem = NodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 })
     .privateKey.export({ type: "pkcs8", format: "pem" })
     .toString();
   return Layer.mergeAll(
     Layer.succeed(KinKeychain, {
-      appSecret: Effect.fn("KinKeychain.devAppSecret")(() =>
-        Effect.succeedSome(Redacted.make(json({ privateKeyPem }))),
+      // A key Kin stored (an App made in Settings), else the invented one for a host's App id.
+      appSecret: Effect.fn("KinKeychain.devAppSecret")((appId: string) =>
+        Effect.succeedSome(kept.get(appId) ?? Redacted.make(json({ privateKeyPem }))),
+      ),
+      writable: Effect.fn("KinKeychain.devWritable")(() => Effect.succeed(true)),
+      setAppSecret: Effect.fn("KinKeychain.devSetAppSecret")(
+        (appId: string, secret: Redacted.Redacted<string>) =>
+          Effect.sync(() => void kept.set(appId, secret)),
+      ),
+      removeAppSecret: Effect.fn("KinKeychain.devRemoveAppSecret")((appId: string) =>
+        Effect.sync(() => void kept.delete(appId)),
       ),
     }),
     Layer.succeed(
