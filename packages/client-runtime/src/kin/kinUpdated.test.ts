@@ -2,8 +2,10 @@ import { describe, expect, it } from "@effect/vitest";
 
 import { kinUpdatedAction, type KinUpdatedAction } from "./kinUpdated.ts";
 
+type Input = Parameters<typeof kinUpdatedAction>[0];
+
 const page = "https://kin.example/assets/index-aaa.js";
-const base = {
+const base: Input = {
   dev: false,
   pageBuild: page,
   serverBuild: "assets/index-bbb.js",
@@ -14,7 +16,7 @@ const base = {
 };
 
 describe("an open page and the build its server serves", () => {
-  it.each<[string, Partial<typeof base> & { reloadedFor?: string | null }, KinUpdatedAction]>([
+  it.each<[string, Partial<Input>, KinUpdatedAction]>([
     ["same build", { serverBuild: "assets/index-aaa.js" }, "none"],
     ["a server that states no build", { serverBuild: undefined }, "none"],
     ["a page that can't name its build", { pageBuild: null }, "none"],
