@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 # Finance's page: a new model reaches the next turn and an unavailable one is refused; its character
 # changes from the page and its history brings the old one back; pause stops its turns and resume
-# brings them back; retire and restore; Zoya gets neither the page nor a way to change it.
+# brings them back; retire and restore; Zoya gets neither the page nor a way to change it. The page
+# opens on the web from Settings → Agents, which sits over bare /kin with no company in the address.
 source "$(dirname "$0")/lib.sh"
 q() { kv db "$1" | tail -1; }
 FIN="$(q "select agent_id from kin_leads where name = 'Finance'")"
 page() { kv as owner rpc kin.lead.page "{\"agentId\":\"$FIN\"}"; }
 last_model() { q "select model from kin_wakeups where agent_id = '$FIN' order by started_at desc, rowid desc limit 1"; }
 script_model() { echo "{\"instanceId\":\"kinVerifyScript\",\"model\":\"$1\"}"; }
+
+kv as owner web open "/kin?settings=agents" >/dev/null
+kv as owner web click --name Finance --role link >/dev/null || fail "Settings → Agents has no Finance to open"
+kv as owner web wait "Character" >/dev/null || fail "Finance's page didn't open from Settings → Agents"
+opened="$(kv as owner web snapshot)"
+expect_in "$opened" 'dialog "Finance"' "Settings → Agents → Finance opened something other than its page"
+expect_in "$(head -1 <<<"$opened")" "agent=$FIN" "Finance's page isn't at its own address"
 
 # A new model applies on the next turn, with no restart.
 kv as owner rpc kin.lead.update "{\"agentId\":\"$FIN\",\"model\":$(script_model script-b)}" >/dev/null ||
@@ -69,4 +77,4 @@ out="$(kv as zoya rpc kin.lead.update "{\"agentId\":\"$FIN\",\"model\":$(script_
 expect_not_in "$(page)" "zoya-$RUN" "Zoya changed Finance's model"
 out="$(kv as zoya rpc kin.lead.character.set "{\"agentId\":\"$FIN\",\"body\":\"zoya-$RUN\"}" 2>&1 || true)"
 [[ "$(latest)" == "$((EDITED + 1))" ]] || fail "Zoya's character change made a version"
-pass "model script-b reached the next turn, a non-Claude one refused; character $KEY v$BEFORE -> v$EDITED restored; paused and resumed; retired and restored; Zoya refused the page, its model and its character"
+pass "Finance's page opened from web Settings → Agents; model script-b reached the next turn, a non-Claude one refused; character $KEY v$BEFORE -> v$EDITED restored; paused and resumed; retired and restored; Zoya refused the page, its model and its character"

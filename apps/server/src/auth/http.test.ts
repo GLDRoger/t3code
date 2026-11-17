@@ -152,6 +152,32 @@ it.effect("sets the selected browser session cookies through the HTTP route", ()
           expect(restrictedCookies).toHaveLength(1);
           expect(restrictedCookies[0]).toMatch(/^t3_session_/);
           expect(restrictedCookies[0]).not.toContain("t3_dev_session_");
+
+          // A restricted session (a teammate's browser) may end itself, and only itself.
+          const restrictedCookieHeader = restrictedCookies[0]?.split(";", 1)[0] ?? "";
+          const signOutResponse = await environmentA.handler(
+            postJson("/api/auth/sign-out", {}, { cookie: restrictedCookieHeader }),
+            requestContext,
+          );
+          expect(signOutResponse.status).toBe(200);
+          expect(await signOutResponse.json()).toEqual({ revoked: true });
+          expect(signOutResponse.headers.getSetCookie()).toContainEqual(
+            expect.stringMatching(/^t3_session_[^=]*=;.*Max-Age=0/),
+          );
+          const afterSignOut = await environmentA.handler(
+            new Request("http://127.0.0.1/api/auth/session", {
+              headers: { cookie: restrictedCookieHeader },
+            }),
+            requestContext,
+          );
+          expect(await afterSignOut.json()).toMatchObject({ authenticated: false });
+          const ownerStillIn = await environmentA.handler(
+            new Request("http://127.0.0.1/api/auth/session", {
+              headers: { cookie: devCookieHeader },
+            }),
+            requestContext,
+          );
+          expect(await ownerStillIn.json()).toMatchObject({ authenticated: true });
         }),
       ([environmentA, environmentB]) =>
         Effect.promise(() => Promise.all([environmentA.dispose(), environmentB.dispose()])),
