@@ -46,7 +46,7 @@ export function KinAgentChanged(props: {
       navigation.navigate("KinProject", { ...base, project: change.key });
     else navigation.navigate("KinWorkItem", { ...base, task: change.key });
   };
-  const run = async (seq: number) => {
+  const run = async (seq: number, done: string) => {
     setBusy(seq);
     const outcome = await undo({ environmentId, input: { orgId, agentId: props.agentId, seq } });
     setBusy(null);
@@ -54,7 +54,7 @@ export function KinAgentChanged(props: {
       seq,
       text: AsyncResult.isFailure(outcome)
         ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_CHANGES.failed)
-        : KIN_AGENT_CHANGES.undone,
+        : done,
     });
     props.onChanged();
   };
@@ -87,7 +87,7 @@ export function KinAgentChanged(props: {
                     label={busy === change.seq ? KIN_AGENT_CHANGES.undoing : KIN_AGENT_CHANGES.undo}
                     loading={busy === change.seq}
                     disabled={busy !== null}
-                    onPress={() => void run(change.seq)}
+                    onPress={() => void run(change.seq, offer.done)}
                   />
                   {said?.seq === change.seq ? (
                     <Text textRole="footnote" className="text-foreground-muted">
@@ -95,18 +95,10 @@ export function KinAgentChanged(props: {
                     </Text>
                   ) : null}
                 </View>
-              ) : offer.kind === "undone" ? (
+              ) : offer.kind !== "undo" && offer.kind !== "none" ? (
                 <View className="px-4 pb-3">
                   <Text textRole="footnote" className="text-foreground-muted">
                     {offer.text}
-                  </Text>
-                </View>
-              ) : offer.kind === "since" || offer.kind === "manual" ? (
-                <View className="px-4 pb-3">
-                  <Text textRole="footnote" className="text-foreground-muted">
-                    {offer.kind === "since"
-                      ? KIN_AGENT_CHANGES.sinceDetail
-                      : KIN_AGENT_CHANGES.manualDetail}
                   </Text>
                 </View>
               ) : said?.seq === change.seq ? (

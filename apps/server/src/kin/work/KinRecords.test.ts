@@ -6,6 +6,7 @@ import { ServerConfig } from "../../config.ts";
 import {
   EnvironmentId,
   KIN_WORK_WS_METHODS,
+  type KinAgentChange,
   KinAgentId,
   KinChat,
   KinChatError,
@@ -15,6 +16,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinRecordId,
+  KinRecordKey,
   type KinWorkPrincipal,
   type MemoryItemHead,
   ProviderInstanceId,
@@ -50,7 +52,7 @@ import * as KinRecords from "./KinRecords.ts";
 import * as LeadDocs from "./leadDocs.ts";
 import * as LeadMoney from "./leadMoney.ts";
 import * as LeadWork from "./leadWork.ts";
-import { teamVisible } from "./teamView.ts";
+import { KIN_OWNER_LEVEL, type KinViewer, teamVisible, viewerOfPeople } from "./teamView.ts";
 import { sensitiveShown } from "./sensitiveReads.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 import * as Docs from "./docs.ts";
@@ -59,7 +61,7 @@ import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import { presetDefinition } from "./registers.ts";
-import { ownerLevelAgentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
+import { agentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 
 // Invented org, people and work only; nothing here reads a real database or memory.
@@ -2607,7 +2609,7 @@ it.effect(
         title: "Invented: pricing v2",
       });
       yield* LeadWork.update(scope, { key: "W-2", sourceEventId: "ask-event", state: "doing" });
-      const changes = yield* ownerLevelAgentChanges(orgId, lead);
+      const changes = yield* agentChanges(KIN_OWNER_LEVEL, orgId, lead);
       assert.deepStrictEqual(
         changes.map((change) => [change.key, change.kind, change.undo, change.since]),
         [
@@ -2626,19 +2628,14 @@ it.effect(
       // Undone once, it changed since: a second Undo is refused, not put back again.
       assert.include(yield* Effect.flip(undo(changes[1]!.seq)), { reason: "invalid_state" });
       // The page says it was put back, not that something else changed it.
-      assert.deepInclude((yield* ownerLevelAgentChanges(orgId, lead))[1]!, {
+      assert.deepInclude((yield* agentChanges(KIN_OWNER_LEVEL, orgId, lead))[1]!, {
         undo: false,
         since: true,
         undone: true,
       });
-      // Someone else's change since the agent's: refused too.
+      // Someone else's change to the same field since the agent's: refused too.
       const w2 = yield* OwnerWork.get([owner], { orgId, key: "W-2" });
-      yield* OwnerWork.update([owner], {
-        orgId,
-        key: "W-2",
-        rev: w2.rev,
-        title: "Invented: brochure, final",
-      });
+      yield* OwnerWork.update([owner], { orgId, key: "W-2", rev: w2.rev, state: "done" });
       assert.include(yield* Effect.flip(undo(changes[0]!.seq)), { reason: "invalid_state" });
       // Another agent's change isn't on this page.
       assert.include(
@@ -2662,7 +2659,7 @@ it.effect(
         WHERE org_id = ${orgId} AND record_id = ${w1!.id} AND kind = 'linked'`;
       yield* sql`UPDATE kin_record_links SET created_at = created_at + 2
         WHERE org_id = ${orgId} AND record_id = ${w1!.id} AND kind = 'record'`;
-      const links = yield* ownerLevelAgentChanges(orgId, lead).pipe(
+      const links = yield* agentChanges(KIN_OWNER_LEVEL, orgId, lead).pipe(
         Effect.map((all) => all.filter((change) => change.kind === "linked")),
       );
       assert.deepStrictEqual(
@@ -2676,12 +2673,130 @@ it.effect(
           AND (l.record_id = r.record_id OR l.target = r.record_id)`;
       assert.strictEqual(left?.n, 0);
       assert.deepInclude(
-        (yield* ownerLevelAgentChanges(orgId, lead)).find((change) => change.seq === links[0]!.seq),
+        (yield* agentChanges(KIN_OWNER_LEVEL, orgId, lead)).find(
+          (change) => change.seq === links[0]!.seq,
+        ),
         { undo: false, undone: true },
       );
       assert.strictEqual(
         (yield* OwnerWork.get([owner], { orgId, key: "W-1" })).changes[0]!.by._tag,
         "person",
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+// Loop 2 (Nov 2026): one doc linked to four entries in a minute read as four identical rows, and
+// only the newest could be undone.
+it.effect(
+  "each link on an agent's page names its other end and undoes on its own; a link blocks no field's undo",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* turn();
+      const scope = scopeOf(lead);
+      const sql = yield* SqlClient.SqlClient;
+      const titles = [
+        "Invented: north invoice",
+        "Invented: south invoice",
+        "Invented: east invoice",
+        "Invented: west invoice",
+      ];
+      yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: titles.map((title) => ({ title })),
+      });
+      yield* LeadWork.update(scope, {
+        key: "W-1",
+        sourceEventId: "ask-event",
+        title: "Invented: north v2",
+      });
+      const notes = yield* LeadDocs.create(scope, {
+        sourceEventId: "ask-event",
+        title: "Invented dunning notes",
+        body: "Invented.",
+      });
+      for (const key of ["W-1", "W-2", "W-3", "W-4"])
+        yield* LeadDocs.link(scope, { key: notes.key, sourceEventId: "ask-event", to: [key] });
+      // The owner writes W-1's notes after: its title can still go back, the field is untouched.
+      const w1 = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
+      yield* OwnerWork.update([owner], { orgId, key: "W-1", rev: w1.rev, notes: "Invented note." });
+      const read = (viewer: KinViewer = KIN_OWNER_LEVEL) => agentChanges(viewer, orgId, lead);
+      const linkRows = (all: ReadonlyArray<KinAgentChange>) =>
+        all
+          .filter((change) => change.kind === "linked")
+          .map((change) => [
+            change.key,
+            change.linkedTo,
+            change.undo,
+            change.since,
+            change.undone ?? false,
+          ]);
+      const end = (key: string, title: string) => ({ key: KinRecordKey.make(key), title });
+      assert.deepStrictEqual(linkRows(yield* read()), [
+        [notes.key, end("W-4", titles[3]!), true, false, false],
+        [notes.key, end("W-3", titles[2]!), true, false, false],
+        [notes.key, end("W-2", titles[1]!), true, false, false],
+        [notes.key, end("W-1", "Invented: north v2"), true, false, false],
+      ]);
+      const before = yield* read();
+      assert.deepInclude(
+        before.find((change) => change.key === "W-1" && change.kind === "updated"),
+        {
+          undo: true,
+          since: false,
+        },
+      );
+      // An add: any later change stands in its way, and one with only links says so.
+      const added = (key: string) =>
+        before.find((change) => change.key === key && change.kind === "created")!;
+      assert.deepInclude(added("W-2"), { undo: false, since: true, linkedSince: true });
+      assert.deepInclude(added("W-1"), { undo: false, since: true });
+      assert.notProperty(added("W-1"), "linkedSince");
+      // Kin never takes back a doc it added, so nothing later is "in the way" of it.
+      assert.deepInclude(added(notes.key), { undo: false, since: false });
+      const second = before.filter((change) => change.kind === "linked")[2]!;
+      yield* ownerLevelUndoAgentChange({ orgId, agentId: lead, seq: second.seq, by: ownerId });
+      const left = yield* sql<{ key: string; n: number }>`SELECT o.key, count(*) AS n
+        FROM kin_record_links l JOIN kin_records d ON d.org_id = l.org_id AND d.key = ${notes.key}
+        JOIN kin_records o ON o.org_id = l.org_id
+          AND ((l.record_id = d.record_id AND l.target = o.record_id)
+            OR (l.target = d.record_id AND l.record_id = o.record_id))
+        WHERE l.org_id = ${orgId} AND l.kind = 'record' GROUP BY o.key ORDER BY o.key`;
+      assert.deepStrictEqual(
+        left.map((row) => [row.key, row.n]),
+        [
+          ["W-1", 2],
+          ["W-3", 2],
+          ["W-4", 2],
+        ],
+      );
+      assert.deepStrictEqual(linkRows(yield* read()), [
+        [notes.key, end("W-4", titles[3]!), true, false, false],
+        [notes.key, end("W-3", titles[2]!), true, false, false],
+        [notes.key, end("W-2", titles[1]!), false, false, true],
+        [notes.key, end("W-1", "Invented: north v2"), true, false, false],
+      ]);
+      assert.include(
+        yield* Effect.flip(
+          ownerLevelUndoAgentChange({ orgId, agentId: lead, seq: second.seq, by: ownerId }),
+        ),
+        { reason: "invalid_state" },
+      );
+      // A teammate reads only what they see: the doc and the task they hold, the rest unnamed.
+      yield* sql`UPDATE kin_records SET team_shared = 1 WHERE org_id = ${orgId} AND key = ${notes.key}`;
+      yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+      yield* sql`UPDATE kin_records SET owner_kind = 'person', owner_id = ${mateId}
+        WHERE org_id = ${orgId} AND key = 'W-3'`;
+      const theirs = yield* read(viewerOfPeople([mateId]));
+      assert.deepStrictEqual(linkRows(theirs), [
+        [notes.key, null, true, false, false],
+        [notes.key, end("W-3", titles[2]!), true, false, false],
+        [notes.key, null, false, false, true],
+        [notes.key, null, true, false, false],
+      ]);
+      assert.deepStrictEqual(
+        [...new Set(theirs.map((change) => change.key))].sort(),
+        [notes.key, "W-3"].sort(),
       );
     }).pipe(Effect.provide(layer)),
 );

@@ -737,7 +737,7 @@ function AgentChanged(props: {
   const names = new Map([...directory.people, ...directory.agents]);
   const [busy, setBusy] = useState<number | null>(null);
   const [said, setSaid] = useState<{ readonly seq: number; readonly text: string } | null>(null);
-  const run = async (seq: number) => {
+  const run = async (seq: number, done: string) => {
     setBusy(seq);
     const outcome = await undo({ environmentId, input: { orgId, agentId: props.agentId, seq } });
     setBusy(null);
@@ -745,7 +745,7 @@ function AgentChanged(props: {
       seq,
       text: AsyncResult.isFailure(outcome)
         ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_CHANGES.failed)
-        : KIN_AGENT_CHANGES.undone,
+        : done,
     });
     props.onChanged();
   };
@@ -780,18 +780,12 @@ function AgentChanged(props: {
                       variant="outline"
                       disabled={busy !== null}
                       aria-busy={busy === change.seq}
-                      onClick={() => void run(change.seq)}
+                      onClick={() => void run(change.seq, offer.done)}
                     >
                       {busy === change.seq ? KIN_AGENT_CHANGES.undoing : KIN_AGENT_CHANGES.undo}
                     </Button>
-                  ) : offer.kind === "undone" ? (
+                  ) : offer.kind !== "undo" && offer.kind !== "none" ? (
                     <span className="text-xs text-muted-foreground">{offer.text}</span>
-                  ) : offer.kind === "since" || offer.kind === "manual" ? (
-                    <span className="text-xs text-muted-foreground">
-                      {offer.kind === "since"
-                        ? KIN_AGENT_CHANGES.sinceDetail
-                        : KIN_AGENT_CHANGES.manualDetail}
-                    </span>
                   ) : null}
                   {said?.seq === change.seq && offer.kind !== "undone" ? (
                     <span role="status" className="text-xs text-muted-foreground">
