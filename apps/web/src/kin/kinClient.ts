@@ -14,6 +14,10 @@ import {
 } from "@t3tools/client-runtime/kin/kinStreams";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "@t3tools/client-runtime/kin/kinDocsStream";
 import {
+  KIN_PULSE_LIVE_LABEL,
+  kinPulseLiveStream,
+} from "@t3tools/client-runtime/kin/kinPulseStream";
+import {
   createKinWorkRefreshTriggers,
   KIN_WORK_NOT_TASKS,
   kinDocsListLean,
@@ -983,6 +987,14 @@ export const kinClient = {
     staleTimeMs: 30_000,
     refreshTrigger: kinRefreshOn("pulse"),
   }),
+  /** `attention` as the host streams it, for a host that does (`attentionStreamed`). */
+  attentionLive: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {
+    label: KIN_PULSE_LIVE_LABEL,
+    subscribe: (input: KinPulseListInput) =>
+      kinPulseLiveStream({ ...input, acceptSenses: KIN_PULSE_LATER_SENSES }),
+  }),
+  /** Whether the host streams Needs attention; null until its refreshes say. */
+  attentionStreamed: kinRefreshOn.serves("pulse"),
   attentionHandle: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:pulse:handle",
     tag: "kin.pulse.handle",

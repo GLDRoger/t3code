@@ -19,6 +19,9 @@ import {
   type KinChatSubscribeInput,
   type KinChatSummary,
   type KinMessage,
+  type KinPulseEvent,
+  type KinPulseFact,
+  type KinPulseSubscribeInput,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -31,6 +34,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 
 import { KinChatState, type KinInboxState } from "./kinInboxModel.ts";
+import { kinPulseLiveStream } from "./kinPulseStream.ts";
 import {
   isKinRetryable,
   KIN_CHAT_LABEL,
@@ -111,11 +115,13 @@ function fakeCache(rows: Map<string, string>) {
 function fakeSession(streams: {
   readonly chat: (input: KinChatSubscribeInput) => Stream.Stream<KinChatStreamEvent, KinChatError>;
   readonly inbox: Stream.Stream<KinChatListEvent, KinChatError>;
+  readonly pulse?: (input: KinPulseSubscribeInput) => Stream.Stream<KinPulseEvent, KinChatError>;
 }): RpcSession {
   return {
     client: {
       [KIN_CHAT_WS_METHODS.chatSubscribe]: streams.chat,
       [KIN_CHAT_WS_METHODS.chatsSubscribe]: () => streams.inbox,
+      "kin.pulse.subscribe": streams.pulse ?? (() => Stream.never),
     },
     initialConfig: Effect.never,
     subscribeServerConfig: () => Stream.never,
@@ -153,7 +159,84 @@ const provider = Effect.fnUntraced(function* (
 
 const kinError = (reason: KinChatError["reason"]) => new KinChatError({ reason, message: reason });
 
+const fact = (key: string, title = key) =>
+  ({
+    sense: "task_late",
+    family: "work",
+    key,
+    subject: { kind: "record", key: "W-1", title },
+    scope: {},
+    since: at,
+    consequence: title,
+    actor: { _tag: "owner" },
+    sensitive: false,
+    wake: "now",
+    handled: null,
+  }) as unknown as KinPulseFact;
+
 describe("Kin streams", () => {
+  it.effect(
+    "Needs attention folds what moved, and a new session names the page held so nothing is resent",
+    () =>
+      Effect.gen(function* () {
+        const subscribed = yield* Queue.unbounded<KinPulseSubscribeInput>();
+        const asOf = at as unknown as Extract<KinPulseEvent, { _tag: "changed" }>["asOf"];
+        const replies: Array<Stream.Stream<KinPulseEvent, KinChatError>> = [
+          Stream.make<ReadonlyArray<KinPulseEvent>>(
+            {
+              _tag: "snapshot",
+              read: { asOf, total: 2, facts: [fact("a"), fact("b")] },
+              hash: "h1",
+            },
+            {
+              _tag: "changed",
+              asOf,
+              total: 2,
+              updated: [fact("b", "b moved"), fact("c")],
+              removed: ["a"],
+              hash: "h2",
+            },
+          ).pipe(Stream.concat(Stream.fail(kinError("unavailable")))),
+          Stream.make<ReadonlyArray<KinPulseEvent>>(
+            { _tag: "current", hash: "h2" },
+            { _tag: "changed", asOf, total: 1, updated: [], removed: ["b"], hash: "h3" },
+          ).pipe(Stream.concat(Stream.never)),
+        ];
+        const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+          Option.some(
+            fakeSession({
+              chat: () => Stream.never,
+              inbox: Stream.never,
+              pulse: (input) =>
+                Stream.fromEffect(Queue.offer(subscribed, input)).pipe(
+                  Stream.drain,
+                  Stream.concat(replies.shift() ?? Stream.never),
+                ),
+            }),
+          ),
+        );
+        const provide = yield* provider(activeSession, new Map());
+        const pages = yield* Queue.unbounded<ReadonlyArray<string>>();
+        yield* kinPulseLiveStream({ orgId: "org" as KinPulseSubscribeInput["orgId"] }).pipe(
+          Stream.runForEach((read) =>
+            Queue.offer(
+              pages,
+              read.facts.map((one) => `${one.key}:${one.subject.title}`),
+            ),
+          ),
+          provide,
+          Effect.forkChild,
+        );
+        expect(yield* Queue.take(subscribed)).toEqual({ orgId: "org" });
+        expect(yield* Queue.take(pages)).toEqual(["a:a", "b:b"]);
+        expect(yield* Queue.take(pages)).toEqual(["b:b moved", "c:c"]);
+        yield* TestClock.adjust(1000);
+        expect(yield* Queue.take(subscribed)).toEqual({ orgId: "org", held: "h2" });
+        // `current` shows nothing new; the change after it applies to the page held.
+        expect(yield* Queue.take(pages)).toEqual(["c:c"]);
+      }),
+  );
+
   it.each([
     ["unavailable", true],
     ["disabled", false],

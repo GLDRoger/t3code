@@ -57,8 +57,18 @@ export const KinRefreshes = Schema.Struct({
    * means nothing moved; a new one means anything may have. Absent from older hosts.
    */
   boot: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+  /**
+   * Live reads this host streams (`KIN_STREAMS`): a client follows those instead of reading again
+   * on each move. Names it doesn't know are skipped. Absent from older hosts.
+   */
+  streams: Schema.optional(
+    Schema.Array(Schema.String.check(Schema.isMaxLength(40))).check(Schema.isMaxLength(20)),
+  ),
 });
 export type KinRefreshes = typeof KinRefreshes.Type;
+
+/** `pulse`: `kin.pulse.subscribe`. */
+export const KIN_STREAMS = ["pulse"] as const;
 
 export const KinRefreshesSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinRefreshesSubscribeInput = typeof KinRefreshesSubscribeInput.Type;

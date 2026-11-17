@@ -46,20 +46,30 @@ const noGoalsAtom: Atom.Atom<AsyncResult.AsyncResult<KinGoalsResult, unknown>> =
  * `paged`: the first open facts Needs you shows, and counts of the rest (`outline`). `scope`: only
  * what a client's, project's or Money's own section is about; the section still filters exactly.
  */
-const attentionAtom = (
+const attentionInput = (
   { environmentId, orgId }: KinWorkTarget,
+  paged: boolean,
+  scope: KinAttentionScope | undefined,
+) => ({
+  environmentId,
+  input: {
+    orgId,
+    includeHandled: true,
+    ...(paged ? { limit: KIN_NEEDS_YOU_PAGE } : {}),
+    ...(scope === undefined ? {} : { scope: kinPulseScopeOf(scope) }),
+  },
+});
+const attentionAtom = (
+  target: KinWorkTarget,
+  streamed: boolean,
   paged = false,
   scope?: KinAttentionScope,
 ) =>
-  kinClient.attention({
-    environmentId,
-    input: {
-      orgId,
-      includeHandled: true,
-      ...(paged ? { limit: KIN_NEEDS_YOU_PAGE } : {}),
-      ...(scope === undefined ? {} : { scope: kinPulseScopeOf(scope) }),
-    },
-  });
+  streamed
+    ? kinClient.attentionLive(attentionInput(target, paged, scope))
+    : kinClient.attention(attentionInput(target, paged, scope));
+const streamedAtom = ({ environmentId, orgId }: KinWorkTarget) =>
+  kinClient.attentionStreamed({ environmentId, input: { orgId } });
 /** Facts answered on this device, hidden until the live read says where they stand now. */
 const answeredAtom = Atom.family((_target: string) =>
   Atom.make<ReadonlyArray<string>>([]).pipe(Atom.keepAlive),
@@ -68,9 +78,9 @@ const answeredOf = ({ environmentId, orgId }: KinWorkTarget) =>
   answeredAtom(`${environmentId}:${orgId}`);
 
 /**
- * What needs attention, live over the host's pulse topic; null until read. The host's pulse moves
- * that topic for any change to what it senses, which is all an owner-level viewer is shown. A
- * member's view also turns on what is shared with them, so theirs is read again on Work's changes.
+ * What needs attention, live; null until read. A host that streams it sends what moved. On an
+ * older one it is read again when the pulse topic moves, which covers all an owner-level viewer is
+ * shown; a member's view also turns on what is shared with them, so theirs follows Work's changes.
  */
 export function useKinAttention(
   target: KinWorkTarget,
@@ -78,11 +88,16 @@ export function useKinAttention(
   paged = false,
   scope?: KinAttentionScope,
 ) {
-  const atom = enabled ? attentionAtom(target, paged, scope) : noAttentionAtom;
+  const streamed = useAtomValue(streamedAtom(target));
+  const atom =
+    enabled && streamed !== null ? attentionAtom(target, streamed, paged, scope) : noAttentionAtom;
   const state = kinWorkReadState(useAtomValue(atom));
   const ownerLevel = useAtomValue(kinOwnerLevelAtom(connectionAtomRuntime, target.environmentId));
   const reads =
-    useAtomValue(kinClient.workRead.permissionAtom(target.environmentId)) && enabled && !ownerLevel;
+    useAtomValue(kinClient.workRead.permissionAtom(target.environmentId)) &&
+    enabled &&
+    !ownerLevel &&
+    streamed === false;
   const live = useAtomValue(reads ? kinWorkLiveAtom(target) : noLiveAtom);
   const seq = Option.getOrNull(AsyncResult.value(live))?.seq ?? null;
   useRereadOnChange(seq, () => appAtomRegistry.refresh(atom));
@@ -118,9 +133,13 @@ export function useKinAttentionHandle(target: KinWorkTarget, scope?: KinAttentio
         },
       });
       setBusy(null);
-      appAtomRegistry.refresh(attentionAtom(target));
-      appAtomRegistry.refresh(attentionAtom(target, true));
-      if (scope !== undefined) appAtomRegistry.refresh(attentionAtom(target, false, scope));
+      // A host that streams it sends the answer's effect; an older one is asked again.
+      if (appAtomRegistry.get(streamedAtom(target)) === false) {
+        appAtomRegistry.refresh(attentionAtom(target, false));
+        appAtomRegistry.refresh(attentionAtom(target, false, true));
+        if (scope !== undefined)
+          appAtomRegistry.refresh(attentionAtom(target, false, false, scope));
+      }
       const problem = kinAttentionProblem(
         AsyncResult.isSuccess(outcome) ? null : squashAtomCommandFailure(outcome),
       );

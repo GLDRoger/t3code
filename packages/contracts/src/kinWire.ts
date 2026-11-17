@@ -1,6 +1,11 @@
 import type { KinOrgId } from "./kinChat.ts";
 import type { KinDocListRow, KinDocRow } from "./kinDocs.ts";
-import type { KinPulseFact, KinPulseOutline } from "./kinPulse.ts";
+import type {
+  KinPulseChange,
+  KinPulseFact,
+  KinPulseOutline,
+  KinPulseScreenRead,
+} from "./kinPulse.ts";
 import type { KinRecord, KinRecordCan, KinRecordCompact, KinWorkListResult } from "./kinWork.ts";
 
 // Opt-in wire shapes (`acceptCompactRows`, `acceptSlimLatest`): the server sends them only to a
@@ -170,5 +175,81 @@ export function kinPulsePage<F extends KinPulseFact>(
       records: [...new Set(facts.flatMap((fact) => kinPulseFactRecord(fact) ?? []))],
       invoiceOverdue: facts.some((fact) => fact.key.startsWith("invoice_overdue:")),
     },
+  };
+}
+
+const sameKeys = (a: ReadonlyArray<string>, b: ReadonlyArray<string>) =>
+  a.length === b.length && a.every((key, index) => key === b[index]);
+
+/** The held order less `removed`, then the new keys in their order: what `order` may leave out. */
+const kinPulseNaturalOrder = (
+  held: ReadonlyArray<string>,
+  removed: ReadonlySet<string>,
+  updated: ReadonlyArray<KinPulseFact>,
+) => {
+  const kept = held.filter((key) => !removed.has(key));
+  const known = new Set(kept);
+  return [...kept, ...updated.map((fact) => fact.key).filter((key) => !known.has(key))];
+};
+
+/**
+ * What moved from the page `held` to `next`, as `kin.pulse.subscribe` sends it; null when nothing
+ * a screen shows did. `kinPulseApply(held, change)` gives `next` back.
+ */
+export function kinPulseDiff(
+  held: KinPulseScreenRead,
+  next: KinPulseScreenRead,
+): Omit<KinPulseChange, "_tag" | "hash"> | null {
+  const before = new Map(held.facts.map((fact) => [fact.key, JSON.stringify(fact)]));
+  const nextKeys = new Set(next.facts.map((fact) => fact.key));
+  const removed = held.facts.map((fact) => fact.key).filter((key) => !nextKeys.has(key));
+  const updated = next.facts.filter((fact) => before.get(fact.key) !== JSON.stringify(fact));
+  const order = next.facts.map((fact) => fact.key);
+  const natural = kinPulseNaturalOrder(
+    held.facts.map((fact) => fact.key),
+    new Set(removed),
+    updated,
+  );
+  const outlineMoved = JSON.stringify(held.outline) !== JSON.stringify(next.outline);
+  const orderMoved = !sameKeys(natural, order);
+  if (
+    removed.length === 0 &&
+    updated.length === 0 &&
+    !orderMoved &&
+    !outlineMoved &&
+    held.total === next.total
+  )
+    return null;
+  return {
+    asOf: next.asOf,
+    total: next.total,
+    ...(outlineMoved && next.outline !== undefined ? { outline: next.outline } : {}),
+    updated,
+    removed,
+    ...(orderMoved ? { order } : {}),
+  };
+}
+
+/** The page `held` with `change` applied: what the host read when it sent it. */
+export function kinPulseApply(
+  held: KinPulseScreenRead,
+  change: Omit<KinPulseChange, "_tag" | "hash">,
+): KinPulseScreenRead {
+  const byKey = new Map(held.facts.map((fact) => [fact.key, fact]));
+  for (const key of change.removed) byKey.delete(key);
+  for (const fact of change.updated) byKey.set(fact.key, fact);
+  const order =
+    change.order ??
+    kinPulseNaturalOrder(
+      held.facts.map((fact) => fact.key),
+      new Set(change.removed),
+      change.updated,
+    );
+  const outline = change.outline ?? held.outline;
+  return {
+    asOf: change.asOf,
+    total: change.total,
+    facts: order.flatMap((key) => byKey.get(key) ?? []),
+    ...(outline === undefined ? {} : { outline }),
   };
 }

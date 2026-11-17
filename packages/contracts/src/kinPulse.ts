@@ -190,6 +190,38 @@ export const KinPulseListInput = Schema.Struct({
 });
 export type KinPulseListInput = typeof KinPulseListInput.Type;
 
+/** `kin.pulse.subscribe`: the read `kin.pulse.read` makes, kept current as facts move. */
+export const KinPulseSubscribeInput = Schema.Struct({
+  ...KinPulseListInput.fields,
+  /** The `hash` of the page held from an earlier session; unchanged, the stream starts `current`. */
+  held: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+});
+export type KinPulseSubscribeInput = typeof KinPulseSubscribeInput.Type;
+
+const KinPulseFactKey = TrimmedNonEmptyString.check(Schema.isMaxLength(300));
+/**
+ * The first page whole (`snapshot`), or `current` when the held one still stands; then what moved
+ * (`kinPulseApply`). `hash` names the page each leaves the client holding.
+ */
+export const KinPulseEvent = Schema.Union([
+  Schema.TaggedStruct("snapshot", { read: KinPulseScreenRead, hash: Schema.String }),
+  Schema.TaggedStruct("current", { hash: Schema.String }),
+  Schema.TaggedStruct("changed", {
+    asOf: CanonicalUtcTimestamp,
+    total: NonNegativeInt,
+    /** Absent: the held outline stands. */
+    outline: Schema.optional(KinPulseOutline),
+    /** New facts, and held ones that changed. */
+    updated: Schema.Array(KinPulseFact),
+    removed: Schema.Array(KinPulseFactKey),
+    /** Every key in order; absent when it is the held order less `removed`, new ones last. */
+    order: Schema.optional(Schema.Array(KinPulseFactKey)),
+    hash: Schema.String,
+  }),
+]);
+export type KinPulseEvent = typeof KinPulseEvent.Type;
+export type KinPulseChange = Extract<KinPulseEvent, { readonly _tag: "changed" }>;
+
 export const KinPulseHandleInput = Schema.Struct({
   orgId: KinOrgId,
   factKey: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
@@ -323,6 +355,12 @@ export type KinCheckInActInput = typeof KinCheckInActInput.Type;
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 export const KinPulseRpcs = [
   Rpc.make("kin.pulse.read", { payload: KinPulseListInput, success: KinPulseScreenRead, error }),
+  Rpc.make("kin.pulse.subscribe", {
+    payload: KinPulseSubscribeInput,
+    success: KinPulseEvent,
+    error,
+    stream: true,
+  }),
   Rpc.make("kin.pulse.handle", { payload: KinPulseHandleInput, success: KinPulseFact, error }),
   Rpc.make("kin.goals.list", { payload: KinGoalsInput, success: KinGoalsResult, error }),
   Rpc.make("kin.goals.save", { payload: KinGoalSaveInput, success: KinGoal, error }),
@@ -337,6 +375,7 @@ export const KinPulseRpcs = [
 
 export const KIN_PULSE_RPC_SCOPES = {
   "kin.pulse.read": AuthKinChatScope,
+  "kin.pulse.subscribe": AuthKinChatScope,
   "kin.pulse.handle": AuthKinChatScope,
   "kin.goals.list": AuthKinChatScope,
   "kin.goals.save": AuthKinChatScope,

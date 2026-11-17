@@ -807,6 +807,10 @@
       "types": "./src/kin/kinDocsStream.ts",
       "default": "./src/kin/kinDocsStream.ts"
     },
+    "./kin/kinPulseStream": {
+      "types": "./src/kin/kinPulseStream.ts",
+      "default": "./src/kin/kinPulseStream.ts"
+    },
     "./kin/kinRefresh": {
       "types": "./src/kin/kinRefresh.ts",
       "default": "./src/kin/kinRefresh.ts"

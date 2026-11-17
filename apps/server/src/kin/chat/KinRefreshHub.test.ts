@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- the guard reads source files synchronously, outside any Effect.
 import { assert, describe, it } from "@effect/vitest";
 import {
+  KIN_STREAMS,
   AuthSessionId,
   AuthStandardClientScopes,
   KinOrgId,
@@ -126,6 +127,7 @@ describe("KinRefreshHub", () => {
           pulse: 0,
           workLists: 0,
           boot,
+          streams: KIN_STREAMS,
         });
 
         // Things only the owner reads: the company, and a lead Priya can't message.
@@ -165,7 +167,15 @@ describe("KinRefreshHub", () => {
           personId: priya.personId,
         });
         yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
-        const moved = { timeZone: 0, people: 0, leads: 1, pulse: 0, workLists: 0, boot };
+        const moved = {
+          timeZone: 0,
+          people: 0,
+          leads: 1,
+          pulse: 0,
+          workLists: 0,
+          boot,
+          streams: KIN_STREAMS,
+        };
         assert.deepStrictEqual(yield* Queue.take(priyaSees), moved);
         assert.strictEqual(yield* Queue.size(priyaSees), 0);
         // Her reconnect with nothing moved since hears the same numbers, so she reads nothing again.

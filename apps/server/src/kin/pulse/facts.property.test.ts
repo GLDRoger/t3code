@@ -1,5 +1,12 @@
 import { assert, layer } from "@effect/vitest";
-import { KinOrgId, KinPersonId } from "@t3tools/contracts";
+import {
+  KinOrgId,
+  KinPersonId,
+  type KinPulseScreenRead,
+  kinPulseApply,
+  kinPulseDiff,
+  kinPulsePage,
+} from "@t3tools/contracts";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -166,6 +173,22 @@ const install = (w: World) =>
 const read = (orgId: KinOrgId, viewer: KinPulse.Viewer) =>
   KinPulse.read({ orgId, at: AT, viewer, includeHandled: true, limit: 200 });
 
+/** A screen's page of `read`: every fact, or the first `limit` open ones with the outline. */
+const screen = (orgId: KinOrgId, viewer: KinPulse.Viewer, limit: number | null) =>
+  read(orgId, viewer).pipe(
+    Effect.map((whole): KinPulseScreenRead =>
+      limit === null ? whole : { ...whole, ...kinPulsePage(whole.facts, limit) },
+    ),
+  );
+
+/** Changes to a world's tasks between two reads: closed, moved due, given to someone else. */
+const move = Arbitrary.all({
+  task: int(0, 7),
+  to: pick(["done", "doing", "waiting", "open"]),
+  due: maybe(int(-100, 400)),
+  holder: pick(["owner", "ana", "ben", "cos"]),
+});
+
 layer(testLayer)("pulse facts", (it) => {
   it.effect.prop(
     "every fact names an entry that exists, once per cause, and a teammate reads only facts on tasks she may see",
@@ -197,6 +220,42 @@ layer(testLayer)("pulse facts", (it) => {
             assert.isTrue(sees.has(fact.subject.recordId!), `${member} reads ${fact.key}`);
             assert.isTrue(shown.has(fact.key), `${fact.key} is the owner's too`);
           }
+        }
+      }),
+  );
+
+  it.effect.prop(
+    "a page folded from the stream's change equals a fresh read, for every viewer and page size",
+    [world, Arbitrary.array(move, { minLength: 1, maxLength: 4 }), maybe(int(1, 8))],
+    ([w, moves, limit]) =>
+      Effect.gen(function* () {
+        const { orgId, id } = yield* install(w);
+        const sql = yield* SqlClient.SqlClient;
+        const viewers: ReadonlyArray<KinPulse.Viewer> = [
+          { _tag: "owner" },
+          { _tag: "people", people: [KinPersonId.make(id("ana"))] },
+          { _tag: "people", people: [KinPersonId.make(id("ben"))] },
+        ];
+        const before = yield* Effect.forEach(viewers, (viewer) => screen(orgId, viewer, limit));
+        for (const one of moves) {
+          const recordId = id(`W-${(one.task % w.tasks.length) + 1}`);
+          yield* sql`UPDATE kin_records SET state = ${one.to},
+              due_at = ${one.due === null ? null : AT + one.due * HOUR},
+              owner_kind = ${one.holder === "cos" ? "agent" : "person"}, owner_id = ${id(one.holder)}
+            WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+        }
+        for (const [index, viewer] of viewers.entries()) {
+          const held = before[index]!;
+          const after = yield* screen(orgId, viewer, limit);
+          const change = kinPulseDiff(held, after);
+          const folded = change === null ? held : kinPulseApply(held, change);
+          assert.deepStrictEqual(
+            { ...folded, asOf: after.asOf },
+            after,
+            `viewer ${index}, limit ${limit}`,
+          );
+          // Nothing sent means nothing a screen shows moved.
+          if (change === null) assert.deepStrictEqual({ ...held, asOf: after.asOf }, after);
         }
       }),
   );
