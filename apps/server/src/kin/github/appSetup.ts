@@ -18,10 +18,10 @@ import { ServerConfig } from "../../config.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
-import { readStoredApp, removeStoredApp, writeStoredApp } from "./appStore.ts";
+import { readStoredApp, removeStoredApp, writeSeedTaken, writeStoredApp } from "./appStore.ts";
 import { knownRepos } from "./githubWatchStore.ts";
 import { KinGitHubAppKey } from "./appKey.ts";
-import { KinGitHubApp, KinGitHubAppConfig } from "./KinGitHubApp.ts";
+import { appSettingsPage, KinGitHubApp, KinGitHubAppConfig } from "./KinGitHubApp.ts";
 
 /**
  * Making Kin's GitHub App from Settings with GitHub's manifest flow: an owner-level call mints a
@@ -91,7 +91,10 @@ export class KinGitHubAppSetup extends Context.Service<
     ) => Effect.Effect<Option.Option<string>>;
     /** GitHub's redirect: the state once, then the code once. */
     readonly complete: (state: string, code: string) => Effect.Effect<SetupOutcome>;
-    /** Forgets the App made here; the App itself stays on GitHub. */
+    /**
+     * Forgets Settings' App, made here or adopted from the host's environment, which then stays
+     * unused across restarts. The App itself stays on GitHub, and an old keyring item stays put.
+     */
     readonly disconnect: (
       people: ReadonlyArray<PersonIdentity>,
       orgId: KinOrgId,
@@ -148,10 +151,11 @@ export const make = Effect.gen(function* () {
     orgId: KinOrgId,
   ) {
     const by = yield* ownerAt(people, orgId);
-    if (
-      Option.isSome(config.appId) ||
-      Option.isSome(yield* readStoredApp.pipe(Effect.provideContext(files)))
-    )
+    const named =
+      app.origin === undefined
+        ? Option.isSome(yield* readStoredApp.pipe(Effect.provideContext(files)))
+        : (yield* app.origin()).source !== "none";
+    if (named)
       return yield* refuse("Kin already has a GitHub App. Disconnect it first to make another.");
     const [company] = yield* sql<{ name: string }>`SELECT name FROM kin_orgs
       WHERE org_id = ${orgId}`.pipe(Effect.orElseSucceed(() => []));
@@ -286,17 +290,28 @@ export const make = Effect.gen(function* () {
     orgId: KinOrgId,
   ) {
     yield* ownerAt(people, orgId);
+    const state = yield* app.state();
+    // Declined before removing the record, so no restart in between adopts the host's App again.
     if (Option.isSome(config.appId))
-      return yield* refuse(
-        "This App is set on Kin's computer itself (KIN_GITHUB_APP_ID), so it is removed there, not here.",
-      );
+      yield* writeSeedTaken(config.appId.value).pipe(Effect.provideContext(files), Effect.orDie);
     const stored = yield* readStoredApp.pipe(Effect.provideContext(files));
-    if (Option.isNone(stored)) return { settingsUrl: null };
-    yield* appKey.remove(String(stored.value.appId));
-    yield* removeStoredApp.pipe(Effect.provideContext(files), Effect.orDie);
+    if (Option.isSome(stored)) {
+      yield* appKey.remove(String(stored.value.appId));
+      yield* removeStoredApp.pipe(Effect.provideContext(files), Effect.orDie);
+    }
     yield* app.lookAgain();
     yield* refreshes.touch(orgId, "connections");
-    return { settingsUrl: `https://github.com/settings/apps/${stored.value.slug}` };
+    return {
+      settingsUrl: Option.isNone(stored)
+        ? null
+        : state._tag === "ok"
+          ? appSettingsPage(
+              state.app.slug,
+              state.app.ownerOrg,
+              state.app.ownerLogin ?? stored.value.owner,
+            )
+          : appSettingsPage(stored.value.slug, false, stored.value.owner),
+    };
   });
 
   return KinGitHubAppSetup.of({ start, page, complete, disconnect });

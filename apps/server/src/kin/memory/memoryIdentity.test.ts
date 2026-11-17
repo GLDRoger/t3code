@@ -23,6 +23,8 @@ const working: AppState = {
     slug: "invented-kin",
     installUrl: "https://github.com/apps/invented-kin/installations/new",
     owner: "invented-owner",
+    ownerLogin: "invented-owner",
+    ownerOrg: false,
     public: true,
     installations: [],
   },

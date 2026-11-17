@@ -85,6 +85,12 @@ describe("kinGitHubAgentsView", () => {
       "Invented Kin isn't installed on any watched repo yet, so agents work there as you (invented-owner).",
     );
     expect(nowhere.detail).not.toMatch(/show the App as the author\./);
+    // The live shape: the App reaches only the memory repo, which Kin doesn't watch.
+    expect(
+      kinGitHubAgentsView({ ...app, installed: 0, elsewhere: 1 }, "invented-owner", now).headline,
+    ).toBe(
+      "Invented Kin works only on 1 repo Kin doesn't watch, so on watched repos agents work as you (invented-owner).",
+    );
     expect(nowhere.detail).toMatch(
       /^Their commits, pull requests and reviews there carry your name/,
     );
@@ -99,7 +105,7 @@ describe("kinGitHubAgentsView", () => {
     ]);
   });
 
-  it("offers Disconnect only for an App made in Kin, and Create only when there is none", () => {
+  it("offers Disconnect for an App made in Kin or adopted from the host, and Create only when there is none", () => {
     const made = kinGitHubAgentsView(
       {
         ...app,
@@ -119,15 +125,24 @@ describe("kinGitHubAgentsView", () => {
       "https://github.com/settings/apps/invented-kin",
     ]);
     expect(made.setUpLine).toMatch(/^Invented Kin, set up in Kin by Owner on /);
-    const host = kinGitHubAgentsView(
-      { ...app, setUp: { source: "host", name: null, at: null, by: null, settingsUrl: null } },
+    const adopted = kinGitHubAgentsView(
+      {
+        ...app,
+        setUp: {
+          source: "kin",
+          name: "Invented Kin",
+          at: null,
+          by: null,
+          settingsUrl: "https://github.com/settings/apps/invented-kin",
+        },
+      },
       null,
       now,
     );
-    expect([host.canCreate, host.disconnect, host.setUpLine]).toEqual([
+    expect([adopted.canCreate, adopted.disconnect, adopted.setUpLine]).toEqual([
       false,
-      null,
-      "Set up on Kin's computer; it is changed there.",
+      { name: "Invented Kin", settingsUrl: "https://github.com/settings/apps/invented-kin" },
+      "Invented Kin, set up earlier on Kin's computer.",
     ]);
     const none = kinGitHubAgentsView(
       {
@@ -200,7 +215,7 @@ describe("kinGitHubAccountRows", () => {
     installed: 0,
     without: [],
     ownerUses: [],
-    appOwner: "invented-owner",
+    appOwner: "Invented-Owner",
     appSettingsUrl: "https://github.com/settings/apps/invented-kin",
   };
   const shown = (accounts: ReadonlyArray<KinGitHubAppAccount>) =>
@@ -215,7 +230,7 @@ describe("kinGitHubAccountRows", () => {
     expect(shown([row, org])).toEqual([
       [
         "Only selected repositories (0 of 48 watched)",
-        "Agents work as you on the other 48 watched repos.",
+        "Agents work as you on its 48 watched repos.",
         "Switch to all repositories -> https://github.com/settings/installations/8",
       ],
       [
@@ -246,6 +261,10 @@ describe("kinGitHubAccountRows", () => {
       null,
     ]);
     expect(kinGitHubAccountsHint(all)).toBeNull();
+    expect(shown([{ ...row, elsewhere: 1 }])[0]?.slice(0, 2)).toEqual([
+      "Only selected repositories (0 of 48 watched)",
+      "Works on 1 repo Kin doesn't watch. Agents work as you on its 48 watched repos.",
+    ]);
     expect(shown([{ ...row, covered: 40 }])[0]?.[0]).toBe(
       "Only selected repositories (40 of 48 watched)",
     );
@@ -273,7 +292,7 @@ describe("kinGitHubAccountRows", () => {
     ).toEqual([
       [
         "Only selected repositories (0 of 48 watched)",
-        "Agents work as you on the other 48 watched repos. Only an owner of invented-co can change this on GitHub.",
+        "Agents work as you on its 48 watched repos. Only an owner of invented-co can change this on GitHub.",
         null,
       ],
     ]);
@@ -283,8 +302,8 @@ describe("kinGitHubAccountRows", () => {
     expect(shown([{ ...org, installable: false }])).toEqual([
       [
         "Not installed",
-        "Invented Kin can only be installed on invented-owner, so agents work as you here. Making it public in its settings on GitHub lets you install it on invented-co.",
-        "Open the App's settings -> https://github.com/settings/apps/invented-kin",
+        "Invented Kin is private to Invented-Owner, so GitHub can't install it on invented-co and agents work as you here. On GitHub, open the App's settings → Advanced, then choose Make public.",
+        "Open Advanced on GitHub -> https://github.com/settings/apps/invented-kin/advanced",
       ],
     ]);
     const { accounts: _accounts, ...unknown } = { ...agents, accounts: undefined };

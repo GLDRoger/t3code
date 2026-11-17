@@ -319,7 +319,7 @@ export const KIN_GITHUB_APP_SETUP_COPY = {
     `Kin forgot ${name}; agents work on GitHub as you. To remove the App for good, delete it on GitHub.`,
   appOnGitHub: "The App on GitHub",
   setUpInKin: (name: string, by: string, at: string) => `${name}, set up in Kin by ${by} on ${at}.`,
-  setUpOnHost: "Set up on Kin's computer; it is changed there.",
+  setUpEarlier: (name: string) => `${name}, set up earlier on Kin's computer.`,
 } as const;
 
 /** Choosing the App's repos one by one on an account, from Kin. */
@@ -418,9 +418,12 @@ function accountState(
         tone: rest === 0 ? "ok" : "attention",
         label: `Only selected repositories (${row.covered} of ${row.watched} watched)`,
         detail: [
+          rest === 0 || (row.elsewhere ?? 0) === 0
+            ? ""
+            : `Works on ${plural(row.elsewhere ?? 0, "repo")} Kin doesn't watch.`,
           rest === 0
             ? "Covers every watched repo here, but not repos made later."
-            : `Agents work as you on the other ${reposWord(rest)}.`,
+            : `Agents work as you on ${row.covered === 0 ? "its" : "the other"} ${reposWord(rest)}.`,
           row.canManage === false ? ownersOnly : "",
         ]
           .filter(Boolean)
@@ -441,11 +444,15 @@ function accountState(
         return {
           tone: "muted",
           label: "Not installed",
-          detail: `${app} can only be installed on ${agents.appOwner ?? "the account that owns it"}, so agents work as you here. Making it public in its settings on GitHub lets you install it on ${row.account}.`,
+          detail: `${app} is private to ${agents.appOwner ?? "the account that owns it"}, so GitHub can't install it on ${row.account} and agents work as you here. On GitHub, open the App's settings → Advanced, then choose Make public.`,
           action:
             agents.appSettingsUrl === undefined
               ? null
-              : { label: "Open the App's settings", url: agents.appSettingsUrl, picksRepos: false },
+              : {
+                  label: "Open Advanced on GitHub",
+                  url: `${agents.appSettingsUrl}/advanced`,
+                  picksRepos: false,
+                },
         };
       if (row.canManage === false)
         return {
@@ -514,21 +521,20 @@ export function kinGitHubAgentsView(
   }));
   const app = agents.appName ?? "Kin's GitHub App";
   const setUp = agents.setUp;
+  // `host` comes only from a server older than adopting the host's App; it says nothing here.
   const setUpLine =
-    setUp === undefined
+    setUp === undefined || setUp.source === "host"
       ? null
-      : setUp.source === "host"
-        ? KIN_GITHUB_APP_SETUP_COPY.setUpOnHost
+      : setUp.by === null || setUp.at === null
+        ? KIN_GITHUB_APP_SETUP_COPY.setUpEarlier(setUp.name ?? app)
         : KIN_GITHUB_APP_SETUP_COPY.setUpInKin(
             setUp.name ?? app,
-            setUp.by ?? "the owner",
-            setUp.at === null
-              ? "an earlier day"
-              : new Date(setUp.at).toLocaleDateString(undefined, {
-                  day: "numeric",
-                  month: "short",
-                  year: "numeric",
-                }),
+            setUp.by,
+            new Date(setUp.at).toLocaleDateString(undefined, {
+              day: "numeric",
+              month: "short",
+              year: "numeric",
+            }),
           );
   const extras = {
     setUpLine,
@@ -551,7 +557,9 @@ export function kinGitHubAgentsView(
     agents.watched === 0
       ? `Agents work on GitHub as ${app} wherever it is installed.`
       : agents.installed === 0
-        ? `${app} isn't installed on any watched repo yet, so agents work there as ${you}.`
+        ? (agents.elsewhere ?? 0) > 0
+          ? `${app} works only on ${plural(agents.elsewhere ?? 0, "repo")} Kin doesn't watch, so on watched repos agents work as ${you}.`
+          : `${app} isn't installed on any watched repo yet, so agents work there as ${you}.`
         : missing === 0
           ? `Agents work on GitHub as ${app} on ${agents.watched === 1 ? "your watched repo" : `all ${agents.watched} watched repos`}.`
           : `Agents work on GitHub as ${app} on ${agents.installed} of ${agents.watched} watched repos.`;
