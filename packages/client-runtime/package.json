@@ -627,6 +627,14 @@
       "types": "./src/kin/kinSubscriptions.ts",
       "default": "./src/kin/kinSubscriptions.ts"
     },
+    "./kin/kinClient": {
+      "types": "./src/kin/kinClient.ts",
+      "default": "./src/kin/kinClient.ts"
+    },
+    "./kin/kinScreenReads": {
+      "types": "./src/kin/kinScreenReads.ts",
+      "default": "./src/kin/kinScreenReads.ts"
+    },
     "./kin/kinBudget": {
       "types": "./src/kin/kinBudget.ts",
       "default": "./src/kin/kinBudget.ts"

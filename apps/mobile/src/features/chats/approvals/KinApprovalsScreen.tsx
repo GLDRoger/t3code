@@ -98,10 +98,10 @@ function ApprovalsBody(props: { readonly environmentId: EnvironmentId; readonly 
   const { environmentId, orgId } = props;
   const { status, refresh } = useKinApproverKey(environmentId, orgId);
   const enrol = useEnrolApproverKey();
-  const revokeKey = useAtomCommand(kinClient.revokeKey, { reportFailure: false });
+  const revokeKey = useAtomCommand(kinClient.approverKeyRevoke, { reportFailure: false });
   const canChallenge = useAtomValue(kinClient.keyChallenge.permissionAtom(environmentId));
   const canRegister = useAtomValue(kinClient.registerKey.permissionAtom(environmentId));
-  const canRemove = useAtomValue(kinClient.revokeKey.permissionAtom(environmentId));
+  const canRemove = useAtomValue(kinClient.approverKeyRevoke.permissionAtom(environmentId));
   const canEnrol = canChallenge && canRegister;
   const [working, setWorking] = useState(false);
   const [removing, setRemoving] = useState<KinKeyThumbprint | null>(null);
