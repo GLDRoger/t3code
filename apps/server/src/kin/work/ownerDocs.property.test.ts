@@ -80,6 +80,9 @@ const docsCase = ([ops, limit]: readonly [ReadonlyArray<Op>, number]) =>
           sees_docs)
         VALUES (${ownerId}, ${orgId}, 'owner', 'Owner', ${at}, 'owner', 1),
           ('mate', ${orgId}, 'mate', 'Mate', ${at}, 'member', 1)`;
+      // Change numbers are kept for teammates who have signed in.
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('session-mate', ${orgId}, 'mate', 0)`;
       const writer = { actor: { _tag: "person", personId: ownerId }, via: "owner" } as const;
       let made = 0;
       const create = (shared: boolean) =>
@@ -210,6 +213,50 @@ const docsCase = ([ops, limit]: readonly [ReadonlyArray<Op>, number]) =>
   );
 
 describe("Docs' live stream", () => {
+  it.effect(
+    "a co-owner made a member mid-stream is sent no row of a doc she may no longer see",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const records = yield* KinRecords.KinRecords;
+        yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${at})`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access,
+          sees_docs)
+        VALUES (${ownerId}, ${orgId}, 'owner', 'Owner', ${at}, 'owner', 1),
+          ('cora', ${orgId}, 'cora', 'Cora', ${at}, 'co_owner', 1)`;
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('session-cora', ${orgId}, 'cora', 0)`;
+        const writer = { actor: { _tag: "person", personId: ownerId }, via: "owner" } as const;
+        const doc = yield* Docs.create(
+          orgId,
+          writer,
+          {},
+          {
+            title: "Invented private plan",
+            body: "# Invented private plan\n\nFirst words.\n",
+            owner: { _tag: "person", personId: ownerId },
+            summary: "Created",
+            originKey: "docs-property:demoted",
+          },
+        );
+        const pull = yield* Stream.toPull(records.changes(orgId));
+        yield* pull;
+        const cora = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("cora") }];
+        const session = yield* OwnerDocs.makeDocsStream(cora, { orgId, acceptRows: true });
+        yield* records.update(orgId, writer, doc.row.key, { title: "Invented private plan, v2" });
+        const before = yield* session.burst(yield* pull);
+        assert.isDefined(
+          before.find((event) => event.row !== undefined),
+          "her row as a co-owner",
+        );
+        yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'cora'`;
+        yield* records.update(orgId, writer, doc.row.key, { title: "Invented private plan, v3" });
+        const after = yield* Effect.exit(session.burst(yield* pull));
+        // The stream ends; her client subscribes again and reads what a member sees.
+        assert.isTrue(after._tag === "Failure", "a row after she stopped being a co-owner");
+      }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect.prop(
     "the Docs list patched from each viewer's stream equals a fresh read after every change",
     [history, firstPage],
