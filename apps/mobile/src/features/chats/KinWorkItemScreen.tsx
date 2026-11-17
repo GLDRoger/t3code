@@ -10,7 +10,7 @@ import {
   KIN_WORK_MILESTONE,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
-  KIN_WORK_ONLY_OWNER,
+  kinWorkOnlyOwner,
   KIN_WORK_REPEAT,
   KIN_WORK_TITLE_MAX,
   kinWorkAssignees,
@@ -87,6 +87,8 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
+import { useKinGate } from "./state/useKinHost";
+import { KinGateView } from "./components/KinWorkPieces";
 
 export type KinWorkItemParams = {
   readonly environmentId: string;
@@ -157,12 +159,15 @@ type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey };
 
 function KinWorkItemGate(props: ItemTarget) {
   const navigation = useNavigation();
-  const allowed = useAtomValue(kinClient.workRead.permissionAtom(props.environmentId));
+  const gate = useKinGate(
+    kinClient.workRead.permissionStateAtom(props.environmentId),
+    props.environmentId,
+  );
   // A teammate who follows a link asks the host nothing.
-  if (!allowed) {
+  if (gate !== null) {
     return (
       <Frame title="Task" onClose={() => navigation.goBack()}>
-        <EmptyState variant="plain" {...KIN_WORK_ONLY_OWNER} />
+        <KinGateView gate={gate} refused={kinWorkOnlyOwner("tasks")} label="Task" />
       </Frame>
     );
   }

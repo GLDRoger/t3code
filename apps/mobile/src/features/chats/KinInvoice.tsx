@@ -80,6 +80,8 @@ import {
 import { useKinEntryLines } from "./state/useKinMoneyAnswers";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
 import { useKinWorkLink } from "./state/kinWorkLink";
+import { useKinGate } from "./state/useKinHost";
+import { KinGateView } from "./components/KinWorkPieces";
 
 type MoneyActions = ReturnType<typeof useKinMoneyActions>;
 
@@ -500,7 +502,11 @@ export function KinMakeDocumentStep(
     setLinesProblem(null);
     return checked.lines === null ? {} : { lines: checked.lines };
   };
-  const allowed = useAtomValue(kinClient.docRender.permissionAtom(props.environmentId));
+  const gate = useKinGate(
+    kinClient.docRender.permissionStateAtom(props.environmentId),
+    props.environmentId,
+  );
+  const allowed = gate === null;
   const recipes = useKinRecipes(props, allowed);
   const [picked, setPicked] = useState<string | null>(null);
   const [previewed, setPreviewed] = useState<string | null>(null);
@@ -516,7 +522,7 @@ export function KinMakeDocumentStep(
   if (!allowed)
     return (
       <KinWorkFrame title={title} onBack={close} guardBack>
-        <EmptyState variant="plain" {...KIN_LISTS.onlyOwner} />
+        <KinGateView gate={gate ?? "refused"} refused={KIN_LISTS.onlyOwner} label={title} />
       </KinWorkFrame>
     );
   const { state } = recipes;

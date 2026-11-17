@@ -46,6 +46,8 @@ import { kinHostConnected } from "./state/useKinHost";
 import { useKinCompanyProfile } from "./state/useKinMoney";
 import type { KinWorkTarget } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { useKinGate } from "./state/useKinHost";
+import { KinGateView } from "./components/KinWorkPieces";
 
 export type KinCompanyParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -69,13 +71,21 @@ export function KinCompanyScreen({ route }: StaticScreenProps<KinCompanyParams>)
 
 function Permitted(props: KinWorkTarget) {
   const navigation = useNavigation();
-  const allowed = useAtomValue(kinClient.companyRead.permissionAtom(props.environmentId));
+  const gate = useKinGate(
+    kinClient.companyRead.permissionStateAtom(props.environmentId),
+    props.environmentId,
+  );
+  const allowed = gate === null;
   const { state, refresh } = useKinCompanyProfile(props, allowed);
   const back = () => navigation.goBack();
   if (!allowed || state._tag === "refused") {
     return (
       <KinWorkFrame title={KIN_COMPANY.title} onBack={back}>
-        <EmptyState variant="plain" {...KIN_COMPANY.onlyOwner} />
+        <KinGateView
+          gate={gate ?? "refused"}
+          refused={KIN_COMPANY.onlyOwner}
+          label={KIN_COMPANY.title}
+        />
       </KinWorkFrame>
     );
   }

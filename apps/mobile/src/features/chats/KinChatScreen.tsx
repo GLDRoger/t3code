@@ -547,6 +547,7 @@ function KinFixtureChat({ fixtures }: { readonly fixtures: KinFixtures }) {
         _tag: "ready",
         environmentId: "dev-fixture" as EnvironmentId,
         connected: true,
+        offline: false,
         chat,
         error: null,
       }}
@@ -760,6 +761,7 @@ function KinChatPage(props: {
             charter={lead?.charter ?? null}
             chat={state.chat}
             connected={state.connected}
+            offline={state.offline}
             error={state.error}
             onRetry={props.onRetry}
             viewer={props.viewer}
@@ -934,6 +936,8 @@ function KinChatFeed(props: {
   readonly charter: string | null;
   readonly chat: KinSynced<KinChatState>;
   readonly connected: boolean;
+  /** Known unreachable, not just still on its first connection attempt. */
+  readonly offline: boolean;
   /** The stream failed after the feed loaded. */
   readonly error: string | null;
   readonly onRetry: () => void;
@@ -1155,7 +1159,12 @@ function KinChatFeed(props: {
     setFollow((current) => resolveKinFeedFollow(current, event));
   const reconnect = useKinReconnect(props.environmentId);
   const notice = kinStaleNotice(
-    { connected: props.connected, live: props.chat.live, savedAt: props.chat.savedAt },
+    {
+      connected: props.connected,
+      offline: props.offline,
+      live: props.chat.live,
+      savedAt: props.chat.savedAt,
+    },
     reconnect.status,
     (date) => offlineTime.format(date),
   );

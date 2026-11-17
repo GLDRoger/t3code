@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import {
   kinWorkNames,
   type KinWorkAnswers,
@@ -94,14 +95,10 @@ export const refreshKinWorkLive = (target: KinWorkTarget) => {
 
 /** Work's counts and change number as one screen state, kept current by the host. */
 export function useKinWork(target: KinWorkTarget): KinWorkScreenState {
-  const allowed = useAtomValue(kinClient.workRead.permissionAtom(target.environmentId));
-  const live = useAtomValue(allowed ? kinWorkLiveAtom(target) : noLiveAtom);
+  const allowed = useAtomValue(kinClient.workRead.permissionStateAtom(target.environmentId));
+  const live = useAtomValue(allowed === "granted" ? kinWorkLiveAtom(target) : noLiveAtom);
   const host = useKinHostAt(target.environmentId);
-  return kinWorkScreenState({
-    allowed,
-    connected: host._tag === "host" && host.connected,
-    live,
-  });
+  return kinWorkScreenState({ allowed, link: kinHostLink(host), live });
 }
 
 /**

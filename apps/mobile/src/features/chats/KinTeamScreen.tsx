@@ -29,6 +29,7 @@ import { KinAvatar } from "./components/KinAvatar";
 import { KinListBanner } from "./components/KinListBanner";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { KinGateView } from "./components/KinWorkPieces";
 
 export type KinTeamParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -119,8 +120,8 @@ function KinTeamBody(target: KinTeamTarget) {
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
-          {!team.allowed ? (
-            <EmptyState variant="plain" {...KIN_TEAM_ONLY_OWNER} />
+          {team.gate !== null ? (
+            <KinGateView gate={team.gate} refused={KIN_TEAM_ONLY_OWNER} label={KIN_TEAM_TITLE} />
           ) : list === null ? (
             team.failed ? (
               <KinLoadFailed title={KIN_TEAM_LOAD_FAILED} cause={null} onRetry={team.refresh} />

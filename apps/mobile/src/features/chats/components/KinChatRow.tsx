@@ -34,17 +34,23 @@ export function KinChatRow(props: {
       <KinAvatar avatar={view.avatar} />
       <View className="min-w-0 flex-1 gap-0.5">
         <View className="flex-row items-baseline gap-2">
-          <Text
-            textRole="body"
-            numberOfLines={1}
-            className={cn(
-              "min-w-0 flex-1",
-              row.retired ? "text-foreground-muted" : "text-foreground",
-              unread ? "font-t3-bold" : "font-t3-medium",
-            )}
-          >
-            {view.title}
-          </Text>
+          {view.title === null ? (
+            <View className="min-w-0 flex-1">
+              <View className="h-3.5 w-1/2 rounded bg-subtle-strong" />
+            </View>
+          ) : (
+            <Text
+              textRole="body"
+              numberOfLines={1}
+              className={cn(
+                "min-w-0 flex-1",
+                row.retired ? "text-foreground-muted" : "text-foreground",
+                unread ? "font-t3-bold" : "font-t3-medium",
+              )}
+            >
+              {view.title}
+            </Text>
+          )}
           {view.sentAt === null ? null : (
             <Text textRole="caption" className="text-foreground-muted">
               <RelativeTime timestamp={view.sentAt} />

@@ -14,6 +14,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   classifyKinProbe,
   kinHostCandidate,
+  kinHostLink,
   kinHostIdToSave,
   kinStandInLine,
   resolveKinHost,
@@ -163,13 +164,17 @@ describe("resolveKinHost", () => {
   });
 
   it.each([
-    ["connecting for the first time", { phase: "connecting", error: null }],
-    ["reconnecting before any attempt failed", { phase: "reconnecting", error: null }],
-  ] as const)("holds the saved host's cache while it is %s, saving nothing", (_name, phase) => {
-    const host = resolve({ [b]: ready }, { savedHostId: c, phases: { [c]: phase } });
-    expect(host).toMatchObject({ environmentId: c, connected: false });
-    expect(host).not.toHaveProperty("standInFor");
-  });
+    ["connecting for the first time", { phase: "connecting", error: null }, "connecting"],
+    ["reconnecting before any attempt failed", { phase: "reconnecting", error: null }, "offline"],
+  ] as const)(
+    "holds the saved host's cache while it is %s, saving nothing",
+    (_name, phase, link) => {
+      const host = resolve({ [b]: ready }, { savedHostId: c, phases: { [c]: phase } });
+      expect(host).toMatchObject({ environmentId: c, connected: false });
+      expect(kinHostLink(host)).toBe(link);
+      expect(host).not.toHaveProperty("standInFor");
+    },
+  );
 
   it.each([
     ["unreachable after a failed attempt", { phase: "reconnecting", error: "timed out" }],
@@ -352,6 +357,22 @@ describe("resolveKinHostAt", () => {
       probe: ready,
     });
     expect(at(b, { [b]: ready }, [b])).toMatchObject({ connected: false, probe: pending });
+  });
+
+  it.each([
+    ["connecting", null, "connecting"],
+    ["connected", null, "connected"],
+    ["reconnecting", null, "offline"],
+    ["reconnecting", "refused", "offline"],
+    ["error", "refused", "offline"],
+    ["offline", null, "offline"],
+  ] as const)("reads a %s route host (error %s) as %s", (phase, error, link) => {
+    const host = resolveKinHostAt({
+      candidates: [kinHostCandidate(a, { phase, error })],
+      environmentId: a,
+      probe: () => ready,
+    });
+    expect(kinHostLink(host)).toBe(link);
   });
 
   it("tells an unpaired route environment from one that isn't Kin", () => {
