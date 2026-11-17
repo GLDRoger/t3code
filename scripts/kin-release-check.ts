@@ -127,6 +127,7 @@ export const gates = (findingItem: Finding, isNew: boolean) =>
 const git = (...args: string[]) =>
   NodeChildProcess.execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
 const short = (sha: string) => sha.slice(0, 12);
+const fixtureOf = (sha: string) => NodePath.join(checkDir(), short(sha), "fixture");
 /** Each worker runs a server, a web build and a Chrome per person: about three cores each. */
 export const lifecycleWorkersOf = (flag: string | undefined) => {
   const asked = flag === undefined ? Number.NaN : Number(flag);
@@ -449,7 +450,7 @@ const instanceHome = (name: string) => NodePath.join(ROOT, ".t3", "kin-verify", 
 
 /** The lifecycle company after all ten scripts, kept outside git for the next release's migration check. */
 const keepFixture = (ctx: Context, instance: string) => {
-  const fixture = NodePath.join(checkDir(), short(ctx.sha), "fixture");
+  const fixture = fixtureOf(ctx.sha);
   NodeFS.rmSync(fixture, { recursive: true, force: true });
   NodeFS.cpSync(instanceHome(instance), fixture, {
     recursive: true,
@@ -531,7 +532,7 @@ const buildKinMigrationHead = () =>
 const migrate = async (ctx: Context): Promise<Finding[] | string> => {
   if (ctx.previousRelease === undefined)
     return "skipped: no previous release in ops/kin/releases.json";
-  const fixture = NodePath.join(checkDir(), short(ctx.previousRelease), "fixture");
+  const fixture = fixtureOf(ctx.previousRelease);
   if (!NodeFS.existsSync(NodePath.join(fixture, "userdata", "statev2.sqlite")))
     return `skipped: no fixture for ${short(ctx.previousRelease)} at ${fixture} (a --full run on that commit keeps one)`;
   const instance = "release-migrate";
@@ -869,6 +870,26 @@ const onRemote = async (
   NodeFS.mkdirSync(out, { recursive: true });
   const command =
     process.env.KIN_RELEASE_REMOTE_COMMAND ?? "bash t3code/scripts/kin-release-remote.sh";
+  const ssh = (remote: string, input?: Buffer) =>
+    NodeChildProcess.spawnSync("ssh", ["-o", "BatchMode=yes", host, remote], {
+      input,
+      maxBuffer: 2 ** 31,
+      timeout: 600_000,
+    });
+  const previous = readRecord()
+    .filter((one) => one.commit !== sha)
+    .at(-1)?.commit;
+  if (args.full && previous !== undefined && NodeFS.existsSync(fixtureOf(previous))) {
+    const tarball = NodeChildProcess.spawnSync(
+      "tar",
+      ["-C", NodePath.dirname(fixtureOf(previous)), "-czf", "-", "fixture"],
+      { maxBuffer: 2 ** 31 },
+    ).stdout;
+    if (ssh(`${command} --fixture-in ${previous}`, tarball).status !== 0)
+      console.log(
+        `[release-check] ${host}: couldn't take ${short(previous)}'s fixture; its migrate may skip`,
+      );
+  }
   console.log(`[release-check] running on ${host}; this machine takes over if it can't`);
   const { code, output } = await new Promise<Ran>((resolve) => {
     const log = NodeFS.createWriteStream(NodePath.join(out, "remote.log"));
@@ -908,6 +929,16 @@ const onRemote = async (
   NodeFS.writeFileSync(NodePath.join(out, "findings.json"), `${found[1]!}\n`);
   NodeFS.writeFileSync(NodePath.join(out, "summary.md"), `${found[2]!}\n`);
   console.log(`  ${NodePath.join(out, "summary.md")} (from ${host})`);
+  if (args.full) {
+    const fixture = ssh(`${command} --fixture-out ${sha}`);
+    const unpacked =
+      fixture.status === 0 &&
+      (NodeFS.rmSync(fixtureOf(sha), { recursive: true, force: true }),
+      NodeChildProcess.spawnSync("tar", ["-C", NodePath.dirname(fixtureOf(sha)), "-xzf", "-"], {
+        input: fixture.stdout,
+      }).status === 0);
+    if (!unpacked) console.log(`[release-check] ${host}: no fixture came back for ${short(sha)}`);
+  }
   return code;
 };
 

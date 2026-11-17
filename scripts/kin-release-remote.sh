@@ -5,6 +5,9 @@
 #   bash scripts/kin-release-remote.sh <commit> [release-check args…]
 # Exits 75 when another run holds this checkout, 76 when the commit can't be fetched, 77 when the
 # install fails: the asking machine then runs the check itself.
+#   bash scripts/kin-release-remote.sh --fixture-in <commit>   (a gzipped tar of fixture/ on stdin)
+#   bash scripts/kin-release-remote.sh --fixture-out <commit>  (the same, on stdout)
+# carry a release's fixture across, so `migrate` checks the same thing on either machine.
 set -uo pipefail
 
 # A function, parsed whole before it runs: the checkout below may change this very file.
@@ -37,7 +40,7 @@ main() {
   }
   mode=quick
   [[ " $* " == *" --full "* ]] && mode=full
-  dir="${KIN_RELEASE_CHECK_DIR:-$HOME/.cache/kin-release-check}/${commit:0:12}/$mode"
+  dir="$checks/${commit:0:12}/$mode"
   node scripts/kin-release-check.ts "$@" --out "$dir"
   code=$?
   echo "@@kin-release-findings"
@@ -47,5 +50,10 @@ main() {
   echo "@@kin-release-end"
   return "$code"
 }
+checks="${KIN_RELEASE_CHECK_DIR:-$HOME/.cache/kin-release-check}"
+case "${1:-}" in
+  --fixture-in) mkdir -p "$checks/${2:0:12}" && rm -rf "$checks/${2:0:12}/fixture" && exec tar -C "$checks/${2:0:12}" -xzf - ;;
+  --fixture-out) exec tar -C "$checks/${2:0:12}" -czf - fixture ;;
+esac
 main "$@"
 exit $?

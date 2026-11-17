@@ -14,9 +14,9 @@ A Kin release is a commit on `kin` that runs on the host. The release check runs
 | Stage        | Runs                                                                                                | Mode  |
 | ------------ | --------------------------------------------------------------------------------------------------- | ----- |
 | `static`     | `vp run check:changed <last release>`, including the Kin rules in `docs/kin/RULES.md`               | quick |
-| `models`     | `node scripts/kin-model.ts send\|reply\|checkin`                                                    | quick |
+| `models`     | `node scripts/kin-model.ts`, skipping models `static`'s `check:changed` already ran                 | quick |
 | `properties` | the `*.property.test.ts` files beside Kin's pure rules                                              | quick |
-| `lifecycle`  | the ten verify-kin lifecycle scripts (`run-all.sh`)                                                 | quick |
+| `lifecycle`  | every verify-kin lifecycle script (`run-all.sh --list`), shared across parallel instances           | quick |
 | `migrate`    | the last release's company database, started on this build, then `doctor` and two lifecycle scripts | full  |
 | `ui-fuzz`    | Bombadil as owner, co-owner, lead and member, 2 minutes each (`--fuzz-time`)                        | full  |
 
@@ -24,8 +24,19 @@ A Kin release is a commit on `kin` that runs on the host. The release check runs
 - By default a run is compared with the last release in `ops/kin/releases.json`. `--against <commit|findings.json>` picks another. A finding that is not in the baseline is NEW.
 - The exit is non-zero on any finding from a deterministic stage, and on a NEW fuzz finding. A deterministic failure stops the later stages unless you pass `--keep-going`. `--only <stage,…>` runs a subset.
 - No model is called. Provider CLIs are stubbed on `PATH` for every stage, and the fuzz runner fails if any agent turn produced a token.
-- A `--full` run keeps `<dir>/<commit>/fixture`, the lifecycle company's state after all ten scripts. The next release's `migrate` stage starts the new build on a copy of it. If the last release has no fixture, `migrate` is skipped and says so. Fuzz traces are deleted after summarising, unless you pass `--keep-traces`.
+- `lifecycle` splits the scripts across `--lifecycle-workers N` instances (default: a third of the cores, at most 4), each taking the next script left. A script that needs another's state lives in that script, so order across workers doesn't matter.
+- A `--full` run keeps `<dir>/<commit>/fixture`, the lifecycle company's state after all the scripts. The next release's `migrate` stage starts the new build on a copy of it. If the last release has no fixture, `migrate` is skipped and says so. Fuzz traces are deleted after summarising, unless you pass `--keep-traces`.
 
 ## What update.sh does on the host
 
 Only after the build passes does it stop `kin-server` and take a `sqlite3 .backup` of `~/.t3/userdata/statev2.sqlite` into `~/kin-update-backups` (or `$KIN_UPDATE_BACKUPS`). It keeps the 10 newest and never touches files it didn't name. Then it switches `~/kin-current` and starts the server. The build is healthy when the service is up with no restarts, the server answers on its port, and the database's T3 and Kin migrations have reached the build's highest. If any of those fails, it switches back to the previous build. If the failed build had already migrated the database, it also restores the backup. The migrated copy stays beside it as `statev2.sqlite.failed-<sha>`. The restore copies the backup beside the database and checks it before renaming it into place. If that fails, it starts nothing: `kin-server` stays stopped with its data intact, and the last line names the backup, where the migrated copy is, and the command that finishes the restore. A failure after the stop but before the new build starts puts back the previous env file, units and link and starts the previous build. It keeps the 3 newest builds, about 7 GB each. `scripts/kin-update.test.ts` runs these paths against a fake host.
+
+## Running it on a second machine
+
+A full check takes over an hour on a laptop. A faster machine you can reach over ssh can run it instead. This is optional: when that machine is off, asleep, busy with another run, or can't fetch the commit, the check runs on this one, and the result is the same either way.
+
+1. On the second machine: a clone of this repo with `vp i`, Java 21, `fd`, `rg` and `lsof` on `PATH`, Chromium for Playwright (`node <playwright-core>/cli.js install --with-deps chromium` from `scripts/`), and Bombadil with `BOMBADIL` pointing at it. Root needs Chrome's `--no-sandbox`, which kin-verify adds by itself. `KIN_VERIFY_HEADLESS=1` keeps browser windows off its screen.
+2. Give it a command that sets that environment and runs `bash <clone>/scripts/kin-release-remote.sh "$@"`.
+3. Here, set `KIN_RELEASE_REMOTE` to the ssh host (an alias in your `~/.ssh/config`) and `KIN_RELEASE_REMOTE_COMMAND` to that command. The commit must be pushed. Pass `--here` to run locally anyway.
+
+The findings, summary and (on `--full`) the new fixture come back into the usual folder here, with the full output in `remote.log`. A `--full` run sends the last release's fixture there first, so `migrate` checks the same thing on either machine. No credentials go to the second machine: no stage needs one.
