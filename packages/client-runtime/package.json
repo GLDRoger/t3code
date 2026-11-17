@@ -599,6 +599,10 @@
       "types": "./src/kin/kinAttention.ts",
       "default": "./src/kin/kinAttention.ts"
     },
+    "./kin/kinAway": {
+      "types": "./src/kin/kinAway.ts",
+      "default": "./src/kin/kinAway.ts"
+    },
     "./kin/kinCheckIns": {
       "types": "./src/kin/kinCheckIns.ts",
       "default": "./src/kin/kinCheckIns.ts"
@@ -638,6 +642,10 @@
     "./kin/kinGroups": {
       "types": "./src/kin/kinGroups.ts",
       "default": "./src/kin/kinGroups.ts"
+    },
+    "./kin/kinHandOver": {
+      "types": "./src/kin/kinHandOver.ts",
+      "default": "./src/kin/kinHandOver.ts"
     },
     "./kin/kinInvoices": {
       "types": "./src/kin/kinInvoices.ts",

@@ -1297,6 +1297,17 @@ export const kinClient = {
     tag: "kin.work.handBack",
     concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
   }),
+  /** Every open task someone holds, to someone else; `dryRun` counts them first. */
+  workHandOver: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:work:handOver",
+    tag: "kin.work.handOver",
+  }),
+  /** Puts back one change an agent made, from its page. */
+  agentUndoChange: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:agent:undoChange",
+    tag: "kin.lead.undoChange",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.agentId}:${input.seq}` },
+  }),
   /** The owner shares tasks with the team, or takes them back. */
   workShare: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:work:share",

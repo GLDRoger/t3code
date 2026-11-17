@@ -17,6 +17,7 @@ import {
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -44,6 +45,7 @@ import { LeadMemory } from "./LeadMemory.ts";
 import { handlers as leadHandlers } from "./mcp/handlers.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
+import { reholdAfter } from "../triggers/quietHold.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
 
@@ -763,6 +765,44 @@ it.effect("a held message follows its reader's changed clock", () =>
       });
       assert.isTrue(moved.ok, JSON.stringify(moved.value));
       assert.deepStrictEqual(yield* deliverAt, [{ at: yield* Clock.currentTimeMillis }]);
+      // Away until Thursday on her calendar: what waits for her waits for her first working hour
+      // back, and the asking chat says when it arrives. "I'm back" lets it all go.
+      const zoyaId = KinPersonId.make("zoya");
+      const setAway = (day: string | null) =>
+        reholdAfter(
+          orgId,
+          zoyaId,
+          sql`UPDATE kin_people SET away_until = ${day} WHERE person_id = ${zoyaId}`,
+        );
+      yield* setAway("2026-11-19");
+      const thursday = Date.UTC(2026, 10, 19, 10);
+      assert.deepStrictEqual(yield* deliverAt, [{ at: thursday }]);
+      const signed = yield* says("Tell Zoya the client signed.");
+      const away = yield* call("kin_relay", {
+        to: "Zoya",
+        text: "The client signed.",
+        sourceEventId: signed,
+      });
+      assert.include(
+        String(away.value.note),
+        "Zoya Sheikh is away until 10:00 their time (Thu 19 Nov)",
+      );
+      const [arrives] = yield* sql<{ body: string; when: string }>`SELECT body, when_json AS "when"
+        FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${ownerChat}
+          AND message_id LIKE 'kin-arrives:%' ORDER BY seq DESC LIMIT 1`;
+      assert.strictEqual(
+        arrives?.body,
+        "Zoya Sheikh is away: it arrives at 10:00 their time (Thu 19 Nov).",
+      );
+      assert.deepStrictEqual(JSON.parse(arrives?.when ?? "null"), {
+        at: DateTime.formatIso(DateTime.makeUnsafe(thursday)),
+        zone: "Europe/London",
+        text: "10:00 their time (Thu 19 Nov)",
+        of: "Zoya Sheikh",
+      });
+      yield* setAway(null);
+      const now = yield* Clock.currentTimeMillis;
+      assert.deepStrictEqual(yield* deliverAt, [{ at: now }, { at: now }]);
     }).pipe(Effect.provide(layer)),
   ),
 );

@@ -1,4 +1,5 @@
 import { KIN_PEOPLE_CHAT, kinPeopleChatWith } from "@t3tools/client-runtime/kin/kinPeopleChat";
+import { kinAwayLine } from "@t3tools/client-runtime/kin/kinAway";
 import { openKinProfile } from "./KinProfileSheet";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinOwnsDirectChat } from "@t3tools/client-runtime/kin/kinClearChat";
@@ -170,6 +171,7 @@ import { useKinPresenceNow, useNowMinuteMs } from "./useKinClock";
 import { KinStandInLine } from "./KinStandInLine";
 import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinHostAt } from "./useKinHost";
+import { useKinProfiles } from "./kinPictures";
 import { kinDraftAtom, kinDraftKey, restoreDraft } from "./kinDraft";
 
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
@@ -299,6 +301,10 @@ export function KinChatView(props: {
     summary === undefined || viewer.personId === null
       ? null
       : kinPeopleChatWith(summary, new Set([viewer.personId]));
+  const profiles = useKinProfiles(
+    pairWith === null ? null : environmentId,
+    summary === undefined ? null : summary.orgId,
+  );
   const avatar =
     summary === undefined
       ? null
@@ -326,13 +332,27 @@ export function KinChatView(props: {
       ? state.chat.value.presence.at(-1)
       : undefined;
   const tasks = state._tag === "ready" ? kinChatStatusLine(state.chat.value.widgets) : null;
+  const pairProfile =
+    pairWith === null || profiles === null
+      ? undefined
+      : Option.getOrNull(AsyncResult.value(profiles))?.profiles.find(
+          (profile) => profile.personId === pairWith,
+        );
+  const away = pairProfile === undefined ? null : kinAwayLine(pairProfile, { mine: false });
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <KinChatHeader
         title={title}
         avatar={avatar}
-        tasks={tasks ?? (pairWith === null ? null : KIN_PEOPLE_CHAT.privacy)}
+        tasks={
+          tasks ??
+          (pairWith === null
+            ? null
+            : away === null
+              ? KIN_PEOPLE_CHAT.privacy
+              : `${away}. Kin holds what can wait until then.`)
+        }
         muted={muted}
         onOpenProfile={
           pairWith !== null && environmentId !== null && summary !== undefined

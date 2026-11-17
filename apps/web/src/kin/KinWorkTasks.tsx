@@ -67,6 +67,7 @@ import {
   KinLoadFailed,
 } from "./KinWorkParts";
 import { KinAvatar } from "./KinAvatar";
+import { KinHandOverButton } from "./KinAway";
 import { KinWorkStateIcon } from "./KinWorkStateIcon";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
@@ -202,6 +203,12 @@ export function KinWorkTaskList(
     const record = records.find((held) => held.key === key);
     if (record !== undefined) void changes.run(record, action, names);
   };
+  const me = names.me;
+  const mineOpen =
+    props.within === undefined && me !== null
+      ? (overview.owners.find((row) => row.owner._tag === "person" && row.owner.personId === me)
+          ?.open ?? 0)
+      : 0;
   const notice = kinWorkListNotice(changed, props.openKey);
   const nothing = kinWorkNothing(filter, names, scope);
   // Needs attention shows some, so the count says how many are loaded in all.
@@ -247,6 +254,14 @@ export function KinWorkTaskList(
             everyone={props.within === undefined}
             onChange={(next) => list.setFilter(next)}
           />
+          {me === null || mineOpen === 0 ? null : (
+            <KinHandOverButton
+              environmentId={environmentId}
+              orgId={orgId}
+              from={{ _tag: "person", personId: me }}
+              fromName={null}
+            />
+          )}
           {notice === null ? null : (
             <KinWorkListNotice
               notice={notice}

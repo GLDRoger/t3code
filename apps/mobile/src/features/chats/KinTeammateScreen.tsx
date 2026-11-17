@@ -17,6 +17,7 @@ import {
 import {
   EnvironmentId,
   KinOrgId,
+  kinOwnerLevel,
   type KinLeadProfile,
   type KinPersonAccess,
   type KinPersonId,
@@ -29,6 +30,7 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import { KIN_PROFILE_COPY } from "@t3tools/client-runtime/kin/kinProfiles";
+import { KIN_HAND_OVER } from "@t3tools/client-runtime/kin/kinHandOver";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
@@ -58,6 +60,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinAvatar } from "./components/KinAvatar";
+import { KinAwaySection, KinHandOverRow } from "./components/KinAway";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { kinClient } from "./state/kinClient";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
@@ -180,9 +183,9 @@ function KinTeammateDetails(props: {
   const offered = kinTeammateActions(teammate, props.viewer);
   // The host says whose profile this reader may change: the owner's and a co-owner's alike.
   const profiles = useKinProfiles(props.target.environmentId, props.target.orgId).held;
-  const mayEdit =
-    profiles?.profiles.find((profile) => profile.personId === teammate.personId)?.canEdit ??
-    props.viewer === "owner";
+  const profile = profiles?.profiles.find((held) => held.personId === teammate.personId) ?? null;
+  const mayEdit = profile?.canEdit ?? props.viewer === "owner";
+  const openTasks = kinOwnerLevel(props.viewer) ? (profile?.load?.open ?? 0) : 0;
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -206,7 +209,10 @@ function KinTeammateDetails(props: {
     const copy = kinRemoveAccessCopy(teammate.name);
     Dialog.confirm({
       title: copy.title,
-      message: copy.detail,
+      message:
+        openTasks === 0
+          ? copy.detail
+          : `${copy.detail}\n\n${KIN_HAND_OVER.removeOffer(openTasks, teammate.name)}`,
       confirmText: copy.confirm,
       destructive: true,
       onConfirm: () => void actions.removeAccess(personId),
@@ -267,6 +273,30 @@ function KinTeammateDetails(props: {
               }}
             />
           ) : null}
+        </ListSection>
+      )}
+      {profile === null ? null : (
+        <KinAwaySection
+          environmentId={props.target.environmentId}
+          orgId={props.target.orgId}
+          profile={profile}
+          mine={false}
+          mayEdit={profile.canEdit === true}
+        />
+      )}
+      {profile === null || openTasks === 0 ? null : (
+        <ListSection
+          title="Tasks"
+          {...(offered.remove
+            ? { footer: KIN_HAND_OVER.removeOffer(openTasks, teammate.name) }
+            : {})}
+        >
+          <KinHandOverRow
+            environmentId={props.target.environmentId}
+            orgId={props.target.orgId}
+            from={{ _tag: "person", personId: profile.personId }}
+            fromName={profile.displayName}
+          />
         </ListSection>
       )}
       {kinTeammateKindEditable(teammate, props.viewer) ? (
