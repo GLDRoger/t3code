@@ -9,7 +9,12 @@ import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
 import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { kinMessageLayout } from "@t3tools/client-runtime/kin/kinMessagePage";
 import { kinDocRefLabel } from "@t3tools/client-runtime/kin/kinDocs";
-import type { KinOutboxEntry } from "@t3tools/client-runtime/kin/kinOutbox";
+import {
+  KIN_OUTBOX_STATUS,
+  kinPendingStatus,
+  type KinOutboxEntry,
+} from "@t3tools/client-runtime/kin/kinOutbox";
+import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_REACTION_NAMES, type KinReactionChip } from "@t3tools/client-runtime/kin/kinReactions";
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import {
@@ -18,6 +23,7 @@ import {
   type KinAvatarView,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { KinAvatar } from "./KinAvatar";
+import { kinOutbox } from "./kinOutbox";
 import { openKinProfile } from "./KinProfileSheet";
 import {
   kinPageShape,
@@ -31,7 +37,7 @@ import {
 } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { FileTextIcon, MessagesSquareIcon, ReplyIcon, SmilePlusIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import ChatMarkdown from "../components/ChatMarkdown";
 import { FoldedMessageHeader } from "../components/chat/TimelineUserMessageRow";
@@ -583,11 +589,18 @@ export function KinPendingRow(props: {
 }) {
   const { entry } = props;
   const failed = entry.state === "failed";
-  const status = failed
-    ? `Not sent: ${entry.error ?? "refused"}`
-    : props.connected || entry.state === "sending"
-      ? "Sending…"
-      : "Waiting for connection";
+  const [now, setNow] = useState(() => Date.now());
+  const [copied, setCopied] = useState(false);
+  const pending = kinPendingStatus(entry, props.connected, now);
+  const status = pending.text;
+  const stuck = pending.kind === "stuck";
+  const turnsIn = pending.kind === "failed" || stuck ? null : (pending.stuckInMs ?? null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- one repaint when a wait turns into "Not sent yet"
+  useEffect(() => {
+    if (turnsIn === null) return;
+    const timer = window.setTimeout(() => setNow(Date.now()), turnsIn);
+    return () => window.clearTimeout(timer);
+  }, [turnsIn]);
   const attachments = entry.attachments ?? [];
   const hasBody = entry.body.trim().length > 0;
   const label = kinSentences([`You: ${kinPlainText(kinMessageSummary(entry))}`, status]);
@@ -622,7 +635,7 @@ export function KinPendingRow(props: {
       ) : null}
       <div className="flex items-center gap-1 px-1">
         <span
-          role={failed ? "alert" : undefined}
+          role={failed || stuck ? "alert" : undefined}
           className={cn(
             "text-xs",
             failed ? "text-destructive-foreground" : "text-muted-foreground",
@@ -630,6 +643,28 @@ export function KinPendingRow(props: {
         >
           {status}
         </span>
+        {stuck ? (
+          <>
+            {hasBody ? (
+              <Button
+                size="micro"
+                variant="ghost"
+                onClick={() =>
+                  void navigator.clipboard.writeText(entry.body).then(() => setCopied(true))
+                }
+              >
+                {copied ? KIN_OUTBOX_STATUS.copied : KIN_OUTBOX_STATUS.copy}
+              </Button>
+            ) : null}
+            <Button
+              size="micro"
+              variant="ghost"
+              onClick={() => void kinOutbox.deliver(props.environmentId)}
+            >
+              {KIN_RETRY}
+            </Button>
+          </>
+        ) : null}
         {failed ? (
           <>
             {hasBody ? (

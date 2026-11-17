@@ -1,6 +1,7 @@
 import {
   KIN_COMPANY_CHAT_TEAM_ID,
   KIN_TEAM_ROOM_TEAM_ID,
+  kinIsPeopleChat,
   type KinChatMembersResult,
   type KinChatSummary,
 } from "@t3tools/contracts";
@@ -60,6 +61,21 @@ function previewOf(chat: KinChatSummary, view: KinChatRowView): string {
 }
 
 /**
+ * A chat between two people whose other person's access was removed, with nothing written since:
+ * off the list, its history kept. A new message, or their return, puts it back.
+ */
+function endedPeopleChat(chat: KinChatSummary, me: ReadonlySet<string>): boolean {
+  if (!kinIsPeopleChat(chat)) return false;
+  const other = chat.members.find(
+    (member) => member.principal._tag === "person" && !me.has(member.principal.personId),
+  );
+  // Unread words stay listed, so the badge never counts a row that isn't there.
+  if (other === undefined || other.leftAt === null || chat.unread > 0) return false;
+  const last = chat.lastMessage;
+  return last === null || Date.parse(last.createdAt) <= Date.parse(other.leftAt);
+}
+
+/**
  * The chat list in one order: chats that wait on the viewer, then working ones, then the rest by
  * latest message, then chats nobody has written in yet, and a retired agent's chats last.
  */
@@ -67,7 +83,8 @@ export function kinChatListRows(
   inbox: KinInboxView,
   directory: KinDirectory,
 ): ReadonlyArray<KinChatListRow> {
-  const rows = inbox.rows.map((row): KinChatListRow => {
+  const shown = inbox.rows.filter((row) => !endedPeopleChat(row.chat, directory.me));
+  const rows = shown.map((row): KinChatListRow => {
     const view = kinChatRowView(row, directory);
     const retired = kinRetiredDirectAgentId(row.chat, directory.retiredAgents) !== null;
     const fresh = row.chat.lastMessage === null;

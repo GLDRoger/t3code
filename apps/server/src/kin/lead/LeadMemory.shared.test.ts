@@ -29,7 +29,14 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Memory from "../memory/Memory.ts";
 import type { MemoryItem } from "../memory/MemoryCache.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
-import { SharedHead, SharedItem, authorise, fingerprint, reaching } from "../memory/sensitivity.ts";
+import {
+  SharedHead,
+  SharedItem,
+  authorise,
+  fingerprint,
+  reaching,
+  setTeamMemory,
+} from "../memory/sensitivity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
 import * as Lead from "./LeadMemory.ts";
@@ -318,6 +325,36 @@ it.effect("with team memory off, a shared turn reads nothing and saves nothing",
     // The owner's own turns are as before.
     assert.isTrue("head" in (yield* service.read(scopeOf(leads.o), { id: teamNote.head.id })));
   }).pipe(Effect.provide(withTeamMemory({}))),
+);
+
+// The owner's switch in Settings → Memory outranks the host's value, and either way an item kept
+// to the owner never reaches a teammate's turn.
+it.effect.each([{}, { KIN_TEAM_MEMORY: "on" }])(
+  "the owner's switch decides team memory from the next turn: host %j",
+  (env) =>
+    Effect.gen(function* () {
+      yield* setup;
+      const privateNote: MemoryItem = { head: head("private-note"), body: "Invented secret.\n" };
+      state.items = [teamNote, privateNote];
+      yield* authorised(teamNote);
+      const service = yield* Lead.LeadMemory;
+      const teammateSees = Effect.gen(function* () {
+        const found = yield* service.search(scopeOf(leads.a), {});
+        const hidden = yield* service
+          .read(scopeOf(leads.a), { id: privateNote.head.id })
+          .pipe(Effect.flip);
+        assert.strictEqual(hidden.reason, "not_found");
+        assert.deepStrictEqual(yield* reaching(orgId, "shared", [privateNote]), []);
+        return found.map((item) => item.id);
+      });
+      assert.deepStrictEqual(yield* teammateSees, "KIN_TEAM_MEMORY" in env ? ["team-note"] : []);
+      yield* setTeamMemory(orgId, true, ownerId);
+      assert.deepStrictEqual(yield* teammateSees, ["team-note"]);
+      yield* setTeamMemory(orgId, false, ownerId);
+      assert.deepStrictEqual(yield* teammateSees, []);
+      const refused = yield* write(leads.a, "new-claim").pipe(Effect.flip);
+      assert.strictEqual(refused.message, SHARED_REFUSAL);
+    }).pipe(Effect.provide(withTeamMemory(env))),
 );
 
 // Review of e1460657a0: shared reads also returned flags derived from `review_by` and

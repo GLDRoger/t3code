@@ -391,7 +391,9 @@ describe("KinBudget", () => {
         const queue = yield* Queue.KinEventQueue;
         const sql = yield* SqlClient.SqlClient;
         const at = "1970-01-01T00:00:00.000Z";
-        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${orgId}, 'mate', 'Kabir', ${at})`;
+        // Kabir is five and a half hours ahead of the owner, who reads UTC.
+        yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'UTC', '09:00', '18:00', '02:00', 0, 1, '10:00', '{}')`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, time_zone) VALUES ('mate', ${orgId}, 'mate', 'Kabir', ${at}, 'Asia/Kolkata')`;
         yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('group', ${orgId}, 'team_group', 0, ${at})`;
         yield* budget.set(owner, {
           orgId,
@@ -455,7 +457,8 @@ describe("KinBudget", () => {
           [
             {
               chatId: "group",
-              body: "Lead will pick this up at 12:00 am: today's limit for teammates' requests is used up.",
+              // On Kabir's clock where he asked; the owner's notice stays on the owner's.
+              body: "Lead will pick this up at 5:30 am: today's limit for teammates' requests is used up.",
             },
             {
               chatId: "owner-chat",
