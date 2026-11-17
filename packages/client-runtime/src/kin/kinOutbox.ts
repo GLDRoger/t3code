@@ -120,6 +120,42 @@ const TIMED_OUT: KinSendOutcome = { _tag: "offline" };
 export const kinOutboxRetractable = (entry: KinOutboxEntry): boolean =>
   entry.state === "failed" || (entry.state === "waiting" && entry.attempted !== true);
 
+/** Unsent this long, a waiting message stops waiting quietly: it may never go from this page. */
+export const KIN_OUTBOX_STUCK_MS = 3 * 60_000;
+
+export const KIN_OUTBOX_STATUS = {
+  sending: "Sending…",
+  waiting: "Waiting for connection",
+  stuck: "Not sent yet",
+  copy: "Copy",
+  copied: "Copied",
+} as const;
+
+export type KinPendingStatus =
+  | { readonly kind: "failed"; readonly text: string }
+  /** `stuckInMs`: when a queued one turns into `stuck`, for one repaint then. */
+  | { readonly kind: "sending"; readonly text: string; readonly stuckInMs?: number }
+  | { readonly kind: "waiting"; readonly text: string; readonly stuckInMs: number }
+  /** Offer Copy and Try again: the address it was written at may never reach the host again. */
+  | { readonly kind: "stuck"; readonly text: string };
+
+/** What an unsent message's line says, on web and phone, at `now`. */
+export function kinPendingStatus(
+  entry: KinOutboxEntry,
+  connected: boolean,
+  now: number,
+): KinPendingStatus {
+  if (entry.state === "failed")
+    return { kind: "failed", text: `Not sent: ${entry.error ?? "refused"}` };
+  if (entry.state === "sending") return { kind: "sending", text: KIN_OUTBOX_STATUS.sending };
+  const written = Date.parse(entry.createdAt);
+  const stuckInMs = Number.isNaN(written) ? 0 : written + KIN_OUTBOX_STUCK_MS - now;
+  if (stuckInMs <= 0) return { kind: "stuck", text: KIN_OUTBOX_STATUS.stuck };
+  return connected
+    ? { kind: "sending", text: KIN_OUTBOX_STATUS.sending, stuckInMs }
+    : { kind: "waiting", text: KIN_OUTBOX_STATUS.waiting, stuckInMs };
+}
+
 export function createKinOutbox(options: KinOutboxOptions) {
   const now = options.now ?? (() => new Date());
   const warn = options.warn ?? ((message, error) => console.warn(message, error));
