@@ -165,7 +165,7 @@ export function useKinDocHistory(
   );
 }
 
-/** One search box over Work: every kind, or only the ones named. */
+/** One search box: everything this viewer may open (money and memory too), or only the kinds named. */
 export function useKinSearch(
   { environmentId, orgId }: KinWorkTarget,
   kinds: ReadonlyArray<KinSearchKind> | null,
@@ -178,7 +178,7 @@ export function useKinSearch(
       read: ({ text, closed }) =>
         kinClient.search.run(appAtomRegistry, {
           environmentId,
-          input: { orgId, text, closed, ...(kinds === null ? {} : { kinds }) },
+          input: { orgId, text, closed, ...(kinds === null ? { everything: true } : { kinds }) },
         }),
     }),
   );

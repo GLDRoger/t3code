@@ -36,12 +36,15 @@ export function useKinWorkLink() {
   };
 }
 
-/** Opens what a search found, as a record link: a doc at the section the words are in. */
+/** Opens what a search found, as a record link: a doc at the section the words are in, a money entry on its sheet. */
 export function useKinOpenHit(target: KinWorkTarget) {
   const openRecord = useKinWorkLink();
+  const navigation = useNavigation();
   const base = { environmentId: String(target.environmentId), orgId: String(target.orgId) };
   return (hit: KinSearchHitView) => {
-    if (hit.kind === "docs")
+    // What memory keeps opens where the owner sees and forgets it.
+    if (hit.kind === "memory") navigation.navigate("KinMemory", base);
+    else if (hit.kind === "docs")
       openRecord("KinDoc", {
         ...base,
         doc: hit.key,

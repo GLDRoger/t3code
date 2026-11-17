@@ -7,6 +7,7 @@ import {
   KIN_DOCS,
   KIN_SEARCH,
   kinDocDiffSummary,
+  kinSearchHint,
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -339,7 +340,7 @@ function KinDocHistory(props: KinWorkTarget & { readonly docKey: KinRecordKey })
 
 export type KinSearchParams = { readonly environmentId: string; readonly orgId: string };
 
-/** One search box over tasks, clients, contacts, projects and docs. */
+/** One search box over tasks, clients, contacts, projects, docs, money and, for the owner level, memory. */
 export function KinSearchScreen({ route }: StaticScreenProps<KinSearchParams>) {
   const navigation = useNavigation();
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
@@ -383,7 +384,7 @@ function KinSearch(props: KinWorkTarget) {
         />
       </ListSection>
       {state.text.trim() === "" ? (
-        <EmptyState variant="plain" {...KIN_SEARCH.hint} />
+        <EmptyState variant="plain" {...kinSearchHint(scope)} />
       ) : (
         <View className="-mx-4">
           <KinSearchHits state={state} scope={scope} onRetry={search.retry} onOpen={open} />
