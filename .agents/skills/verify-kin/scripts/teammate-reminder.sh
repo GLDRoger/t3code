@@ -78,7 +78,12 @@ expect_in "$(kv push sent | rg "/eeeeee" | rg -F "Reminder: $WHAT" || true)" "Re
 
 # Due, her card offers every tap, and each one works for her.
 kv as zoya web open chat:chief >/dev/null
-kv as zoya web wait "Tomorrow 9:00" >/dev/null || fail "Zoya's due reminder card never showed"
+if ! kv as zoya web wait "Tomorrow 9:00" >/dev/null; then
+  # It failed only in long runs: say what the card and her page held, for the next one.
+  kv db "select widget_id, closed_at, revision, state_json from kin_widgets where state_json like '%$WHAT%'" >&2
+  kv as zoya web snapshot 2>&1 | tail -40 >&2
+  fail "Zoya's due reminder card never showed"
+fi
 card="$(kv as zoya web snapshot --full)"
 for name in "Change this with your agent" "Snooze this reminder for 10 minutes" \
   "Snooze this reminder for an hour" "Snooze this reminder to tomorrow at 9:00" "Mark this reminder done"; do
