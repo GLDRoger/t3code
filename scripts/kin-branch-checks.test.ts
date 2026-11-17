@@ -3,8 +3,10 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   addedLines,
   checkInstructions,
+  checkSharedCopy,
   checkMigrations,
   checkSurvival,
+  kinSentences,
   migrationIds,
   supersededIn,
 } from "./kin-branch-checks.ts";
@@ -91,6 +93,36 @@ describe("kin branch checks", () => {
     assert.deepStrictEqual(
       checkSurvival({ merged, tip, head: () => renamed.join("\n"), superseded: new Set() }),
       [],
+    );
+  });
+
+  it("refuses a sentence of four or more words typed into both Kin clients", () => {
+    const web = `
+      // Comments are not copy: Couldn't load the rates.
+      export const Rates = (props: { host: string }) => (
+        <p className="text-xs text-muted-foreground flex-1 min-w-0">
+          Couldn't load the rates. This visual asks to load from <b>{props.host}</b>.
+        </p>
+      );
+      const done = "Saved.";
+      const label = \`Open the chat with \${props.host}\`;
+    `;
+    const phone = `
+      const title = "Couldn't load the rates";
+      const fragment = \`\${host}\${unicode === null ? "" : \`(shown as \${unicode})\`}\\n\\nThis visual asks to load from it.\`;
+      const done = "Saved.";
+      const label = \`Open the chat with \${title}\`;
+    `;
+    assert.deepStrictEqual(kinSentences(web).toSorted(), [
+      "Couldn't load the rates.",
+      "Open the chat with",
+      "This visual asks to load from",
+    ]);
+    const said = checkSharedCopy(new Map([["web.tsx", web]]), new Map([["phone.tsx", phone]]));
+    // The same words with different punctuation, and short words, are left alone.
+    assert.deepStrictEqual(
+      said.map((problem) => problem.split('"')[1]),
+      ["Open the chat with"],
     );
   });
 });

@@ -8,6 +8,7 @@ import {
 import {
   KIN_OTHER_PROVIDER_AGENTS,
   kinDomainLabel,
+  KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { EnvironmentId, KinOrgId, type ModelSelection } from "@t3tools/contracts";
 import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
@@ -134,7 +135,7 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
         <EmptyState
           variant="plain"
           title="No agents yet"
-          detail="An agent looks after one part of the company, such as engineering or finance, and you talk to it in a chat."
+          detail={KIN_AGENTS_COPY.explain}
           {...(add === undefined ? {} : { actionLabel: "New agent", onAction: add })}
         />
       ) : (
@@ -241,7 +242,7 @@ function KinAgentDefaults(props: {
         title={KIN_AGENT_PAGE.defaults}
         footer={
           problem ??
-          `${KIN_AGENT_PAGE.defaultsDetail}${defaults?.chosen === false ? " Until you choose, they start on your first agent's." : ""}`
+          `${KIN_AGENT_PAGE.defaultsDetail}${defaults?.chosen === false ? ` ${KIN_AGENT_PAGE.defaultsUnchosen}` : ""}`
         }
       >
         <KinAgentModelRow

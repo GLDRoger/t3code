@@ -623,6 +623,10 @@
       "types": "./src/kin/kinCurrency.ts",
       "default": "./src/kin/kinCurrency.ts"
     },
+    "./kin/kinDevice": {
+      "types": "./src/kin/kinDevice.ts",
+      "default": "./src/kin/kinDevice.ts"
+    },
     "./kin/kinSubscriptions": {
       "types": "./src/kin/kinSubscriptions.ts",
       "default": "./src/kin/kinSubscriptions.ts"

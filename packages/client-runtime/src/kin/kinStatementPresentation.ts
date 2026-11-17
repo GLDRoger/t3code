@@ -456,3 +456,13 @@ export const kinStatementFailureText = (cause: unknown): string =>
   isKinChatError(cause) && cause.message.trim() !== ""
     ? cause.message.slice(0, 300)
     : kinFailureText(cause, KIN_SEND_FAILED_TEXT);
+
+/** A bank statement's review card. */
+export const KIN_STATEMENT_COPY = {
+  takeSuggestions: (rows?: number) =>
+    rows === undefined
+      ? "Use Kin's suggestions"
+      : `Use Kin's suggestions for ${rows} ${rows === 1 ? "row" : "rows"}`,
+  remember: "Remember for this account, so the next statement opens on its own",
+  leftRows: "Rows you leave stay unexplained for later.",
+} as const;

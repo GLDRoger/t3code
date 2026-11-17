@@ -5,6 +5,7 @@ import { formatKinTime } from "./kinScreenState.ts";
 import { kinWorkActorName, type KinWorkNames } from "./kinWork.ts";
 
 export const KIN_TEMPLATES = {
+  loadFailed: "Couldn't load your templates",
   title: "Templates",
   detail:
     "How Kin makes your documents. Agents write them; you can preview, undo or ask for changes.",

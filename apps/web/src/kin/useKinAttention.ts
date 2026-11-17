@@ -4,6 +4,7 @@ import {
   kinAttentionProblem,
   kinAttentionShown,
   type KinAttentionScope,
+  KIN_GOALS,
 } from "@t3tools/client-runtime/kin/kinAttention";
 import { kinAskAboutAgent } from "@t3tools/client-runtime/kin/kinScreenReads";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -150,7 +151,7 @@ export function useKinGoals(
       if (live === null) appAtomRegistry.refresh(atom);
       return AsyncResult.isSuccess(outcome)
         ? null
-        : kinFailureText(squashAtomCommandFailure(outcome), "Couldn't save the goal.");
+        : kinFailureText(squashAtomCommandFailure(outcome), KIN_GOALS.saveFailed);
     },
   };
 }

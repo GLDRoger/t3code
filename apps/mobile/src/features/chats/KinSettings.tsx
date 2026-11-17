@@ -1,3 +1,4 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
@@ -154,7 +155,7 @@ export function KinSettings(props: {
   const leave = (environmentId: EnvironmentId) =>
     Dialog.alert(
       teamOf(environmentId) === null ? "Leave this team?" : `Leave ${teamOf(environmentId)}?`,
-      "You'll be signed out on this phone and its chats will be removed from it. To come back, ask your team for a new join link.",
+      KIN_DEVICE_COPY.leave("phone"),
       [
         { text: "Cancel", style: "cancel" },
         {

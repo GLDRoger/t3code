@@ -1,6 +1,7 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomValue } from "@effect/atom-react";
 import { kinAgentGroups } from "@t3tools/client-runtime/kin/kinAgentRetire";
-import { kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { kinDomainLabel, KIN_AGENTS_COPY } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import {
   KIN_SETTINGS_MOVED,
   KIN_SETTINGS_PAGE_TITLES,
@@ -432,8 +433,7 @@ function KinLeaveTeam() {
 const KIN_LEAVE_TEAM = {
   button: "Leave this team",
   title: "Leave this team?",
-  detail:
-    "You'll be signed out on this browser. To come back, ask your team for a new join link: it brings back your chats and tasks.",
+  detail: KIN_DEVICE_COPY.leave("browser"),
   confirm: "Leave",
   failed: "Couldn't sign this browser out. Nothing changed.",
 } as const;
@@ -497,16 +497,13 @@ function KinSettingsAgents(props: KinSettingsTarget) {
       ) : null}
       {agents === null ? (
         <p className="text-sm text-muted-foreground">
-          {AsyncResult.isFailure(result) ? "Couldn't load your agents." : "Loading…"}
+          {AsyncResult.isFailure(result) ? KIN_AGENTS_COPY.loadFailed : "Loading…"}
         </p>
       ) : agents.length === 0 ? (
         <Empty size="compact">
           <EmptyHeader>
             <EmptyTitle>No agents yet</EmptyTitle>
-            <EmptyDescription>
-              An agent looks after one part of the company, such as engineering or finance, and you
-              talk to it in a chat.
-            </EmptyDescription>
+            <EmptyDescription>{KIN_AGENTS_COPY.explain}</EmptyDescription>
           </EmptyHeader>
         </Empty>
       ) : (

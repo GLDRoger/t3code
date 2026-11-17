@@ -166,12 +166,8 @@ function KinListGate(
       <KinWorkFrame title={KIN_LISTS.title} onBack={back}>
         <EmptyState
           variant="plain"
-          title={found ? "This list isn't here" : KIN_LISTS.loadFailed}
-          detail={
-            found
-              ? "It may have been renamed. Open Lists to see what there is."
-              : failure.text.trim()
-          }
+          title={found ? KIN_LISTS.listGone : KIN_LISTS.loadFailed}
+          detail={found ? KIN_LISTS.goneDetail : failure.text.trim()}
           action={
             <Button
               tone="secondary"

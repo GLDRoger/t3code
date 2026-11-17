@@ -117,7 +117,7 @@ function KinDocChanges(
     return frame(
       <EmptyState
         variant="plain"
-        title="Couldn't load the changes"
+        title={KIN_DOCS.changesFailed}
         detail={KIN_CHECK_CONNECTION}
         action={
           <Button
@@ -275,7 +275,7 @@ function KinDocHistory(props: KinWorkTarget & { readonly docKey: KinRecordKey })
       ) : state.failed !== null ? (
         <EmptyState
           variant="plain"
-          title="Couldn't load the history"
+          title={KIN_DOCS.historyFailed}
           detail={KIN_CHECK_CONNECTION}
           action={<Button tone="secondary" label={KIN_RETRY} onPress={list.refresh} />}
         />

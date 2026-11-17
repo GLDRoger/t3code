@@ -4,6 +4,7 @@ import {
   kinLeadAccessCandidates,
   kinLeadAccessChanged,
   kinLeadAccessProblem,
+  KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
@@ -106,7 +107,7 @@ export function KinLeadAccess(props: {
     <KinAgentSection title="Who can message">
       {allowed === null ? (
         <p className="text-sm text-muted-foreground">
-          {AsyncResult.isFailure(access) ? "Couldn't load who can message it." : "Loading…"}
+          {AsyncResult.isFailure(access) ? KIN_AGENTS_COPY.accessFailed : "Loading…"}
         </p>
       ) : everyone || allowed.length === 0 ? (
         <p className="text-sm text-muted-foreground">
@@ -136,8 +137,8 @@ export function KinLeadAccess(props: {
       {allowed === null || everyone || allowed.length === 0 ? null : (
         <p className="text-xs text-muted-foreground">
           {(lead.intro ?? "").trim() === ""
-            ? "They see its name only. Add what teammates see in Edit agent."
-            : `They see its name and this: ${(lead.intro ?? "").trim()}`}
+            ? KIN_AGENTS_COPY.nameOnly
+            : KIN_AGENTS_COPY.seesIntro((lead.intro ?? "").trim())}
         </p>
       )}
       {note === null ? null : (
@@ -176,8 +177,7 @@ export function KinLeadAccess(props: {
           <AlertDialogHeader>
             <AlertDialogTitle>Remove {removing?.displayName}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {removing?.displayName} keeps their chat with {lead.name} to read, but can't send it
-              anything more. You can add them back any time.
+              {KIN_AGENTS_COPY.removeAccess(removing?.displayName ?? "", lead.name)}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

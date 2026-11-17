@@ -23,7 +23,7 @@ import {
   kinLinesInput,
   type KinLineDraft,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
-import { kinDefaultTemplate } from "@t3tools/client-runtime/kin/kinTemplates";
+import { kinDefaultTemplate, KIN_TEMPLATES } from "@t3tools/client-runtime/kin/kinTemplates";
 import { kinWorkDayOf, kinWorkDueLabel } from "@t3tools/client-runtime/kin/kinWork";
 import {
   EnvironmentId,
@@ -566,7 +566,7 @@ export function KinMakeDocumentStep(
         <KinWorkLoading label="Loading templates" />
       ) : state._tag !== "ready" ? (
         <KinLoadFailed
-          title="Couldn't load your templates"
+          title={KIN_TEMPLATES.loadFailed}
           cause={state._tag === "failed" ? state.cause : null}
           onRetry={recipes.refresh}
         />

@@ -11,6 +11,7 @@ import {
   kinGroupNameCheck,
   kinGroupProblem,
   type KinGroupMemberView,
+  KIN_GROUP_FORM,
 } from "@t3tools/client-runtime/kin/kinGroups";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinChatMembersResult, KinOrgId } from "@t3tools/contracts";
@@ -215,9 +216,7 @@ export function KinGroupSheet(props: {
               ))}
             </ul>
             {leads.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No agent is in this group, so messages here get no answer from one.
-              </p>
+              <p className="text-xs text-muted-foreground">{KIN_GROUP_FORM.noAgent}</p>
             ) : null}
             {canChange ? (
               <Button
@@ -230,12 +229,12 @@ export function KinGroupSheet(props: {
                   appAtomRegistry.set(kinGroupFormAtom, { environmentId, orgId, chatId });
                 }}
               >
-                Add agents or people
+                {KIN_GROUP_FORM.addMembers}
               </Button>
             ) : null}
           </Section>
           {canChange && (answerers.length > 1 || (silent !== null && answerers.length > 0)) ? (
-            <Section title="Answers when no one is named">
+            <Section title={KIN_GROUP_FORM.answers}>
               {silent === null ? null : (
                 <p className="text-xs text-muted-foreground">
                   {silent.name} is retired, so nobody answers until you choose another agent.
@@ -261,9 +260,7 @@ export function KinGroupSheet(props: {
                   </label>
                 ))}
               </RadioGroup>
-              <p className="text-xs text-muted-foreground">
-                Name another agent with @ in a message to ask it instead.
-              </p>
+              <p className="text-xs text-muted-foreground">{KIN_GROUP_FORM.nameAnother}</p>
             </Section>
           ) : null}
           {canMute ? (
@@ -371,12 +368,10 @@ export function KinGroupSheet(props: {
             </AlertDialogTitle>
             <AlertDialogDescription>
               {confirm?.kind === "remove"
-                ? confirm.member.kind === "lead"
-                  ? `${confirm.member.name} stops answering here. You can add it back any time.`
-                  : `${confirm.member.name} stops seeing this group and its files. You can add them back any time.`
+                ? KIN_GROUP_FORM.removeDetail(confirm.member.name, confirm.member.kind === "lead")
                 : confirm?.kind === "clear"
                   ? kinClearChatBody("group", clearPreview.kept)
-                  : "The group closes for everyone in it. This can't be undone."}
+                  : KIN_GROUP_FORM.closeDetail}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

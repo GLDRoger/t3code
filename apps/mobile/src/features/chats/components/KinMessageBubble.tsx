@@ -33,6 +33,7 @@ import {
   kinPlainText,
   type KinFeedRow,
   type KinNoticeOpen,
+  KIN_CHAT_COPY,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import {
   KIN_OUTBOX_STATUS,
@@ -55,7 +56,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import { kinAuthorAvatar } from "@t3tools/client-runtime/kin/kinGroups";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
-import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { kinMessageLayout } from "@t3tools/client-runtime/kin/kinMessagePage";
 import { AgentMessageFoldHeader, MessageAttachmentList } from "../../threads/ThreadFeed";
 import { attachmentImageGallery } from "../../threads/messageImageGallery";
@@ -321,7 +322,7 @@ export function KinMessageBubble(props: {
             textRole="caption"
             className={row.own ? "text-user-bubble-foreground-muted" : "text-foreground-muted"}
           >
-            {suggested ? "Suggestion, not sent yet" : "Edited"}
+            {suggested ? KIN_CHAT_COPY.suggestion : "Edited"}
           </Text>
         ) : null}
       </View>
@@ -641,7 +642,7 @@ export function KinRelayBubble(props: {
             onPress={props.onOpenDiscussion}
           >
             <Text textRole="footnote" className="text-foreground-muted underline">
-              See how they got there
+              {KIN_CARD_COPY.seeHow}
             </Text>
           </Pressable>
         )}

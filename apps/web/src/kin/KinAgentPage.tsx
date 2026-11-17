@@ -196,7 +196,7 @@ export function KinAgentDetails(props: {
   if (page === null)
     return AsyncResult.isFailure(result) ? (
       <KinLoadFailed
-        what="Couldn't load this agent"
+        what={KIN_AGENT_PAGE.loadFailed}
         cause={result}
         onRetry={() => appAtomRegistry.refresh(pageAtom)}
       />
@@ -332,9 +332,7 @@ function AgentPageBody(props: {
         }
       >
         <p className="text-sm text-foreground">
-          {page.teamAgent
-            ? KIN_AGENT_PAGE.teamAgentDetail
-            : "Not the team agent. Only you and the people you add can message it."}
+          {page.teamAgent ? KIN_AGENT_PAGE.teamAgentDetail : KIN_AGENT_PAGE.notTeamAgent}
         </p>
       </KinAgentSection>
       <KinAgentSection
@@ -461,7 +459,7 @@ function AgentModels(props: {
     setBusy(false);
     setProblem(
       AsyncResult.isFailure(outcome)
-        ? kinFailureText(squashAtomCommandFailure(outcome), "Couldn't change the model.")
+        ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_PAGE.modelFailed)
         : null,
     );
     props.onChanged();
@@ -527,7 +525,7 @@ function AgentCharacter(props: {
     });
     setBusy(false);
     if (AsyncResult.isFailure(outcome)) {
-      setProblem(kinFailureText(squashAtomCommandFailure(outcome), "Couldn't save the character."));
+      setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_PAGE.characterFailed));
       return;
     }
     setProblem(null);
@@ -682,7 +680,7 @@ function AgentInHand(props: {
     <KinAgentSection title={retired ? "On hold" : KIN_AGENT_PAGE.activity}>
       {lead.tracking.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          {retired ? "Nothing is waiting on it." : "Nothing in hand right now."}
+          {retired ? KIN_AGENT_PAGE.nothingWaiting : "Nothing in hand right now."}
         </p>
       ) : (
         <ul className="flex flex-col gap-2">

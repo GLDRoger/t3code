@@ -145,7 +145,7 @@ export function KinDocPage(
 
   const run = async (target: NonNullable<Restoring>, undoing: boolean) => {
     if (!kinHostConnected(environmentId)) {
-      setProblem("You're offline. Restore it when the connection is back.");
+      setProblem(KIN_DOCS.restoreOffline);
       setRestoring(null);
       return;
     }
@@ -237,9 +237,7 @@ export function KinDocPage(
           )}
           {undo === null || doc === null ? null : (
             <Alert variant="success">
-              <AlertDescription>
-                Restored. This is now version {doc.latest.version}, and nothing was lost.
-              </AlertDescription>
+              <AlertDescription>{KIN_DOCS.restored(doc.latest.version)}</AlertDescription>
               <AlertAction>
                 <Button
                   size="xs"
@@ -372,8 +370,7 @@ export function KinDocPage(
           <AlertDialogHeader>
             <AlertDialogTitle>Restore version {restoring?.version}?</AlertDialogTitle>
             <AlertDialogDescription>
-              The doc will read as it did at version {restoring?.version}. Nothing is lost: the
-              restore is saved as a new version, and you can undo it.
+              {KIN_DOCS.restoreDetail(restoring?.version)}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -469,7 +466,7 @@ function KinDocChanges(
   if (state._tag !== "ready")
     return (
       <KinWorkNotice
-        title="Couldn't load the changes"
+        title={KIN_DOCS.changesFailed}
         detail={KIN_CHECK_CONNECTION}
         action={
           <Button size="sm" variant="outline" onClick={() => appAtomRegistry.refresh(atom)}>
@@ -589,7 +586,7 @@ function KinDocHistory(
             </div>
           ) : state.failed !== null ? (
             <KinLoadFailed
-              what={"Couldn't load the history"}
+              what={KIN_DOCS.historyFailed}
               cause={state.failed}
               onRetry={list.refresh}
             />

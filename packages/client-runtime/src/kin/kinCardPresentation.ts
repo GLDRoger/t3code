@@ -589,3 +589,19 @@ function kinLiveCardView(
       return unknown(widget);
   }
 }
+
+/** Words on chat cards: pictures, decisions and visuals. */
+export const KIN_CARD_COPY = {
+  choicePicture: "The picture this question is about",
+  asksToLoadFrom: "This visual asks to load from",
+  allowHostTitle: "Allow this host for every visual?",
+  allowHostDetail:
+    "The visual asked for this itself; nobody checked the host. Once allowed, every visual in this workspace can load from it and send it anything a visual shows. Allow only a host you trust. You can remove it later under Team.",
+  saveFileFailed: "Couldn't save this file",
+  svgUnsafe: (error: string) => `Kin couldn't save this SVG safely: ${error}.`,
+  visualFailed: "Couldn't load this visual.",
+  visualGone: "This visual is no longer available.",
+  visualAllowAll: "Allow for every visual",
+  seeHow: "See how they got there",
+  pictureFailed: "The picture couldn't load. Open the chat to see the file.",
+} as const;

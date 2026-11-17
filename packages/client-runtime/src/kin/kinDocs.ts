@@ -43,6 +43,13 @@ import {
 } from "./kinWork.ts";
 
 export const KIN_DOCS = {
+  changesFailed: "Couldn't load the changes",
+  historyFailed: "Couldn't load the history",
+  restoreOffline: "You're offline. Restore it when the connection is back.",
+  restored: (version: number) => `Restored. This is now version ${version}, and nothing was lost.`,
+  restoreDetail: (version: number | undefined) =>
+    `The doc will read as it did at version ${version ?? ""}. Nothing is lost: the restore is saved as a new version, and you can undo it.`,
+  noText: "This doc has no text yet.",
   title: "Docs",
   docsAndLists: "Docs and lists",
   which: "Which",

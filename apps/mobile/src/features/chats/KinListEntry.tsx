@@ -1109,11 +1109,7 @@ function KinListSettingsGate(props: KinWorkTarget & { readonly list: KinListId }
         {lists.state._tag === "loading" ? (
           <KinWorkLoading label="Loading list" />
         ) : (
-          <EmptyState
-            variant="plain"
-            title="This list isn't here"
-            detail="It may have been renamed. Open Lists to see what there is."
-          />
+          <EmptyState variant="plain" title={KIN_LISTS.listGone} detail={KIN_LISTS.goneDetail} />
         )}
       </KinWorkFrame>
     );

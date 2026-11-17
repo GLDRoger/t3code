@@ -1,3 +1,4 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_STATEMENT_ACTION_LABELS,
@@ -33,6 +34,7 @@ import {
   type KinStatementPasswordView,
   type KinStatementReviewView,
   type KinStatementSectionId,
+  KIN_STATEMENT_COPY,
 } from "@t3tools/client-runtime/kin/kinStatementPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId, KinStatementSelectChange } from "@t3tools/contracts";
@@ -366,7 +368,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
       )}
       {card.status === "replaced" ? null : !canApply ? (
         <Text textRole="caption" className="text-foreground-muted">
-          This phone can't confirm here. Pair it again with the server that runs Kin.
+          {KIN_DEVICE_COPY.cantAct("phone", "confirm")}
         </Text>
       ) : card.status === "applied" ? (
         <View className="flex-row flex-wrap gap-2">
@@ -391,7 +393,7 @@ export const KinStatementReviewCard = memo(function KinStatementReviewCard(props
             onPress={() => void send("apply")}
           />
           <Text textRole="caption" className="text-center text-foreground-muted">
-            Rows you leave stay unexplained for later.
+            {KIN_STATEMENT_COPY.leftRows}
           </Text>
           {undoBefore === null ? null : (
             <Button
@@ -524,11 +526,7 @@ function UnmatchedRows(props: RowsProps) {
         <Button
           tone="outline"
           size="compact"
-          label={
-            whole
-              ? `Use Kin's suggestions for ${open} ${open === 1 ? "row" : "rows"}`
-              : "Use Kin's suggestions"
-          }
+          label={KIN_STATEMENT_COPY.takeSuggestions(whole ? open : undefined)}
           onPress={() => props.onChange({ _tag: "suggestions" })}
         />
       )}
@@ -649,7 +647,7 @@ export const KinStatementPasswordCard = memo(function KinStatementPasswordCard(p
           />
           <View className="min-h-11 flex-row items-center gap-3">
             <Text textRole="caption" className="min-w-0 flex-1 text-foreground-muted">
-              Remember for this account, so the next statement opens on its own
+              {KIN_STATEMENT_COPY.remember}
             </Text>
             <ThemedSwitch
               accessibilityLabel="Remember the password for this account"

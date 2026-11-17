@@ -1,4 +1,7 @@
-import { kinLeadMessageable } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import {
+  kinLeadMessageable,
+  KIN_AGENTS_COPY,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -13,6 +16,7 @@ import {
   kinTeammateLeadLine,
   type KinMadeInvite,
   type KinTeammate,
+  KIN_TEAM_COPY,
 } from "@t3tools/client-runtime/kin/kinTeam";
 import {
   EnvironmentId,
@@ -300,7 +304,7 @@ function KinTeammateDetails(props: {
         </ListSection>
       )}
       {kinTeammateKindEditable(teammate, props.viewer) ? (
-        <ListSection title="What they can do">
+        <ListSection title={KIN_TEAM_COPY.canDo}>
           {KIN_ACCESS_CHOICES.map((choice, index) => (
             <ListChoiceRow
               key={choice.access}
@@ -410,16 +414,16 @@ function KinTeammateLeads(props: {
       footer={
         leads === null || leads.length === 0
           ? undefined
-          : `Open an agent to change whether ${props.name} can message it.`
+          : KIN_TEAM_COPY.openAgentToChange(props.name)
       }
     >
       {leads === null || leads.length === 0 ? (
         <View className="px-4 py-3">
           <Text textRole="body" className="text-foreground-muted">
             {leads !== null
-              ? "You have no agents yet."
+              ? KIN_AGENTS_COPY.none
               : AsyncResult.isFailure(result)
-                ? "Couldn't load your agents."
+                ? KIN_AGENTS_COPY.loadFailed
                 : "Loading…"}
           </Text>
         </View>
@@ -500,10 +504,7 @@ function KinTeammatePlaces(props: {
   };
   return (
     <>
-      <ListSection
-        title="What they can see"
-        footer={problem ?? "Tasks shared with the team, always."}
-      >
+      <ListSection title={KIN_TEAM_COPY.canSee} footer={problem ?? KIN_TEAM_COPY.sharedAlways}>
         {KIN_PLACE_SWITCHES.map((entry, index) => (
           <View
             key={entry.place}

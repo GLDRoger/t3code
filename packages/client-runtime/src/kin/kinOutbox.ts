@@ -437,3 +437,10 @@ export function splitKinOutbox(
   }
   return { acked, pending, echoed };
 }
+
+/** What the composer says when a message can't go yet. */
+export const KIN_COMPOSER_COPY = {
+  tooLong: (length: string, max: string) => `Too long to send: ${length} of ${max} characters.`,
+  tooMany: "Too many unsent messages. Wait for them to go out.",
+  agentsYouCanAsk: "Agents you can ask",
+} as const;

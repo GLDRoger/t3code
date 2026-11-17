@@ -4,9 +4,10 @@ import {
   kinPlainText,
   type KinFeedRow,
   type KinNoticeOpen,
+  KIN_CHAT_COPY,
 } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinMessageSummary } from "@t3tools/client-runtime/kin/kinAttachments";
-import { kinCardDraws } from "@t3tools/client-runtime/kin/kinCardPresentation";
+import { kinCardDraws, KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { kinMessageLayout } from "@t3tools/client-runtime/kin/kinMessagePage";
 import { kinDocRefLabel } from "@t3tools/client-runtime/kin/kinDocs";
 import {
@@ -273,7 +274,7 @@ export function KinMessageRow(props: {
             ) : null}
             {suggested || message.editedAt !== null ? (
               <p className="pt-0.5 text-xs text-muted-foreground">
-                {suggested ? "Suggestion, not sent yet" : "Edited"}
+                {suggested ? KIN_CHAT_COPY.suggestion : "Edited"}
               </p>
             ) : null}
           </div>
@@ -524,7 +525,7 @@ export function KinRelayRow(props: {
             }}
             className="self-start rounded-sm text-xs text-foreground underline underline-offset-2 outline-none ring-ring hover:text-primary focus-visible:ring-2 focus-visible:ring-inset"
           >
-            See how they got there
+            {KIN_CARD_COPY.seeHow}
           </Link>
         )}
       </div>

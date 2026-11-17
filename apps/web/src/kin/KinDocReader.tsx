@@ -440,7 +440,7 @@ export function KinDocReader(
           )}
           {doc.body.trim() === "" ? (
             doc.version.file === undefined ? (
-              <p className="text-sm text-muted-foreground">This doc has no text yet.</p>
+              <p className="text-sm text-muted-foreground">{KIN_DOCS.noText}</p>
             ) : null
           ) : (
             <div

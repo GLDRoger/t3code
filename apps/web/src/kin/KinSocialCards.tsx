@@ -1,3 +1,4 @@
+import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { useAtomValue } from "@effect/atom-react";
 import { createKinCardActions } from "@t3tools/client-runtime/kin/kinDeferralPresentation";
 import type { KinCardNotice } from "@t3tools/client-runtime/kin/kinDeferralPresentation";
@@ -10,6 +11,7 @@ import {
   type KinSocialPostTone,
   type KinSocialPostView,
   type KinSocialWeekView,
+  KIN_SOCIAL_COPY,
 } from "@t3tools/client-runtime/kin/kinSocial";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type {
@@ -31,8 +33,7 @@ import { CardFrame } from "./KinCards";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 
-const CANT_ACT_TEXT =
-  "This browser can't answer here. Pair it again with the server that runs Kin.";
+const CANT_ACT_TEXT = KIN_DEVICE_COPY.cantAct("browser", "answer");
 
 const TONE_CLASSES: Record<KinSocialPostTone, string> = {
   waiting: "text-muted-foreground",
@@ -147,7 +148,7 @@ function MediaThumb(props: {
         name={media.name}
         mimeType={media.mimeType}
         src={src}
-        alt={`Picture for this post: ${media.name}`}
+        alt={KIN_SOCIAL_COPY.postPicture(media.name)}
         decoding="async"
         onError={() => setFailed(true)}
         className="size-full object-cover"

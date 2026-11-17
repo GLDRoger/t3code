@@ -552,3 +552,10 @@ export function createKinMemoryActions(options: {
 }
 
 export type KinMemoryActions = ReturnType<typeof createKinMemoryActions>;
+
+/** What the agents remember, for the owner, and the dead end for everyone else. */
+export const KIN_MEMORY_COPY = {
+  loading: "Loading what your agents remember",
+  ownerOnly: "Only the owner can open this",
+  ownerOnlyDetail: "What the agents remember is shown to the person who runs this workspace.",
+} as const;
