@@ -35,7 +35,7 @@ Only after the build passes does it stop `kin-server` and take a `sqlite3 .backu
 
 A full check takes over an hour on a laptop. A faster machine you can reach over ssh can run it instead. This is optional: when that machine is off, asleep, busy with another run, or can't fetch the commit, the check runs on this one, and the result is the same either way.
 
-1. On the second machine: a clone of this repo with `vp i`, Java 21, `fd`, `rg` and `lsof` on `PATH`, Chromium for Playwright (`node <playwright-core>/cli.js install --with-deps chromium` from `scripts/`), and Bombadil with `BOMBADIL` pointing at it. Root needs Chrome's `--no-sandbox`, which kin-verify adds by itself. `KIN_VERIFY_HEADLESS=1` keeps browser windows off its screen.
+1. On the second machine: a clone of this repo with `vp i`, Java 21, `fd`, `rg` and `lsof` on `PATH`, Chromium for Playwright (`node <playwright-core>/cli.js install --with-deps chromium` from `scripts/`), and Bombadil with `BOMBADIL` pointing at it. Run it as a normal user: as root, the server tests that expect a permission error fail, so `static` reports findings this machine wouldn't. `KIN_VERIFY_HEADLESS=1` keeps browser windows off its screen.
 2. Give it a command that sets that environment and runs `bash <clone>/scripts/kin-release-remote.sh "$@"`.
 3. Here, set `KIN_RELEASE_REMOTE` to the ssh host (an alias in your `~/.ssh/config`) and `KIN_RELEASE_REMOTE_COMMAND` to that command. The commit must be pushed. Pass `--here` to run locally anyway.
 

@@ -883,7 +883,8 @@ const onRemote = async (
     const tarball = NodeChildProcess.spawnSync(
       "tar",
       ["--no-xattrs", "-C", NodePath.dirname(fixtureOf(previous)), "-czf", "-", "fixture"],
-      { maxBuffer: 2 ** 31 },
+      // macOS tar otherwise adds ._ AppleDouble files, which a fixture copy trips over.
+      { maxBuffer: 2 ** 31, env: { ...process.env, COPYFILE_DISABLE: "1" } },
     ).stdout;
     if (ssh(`${command} --fixture-in ${previous}`, tarball).status !== 0)
       console.log(
