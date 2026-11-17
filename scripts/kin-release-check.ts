@@ -261,7 +261,14 @@ const kv = (ctx: Context, stage: Stage, instance: string, ...args: string[]) =>
   ]);
 
 const staticChecks = async (ctx: Context): Promise<Finding[]> => {
-  const { code, output } = await run(ctx.log("static"), "vp", ["run", "check:changed", ctx.base]);
+  // A release spans many PRs, so its changed-file tests take far longer than one PR's.
+  const { code, output } = await run(ctx.log("static"), "vp", [
+    "run",
+    "check:changed",
+    ctx.base,
+    "--timeout",
+    "3600",
+  ]);
   const failed = [
     ...output.matchAll(/^\s+(FAIL|TIMEOUT)\s+(.+?)\s+(?:[\d.]+s|killed after \d+s)$/gm),
   ].map(([, outcome, step]) => finding("static", "check:changed", step!, "-", outcome!));

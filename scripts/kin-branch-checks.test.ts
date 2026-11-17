@@ -56,6 +56,17 @@ describe("kin branch checks", () => {
       checkInstructions({ mergeBase: was, tip: was, head: instructions(44, "Old.") })[0],
       "unchanged",
     );
+    // A release range holds merged PRs, each of which went up by one: up to one more per PR.
+    const release = { mergeBase: was, tip: was, mergedPrs: 3 };
+    assert.deepStrictEqual(checkInstructions({ ...release, head: instructions(46, "New.") }), []);
+    assert.include(
+      checkInstructions({ ...release, head: instructions(48, "New.") })[0],
+      "44 to 47",
+    );
+    assert.include(
+      checkInstructions({ ...release, head: instructions(43, "New.") })[0],
+      "44 to 47",
+    );
   });
 
   it("refuses a branch that drops most of a merged PR's lines unless it says it supersedes it", () => {

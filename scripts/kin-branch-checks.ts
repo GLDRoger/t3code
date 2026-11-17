@@ -63,17 +63,26 @@ export const instructionsVersion = (source: string) => {
 };
 const instructionsBody = (source: string) => source.replace(VERSION, "");
 
-/** `mergeBase` is where the branch left the ref, `tip` the ref now, `head` the branch. */
+/**
+ * `mergeBase` is where the branch left the ref, `tip` the ref now, `head` the branch.
+ * `mergedPrs` counts PRs already merged between the ref and head, as in a release range.
+ */
 export const checkInstructions = (input: {
   readonly mergeBase: string;
   readonly tip: string;
   readonly head: string;
+  readonly mergedPrs?: number;
 }) => {
   const [was, tip, now] = [input.mergeBase, input.tip, input.head].map(instructionsVersion);
   if (was === undefined || tip === undefined || now === undefined)
     return [`${INSTRUCTIONS} must start with \`instructions-version: N\`.`];
   const changed = instructionsBody(input.head) !== instructionsBody(input.mergeBase);
-  if (changed && now !== tip + 1)
+  const most = tip + 1 + (input.mergedPrs ?? 0);
+  if (changed && most > tip + 1 && (now <= tip || now > most))
+    return [
+      `The agent instructions changed over ${input.mergedPrs} merged PRs, so their version is ${tip + 1} to ${most}, not ${now}.`,
+    ];
+  if (changed && most === tip + 1 && now !== tip + 1)
     return [
       `The agent instructions changed, so their version is ${tip + 1} (one above the base's ${tip}), not ${now}.${tip !== was ? " Merge the base first: it moved." : ""}`,
     ];
@@ -188,8 +197,17 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
     yield* show(ref, INSTRUCTIONS),
     yield* onDisk(INSTRUCTIONS),
   ];
+  const mergedPrs = (yield* gitLines(root, [
+    "log",
+    "--first-parent",
+    "--merges",
+    "--format=%s",
+    `${mergeBase}..HEAD`,
+  ])).filter((subject) => /^Merge pull request #\d+/.test(subject)).length;
   if (Option.isSome(was) && Option.isSome(tip) && Option.isSome(now))
-    problems.push(...checkInstructions({ mergeBase: was.value, tip: tip.value, head: now.value }));
+    problems.push(
+      ...checkInstructions({ mergeBase: was.value, tip: tip.value, head: now.value, mergedPrs }),
+    );
 
   if (changed.length > 0) {
     const merges = yield* gitLines(root, [
