@@ -1,7 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
+import { kinGate, type KinGate, type KinPermission } from "@t3tools/client-runtime/kin/kinAccess";
 import {
   classifyKinProbe,
   kinHostCandidate,
+  kinHostLink,
   kinHostIdToSave,
   resolveKinHost,
   resolveKinHostAt,
@@ -111,6 +113,14 @@ export function chooseKinHost(environmentId: EnvironmentId) {
 /** The connected environment that hosts Kin. `none` on plain T3 servers and with Kin off. */
 export function useKinHost(): KinHost {
   return useAtomValue(kinHostAtom);
+}
+
+/** What a page gated on one permission shows before its reads; null once it may read. */
+export function useKinGate(
+  permission: Atom.Atom<KinPermission>,
+  environmentId: EnvironmentId,
+): KinGate {
+  return kinGate(useAtomValue(permission), kinHostLink(useKinHostAt(environmentId)));
 }
 
 /** The Kin host a route names; `unpaired` when it isn't in this browser's catalog. */

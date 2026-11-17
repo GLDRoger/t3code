@@ -63,6 +63,8 @@ export function classifyKinProbe(
 export interface KinHostCandidate {
   readonly environmentId: EnvironmentId;
   readonly connected: boolean;
+  /** Its first connection attempt hasn't ended yet, so whether it is reachable isn't known. */
+  readonly connecting?: boolean;
   /** Down for more than a blip: switched off, failing, or unsupported. See `kinHostCandidate`. */
   readonly down?: boolean;
   /** Switched off on this device by the person, which is not the same as unreachable. */
@@ -81,6 +83,7 @@ export function kinHostCandidate(
   return {
     environmentId,
     connected: phase === "connected",
+    connecting: phase === "connecting",
     off: phase === "available",
     down:
       phase === "available" ||
@@ -101,6 +104,8 @@ export type KinHost =
       readonly environmentId: EnvironmentId;
       /** False for a saved host that is offline: show its cache. */
       readonly connected: boolean;
+      /** Not connected yet because its first attempt is still under way: not known to be offline. */
+      readonly connecting?: true;
       readonly probe: KinProbe;
       /**
        * The saved host this one stands in for while it is down; never saved, so Kin goes back
@@ -178,6 +183,7 @@ export function resolveKinHost(input: {
         _tag: "host",
         environmentId: saved.environmentId,
         connected: false,
+        ...connectingOf(saved),
         probe: kinOfflineProbe(input.cachedOrgs?.(saved.environmentId) ?? null),
       };
     }
@@ -222,12 +228,29 @@ export function resolveKinHostAt(input: {
       _tag: "host",
       environmentId: candidate.environmentId,
       connected: false,
+      ...connectingOf(candidate),
       probe: kinOfflineProbe(input.cachedOrgs?.(candidate.environmentId) ?? null),
     };
   }
   const probe = input.probe(candidate.environmentId);
   if (probe._tag === "notKin") return { _tag: "none" };
   return { _tag: "host", environmentId: candidate.environmentId, connected: true, probe };
+}
+
+const connectingOf = (candidate: KinHostCandidate) =>
+  candidate.connecting === true ? { connecting: true as const } : {};
+
+/**
+ * What is known about reaching a host: `connecting` until its first attempt ends, so no screen
+ * says offline before an attempt has failed or a live connection was lost.
+ */
+export type KinLink = "connecting" | "connected" | "offline";
+
+export function kinHostLink(host: KinRouteHost): KinLink {
+  if (host._tag === "searching") return "connecting";
+  if (host._tag !== "host") return "offline";
+  if (host.connected) return "connected";
+  return host.connecting === true ? "connecting" : "offline";
 }
 
 /**

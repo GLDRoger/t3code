@@ -15,7 +15,13 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { isAgentText, postKey, signed } from "./agentMark.ts";
-import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr } from "./fakeGitHub.ts";
+import {
+  emptyWorld,
+  FakeGitHub,
+  type FakeRuleset,
+  ghApiOutput,
+  ghApiStderr,
+} from "./fakeGitHub.ts";
 import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import { KIN_RULESET_NAME, setGuards } from "./branchGuard.ts";
 import { KinGitHubApp } from "./KinGitHubApp.ts";
@@ -116,6 +122,7 @@ const fakeApp = (github: FakeGitHub) => {
       Effect.succeed({
         _tag: "ok",
         app: {
+          id: 9001,
           name: "Invented Kin",
           botLogin: BOT_LOGIN,
           botEmail: BOT_EMAIL,
@@ -783,7 +790,7 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
   const FREE = "invented-owner/private";
   const NOT_ADMIN = "invented-co/shared";
   const EMPTY = "invented-owner/fresh";
-  /** Seven watched repos as GitHub holds them: open, protected by the owner two ways, three Kin can't change, and one with no branch yet. */
+  /** Seven watched repos as GitHub holds them: open, reviews required two ways, three Kin can't change, and one with no branch yet. */
   const world = (github: FakeGitHub) => {
     github.world.accounts = [
       { login: "invented-co", id: 7001, type: "Organization", role: "admin" },
@@ -832,8 +839,9 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
       yield* (yield* GitHubWatch.KinGitHubWatch).poll(orgId, { force: true });
       assert.deepStrictEqual(yield* guards, {
         [REPO]: { state: "open", branch: "main", byKin: false },
-        [OWN_RULES]: { state: "protected", branch: "trunk", byKin: false },
-        [CLASSIC]: { state: "protected", branch: "main", byKin: false },
+        // A required review isn't a wall: once approved, an App with contents write merges.
+        [OWN_RULES]: { state: "open", branch: "trunk", byKin: false, needsReview: true },
+        [CLASSIC]: { state: "open", branch: "main", byKin: false, needsReview: true },
         [PAID]: { state: "open", branch: "main", byKin: false },
         [FREE]: { state: "unknown", branch: "main", byKin: false, problem: "plan" },
         [NOT_ADMIN]: { state: "unknown", branch: "main", byKin: false, problem: "no_admin" },
@@ -842,17 +850,18 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
       // The unwatched fork isn't read; classic protection only where rules didn't answer.
       const reads = github.world.calls.filter((call) => /rules|protection/.test(call));
       assert.lengthOf(
-        reads.filter((call) => call.includes("/rules/")),
+        reads.filter((call) => /\/rules\/branches\/[^/]+$/.test(call)),
         7,
       );
       assert.sameMembers(
         reads.filter((call) => call.endsWith("/protection")),
         [
           ...[REPO, CLASSIC, PAID].map((repo) => `GET repos/${repo}/branches/main/protection`),
+          `GET repos/${OWN_RULES}/branches/trunk/protection`,
           `GET repos/${EMPTY}/branches/trunk/protection`,
         ],
       );
-      assert.strictEqual((yield* watchSummary(orgId, T0))?.open, 2);
+      assert.strictEqual((yield* watchSummary(orgId, T0))?.open, 4);
       // A look before the next refresh reads none of it again.
       github.world.calls.length = 0;
       yield* look(github);
@@ -868,6 +877,177 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
       });
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect(
+    "only an update rule the App can't bypass protects; a required review leaves it able to merge",
+    () => {
+      const { github, layer } = setup({ app: true });
+      const LOCKED = "invented-co/locked";
+      const LETS_APP = "invented-co/lets-app";
+      const WRITERS = "invented-co/writers";
+      const HIDDEN = "invented-co/hidden";
+      const ruleset = (
+        id: number,
+        rules: FakeRuleset["rules"],
+        bypass: FakeRuleset["bypass"],
+        extra: Partial<FakeRuleset> = {},
+      ): FakeRuleset => ({
+        id,
+        name: `Owner's rules ${id}`,
+        target: "branch",
+        enforcement: "active",
+        include: ["refs/heads/main"],
+        exclude: [],
+        rules,
+        bypass,
+        ...extra,
+      });
+      const admin = { actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always" };
+      const update = { type: "update", parameters: { update_allows_fetch_and_merge: false } };
+      // As captured from GitHub: deletion, no force-push, linear history and one review, no update rule.
+      const reviewOnly = ruleset(
+        61,
+        [
+          { type: "deletion" },
+          { type: "non_fast_forward" },
+          { type: "required_linear_history" },
+          {
+            type: "pull_request",
+            parameters: {
+              required_approving_review_count: 1,
+              dismiss_stale_reviews_on_push: false,
+              required_reviewers: [],
+              require_code_owner_review: false,
+              require_last_push_approval: false,
+              required_review_thread_resolution: false,
+              allowed_merge_methods: ["merge", "squash", "rebase"],
+            },
+          },
+        ],
+        [admin],
+      );
+      github.world.accounts = [
+        { login: "invented-co", id: 7001, type: "Organization", role: "admin" },
+        { login: "invented-owner", id: 7000, type: "User" },
+      ];
+      github.world.repos.find((entry) => entry.full_name === REPO)!.rulesets = [reviewOnly];
+      github.addRepo({ full_name: LOCKED, rulesets: [ruleset(62, [update], [admin])] });
+      github.addRepo({
+        full_name: LETS_APP,
+        rulesets: [
+          ruleset(
+            63,
+            [update],
+            [admin, { actor_id: 9001, actor_type: "Integration", bypass_mode: "pull_request" }],
+          ),
+        ],
+      });
+      // GitHub's docs don't say whether a write-role bypass covers an App, so it isn't a wall.
+      github.addRepo({
+        full_name: WRITERS,
+        rulesets: [
+          ruleset(
+            64,
+            [update],
+            [{ actor_id: 4, actor_type: "RepositoryRole", bypass_mode: "always" }],
+          ),
+        ],
+      });
+      github.addRepo({
+        full_name: HIDDEN,
+        rulesets: [ruleset(65, [update], [admin], { bypassHidden: true })],
+      });
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(T0);
+        yield* seed;
+        yield* (yield* GitHubWatch.KinGitHubWatch).poll(orgId, { force: true });
+        assert.deepStrictEqual(yield* guards, {
+          [REPO]: { state: "open", branch: "main", byKin: false, needsReview: true },
+          [LOCKED]: { state: "protected", branch: "main", byKin: false },
+          [LETS_APP]: { state: "open", branch: "main", byKin: false },
+          [WRITERS]: { state: "open", branch: "main", byKin: false },
+          [HIDDEN]: { state: "unknown", branch: "main", byKin: false, problem: "no_admin" },
+        });
+        // One more read, only of the rulesets that restrict updates.
+        assert.sameMembers(
+          github.world.calls.filter((call) => /rulesets\//.test(call)),
+          [
+            `GET repos/${LOCKED}/rulesets/62`,
+            `GET repos/${LETS_APP}/rulesets/63`,
+            `GET repos/${WRITERS}/rulesets/64`,
+            `GET repos/${HIDDEN}/rulesets/65`,
+          ],
+        );
+        assert.strictEqual((yield* watchSummary(orgId, T0))?.open, 3);
+
+        // Under the review rule the App merges as soon as the owner approves: same row either way.
+        const asApp = fakeCall(github, APP_TOKEN);
+        const pull = github.openItem({
+          repo: REPO,
+          pull: true,
+          author: BOT_LOGIN,
+          association: "NONE",
+          title: "An agent's change",
+        });
+        const merge = { method: "PUT" as const, path: `repos/${REPO}/pulls/${pull}/merge` };
+        assert.strictEqual((yield* asApp(merge)).status, 405);
+        github.world.reviews.push({
+          id: 1,
+          repo: REPO,
+          number: pull,
+          user: "invented-owner",
+          event: "APPROVE",
+          body: "",
+        });
+        const second = github.openItem({
+          repo: REPO,
+          pull: true,
+          author: BOT_LOGIN,
+          association: "NONE",
+          title: "Another change",
+        });
+        github.world.reviews.push({
+          id: 2,
+          repo: REPO,
+          number: second,
+          user: "invented-owner",
+          event: "APPROVE",
+          body: "",
+        });
+        yield* look(github, 6 * 60 + 1);
+        assert.deepStrictEqual((yield* guards)[REPO], {
+          state: "open",
+          branch: "main",
+          byKin: false,
+          needsReview: true,
+        });
+        assert.strictEqual((yield* asApp(merge)).status, 200);
+
+        // Kin's own ruleset is a wall, until someone adds the App to its bypass list on GitHub.
+        assert.deepStrictEqual(yield* set(github, [REPO], true), { changed: 1, failed: [] });
+        yield* look(github, 6 * 60 + 1);
+        assert.deepStrictEqual((yield* guards)[REPO], {
+          state: "protected",
+          branch: "main",
+          byKin: true,
+        });
+        const merge2 = { method: "PUT" as const, path: `repos/${REPO}/pulls/${second}/merge` };
+        assert.strictEqual((yield* asApp(merge2)).status, 405);
+        github.world.repos
+          .find((entry) => entry.full_name === REPO)!
+          .rulesets!.find((entry) => entry.name === KIN_RULESET_NAME)!
+          .bypass.push({ actor_id: 9001, actor_type: "Integration", bypass_mode: "always" });
+        yield* look(github, 6 * 60 + 1);
+        assert.deepStrictEqual((yield* guards)[REPO], {
+          state: "open",
+          branch: "main",
+          byKin: true,
+          needsReview: true,
+        });
+        assert.strictEqual((yield* asApp(merge2)).status, 200);
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect(
     "a row read wrong corrects itself on the next refresh, and on the first after a start",
@@ -965,7 +1145,8 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
           { actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always" },
         ]);
         assert.include((yield* guards)[REPO], { state: "protected", byKin: true });
-        assert.strictEqual((yield* watchSummary(orgId, T0))?.open, 0);
+        // Left: the owner's two review-only repos, which the App merges into once approved.
+        assert.strictEqual((yield* watchSummary(orgId, T0))?.open, 2);
 
         const merge = { method: "PUT" as const, path: `repos/${REPO}/pulls/${merging}/merge` };
         assert.strictEqual((yield* asApp(merge)).status, 405);

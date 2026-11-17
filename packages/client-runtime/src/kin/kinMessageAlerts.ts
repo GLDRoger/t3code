@@ -29,6 +29,6 @@ export function kinNewArrivals(
 
 /** One alert's words: the chat, and its last line with who wrote it. */
 export const kinArrivalText = (row: KinChatListRow) => ({
-  title: row.view.title,
+  title: row.view.title ?? "Kin",
   body: row.author === null ? row.preview : `${row.author}: ${row.preview}`,
 });

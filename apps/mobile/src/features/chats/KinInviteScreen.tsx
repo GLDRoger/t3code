@@ -21,6 +21,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
+import { KinGateView } from "./components/KinWorkPieces";
 
 export type KinInviteParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -57,7 +58,7 @@ export function KinInviteScreen({ route }: StaticScreenProps<KinInviteParams>) {
 
 function KinInviteForm(target: KinTeamTarget) {
   const navigation = useNavigation();
-  const { allowed, actions } = useKinTeam(target);
+  const { allowed, gate, actions } = useKinTeam(target);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -104,8 +105,12 @@ function KinInviteForm(target: KinTeamTarget) {
           contentInsetAdjustmentBehavior="automatic"
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
-          {!allowed ? (
-            <EmptyState variant="plain" {...KIN_TEAM_ONLY_OWNER} />
+          {gate !== null ? (
+            <KinGateView
+              gate={gate}
+              refused={KIN_TEAM_ONLY_OWNER}
+              label={KIN_TEAM_ADD_COPY.submit}
+            />
           ) : made !== null ? (
             <KinInviteLink invite={made} environmentId={target.environmentId} />
           ) : (

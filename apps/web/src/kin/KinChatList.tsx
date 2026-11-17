@@ -132,7 +132,7 @@ export function KinChatList() {
   const rows = kinChatListRows(view, directory);
   const liveRows = rows.filter((row) => !row.retired);
   const retiredRows = rows.filter((row) => row.retired);
-  const stale = !(state.connected && state.inbox.live);
+  const stale = state.offline;
   const now = new Date(nowMs);
   const mine = kinNewLeadTarget(host);
   const closeSidebar = () => {
@@ -292,7 +292,7 @@ function KinRetiredChatItem(props: {
     orgId: chat.orgId,
     // Never sent without an agent: the button below is hidden then.
     agentId: props.agentId ?? ("" as KinAgentId),
-    name: view.title,
+    name: view.title ?? "",
   };
   const restore = useKinRestore(target);
   return (
@@ -362,7 +362,7 @@ function KinChatListItem(props: {
                 unread ? "font-semibold" : "font-medium",
               )}
             >
-              {view.title}
+              {view.title ?? <Skeleton className="h-3.5 w-1/2" aria-hidden />}
             </span>
             {view.sentAt === null ? null : (
               <span className="shrink-0 text-xs text-sidebar-muted-foreground tabular-nums">

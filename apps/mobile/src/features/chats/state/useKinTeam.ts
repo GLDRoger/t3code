@@ -25,7 +25,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { kinClient } from "./kinClient";
-import { useKinHostAt } from "./useKinHost";
+import { useKinGate, useKinHostAt } from "./useKinHost";
 import { useKinProfiles } from "./useKinProfiles";
 
 export interface KinTeamTarget {
@@ -90,7 +90,8 @@ function actionsFor(target: KinTeamTarget): KinTeamActions {
 /** The owner's team as last read, the changes still in flight, and the actions that make them. */
 export function useKinTeam(target: KinTeamTarget) {
   const { environmentId, orgId } = target;
-  const allowed = useAtomValue(kinClient.inviteCreate.permissionAtom(environmentId));
+  const gate = useKinGate(kinClient.inviteCreate.permissionStateAtom(environmentId), environmentId);
+  const allowed = gate === null;
   const { peopleAtom, invitesAtom } = teamAtoms(target);
   const people = useAtomValue(allowed ? peopleAtom : noPeopleAtom);
   const invites = useAtomValue(allowed ? invitesAtom : noInvitesAtom);
@@ -117,6 +118,7 @@ export function useKinTeam(target: KinTeamTarget) {
         };
   return {
     allowed,
+    gate,
     list,
     failed: list === null && (AsyncResult.isFailure(people) || AsyncResult.isFailure(invites)),
     ownerPersonId: personId,
