@@ -29,6 +29,11 @@ export const KIN_CHECK_CONNECTION = "Check your connection to the server and try
 export const KIN_BUSY = "Kin isn't answering right now. Try again in a moment.";
 export const KIN_CHANGED =
   "This changed while you were looking at it. Here is the latest, so check it and try again.";
+/** A page with nothing held, once a connection failed or was lost. */
+export const KIN_OFFLINE_PAGE = {
+  title: "You're offline",
+  detail: "This comes back when the connection does.",
+};
 /** Said before sending at all while the device is offline. */
 export const KIN_OFFLINE_NOT_SENT = "You're offline. Try again when you're back.";
 

@@ -5,6 +5,7 @@ import type { KinInboxRow, KinInboxView } from "./kinInboxModel.ts";
 import type { KinDirectory } from "./kinScreenState.ts";
 
 const directory: KinDirectory = {
+  known: true,
   agentNames: new Map([
     ["lead", "Tech lead"],
     ["old", "Finance"],

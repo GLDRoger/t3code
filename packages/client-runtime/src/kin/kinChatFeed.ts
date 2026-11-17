@@ -20,7 +20,7 @@ import { AsyncResult } from "effect/reactivity";
 
 import { kinAttachmentSummary } from "./kinAttachments.ts";
 import { kinMessageOnMyClock } from "./kinAway.ts";
-import type { KinRouteHost } from "./kinHost.ts";
+import { kinHostLink, type KinRouteHost } from "./kinHost.ts";
 import {
   applyKinChatHistory,
   emptyKinChat,
@@ -52,6 +52,8 @@ export type KinChatScreenState =
       readonly _tag: "ready";
       readonly environmentId: EnvironmentId;
       readonly connected: boolean;
+      /** Known to be unreachable; false while the first attempt is still under way. */
+      readonly offline: boolean;
       readonly chat: KinSynced<KinChatState>;
       /** The stream failed after the feed loaded; shown above the cached list. */
       readonly error: string | null;
@@ -76,8 +78,9 @@ export function kinChatScreenState(
   if (host.probe._tag === "error" && loaded === null) {
     return { _tag: "error", message: "Couldn't reach Kin.", retry: "orgs" };
   }
+  const offline = kinHostLink(host) === "offline";
   if (chat === null || chat._tag === "Initial") {
-    return host.connected ? { _tag: "loading" } : { _tag: "offline" };
+    return offline ? { _tag: "offline" } : { _tag: "loading" };
   }
   let message: string | null = null;
   if (chat._tag === "Failure") {
@@ -94,12 +97,14 @@ export function kinChatScreenState(
       _tag: "ready",
       environmentId: host.environmentId,
       connected: host.connected,
+      offline,
       chat: loaded,
       // Offline, the notice already says why the feed stopped.
       error: host.connected ? message : null,
     };
   }
-  if (!host.connected) return { _tag: "offline" };
+  if (offline) return { _tag: "offline" };
+  if (!host.connected) return { _tag: "loading" };
   return { _tag: "error", message: message ?? "Kin didn't answer.", retry: "chat" };
 }
 

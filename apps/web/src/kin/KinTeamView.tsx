@@ -16,6 +16,7 @@ import {
   KIN_TEAM_LOAD_FAILED,
   KIN_TEAM_NO_EDITS,
   KIN_TEAM_ONLY_OWNER,
+  KIN_TEAM_TITLE,
   createKinTeamActions,
   kinRemoveAccessCopy,
   kinTeamView,
@@ -100,6 +101,8 @@ import { openKinProfile } from "./KinProfileSheet";
 import { KinCompanyChatRow, KinTeamAgentRow } from "./KinTeamAgent";
 import { useKinHostAt } from "./useKinHost";
 import { KinLoadFailed } from "./KinWorkParts";
+import { useKinGate } from "./useKinHost";
+import { KinGateView } from "./KinWorkParts";
 
 interface KinTeamTarget {
   readonly environmentId: EnvironmentId;
@@ -159,7 +162,11 @@ function useKinTeam(target: KinTeamTarget) {
 
 /** Who is on the team, whether each has joined, and the links that bring them in. */
 export function KinTeamView(props: KinTeamTarget) {
-  const allowed = useAtomValue(kinClient.inviteCreate.permissionAtom(props.environmentId));
+  const gate = useKinGate(
+    kinClient.inviteCreate.permissionStateAtom(props.environmentId),
+    props.environmentId,
+  );
+  const allowed = gate === null;
   const [adding, setAdding] = useState(false);
   return (
     <>
@@ -174,12 +181,7 @@ export function KinTeamView(props: KinTeamTarget) {
       {allowed ? (
         <KinTeamBody {...props} adding={adding} setAdding={setAdding} />
       ) : (
-        <Empty size="compact">
-          <EmptyHeader>
-            <EmptyTitle>{KIN_TEAM_ONLY_OWNER.title}</EmptyTitle>
-            <EmptyDescription>{KIN_TEAM_ONLY_OWNER.detail}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <KinGateView gate={gate} refused={KIN_TEAM_ONLY_OWNER} label={KIN_TEAM_TITLE} />
       )}
     </>
   );

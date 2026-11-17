@@ -77,6 +77,7 @@ import {
   kinChatTitle,
   kinDirectAgentName,
   kinOwnedLeadAgentId,
+  kinStaleNotice,
   type KinAvatarView,
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
@@ -178,6 +179,7 @@ import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinHostAt } from "./useKinHost";
 import { useKinProfiles } from "./kinPictures";
 import { kinDraftAtom, kinDraftKey, restoreDraft } from "./kinDraft";
+import { Skeleton } from "../components/ui/skeleton";
 
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
@@ -301,7 +303,14 @@ export function KinChatView(props: {
     summary !== undefined &&
     viewer.personId !== null &&
     kinChatMuted(summary, new Set([viewer.personId]), nowMs);
-  const title = summary === undefined ? "Chat" : kinChatTitle(summary, viewer.agentNames);
+  const namesKnown =
+    host._tag === "host" && (host.probe._tag === "ready" || host.probe._tag === "noIdentity");
+  const title =
+    summary === undefined
+      ? "Chat"
+      : !namesKnown && summary.title === null && summary.kind === "direct"
+        ? null
+        : kinChatTitle(summary, viewer.agentNames);
   const pairWith =
     summary === undefined || viewer.personId === null
       ? null
@@ -404,12 +413,13 @@ export function KinChatView(props: {
           // Paging, folds and follow belong to one chat.
           key={`${state.environmentId}:${props.chatId}`}
           orgId={props.orgId}
-          title={title}
+          title={title ?? "Chat"}
           environmentId={state.environmentId}
           chatId={chatId ?? (props.chatId as KinChatId)}
           agentName={summary === undefined ? null : kinDirectAgentName(summary, viewer.agentNames)}
           chat={state.chat}
           connected={state.connected}
+          offline={state.offline}
           error={state.error}
           onRetry={retry}
           viewer={
@@ -450,7 +460,8 @@ export function KinChatView(props: {
 
 /** Who the chat is with, and their open tasks. What the lead is doing right now reads under the feed. */
 function KinChatHeader(props: {
-  readonly title: string;
+  /** Null while a direct chat's agent isn't named yet. */
+  readonly title: string | null;
   readonly avatar: KinAvatarView | null;
   readonly tasks: string | null;
   readonly muted: boolean;
@@ -464,7 +475,9 @@ function KinChatHeader(props: {
       <WorkspaceBreadcrumb ariaLabel="Chat" className="shrink">
         <WorkspaceBreadcrumbItem current>
           <h1 className="min-w-0">
-            <WorkspaceBreadcrumbText>{props.title}</WorkspaceBreadcrumbText>
+            <WorkspaceBreadcrumbText>
+              {props.title ?? <Skeleton className="inline-block h-3.5 w-24 align-middle" />}
+            </WorkspaceBreadcrumbText>
           </h1>
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
@@ -486,7 +499,7 @@ function KinChatHeader(props: {
       ) : (
         <button
           type="button"
-          aria-label={`${props.title}: open details`}
+          aria-label={`${props.title ?? "Chat"}: open details`}
           className="-mx-1.5 flex min-w-0 shrink items-center gap-3 rounded-md px-1.5 py-1 outline-none ring-ring [-webkit-app-region:no-drag] hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
           onClick={props.onOpenProfile}
         >
@@ -588,6 +601,8 @@ function KinChatFeed(props: {
   readonly agentName: string | null;
   readonly chat: KinSynced<KinChatState>;
   readonly connected: boolean;
+  /** Known unreachable, not just still on its first connection attempt. */
+  readonly offline: boolean;
   readonly error: string | null;
   readonly onRetry: () => void;
   readonly viewer: KinFeedViewer;
@@ -959,9 +974,16 @@ function KinChatFeed(props: {
   };
 
   const notice =
-    (props.connected && props.chat.live) || props.chat.savedAt === null
-      ? null
-      : `${props.connected ? "Updating" : "Offline"}. Last updated ${offlineTime.format(new Date(props.chat.savedAt))}.`;
+    kinStaleNotice(
+      {
+        connected: props.connected,
+        offline: props.offline,
+        live: props.chat.live,
+        savedAt: props.chat.savedAt,
+      },
+      "idle",
+      (date) => offlineTime.format(date),
+    )?.message ?? null;
 
   const intro =
     showIntro && props.agentName !== null ? (
