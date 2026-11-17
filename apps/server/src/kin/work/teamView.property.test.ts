@@ -452,7 +452,7 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
   it.effect("a teammate finds a money entry exactly when Money shows it to her", () =>
     Effect.gen(function* () {
       const quiet = { sensitive: false, shared: false };
-      const invoice = {
+      const invoice: Entry = {
         list: "invoices",
         owner: "owner",
         createdBy: "owner",
@@ -464,7 +464,7 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
         attendees: [],
         company: false,
         title: "Call vendor",
-      } as const;
+      };
       const found = (money: boolean) =>
         Effect.gen(function* () {
           yield* install({
