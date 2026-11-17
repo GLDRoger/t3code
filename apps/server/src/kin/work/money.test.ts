@@ -38,6 +38,7 @@ import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers
 import { moneySection } from "./moneyViews.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import { proposalFor } from "./registers.ts";
+import { waitLine } from "./statements/passwordBudget.ts";
 import * as OwnerMoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as OwnerWork from "./ownerWork.ts";
 import { endOfDay } from "./recordRows.ts";
@@ -1905,6 +1906,26 @@ describe("the company profile", () => {
         changeLines(unrated, { homeCurrency: "USD", rates: [], pan: "ABCDE1234F" }),
         ["PAN: none → ABCDE1234F"],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("writes its people's times on its country's clock, en-GB's where it has none", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const at = Date.UTC(2026, 10, 17, 9, 5);
+      const line = waitLine(orgId, at);
+      // A company that never set one keeps rupees, and so India's 12-hour clock.
+      assert.match(yield* line, /after \d{1,2}:35 [ap]m;/);
+      let rev = 0;
+      for (const [home, clock] of [
+        ["GBP", /after \d{2}:35;/],
+        ["USD", /after \d{1,2}:35 [AP]M;/],
+        ["EUR", /after \d{2}:35;/],
+        ["INR", /after \d{1,2}:35 [ap]m;/],
+      ] as const) {
+        rev = (yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, homeCurrency: home })).rev;
+        assert.match(yield* line, clock, home);
+      }
     }).pipe(Effect.provide(layer)),
   );
 

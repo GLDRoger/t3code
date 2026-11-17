@@ -181,19 +181,22 @@ export const holdIfQuiet = Effect.fn("KinQuiet.hold")(function* (input: {
   return true;
 });
 
-/** When a held line reaches them, on their own clock: "07:00 their time (Tue 17 Nov)". */
-export const theirTime = (at: number, zone: string) => {
+/**
+ * When a held line reaches them, in their own zone: "07:00 their time (Tue 17 Nov)", in `locale`
+ * (the company's `textLocale` for people, `KIN_TEXT_LOCALE` for an agent).
+ */
+export const theirTime = (at: number, zone: string, locale: string) => {
   const part = (style: "time" | "day") =>
-    formatKinWhen(at, style, { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "");
+    formatKinWhen(at, style, { zone, locale }).replace(/,/g, "");
   return `${part("time")} their time (${part("day")})`;
 };
 
-/** What the sender hears of a held line: "Zoya Sheikh is off until 10:00 their time (Tue 17 Nov)". */
+/** What the sending agent is told of a held line: "Zoya Sheikh is off until 10:00 their time (Tue 17 Nov)". */
 export const heldUntil = (
   name: string,
   held: { readonly at: number; readonly zone: string; readonly why: "quiet" | "off" | "away" },
 ) =>
-  `${name} is ${held.why === "off" ? "off" : held.why === "away" ? "away" : "in quiet hours"} until ${theirTime(held.at, held.zone)}`;
+  `${name} is ${held.why === "off" ? "off" : held.why === "away" ? "away" : "in quiet hours"} until ${theirTime(held.at, held.zone, KIN_TEXT_LOCALE)}`;
 
 /**
  * Until when a relay, nudge, notice or hand-over line for `personId` in `chatId` waits: the end

@@ -9,12 +9,13 @@ import {
   type KinSocialPlatform,
   type KinSocialPostState,
   formatKinWhen,
-  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+
+import type { TextClock } from "../work/companyProfile.ts";
 
 /** What each platform takes, checked before a post reaches a card. Conservative on purpose. */
 export const PLATFORM_RULES: Record<
@@ -342,6 +343,6 @@ export const digestOf = (
 export const idempotencyKey = (post: Pick<PostRow, "postId" | "digest">) =>
   `kin-${post.postId}-${(post.digest ?? "").slice(0, 16)}`;
 
-/** "Mon 18 Nov · 19:00" in the owner's zone. */
-export const whenLabel = (ms: number, zone: string) =>
-  `${formatKinWhen(ms, "day", { zone, locale: KIN_TEXT_LOCALE })} · ${formatKinWhen(ms, "time", { zone, locale: KIN_TEXT_LOCALE })}`;
+/** "Mon 18 Nov · 19:00" in the owner's zone and `clock`'s locale. */
+export const whenLabel = (ms: number, clock: TextClock) =>
+  `${formatKinWhen(ms, "day", clock)} · ${formatKinWhen(ms, "time", clock)}`;

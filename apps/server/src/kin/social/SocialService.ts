@@ -44,6 +44,7 @@ import { KinDocRenderer } from "../gendocs/render.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { markOutside } from "../lead/OutsideContent.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
+import { textLocale } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import * as Cards from "./cards.ts";
 import { previewSheet } from "./preview.ts";
@@ -522,7 +523,10 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     const until =
       made.expiresAt === null
         ? ""
-        : ` It works once, until ${whenLabel(Date.parse(made.expiresAt), yield* ownerZone(input.orgId))}.`;
+        : ` It works once, until ${whenLabel(Date.parse(made.expiresAt), {
+            zone: yield* ownerZone(input.orgId),
+            locale: yield* textLocale(input.orgId),
+          })}.`;
     return {
       url: made.url,
       expiresAt: made.expiresAt,
@@ -655,7 +659,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
           .slice(0, 30)
           .map((post) => statsLine(post, accounts)),
         bestTimes: got.value.best.slice(0, 5).map((slot) => bestLine(slot, zone, now)),
-        readAt: whenLabel(got.readAt, zone),
+        readAt: whenLabel(got.readAt, { zone, locale: KIN_TEXT_LOCALE }),
         ...(costs.length === 0
           ? {}
           : {
@@ -670,7 +674,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
           ? "pack"
           : (groups.find((one) => one.groupId === post.groupId)?.label ?? "another group"),
       where: post.whereText ?? post.accountId,
-      when: whenLabel(post.atMs, zone),
+      when: whenLabel(post.atMs, { zone, locale: KIN_TEXT_LOCALE }),
       state: post.state,
       caption: post.caption.slice(0, 80),
     }));
@@ -828,7 +832,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       return yield* invalid("at is a time with its offset, such as 2026-11-18T19:00:00+05:30.");
     if (atMs < now + CONFIRM_LEAD_MS)
       return yield* invalid(
-        `${whenLabel(atMs, zone)} is too soon: posts are drafted at least 10 minutes ahead.`,
+        `${whenLabel(atMs, { zone, locale: KIN_TEXT_LOCALE })} is too soon: posts are drafted at least 10 minutes ahead.`,
       );
     const caption = input.caption ?? existing?.caption ?? "";
     const media =
@@ -878,7 +882,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       postId,
       group: group.label,
       account: `${account.name} (${PLATFORM_RULES[account.platform].label})`,
-      when: whenLabel(atMs, zone),
+      when: whenLabel(atMs, { zone, locale: KIN_TEXT_LOCALE }),
       state: "draft",
       next: "Drafts reach the owner only on a card: social_week for this group.",
     };
@@ -896,10 +900,10 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       return yield* invalid(
         `${group.label} has no drafts still to come. Save some with social_draft first.`,
       );
-    const zone = yield* ownerZone(lead.orgId);
+    const clock = { zone: yield* ownerZone(lead.orgId), locale: yield* textLocale(lead.orgId) };
     const title =
       input.title?.trim().slice(0, 120) ||
-      `${group.label}: ${drafts.length} post${drafts.length === 1 ? "" : "s"} from ${whenLabel(drafts[0]!.atMs, zone).split(" · ")[0]}`;
+      `${group.label}: ${drafts.length} post${drafts.length === 1 ? "" : "s"} from ${whenLabel(drafts[0]!.atMs, clock).split(" · ")[0]}`;
     const made = yield* Cards.writeWeekCard({
       orgId: lead.orgId,
       agentId: lead.agentId,
@@ -959,7 +963,11 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
         isKinError(error) ? error : unavailable("Kin couldn't make the pack."),
       ),
     );
-    return { packId, cardId: made.cardId, when: whenLabel(atMs, yield* ownerZone(lead.orgId)) };
+    return {
+      packId,
+      cardId: made.cardId,
+      when: whenLabel(atMs, { zone: yield* ownerZone(lead.orgId), locale: KIN_TEXT_LOCALE }),
+    };
   });
 
   const setPost = Effect.fn("KinSocial.setPost")(function* (

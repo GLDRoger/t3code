@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a file's tries are keyed by a hash of its bytes.
-import { formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
+import { formatKinWhen } from "@t3tools/contracts";
 import * as NodeCrypto from "node:crypto";
 
 import type { KinOrgId } from "@t3tools/contracts";
@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { textLocale } from "../companyProfile.ts";
 import { ownerZone } from "../recordRows.ts";
 
 /**
@@ -103,6 +104,6 @@ export const waitLine = Effect.fn("KinStatements.passwordWaitLine")(function* (
   refillAt: number,
 ) {
   const zone = yield* ownerZone(orgId);
-  const at = formatKinWhen(refillAt, "time", { zone, locale: KIN_TEXT_LOCALE });
+  const at = formatKinWhen(refillAt, "time", { zone, locale: yield* textLocale(orgId) });
   return `Too many wrong passwords for this file. Kin takes another after ${at}; the right one clears them.`;
 });

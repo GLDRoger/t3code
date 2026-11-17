@@ -20,6 +20,7 @@ import { isSqlError } from "effect/sql/SqlError";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
+import { textLocale } from "../work/companyProfile.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
@@ -233,7 +234,10 @@ const make = Effect.gen(function* () {
       title: item.title,
       dueAt: iso(plan.dueAt),
       onDue: plan.onDue,
-      text: confirmText(plan.dueAt, plan.onDue, timeZone),
+      text: confirmText(plan.dueAt, plan.onDue, {
+        zone: timeZone,
+        locale: yield* textLocale(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      }),
     };
     // Only kin_defer items name a chat; other deferrals arm without a card. A remind or ask
     // only ever messages whoever set it, and the lead's own reply already said when, so no card.
