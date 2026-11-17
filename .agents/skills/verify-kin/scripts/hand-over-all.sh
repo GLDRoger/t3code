@@ -25,7 +25,9 @@ refused="$(kv as arjun rpc kin.work.handOver "{\"from\":$(from "$ZOYA"),\"to\":$
 
 titles="$(q "select group_concat(title, '|') from kin_records where register_id = 'work' and owner_kind = 'person' and owner_id = '$ZOYA' and state in ('open','doing','waiting')")"
 first="${titles%%|*}"
-seq0="$(q "select coalesce(max(seq), 0) from kin_messages")"
+# Message seq counts within a chat, so count what reached Arjun's own chats instead.
+told_arjun() { q "select count(*) from kin_messages m join kin_chats c on c.chat_id = m.chat_id where c.kind = 'direct' and c.direct_key like '$ARJUN:%' and m.body like '%$first%'"; }
+told0="$(told_arjun)"
 cseq0="$(q "select coalesce(max(seq), 0) from kin_record_changes")"
 keys="$(kv as owner rpc kin.work.handOver "{\"from\":$(from "$ZOYA"),\"to\":$(from "$ARJUN")}" | keys_of)"
 [[ "$(held "$ZOYA")" == 0 && "$(held "$ARJUN")" -ge "$open_count" ]] ||
@@ -33,10 +35,10 @@ keys="$(kv as owner rpc kin.work.handOver "{\"from\":$(from "$ZOYA"),\"to\":$(fr
 changes="$(q "select count(*) from kin_record_changes c join kin_records r on r.record_id = c.record_id where c.seq > $cseq0 and r.owner_id = '$ARJUN' and c.fields_json like '%owner%' and c.actor_kind = 'person'")"
 [[ "$changes" -ge "$open_count" ]] || fail "the moves weren't each recorded as a change ($changes)"
 for _ in $(seq 1 30); do
-  [[ "$(q "select count(*) from kin_messages where seq > $seq0 and body like '%$first%'")" -ge 1 ]] && break
+  (($(told_arjun) > told0)) && break
   sleep 1
 done
-told="$(q "select count(*) from kin_messages where seq > $seq0 and body like '%$first%'")"
+told=$(($(told_arjun) - told0))
 [[ "$told" == 1 ]] || fail "Arjun was told $told times, not once"
 
 kv as owner rpc kin.work.handOver "{\"from\":$(from "$ARJUN"),\"to\":$(from "$ZOYA"),\"keys\":$keys}" >/dev/null
