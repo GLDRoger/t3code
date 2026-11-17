@@ -17,6 +17,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -24,6 +25,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlError from "effect/sql/SqlError";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
@@ -66,9 +68,12 @@ const harness = (renderer: Layer.Layer<never> = Layer.empty) => {
   clock = NOW;
   const fake = makeFakeZernio(memoryStore(), () => clock);
   const keys = new Map<string, Redacted.Redacted<string>>();
+  // What runs before each key is stored, so a test can hold saves there.
+  const keySave = { before: Effect.void as Effect.Effect<void> };
   const secrets = Layer.mock(KinConnectionSecrets)({
     getSocialKey: (groupId) => Effect.succeed(Option.fromNullishOr(keys.get(groupId))),
-    setSocialKey: (groupId, key) => Effect.sync(() => void keys.set(groupId, key)),
+    setSocialKey: (groupId, key) =>
+      keySave.before.pipe(Effect.andThen(Effect.sync(() => void keys.set(groupId, key)))),
     removeSocialKey: (groupId) => Effect.sync(() => void keys.delete(groupId)),
   });
   const identity = Layer.mock(KinIdentity)({
@@ -104,7 +109,7 @@ const harness = (renderer: Layer.Layer<never> = Layer.empty) => {
       yield* at(NOW);
       return yield* body.pipe(Effect.provide(layer));
     });
-  return { fake, run };
+  return { fake, run, keys, keySave };
 };
 
 /** The time on Kin's clock and the fake service's, together. */
@@ -219,7 +224,7 @@ const failure = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
 it.effect("connects groups only with a key limited to one profile, owner-level only", () => {
-  const { fake, run } = harness();
+  const { fake, run, keys, keySave } = harness();
   return run(
     Effect.gen(function* () {
       yield* setUp;
@@ -247,6 +252,66 @@ it.effect("connects groups only with a key limited to one profile, owner-level o
         ),
         /./,
       );
+      // Two checks of one profile, for two groups, pass; both saves then run at once and are
+      // held where each stores its key, past any read before it. Exactly one binding lands.
+      const sharedMade = fake.addProfile({ ...OWN, name: "Invented Shared" });
+      const raced = yield* Effect.forEach(
+        [{ kind: "own" as const }, { kind: "client" as const, clientId: "rec_north" }],
+        (group) => social.check(asOwner, { orgId, ...group, key: Redacted.make(sharedMade.key) }),
+      );
+      const bothHeld = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let held = 0;
+      keySave.before = Effect.gen(function* () {
+        held += 1;
+        if (held === 2) yield* Deferred.succeed(bothHeld, undefined);
+        yield* Deferred.await(release);
+      });
+      const saves = yield* Effect.forEach(
+        raced,
+        (one) =>
+          failure(social.connect(asOwner, { orgId, checkId: one.checkId })).pipe(Effect.option),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(bothHeld);
+      keySave.before = Effect.void;
+      yield* Deferred.succeed(release, undefined);
+      const refusals = (yield* Fiber.join(saves)).flatMap((one) => Option.toArray(one));
+      const sql = yield* SqlClient.SqlClient;
+      const bound = yield* sql<{ groupId: string; label: string }>`SELECT g.group_id AS "groupId",
+          COALESCE(r.title, 'Our own') AS label
+        FROM kin_social_groups g LEFT JOIN kin_records r ON r.record_id = g.party_id
+        WHERE g.org_id = ${orgId} AND g.profile_id = ${sharedMade.profileId}
+          AND g.removed_at IS NULL`;
+      assert.strictEqual(bound.length, 1, "one live binding of the profile");
+      assert.deepEqual(refusals, [
+        `That profile is already connected as ${bound[0]!.label}. One profile is one group.`,
+      ]);
+      assert.deepEqual([...keys.keys()], [bound[0]!.groupId], "the refused save keeps no key");
+      // The database refuses a second live binding, new or moved by a reconnection.
+      const refused = (statement: Effect.Effect<unknown, SqlError.SqlError>) =>
+        statement.pipe(
+          Effect.flip,
+          Effect.map((error) => String(error.cause)),
+        );
+      assert.match(
+        yield* refused(sql`INSERT INTO kin_social_groups (org_id, group_id, party_id, service,
+            profile_id, accounts_json, created_at)
+          SELECT org_id, 'sg_copy', 'rec_lumen', service, profile_id, accounts_json, created_at
+          FROM kin_social_groups WHERE group_id = ${bound[0]!.groupId}`),
+        /UniqueViolation/,
+      );
+      yield* sql`INSERT INTO kin_social_groups (org_id, group_id, party_id, service, profile_id,
+          accounts_json, created_at)
+        SELECT org_id, 'sg_other', 'rec_lumen', service, 'other-profile', accounts_json, created_at
+        FROM kin_social_groups WHERE group_id = ${bound[0]!.groupId}`;
+      assert.match(
+        yield* refused(sql`UPDATE kin_social_groups SET profile_id = ${sharedMade.profileId}
+          WHERE group_id = 'sg_other'`),
+        /UniqueViolation/,
+      );
+      yield* sql`DELETE FROM kin_social_groups WHERE group_id = 'sg_other'`;
+      yield* social.remove(asOwner, { orgId, groupId: bound[0]!.groupId });
       // Two checks of one profile, for two groups, pass before either is saved; the second is refused.
       const ownMade = fake.addProfile(OWN);
       const ownCheck = yield* social.check(asOwner, {
