@@ -1,7 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
-import { KIN_OPENAI_AGENTS, kinDomainLabel } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import {
+  KIN_OTHER_PROVIDER_AGENTS,
+  kinDomainLabel,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { KinLeadProfile, ModelSelection } from "@t3tools/contracts";
@@ -59,15 +62,15 @@ function OpenAiAgents(props: KinWorkTarget) {
   const updateSettings = useUpdateEnvironmentSettings(props.environmentId);
   return (
     <SettingsRow
-      title={KIN_OPENAI_AGENTS.title}
-      description={KIN_OPENAI_AGENTS.detail}
+      title={KIN_OTHER_PROVIDER_AGENTS.title}
+      description={KIN_OTHER_PROVIDER_AGENTS.detail}
       control={
         <Switch
           checked={settings.kinNonClaudeAgents}
           onCheckedChange={(checked) =>
             void updateSettings({ kinNonClaudeAgents: Boolean(checked) })
           }
-          aria-label={KIN_OPENAI_AGENTS.title}
+          aria-label={KIN_OTHER_PROVIDER_AGENTS.title}
         />
       }
     />

@@ -7,6 +7,7 @@ import type {
   ModelSelection,
   ServerProviderModel,
 } from "@t3tools/contracts";
+import { KIN_PROVIDER_FACTS, kinCantDo, kinProviderFacts } from "@t3tools/contracts";
 import { formatModelSlugName } from "@t3tools/shared/model";
 
 import { formatKinDeferralTime } from "./kinDeferralPresentation.ts";
@@ -177,18 +178,26 @@ export const KIN_CHIEF_OF_STAFF: KinLeadDraft = {
 /** The providers an agent may run on; the one rule lives in contracts, beside the host's. */
 export { kinAgentDriverAllowed } from "@t3tools/contracts";
 
-/** The host's switch for agents on Codex, shown beside the model new agents start on. */
-export const KIN_OPENAI_AGENTS = {
-  title: "Agents on OpenAI models",
-  detail:
-    "An experiment: agents may also run on Codex's models. As on Claude, in your own chats they have a shell, files and web search, each step checked by Kin, and in chats others read only their Kin tools. Set up Codex under Settings, Providers first.",
+const switched = KIN_PROVIDER_FACTS.filter((facts) => facts.behindSwitch && !facts.devOnly);
+
+/** The host's switch for the providers behind it, shown beside the model new agents start on. */
+export const KIN_OTHER_PROVIDER_AGENTS = {
+  title: "Agents on other providers",
+  detail: `An experiment: agents may also run on ${switched.map((facts) => facts.label).join(" and ")} models. As on Claude, in your own chats they have a shell, files and the web, each step checked by Kin, and in chats others read only their Kin tools. Set the provider up under Settings, Providers first.`,
 };
+
+/** What an agent on this provider can't do, from the providers table; null when nothing. */
+export function kinProviderLimitLine(driver: string | undefined): string | null {
+  const facts = kinProviderFacts(driver);
+  if (facts === undefined || facts.lacks.length === 0) return null;
+  return `On ${facts.label}, this agent can't ${kinCantDo(facts.lacks)}.`;
+}
 
 /** An org's first agent is where the model comes from: the host copies it to every later one. */
 export const KIN_LEAD_MODELS = {
   title: "Model",
   hint: "Your agents think with this. Agents you add later use the same one.",
-  none: "Agents run on Claude, and this server has no Claude set up yet. Set it up under Settings, Providers, then come back.",
+  none: "This server has no provider set up that agents can run on yet. Set up Claude under Settings, Providers, then come back.",
 };
 
 /** The model a first agent starts on: the strongest offered, changeable. Null when none is. */
