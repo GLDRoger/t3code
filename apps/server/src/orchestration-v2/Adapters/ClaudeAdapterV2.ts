@@ -11942,6 +11942,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               resultFailure?.class === "usage_limit"
                 ? { ...resultFailure, resetAt }
                 : resultFailure !== null &&
+                    resultFailure.code !== "api_error_401" &&
                     context.authenticationFailureMessage !== undefined &&
                     !permissionDenied
                   ? { ...resultFailure, code: "authentication_failed" }
