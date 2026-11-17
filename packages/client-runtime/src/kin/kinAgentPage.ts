@@ -197,3 +197,84 @@ export function kinAgentRewriteStarter(name: string): string {
 export function kinAgentWriteCharacterStarter(name: string, area: string): string {
   return `Write a character for ${name}, our new ${area} agent: an archetype, its biases and favourites, and how it talks. Show me a draft and save it to its character doc when I agree.`;
 }
+
+/** "Changed lately": its last record changes, each opening its record, each with Undo where Kin can. */
+export const KIN_AGENT_CHANGES = {
+  title: "Changed lately",
+  detail: "Its last 20 changes to tasks, clients, money and docs. Undo puts back what it replaced.",
+  none: "It hasn't changed anything yet.",
+  undo: "Undo",
+  undoing: "Undoing…",
+  undone: "Put back.",
+  since: "Changed since",
+  sinceDetail:
+    "Changed again after this, so Kin won't put it back over that. Open it to change it.",
+  manual: "Open it to change it",
+  manualDetail: "Kin can't put this one back on its own, such as an amount or a doc's text.",
+  failed: "Couldn't undo that.",
+} as const;
+
+const FIELD_WORDS: Readonly<Record<string, string>> = {
+  owner: "holder",
+  waitingOn: "waiting on",
+  due: "due",
+  dueAllDay: "all day",
+  date: "date",
+  state: "status",
+  notes: "notes",
+  title: "title",
+  party: "client",
+  project: "project",
+  category: "category",
+  amount: "amount",
+  repeat: "repeats",
+  sensitive: "private",
+  confirmed: "kept",
+  repo: "repo",
+  side: "side",
+};
+const HIDDEN_FIELDS = new Set(["reason", "handedBack"]);
+const VALUE_MAX = 40;
+
+type Change = NonNullable<KinAgentPage["changed"]>[number];
+
+/** One change in words: "Added W-4 Draft the brochure", "W-2 Brochure: holder Zoya → Arjun". */
+export function kinAgentChangeLine(
+  change: Change,
+  names: ReadonlyMap<string, string>,
+  now: Date = new Date(),
+): string {
+  const record = `${change.key} ${change.title}`;
+  if (change.kind === "created") return `Added ${record}`;
+  if (change.kind === "linked") return `Linked ${record}`;
+  const value = (field: string, shown: string | null) => {
+    if (shown === null || shown === "") return "none";
+    const principal = /^(person|agent):(.+)$/.exec(shown);
+    if (principal !== null && (field === "owner" || field === "waitingOn"))
+      return names.get(principal[2]!) ?? (principal[1] === "agent" ? "an agent" : "someone");
+    if ((field === "due" || field === "date") && !Number.isNaN(Date.parse(shown)))
+      return new Date(shown).toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+        ...(new Date(shown).getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+      });
+    return shown.length > VALUE_MAX ? `${shown.slice(0, VALUE_MAX - 1)}…` : shown;
+  };
+  const parts = change.fields
+    .filter((one) => !HIDDEN_FIELDS.has(one.field))
+    .map(
+      (one) =>
+        `${FIELD_WORDS[one.field] ?? one.field} ${value(one.field, one.from)} → ${value(one.field, one.to)}`,
+    );
+  return parts.length === 0 ? `Changed ${record}` : `${record}: ${parts.join("; ")}`;
+}
+
+/** What the row offers: Undo, or why not. */
+export const kinAgentChangeOffer = (change: Change) =>
+  change.undo
+    ? ({ kind: "undo" } as const)
+    : change.since
+      ? ({ kind: "since", text: KIN_AGENT_CHANGES.since } as const)
+      : change.kind === "updated"
+        ? ({ kind: "manual", text: KIN_AGENT_CHANGES.manual } as const)
+        : ({ kind: "none" } as const);

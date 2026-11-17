@@ -64,6 +64,7 @@ import {
   type KinPlaceDialog,
   type KinRecordWhere,
 } from "./kinPlaces";
+import { openKinMemoryInstead } from "./kinSettingsAddress";
 import { kinListsOf, useKinAskAgent, useKinLists } from "./useKinMoney";
 import {
   kinWorkLiveAtom,
@@ -244,7 +245,7 @@ function KinPlaceView({
   readonly docLink: (doc: KinRecordKey, section: string | null) => string;
 }) {
   const { environmentId } = props;
-  const navigate = useNavigate();
+  const router = useRouter();
   const wide = useMediaQuery("lg");
   const state = useKinWork(props);
   const canAdd = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
@@ -592,11 +593,7 @@ function KinPlaceView({
             if (hit.kind === "docs") openDoc(hit.key, hit.section?.id);
             else if (hit.kind === "clients") openClient(hit.key);
             else if (hit.kind === "projects") openProject(hit.key);
-            else if (hit.kind === "memory")
-              void navigate({
-                to: "/kin/$environmentId/$orgId/memory",
-                params: { environmentId, orgId: props.orgId },
-              });
+            else if (hit.kind === "memory") openKinMemoryInstead(router.history, hit.title, "open");
             // A contact has no page of its own, and a money entry opens on its sheet.
             else setOpenKey(hit.key);
           }}

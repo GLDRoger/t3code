@@ -13,6 +13,7 @@ import {
 import { KIN_BRAND } from "@t3tools/client-runtime/kin/kinBrand";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinListSend } from "@t3tools/client-runtime/kin/kinLists";
+import { kinZoneName } from "@t3tools/client-runtime/kin/kinTimeZone";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { EnvironmentId, KinOrgId, type KinCompanyProfile } from "@t3tools/contracts";
@@ -280,7 +281,7 @@ function CompanyTimeZone(props: KinWorkTarget) {
     <ListSection title={KIN_COMPANY.timeZone}>
       <ListRowLayout
         icon="clock"
-        label={zone.timeZone}
+        label={kinZoneName(zone.timeZone)}
         description={
           zone.fromHost === true ? KIN_COMPANY.timeZoneFromHost : KIN_COMPANY.timeZoneUse
         }

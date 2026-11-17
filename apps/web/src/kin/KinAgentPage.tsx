@@ -1,6 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_AGENT_CHANGES,
   KIN_AGENT_PAGE,
+  kinAgentChangeLine,
+  kinAgentChangeOffer,
   kinAgentModelLine,
   kinAgentPageCan,
   kinAgentQuietLine,
@@ -23,6 +26,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import {
   KinOrgId,
   type EnvironmentId,
+  type KinAgentChange,
   type KinAgentId,
   type KinAgentPage,
   type KinChatId,
@@ -60,6 +64,7 @@ import { KIN_PLACE_PATH, withKinAgentPage } from "./kinPlaces";
 import { KinLoadFailed } from "./KinWorkParts";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useKinHost } from "./useKinHost";
+import { useKinWorkDirectory } from "./useKinWork";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 import { useNowMinuteMs } from "./useKinClock";
 
@@ -407,6 +412,16 @@ function AgentPageBody(props: {
         orgId={orgId}
         onClose={props.onClose}
       />
+      {page.changed === undefined ? null : (
+        <AgentChanged
+          environmentId={environmentId}
+          orgId={orgId}
+          agentId={lead.agentId}
+          changed={page.changed}
+          onClose={props.onClose}
+          onChanged={props.onChanged}
+        />
+      )}
       {canPause ? (
         <KinAgentSection title={lead.paused === undefined ? KIN_AGENT_PAGE.pause : "Paused"}>
           <p className="text-xs text-muted-foreground">{KIN_AGENT_PAGE.pauseDetail}</p>
@@ -715,6 +730,105 @@ function AgentInHand(props: {
               )}
             </li>
           ))}
+        </ul>
+      )}
+    </KinAgentSection>
+  );
+}
+
+const changePlace = (change: KinAgentChange) =>
+  change.registerId === "docs"
+    ? { to: KIN_PLACE_PATH.docs, search: { doc: change.key } }
+    : change.registerId === "clients"
+      ? { to: KIN_PLACE_PATH.clients, search: { client: change.key } }
+      : change.registerId === "projects"
+        ? { to: KIN_PLACE_PATH.clients, search: { project: change.key } }
+        : { to: KIN_PLACE_PATH.tasks, search: { task: change.key } };
+
+/** The agent's last changes to records, read from `kin_record_changes`, each with its way back. */
+function AgentChanged(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly changed: ReadonlyArray<KinAgentChange>;
+  readonly onClose: () => void;
+  readonly onChanged: () => void;
+}) {
+  const { environmentId, orgId } = props;
+  const undo = useAtomCommand(kinClient.agentUndoChange, { reportFailure: false });
+  const canUndo = useAtomValue(kinClient.agentUndoChange.permissionAtom(environmentId));
+  const directory = useKinWorkDirectory({ environmentId, orgId }, true).names;
+  const names = new Map([...directory.people, ...directory.agents]);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [said, setSaid] = useState<{ readonly seq: number; readonly text: string } | null>(null);
+  const run = async (seq: number) => {
+    setBusy(seq);
+    const outcome = await undo({ environmentId, input: { orgId, agentId: props.agentId, seq } });
+    setBusy(null);
+    setSaid({
+      seq,
+      text: AsyncResult.isFailure(outcome)
+        ? kinFailureText(squashAtomCommandFailure(outcome), KIN_AGENT_CHANGES.failed)
+        : KIN_AGENT_CHANGES.undone,
+    });
+    props.onChanged();
+  };
+  return (
+    <KinAgentSection title={KIN_AGENT_CHANGES.title}>
+      <p className="text-xs text-muted-foreground">{KIN_AGENT_CHANGES.detail}</p>
+      {props.changed.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{KIN_AGENT_CHANGES.none}</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {props.changed.map((change) => {
+            const offer = kinAgentChangeOffer(change);
+            const place = changePlace(change);
+            return (
+              <li key={change.seq} className="flex flex-col gap-1">
+                <span className="text-xs text-muted-foreground">
+                  {new Date(change.at).toLocaleString(undefined, {
+                    day: "numeric",
+                    month: "short",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+                <Link
+                  to={place.to}
+                  params={{ environmentId, orgId }}
+                  search={place.search}
+                  onClick={props.onClose}
+                  className="text-sm break-words text-foreground underline-offset-4 hover:underline"
+                >
+                  {kinAgentChangeLine(change, names)}
+                </Link>
+                <div className="flex flex-wrap items-center gap-2">
+                  {offer.kind === "undo" && canUndo ? (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={busy !== null}
+                      aria-busy={busy === change.seq}
+                      onClick={() => void run(change.seq)}
+                    >
+                      {busy === change.seq ? KIN_AGENT_CHANGES.undoing : KIN_AGENT_CHANGES.undo}
+                    </Button>
+                  ) : offer.kind === "since" || offer.kind === "manual" ? (
+                    <span className="text-xs text-muted-foreground">
+                      {offer.kind === "since"
+                        ? KIN_AGENT_CHANGES.sinceDetail
+                        : KIN_AGENT_CHANGES.manualDetail}
+                    </span>
+                  ) : null}
+                  {said?.seq === change.seq ? (
+                    <span role="status" className="text-xs text-muted-foreground">
+                      {said.text}
+                    </span>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
     </KinAgentSection>

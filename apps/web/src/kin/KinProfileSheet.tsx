@@ -48,6 +48,7 @@ import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
+import { KinAwayField } from "./KinAway";
 import { useOpenKinPeopleChat } from "./KinPeopleChat";
 import { kinSettingsSectionIn } from "./kinSettingsAddress";
 import { KIN_DIALOG_PARTS, KIN_SHEET_PARTS } from "./kinOverlayParts";
@@ -312,8 +313,11 @@ export function KinProfileBody(props: KinProfileTarget) {
     />
   ) : (
     <KinProfileRead
+      environmentId={environmentId}
+      orgId={orgId}
       profile={profile}
       holding={holding}
+      mine={mine}
       mayEdit={mayEdit}
       onEdit={() => setEditing(true)}
     />
@@ -339,6 +343,9 @@ function Field(props: { readonly label: string; readonly children: React.ReactNo
 }
 
 function KinProfileRead(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly mine: boolean;
   readonly profile: KinPersonProfile;
   readonly holding: KinProfileHolding;
   readonly mayEdit: boolean;
@@ -392,6 +399,13 @@ function KinProfileRead(props: {
           )}
         </p>
       </Field>
+      <KinAwayField
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+        profile={profile}
+        mine={props.mine}
+        mayEdit={props.mayEdit}
+      />
       <Field label={KIN_PROFILE_COPY.quietLabel}>
         <p className="text-sm text-foreground">{kinQuietLine(profile, props.holding)}</p>
       </Field>

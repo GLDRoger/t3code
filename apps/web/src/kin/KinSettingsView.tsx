@@ -82,7 +82,12 @@ import { KinMemoryView } from "./KinMemoryView";
 import { KinSettingsNotifications } from "./KinNotifications";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import { KinProfileBody, useKinMe } from "./KinProfileSheet";
-import { closeKinSettings, kinSettingsSectionIn, openKinSettings } from "./kinSettingsAddress";
+import {
+  closeKinSettings,
+  kinSettingsFindIn,
+  kinSettingsSectionIn,
+  openKinSettings,
+} from "./kinSettingsAddress";
 import { rememberKinTeammate } from "./kinTeammateMark";
 import { KinTeamView } from "./KinTeamView";
 import { useKinHost } from "./useKinHost";
@@ -334,7 +339,7 @@ function KinSettingsPageBody(props: {
         </SettingsPageContainer>
       );
     case "memory":
-      return <KinMemoryView key={target.orgId} {...target} />;
+      return <KinSettingsMemory {...target} />;
     case "company":
       return (
         <SettingsPageContainer>
@@ -383,7 +388,7 @@ function KinLeaveTeam() {
       setFailed(true);
       return;
     }
-    rememberKinTeammate(true);
+    rememberKinTeammate("left");
     window.location.assign("/pair");
   };
   return (
@@ -533,4 +538,10 @@ function KinSettingsAgents(props: KinSettingsTarget) {
       <KinAgentDefaultsSetting {...props} />
     </div>
   );
+}
+
+/** Memory, filtered to what a search result named. */
+function KinSettingsMemory(props: KinSettingsTarget) {
+  const find = useLocation({ select: (location) => kinSettingsFindIn(location.searchStr) });
+  return <KinMemoryView key={`${props.orgId}\u0000${find}`} {...props} find={find} />;
 }

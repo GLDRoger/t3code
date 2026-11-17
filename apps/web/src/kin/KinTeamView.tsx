@@ -87,6 +87,9 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
 import { KinInviteDialog, type KinInviteDialogState } from "./KinInviteDialog";
+import { KinAwayField, KinHandOverButton } from "./KinAway";
+import { useKinProfiles } from "./kinPictures";
+import { KIN_HAND_OVER } from "@t3tools/client-runtime/kin/kinHandOver";
 import { kinClient } from "./kinClient";
 import { kinProfileRequestAtom, kinTeamAddRequestAtom } from "./kinTeamForm";
 import { openKinProfile } from "./KinProfileSheet";
@@ -429,6 +432,13 @@ function KinTeammateDialog(props: {
               Profile
             </Button>
           )}
+          {teammate.personId === null ? null : (
+            <KinTeammateAway
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+              personId={teammate.personId}
+            />
+          )}
           {kinTeammateKindEditable(teammate, props.viewer) ? (
             <Section title="What they can do">
               <RadioGroup
@@ -558,6 +568,14 @@ function KinTeammateDialog(props: {
             <AlertDialogTitle>{removal.title}</AlertDialogTitle>
             <AlertDialogDescription>{removal.detail}</AlertDialogDescription>
           </AlertDialogHeader>
+          {teammate.personId === null ? null : (
+            <KinRemoveHandOver
+              environmentId={props.environmentId}
+              orgId={props.orgId}
+              personId={teammate.personId}
+              name={teammate.name}
+            />
+          )}
           <AlertDialogFooter>
             <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
             <Button
@@ -825,5 +843,65 @@ function KinTeammateLead(props: {
       </span>
       <ChevronRightIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
     </button>
+  );
+}
+
+function useKinProfile(environmentId: EnvironmentId, orgId: KinOrgId, personId: KinPersonId) {
+  const result = useKinProfiles(environmentId, orgId);
+  const held = result === null ? null : Option.getOrNull(AsyncResult.value(result));
+  return held?.profiles.find((profile) => profile.personId === personId) ?? null;
+}
+
+/** Away, and giving all their open tasks to someone, from the teammate's own page. */
+function KinTeammateAway(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly personId: KinPersonId;
+}) {
+  const profile = useKinProfile(props.environmentId, props.orgId, props.personId);
+  if (profile === null) return null;
+  return (
+    <>
+      <KinAwayField
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+        profile={profile}
+        mine={false}
+        mayEdit={profile.canEdit === true}
+      />
+      {(profile.load?.open ?? 0) === 0 ? null : (
+        <Section title="Tasks">
+          <KinHandOverButton
+            environmentId={props.environmentId}
+            orgId={props.orgId}
+            from={{ _tag: "person", personId: props.personId }}
+            fromName={profile.displayName}
+          />
+        </Section>
+      )}
+    </>
+  );
+}
+
+/** Before removing someone who still holds open tasks: give them to someone first. */
+function KinRemoveHandOver(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly personId: KinPersonId;
+  readonly name: string;
+}) {
+  const profile = useKinProfile(props.environmentId, props.orgId, props.personId);
+  const open = profile?.load?.open ?? 0;
+  if (open === 0) return null;
+  return (
+    <div className="flex flex-col gap-2 px-6">
+      <p className="text-sm text-muted-foreground">{KIN_HAND_OVER.removeOffer(open, props.name)}</p>
+      <KinHandOverButton
+        environmentId={props.environmentId}
+        orgId={props.orgId}
+        from={{ _tag: "person", personId: props.personId }}
+        fromName={props.name}
+      />
+    </div>
   );
 }
