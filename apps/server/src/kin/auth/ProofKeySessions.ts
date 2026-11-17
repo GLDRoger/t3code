@@ -295,6 +295,32 @@ const enabled = (options: { readonly recordsPairings: boolean }) =>
                 ),
               ),
             ),
+            // Signing out a whole device blocks its key, as signing out its active session does.
+            revokeByProofKey: Effect.fn("ProofKeySessions.revokeByProofKey")((thumbprint) =>
+              sql
+                .withTransaction(
+                  Effect.gen(function* () {
+                    const now = yield* DateTime.now;
+                    yield* sql`UPDATE kin_auth_session_keys SET individually_revoked = ${UNCONDITIONAL_BLOCK}, repaired_at = NULL
+              WHERE proof_key_thumbprint = ${thumbprint}`;
+                    yield* sql`UPDATE kin_auth_key_repairs SET consumed_at = ${now.epochMilliseconds}
+              WHERE consumed_at IS NULL AND thumbprint = ${thumbprint}`;
+                    return yield* store.revokeByProofKey(thumbprint);
+                  }),
+                )
+                .pipe(
+                  Effect.catchTags({
+                    SqlError: (cause) =>
+                      Effect.fail(
+                        new SessionStore.ProofKeySessionsError({
+                          operation: "revoke",
+                          cause: toPersistenceSqlError("ProofKeySessions.revokeByProofKey")(cause),
+                        }),
+                      ),
+                  }),
+                  Effect.uninterruptible,
+                ),
+            ),
           };
         },
       });

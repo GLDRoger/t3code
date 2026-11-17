@@ -489,7 +489,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
           (yield* sessions.issue({ proofKeyThumbprint: "orphan" }).pipe(Effect.flip))._tag,
         ).toBe("SessionCredentialIssueError");
         expect(
-          yield* sql`SELECT proof_key_thumbprint FROM kin_auth_session_keys m
+          yield* sql`SELECT m.proof_key_thumbprint FROM kin_auth_session_keys m
         LEFT JOIN auth_sessions s ON s.session_id = m.session_id WHERE s.session_id IS NULL`,
         ).toEqual([]);
       }).pipe(Effect.provide(layer)),

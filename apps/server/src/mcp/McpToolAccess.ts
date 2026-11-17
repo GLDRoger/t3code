@@ -387,6 +387,14 @@ export class HandlersLayer<Tools extends Record<string, Tool.Any>, EX = never, R
 const checkedHandlers = <Handlers>(declarations: Declarations<Handlers>): Handlers =>
   Struct.map(declarations, checkedHandler);
 
+const threadBound = Symbol("McpToolAccess.threadBound");
+/** Kin: an `EnabledWhen` gate that, like `hiddenFromOutsideClients`, is false without a calling thread. */
+export const threadBoundGate = (gate: () => boolean) =>
+  Object.assign(gate, { [threadBound]: true as const });
+const hidesOutsideClients = (gate: unknown) =>
+  gate === McpInvocationContext.hiddenFromOutsideClients ||
+  (typeof gate === "function" && threadBound in gate);
+
 /**
  * A tool runs in a linked environment when its parameters take this target
  * as `environmentId`. Other tools may name an environment for their own
@@ -426,8 +434,7 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
     const remote = remoteCheckOf(declaration);
     if (
       remote === undefined &&
-      Context.getOrUndefined(tool.annotations, McpSchema.EnabledWhen) !==
-        McpInvocationContext.hiddenFromOutsideClients
+      !hidesOutsideClients(Context.getOrUndefined(tool.annotations, McpSchema.EnabledWhen))
     )
       return yield* Effect.die(
         `${name} acts as its calling thread, so outside clients must not be offered it.`,

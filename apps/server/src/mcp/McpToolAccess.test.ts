@@ -508,5 +508,19 @@ it.effect("refuses to build a thread-bound tool that outside clients would be of
     expect(Exit.isFailure(built) && Cause.pretty(built.cause)).toContain(
       "reads_as_caller acts as its calling thread",
     );
+    const GatedToolkit = Toolkit.make(
+      Tool.make("reads_as_caller", probe).annotate(
+        McpSchema.EnabledWhen,
+        McpToolAccess.threadBoundGate(() => true),
+      ),
+    );
+    const gated = yield* Layer.build(
+      McpToolAccess.HandlersLayer.layer(
+        McpToolAccess.toLayer(GatedToolkit, {
+          reads_as_caller: McpToolAccess.readsAsCaller(() => ran),
+        }),
+      ),
+    ).pipe(Effect.scoped, Effect.exit);
+    expect(Exit.isSuccess(gated)).toBe(true);
   }),
 );

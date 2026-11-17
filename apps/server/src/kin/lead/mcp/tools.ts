@@ -33,9 +33,10 @@ import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import * as Lead from "../LeadMemory.ts";
 import { deferredMeta } from "../deferredTools.ts";
+import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
-const enabled = () => {
+const enabled = McpToolAccess.threadBoundGate(() => {
   const fiber = Fiber.getCurrent();
   if (!fiber) return false;
   const scope = Context.getOrUndefined(fiber.context, McpInvocationContext);
@@ -45,7 +46,7 @@ const enabled = () => {
     scope.thread.subagent !== true &&
     identity?.isLeadThread(scope.thread.threadId) === true
   );
-};
+});
 const shared = {
   failure: Schema.Union([KinChatError, OrchestratorMcpFailure]),
   failureMode: "return" as const,

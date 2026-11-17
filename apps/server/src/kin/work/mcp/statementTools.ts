@@ -14,9 +14,10 @@ import { KinChatHub } from "../../chat/KinChatHub.ts";
 import { KinChatRepository } from "../../chat/KinChatRepository.ts";
 import { KinIdentity } from "../../chat/KinIdentity.ts";
 import * as Statements from "../leadStatements.ts";
+import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 
 // tools/list runs this before handler services are provided; the Kin MCP endpoint provides `KinIdentity`.
-const enabled = () => {
+const enabled = McpToolAccess.threadBoundGate(() => {
   const fiber = Fiber.getCurrent();
   if (!fiber) return false;
   const scope = Context.getOrUndefined(fiber.context, McpInvocationContext);
@@ -26,7 +27,7 @@ const enabled = () => {
     scope.thread.subagent !== true &&
     identity?.isLeadThread(scope.thread.threadId) === true
   );
-};
+});
 const shared = {
   failure: Schema.Union([KinChatError, OrchestratorMcpFailure]),
   failureMode: "return" as const,
