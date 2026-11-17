@@ -9,7 +9,7 @@ import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientResponse, UrlParams } from "effect/http";
 
 import type { FakeApp, FakeGitHub } from "./fakeGitHub.ts";
-import { KinKeychain } from "./Keychain.ts";
+import { KinGitHubAppKey } from "./appKey.ts";
 import { KinGitHubAppConfig } from "./KinGitHubApp.ts";
 
 export const BOT_LOGIN = "invented-kin[bot]";
@@ -62,16 +62,18 @@ export const fakeHttp = (github: FakeGitHub) =>
     ),
   );
 
-/** The App's keyring item, or none, and the env lines that name the App. */
+/** The App's key, or none, and the env lines that name the App. */
 export const appHost = (options: { readonly appId?: string; readonly key?: boolean }) =>
   Layer.mergeAll(
-    Layer.succeed(KinKeychain, {
-      appSecret: () =>
+    Layer.succeed(KinGitHubAppKey, {
+      get: () =>
         Effect.succeed(
           options.key === false
             ? Option.none()
             : Option.some(Redacted.make(json({ privateKeyPem }))),
         ),
+      set: () => Effect.void,
+      remove: () => Effect.void,
     }),
     Layer.succeed(KinGitHubAppConfig, {
       appId: Option.fromNullishOr(options.appId),

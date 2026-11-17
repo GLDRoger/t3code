@@ -397,6 +397,7 @@ describe("Kin migrations", () => {
           { migration_id: 167, name: "TeamMemorySetting" },
           { migration_id: 168, name: "GitHubOwnerUses" },
           { migration_id: 169, name: "AwayAndWhen" },
+          { migration_id: 170, name: "OneSocialProfile" },
         ]);
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
@@ -585,6 +586,7 @@ describe("Kin migrations", () => {
           { migration_id: 167, name: "TeamMemorySetting" },
           { migration_id: 168, name: "GitHubOwnerUses" },
           { migration_id: 169, name: "AwayAndWhen" },
+          { migration_id: 170, name: "OneSocialProfile" },
         ]);
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
@@ -653,6 +655,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_shadow_entries_promotion" },
           { name: "idx_kin_shadow_entries_review" },
           { name: "idx_kin_social_groups_party" },
+          { name: "idx_kin_social_groups_profile" },
           { name: "idx_kin_social_posts_card" },
           { name: "idx_kin_social_posts_state" },
           { name: "idx_kin_trigger_fires_retention" },
@@ -822,6 +825,7 @@ describe("Kin migrations", () => {
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
@@ -1061,6 +1065,7 @@ describe("Kin migrations", () => {
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
@@ -1213,6 +1218,7 @@ describe("Kin migrations", () => {
         { migration_id: 167, name: "TeamMemorySetting" },
         { migration_id: 168, name: "GitHubOwnerUses" },
         { migration_id: 169, name: "AwayAndWhen" },
+        { migration_id: 170, name: "OneSocialProfile" },
       ]);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -1375,6 +1381,7 @@ describe("Kin migrations", () => {
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
@@ -1507,6 +1514,7 @@ describe("Kin migrations", () => {
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       const columns = yield* sql<{ name: string }>`
         SELECT name FROM pragma_table_info('kin_workers')`;
@@ -1648,8 +1656,9 @@ describe("Kin migrations", () => {
           [167, "TeamMemorySetting"],
           [168, "GitHubOwnerUses"],
           [169, "AwayAndWhen"],
+          [170, "OneSocialProfile"],
         ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-96), [
+        assert.deepStrictEqual((yield* kinHistory).slice(-97), [
           { migration_id: 32, name: "WorkerEnvironment" },
           { migration_id: 33, name: "ApproverKeyConfirmations" },
           { migration_id: 34, name: "PerLeadWakeups" },
@@ -1746,6 +1755,7 @@ describe("Kin migrations", () => {
           { migration_id: 167, name: "TeamMemorySetting" },
           { migration_id: 168, name: "GitHubOwnerUses" },
           { migration_id: 169, name: "AwayAndWhen" },
+          { migration_id: 170, name: "OneSocialProfile" },
         ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
         assert.deepStrictEqual(
@@ -1895,6 +1905,7 @@ describe("Kin migrations", () => {
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
         { message_id: "promotion:lead:L1", status: "dismissed" },
@@ -2067,6 +2078,7 @@ describe("Kin migrations", () => {
           [167, "TeamMemorySetting"],
           [168, "GitHubOwnerUses"],
           [169, "AwayAndWhen"],
+          [170, "OneSocialProfile"],
         ]);
         assert.deepStrictEqual(
           yield* sql`SELECT chat_id, shared_at IS NOT NULL AS shared, shared_from_seq FROM kin_chats ORDER BY chat_id`,
@@ -2215,6 +2227,7 @@ describe("Kin migrations", () => {
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_wakeups_running*' ORDER BY name`,
@@ -2338,6 +2351,7 @@ describe("Kin migrations", () => {
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT item_id, held_at, classified, shared_content, suggested_content,
@@ -2474,6 +2488,7 @@ describe("Kin migrations", () => {
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT item_id, held_at, shared_content, shared_how, suggested_content,
@@ -2601,6 +2616,7 @@ describe("Kin migrations", () => {
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_memory_labels`, []);
       yield* undoSuggestionsByVersion;
@@ -2735,6 +2751,7 @@ describe("Kin migrations", () => {
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT org_id, item_id, held_at, shared_content, shared_how, suggested_content,
@@ -2778,6 +2795,7 @@ describe("Kin migrations", () => {
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       const one = JSON.parse(strong);
       for (const table of ["kin_leads", "kin_agent_defaults"]) {
@@ -2787,6 +2805,41 @@ describe("Kin migrations", () => {
         // The model itself, with the old pair kept for Workers.ts until it is deleted.
         assert.deepStrictEqual(JSON.parse(row!.models), { ...one, ...JSON.parse(old) });
       }
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("K170 keeps the earliest live group of a social profile and disconnects the rest", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DROP INDEX idx_kin_social_groups_profile`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 170`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+      yield* sql`INSERT INTO kin_social_groups (org_id, group_id, party_id, service, profile_id,
+          accounts_json, created_at, removed_at)
+        VALUES ('org', 'sg_first', NULL, 'zernio', 'shared', '[]', 1, NULL),
+          ('org', 'sg_second', 'client-a', 'zernio', 'shared', '[]', 2, NULL),
+          ('org', 'sg_gone', 'client-b', 'zernio', 'shared', '[]', 0, 5),
+          ('org', 'sg_own', 'client-c', 'zernio', 'own', '[]', 3, NULL)`;
+      yield* sql`INSERT INTO kin_social_posts (org_id, post_id, kind, group_id, caption, at_ms,
+          state, agent_id, created_at, updated_at)
+        VALUES ('org', 'draft', 'post', 'sg_second', 'Invented', 9, 'draft', 'lead', 0, 0),
+          ('org', 'kept', 'post', 'sg_first', 'Invented', 9, 'draft', 'lead', 0, 0)`;
+
+      assert.deepStrictEqual(yield* runKinMigrations(), [[170, "OneSocialProfile"]]);
+      assert.deepStrictEqual(
+        yield* sql<{ groupId: string }>`SELECT group_id AS "groupId" FROM kin_social_groups
+          WHERE removed_at IS NULL ORDER BY group_id`,
+        [{ groupId: "sg_first" }, { groupId: "sg_own" }],
+      );
+      assert.deepStrictEqual(
+        yield* sql<{ postId: string; state: string }>`SELECT post_id AS "postId", state
+          FROM kin_social_posts ORDER BY post_id`,
+        [
+          { postId: "draft", state: "removed" },
+          { postId: "kept", state: "draft" },
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 
@@ -2800,7 +2853,7 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 169");
+      assert.include(String(exit), "below the latest applied migration 170");
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -3431,6 +3484,7 @@ it.effect("K058 adds Work to a database at K057, keeps its rows, and reruns with
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
@@ -3536,6 +3590,7 @@ it.effect(
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.lengthOf(
         yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'kin_worker_withdrawals'`,
@@ -3644,6 +3699,7 @@ it.effect("K061 turns the withdrawals K059 stored into stops of those attempts",
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     assert.deepStrictEqual(
       yield* sql`SELECT worker_id, started_at, agent_id, withdrawn_at, stopped_at, stop_key,
@@ -3782,6 +3838,7 @@ it.effect(
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(yield* sql`SELECT key, repo FROM kin_records`, [
         { key: "W-1", repo: null },
@@ -3892,6 +3949,7 @@ it.effect("K062 upgrades a database at K061, keeps its attempts, and reruns clea
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     assert.deepStrictEqual(
       yield* sql`SELECT worker_id, pushed_sha, visibility, sensitive_at, ready_sha, approved_sha,
@@ -3995,6 +4053,7 @@ it.effect("K164 keeps a worker's PR on the Work entry it belongs to, and reruns 
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     const links = sql`SELECT kind, target, relation, label FROM kin_record_links ORDER BY kind, target`;
     const expected = [
@@ -4049,6 +4108,7 @@ it.effect("K166 declines a review still waiting on its Post card and clears the 
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     const shown = sql`SELECT p.post_id AS post, p.state, m.status,
         w.closed_at IS NOT NULL AS closed, q.resolved_at IS NOT NULL AS resolved
@@ -4166,6 +4226,7 @@ it.effect(
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(yield* shape, fresh);
       assert.deepStrictEqual(
@@ -4274,6 +4335,7 @@ it.effect(
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(yield* column, fresh);
       assert.deepStrictEqual(
@@ -4378,6 +4440,7 @@ it.effect(
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(yield* index, fresh);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
@@ -4474,6 +4537,7 @@ it.effect(
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       const indexed = yield* found;
       assert.lengthOf(indexed, 1);
@@ -4568,6 +4632,7 @@ it.effect("K068 adds money to a database at K067, keeps its entries, and reruns 
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     assert.deepStrictEqual(
       yield* sql`SELECT r.amount_minor, r.currency, r.date_all_day, g.rev FROM kin_records r
@@ -4677,6 +4742,7 @@ it.effect(
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       yield* K069WorkerNetwork;
       assert.deepStrictEqual(yield* runKinMigrations(), []);
@@ -4762,6 +4828,7 @@ it.effect("K071 adds a proposal's card and one profile change per card, and reru
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     yield* K071OwnerAnswerCards;
     assert.deepStrictEqual(yield* runKinMigrations(), []);
@@ -4850,6 +4917,7 @@ it.effect("K072 issues each number once per series and entry, and reruns cleanly
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     yield* K072GeneratedDocuments;
     assert.lengthOf(yield* sql`SELECT 1 FROM kin_issued_numbers`, 1);
@@ -4930,6 +4998,7 @@ it.effect("K073 owes one push per key change, each notice's once, and reruns cle
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     yield* K073KeyPushes;
     assert.lengthOf(yield* sql`SELECT 1 FROM kin_key_pushes`, 3);
@@ -5007,6 +5076,7 @@ it.effect("K074 owes every document job's worktree until it is removed, and reru
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     yield* K074DocJobCleanup;
     assert.deepStrictEqual(yield* owed, [{ workerId: "wk-1" }]);
@@ -5081,6 +5151,7 @@ it.effect("K075 keeps what a rendered document was asked with, and reruns cleanl
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     yield* K075ServerRenderedDocuments;
     assert.deepStrictEqual(
@@ -5159,6 +5230,7 @@ it.effect("K077 adds recipe labels and request fingerprints, and reruns cleanly"
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     yield* K077DocumentLabels;
     assert.deepStrictEqual(
@@ -5235,6 +5307,7 @@ it.effect("K078 keeps one baseline per workspace, and reruns cleanly", () =>
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     assert.deepStrictEqual(
       yield* sql`SELECT commit_sha AS "commit" FROM kin_recipe_label_baselines`,
@@ -5289,6 +5362,7 @@ it.effect(
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT person_id AS "personId", access FROM kin_people ORDER BY person_id`,
@@ -5368,6 +5442,7 @@ it.effect("K088 lets a Dates list take an amount, keeps rendered figures, and re
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     yield* K088MoneyRecords;
     // What an issued document showed is never edited or removed.
@@ -5459,6 +5534,7 @@ it.effect(
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       yield* K107Connections;
       assert.deepStrictEqual(yield* sql`SELECT wakeup_id FROM kin_wakeup_outside_reads`, []);
@@ -5531,6 +5607,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     const budget = sql`SELECT budget_key AS key, remaining, refill_at IS NOT NULL AS "refills"
       FROM kin_statement_password_budget ORDER BY budget_key`;
@@ -5582,6 +5659,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
       [167, "TeamMemorySetting"],
       [168, "GitHubOwnerUses"],
       [169, "AwayAndWhen"],
+      [170, "OneSocialProfile"],
     ]);
     assert.deepStrictEqual(yield* budget, carried);
   }).pipe(Effect.provide(layer)),
@@ -5651,6 +5729,7 @@ it.effect(
         [167, "TeamMemorySetting"],
         [168, "GitHubOwnerUses"],
         [169, "AwayAndWhen"],
+        [170, "OneSocialProfile"],
       ]);
       assert.deepStrictEqual(yield* schemaOf(), widened);
       assert.isTrue(Exit.isSuccess(yield* connection("conn_outlook", "microsoft")));

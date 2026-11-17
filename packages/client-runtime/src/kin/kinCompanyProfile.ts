@@ -1,4 +1,6 @@
 import {
+  KIN_EXPORT_HOLDS,
+  KIN_EXPORT_LEAVES,
   KinCompanyBank,
   KinCompanyProfileData,
   type KinCompanyProfile,
@@ -37,9 +39,8 @@ export const KIN_COMPANY = {
   },
   export: {
     title: "Your data",
-    detail:
-      "Everything Kin keeps for the company in one zip: clients, projects, every list with its payments, and docs with their files. Kin can import it back.",
-    memory: "Memory is kept in your memory repository",
+    detail: KIN_EXPORT_HOLDS,
+    leaves: KIN_EXPORT_LEAVES,
     action: "Download everything",
     preparing: "Preparing…",
     started: "Your download has started.",

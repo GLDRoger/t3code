@@ -22,6 +22,8 @@ lines above it:
   imported before.
 - A list named in the first line is made if you don't have it yet, from a template or with your
   own fields, states and categories. A list you already have only gains new fields and categories.
+- A contact at a client is an entry on `contacts` naming its `client`, with `role`, `email` and
+  `phone` as fields.
 - Amounts are plain decimals in the list's currency unless a row names another. Dates are days
   (`2026-04-30`) or times with an offset.
 - An invoice keeps the number it was issued. Kin's own numbering carries on after the highest

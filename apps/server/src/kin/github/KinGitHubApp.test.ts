@@ -233,13 +233,20 @@ describe("Kin's GitHub App", () => {
         // A later look, and a restart that reads the file again, record nothing twice.
         yield* app.refresh();
         yield* (yield* restart).refresh();
-        const view = yield* agentsView(Option.some(app), orgId);
+        // The account rows have their own tests below.
+        const {
+          accounts: _accounts,
+          appOwner: _owner,
+          appSettingsUrl: _settings,
+          ...view
+        } = yield* agentsView(Option.some(app), orgId);
         assert.deepStrictEqual(view, {
           as: "app",
           appName: "Invented Kin",
           botLogin: BOT_LOGIN,
           installUrl: "https://github.com/apps/invented-kin/installations/new",
           problem: null,
+          setUp: { source: "host", name: null, at: null, by: null, settingsUrl: null },
           watched: 3,
           installed: 2,
           without: ["elsewhere/tool"],
@@ -424,21 +431,70 @@ describe("the App's row for each account with watched repos", () => {
             ["invented-lab", "none", "0/1", false, false],
           ],
         );
+        // Made public on GitHub: looking again sees it at once, not after the visibility cache.
+        github.world.app!.public = true;
+        yield* app.lookAgain();
+        const after = yield* rows(app);
+        assert.isTrue(after.accounts?.find((row) => row.account === "invented-lab")?.installable);
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("no rows, only GitHub's own install page, while Kin can't tell the accounts", () =>
-    Effect.gen(function* () {
-      const { github, app } = yield* setup({ appId: "9001" }, false);
-      world(github);
-      installApp(github, []);
-      // Stored before Kin kept what each account is.
-      yield* watching(known(REPOS.map(({ repo }) => ({ repo }))));
-      yield* app.refresh();
-      const view = yield* agentsView(Option.some(app), orgId);
-      assert.isUndefined(view.accounts);
-      assert.strictEqual(view.installUrl, "https://github.com/apps/invented-kin/installations/new");
-    }).pipe(Effect.provide(layer)),
+  it.effect(
+    "rows from the watched repos' owners alone, before Kin has kept what each account is, whatever the login's case",
+    () =>
+      Effect.gen(function* () {
+        const { github, app } = yield* setup({ appId: "9001" }, false);
+        world(github);
+        // The live shape: selected on the user's account, covering only the unwatched memory repo.
+        installApp(github, [
+          {
+            id: 8,
+            account: "invented-owner",
+            repos: ["invented-owner/kin-memory"],
+            permissions: PERMISSIONS,
+          },
+        ]);
+        const sql = yield* SqlClient.SqlClient;
+        // Stored before Kin kept account facts, with GitHub's own mixed-case names.
+        const old = REPOS.map(({ repo }) => ({
+          repo: repo.replace("invented-owner/", "Invented-Owner/"),
+        }));
+        yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at, repos_json)
+          VALUES (${orgId}, 'Invented-Owner', 0, 0, 0, ${known(old)})`;
+        yield* app.refresh();
+        const view = yield* agentsView(Option.some(app), orgId);
+        assert.deepStrictEqual(
+          view.accounts?.map((row) => [
+            row.account,
+            row.organisation,
+            row.installation,
+            `${row.covered}/${row.watched}`,
+            row.settingsUrl,
+            row.installUrl,
+            row.canManage,
+          ]),
+          [
+            [
+              "Invented-Owner",
+              false,
+              "selected",
+              "0/3",
+              "https://github.com/settings/installations/8",
+              null,
+              true,
+            ],
+            [
+              "invented-co",
+              true,
+              "none",
+              "0/2",
+              null,
+              "https://github.com/apps/invented-kin/installations/new",
+              null,
+            ],
+          ],
+        );
+      }).pipe(Effect.provide(layer)),
   );
 });
 

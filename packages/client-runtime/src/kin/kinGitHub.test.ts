@@ -6,6 +6,7 @@ import {
   kinGitHubAccountRows,
   kinGitHubAccountsHint,
   kinGitHubAgentsView,
+  kinGitHubAppCreatePath,
   kinGitHubRow,
   kinGitHubSheet,
 } from "./kinGitHub.ts";
@@ -96,6 +97,58 @@ describe("kinGitHubAgentsView", () => {
       "Agents work on GitHub as you (invented-owner).",
       null,
     ]);
+  });
+
+  it("offers Disconnect only for an App made in Kin, and Create only when there is none", () => {
+    const made = kinGitHubAgentsView(
+      {
+        ...app,
+        setUp: {
+          source: "kin",
+          name: "Invented Kin",
+          at: now,
+          by: "Owner",
+          settingsUrl: "https://github.com/settings/apps/invented-kin",
+        },
+      },
+      null,
+      now,
+    );
+    expect([made.canCreate, made.disconnect?.settingsUrl]).toEqual([
+      false,
+      "https://github.com/settings/apps/invented-kin",
+    ]);
+    expect(made.setUpLine).toMatch(/^Invented Kin, set up in Kin by Owner on /);
+    const host = kinGitHubAgentsView(
+      { ...app, setUp: { source: "host", name: null, at: null, by: null, settingsUrl: null } },
+      null,
+      now,
+    );
+    expect([host.canCreate, host.disconnect, host.setUpLine]).toEqual([
+      false,
+      null,
+      "Set up on Kin's computer; it is changed there.",
+    ]);
+    const none = kinGitHubAgentsView(
+      {
+        as: "owner",
+        problem: null,
+        watched: 1,
+        installed: 0,
+        without: [],
+        ownerUses: [],
+        canCreate: true,
+      },
+      null,
+      now,
+    );
+    expect([none.canCreate, none.disconnect]).toEqual([true, null]);
+    expect(
+      kinGitHubAppCreatePath(
+        { path: "/api/kin/github-app/new?state=s", name: "Kin for X" },
+        " A&B ",
+      ),
+    ).toBe("/api/kin/github-app/new?state=s&name=A%26B");
   });
 
   it("lists what agents did as the owner, newest first", () => {

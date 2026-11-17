@@ -340,7 +340,14 @@ out as that App, so blame and history show what an agent did; each commit carrie
 (`Kin-Agent: Tech lead`). On repos the App isn't installed on, and without an App, they go out as
 you. When GitHub refuses the App, or you say "do it as me", the agent runs that one command as you
 and says so. Memory commits are by the App too. The App can't approve, merge or change a repo's
-settings. Your host guide says how to set one up.
+settings.
+
+To give your Kin an App, open **Settings → Connections → GitHub → Create Kin's GitHub App** (owner
+and co-owners). Kin suggests a name, GitHub opens with everything filled in, and after you choose
+**Create GitHub App** you land back in Kin with the App working; then install it from the account
+rows below. The section says which App agents use and who set it up when. **Disconnect the App**
+makes Kin forget it and its key, and links to the App on GitHub if you want to delete it there. An
+App set up on Kin's computer instead is changed there; your host guide covers that.
 
 **Settings → Connections → GitHub** has a row for each of your accounts and organizations with
 watched repos, saying whether the App is on all its repositories, only some, or none. To cover
@@ -491,19 +498,25 @@ To give agents characters you wrote yourself, see
 
 ### Taking your data out
 
-**Settings → Company details → Download everything** (the owner only) saves one zip: your clients,
-projects, every list's entries with their payments, each doc as it reads now, and the files docs
-and entries hold. On the phone, the same row downloads the zip and opens the share sheet.
+**Settings → Company details → Download everything** (the owner only) saves the company as one zip. On the phone,
+the same row downloads the zip and opens the share sheet.
 
-`kin.jsonl` inside it is the file [Kin's import](./kin-import.md) reads, so a new Kin can take
-the company back. On the computer running it, unzip the file, then:
+Your clients, contacts, projects, every list with its entries and their payments, each doc as it
+reads now, and the files entries and docs hold, in one zip. Kin's import makes the clients,
+contacts, projects and entries again; the docs and files are there to keep.
+
+It is not a full backup. Not in it: memory, which stays in your memory repository; chats; people
+and their access; agents and their characters; check-ins and reminders; connections, social
+accounts and their posts; budgets, bank statements and company details; settings; project repos
+and members; and who holds each entry, how it repeats and its history. Keys, tokens, sign-in
+sessions, pairing codes and bank details never leave.
+
+`kin.jsonl` inside it is the file [Kin's import](./kin-import.md) reads. On the computer running a
+new Kin, unzip the file, then:
 
 ```sh
 t3 kin import --file kin.jsonl          # what it would make
 t3 kin import --file kin.jsonl --apply
 ```
 
-What comes back is owned by whoever imports it; who did what and each entry's history stay behind,
-and so do contacts (they're in `contacts.jsonl` to keep). Memory isn't in the zip: it is kept in
-your memory repository. The zip never holds connection tokens, keys, sign-in sessions, pairing
-codes, invites or push tokens.
+What comes back is owned by whoever imports it.

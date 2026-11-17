@@ -1,9 +1,11 @@
-// @effect-diagnostics globalDate:off - plain code outside Effect: node runs it from a copy for `gh`.
+// @effect-diagnostics globalDate:off nodeBuiltinImport:off - plain code outside Effect: node runs it from a copy for `gh`.
 /**
  * An invented, deterministic GitHub for tests. `fakeGh.sh` runs this file for `gh api` and the
  * posting commands, keeping the world in `$KIN_FAKE_GH/github.json`. No dependencies, so node
  * runs it from a copy beside the fake `gh`.
  */
+
+import * as NodeCrypto from "node:crypto";
 
 export interface FakeRepo {
   full_name: string;
@@ -82,6 +84,8 @@ export interface FakeAccount {
 export interface FakeWorld {
   user: string;
   accounts?: FakeAccount[];
+  /** One-time codes GitHub's manifest flow hands the browser, and the App each makes. */
+  manifestCodes?: Record<string, { name: string; slug: string; public?: boolean }>;
   /** GitHub refuses the user's login on an installation's repos, as for a token it won't take there. */
   installationEditsRefused?: boolean;
   /** Kin's GitHub App, when the test sets one up. */
@@ -518,6 +522,44 @@ export class FakeGitHub {
           permissions: { push: repo.push },
         })),
       );
+    const conversion = /^app-manifests\/([^/]+)\/conversions$/.exec(path);
+    if (conversion !== null && method === "POST") {
+      const made = this.world.manifestCodes?.[conversion[1]!];
+      // A code works once, as GitHub's does.
+      if (made === undefined) return missing;
+      delete this.world.manifestCodes![conversion[1]!];
+      const owner = this.account(this.world.user);
+      this.world.app = {
+        id: 9100,
+        slug: made.slug,
+        name: made.name,
+        botId: 4100,
+        owner: this.world.user,
+        public: made.public ?? false,
+        installations: [],
+        minted: [],
+      };
+      return {
+        status: 201,
+        headers: {},
+        body: {
+          id: 9100,
+          slug: made.slug,
+          name: made.name,
+          owner: { login: owner.login, id: owner.id, type: owner.type },
+          client_id: "Iv1.invented",
+          client_secret: "invented-client-secret",
+          webhook_secret: null,
+          // A real key, as GitHub's is, so Kin can sign with the App it just made.
+          pem: NodeCrypto.generateKeyPairSync("rsa", {
+            modulusLength: 2048,
+            publicKeyEncoding: { type: "spki", format: "pem" },
+            privateKeyEncoding: { type: "pkcs1", format: "pem" },
+          }).privateKey,
+          permissions: { contents: "write", metadata: "read" },
+        },
+      };
+    }
     const edit = /^user\/installations\/(\d+)\/repositories\/(\d+)$/.exec(path);
     if (edit !== null && bearer === undefined && (method === "PUT" || method === "DELETE")) {
       const target = app?.installations.find((entry) => entry.id === Number(edit[1]));
@@ -854,13 +896,18 @@ const main = async () => {
                         ? (world.world.app = input === null ? null : { minted: [], ...input })
                         : op === "accounts"
                           ? (world.world.accounts = input)
-                          : op === "down"
-                            ? (world.world.down = input.status ?? null)
-                            : op === "interval"
-                              ? (world.world.pollInterval = input.seconds)
-                              : op === "show"
-                                ? world.world
-                                : undefined;
+                          : op === "manifest-code"
+                            ? (world.world.manifestCodes = {
+                                ...world.world.manifestCodes,
+                                [input.code]: input,
+                              })
+                            : op === "down"
+                              ? (world.world.down = input.status ?? null)
+                              : op === "interval"
+                                ? (world.world.pollInterval = input.seconds)
+                                : op === "show"
+                                  ? world.world
+                                  : undefined;
     out = JSON.stringify(result ?? null);
   } else {
     const stdin = args.includes("--input") ? fs.readFileSync(0, "utf8") : "";

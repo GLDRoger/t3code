@@ -1,5 +1,6 @@
 import * as KinPeopleHttp from "./kin/people/http.ts";
 import * as KinExportHttp from "./kin/work/exportHttp.ts";
+import * as KinGitHubAppSetupHttp from "./kin/github/appSetupHttp.ts";
 import * as ProofKeySessions from "./kin/auth/ProofKeySessions.ts";
 import * as Kin from "./kin/layer.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
@@ -804,6 +805,7 @@ const layerMakeRoutes = Layer.mergeAll(
     GuestHttp.layer,
     KinPeopleHttp.layer,
     KinExportHttp.layer,
+    KinGitHubAppSetupHttp.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
