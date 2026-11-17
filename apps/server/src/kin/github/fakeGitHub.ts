@@ -10,6 +10,8 @@ export interface FakeRepo {
   private: boolean;
   fork: boolean;
   push: boolean;
+  /** Admin on the repo, which GitHub wants before it adds or removes it on an installation. */
+  admin?: boolean;
 }
 export interface FakeItem {
   repo: string;
@@ -50,9 +52,15 @@ export interface FakeApp {
   slug: string;
   name: string;
   botId: number;
+  /** The account that owns the App; a private App installs only there. Default: the user, public. */
+  owner?: string;
+  public?: boolean;
   installations: {
     id: number;
     account: string;
+    /** `selected` (the default) covers `repos`; `all` covers every repo of the account. */
+    selection?: "all" | "selected";
+    suspended?: boolean;
     repos: string[];
     permissions: Record<string, string>;
   }[];
@@ -63,8 +71,19 @@ export interface FakeApp {
     permissions: Record<string, string>;
   }[];
 }
+/** A GitHub account; the user's own is a User, any other an Organization unless listed. */
+export interface FakeAccount {
+  login: string;
+  id: number;
+  type: "User" | "Organization";
+  /** The user's role in an organisation: only `admin` (owner) may install Apps on it. */
+  role?: "admin" | "member";
+}
 export interface FakeWorld {
   user: string;
+  accounts?: FakeAccount[];
+  /** GitHub refuses the user's login on an installation's repos, as for a token it won't take there. */
+  installationEditsRefused?: boolean;
   /** Kin's GitHub App, when the test sets one up. */
   app?: FakeApp | null;
   now: number;
@@ -296,6 +315,35 @@ export class FakeGitHub {
     };
   }
 
+  private ownerJson(app: FakeApp) {
+    const owner = this.account(app.owner ?? this.world.user);
+    return { login: owner.login, id: owner.id, type: owner.type };
+  }
+  /** The account by login, as GitHub would describe it; unknown ones get a stable invented id. */
+  account(login: string): FakeAccount {
+    const listed = this.world.accounts?.find(
+      (entry) => entry.login.toLowerCase() === login.toLowerCase(),
+    );
+    if (listed !== undefined) return listed;
+    const user = login.toLowerCase() === this.world.user.toLowerCase();
+    let id = 5000;
+    for (const char of login.toLowerCase()) id = (id * 31 + char.charCodeAt(0)) % 900_000;
+    return { login, id: 100_000 + id, type: user ? "User" : "Organization", role: "admin" };
+  }
+  private repoId(fullName: string) {
+    const index = this.world.repos.findIndex(
+      (repo) => repo.full_name.toLowerCase() === fullName.toLowerCase(),
+    );
+    return index < 0 ? undefined : 2000 + index;
+  }
+  /** The repos an installation reaches: all of the account's under `all`, else those picked. */
+  installedRepos(installation: FakeApp["installations"][number]) {
+    if (installation.selection !== "all") return installation.repos;
+    const prefix = `${installation.account.toLowerCase()}/`;
+    return this.world.repos
+      .map((repo) => repo.full_name)
+      .filter((name) => name.toLowerCase().startsWith(prefix));
+  }
   /** One REST call, as `gh api` makes it. */
   handle(
     method: string,
@@ -336,18 +384,42 @@ export class FakeGitHub {
       };
     if (app !== null && method === "GET" && decodeURIComponent(path) === `users/${app.slug}[bot]`)
       return ok({ id: app.botId, login: `${app.slug}[bot]` });
+    // A private App is hidden from anyone not signed in as its owner.
+    if (app !== null && method === "GET" && path === `apps/${app.slug}` && bearer === undefined)
+      return app.public === false
+        ? missing
+        : ok({ slug: app.slug, name: app.name, owner: this.ownerJson(app) });
     if (asApp) {
-      if (method === "GET" && path === "app") return ok({ slug: app.slug, name: app.name });
+      if (method === "GET" && path === "app")
+        return ok({ slug: app.slug, name: app.name, owner: this.ownerJson(app) });
       if (method === "GET" && path === "app/installations")
         return ok(
-          app.installations.map((entry) => ({
-            id: entry.id,
-            account: { login: entry.account },
-            permissions: entry.permissions,
-          })),
+          app.installations.map((entry) => {
+            const account = this.account(entry.account);
+            return {
+              id: entry.id,
+              account: { login: entry.account, id: account.id, type: account.type },
+              repository_selection: entry.selection ?? "selected",
+              suspended_at: entry.suspended === true ? iso(this.world.now) : null,
+              suspended_by: entry.suspended === true ? { login: this.world.user } : null,
+              html_url:
+                account.type === "Organization"
+                  ? `https://github.com/organizations/${entry.account}/settings/installations/${entry.id}`
+                  : `https://github.com/settings/installations/${entry.id}`,
+              target_id: account.id,
+              target_type: account.type,
+              permissions: entry.permissions,
+            };
+          }),
         );
       const mint = /^app\/installations\/(\d+)\/access_tokens$/.exec(path);
       const target = app.installations.find((entry) => entry.id === Number(mint?.[1]));
+      if (method === "POST" && target?.suspended === true)
+        return {
+          status: 403,
+          headers: {},
+          body: { message: "This installation has been suspended" },
+        };
       if (method === "POST" && target !== undefined) {
         const asked = (body.permissions ?? target.permissions) as Record<string, string>;
         const level = (value: string | undefined) =>
@@ -370,13 +442,15 @@ export class FakeGitHub {
       return missing;
     }
     if (installation !== undefined) {
+      const reached = this.installedRepos(installation);
       if (method === "GET" && path === "installation/repositories")
         return ok({
-          total_count: installation.repos.length,
-          repositories: installation.repos.map((full_name) => ({ full_name })),
+          total_count: reached.length,
+          repository_selection: installation.selection ?? "selected",
+          repositories: reached.map((full_name) => ({ full_name })),
         });
       const scoped = /^repos\/([^/]+\/[^/]+)\//.exec(path)?.[1]?.toLowerCase();
-      if (scoped === undefined || !installation.repos.some((repo) => repo.toLowerCase() === scoped))
+      if (scoped === undefined || !reached.some((repo) => repo.toLowerCase() === scoped))
         return { status: 404, headers: {}, body: { message: "Not Found" } };
     }
     const since = url.searchParams.get("since");
@@ -437,10 +511,72 @@ export class FakeGitHub {
           full_name: repo.full_name,
           private: repo.private,
           fork: repo.fork,
-          owner: { login: repo.full_name.split("/")[0] },
+          id: this.repoId(repo.full_name),
+          owner: (({ login, id, type }) => ({ login, id, type }))(
+            this.account(repo.full_name.split("/")[0]!),
+          ),
           permissions: { push: repo.push },
         })),
       );
+    const edit = /^user\/installations\/(\d+)\/repositories\/(\d+)$/.exec(path);
+    if (edit !== null && bearer === undefined && (method === "PUT" || method === "DELETE")) {
+      const target = app?.installations.find((entry) => entry.id === Number(edit[1]));
+      const repo = this.world.repos.find(
+        (entry) => this.repoId(entry.full_name) === Number(edit[2]),
+      );
+      if (this.world.installationEditsRefused === true)
+        return {
+          status: 403,
+          headers: {},
+          body: { message: "Resource not accessible by personal access token" },
+        };
+      if (target === undefined || repo === undefined) return missing;
+      if (repo.admin === false)
+        return {
+          status: 403,
+          headers: {},
+          body: { message: "Must have admin rights to Repository." },
+        };
+      const name = repo.full_name;
+      const picked = target.repos.some((entry) => entry.toLowerCase() === name.toLowerCase());
+      const done: FakeAnswer = { status: 204, headers: {}, body: null };
+      if (method === "PUT") {
+        if (target.selection === "all" || picked) return { status: 304, headers: {}, body: null };
+        target.repos.push(name);
+        return done;
+      }
+      if (target.selection === "all")
+        return {
+          status: 422,
+          headers: {},
+          body: { message: "The application is installed on all repositories in this account." },
+        };
+      if (!picked) return { status: 304, headers: {}, body: null };
+      if (target.repos.length === 1)
+        return {
+          status: 422,
+          headers: {},
+          body: { message: "Cannot remove the last repository from this installation." },
+        };
+      target.repos = target.repos.filter((entry) => entry.toLowerCase() !== name.toLowerCase());
+      return done;
+    }
+    if (method === "GET" && path === "user/memberships/orgs") {
+      const orgs = new Map<string, FakeAccount>();
+      for (const repo of this.world.repos) {
+        const account = this.account(repo.full_name.split("/")[0]!);
+        if (account.type === "Organization") orgs.set(account.login.toLowerCase(), account);
+      }
+      for (const account of this.world.accounts ?? [])
+        if (account.type === "Organization") orgs.set(account.login.toLowerCase(), account);
+      return ok(
+        [...orgs.values()].map((account) => ({
+          state: "active",
+          role: account.role ?? "admin",
+          organization: { login: account.login, id: account.id },
+        })),
+      );
+    }
     const match = /^repos\/([^/]+\/[^/]+)\/(.*)$/.exec(path);
     if (match === null) return missing;
     const repo = match[1]!;
@@ -714,13 +850,17 @@ const main = async () => {
                     ? world.setChecks(input)
                     : op === "merge"
                       ? world.merge(input)
-                      : op === "down"
-                        ? (world.world.down = input.status ?? null)
-                        : op === "interval"
-                          ? (world.world.pollInterval = input.seconds)
-                          : op === "show"
-                            ? world.world
-                            : undefined;
+                      : op === "app"
+                        ? (world.world.app = input === null ? null : { minted: [], ...input })
+                        : op === "accounts"
+                          ? (world.world.accounts = input)
+                          : op === "down"
+                            ? (world.world.down = input.status ?? null)
+                            : op === "interval"
+                              ? (world.world.pollInterval = input.seconds)
+                              : op === "show"
+                                ? world.world
+                                : undefined;
     out = JSON.stringify(result ?? null);
   } else {
     const stdin = args.includes("--input") ? fs.readFileSync(0, "utf8") : "";

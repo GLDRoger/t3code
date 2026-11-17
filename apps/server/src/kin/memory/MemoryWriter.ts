@@ -30,7 +30,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { stringify } from "yaml";
 import { memoryGit as runMemoryGit } from "./git.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
+import { gitHubApp } from "../github/KinGitHubApp.ts";
 import { MemoryConfig } from "./MemoryConfig.ts";
+import { memoryIdentity } from "./memoryIdentity.ts";
 import {
   Memory,
   MemoryCheckoutInvalid,
@@ -336,6 +338,7 @@ const make = Effect.gen(function* () {
       Effect.provideService(MemoryConfig, config),
     );
   const config = yield* MemoryConfig;
+  const app = yield* gitHubApp;
   const cache = yield* MemoryCache.MemoryCache;
   const pullRequests = yield* Effect.serviceOption(MemoryPullRequests);
   const mainWrites = Option.isSome(pullRequests)
@@ -690,10 +693,7 @@ const make = Effect.gen(function* () {
         const temporary = yield* io(orgId, fs.makeTempDirectoryScoped());
         const env = {
           GIT_INDEX_FILE: `${temporary}/index`,
-          GIT_AUTHOR_NAME: config.botName ?? "Kin Memory Bot",
-          GIT_AUTHOR_EMAIL: config.botEmail ?? "kin-memory@localhost",
-          GIT_COMMITTER_NAME: config.botName ?? "Kin Memory Bot",
-          GIT_COMMITTER_EMAIL: config.botEmail ?? "kin-memory@localhost",
+          ...(yield* memoryIdentity(config, app)),
         };
         yield* git(orgId, writer, ["read-tree", "--empty"], env);
         const entries = yield* readTree(orgId, writer, parent).pipe(

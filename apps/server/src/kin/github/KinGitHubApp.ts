@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Effect's crypto has no RSA signing for the App JWT.
 import * as NodeCrypto from "node:crypto";
 
-import type { KinGitHubAgents, KinOrgId } from "@t3tools/contracts";
+import type { KinGitHubAgents, KinGitHubAppAccount, KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -23,7 +23,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinServer } from "../KinServer.ts";
 import type { ApiAnswer, ApiRequest } from "./GitHubWatch.ts";
 import { APP_IDENTITY_FILE, APP_TOKENS_FOLDER, GH_APP_FOLDER, OWNER_USES_FILE } from "./ghSign.ts";
-import { repoList } from "./githubWatchStore.ts";
+import { type KnownRepo, knownRepos, repoList, watchRow } from "./githubWatchStore.ts";
 import { KinKeychain } from "./Keychain.ts";
 
 /**
@@ -34,9 +34,13 @@ import { KinKeychain } from "./Keychain.ts";
 
 const API = "https://api.github.com";
 const MINUTE = 60_000;
-/** How often Kin looks again at the App and where it is installed. */
-const DESCRIBE_EVERY_MS = 10 * MINUTE;
+/**
+ * How often Kin looks again at the App and where it is installed: often enough that a choice the
+ * owner saves on GitHub shows in Connections within a minute, without a reload.
+ */
+const DESCRIBE_EVERY_MS = MINUTE;
 /** A token is renewed this long before it expires, so a shell never gets one about to lapse. */
+const VISIBILITY_EVERY_MS = 15 * MINUTE;
 const RENEW_BEFORE_MS = 30 * MINUTE;
 const TICK = "30 seconds";
 const MAX_PAGES = 10;
@@ -82,7 +86,12 @@ export class KinGitHubAppConfig extends Context.Service<
 const Secrets = Schema.Struct({ privateKeyPem: Schema.String });
 const decodeSecrets = Schema.decodeUnknownOption(Schema.fromJsonString(Secrets));
 const decodeApp = Schema.decodeUnknownOption(
-  Schema.Struct({ slug: Schema.String, name: Schema.String }),
+  Schema.Struct({
+    slug: Schema.String,
+    name: Schema.String,
+    // An enterprise owner has a slug and no login.
+    owner: Schema.optional(Schema.NullOr(Schema.Struct({ login: Schema.optional(Schema.String) }))),
+  }),
 );
 const decodeUser = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.Int }));
 const decodeInstallations = Schema.decodeUnknownOption(
@@ -90,7 +99,16 @@ const decodeInstallations = Schema.decodeUnknownOption(
     Schema.Struct({
       id: Schema.Int,
       // An enterprise account has a slug and no login; Kin's shells can't use it.
-      account: Schema.NullOr(Schema.Struct({ login: Schema.optional(Schema.String) })),
+      account: Schema.NullOr(
+        Schema.Struct({
+          login: Schema.optional(Schema.String),
+          id: Schema.optional(Schema.Int),
+          type: Schema.optional(Schema.String),
+        }),
+      ),
+      repository_selection: Schema.optional(Schema.String),
+      suspended_at: Schema.optional(Schema.NullOr(Schema.String)),
+      html_url: Schema.optional(Schema.String),
       permissions: Schema.Record(Schema.String, Schema.String),
     }),
   ),
@@ -110,6 +128,11 @@ interface Installation {
   readonly id: number;
   /** The account it is installed on, lowercased: the shell's token file is named after it. */
   readonly account: string;
+  /** `all` covers every repo of the account, new ones too; `selected` only those picked. */
+  readonly selection: "all" | "selected";
+  readonly suspended: boolean;
+  /** The installation's page on GitHub, where its owner picks its repos or unsuspends it. */
+  readonly settingsUrl: string | null;
   readonly permissions: Readonly<Record<string, string>>;
   readonly repos: ReadonlySet<string>;
 }
@@ -118,7 +141,12 @@ interface Described {
   readonly name: string;
   readonly botLogin: string;
   readonly botEmail: string;
+  readonly slug: string;
   readonly installUrl: string;
+  /** The account that owns the App, lowercased; null for an enterprise. */
+  readonly owner: string | null;
+  /** False when GitHub hides the App from anyone else: then it installs only on `owner`. */
+  readonly public: boolean | null;
   readonly installations: ReadonlyArray<Installation>;
 }
 
@@ -154,8 +182,24 @@ export class KinGitHubApp extends Context.Service<
     readonly on: (repo: string) => Effect.Effect<KinGitHubAppAs | undefined>;
     /** Renews what is due (the App's description, tokens, the shell's files) and records owner switches. */
     readonly refresh: () => Effect.Effect<void>;
+    /** Looks at the App on GitHub now, as after the owner changed where it is installed. */
+    readonly lookAgain: () => Effect.Effect<void>;
   }
 >()("t3/kin/github/KinGitHubApp") {}
+
+/** Where the App reaches, so Connections hears when the owner changes it on GitHub. */
+const coverage = (state: AppState) =>
+  state._tag !== "ok"
+    ? state._tag
+    : toJson([
+        state.app.public,
+        state.app.installations.map((entry) => [
+          entry.id,
+          entry.selection,
+          entry.suspended,
+          [...entry.repos].toSorted(),
+        ]),
+      ]);
 
 const base64Url = (value: string | Buffer) => Buffer.from(value).toString("base64url");
 
@@ -221,6 +265,7 @@ export const make = Effect.gen(function* () {
   const tokens = new Map<number, { token: Redacted.Redacted<string>; expiresAt: number }>();
   /** The bytes of the owner-uses file already recorded; a restart reads it again, without repeats. */
   let usesRead = 0;
+  let visibility: { readonly at: number; readonly public: boolean | null } | null = null;
   /** The last shortfall logged, so a failure that lasts is logged once, not every look. */
   let loggedProblem: string | null = null;
 
@@ -321,15 +366,23 @@ export const make = Effect.gen(function* () {
         const account = installation.account?.login?.toLowerCase() ?? "";
         if (!/^[a-z0-9-]+$/.test(account)) continue;
         const held = tokens.get(installation.id);
-        const token =
+        let token =
           held !== undefined && held.expiresAt - (yield* Clock.currentTimeMillis) > 5 * MINUTE
             ? held
             : yield* mint(appToken, installation);
         const repos = new Set<string>();
         for (let reposPage = 1; token !== undefined && reposPage <= MAX_PAGES; reposPage++) {
-          const answer = yield* request(token.token, {
+          let answer = yield* request(token.token, {
             path: `installation/repositories?per_page=100&page=${reposPage}`,
           });
+          // A token GitHub stopped taking (revoked, or the installation was replaced): mint once more.
+          if (answer.status === 401 && token === held) {
+            token = yield* mint(appToken, installation);
+            if (token === undefined) break;
+            answer = yield* request(token.token, {
+              path: `installation/repositories?per_page=100&page=${reposPage}`,
+            });
+          }
           const found = answer.status === 200 ? decodeRepos(answer.body) : Option.none();
           if (Option.isNone(found)) break;
           for (const repo of found.value.repositories) repos.add(repo.full_name.toLowerCase());
@@ -338,6 +391,11 @@ export const make = Effect.gen(function* () {
         installations.push({
           id: installation.id,
           account,
+          selection: installation.repository_selection === "all" ? "all" : "selected",
+          suspended: installation.suspended_at != null,
+          settingsUrl: installation.html_url?.startsWith("https://github.com/")
+            ? installation.html_url
+            : null,
           permissions: installation.permissions,
           repos,
         });
@@ -355,13 +413,28 @@ export const make = Effect.gen(function* () {
       if (Option.isNone(found)) return short("for its bot account", user.status);
       botIds.set(botLogin, found.value.id);
     }
+    // GitHub answers a private App's page only to its owner, so a look without a token tells.
+    // Unsigned calls share a small hourly allowance, so this look is spaced out.
+    const now = yield* Clock.currentTimeMillis;
+    if (visibility === null || now - visibility.at >= VISIBILITY_EVERY_MS) {
+      const listed = yield* request(undefined, {
+        path: `apps/${encodeURIComponent(about.value.slug)}`,
+      });
+      visibility = {
+        at: now,
+        public: listed.status === 200 ? true : listed.status === 404 ? false : null,
+      };
+    }
     return {
       _tag: "ok",
       app: {
         name: about.value.name,
         botLogin,
         botEmail: `${botIds.get(botLogin)}+${botLogin}@users.noreply.github.com`,
+        slug: about.value.slug,
         installUrl: `https://github.com/apps/${about.value.slug}/installations/new`,
+        owner: about.value.owner?.login?.toLowerCase() ?? null,
+        public: visibility.public,
         installations,
       },
     } as const;
@@ -466,7 +539,8 @@ export const make = Effect.gen(function* () {
           Effect.logWarning("Kin couldn't record agents' uses of the owner's GitHub", { cause }),
         ),
       );
-      if (state._tag !== before._tag) yield* refreshObserver.touch(orgId, "connections");
+      if (state._tag !== before._tag || coverage(state) !== coverage(before))
+        yield* refreshObserver.touch(orgId, "connections");
     },
     (effect) => lock.withPermits(1)(effect),
   );
@@ -495,7 +569,12 @@ export const make = Effect.gen(function* () {
     return yield* Ref.get(current);
   });
 
-  return KinGitHubApp.of({ state, on, refresh });
+  const lookAgain = Effect.fn("KinGitHubApp.lookAgain")(function* () {
+    yield* Ref.set(describedAt, null);
+    yield* refresh();
+  });
+
+  return KinGitHubApp.of({ state, on, refresh, lookAgain });
 });
 
 /** Looks once at startup and then every 30 seconds, for as long as Kin runs. */
@@ -541,10 +620,17 @@ export const agentsView = Effect.fn("KinGitHubApp.agentsView")(function* (
           state.app.installations.some((entry) => entry.repos.has(repo.toLowerCase())),
         )
       : [];
+  const known = state._tag === "ok" ? yield* knownRepos(orgId) : [];
+  const login = state._tag === "ok" ? ((yield* watchRow(orgId))?.login ?? null) : null;
   return {
     as: state._tag === "ok" ? "app" : "owner",
     ...(state._tag === "ok"
-      ? { appName: state.app.name, botLogin: state.app.botLogin, installUrl: state.app.installUrl }
+      ? {
+          appName: state.app.name,
+          botLogin: state.app.botLogin,
+          installUrl: state.app.installUrl,
+          ...appAccounts(state.app, watched, known, login),
+        }
       : {}),
     problem: state._tag === "broken" ? state.problem : null,
     watched: watched.length,
@@ -553,3 +639,74 @@ export const agentsView = Effect.fn("KinGitHubApp.agentsView")(function* (
     ownerUses: uses,
   } satisfies KinGitHubAgents;
 });
+
+const ownerOf = (repo: string) => repo.split("/")[0]?.toLowerCase() ?? "";
+
+/**
+ * Where the App stands on each account with watched repos, and the one GitHub page that changes
+ * it. No accounts when the last look at the repos came before Kin stored what an account is.
+ */
+const appAccounts = (
+  app: Described,
+  watched: ReadonlyArray<string>,
+  known: ReadonlyArray<KnownRepo>,
+  login: string | null,
+): Pick<KinGitHubAgents, "accounts" | "appOwner" | "appSettingsUrl"> => {
+  const facts = new Map(known.map((entry) => [ownerOf(entry.repo), entry]));
+  const names = new Map<string, string>();
+  for (const repo of watched) names.set(ownerOf(repo), repo.split("/")[0] ?? "");
+  const user = login?.toLowerCase() ?? null;
+  const manages = (account: string) => {
+    if (account === user) return true;
+    const entry = facts.get(account);
+    // The only personal account among the repos' owners is the login's own.
+    return entry?.ownerOrg === false ? true : (entry?.ownerAdmin ?? null);
+  };
+  const accounts: Array<KinGitHubAppAccount> = [];
+  for (const [account, name] of names) {
+    const entry = facts.get(account);
+    if (entry?.ownerOrg === undefined) return {};
+    const repos = watched.filter((repo) => ownerOf(repo) === account);
+    const installation = app.installations.find((item) => item.account === account);
+    accounts.push({
+      account: name,
+      organisation: entry.ownerOrg,
+      watched: repos.length,
+      covered: repos.filter((repo) => installation?.repos.has(repo.toLowerCase()) === true).length,
+      installation:
+        installation === undefined
+          ? "none"
+          : installation.suspended
+            ? "suspended"
+            : installation.selection,
+      settingsUrl: installation?.settingsUrl ?? null,
+      installUrl:
+        installation !== undefined
+          ? null
+          : entry.ownerId === undefined
+            ? app.installUrl
+            : `${app.installUrl}/permissions?target_id=${entry.ownerId}`,
+      canManage: manages(account),
+      installable:
+        installation !== undefined ||
+        app.public !== false ||
+        app.owner === null ||
+        app.owner === account,
+    });
+  }
+  const owner = app.owner;
+  const ownerSettings =
+    owner === null || manages(owner) !== true
+      ? undefined
+      : owner === user || facts.get(owner)?.ownerOrg === false
+        ? `https://github.com/settings/apps/${app.slug}`
+        : `https://github.com/organizations/${names.get(owner) ?? owner}/settings/apps/${app.slug}`;
+  return {
+    accounts: accounts.toSorted(
+      (a, b) =>
+        Number(a.organisation) - Number(b.organisation) || a.account.localeCompare(b.account),
+    ),
+    ...(owner === null ? {} : { appOwner: owner }),
+    ...(ownerSettings === undefined ? {} : { appSettingsUrl: ownerSettings }),
+  };
+};

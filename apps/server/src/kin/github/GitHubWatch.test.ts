@@ -16,7 +16,7 @@ import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
 import { KinGitHubApp } from "./KinGitHubApp.ts";
 import { BOT_EMAIL, BOT_LOGIN, installApp } from "./KinGitHubApp.testkit.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
-import { isMemoryRepo, repoList, setRepo, watchSummary } from "./githubWatchStore.ts";
+import { isMemoryRepo, knownRepos, repoList, setRepo, watchSummary } from "./githubWatchStore.ts";
 import { WRITE_BRANCH_PREFIX } from "../memory/MemoryConfig.ts";
 
 const orgId = KinOrgId.make("org-gh");
@@ -101,9 +101,20 @@ const fakeApp = (github: FakeGitHub) => {
           name: "Invented Kin",
           botLogin: BOT_LOGIN,
           botEmail: BOT_EMAIL,
+          slug: "invented-kin",
           installUrl: "https://github.com/apps/invented-kin/installations/new",
+          owner: "invented-owner",
+          public: true,
           installations: [
-            { id: 7, account: "invented-co", permissions: {}, repos: new Set([REPO]) },
+            {
+              id: 7,
+              account: "invented-co",
+              selection: "selected",
+              suspended: false,
+              settingsUrl: null,
+              permissions: {},
+              repos: new Set([REPO]),
+            },
           ],
         },
       }),
@@ -114,6 +125,7 @@ const fakeApp = (github: FakeGitHub) => {
           : undefined,
       ),
     refresh: () => Effect.void,
+    lookAgain: () => Effect.void,
   });
 };
 
@@ -345,6 +357,25 @@ describe("KinGitHubWatch", () => {
         MEMORY_REPO,
       );
       assert.isTrue(yield* isMemoryRepo(MEMORY_REPO.toUpperCase()));
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("keeps what GitHub says of each repo's account, for the App's rows", () => {
+    const { github, layer } = setup();
+    github.world.accounts = [
+      { login: "invented-co", id: 7001, type: "Organization", role: "member" },
+      { login: "invented-owner", id: 7000, type: "User" },
+    ];
+    github.addRepo({ full_name: "invented-owner/notes" });
+    return Effect.gen(function* () {
+      yield* start(github);
+      yield* look(github);
+      const facts = (yield* knownRepos(orgId)).map(({ fork: _fork, id: _id, ...rest }) => rest);
+      assert.deepStrictEqual(facts, [
+        { repo: REPO, ownerId: 7001, ownerOrg: true, ownerAdmin: false },
+        { repo: "invented-co/old-fork", ownerId: 7001, ownerOrg: true, ownerAdmin: false },
+        { repo: "invented-owner/notes", ownerId: 7000, ownerOrg: false },
+      ]);
     }).pipe(Effect.provide(layer));
   });
 

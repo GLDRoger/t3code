@@ -469,6 +469,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
       state: () => Effect.succeed({ _tag: "none" }),
       on: () => Effect.succeed({ login: "invented-kin[bot]", call: callAs("app") }),
       refresh: () => Effect.void,
+      lookAgain: () => Effect.void,
     });
     const pullRequests = Layer.effect(
       PullRequests.MemoryPullRequests,

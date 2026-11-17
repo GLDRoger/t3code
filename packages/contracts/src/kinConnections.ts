@@ -393,6 +393,25 @@ export const KinGitHubOwnerUse = Schema.Struct({
 });
 export type KinGitHubOwnerUse = typeof KinGitHubOwnerUse.Type;
 
+/** One GitHub account with watched repos, and where Kin's App stands on it. */
+export const KinGitHubAppAccount = Schema.Struct({
+  account: TrimmedNonEmptyString,
+  organisation: Schema.Boolean,
+  watched: NonNegativeInt,
+  /** Watched repos of this account the App reaches. */
+  covered: NonNegativeInt,
+  installation: Schema.Literals(["all", "selected", "none", "suspended"]),
+  /** The installation's page on GitHub, where its repos are picked or it is unsuspended. */
+  settingsUrl: Schema.NullOr(Schema.String),
+  /** GitHub's install page for this account, when there is no installation. */
+  installUrl: Schema.NullOr(Schema.String),
+  /** Whether the connected login may change the App here: null when GitHub didn't say. */
+  canManage: Schema.NullOr(Schema.Boolean),
+  /** False when the App is private to another account, so GitHub can't install it here. */
+  installable: Schema.Boolean,
+});
+export type KinGitHubAppAccount = typeof KinGitHubAppAccount.Type;
+
 /** Who agents act as on GitHub: Kin's GitHub App where it is installed, else the owner. */
 export const KinGitHubAgents = Schema.Struct({
   as: Schema.Literals(["app", "owner"]),
@@ -409,6 +428,11 @@ export const KinGitHubAgents = Schema.Struct({
   without: Schema.Array(Schema.String),
   /** The latest commands agents ran as the owner, newest first; at most 5. */
   ownerUses: Schema.Array(KinGitHubOwnerUse),
+  /** One row per account with watched repos; absent when Kin can't tell the accounts. */
+  accounts: Schema.optional(Schema.Array(KinGitHubAppAccount)),
+  /** The account that owns the App, and its settings page when the login can open it. */
+  appOwner: Schema.optional(Schema.String),
+  appSettingsUrl: Schema.optional(Schema.String),
 });
 export type KinGitHubAgents = typeof KinGitHubAgents.Type;
 
@@ -436,11 +460,33 @@ export const KinGitHubRepo = Schema.Struct({
   fork: Schema.Boolean,
   /** An @-mention of the owner's own login here calls an agent too. */
   mentions: Schema.Boolean,
+  /** Who agents work as here: Kin's GitHub App where it reaches the repo, else the owner. */
+  agentsAs: Schema.optional(Schema.Literals(["app", "owner"])),
 });
 export type KinGitHubRepo = typeof KinGitHubRepo.Type;
 
-export const KinGitHubRepos = Schema.Struct({ repos: Schema.Array(KinGitHubRepo) });
+export const KinGitHubRepos = Schema.Struct({
+  repos: Schema.Array(KinGitHubRepo),
+  /** For an agent's own look: where Kin's GitHub App stands on each account, and its GitHub page. */
+  appAccounts: Schema.optional(Schema.Array(KinGitHubAppAccount)),
+});
 export type KinGitHubRepos = typeof KinGitHubRepos.Type;
+
+/** Puts Kin's GitHub App on these repos of one account, or takes it off, with the owner's login. */
+export const KinGitHubAppReposSetInput = Schema.Struct({
+  orgId: KinOrgId,
+  account: TrimmedNonEmptyString,
+  repos: Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(100)),
+  on: Schema.Boolean,
+});
+export type KinGitHubAppReposSetInput = typeof KinGitHubAppReposSetInput.Type;
+
+export const KinGitHubAppReposResult = Schema.Struct({
+  changed: NonNegativeInt,
+  /** Why GitHub refused the rest, in plain words; null when every repo changed. */
+  problem: Schema.NullOr(Schema.String),
+});
+export type KinGitHubAppReposResult = typeof KinGitHubAppReposResult.Type;
 
 /** One repo's switch; `repo` null sets every repo back to the default (watch everything). */
 export const KinGitHubRepoSetInput = Schema.Struct({
@@ -565,6 +611,11 @@ export const KinConnectionRpcs = [
     success: KinGitHubRepos,
     error: KinError,
   }),
+  Rpc.make("kin.github.app.repos.set", {
+    payload: KinGitHubAppReposSetInput,
+    success: KinGitHubAppReposResult,
+    error: KinError,
+  }),
 ] as const;
 
 // Owner-level settings (`KIN_RPC_ACCESS`): what outside services agents reach, and with what key.
@@ -590,4 +641,5 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.github.disconnect": AuthKinChatScope,
   "kin.github.repos": AuthKinChatScope,
   "kin.github.repos.set": AuthKinChatScope,
+  "kin.github.app.repos.set": AuthKinChatScope,
 } as const;

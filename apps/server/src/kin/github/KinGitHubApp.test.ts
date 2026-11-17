@@ -15,6 +15,9 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
+import { setAppRepos } from "./appRepos.ts";
+import { KinGitHubApi } from "./GitHubWatch.ts";
+import { setRepo } from "./githubWatchStore.ts";
 import { agentsView, KinGitHubApp, make, parseOwnerUse } from "./KinGitHubApp.ts";
 import { appHost, BOT_EMAIL, BOT_LOGIN, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
 
@@ -255,6 +258,310 @@ describe("Kin's GitHub App", () => {
           "owner",
         );
       }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("the App's row for each account with watched repos", () => {
+  const OWNER = { ownerId: 7000, ownerOrg: false };
+  const ORG = { ownerId: 7001, ownerOrg: true, ownerAdmin: true };
+  const known = (entries: ReadonlyArray<Record<string, unknown>>) =>
+    JSON.stringify(entries.map((entry) => ({ fork: false, ...entry })));
+  const watching = (reposJson: string) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at, repos_json)
+        VALUES (${orgId}, 'invented-owner', 0, 0, 0, ${reposJson})`;
+    });
+  const REPOS = [
+    { repo: "invented-owner/a", ...OWNER },
+    { repo: "invented-owner/b", ...OWNER },
+    { repo: "invented-owner/c", ...OWNER },
+    { repo: "invented-co/app", ...ORG },
+    { repo: "invented-co/site", ...ORG },
+  ];
+  const PERMISSIONS = { contents: "write", metadata: "read" };
+  const world = (github: FakeGitHub) => {
+    github.world.accounts = [
+      { login: "invented-owner", id: 7000, type: "User" },
+      { login: "invented-co", id: 7001, type: "Organization", role: "admin" },
+    ];
+    for (const { repo } of REPOS) github.addRepo({ full_name: repo });
+    github.addRepo({ full_name: "invented-owner/kin-memory" });
+  };
+  const rows = (app: KinGitHubApp["Service"]) =>
+    agentsView(Option.some(app), orgId).pipe(
+      Effect.map(({ accounts, appOwner, appSettingsUrl }) => ({
+        accounts,
+        appOwner,
+        appSettingsUrl,
+      })),
+    );
+
+  it.effect(
+    "only selected on the user's account with no watched repo, not on the organisation; then each switched to all",
+    () =>
+      Effect.gen(function* () {
+        const { github, app } = yield* setup({ appId: "9001" }, false);
+        world(github);
+        installApp(github, [
+          {
+            id: 8,
+            account: "invented-owner",
+            repos: ["invented-owner/kin-memory"],
+            permissions: PERMISSIONS,
+          },
+        ]);
+        yield* watching(known(REPOS));
+        yield* app.refresh();
+        assert.deepStrictEqual(yield* rows(app), {
+          accounts: [
+            {
+              account: "invented-owner",
+              organisation: false,
+              watched: 3,
+              covered: 0,
+              installation: "selected",
+              settingsUrl: "https://github.com/settings/installations/8",
+              installUrl: null,
+              canManage: true,
+              installable: true,
+            },
+            {
+              account: "invented-co",
+              organisation: true,
+              watched: 2,
+              covered: 0,
+              installation: "none",
+              settingsUrl: null,
+              installUrl:
+                "https://github.com/apps/invented-kin/installations/new/permissions?target_id=7001",
+              canManage: true,
+              installable: true,
+            },
+          ],
+          appOwner: "invented-owner",
+          appSettingsUrl: "https://github.com/settings/apps/invented-kin",
+        });
+
+        // The owner picks All repositories on GitHub for both; the next look a minute on sees it.
+        github.world.app!.installations[0]!.selection = "all";
+        github.world.app!.installations.push({
+          id: 9,
+          account: "invented-co",
+          selection: "all",
+          repos: [],
+          permissions: PERMISSIONS,
+        });
+        yield* advance(github, MINUTE);
+        yield* app.refresh();
+        const after = (yield* rows(app)).accounts ?? [];
+        assert.deepStrictEqual(
+          after.map((row) => [row.account, row.installation, row.covered, row.settingsUrl]),
+          [
+            ["invented-owner", "all", 3, "https://github.com/settings/installations/8"],
+            [
+              "invented-co",
+              "all",
+              2,
+              "https://github.com/organizations/invented-co/settings/installations/9",
+            ],
+          ],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "some repos picked, a suspended installation, an organisation the login doesn't own, and an App private to its owner",
+    () =>
+      Effect.gen(function* () {
+        const { github, app } = yield* setup({ appId: "9001" }, false);
+        world(github);
+        github.world.accounts!.push({
+          login: "invented-lab",
+          id: 7002,
+          type: "Organization",
+          role: "member",
+        });
+        github.addRepo({ full_name: "invented-lab/tool" });
+        installApp(github, [
+          {
+            id: 8,
+            account: "invented-owner",
+            repos: ["invented-owner/a", "invented-owner/b"],
+            permissions: PERMISSIONS,
+          },
+          {
+            id: 9,
+            account: "invented-co",
+            suspended: true,
+            repos: ["invented-co/app"],
+            permissions: PERMISSIONS,
+          },
+        ]);
+        github.world.app!.public = false;
+        yield* watching(
+          known([
+            ...REPOS,
+            { repo: "invented-lab/tool", ownerId: 7002, ownerOrg: true, ownerAdmin: false },
+            // Watched off: an account with nothing watched gets no row.
+            { repo: "invented-quiet/x", ownerId: 7003, ownerOrg: true, ownerAdmin: true },
+          ]),
+        );
+        yield* setRepo({ orgId, repo: "invented-quiet/x", watched: false }, T0);
+        yield* app.refresh();
+        const { accounts } = yield* rows(app);
+        assert.deepStrictEqual(
+          accounts?.map((row) => [
+            row.account,
+            row.installation,
+            `${row.covered}/${row.watched}`,
+            row.canManage,
+            row.installable,
+          ]),
+          [
+            ["invented-owner", "selected", "2/3", true, true],
+            ["invented-co", "suspended", "0/2", true, true],
+            ["invented-lab", "none", "0/1", false, false],
+          ],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("no rows, only GitHub's own install page, while Kin can't tell the accounts", () =>
+    Effect.gen(function* () {
+      const { github, app } = yield* setup({ appId: "9001" }, false);
+      world(github);
+      installApp(github, []);
+      // Stored before Kin kept what each account is.
+      yield* watching(known(REPOS.map(({ repo }) => ({ repo }))));
+      yield* app.refresh();
+      const view = yield* agentsView(Option.some(app), orgId);
+      assert.isUndefined(view.accounts);
+      assert.strictEqual(view.installUrl, "https://github.com/apps/invented-kin/installations/new");
+    }).pipe(Effect.provide(layer)),
+  );
+});
+
+describe("picking the App's repos from Settings, with the owner's login", () => {
+  const PERMISSIONS = { contents: "write", metadata: "read" };
+  const REPOS = ["invented-owner/a", "invented-owner/b", "invented-owner/c"];
+  const fakeApi = (github: FakeGitHub) =>
+    Layer.mergeAll(
+      Layer.succeed(KinGitHubApi, {
+        connected: () => Effect.succeed({ login: "invented-owner", orgs: [] }),
+        call: (request) =>
+          Effect.sync(() => {
+            const answer = github.handle(
+              request.method ?? "GET",
+              request.path,
+              request.headers,
+              (request.body ?? {}) as Record<string, unknown>,
+            );
+            return { ...answer, text: answer.body === null ? "" : JSON.stringify(answer.body) };
+          }),
+      }),
+      Layer.succeed(KinRefreshObserver, { touch: () => Effect.void }),
+    );
+  const owner = { _tag: "person" as const, orgId, personId: KinPersonId.make("owner") };
+  const start = (selection: "all" | "selected", picked: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      const { github, app } = yield* setup({ appId: "9001" }, false);
+      github.world.accounts = [{ login: "invented-owner", id: 7000, type: "User" }];
+      for (const repo of [...REPOS, "invented-owner/kin-memory"])
+        github.addRepo({ full_name: repo });
+      installApp(github, [
+        {
+          id: 8,
+          account: "invented-owner",
+          selection,
+          repos: [...picked],
+          permissions: PERMISSIONS,
+        },
+      ]);
+      const sql = yield* SqlClient.SqlClient;
+      const known = JSON.stringify(
+        REPOS.map((repo, index) => ({
+          repo,
+          fork: false,
+          id: 2000 + index,
+          ownerId: 7000,
+          ownerOrg: false,
+        })),
+      );
+      yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at, repos_json)
+        VALUES (${orgId}, 'invented-owner', 0, 0, 0, ${known})`;
+      yield* app.refresh();
+      const set = (repos: ReadonlyArray<string>, on: boolean) =>
+        setAppRepos(app, owner, { orgId, account: "invented-owner", repos, on }).pipe(
+          Effect.provide(fakeApi(github)),
+        );
+      const covered = agentsView(Option.some(app), orgId).pipe(
+        Effect.map((view) => view.accounts?.[0]?.covered),
+      );
+      return { github, app, set, covered };
+    });
+
+  it.effect("adds every watched repo and takes them off again, as GitHub then holds it", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const { github, app, set, covered } = yield* start("selected", ["invented-owner/kin-memory"]);
+      assert.deepStrictEqual(yield* set(REPOS, true), { changed: 3, problem: null });
+      assert.strictEqual(yield* covered, 3);
+      assert.sameMembers(github.world.app!.installations[0]!.repos, [
+        "invented-owner/kin-memory",
+        ...REPOS,
+      ]);
+      assert.strictEqual((yield* app.on("invented-owner/b"))?.login, BOT_LOGIN);
+      // Asking again changes nothing and calls GitHub for nothing.
+      const calls = github.world.calls.length;
+      assert.deepStrictEqual(yield* set(REPOS, true), { changed: 0, problem: null });
+      assert.strictEqual(github.world.calls.length, calls);
+
+      assert.deepStrictEqual(yield* set(["invented-owner/b"], false), {
+        changed: 1,
+        problem: null,
+      });
+      assert.strictEqual(yield* covered, 2);
+      // Kin's own writes on that repo go out as the owner from now on; the rest stay the App's.
+      assert.isUndefined(yield* app.on("invented-owner/b"));
+      assert.strictEqual((yield* app.on("invented-owner/a"))?.login, BOT_LOGIN);
+      const recorded = yield* sql<{ agent: string; repo: string; command: string }>`
+        SELECT agent_name AS agent, repo, command FROM kin_github_owner_uses ORDER BY at, use_id`;
+      assert.strictEqual(recorded.length, 4);
+      assert.deepStrictEqual(
+        recorded.find((entry) => entry.command.startsWith("Took")),
+        {
+          agent: "Owner",
+          repo: "invented-owner/b",
+          command: "Took Invented Kin off this repo in Settings",
+        },
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("says why GitHub refused, and the rows keep what GitHub holds", () =>
+    Effect.gen(function* () {
+      const { github, set, covered } = yield* start("selected", ["invented-owner/a"]);
+      const last = yield* set(["invented-owner/a"], false);
+      assert.strictEqual(last.changed, 0);
+      assert.match(last.problem ?? "", /keeps at least one repo/);
+      assert.strictEqual(yield* covered, 1);
+
+      github.world.installationEditsRefused = true;
+      const refused = yield* set(["invented-owner/b", "invented-owner/c"], true);
+      assert.strictEqual(refused.changed, 0);
+      assert.match(refused.problem ?? "", /Change it on the App's page on GitHub instead\.$/);
+      assert.strictEqual(yield* covered, 1);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("refuses an account on all repositories: that choice is made on GitHub", () =>
+    Effect.gen(function* () {
+      const { set } = yield* start("all", []);
+      const failure = yield* Effect.flip(set(["invented-owner/a"], false));
+      assert.strictEqual(failure.reason, "not_allowed");
+      assert.match(failure.message, /Only select repositories on its page on GitHub/);
+    }).pipe(Effect.provide(layer)),
   );
 });
 

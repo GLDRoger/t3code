@@ -164,7 +164,7 @@ With a GitHub App set up, agents' commits, pushes, pull requests, comments and r
 To set one up:
 
 1. On GitHub, Settings → Developer settings → GitHub Apps → New GitHub App. No webhook. Repository permissions: Contents, Pull requests, Issues and Checks read and write; Metadata read. Generate a private key.
-2. Install it on the accounts and repos agents should work in. Connections shows how many watched repos have it and links to install it on more.
+2. To use it on organisations too, make it public (its settings → Advanced): a private App installs only on the account that owns it. Then install it from Connections, which has a row and a link per account.
 3. As kin, store the key in kin's keyring, which needs a Secret Service its headless session unlocks unprompted, such as `gnome-keyring-daemon` with an empty-password `login` keyring (Connections says when Kin can't read it). From `~/t3code/apps/server`:
 
    ```bash

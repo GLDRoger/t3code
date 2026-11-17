@@ -1,6 +1,9 @@
 import {
   KinConnectionKey,
   type KinGitHubAgents,
+  type KinGitHubAppAccount,
+  type KinGitHubAppReposResult,
+  type KinGitHubAppReposSetInput,
   type KinGitHubConnectInput,
   type KinGitHubInput,
   type KinGitHubRepo,
@@ -183,6 +186,8 @@ export const KIN_GITHUB_WATCH_COPY = {
   showRepos: (count: number) => `Show repos (${count})`,
   hideRepos: "Hide repos",
   loadFailed: "Couldn't load the repo list",
+  asApp: "As the App",
+  asYou: "As you",
 } as const;
 
 const plural = (count: number, one: string) => `${count} ${count === 1 ? one : `${one}s`}`;
@@ -234,12 +239,185 @@ export const KIN_GITHUB_AGENTS_COPY = {
   title: "Agents on GitHub",
   install: "Install on more repos",
   usesTitle: "Done as you lately",
+  accountsTitle: "Where the App is",
+  /** Under the rows while one of them sends the owner to GitHub. */
+  accountsHint: "On GitHub, choose All repositories, then confirm. New repos are covered too.",
 } as const;
+
+/** One account's row: where the App stands there, and the one GitHub page that changes it. */
+export interface KinGitHubAccountRow {
+  readonly key: string;
+  readonly account: string;
+  readonly tone: KinConnectionTone;
+  readonly label: string;
+  readonly detail: string;
+  readonly action: {
+    readonly label: string;
+    readonly url: string;
+    /** The page asks which repos: the hint under the rows says what to pick. */
+    readonly picksRepos: boolean;
+  } | null;
+  /** The App's repos here are picked one by one, and this login may pick them from Kin. */
+  readonly pickable: boolean;
+  readonly watched: number;
+  /** The installation's page on GitHub, offered when GitHub refuses a change made from Kin. */
+  readonly settingsUrl: string | null;
+}
+
+/** Choosing the App's repos one by one on an account, from Kin. */
+export const KIN_GITHUB_APP_REPOS_COPY = {
+  choose: (count: number) => `Choose repos (${count})`,
+  hide: "Hide repos",
+  hint: "Only the repos you pick. Kin changes them on GitHub with your login, and new repos aren't added.",
+  search: "Find a repo",
+  addAll: "Add all watched repos",
+  removeAll: "Remove all",
+  appOn: (repo: string) => `${repo}: the App works here`,
+  none: "No watched repo matches.",
+  openOnGitHub: "Open on GitHub",
+} as const;
+
+/** The account's watched repos that match `query`, by name. */
+export function kinGitHubAccountRepos(
+  repos: ReadonlyArray<KinGitHubRepo>,
+  account: string,
+  query: string,
+): ReadonlyArray<KinGitHubRepo> {
+  const prefix = `${account.toLowerCase()}/`;
+  const wanted = query.trim().toLowerCase();
+  return repos.filter(
+    (repo) =>
+      repo.watched &&
+      repo.repo.toLowerCase().startsWith(prefix) &&
+      (wanted === "" || repo.repo.toLowerCase().includes(wanted)),
+  );
+}
+
+/** Puts the App on repos of one account or takes it off, answered in plain words. */
+export function createKinGitHubAppRepoActions(options: {
+  readonly orgId: KinOrgId;
+  readonly set: (input: KinGitHubAppReposSetInput) => Sent<KinGitHubAppReposResult>;
+  readonly refresh: () => void;
+}) {
+  return async (
+    account: string,
+    repos: ReadonlyArray<string>,
+    on: boolean,
+  ): Promise<{ readonly changed: number; readonly problem: string | null }> => {
+    const result = await options.set({ orgId: options.orgId, account, repos: [...repos], on });
+    options.refresh();
+    return AsyncResult.isSuccess(result)
+      ? result.value
+      : {
+          changed: 0,
+          problem: kinFailureText(
+            squashAtomCommandFailure(result),
+            "Couldn't change where the App works.",
+            { device: "This device isn't allowed to change where Kin's GitHub App works." },
+          ),
+        };
+  };
+}
+
+const reposWord = (count: number) => plural(count, "watched repo");
+
+/** One row per account with watched repos; empty when Kin can't tell the accounts. */
+export function kinGitHubAccountRows(agents: KinGitHubAgents): ReadonlyArray<KinGitHubAccountRow> {
+  if (agents.as !== "app" || agents.accounts === undefined) return [];
+  const app = agents.appName ?? "Kin's GitHub App";
+  return agents.accounts.map((row) => ({
+    key: row.account.toLowerCase(),
+    account: row.account,
+    ...accountState(row, app, agents),
+    pickable: row.installation === "selected" && row.canManage !== false,
+    watched: row.watched,
+    settingsUrl: row.settingsUrl,
+  }));
+}
+
+function accountState(
+  row: KinGitHubAppAccount,
+  app: string,
+  agents: KinGitHubAgents,
+): Omit<KinGitHubAccountRow, "key" | "account" | "pickable" | "watched" | "settingsUrl"> {
+  const ownersOnly = `Only an owner of ${row.account} can change this on GitHub.`;
+  const link = (label: string, url: string | null, picksRepos = true) =>
+    url === null ? null : { label, url, picksRepos };
+  switch (row.installation) {
+    case "all":
+      return {
+        tone: "ok",
+        label: "All repositories",
+        detail:
+          row.covered >= row.watched
+            ? `Covers its ${reposWord(row.watched)}, and new ones.`
+            : `Covers ${row.covered} of its ${reposWord(row.watched)}; GitHub doesn't give it the rest yet.`,
+        action: null,
+      };
+    case "selected": {
+      const rest = row.watched - row.covered;
+      return {
+        tone: rest === 0 ? "ok" : "attention",
+        label: `Only selected repositories (${row.covered} of ${row.watched} watched)`,
+        detail: [
+          rest === 0
+            ? "Covers every watched repo here, but not repos made later."
+            : `Agents work as you on the other ${reposWord(rest)}.`,
+          row.canManage === false ? ownersOnly : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+        action:
+          row.canManage === false ? null : link("Switch to all repositories", row.settingsUrl),
+      };
+    }
+    case "suspended":
+      return {
+        tone: "error",
+        label: "Suspended",
+        detail: `${app} is suspended here, so agents work as you on its ${reposWord(row.watched)} until it is unsuspended on GitHub.${row.canManage === false ? ` ${ownersOnly}` : ""}`,
+        action: row.canManage === false ? null : link("Open on GitHub", row.settingsUrl, false),
+      };
+    case "none": {
+      if (!row.installable)
+        return {
+          tone: "muted",
+          label: "Not installed",
+          detail: `${app} can only be installed on ${agents.appOwner ?? "the account that owns it"}, so agents work as you here. Making it public in its settings on GitHub lets you install it on ${row.account}.`,
+          action:
+            agents.appSettingsUrl === undefined
+              ? null
+              : { label: "Open the App's settings", url: agents.appSettingsUrl, picksRepos: false },
+        };
+      if (row.canManage === false)
+        return {
+          tone: "muted",
+          label: "Not installed",
+          detail: `Only an owner of ${row.account} can install ${app}. GitHub sends them your request; this row changes once one of them installs it.`,
+          action: link(`Ask an owner of ${row.account}`, row.installUrl),
+        };
+      return {
+        tone: "attention",
+        label: "Not installed",
+        detail: `Agents work as you on its ${reposWord(row.watched)}.${
+          row.organisation && row.canManage === null
+            ? ` If you don't own ${row.account}, GitHub sends your request to its owners instead.`
+            : ""
+        }`,
+        action: link("Install on all repositories", row.installUrl),
+      };
+    }
+  }
+}
+
+/** Whether to show the hint under the rows: some row sends the owner to pick on GitHub. */
+export const kinGitHubAccountsHint = (rows: ReadonlyArray<KinGitHubAccountRow>) =>
+  rows.some((row) => row.action?.picksRepos === true) ? KIN_GITHUB_AGENTS_COPY.accountsHint : null;
 
 export interface KinGitHubAgentsView {
   readonly headline: string;
   readonly detail: string;
-  /** Where to install the App on more repos; null while there is no App. */
+  /** GitHub's own install page, only while Kin can't tell the accounts to give each a row. */
   readonly installUrl: string | null;
   /** The latest commands agents ran as the owner, newest first. */
   readonly uses: ReadonlyArray<{
@@ -290,8 +468,15 @@ export function kinGitHubAgentsView(
           ? `Agents work on GitHub as ${app} on ${agents.watched === 1 ? "your watched repo" : `all ${agents.watched} watched repos`}.`
           : `Agents work on GitHub as ${app} on ${agents.installed} of ${agents.watched} watched repos.`;
   const detail =
-    agents.installed > 0 && missing > 0
-      ? `On ${repoList(agents.without, missing)}, their work goes out as ${you}. An agent also works as you, one command at a time, when the App can't do something or you ask it to.`
-      : "Their commits, pull requests and reviews show the App as the author. An agent works as you, one command at a time, only when the App can't do something or you ask it to.";
-  return { headline, detail, installUrl: agents.installUrl ?? null, uses };
+    agents.watched > 0 && agents.installed === 0
+      ? `Their commits, pull requests and reviews there carry your name, signed with the agent's. Once ${app} is on a repo, its work there shows the App as the author.`
+      : missing > 0
+        ? `On ${repoList(agents.without, missing)}, their work goes out as ${you}. An agent also works as you, one command at a time, when the App can't do something or you ask it to.`
+        : "Their commits, pull requests and reviews show the App as the author. An agent works as you, one command at a time, only when the App can't do something or you ask it to.";
+  return {
+    headline,
+    detail,
+    installUrl: agents.accounts === undefined ? (agents.installUrl ?? null) : null,
+    uses,
+  };
 }
