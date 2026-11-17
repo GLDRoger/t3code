@@ -9,7 +9,8 @@ import {
 import { Button } from "../components/ui/button";
 import { StandalonePage, StandalonePageHeader } from "../components/ui/standalone-page";
 import { peekPairingTokenFromUrl } from "../environments/primary";
-import { KIN_ACCESS_ENDED, wasKinTeammate } from "../kin/kinTeammateMark";
+import { KIN_ACCESS_ENDED } from "@t3tools/client-runtime/kin/kinJoin";
+import { wasKinTeammate } from "../kin/kinTeammateMark";
 
 export const Route = createFileRoute("/pair")({
   beforeLoad: async ({ context }) => {

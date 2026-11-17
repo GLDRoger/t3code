@@ -1,3 +1,5 @@
+import { KIN_ACCESS_ENDED } from "@t3tools/client-runtime/kin/kinJoin";
+
 const KEY = "t3code:kin:teammate";
 
 /**
@@ -20,13 +22,6 @@ export function wasKinTeammate() {
     return false;
   }
 }
-
-/** What a teammate's browser says once their access ended, wherever Kin finds it out. */
-export const KIN_ACCESS_ENDED = {
-  title: "Your access to Kin has ended",
-  detail:
-    "Whoever runs your team's Kin removed your access or signed this browser out. Ask them for a new join link: opening it brings you back with your chats and tasks.",
-} as const;
 
 /** A screen that can't tell who you are says your access ended, when this was a teammate's. */
 export function kinAccessCopy(
