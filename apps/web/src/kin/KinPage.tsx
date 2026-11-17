@@ -16,6 +16,7 @@ import { KinProfileSheetHost } from "./KinProfileSheet";
 import { KinPeoplePickerHost } from "./KinPeopleChat";
 import { KinMessageAlerts } from "./KinNotifications";
 import { KinToday } from "./KinToday";
+import { KinUpdatedLine } from "./KinUpdatedLine";
 import { KinSettingsButton, KinSettingsModalHost } from "./KinSettingsView";
 import { KinDock } from "./KinNav";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
@@ -26,6 +27,7 @@ export function KinPage() {
   startKinOutbox();
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+      <KinUpdatedLine />
       <Outlet />
       <KinDockHost />
       <KinLeadDialogHost />

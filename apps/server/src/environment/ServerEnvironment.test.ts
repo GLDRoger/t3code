@@ -148,6 +148,46 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
     }),
   );
   it.effect.each([
+    {
+      name: "a built bundle",
+      manifest: '{"index.html":{"file":"assets/index-abc.js","isEntry":true}}',
+      webBuild: "assets/index-abc.js",
+    },
+    { name: "no manifest", manifest: undefined, webBuild: undefined },
+    {
+      name: "a manifest without an entry",
+      manifest: '{"src/x.ts":{"file":"assets/x.js"}}',
+      webBuild: undefined,
+    },
+    { name: "a broken manifest", manifest: "{", webBuild: undefined },
+  ])("states the web build it serves from $name", ({ manifest, webBuild }) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-server-environment-web-build-test-",
+      });
+      const staticDir = `${baseDir}/client`;
+      yield* fileSystem.makeDirectory(`${staticDir}/.vite`, { recursive: true });
+      if (manifest !== undefined) {
+        yield* fileSystem.writeFileString(`${staticDir}/.vite/manifest.json`, manifest);
+      }
+      const config = yield* makeServerConfig(baseDir);
+      yield* fileSystem.makeDirectory(config.stateDir, { recursive: true });
+      const descriptor = yield* Effect.gen(function* () {
+        const environment = yield* ServerEnvironment.ServerEnvironment;
+        return yield* environment.getDescriptor;
+      }).pipe(
+        Effect.provide(
+          ServerEnvironment.layer.pipe(
+            Layer.provide(layerEmptySecretStore),
+            Layer.provide(ServerConfig.layer({ ...config, staticDir })),
+          ),
+        ),
+      );
+      expect(descriptor.webBuild).toBe(webBuild);
+    }),
+  );
+  it.effect.each([
     { name: "missing", content: undefined },
     { name: "empty", content: "" },
     { name: "whitespace-only", content: " \t\n" },

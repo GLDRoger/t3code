@@ -170,6 +170,7 @@ import {
 } from "./KinMessageRows";
 import { useKinPresenceNow, useNowMinuteMs } from "./useKinClock";
 import { KinStandInLine } from "./KinStandInLine";
+import { KIN_UNSENT_ATTRIBUTE } from "./KinUpdatedLine";
 import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinHostAt } from "./useKinHost";
 import { useKinProfiles } from "./kinPictures";
@@ -1405,6 +1406,7 @@ function KinComposer(props: {
               className={cn(
                 dragOver && "rounded-[inherit] bg-accent/45 ring-1 ring-inset ring-primary/70",
               )}
+              {...(hasContent || sending ? { [KIN_UNSENT_ATTRIBUTE]: "" } : {})}
               onSubmit={(event) => {
                 event.preventDefault();
                 if (canSend) void send();
