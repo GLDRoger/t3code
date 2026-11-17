@@ -6,6 +6,7 @@ import { expect, layer as withLayer } from "@effect/vitest";
 import {
   KIN_REFRESH_TOPICS,
   KinChatError,
+  KinDocsEvent,
   KinDocsRpcs,
   KinFinanceRpcs,
   KinOrgId,
@@ -220,6 +221,7 @@ const SCHEMAS = {
   docs: successOf(KinDocsRpcs, "kin.docs.list"),
   pulse: successOf(KinPulseRpcs, "kin.pulse.read"),
   pulseEvent: KinPulseEvent,
+  docsEvent: KinDocsEvent,
   refreshes: KinRefreshes,
 };
 
@@ -506,6 +508,53 @@ const rowsChange = Effect.fn("KinWireBudget.rowsChange")(function* () {
 });
 
 /**
+ * One doc rewritten: what each viewer's docs feed sends for it. With rows the Docs list patches
+ * from the change itself; without, it reads its page again (`docsPage`).
+ */
+const docChange = Effect.fn("KinWireBudget.docChange")(function* () {
+  const records = yield* KinRecords.KinRecords;
+  const sql = yield* SqlClient.SqlClient;
+  const pull = yield* Stream.toPull(records.changes(orgId));
+  yield* pull;
+  const measured: Record<string, number> = {};
+  const sessions = yield* Effect.forEach(VIEWERS, ([name, personId]) =>
+    Effect.map(OwnerDocs.makeDocsStream(as(personId), { orgId, acceptRows: true }), (session) => ({
+      name,
+      session,
+    })),
+  );
+  const [doc] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+    WHERE org_id = ${orgId} AND register_id = 'docs' AND json_extract(fields_json, '$.home') = 'company'
+    ORDER BY key LIMIT 1`;
+  yield* Docs.replaceBody(
+    orgId,
+    ownerWriter,
+    {},
+    { key: doc!.key },
+    {
+      body: "# Invented doc 1\n\nWhat was agreed, now with the venue's new date.\n",
+      summary: "Rewritten",
+      originKey: "wire-budget:doc:rewrite",
+    },
+  );
+  const ticks: Array<KinRecords.Tick> = [];
+  while (!ticks.some((tick) => tick.key === doc!.key)) ticks.push(...(yield* pull));
+  for (const { name, session } of sessions) {
+    const events = yield* session.burst(ticks);
+    measured[`docs.${name}.rewrite.bytes`] = events.reduce(
+      (sum, event) => sum + wireBytes(SCHEMAS.docsEvent, event),
+      0,
+    );
+    measured[`docs.${name}.rewrite.reads`] = events.some(
+      (event) => event.key !== undefined && event.row === undefined && event.unlisted !== true,
+    )
+      ? 1
+      : 0;
+  }
+  return measured;
+});
+
+/**
  * A reconnect with nothing changed: each viewer's refresh revisions heard again. A topic that
  * reads differently is one their screens read again; the bytes are what resubscribing costs.
  */
@@ -607,6 +656,7 @@ withLayer(layer)("Kin wire budget", (it) => {
       }
       Object.assign(measured, yield* oneChange(rereadBytes));
       Object.assign(measured, yield* Effect.scoped(rowsChange()));
+      Object.assign(measured, yield* Effect.scoped(docChange()));
       Object.assign(measured, yield* reconnect());
       Object.assign(measured, yield* Effect.scoped(attentionMove()));
 

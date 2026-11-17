@@ -13,7 +13,7 @@ import {
   type KinDocsFilter,
   type KinSearchState,
 } from "@t3tools/client-runtime/kin/kinDocs";
-import type { KinDocsLive } from "@t3tools/client-runtime/kin/kinDocsStream";
+import { type KinDocsLive, kinDocsPageFollower } from "@t3tools/client-runtime/kin/kinDocsStream";
 import { kinWorkFailuresOf, kinWorkRefused } from "@t3tools/client-runtime/kin/kinWork";
 import { createKinWorkItemWatch } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -60,11 +60,17 @@ export function useKinDocsLive(target: KinWorkTarget) {
 }
 
 /** Every doc, or the archived ones, latest change first, a page at a time. */
-export function useKinDocsList({ environmentId, orgId }: KinWorkTarget, seq: number | null) {
+export function useKinDocsList(target: KinWorkTarget, seq: number | null) {
+  const { environmentId, orgId } = target;
   return useKinPagedList<KinDocsFilter, KinDocListRow>(
     KIN_DOCS_DEFAULT_FILTER,
-    (onChange) =>
-      createKinPagedList({
+    (onChange) => {
+      const follow = kinDocsPageFollower(
+        () =>
+          Option.getOrNull(AsyncResult.value(appAtomRegistry.get(docsLiveAtom(target))))?.rows ??
+          null,
+      );
+      return createKinPagedList({
         initial: KIN_DOCS_DEFAULT_FILTER,
         sameFilter: kinDocsSameFilter,
         idOf: (row) => row.recordId,
@@ -72,13 +78,17 @@ export function useKinDocsList({ environmentId, orgId }: KinWorkTarget, seq: num
         schedule: kinSchedule,
         read: async (filter, page) =>
           mapPage(
-            await kinClient.docsList.run(appAtomRegistry, {
-              environmentId,
-              input: { ...kinDocsQuery(orgId, filter), ...page },
-            }),
+            await follow.read(page, () =>
+              kinClient.docsList.run(appAtomRegistry, {
+                environmentId,
+                input: { ...kinDocsQuery(orgId, filter), ...page },
+              }),
+            ),
             (value) => ({ ...value, rows: value.docs }),
           ),
-      }),
+        catchUp: follow.catchUp,
+      });
+    },
     seq,
   );
 }
