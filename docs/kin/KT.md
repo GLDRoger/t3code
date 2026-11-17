@@ -14,34 +14,34 @@ In one line: Kin is a messaging app, built on [T3 Code](https://github.com/pingd
 
 All Kin work is on branch `kin` of `GLDRoger/t3code`, a public fork. `main` mirrors upstream; never commit to it. [KIN.md](../../KIN.md) has the branch, sync and branding rules.
 
-| Where                              | What                                                                                     |
-| ---------------------------------- | ---------------------------------------------------------------------------------------- |
-| `apps/server/src/kin/chat/`        | Chats, messages, members, identity, the live hub, task cards, chat RPCs                  |
-| `apps/server/src/kin/floor/`       | Who may speak: `FloorManager` (pure rules) and `KinFloor` (runs and grants in SQLite)    |
-| `apps/server/src/kin/lead/`        | The event queue, wake-up runner, prompt, permissions, budget, stop switch, workers, CLI  |
-| `apps/server/src/kin/reply/`       | The reply bridge (lead text → chat messages) and presence ("thinking", "working")        |
-| `apps/server/src/kin/memory/`      | Memory reads, the git writer, change cards and memory PRs                                |
-| `apps/server/src/kin/dreaming/`    | The nightly dream                                                                        |
-| `apps/server/src/kin/triggers/`    | Time triggers, deferrals, routines, watchdogs, pings, GitHub webhooks, the trigger inbox |
-| `apps/server/src/kin/approvals/`   | `request_action`, pending actions, approver keys, grant checks, the executor, audit      |
-| `apps/server/src/kin/github/`      | The GitHub App, rulesets and the owner's merge client                                    |
-| `apps/server/src/kin/push/`        | Kin's own APNs sender                                                                    |
-| `apps/server/src/kin/persistence/` | Kin's migration track (`kin_sql_migrations`, K001 onward)                                |
-| `apps/server/src/kin/mcp/`         | The `/kin/mcp` endpoint that only registered agent threads get                           |
-| `packages/contracts/src/kin*.ts`   | Schemas shared by server and clients                                                     |
-| `packages/client-runtime/src/kin/` | Client logic shared by web and mobile                                                    |
-| `apps/mobile/src/features/chats/`  | The mobile app's Kin screens                                                             |
-| `apps/web/src/kin/`                | The web and desktop Kin screens                                                          |
-| `ops/kin/host/`                    | Host install, update, backup and restore                                                 |
+| Where                              | What                                                                                    |
+| ---------------------------------- | --------------------------------------------------------------------------------------- |
+| `apps/server/src/kin/chat/`        | Chats, messages, members, identity, the live hub, task cards, chat RPCs                 |
+| `apps/server/src/kin/floor/`       | Who may speak: `FloorManager` (pure rules) and `KinFloor` (runs and grants in SQLite)   |
+| `apps/server/src/kin/lead/`        | The event queue, wake-up runner, prompt, permissions, budget, stop switch, workers, CLI |
+| `apps/server/src/kin/reply/`       | The reply bridge (lead text → chat messages) and presence ("thinking", "working")       |
+| `apps/server/src/kin/memory/`      | Memory reads, the git writer, change cards and memory PRs                               |
+| `apps/server/src/kin/dreaming/`    | The nightly dream                                                                       |
+| `apps/server/src/kin/triggers/`    | Time triggers, deferrals, routines, watchdogs, pings, GitHub readers, the trigger inbox |
+| `apps/server/src/kin/approvals/`   | Pending actions, approver keys, grant checks, the executor, audit                       |
+| `apps/server/src/kin/github/`      | The owner's GitHub watch, its triggers, signed replies and `kin_github_*` tools         |
+| `apps/server/src/kin/push/`        | Kin's own APNs sender                                                                   |
+| `apps/server/src/kin/persistence/` | Kin's migration track (`kin_sql_migrations`, K001 onward)                               |
+| `apps/server/src/kin/mcp/`         | The `/kin/mcp` endpoint that only registered agent threads get                          |
+| `packages/contracts/src/kin*.ts`   | Schemas shared by server and clients                                                    |
+| `packages/client-runtime/src/kin/` | Client logic shared by web and mobile                                                   |
+| `apps/mobile/src/features/chats/`  | The mobile app's Kin screens                                                            |
+| `apps/web/src/kin/`                | The web and desktop Kin screens                                                         |
+| `ops/kin/host/`                    | Host install, update, backup and restore                                                |
 
 Kin code lives in its own files. Upstream files get a hook of a line or two at most, so upstream merges stay easy.
 
 ## How a message flows
 
 1. **Chat.** A client calls `kin.messages.send`. `KinChatService` checks membership, stores the message with the next sequence number, and calls `KinFloor.open`, which opens a floor run and grants a turn. In a direct chat that is the lead; in a group it is the mentioned agent, and with no mention it will be the group's lead (W3-1). After commit, `KinChatHub` publishes the message to every member's stream.
-2. **Queue.** `ChatWake` turns the message into a `chat.message` event in `KinEventQueue` (`kin_events`) and shows the lead's working line ("Catching up", or "Finishing something else" behind a running wake-up) at once. Triggers, worker reports and approval results become events the same way. Code sets each event's priority; an owner message is P0.
+2. **Queue.** `ChatWake` turns the message into a `chat.message` event in `KinEventQueue` (`kin_events`) and shows the lead's working line ("Catching up", or "Finishing something else" behind a running wake-up) at once. Triggers, finished tasks and approval results become events the same way. Code sets each event's priority; an owner message is P0.
 3. **Wake-up.** `WakeupRunner` waits briefly for a burst to finish, then claims a batch of events for one lead and one chat. It checks the stop switch and budget, prepares a read-only memory checkout, builds the prompt (`LeadPrompt`) and runs the lead as a T3 thread. A message that arrives during a wake-up is steered into it.
-4. **Lead.** The lead runs on Claude with no shell. It acts only through Kin's MCP tools: memory, deferrals, workers, cards, `request_action`. Its plain text is its reply.
+4. **Lead.** The lead acts through Kin's MCP tools: memory, deferrals, cards, Work. In a turn only the owner reads that has read nothing from outside, it also gets a shell (with the owner's GitHub login) and T3's `delegate_task`. Its plain text is its reply.
 5. **Reply bridge.** `KinReplyBridge` reads the lead's text as it streams and posts it through `LevelGate`, so membership, the floor and permissions apply.
 6. **Clients.** Members' streams deliver the reply, and `KinPushSender` pushes it to phones that aren't showing the chat.
 
@@ -53,17 +53,17 @@ Memory is plain Markdown files with front matter in a private git repo per organ
 
 ## Dreams
 
-Once a night per organization, `DreamRunner` collects the day's originals (journal, chat messages, worker reports, GitHub events) and runs an isolated lead session in dream mode on a scratch checkout. It merges duplicates, supersedes stale items and lists contradictions, which a second turn on the same model turns into a resolution or a question for the owner. Code checks every change (schema, sources, no deletions, secret scan) before the result goes to a `dream/<date>` branch for the owner to approve. The morning routine uses it for the brief. See the [triggers spec, "Dreaming pipeline"](specs/triggers.md#dreaming-pipeline-one-per-org-per-night).
+Once a night per organization, `DreamRunner` collects the day's originals (journal, chat messages, finished tasks, GitHub events) and runs an isolated lead session in dream mode on a scratch checkout. It merges duplicates, supersedes stale items and lists contradictions, which a second turn on the same model turns into a resolution or a question for the owner. Code checks every change (schema, sources, no deletions, secret scan) before the result goes to a `dream/<date>` branch for the owner to approve. The morning routine uses it for the brief. See the [triggers spec, "Dreaming pipeline"](specs/triggers.md#dreaming-pipeline-one-per-org-per-night).
 
 ## Triggers
 
-Everything that wakes a lead without a chat message goes through one inbox (`kin_trigger_inbox`) into the event queue. Time triggers (deferrals, morning and evening routines, watchdogs that chase stale items) run on T3's scheduler in the owner's time zone. GitHub webhooks arrive verified and deduplicated by delivery id. A deferral is a memory item with a due time and an `on_due` of remind, start, ask or chase; the lead creates one with `kin_defer`. See the [triggers spec](specs/triggers.md).
+Everything that wakes a lead without a chat message goes through one inbox (`kin_trigger_inbox`) into the event queue. Time triggers (deferrals, morning and evening routines, watchdogs that chase stale items) run on T3's scheduler in the owner's time zone. GitHub activity comes from the owner's watch, which polls his watched repos with his own login and wakes a lead on a `/kin` call or a review request. A deferral is a memory item with a due time and an `on_due` of remind, start, ask or chase; the lead creates one with `kin_defer`. See the [triggers spec](specs/triggers.md).
 
 ## Approvals
 
-Authority never passes through a model. A lead can only propose a privileged action (merge, enrol a key) with `request_action`, which stores a pending action bound to an exact target, such as a PR at a pinned head SHA. The owner's phone shows an approval card and signs a single-use grant with a hardware key behind Face ID. `ActionExecutor` checks the grant and runs the action with an executor-held credential, then writes a hash-chained audit row. Chat text, including "approved", never counts. See the [approvals spec](specs/approvals.md).
+Authority never passes through a model. No agent can request a privileged action. The owner asks from his own session (raising a lead's level), which stores a pending action bound to an exact target. The owner's phone shows an approval card and signs a single-use grant with a hardware key behind Face ID. `ActionExecutor` checks the grant and runs the action, then writes a hash-chained audit row. Kin never merges: the lead says when a PR is ready and the owner merges it. Chat text, including "approved", never counts. See the [approvals spec](specs/approvals.md).
 
-A lead just works in chats its owner placed it in (its DM, the owner's groups): posts, workers, draft PRs. There is no ladder and the owner never sees a level. An internal gate (`KinLevels`) refuses the lead in any other chat, so members can't widen what it does; only an owner-signed `set_level` changes it. See [DESIGN.md section 10](DESIGN.md#10-permissions) and the [lead spec, "Permissions"](specs/lead.md#permissions-design-10).
+A lead just works in chats its owner placed it in (its DM, the owner's groups): posts, delegated tasks, PRs. There is no ladder and the owner never sees a level. An internal gate (`KinLevels`) refuses the lead in any other chat, so members can't widen what it does; only an owner-signed `set_level` changes it. See [DESIGN.md section 10](DESIGN.md#10-permissions) and the [lead spec, "Permissions"](specs/lead.md#permissions-design-10).
 
 ## Running Kin locally
 

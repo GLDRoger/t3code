@@ -106,15 +106,6 @@ switch_to() {
   ln -sfn "$1" "$CURRENT.new" && mv -T "$CURRENT.new" "$CURRENT"
 }
 
-# The worker environment mounts ~/kin-current when it starts, so it moves to a build only on a
-# restart. kin-worker.sh's sudoers entry lets kin run this; try-restart leaves a server Kin's
-# pause stopped as it is. No worker unit, no restart.
-restart_workers() {
-  systemctl --system cat kin-worker-server.service >/dev/null 2>&1 || return 0
-  sudo -n /usr/bin/systemctl try-restart kin-worker-server.service ||
-    say "couldn't restart kin-worker-server, so workers still run the build before this one. Run sudo /root/kin-ops/ops/kin/host/kin-worker.sh."
-}
-
 # Puts back the backup taken before this update; the migrated database is kept beside it as
 # $DB.failed-<sha>. Every step is checked: on failure it puts back what it moved and returns 1.
 # Sets MIGRATED to where the migrated database is afterwards.
@@ -244,7 +235,6 @@ deploy() {
   problem="$(health "$build")"
   if [ -z "$problem" ]; then
     rm -f "$ENV_FILE.prev"
-    restart_workers
     say "running $sha, healthy: up, answering, migrations at $(db_heads | sed 's/ /\/K/'). Previous build: ${previous:-none}."
     prune_builds "$build" "$previous"
     prune_backups
@@ -278,7 +268,6 @@ deploy() {
     say "rollback restart failed; kin-server is stopped. See systemctl --user status kin-server."
     return 1
   fi
-  restart_workers
   say "rolled back to $previous. $build is kept for inspection until the next good update."
   return 1
 }
@@ -314,14 +303,14 @@ main() {
   git -C "$REPO" worktree prune
   git -C "$REPO" worktree add --detach "$BUILD" "$SHA"
   trap 'say "build of $SHA failed; the server still runs ${PREVIOUS:-nothing}."; git -C "$REPO" worktree remove --force "$BUILD" 2>/dev/null || rm -rf "$BUILD"' ERR
-  # Workers' sandbox mounts the build read-only, .env included, so it may hold only the public
-  # identifiers .env.example names; a secret there would be readable by every worker.
+  # The build's .env may hold only the public identifiers .env.example names: anything that can
+  # read the build can read it. Settings and secrets go in ~/.t3/service.env.
   local allowed extra node_version lib
   allowed="$(sed -n 's/^#\{0,1\} *\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$BUILD/.env.example" | sort -u)"
   extra="$(sed -n 's/^ *\(export \)\{0,1\}\([A-Za-z_][A-Za-z0-9_]*\)=.*/\2/p' "$REPO/.env" | sort -u |
     comm -23 - <(printf '%s\n' "$allowed") | tr '\n' ' ')"
   if [ -n "$extra" ]; then
-    say "$REPO/.env sets ${extra}which .env.example doesn't name. Workers can read the build's .env, so remove them; server settings go in ~/.t3/service.env."
+    say "$REPO/.env sets ${extra}which .env.example doesn't name. The build's .env is for public identifiers only, so remove them; server settings go in ~/.t3/service.env."
     false
   fi
   cp -p "$REPO/.env" "$BUILD/.env"
@@ -329,9 +318,6 @@ main() {
   node_version="$(sed -n '/"engines"/,/}/s/.*"node": *"\([^"]*\)".*/\1/p' "$BUILD/package.json" | head -n1)"
   [ -n "$node_version" ] || { say "no engines.node in package.json."; false; }
   mise install "node@$node_version"
-  # Workers run kin's vp read-only from a home of their own, so vp can't use the system Node there
-  # and can't download its own; give it the build's Node now.
-  mise exec "node@$node_version" -- vp env install "$node_version" </dev/null
 
   cd "$BUILD"
   # Unattended, like scripts/setup-worktree.ts: a stale lockfile must fail, not be rewritten.
