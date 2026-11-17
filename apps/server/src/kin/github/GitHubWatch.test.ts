@@ -15,7 +15,7 @@ import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { isAgentText, postKey, signed } from "./agentMark.ts";
-import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
+import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr } from "./fakeGitHub.ts";
 import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import { KIN_RULESET_NAME, setGuards } from "./branchGuard.ts";
 import { KinGitHubApp } from "./KinGitHubApp.ts";
@@ -34,6 +34,7 @@ import { WRITE_BRANCH_PREFIX } from "../memory/MemoryConfig.ts";
 const orgId = KinOrgId.make("org-gh");
 const T0 = Date.UTC(2026, 10, 16, 9, 0, 0);
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const REPO = "invented-co/app";
 const MEMORY_REPO = "invented-co/kin-memory";
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(KinEvent));
@@ -74,6 +75,9 @@ const fakeCall =
         headers,
         (request.body ?? {}) as Record<string, unknown>,
       );
+      // The owner's login answers through gh: stdout and stderr together, parsed as the server does.
+      if (token === undefined)
+        return GitHubWatch.parseGhApi(ghApiOutput(answer) + ghApiStderr(request.path, answer));
       return {
         status: answer.status,
         headers: answer.headers,
@@ -198,6 +202,35 @@ const start = (github: FakeGitHub) =>
     yield* (yield* GitHubWatch.KinGitHubWatch).poll(orgId, { force: true });
     github.world.calls.length = 0;
   });
+
+describe("parseGhApi", () => {
+  const head = "HTTP/2.0 404 Not Found\r\nContent-Type: application/json; charset=utf-8\r\n\r\n";
+  const notProtected =
+    '{"message":"Branch not protected","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-branch-protection","status":"404"}';
+  it.each([
+    [
+      "gh's error line straight after the body",
+      `${head}${notProtected}gh: Branch not protected (HTTP 404)\n`,
+    ],
+    ["gh's error line first", `gh: Branch not protected (HTTP 404)\n${head}${notProtected}`],
+    ["no error line", `${head}${notProtected}`],
+  ])("reads the body with %s", (_case, out) => {
+    const answer = GitHubWatch.parseGhApi(out);
+    assert.strictEqual(answer.status, 404);
+    assert.strictEqual(answer.headers["content-type"], "application/json; charset=utf-8");
+    assert.deepInclude(answer.body as object, { message: "Branch not protected" });
+    assert.include(answer.text, "Branch not protected");
+  });
+  it('keeps gh\'s words in text for the matchers, and a body with "gh: " in it whole', () => {
+    const body = '{"message":"Bad credentials","note":"gh: not a line"}';
+    const answer = GitHubWatch.parseGhApi(
+      `HTTP/2.0 401 Unauthorized\r\n\r\n${body}gh: Bad credentials (HTTP 401)\ngh: This API operation needs the "repo" scope.\n`,
+    );
+    assert.deepStrictEqual(answer.body, JSON.parse(body));
+    assert.match(answer.text, /HTTP 401/);
+    assert.isNull(GitHubWatch.parseGhApi("HTTP/2.0 304 Not Modified\r\n\r\ngh: HTTP 304\n").body);
+  });
+});
 
 describe("KinGitHubWatch", () => {
   it.effect("a teammate's PR is reviewed once; an unchanged look reads nothing more", () => {
@@ -804,6 +837,43 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
       });
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect(
+    "a row read wrong corrects itself on the next refresh, and on the first after a start",
+    () => {
+      const { github, layer } = setup();
+      world(github);
+      return Effect.gen(function* () {
+        yield* TestClock.setTime(T0);
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const misread = sql`UPDATE kin_github_branch_guards SET state = 'unknown', problem = 'no_access'
+        WHERE repo = ${PAID.toLowerCase()}`;
+        const watch = yield* GitHubWatch.KinGitHubWatch;
+        yield* watch.poll(orgId, { force: true });
+        yield* misread;
+        // Six hours on, the repo refresh reads it again and overwrites the row.
+        github.tick(6 * HOUR + MINUTE);
+        yield* TestClock.adjust(6 * HOUR + MINUTE);
+        yield* watch.poll(orgId, { force: true });
+        assert.deepStrictEqual((yield* guards)[PAID], {
+          state: "open",
+          branch: "main",
+          byKin: false,
+        });
+        // A server started since reads it on its first look, without waiting six hours.
+        yield* misread;
+        yield* watch.poll(orgId, { force: true });
+        assert.include((yield* guards)[PAID], { problem: "no_access" });
+        yield* (yield* GitHubWatch.make).poll(orgId, { force: true });
+        assert.deepStrictEqual((yield* guards)[PAID], {
+          state: "open",
+          branch: "main",
+          byKin: false,
+        });
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect(
     "Protect writes Kin's ruleset, the App can't merge and the owner can; Remove takes only Kin's",

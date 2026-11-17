@@ -697,7 +697,7 @@ function useGuardActions(environmentId: EnvironmentId, orgId: KinOrgId, refresh:
   return { busy, outcome, run };
 }
 
-/** "N watched repos let Kin's App change their main branch", what protecting does, and Protect all. */
+/** "N watched repos have an unprotected main branch", what protecting does, and Protect all. */
 function ProtectAll(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
@@ -785,7 +785,7 @@ function RepoList(props: {
                 <span className="truncate text-sm">{repo.repo}</span>
                 {repo.fork ? <Badge variant="outline">{WATCH.fork}</Badge> : null}
               </div>
-              {repo.mentions || repo.agentsAs !== undefined || repo.guard !== undefined ? (
+              {repo.mentions || repo.agentsAs !== undefined || kinGitHubGuardLine(repo) !== null ? (
                 <span className="text-xs text-muted-foreground">
                   {[
                     repo.agentsAs === undefined
@@ -794,7 +794,7 @@ function RepoList(props: {
                         ? WATCH.asApp
                         : WATCH.asYou,
                     repo.mentions ? WATCH.mentions : null,
-                    repo.guard === undefined ? null : kinGitHubGuardLine(repo.guard),
+                    kinGitHubGuardLine(repo),
                   ]
                     .filter(Boolean)
                     .join(". ")}

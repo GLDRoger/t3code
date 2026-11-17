@@ -12,7 +12,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { buildSchema, parse, validate } from "graphql";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
-import { type ApiRequest, KinGitHubApi } from "../github/GitHubWatch.ts";
+import { ghApiOutput, ghApiStderr } from "../github/fakeGitHub.ts";
+import { type ApiRequest, KinGitHubApi, parseGhApi } from "../github/GitHubWatch.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinDeferralGithubReader, readGithubLinks, readGithubLinkSets } from "./deferralGithub.ts";
 import * as RoutineContent from "../lead/RoutineContent.ts";
@@ -139,13 +140,10 @@ const setup = (route: (request: ApiRequest) => FakeAnswer = graphql, hang = fals
           ? Effect.never
           : Effect.sync(() => {
               requests.push(request);
-              const answer = route(request);
-              return {
-                status: answer.status,
-                headers: answer.headers ?? {},
-                body: answer.body,
-                text: "",
-              };
+              const routed = route(request);
+              const answer = { ...routed, headers: routed.headers ?? {} };
+              // As gh prints it: the body, then its error line on stderr, run together.
+              return parseGhApi(ghApiOutput(answer) + ghApiStderr(request.path, answer));
             }),
     }),
   );
@@ -297,6 +295,16 @@ describe("Kin GitHub readers", () => {
     {
       name: "GraphQL RATE_LIMITED",
       answer: { status: 200, body: { data: null, errors: [{ type: "RATE_LIMITED" }] } },
+    },
+    {
+      name: "GraphQL RATE_LIMITED with gh's error line after the body",
+      answer: {
+        status: 200,
+        body: {
+          data: null,
+          errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded for user ID 1." }],
+        },
+      },
     },
   ] satisfies ReadonlyArray<{ name: string; answer: FakeAnswer }>)(
     "counts a rate limit ($name) as a failed repo, once",
