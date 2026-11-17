@@ -101,6 +101,7 @@ import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, type AppServerEvent, openAppServer } from "./appServer.ts";
 import {
   CONFINED_CONFIG,
+  FULL_SESSION_CONFIG,
   codexFullSessionInstructions,
   codexInstructions,
 } from "../../apps/server/src/kin/lead/CodexIsolation.ts";
@@ -2699,18 +2700,20 @@ const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSample")(fu
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
   const calls: Array<Call> = [];
   let step = 0;
+  const ownerSession =
+    testCase.setup.world?.kinSession === true &&
+    !/\{\{(SHARED_TURN|GROUP_RULES)\}\}/.test(testCase.prompt);
   const result = yield* Effect.tryPromise({
     try: () =>
       server.runTurn({
         model: config.model,
         effort: config.effort,
-        // An owner-only session's note says it has a shell, as Kin's does; the eval runs none.
-        baseInstructions:
-          testCase.setup.world?.kinSession === true &&
-          !/\{\{(SHARED_TURN|GROUP_RULES)\}\}/.test(testCase.prompt)
-            ? codexFullSessionInstructions
-            : codexInstructions,
-        config: CONFINED_CONFIG,
+        // An owner-only session's note says it has a shell, as Kin's does; the eval runs none, so
+        // it keeps the session's web search and no sub-agents nobody here would answer.
+        baseInstructions: ownerSession ? codexFullSessionInstructions : codexInstructions,
+        config: ownerSession
+          ? { ...FULL_SESSION_CONFIG, "agents.enabled": false }
+          : CONFINED_CONFIG,
         namespace: APP_SERVER_NAMESPACE,
         tools: t3.map((tool) => ({
           name: tool.name.replace(T3_PREFIX, ""),
@@ -2891,7 +2894,7 @@ export const summarize = (
     `- Pass: ${percent(passRate(rows))} of ${finished} samples (${sampleCount("pass")} pass, ${sampleCount("margin")} within margin, ${sampleCount("fail")} fail).`,
     `- Cases: ${caseCount("pass")} pass, ${caseCount("margin")} pass within margin, ${caseCount("fail")} fail.`,
     ...(errors.length > 0 ? [errorNote] : []),
-    `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample${codex ? ", at OpenAI's API prices; the run itself bills the ChatGPT sign-in (`--harness app-server`) or the `vibeproxy` in `~/.codex/config.toml`" : ""}.`,
+    `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample${codex ? ", at OpenAI's API prices; the run itself bills whatever provider the Codex config (`CODEX_HOME`) selects" : ""}.`,
     `- Agent tokens: ${agent.tokens} ($${agent.cost.toFixed(2)}).`,
     ...latencyLine(rows),
     `- Shell simulator (${options.shellModel}) tokens: ${shell.tokens} (API-price estimate $${shell.cost.toFixed(2)}).`,
