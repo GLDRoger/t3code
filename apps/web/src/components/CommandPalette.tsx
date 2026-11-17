@@ -116,7 +116,7 @@ import {
   openKinLeadForm,
 } from "../kin/KinNewLeadButton";
 import { useKinPaletteHits } from "../kin/useKinDocs";
-import { useKinPaletteAgents, useOpenKinAgentPage } from "../kin/KinAgentPage";
+import { useKinPaletteAgents, useOpenKinAgentPage } from "../kin/kinAgentPageLink";
 import { useKinHost } from "../kin/useKinHost";
 import { useKinListSwitch } from "../kin/useKinListSwitch";
 import { kinDestinationLink, kinListShownAt, kinShownDestinationsAtom } from "../kin/kinListSwitch";

@@ -34,7 +34,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState } from "react";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { prefillKinDraft } from "./KinChatView";
+import { prefillKinDraft } from "./kinDraft";
 import { kinClient } from "./kinClient";
 import { useKinInbox } from "./useKinHost";
 import { kinSchedule, useKinPagedList, type KinWorkTarget } from "./useKinWork";
