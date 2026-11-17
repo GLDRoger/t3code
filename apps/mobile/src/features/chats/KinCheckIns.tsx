@@ -74,6 +74,7 @@ export function KinCheckInsSection(props: Target) {
               key={checkIn.scheduleId}
               icon={checkIn.on ? "clock" : "moon"}
               label={checkIn.title}
+              valuePosition="below"
               value={
                 checkIn.on
                   ? kinCheckInLine(checkIn)
