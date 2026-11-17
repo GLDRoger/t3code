@@ -1,10 +1,10 @@
 /**
  * Kin's one way to write a day and a time, in the reader's zone. The locale picks the clock (CLDR:
- * 24-hour en-GB, 12-hour en-US and en-IN). Clients use the device's locale; the server writes in
- * `KIN_TEXT_LOCALE`, since no profile names a locale.
+ * 24-hour en-GB, 12-hour en-US and en-IN). Clients use the device's locale; the server writes a
+ * company's people's text in its region's (`textLocale`, server work/companyProfile.ts).
  */
 
-/** The locale of text the server writes for people and agents. */
+/** The locale of agent-facing text, and of people's text for a company whose region Kin has no row for. */
 export const KIN_TEXT_LOCALE = "en-GB";
 
 const STYLES = {

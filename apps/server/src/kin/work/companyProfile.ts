@@ -1,5 +1,6 @@
 import {
   KIN_DEFAULT_HOME_CURRENCY,
+  KIN_TEXT_LOCALE,
   KinChatError,
   KinCompanyLogo,
   type KinCompanyProfile,
@@ -17,6 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { iso } from "./recordRows.ts";
+import { companyRegion } from "./statements/statementRegion.ts";
 
 /**
  * The company profile: legal name, address, tax ids, bank details, logo and brand, one sensitive
@@ -85,6 +87,21 @@ export const homeCurrency = Effect.fn("KinCompanyProfile.homeCurrency")(function
         onNone: () => KIN_DEFAULT_HOME_CURRENCY,
         onSome: (profile) => profile.homeCurrency,
       });
+});
+
+/**
+ * The locale of what the server writes for this company's people: its region's (en-IN and a
+ * 12-hour clock in India, en-GB in the UK, en-US in the US), `KIN_TEXT_LOCALE` where no region
+ * matches its home currency. Agent-facing text stays in `KIN_TEXT_LOCALE` so prompts don't move.
+ */
+/** The zone a person reads a time in and the locale the company's text is written in. */
+export interface TextClock {
+  readonly zone: string;
+  readonly locale: string;
+}
+
+export const textLocale = Effect.fn("KinCompanyProfile.textLocale")(function* (orgId: KinOrgId) {
+  return companyRegion(yield* homeCurrency(orgId))?.locale ?? KIN_TEXT_LOCALE;
 });
 
 /** Only the fields given change. A `rev` other than the stored one is refused unless nothing would change. */

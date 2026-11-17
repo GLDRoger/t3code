@@ -1,6 +1,9 @@
 import {
+  KIN_SIGN_IN_CLIENTS,
   KinChatError,
   KinConnectionKey,
+  kinIsOwnerClientService,
+  type KinOwnerClientService,
   type KinConnection,
   type KinConnectionAcceptInput,
   type KinConnectionAddInput,
@@ -76,12 +79,11 @@ export const KIN_CONNECTIONS_COPY = {
   redirectLabel: "Return address",
   copy: "Copy",
   copied: "Copied",
-  clientIdLabel: "Client ID",
-  clientSecretLabel: "Client secret",
   saveClient: "Save and continue",
-  ownClient: "This account is in another Google Workspace",
+  ownClient: "This account signs in with its own client",
   ownClientDetail:
-    "If that Workspace keeps its sign-in client to itself, paste its client here. Only this account uses it.",
+    "If this account's organization keeps its sign-in client to itself, paste that client here. Only this account uses it.",
+  usualClient: "Use the usual client",
   accountTitle: "Account",
   noteLabel: "What it's for",
   notePlaceholder: "For example: client work, or personal, never send from here",
@@ -375,7 +377,7 @@ export interface KinConnectionDraft {
   readonly key: string;
   readonly org: string;
   readonly secretUrl: string;
-  /** Google: this account's own client, when its Workspace keeps one to itself. */
+  /** This account's own client, where its service allows one (`accountClient`). */
   readonly clientId: string;
   readonly clientSecret: string;
 }
@@ -403,10 +405,17 @@ export const kinServiceNote = (service: KinConnectionService) =>
         ? KIN_CONNECTIONS_COPY.signIn
         : undefined;
 
-/** A service the owner signs in to through an app he set up there once. */
-export type KinOwnerClientService = KinConnectionSetSignInClientInput["service"];
-export const kinIsOwnerClientService = (service: string): service is KinOwnerClientService =>
-  service === "google" || service === "microsoft";
+export { kinIsOwnerClientService, type KinOwnerClientService };
+
+/** One account's own client is offered exactly where its service's rule allows one. */
+function accountClient(
+  service: KinOwnerClientService,
+  label: string = KIN_CONNECTIONS_COPY.ownClient,
+) {
+  return KIN_SIGN_IN_CLIENTS[service].accountClient
+    ? { label, detail: KIN_CONNECTIONS_COPY.ownClientDetail }
+    : null;
+}
 
 /** One step of a one-time setup; `address` steps end with the return address to paste. */
 export type KinSetupStep = { readonly text: string; readonly address: boolean };
@@ -424,12 +433,11 @@ export const KIN_OWNER_CLIENT_SETUP: Readonly<
       readonly steps: ReadonlyArray<KinSetupStep>;
       readonly clientIdLabel: string;
       readonly clientIdPlaceholder: string;
-      readonly clientId: RegExp;
-      readonly notClientId: string;
-      readonly secret: "required" | "optional";
       readonly secretLabel: string;
       readonly host: string;
       readonly changeClient: string;
+      /** What offers one account its own client, where the service allows one. */
+      readonly accountClient: { readonly label: string; readonly detail: string } | null;
     }
   >
 > = {
@@ -446,12 +454,10 @@ export const KIN_OWNER_CLIENT_SETUP: Readonly<
     ].map((text, index) => ({ text, address: index === 3 })),
     clientIdLabel: "Client ID",
     clientIdPlaceholder: "…apps.googleusercontent.com",
-    clientId: /\.apps\.googleusercontent\.com$/,
-    notClientId: "The client ID ends in .apps.googleusercontent.com.",
-    secret: "required",
     secretLabel: "Client secret",
     host: "accounts.google.com",
     changeClient: "Use a different Google client",
+    accountClient: accountClient("google", "This account is in another Google Workspace"),
   },
   microsoft: {
     title: "Set up Microsoft once",
@@ -466,12 +472,10 @@ export const KIN_OWNER_CLIENT_SETUP: Readonly<
     ].map((text, index) => ({ text, address: index === 2 })),
     clientIdLabel: "Application (client) ID",
     clientIdPlaceholder: "00000000-0000-0000-0000-000000000000",
-    clientId: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-    notClientId: "The application ID looks like 00000000-0000-0000-0000-000000000000.",
-    secret: "optional",
     secretLabel: "Client secret, only if you made one",
     host: "login.microsoftonline.com",
     changeClient: "Use a different Microsoft app",
+    accountClient: accountClient("microsoft"),
   },
 };
 
@@ -487,12 +491,13 @@ export function kinSignInClientCheck(
   | { readonly ok: true; readonly input: KinConnectionSetSignInClientInput }
   | { readonly ok: false; readonly problem: string } {
   const setup = KIN_OWNER_CLIENT_SETUP[service];
+  const rule = KIN_SIGN_IN_CLIENTS[service];
   const id = clientId.trim();
   const secret = clientSecret.trim();
   if (id === "") return { ok: false, problem: `Paste the ${setup.clientIdLabel}.` };
-  if (secret === "" && setup.secret === "required")
+  if (secret === "" && rule.secret === "required")
     return { ok: false, problem: "Paste both the client ID and the client secret." };
-  if (!setup.clientId.test(id)) return { ok: false, problem: setup.notClientId };
+  if (!rule.clientId.test(id)) return { ok: false, problem: rule.notClientId };
   if (id.length > 512 || secret.length > 4096)
     return { ok: false, problem: "That's too long to be a sign-in client." };
   return {
@@ -519,11 +524,14 @@ export function kinSignInCheck(
     return { ok: false, problem: "That service connects with a key." };
   const clientId = draft.clientId.trim();
   const clientSecret = draft.clientSecret.trim();
-  const ownClient = draft.service === "google" && (clientId !== "" || clientSecret !== "");
+  const rule = kinIsOwnerClientService(draft.service)
+    ? KIN_SIGN_IN_CLIENTS[draft.service]
+    : undefined;
+  const ownClient = rule?.accountClient === true && (clientId !== "" || clientSecret !== "");
   if (ownClient) {
-    if (!/\.apps\.googleusercontent\.com$/.test(clientId))
-      return { ok: false, problem: "The client ID ends in .apps.googleusercontent.com." };
-    if (clientSecret === "") return { ok: false, problem: "Paste the client secret too." };
+    if (!rule.clientId.test(clientId)) return { ok: false, problem: rule.notClientId };
+    if (clientSecret === "" && rule.secret === "required")
+      return { ok: false, problem: "Paste the client secret too." };
   } else if (service.needsSetup) return { ok: false, problem: `Set up ${service.label} first.` };
   const label = draft.label.trim();
   const org = draft.org.trim();
@@ -548,7 +556,14 @@ export function kinSignInCheck(
       ...(secretUrl === "" || !service.fields.includes("secretUrl")
         ? {}
         : { secretUrl: makeSecret(secretUrl) }),
-      ...(ownClient ? { client: { clientId, clientSecret: makeSecret(clientSecret) } } : {}),
+      ...(ownClient
+        ? {
+            client: {
+              clientId,
+              ...(clientSecret === "" ? {} : { clientSecret: makeSecret(clientSecret) }),
+            },
+          }
+        : {}),
     },
   };
 }

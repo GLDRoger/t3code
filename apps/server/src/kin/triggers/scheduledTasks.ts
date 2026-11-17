@@ -15,7 +15,6 @@ import {
   type MemoryItemHead,
   kinScheduledTaskWidgetId,
   formatKinWhen,
-  KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -30,6 +29,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { textLocale } from "../work/companyProfile.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -74,8 +74,8 @@ const armed = (item: SyncItem) =>
   item.duplicate !== true;
 
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
-const clockTime = (ms: number) =>
-  formatKinWhen(ms, "time", { zone: KinSchedules.hostTimeZone(), locale: KIN_TEXT_LOCALE });
+const clockTime = (ms: number, locale: string) =>
+  formatKinWhen(ms, "time", { zone: KinSchedules.hostTimeZone(), locale });
 const encodeSchedule = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSchedule));
 const encodeSubject = Schema.encodeEffect(Schema.fromJsonString(KinTriggerSubject));
 const decodeCard = Schema.decodeUnknownEffect(KinScheduledTaskCard);
@@ -485,7 +485,10 @@ const make = Effect.gen(function* () {
               : {
                   at,
                   status: "posted",
-                  note: `${result.facts} open facts, ${result.outside} new outside; at ${clockTime(result.notBefore)}.`,
+                  note: `${result.facts} open facts, ${result.outside} new outside; at ${clockTime(
+                    result.notBefore,
+                    yield* textLocale(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+                  )}.`,
                 },
           );
           return yield* consume;

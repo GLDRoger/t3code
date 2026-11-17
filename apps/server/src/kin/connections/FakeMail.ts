@@ -46,10 +46,26 @@ export type FakeMailFile = {
   readonly data: string;
 };
 
+/** A calendar event as both vendors keep it; `repeats` makes it a weekly series of that many. */
+export type FakeMailEvent = {
+  readonly account: string;
+  readonly id: string;
+  readonly title: string;
+  readonly start: number;
+  readonly end: number;
+  readonly updated: number;
+  readonly state: "confirmed" | "cancelled" | "deleted";
+  readonly repeats?: number;
+  /** The fake's revision when it last changed: a delta round returns what moved past its own. */
+  readonly rev: number;
+};
+
 export type FakeMailState = {
   readonly accounts: Array<FakeMailAccount>;
   readonly messages: Array<FakeMailMessage>;
+  /** What Kin saved through a send card, as the vendor received it. */
   readonly events: Array<{ readonly account: string; readonly id: string; readonly json: unknown }>;
+  readonly calendar: Array<FakeMailEvent>;
   readonly codes: Record<string, { readonly address: string; readonly challenge: string }>;
   /** The scopes each account last granted: what its sign-in asked for. */
   readonly granted: Record<string, string>;
@@ -70,6 +86,7 @@ const emptyFakeMail = (): FakeMailState => ({
   accounts: [],
   messages: [],
   events: [],
+  calendar: [],
   codes: {},
   granted: {},
   drafts: {},
@@ -228,10 +245,28 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const down = new Set<string>();
   const setDown = (address: string, isDown: boolean) =>
     isDown ? void down.add(lower(address)) : void down.delete(lower(address));
-  const outage = (account: FakeMailAccount, request: Request) =>
-    request.method === "POST" && down.has(lower(account.address))
+  /** Every call for the account answers this HTTP status, as a refusal or a throttle does. */
+  const failing = new Map<string, number>();
+  const failWith = (address: string, status: number | null) =>
+    status === null
+      ? void failing.delete(lower(address))
+      : void failing.set(lower(address), status);
+  const outage = (account: FakeMailAccount, request: Request) => {
+    const status = failing.get(lower(account.address));
+    if (status !== undefined) return json({ error: { code: status } }, status);
+    return request.method === "POST" && down.has(lower(account.address))
       ? json({ error: { code: 503, message: "The service is unavailable." } }, 503)
       : undefined;
+  };
+
+  /** Adds or changes an event on an account's calendar; deleting keeps it, as a tombstone. */
+  const putEvent = (event: Omit<FakeMailEvent, "rev" | "state"> & Partial<FakeMailEvent>) =>
+    edit((state) => {
+      const at = state.calendar.findIndex((one) => one.id === event.id);
+      const next: FakeMailEvent = { state: "confirmed", ...event, rev: ++state.seq };
+      if (at >= 0) state.calendar[at] = next;
+      else state.calendar.push(next);
+    });
 
   /** Mail arriving at `to`, one of an account's addresses, in a new thread or an existing one. */
   const deliver = (input: {
@@ -391,6 +426,69 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     },
   });
 
+  const WEEK = 7 * 24 * 60 * 60 * 1000;
+  type Occurrence = {
+    readonly event: FakeMailEvent;
+    readonly id: string;
+    readonly start: number;
+    readonly end: number;
+    readonly kind: "single" | "master" | "instance";
+  };
+  /** An account's events, each series as its master or as one item per week. */
+  const occurrences = (state: FakeMailState, account: FakeMailAccount, expand: boolean) =>
+    state.calendar
+      .filter((event) => event.account === account.address)
+      .flatMap((event): ReadonlyArray<Occurrence> =>
+        event.repeats === undefined
+          ? [{ event, id: event.id, start: event.start, end: event.end, kind: "single" }]
+          : expand
+            ? Array.from({ length: event.repeats }, (_, week) => ({
+                event,
+                id: `${event.id}_${week}`,
+                start: event.start + week * WEEK,
+                end: event.end + week * WEEK,
+                kind: "instance" as const,
+              }))
+            : [{ event, id: event.id, start: event.start, end: event.end, kind: "master" }],
+      );
+  const googleEvent = (item: Occurrence) => ({
+    kind: "calendar#event",
+    id: item.id,
+    status: item.event.state === "confirmed" ? "confirmed" : "cancelled",
+    summary: item.event.title,
+    start: { dateTime: iso(item.start) },
+    end: { dateTime: iso(item.end) },
+    updated: iso(item.event.updated),
+    organizer: { email: item.event.account },
+    attendees: [],
+    ...(item.kind === "instance"
+      ? { recurringEventId: item.event.id, originalStartTime: { dateTime: iso(item.start) } }
+      : item.kind === "master"
+        ? { recurrence: [`RRULE:FREQ=WEEKLY;COUNT=${item.event.repeats}`] }
+        : {}),
+  });
+  const graphTime = (ms: number) => ({
+    dateTime: iso(ms).replace(/\.\d+Z$/, ".0000000"),
+    timeZone: "UTC",
+  });
+  const graphEvent = (item: Occurrence) => ({
+    "@odata.type": "#microsoft.graph.event",
+    id: item.id,
+    subject: item.event.title,
+    isCancelled: item.event.state === "cancelled",
+    isAllDay: false,
+    start: graphTime(item.start),
+    end: graphTime(item.end),
+    lastModifiedDateTime: iso(item.event.updated),
+    type: { single: "singleInstance", master: "seriesMaster", instance: "occurrence" }[item.kind],
+    seriesMasterId: item.kind === "instance" ? item.event.id : null,
+    organizer: { emailAddress: { address: item.event.account } },
+    attendees: [],
+    location: { displayName: "" },
+    bodyPreview: "",
+    body: { contentType: "html", content: "" },
+  });
+
   const gmail = async (request: Request, url: URL) => {
     const body = request.method === "GET" ? undefined : await request.json();
     return edit((state) => {
@@ -447,8 +545,25 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         );
         return json({ id: message.id, threadId: message.threadId });
       }
-      if (/^\/calendar\/v3\/calendars\/[^/]+\/events/.test(path)) {
-        if (request.method === "GET") return json({ items: [] });
+      const eventPath = /^\/calendar\/v3\/calendars\/[^/]+\/events(?:\/([^/]+))?$/.exec(path);
+      if (eventPath !== null && request.method === "GET") {
+        const params = url.searchParams;
+        const singles = params.get("singleEvents") === "true";
+        const items = occurrences(state, account, singles).filter(
+          ({ event, start, end }) =>
+            (params.get("showDeleted") === "true" || event.state === "confirmed") &&
+            event.updated >= Date.parse(params.get("updatedMin") ?? "1970-01-01T00:00:00Z") &&
+            end > Date.parse(params.get("timeMin") ?? "1970-01-01T00:00:00Z") &&
+            start < Date.parse(params.get("timeMax") ?? "9999-01-01T00:00:00Z") &&
+            lower(event.title).includes(lower(params.get("q") ?? "")),
+        );
+        if (eventPath[1] === undefined) return json({ items: items.map(googleEvent) });
+        const one = occurrences(state, account, true).find(
+          (item) => item.id === decodeURIComponent(eventPath[1]!),
+        );
+        return one === undefined ? json({ error: { code: 404 } }, 404) : json(googleEvent(one));
+      }
+      if (eventPath !== null) {
         const id = next(state, "fev");
         state.events.push({ account: account.address, id, json: body });
         return json({ id });
@@ -564,8 +679,66 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         record(state, account, mime(), answered.threadId);
         return new Response(null, { status: 202 });
       }
+      if (path === `${GRAPH}/calendarView/delta`) {
+        const since = url.searchParams.get("$deltatoken");
+        const from = Date.parse(url.searchParams.get("startDateTime") ?? "1970-01-01T00:00:00Z");
+        const until = Date.parse(url.searchParams.get("endDateTime") ?? "9999-01-01T00:00:00Z");
+        const rounds = since === null ? undefined : Number(since);
+        const value = occurrences(state, account, true)
+          .filter(({ event, start, end }) =>
+            rounds === undefined
+              ? event.state !== "deleted" && end > from && start < until
+              : event.rev > rounds,
+          )
+          .map((item) =>
+            item.event.state === "deleted"
+              ? {
+                  "@odata.type": "#microsoft.graph.event",
+                  id: item.id,
+                  "@removed": { reason: "deleted" },
+                }
+              : graphEvent(item),
+          );
+        return json({
+          "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(event)",
+          "@odata.deltaLink": `https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=${state.seq}`,
+          value,
+        });
+      }
+      if (/\/calendarView$/.test(path)) {
+        const from = Date.parse(url.searchParams.get("startDateTime") ?? "1970-01-01T00:00:00Z");
+        const until = Date.parse(url.searchParams.get("endDateTime") ?? "9999-01-01T00:00:00Z");
+        return json({
+          value: occurrences(state, account, true)
+            .filter(
+              ({ event, start, end }) => event.state !== "deleted" && end > from && start < until,
+            )
+            .map(graphEvent),
+        });
+      }
+      const graphEventId = /\/events\/([^/]+)$/.exec(path)?.[1];
+      if (graphEventId !== undefined && request.method === "GET") {
+        const one = occurrences(state, account, true).find(
+          (item) => item.id === decodeURIComponent(graphEventId) && item.event.state !== "deleted",
+        );
+        return one === undefined
+          ? json({ error: { code: "ErrorItemNotFound" } }, 404)
+          : json(graphEvent(one));
+      }
       if (/\/events$/.test(path)) {
-        if (request.method === "GET") return json({ value: [] });
+        if (request.method === "GET") {
+          // A list of events holds single ones and each series' master, never its occurrences.
+          const since = odata(filter, "lastModifiedDateTime");
+          return json({
+            value: occurrences(state, account, false)
+              .filter(
+                ({ event }) =>
+                  event.state !== "deleted" &&
+                  (since === undefined || event.updated >= Date.parse(since)),
+              )
+              .map(graphEvent),
+          });
+        }
         const id = next(state, "fev");
         state.events.push({ account: account.address, id, json: JSON.parse(text) });
         return json({ id }, 201);
@@ -590,6 +763,17 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       { preconnect() {} },
     ) satisfies typeof globalThis.fetch;
 
-  return { addAccount, approve, setExpired, setDown, deliver, sent, handle, load: store.load };
+  return {
+    addAccount,
+    approve,
+    setExpired,
+    setDown,
+    failWith,
+    deliver,
+    putEvent,
+    sent,
+    handle,
+    load: store.load,
+  };
 };
 export type FakeMail = ReturnType<typeof makeFakeMail>;

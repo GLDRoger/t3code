@@ -72,10 +72,12 @@ function AddForm(props: {
   const custom = shown.service === "custom";
   const signIn = service?.connect === "sign_in";
   const [changingClient, setChangingClient] = useState(false);
+  const [ownClient, setOwnClient] = useState(false);
   const ownerClient =
     service !== undefined && kinIsOwnerClientService(service.service) ? service.service : null;
-  const setup = signIn && (service?.needsSetup === true || changingClient);
+  const setup = signIn && !ownClient && (service?.needsSetup === true || changingClient);
   const clientSetup = ownerClient === null ? null : KIN_OWNER_CLIENT_SETUP[ownerClient];
+  const accountClient = signIn ? (clientSetup?.accountClient ?? null) : null;
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
 
@@ -152,6 +154,7 @@ function AddForm(props: {
                     onPress={() => {
                       setProblem(null);
                       setChangingClient(false);
+                      setOwnClient(false);
                       setDraft({ ...kinConnectionDraft(entry.service), key: shown.key });
                     }}
                   />
@@ -277,13 +280,55 @@ function AddForm(props: {
                     />
                   </ListSection>
                 </>
-              ) : signIn && clientSetup !== null ? (
+              ) : signIn && clientSetup !== null && !ownClient ? (
                 <ListSection>
                   <ListActionRow
                     label={clientSetup.changeClient}
                     onPress={() => setChangingClient(true)}
                   />
+                  {accountClient === null ? null : (
+                    <ListActionRow label={accountClient.label} onPress={() => setOwnClient(true)} />
+                  )}
                 </ListSection>
+              ) : null}
+              {accountClient !== null && clientSetup !== null && ownClient ? (
+                <>
+                  <Text textRole="body" className="px-2 text-foreground-muted">
+                    {accountClient.detail}
+                  </Text>
+                  <Field label={clientSetup.clientIdLabel}>
+                    <TextInput
+                      accessibilityLabel={clientSetup.clientIdLabel}
+                      value={shown.clientId}
+                      editable={!busy}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      placeholder={clientSetup.clientIdPlaceholder}
+                      placeholderTextColorClassName="accent-placeholder"
+                      onChangeText={(clientId) => setDraft({ ...shown, clientId })}
+                      className="min-h-8 font-sans text-base text-foreground"
+                    />
+                  </Field>
+                  <Field label={clientSetup.secretLabel} hint={COPY.keyHint}>
+                    <SecretTextInput
+                      accessibilityLabel={clientSetup.secretLabel}
+                      placeholder={clientSetup.secretLabel}
+                      value={shown.clientSecret}
+                      editable={!busy}
+                      onChangeText={(clientSecret) => setDraft({ ...shown, clientSecret })}
+                      onSubmitEditing={() => void connect()}
+                    />
+                  </Field>
+                  <ListSection>
+                    <ListActionRow
+                      label={COPY.usualClient}
+                      onPress={() => {
+                        setOwnClient(false);
+                        setDraft({ ...shown, clientId: "", clientSecret: "" });
+                      }}
+                    />
+                  </ListSection>
+                </>
               ) : null}
             </>
           )}
