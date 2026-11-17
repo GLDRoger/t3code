@@ -393,6 +393,25 @@ export const KinGitHubOwnerUse = Schema.Struct({
 });
 export type KinGitHubOwnerUse = typeof KinGitHubOwnerUse.Type;
 
+/** One GitHub account with watched repos, and where Kin's App stands on it. */
+export const KinGitHubAppAccount = Schema.Struct({
+  account: TrimmedNonEmptyString,
+  organisation: Schema.Boolean,
+  watched: NonNegativeInt,
+  /** Watched repos of this account the App reaches. */
+  covered: NonNegativeInt,
+  installation: Schema.Literals(["all", "selected", "none", "suspended"]),
+  /** The installation's page on GitHub, where its repos are picked or it is unsuspended. */
+  settingsUrl: Schema.NullOr(Schema.String),
+  /** GitHub's install page for this account, when there is no installation. */
+  installUrl: Schema.NullOr(Schema.String),
+  /** Whether the connected login may change the App here: null when GitHub didn't say. */
+  canManage: Schema.NullOr(Schema.Boolean),
+  /** False when the App is private to another account, so GitHub can't install it here. */
+  installable: Schema.Boolean,
+});
+export type KinGitHubAppAccount = typeof KinGitHubAppAccount.Type;
+
 /** Who agents act as on GitHub: Kin's GitHub App where it is installed, else the owner. */
 export const KinGitHubAgents = Schema.Struct({
   as: Schema.Literals(["app", "owner"]),
@@ -409,6 +428,11 @@ export const KinGitHubAgents = Schema.Struct({
   without: Schema.Array(Schema.String),
   /** The latest commands agents ran as the owner, newest first; at most 5. */
   ownerUses: Schema.Array(KinGitHubOwnerUse),
+  /** One row per account with watched repos; absent when Kin can't tell the accounts. */
+  accounts: Schema.optional(Schema.Array(KinGitHubAppAccount)),
+  /** The account that owns the App, and its settings page when the login can open it. */
+  appOwner: Schema.optional(Schema.String),
+  appSettingsUrl: Schema.optional(Schema.String),
 });
 export type KinGitHubAgents = typeof KinGitHubAgents.Type;
 

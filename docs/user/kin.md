@@ -339,9 +339,16 @@ If your Kin has its own GitHub App, agents' commits, pushes, pull requests, comm
 out as that App, so blame and history show what an agent did; each commit carries the agent's name
 (`Kin-Agent: Tech lead`). On repos the App isn't installed on, and without an App, they go out as
 you. When GitHub refuses the App, or you say "do it as me", the agent runs that one command as you
-and says so. **Settings → Connections → GitHub** shows who agents work as, how many watched repos
-have the App with a link to install it on more, and the last few things done as you. The App can't
-approve, merge or change a repo's settings. Your host guide says how to set one up.
+and says so. Memory commits are by the App too. The App can't approve, merge or change a repo's
+settings. Your host guide says how to set one up.
+
+**Settings → Connections → GitHub** has a row for each of your accounts and organizations with
+watched repos, saying whether the App is on all its repositories, only some, or none. To cover
+everything, tap the row's button: it opens the exact GitHub page, where you choose **All
+repositories** and save; repos you make later are covered too, and the row updates within a minute.
+Only an organization's owners can put the App on it; if you aren't one, GitHub sends them your
+request. An App that is private to one account can't go on another until you make it public in its
+settings on GitHub. The section also lists the last few things done as you.
 
 #### When things happen on GitHub
 

@@ -30,7 +30,7 @@ import {
   type ThreadSnapshot,
   type Trigger,
 } from "./githubTriggers.ts";
-import { companyRepo, repoList, watchRow } from "./githubWatchStore.ts";
+import { companyRepo, type KnownRepo, repoList, watchRow } from "./githubWatchStore.ts";
 import { gitHubApp } from "./KinGitHubApp.ts";
 
 /**
@@ -168,9 +168,14 @@ const OwnEvent = Schema.Struct({
   }),
 });
 const RepoEntry = Schema.Struct({
+  id: Schema.optional(Schema.Int),
   full_name: Schema.String,
   fork: Schema.Boolean,
-  owner: Login,
+  owner: Schema.Struct({
+    login: Schema.String,
+    id: Schema.optional(Schema.Int),
+    type: Schema.optional(Schema.String),
+  }),
   permissions: Schema.optional(Schema.Struct({ push: Schema.Boolean })),
 });
 const Issue = Schema.Struct({
@@ -215,6 +220,11 @@ const CheckRuns = Schema.Struct({
 const decodeNotifications = Schema.decodeUnknownOption(Schema.Array(Notification));
 const decodeEvents = Schema.decodeUnknownOption(Schema.Array(OwnEvent));
 const decodeRepos = Schema.decodeUnknownOption(Schema.Array(RepoEntry));
+const decodeMemberships = Schema.decodeUnknownOption(
+  Schema.Array(
+    Schema.Struct({ role: Schema.String, organization: Schema.Struct({ login: Schema.String }) }),
+  ),
+);
 const decodeIssue = Schema.decodeUnknownOption(Issue);
 const decodePull = Schema.decodeUnknownOption(Pull);
 const decodeComments = Schema.decodeUnknownOption(Schema.Array(Comment));
@@ -276,7 +286,18 @@ export const make = Effect.gen(function* () {
     now: number,
   ) {
     const owners = new Set([account.login, ...account.orgs].map((name) => name.toLowerCase()));
-    const found: Array<{ repo: string; fork: boolean }> = [];
+    // Only an organisation's owners can put an App on it; unknown when GitHub won't say.
+    const memberships = yield* get("user/memberships/orgs?state=active&per_page=100");
+    const roles = memberships.status === 200 ? decodeMemberships(memberships.body) : Option.none();
+    const ownsOrg = (login: string) =>
+      Option.map(roles, (list) =>
+        list.some(
+          (entry) =>
+            entry.role === "admin" &&
+            entry.organization.login.toLowerCase() === login.toLowerCase(),
+        ),
+      ).pipe(Option.getOrUndefined);
+    const found: Array<KnownRepo> = [];
     for (let page = 1; page <= 5; page++) {
       const answer = yield* get(
         `user/repos?per_page=100&page=${page}&affiliation=owner,organization_member&sort=pushed`,
@@ -285,7 +306,17 @@ export const make = Effect.gen(function* () {
       if (Option.isNone(repos)) return answer;
       for (const repo of repos.value)
         if (repo.permissions?.push !== false && owners.has(repo.owner.login.toLowerCase()))
-          found.push({ repo: repo.full_name, fork: repo.fork });
+          found.push({
+            repo: repo.full_name,
+            fork: repo.fork,
+            ...(repo.id === undefined ? {} : { id: repo.id }),
+            ...(repo.owner.id === undefined ? {} : { ownerId: repo.owner.id }),
+            ...(repo.owner.type === "Organization"
+              ? { ownerOrg: true, ownerAdmin: ownsOrg(repo.owner.login) }
+              : repo.owner.type === "User"
+                ? { ownerOrg: false }
+                : {}),
+          });
       if (repos.value.length < 100) break;
     }
     yield* sql`UPDATE kin_github_watch SET repos_json = ${toJson(found)},

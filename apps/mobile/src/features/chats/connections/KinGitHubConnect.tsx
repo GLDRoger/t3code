@@ -7,6 +7,8 @@ import {
   KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_COPY as COPY,
   KIN_GITHUB_WATCH_COPY as WATCH,
+  kinGitHubAccountRows,
+  kinGitHubAccountsHint,
   kinGitHubAgentsView,
   kinGitHubRow,
   kinGitHubSheet,
@@ -154,6 +156,8 @@ export function KinGitHubSection(props: {
 function AgentIdentity(props: { readonly agents: KinGitHubAgents; readonly login: string | null }) {
   const view = kinGitHubAgentsView(props.agents, props.login, useNowMinuteMs());
   const installUrl = view.installUrl;
+  const rows = kinGitHubAccountRows(props.agents);
+  const hint = kinGitHubAccountsHint(rows);
   return (
     <>
       <ListSection title={AGENTS.title} footer={view.detail}>
@@ -167,6 +171,27 @@ function AgentIdentity(props: { readonly agents: KinGitHubAgents; readonly login
           </View>
         )}
       </ListSection>
+      {rows.length === 0 ? null : (
+        <ListSection title={AGENTS.accountsTitle} {...(hint === null ? {} : { footer: hint })}>
+          {rows.map((row, index) => {
+            const action = row.action;
+            return (
+              <View
+                key={row.key}
+                className={index === 0 ? undefined : "border-t border-border-subtle"}
+              >
+                <ListRowLayout label={row.account} detail={row.label} description={row.detail} />
+                {action === null ? null : (
+                  <ListActionRow
+                    label={action.label}
+                    onPress={() => void Linking.openURL(action.url)}
+                  />
+                )}
+              </View>
+            );
+          })}
+        </ListSection>
+      )}
       {view.uses.length === 0 ? null : (
         <ListSection title={AGENTS.usesTitle}>
           {view.uses.map((use, index) => (

@@ -6,6 +6,8 @@ import {
   KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_COPY as COPY,
   KIN_GITHUB_WATCH_COPY as WATCH,
+  kinGitHubAccountRows,
+  kinGitHubAccountsHint,
   kinGitHubAgentsView,
   kinGitHubRow,
   kinGitHubSheet,
@@ -172,12 +174,47 @@ function AgentIdentity(props: {
 }) {
   const now = useNowMinuteMs();
   const view = kinGitHubAgentsView(props.agents, props.status.account?.login ?? null, now);
+  const rows = kinGitHubAccountRows(props.agents);
+  const hint = kinGitHubAccountsHint(rows);
   return (
     <div className="flex flex-col gap-3 border-t px-4 py-3">
       <div className="flex flex-col gap-1">
         <p className="text-sm font-medium">{view.headline}</p>
         <p className="text-sm text-muted-foreground">{view.detail}</p>
       </div>
+      {rows.length === 0 ? null : (
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-medium text-muted-foreground">{AGENTS.accountsTitle}</p>
+          <ul className="flex flex-col divide-y rounded-md border">
+            {rows.map((row) => (
+              <li
+                key={row.key}
+                className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+              >
+                <div className="flex min-w-0 flex-col gap-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="truncate text-sm font-medium">{row.account}</span>
+                    <Badge variant={TONE_BADGE[row.tone]}>{row.label}</Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{row.detail}</p>
+                </div>
+                {row.action === null ? null : (
+                  <div className="shrink-0">
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      render={<a href={row.action.url} target="_blank" rel="noreferrer noopener" />}
+                    >
+                      {row.action.label}
+                    </Button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+          {hint === null ? null : <p className="text-xs text-muted-foreground">{hint}</p>}
+        </div>
+      )}
       {view.installUrl === null ? null : (
         <div>
           <Button

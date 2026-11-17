@@ -5,6 +5,7 @@ import * as TaskCardUpdater from "./chat/TaskCardUpdater.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as KinEnabled from "./KinEnabled.ts";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/http/HttpRouter";
@@ -39,6 +40,7 @@ import * as Render from "./gendocs/render.ts";
 import * as Toolchain from "./gendocs/toolchain.ts";
 import * as GhTool from "./connections/ghTool.ts";
 import * as GitHubLogin from "./connections/GitHubLogin.ts";
+import { devAppStandIn } from "./github/devAppStandIn.ts";
 import * as KinGitHubApp from "./github/KinGitHubApp.ts";
 import * as Keychain from "./github/Keychain.ts";
 import * as AgentSession from "./lead/AgentSession.ts";
@@ -139,8 +141,18 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           // Kin's GitHub App: the identity agents' shells and Kin's own GitHub writes use.
           Layer.provideMerge(
             KinGitHubApp.layer.pipe(
-              Layer.provide(Keychain.layer),
-              Layer.provide(FetchHttpClient.layer),
+              Layer.provide(
+                Layer.unwrap(
+                  Config.String("KIN_DEV_FAKE_GITHUB").pipe(
+                    Config.withDefault(""),
+                    Effect.map((fake) =>
+                      fake === ""
+                        ? Layer.merge(Keychain.layer, FetchHttpClient.layer)
+                        : devAppStandIn(fake),
+                    ),
+                  ),
+                ),
+              ),
             ),
           ),
           Layer.provideMerge(
