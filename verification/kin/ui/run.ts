@@ -191,6 +191,8 @@ try {
           "--instrument-javascript",
           "",
           ...(args.headed ? [] : ["--headless"]),
+          // Chromium refuses to start as root with its sandbox on (a container or WSL runner).
+          ...(process.getuid?.() === 0 ? ["--no-sandbox"] : []),
         ],
         { stdio: ["ignore", log, log] },
       ).on("exit", (c) => resolve(c ?? 1));

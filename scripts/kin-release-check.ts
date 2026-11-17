@@ -5,6 +5,10 @@
 //
 //   node scripts/kin-release-check.ts [--quick|--full] [--against <commit|findings.json>] [--out <dir>]
 //        [--base <ref>] [--only <stage,...>] [--keep-going] [--fuzz-time 2m] [--keep-traces]
+//        [--lifecycle-workers N] [--here]
+//   With KIN_RELEASE_REMOTE set to an ssh host, the check runs there through
+//   KIN_RELEASE_REMOTE_COMMAND (scripts/kin-release-remote.sh) and falls back to this machine when
+//   that one is unreachable, busy or can't fetch the commit. --here always runs it here.
 //   node scripts/kin-release-check.ts --mark-released <commit> [--from <findings.json>]
 //
 // Outputs (findings.json, summary.md, report.html, logs) go to --out, by default
@@ -123,6 +127,13 @@ export const gates = (findingItem: Finding, isNew: boolean) =>
 const git = (...args: string[]) =>
   NodeChildProcess.execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
 const short = (sha: string) => sha.slice(0, 12);
+const fixtureOf = (sha: string) => NodePath.join(checkDir(), short(sha), "fixture");
+/** Each worker runs a server, a web build and a Chrome per person: about three cores each. */
+export const lifecycleWorkersOf = (flag: string | undefined) => {
+  const asked = flag === undefined ? Number.NaN : Number(flag);
+  if (Number.isInteger(asked) && asked >= 1) return asked;
+  return Math.min(4, Math.max(1, Math.floor(NodeOS.availableParallelism() / 3)));
+};
 const checkDir = () =>
   NodePath.resolve(
     process.env.KIN_RELEASE_CHECK_DIR ??
@@ -249,7 +260,10 @@ interface Context {
   readonly previousRelease: string | undefined;
   readonly fuzzTime: string;
   readonly keepTraces: boolean;
+  readonly lifecycleWorkers: number;
   readonly report: Findings;
+  /** Models `check:changed` already ran in this run's static stage, so `models` skips them. */
+  readonly modelsChecked: Set<string>;
 }
 
 const kv = (ctx: Context, stage: Stage, instance: string, ...args: string[]) =>
@@ -272,6 +286,8 @@ const staticChecks = async (ctx: Context): Promise<Finding[]> => {
   const failed = [
     ...output.matchAll(/^\s+(FAIL|TIMEOUT)\s+(.+?)\s+(?:[\d.]+s|killed after \d+s)$/gm),
   ].map(([, outcome, step]) => finding("static", "check:changed", step!, "-", outcome!));
+  for (const [, name] of output.matchAll(/^\s+(?:pass|FAIL)\s+kin model (\w+)\s/gm))
+    ctx.modelsChecked.add(name!);
   if (code !== 0 && failed.length === 0)
     failed.push(
       finding(
@@ -285,9 +301,11 @@ const staticChecks = async (ctx: Context): Promise<Finding[]> => {
   return failed;
 };
 
-const models = async (ctx: Context): Promise<Finding[]> => {
+const models = async (ctx: Context): Promise<Finding[] | string> => {
   const found: Finding[] = [];
-  for (const name of MODELS) {
+  const left = MODELS.filter((name) => !ctx.modelsChecked.has(name));
+  if (left.length === 0) return `checked by static's check:changed: ${MODELS.join(", ")}`;
+  for (const name of left) {
     const { code, output } = await run(ctx.log("models"), process.execPath, [
       NodePath.join(ROOT, "scripts", "kin-model.ts"),
       name,
@@ -366,37 +384,73 @@ const lifecycleFindings = (stage: Stage, output: string, check: string) => {
   return found;
 };
 
+/** One instance per worker; the first keeps the company the next release's migration starts from. */
+export const lifecycleInstances = (workers: number) =>
+  Array.from({ length: workers }, (_, index) =>
+    index === 0 ? "release-check" : `release-check-${index + 1}`,
+  );
+
+/** Every lifecycle script, shared out to the workers through a queue: each takes the next one left. */
 const lifecycle = async (ctx: Context): Promise<Finding[]> => {
-  const instance = "release-check";
+  const instances = lifecycleInstances(ctx.lifecycleWorkers);
+  const queue = NodePath.join(ctx.out, "lifecycle-queue");
+  NodeFS.rmSync(queue, { recursive: true, force: true });
+  NodeFS.mkdirSync(NodePath.join(queue, "todo"), { recursive: true });
+  const listed = await run(ctx.log("lifecycle"), "bash", [
+    NodePath.join(LIFECYCLE, "run-all.sh"),
+    "--list",
+  ]);
+  listed.output
+    .split("\n")
+    .filter(Boolean)
+    .forEach((name, index) =>
+      NodeFS.writeFileSync(
+        NodePath.join(queue, "todo", `${String(index).padStart(3, "0")}-${name}`),
+        "",
+      ),
+    );
   try {
-    const { code, output } = await run(ctx.log("lifecycle"), "bash", [
-      NodePath.join(LIFECYCLE, "run-all.sh"),
-      "--instance",
-      instance,
-    ]);
+    const ran = await Promise.all(
+      instances.map((instance) =>
+        run(NodePath.join(ctx.out, `lifecycle-${instance}.log`), "bash", [
+          NodePath.join(LIFECYCLE, "run-all.sh"),
+          "--instance",
+          instance,
+          "--queue",
+          queue,
+        ]),
+      ),
+    );
+    const output = ran.map((one) => one.output).join("\n");
+    NodeFS.appendFileSync(ctx.log("lifecycle"), output);
     const found = lifecycleFindings("lifecycle", output, "run-all");
-    if (code !== 0 && found.length === 0)
-      found.push(
-        finding(
-          "lifecycle",
-          "run-all",
-          "up",
-          "-",
-          output.trim().split("\n").at(-1) ?? `exit ${code}`,
-        ),
-      );
-    if (ctx.report.mode === "full") keepFixture(ctx, instance);
+    ran.forEach(({ code, output: own }, index) => {
+      if (code !== 0 && lifecycleFindings("lifecycle", own, "run-all").length === 0)
+        found.push(
+          finding(
+            "lifecycle",
+            "run-all",
+            "up",
+            "-",
+            `${instances[index]}: ${own.trim().split("\n").at(-1) ?? `exit ${code}`}`,
+          ),
+        );
+    });
+    const left = NodeFS.readdirSync(NodePath.join(queue, "todo"));
+    for (const file of left)
+      found.push(finding("lifecycle", "run-all", file.replace(/^\d+-/, ""), "-", "never ran"));
+    if (ctx.report.mode === "full") keepFixture(ctx, instances[0]!);
     return found;
   } finally {
-    await kv(ctx, "lifecycle", instance, "down", "--wipe");
+    for (const instance of instances) await kv(ctx, "lifecycle", instance, "down", "--wipe");
   }
 };
 
 const instanceHome = (name: string) => NodePath.join(ROOT, ".t3", "kin-verify", name);
 
-/** The lifecycle company after all ten scripts, kept outside git for the next release's migration check. */
+/** The first lifecycle instance's company after its scripts, kept outside git for the next release's migration check. */
 const keepFixture = (ctx: Context, instance: string) => {
-  const fixture = NodePath.join(checkDir(), short(ctx.sha), "fixture");
+  const fixture = fixtureOf(ctx.sha);
   NodeFS.rmSync(fixture, { recursive: true, force: true });
   NodeFS.cpSync(instanceHome(instance), fixture, {
     recursive: true,
@@ -478,7 +532,7 @@ const buildKinMigrationHead = () =>
 const migrate = async (ctx: Context): Promise<Finding[] | string> => {
   if (ctx.previousRelease === undefined)
     return "skipped: no previous release in ops/kin/releases.json";
-  const fixture = NodePath.join(checkDir(), short(ctx.previousRelease), "fixture");
+  const fixture = fixtureOf(ctx.previousRelease);
   if (!NodeFS.existsSync(NodePath.join(fixture, "userdata", "statev2.sqlite")))
     return `skipped: no fixture for ${short(ctx.previousRelease)} at ${fixture} (a --full run on that commit keeps one)`;
   const instance = "release-migrate";
@@ -683,7 +737,9 @@ const check = async (args: Record<string, string | boolean | undefined>) => {
     previousRelease,
     fuzzTime: (args["fuzz-time"] as string | undefined) ?? "2m",
     keepTraces: Boolean(args["keep-traces"]),
+    lifecycleWorkers: lifecycleWorkersOf(args["lifecycle-workers"] as string | undefined),
     report,
+    modelsChecked: new Set(),
   };
   const previousFingerprints = new Set(against.findings.map((one) => one.fingerprint));
   let stopped: string | undefined;
@@ -774,6 +830,118 @@ const markReleased = (commit: string, from: string | undefined) => {
   );
 };
 
+/** Exits of kin-release-remote.sh (busy, can't fetch, install failed) and of ssh (no connection). */
+const RUN_HERE_ON = new Set([75, 76, 77, 255]);
+const BETWEEN =
+  /@@kin-release-findings\n([\s\S]*?)\n@@kin-release-summary\n([\s\S]*?)\n@@kin-release-end/;
+
+/** The check on KIN_RELEASE_REMOTE over ssh; undefined when it should run on this machine instead. */
+const onRemote = async (
+  args: Record<string, string | boolean | undefined>,
+  argv: ReadonlyArray<string>,
+): Promise<number | undefined> => {
+  const host = process.env.KIN_RELEASE_REMOTE;
+  if (host === undefined || host === "" || args.here) return undefined;
+  const here = (why: string) => {
+    console.log(`[release-check] ${host}: ${why}; running on this machine`);
+    return undefined;
+  };
+  if (typeof args.against === "string" && NodeFS.existsSync(args.against))
+    return here("--against names a file on this machine");
+  if (git("status", "--porcelain", "--untracked-files=no") !== "")
+    return here("this checkout has uncommitted changes");
+  const passed = argv.filter(
+    (arg, index) => arg !== "--here" && arg !== "--out" && argv[index - 1] !== "--out",
+  );
+  if (passed.some((arg) => !/^[\w.,:=/@+-]+$/.test(arg)))
+    return here("an argument needs quoting over ssh");
+  const reach = NodeChildProcess.spawnSync(
+    "ssh",
+    ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "exit 0"],
+    { stdio: "ignore", timeout: 30_000 },
+  );
+  if (reach.status !== 0) return here("not reachable");
+  const sha = git("rev-parse", "HEAD");
+  const out = NodePath.resolve(
+    (args.out as string | undefined) ??
+      NodePath.join(checkDir(), short(sha), args.full ? "full" : "quick"),
+  );
+  refuseLive(out);
+  NodeFS.mkdirSync(out, { recursive: true });
+  const command =
+    process.env.KIN_RELEASE_REMOTE_COMMAND ?? "bash t3code/scripts/kin-release-remote.sh";
+  const ssh = (remote: string, input?: Buffer) =>
+    NodeChildProcess.spawnSync("ssh", ["-o", "BatchMode=yes", host, remote], {
+      input,
+      maxBuffer: 2 ** 31,
+      timeout: 600_000,
+    });
+  const previous = readRecord()
+    .filter((one) => one.commit !== sha)
+    .at(-1)?.commit;
+  if (args.full && previous !== undefined && NodeFS.existsSync(fixtureOf(previous))) {
+    const tarball = NodeChildProcess.spawnSync(
+      "tar",
+      ["--no-xattrs", "-C", NodePath.dirname(fixtureOf(previous)), "-czf", "-", "fixture"],
+      { maxBuffer: 2 ** 31 },
+    ).stdout;
+    if (ssh(`${command} --fixture-in ${previous}`, tarball).status !== 0)
+      console.log(
+        `[release-check] ${host}: couldn't take ${short(previous)}'s fixture; its migrate may skip`,
+      );
+  }
+  console.log(`[release-check] running on ${host}; this machine takes over if it can't`);
+  const { code, output } = await new Promise<Ran>((resolve) => {
+    const log = NodeFS.createWriteStream(NodePath.join(out, "remote.log"));
+    let text = "";
+    const child = NodeChildProcess.spawn(
+      "ssh",
+      [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        host,
+        [command, sha, ...passed].join(" "),
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    if (child.pid !== undefined) children.add(child.pid);
+    const take = (chunk: Buffer) => {
+      text += chunk.toString();
+      log.write(chunk);
+      if (!BETWEEN.test(text) && !text.includes("@@kin-release-findings"))
+        process.stdout.write(chunk);
+    };
+    child.stdout.on("data", take);
+    child.stderr.on("data", take);
+    child.on("close", (exit) => {
+      if (child.pid !== undefined) children.delete(child.pid);
+      log.end();
+      resolve({ code: exit ?? 255, output: text });
+    });
+  });
+  const found = BETWEEN.exec(output);
+  if (RUN_HERE_ON.has(code) || found === null)
+    return here(
+      `its run ended without results (exit ${code}; see ${NodePath.join(out, "remote.log")})`,
+    );
+  NodeFS.writeFileSync(NodePath.join(out, "findings.json"), `${found[1]!}\n`);
+  NodeFS.writeFileSync(NodePath.join(out, "summary.md"), `${found[2]!}\n`);
+  console.log(`  ${NodePath.join(out, "summary.md")} (from ${host})`);
+  if (args.full) {
+    const fixture = ssh(`${command} --fixture-out ${sha}`);
+    const unpacked =
+      fixture.status === 0 &&
+      (NodeFS.rmSync(fixtureOf(sha), { recursive: true, force: true }),
+      NodeChildProcess.spawnSync("tar", ["-C", NodePath.dirname(fixtureOf(sha)), "-xzf", "-"], {
+        input: fixture.stdout,
+      }).status === 0);
+    if (!unpacked) console.log(`[release-check] ${host}: no fixture came back for ${short(sha)}`);
+  }
+  return code;
+};
+
 if (import.meta.main) {
   const { values } = NodeUtil.parseArgs({
     options: {
@@ -786,6 +954,8 @@ if (import.meta.main) {
       "keep-going": { type: "boolean" },
       "keep-traces": { type: "boolean" },
       "fuzz-time": { type: "string" },
+      "lifecycle-workers": { type: "string" },
+      here: { type: "boolean" },
       "mark-released": { type: "string" },
       from: { type: "string" },
     },
@@ -793,7 +963,10 @@ if (import.meta.main) {
   for (const signal of ["SIGINT", "SIGTERM"] as const)
     process.on(signal, () => {
       stopChildren();
-      for (const instance of ["release-check", "release-migrate"])
+      for (const instance of [
+        ...lifecycleInstances(lifecycleWorkersOf(values["lifecycle-workers"])),
+        "release-migrate",
+      ])
         NodeChildProcess.spawnSync(
           process.execPath,
           [NodePath.join(ROOT, "scripts", "kin-verify.ts"), "--instance", instance, "down"],
@@ -803,7 +976,8 @@ if (import.meta.main) {
     });
   try {
     if (values["mark-released"]) markReleased(values["mark-released"], values.from);
-    else process.exitCode = await check(values);
+    else
+      process.exitCode = (await onRemote(values, process.argv.slice(2))) ?? (await check(values));
   } catch (error) {
     console.error(`kin-release-check: ${(error as Error).message}`);
     process.exitCode = 2;
