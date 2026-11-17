@@ -346,10 +346,11 @@ but GitHub would let them merge or approve: what stops an agent is its own `gh` 
 in a shell that can also read those tokens. To be sure the App changes no default branch, protect
 the branches from Kin, as below.
 
-**Settings → Connections → GitHub** says how many watched repos still let the App change their
-default branch, and each repo in the watched list says whether its branch is open to the App,
-protected by Kin, protected by your own rules, or why Kin can't tell (GitHub offers no protection on
-a private repo on its free plan, and only a repo's admins can see or set it). **Protect** on a repo,
+**Settings → Connections → GitHub** says how many watched repos have an unprotected default
+branch, and each repo in the watched list says whether its branch is unprotected (and whether the
+App is on that repo to change it), protected by Kin, protected by your own rules, not checked yet,
+or why Kin can't tell (GitHub offers no protection on a private repo on its free plan, and only a
+repo's admins can see or set it). Protecting a repo the App isn't on yet covers the day you add it. **Protect** on a repo,
 or **Protect all**, adds one ruleset on GitHub with your login: only the repo's admins (and an
 organization's owners) may update, delete or force-push the default branch. You keep merging your
 own pull requests and pushing as before; the App can't change the branch by any route, and no review

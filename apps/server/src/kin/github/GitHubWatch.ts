@@ -72,11 +72,25 @@ export interface ApiAnswer {
   readonly text: string;
 }
 
-/** `gh api -i` output: status line, headers, a blank line, then the body. */
-const parseGhApi = (out: string): ApiAnswer => {
-  const split = /\r?\n\r?\n/.exec(out);
-  const head = split === null ? out : out.slice(0, split.index);
-  const text = split === null ? "" : out.slice(split.index + split[0].length);
+const parseJson = (text: string): { readonly ok: boolean; readonly value: unknown } => {
+  try {
+    return { ok: true, value: text.trim() === "" ? null : JSON.parse(text) };
+  } catch {
+    return { ok: false, value: null };
+  }
+};
+
+/**
+ * `gh api -i` output: status line, headers, a blank line, then the body. Its stdout and stderr
+ * arrive together, and on an error gh writes `gh: <message> (HTTP <status>)` to stderr straight
+ * after the body with no newline, so the body is the JSON before the first such line.
+ */
+export const parseGhApi = (out: string): ApiAnswer => {
+  const start = out.search(/^HTTP\/\S+\s+\d{3}/m);
+  const response = start > 0 ? out.slice(start) : out;
+  const split = /\r?\n\r?\n/.exec(response);
+  const head = split === null ? response : response.slice(0, split.index);
+  const text = split === null ? "" : response.slice(split.index + split[0].length);
   const status = /^HTTP\/\S+\s+(\d{3})/.exec(head);
   if (status === null) return { status: 0, headers: {}, body: null, text: out };
   const headers: Record<string, string> = {};
@@ -84,13 +98,10 @@ const parseGhApi = (out: string): ApiAnswer => {
     const at = line.indexOf(":");
     if (at > 0) headers[line.slice(0, at).trim().toLowerCase()] = line.slice(at + 1).trim();
   }
-  let body: unknown = null;
-  try {
-    body = text.trim() === "" ? null : JSON.parse(text);
-  } catch {
-    body = null;
-  }
-  return { status: Number(status[1]), headers, body, text };
+  let body = parseJson(text);
+  for (let at = text.indexOf("gh: "); !body.ok && at >= 0; at = text.indexOf("gh: ", at + 1))
+    body = parseJson(text.slice(0, at));
+  return { status: Number(status[1]), headers, body: body.value, text };
 };
 
 export interface ApiRequest {
@@ -276,6 +287,8 @@ export const make = Effect.gen(function* () {
   const app = yield* gitHubApp;
   const config = yield* Effect.serviceOption(ServerConfig);
   const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
+  /** Orgs whose repos this server has read; the first look after a start reads them again. */
+  const reposReadSinceStart = new Set<KinOrgId>();
   /** What agents' shells sent this past week (`ghSign.ts`): their words, signed or not. */
   const agentPosts = Effect.gen(function* () {
     if (Option.isNone(config) || Option.isNone(fileSystem)) return undefined;
@@ -605,11 +618,17 @@ export const make = Effect.gen(function* () {
     const factsMissing = (yield* knownRepos(orgId)).some(
       (entry) => entry.id === undefined || entry.branch === undefined,
     );
-    if (row.reposAt === null || now - row.reposAt > REPOS_EVERY_MS || factsMissing) {
+    if (
+      row.reposAt === null ||
+      now - row.reposAt > REPOS_EVERY_MS ||
+      factsMissing ||
+      !reposReadSinceStart.has(orgId)
+    ) {
       const before = row.reposJson;
       const failed = yield* refreshRepos(orgId, account, now);
       if (failed !== undefined) return yield* fail(failed);
       const guardsChanged = yield* checkGuards(api.call, orgId, now);
+      reposReadSinceStart.add(orgId);
       reposChanged = guardsChanged || (yield* watchRow(orgId))?.reposJson !== before;
     }
     const repos = yield* repoList(orgId);

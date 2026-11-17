@@ -14,9 +14,9 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
-import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
+import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr } from "./fakeGitHub.ts";
 import { setAppRepos } from "./appRepos.ts";
-import { KinGitHubApi } from "./GitHubWatch.ts";
+import { KinGitHubApi, parseGhApi } from "./GitHubWatch.ts";
 import { setRepo } from "./githubWatchStore.ts";
 import { agentsView, KinGitHubApp, make, parseOwnerUse } from "./KinGitHubApp.ts";
 import { appHost, BOT_EMAIL, BOT_LOGIN, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
@@ -545,7 +545,8 @@ describe("picking the App's repos from Settings, with the owner's login", () => 
               request.headers,
               (request.body ?? {}) as Record<string, unknown>,
             );
-            return { ...answer, text: answer.body === null ? "" : JSON.stringify(answer.body) };
+            // As the owner's `gh` prints it: the body, then its error line, run together.
+            return parseGhApi(ghApiOutput(answer) + ghApiStderr(request.path, answer));
           }),
       }),
       Layer.succeed(KinRefreshObserver, { touch: () => Effect.void }),
@@ -638,7 +639,10 @@ describe("picking the App's repos from Settings, with the owner's login", () => 
       github.world.installationEditsRefused = true;
       const refused = yield* set(["invented-owner/b", "invented-owner/c"], true);
       assert.strictEqual(refused.changed, 0);
-      assert.match(refused.problem ?? "", /Change it on the App's page on GitHub instead\.$/);
+      assert.match(
+        refused.problem ?? "",
+        /GitHub said: "Resource not accessible by personal access token"\. Change it on the App's page on GitHub instead\.$/,
+      );
       assert.strictEqual(yield* covered, 1);
     }).pipe(Effect.provide(layer)),
   );

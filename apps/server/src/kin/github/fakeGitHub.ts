@@ -948,8 +948,39 @@ export class FakeGitHub {
   }
 }
 
+/**
+ * What gh prints on stderr after the body, as `pkg/cmd/api/api.go` does: GitHub's `message` for a
+ * JSON error (or for any GraphQL answer carrying errors), else `HTTP <status>` for anything past 299
+ * but a 204. The real gh writes it straight after the body, with no newline between them.
+ */
+export const ghApiStderr = (path: string, answer: FakeAnswer) => {
+  if (answer.status === 204) return "";
+  let said = "";
+  const body = answer.body;
+  if (
+    body !== null &&
+    typeof body === "object" &&
+    (path.replace(/^\//, "") === "graphql" || answer.status >= 400)
+  ) {
+    const { message, errors } = body as { message?: unknown; errors?: unknown };
+    const text = typeof message === "string" ? message : "";
+    if (typeof errors === "string" && errors !== "") said = text ? `${errors} (${text})` : errors;
+    else if (text !== "") said = `${text} (HTTP ${answer.status})`;
+    else if (Array.isArray(errors))
+      said = errors
+        .map((error) =>
+          typeof error === "string"
+            ? error
+            : String((error as { message?: unknown } | null)?.message ?? ""),
+        )
+        .join("\n");
+  }
+  if (said === "" && answer.status > 299) said = `HTTP ${answer.status}`;
+  return said === "" ? "" : `gh: ${said}\n`;
+};
+
 /** `gh api` output with `-i`: the status line, headers, a blank line, then the body. */
-const ghApiOutput = (answer: FakeAnswer) =>
+export const ghApiOutput = (answer: FakeAnswer) =>
   [
     `HTTP/2.0 ${answer.status} ${answer.status < 300 ? "OK" : answer.status === 304 ? "Not Modified" : "Error"}`,
     ...Object.entries(answer.headers).map(([name, value]) => `${name}: ${value}`),
@@ -1006,7 +1037,8 @@ const runGh = (world: FakeGitHub, args: ReadonlyArray<string>, stdin: string) =>
         : answer.body === null
           ? ""
           : JSON.stringify(answer.body);
-    return { code: answer.status >= 300 ? 1 : 0, out: output };
+    const err = ghApiStderr(path, answer);
+    return { code: answer.status >= 300 || err !== "" ? 1 : 0, out: output, err };
   }
   const sub = `${args[0]} ${args[1]}`;
   const number = Number(args[2]);
@@ -1077,6 +1109,7 @@ const main = async () => {
   const args = process.argv.slice(2);
   let code = 0;
   let out = "";
+  let err = "";
   if (args[0] === "world") {
     const input = JSON.parse(args[2] ?? "{}");
     const op = args[1];
@@ -1116,12 +1149,15 @@ const main = async () => {
     out = JSON.stringify(result ?? null);
   } else {
     const stdin = args.includes("--input") ? fs.readFileSync(0, "utf8") : "";
-    ({ code, out } = runGh(world, args, stdin));
+    ({ code, out, err = "" } = runGh(world, args, stdin));
   }
   fs.writeFileSync(state, JSON.stringify(world.world));
   fs.rmSync(lock, { recursive: true, force: true });
-  process.stdout.write(out.endsWith("\n") || out === "" ? out : `${out}\n`);
-  process.exit(code);
+  // gh ends a body with no newline when stderr follows it, so the two run together as on GitHub.
+  const body = err !== "" || out.endsWith("\n") || out === "" ? out : `${out}\n`;
+  process.stdout.write(body, () =>
+    err === "" ? process.exit(code) : process.stderr.write(err, () => process.exit(code)),
+  );
 };
 
 if (process.argv[1]?.endsWith("fakeGitHub.ts")) void main();
