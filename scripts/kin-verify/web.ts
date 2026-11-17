@@ -124,6 +124,19 @@ export interface WebSession {
   readonly page: Page;
   readonly web: string;
   readonly base: string;
+  /** Where `view --zone` keeps this person's clock zone. */
+  readonly zoneFile: string;
+}
+
+// Chrome drops a zone override when the connection that set it closes, so each one sets it again.
+async function applyZone(page: Page, zoneFile: string) {
+  if (!NodeFS.existsSync(zoneFile)) return;
+  const cdp = await page.context().newCDPSession(page);
+  // An override already set on this connection must be cleared before another is set.
+  await cdp.send("Emulation.setTimezoneOverride", { timezoneId: "" });
+  await cdp.send("Emulation.setTimezoneOverride", {
+    timezoneId: NodeFS.readFileSync(zoneFile, "utf8"),
+  });
 }
 
 async function livePage(instance: Instance, person: string): Promise<Page> {
@@ -172,7 +185,9 @@ export async function openWeb(
     await settle(page);
     NodeFS.writeFileSync(signedIn, state.web);
   }
-  return { page, web: state.web, base };
+  const zoneFile = NodePath.join(profileOf(instance, person), "kin-verify-zone");
+  await applyZone(page, zoneFile);
+  return { page, web: state.web, base, zoneFile };
 }
 
 export function routeUrl(session: WebSession, route: string): string {
@@ -395,9 +410,16 @@ export async function view(
     readonly width: number;
     readonly height: number;
     readonly colorScheme: "dark" | "light" | null;
+    /** The browser's own clock zone, as a person elsewhere has it; the page reloads to read it. */
+    readonly zone?: string;
   },
 ) {
   await session.page.setViewportSize({ width: options.width, height: options.height });
+  if (options.zone !== undefined) {
+    NodeFS.writeFileSync(session.zoneFile, options.zone);
+    await applyZone(session.page, session.zoneFile);
+    await session.page.reload();
+  }
   if (options.colorScheme !== null) {
     await session.page.emulateMedia({ colorScheme: options.colorScheme });
     // The app keeps its own appearance, read at load.

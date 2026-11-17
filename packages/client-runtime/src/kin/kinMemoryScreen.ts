@@ -425,7 +425,7 @@ export function kinMemoryView(
   return {
     rows,
     total: items.length,
-    searchable: items.length >= SEARCH_FROM,
+    searchable: items.length >= SEARCH_FROM || words.length > 0,
     noMatch: rows.length === 0 && words.length > 0 ? `Nothing matches “${search.trim()}”.` : null,
     // One suggestion has its own yes beside it.
     confirmAll:
