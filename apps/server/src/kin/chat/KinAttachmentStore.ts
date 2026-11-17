@@ -10,15 +10,26 @@ import {
   createAttachmentId,
   isKinAttachmentId,
   KIN_ATTACHMENT_ID_PREFIX,
+  parseAttachmentFileExtension,
   resolveAttachmentPathById,
 } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as AttachmentClaims from "../../orchestration-v2/AttachmentClaims.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
+import { pageImageId } from "../lead/turn/content.ts";
+import { PDF_PAGE_IMAGES } from "../lead/turn/pdfPageImages.ts";
 
 // Kin's files sit beside threads' in the attachments directory, under their own id prefix.
 const KIN_ATTACHMENT_OWNER = KIN_ATTACHMENT_ID_PREFIX.slice(0, -1);
 export { KIN_ATTACHMENT_ID_PREFIX };
+
+/** The page images a turn drew of a stored PDF (`turn/content.ts`) go with it. */
+const pagesOf = (attachmentId: string) =>
+  parseAttachmentFileExtension(attachmentId) === "pdf"
+    ? Array.from({ length: PDF_PAGE_IMAGES.pagesPerTurn }, (_, index) =>
+        pageImageId(attachmentId, index + 1),
+      ).filter((id) => id !== null)
+    : [];
 
 const refused = (message: string) => new KinChatError({ reason: "invalid_state", message });
 
@@ -117,11 +128,13 @@ export const layer = Layer.effect(
       }),
       remove: Effect.fn("KinAttachmentStore.remove")((attachmentIds) =>
         AttachmentClaims.releaseClaimedAttachments(
-          attachmentIds.flatMap((attachmentId) => {
-            if (!isKinAttachmentId(attachmentId)) return [];
-            const path = resolveAttachmentPathById({ attachmentsDir, attachmentId });
-            return path === null ? [] : [path];
-          }),
+          attachmentIds
+            .flatMap((attachmentId) => [attachmentId, ...pagesOf(attachmentId)])
+            .flatMap((attachmentId) => {
+              if (!isKinAttachmentId(attachmentId)) return [];
+              const path = resolveAttachmentPathById({ attachmentsDir, attachmentId });
+              return path === null ? [] : [path];
+            }),
         ).pipe(Effect.provideContext(context)),
       ),
     });

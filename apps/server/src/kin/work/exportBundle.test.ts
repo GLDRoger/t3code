@@ -5,7 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KIN_EXPORT_HOLDS, KIN_EXPORT_LEAVES, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -78,6 +78,15 @@ const rows = [
   { project: { source: "p1", name: "Website", client: "c1", target: "2026-12-01" } },
   {
     entry: {
+      source: "ct1",
+      list: "contacts",
+      title: "Invented Asha",
+      client: "c1",
+      fields: { role: "Finance", email: "asha@invented.example", phone: "+91 00000 00000" },
+    },
+  },
+  {
+    entry: {
       source: "t1",
       list: "work",
       title: "Send the welcome pack",
@@ -123,6 +132,29 @@ const rows = [
   },
 ];
 const books = Stream.fromIterable([header, ...rows].map((one) => JSON.stringify(one)));
+// Later books add a way to pay to the Expenses template, and an expense paid that way.
+const cheque = [
+  {
+    ...header,
+    batch: "cheques",
+    lists: [
+      { list: "expenses", template: "expenses" },
+      { list: "expenses", fields: [{ label: "Paid with", type: "choice", choices: ["cheque"] }] },
+    ],
+  },
+  {
+    entry: {
+      source: "e1",
+      list: "expenses",
+      title: "Printer paper",
+      state: "done",
+      date: "2026-05-04",
+      amount: "840",
+      fields: { vendor: "Invented Paper Co", paidWith: "cheque" },
+    },
+  },
+];
+const chequeBooks = Stream.fromIterable(cheque.map((one) => JSON.stringify(one)));
 
 const unzip = (bytes: Uint8Array) =>
   Effect.promise(
@@ -195,6 +227,8 @@ describe("Download everything", () => {
       const imports = yield* KinImport.KinImport;
       const seeded = yield* imports.apply(from, owner, books);
       assert.deepStrictEqual(seeded.problems, []);
+      const extended = yield* imports.apply(from, owner, chequeBooks);
+      assert.deepStrictEqual(extended.problems, []);
 
       // A doc with a picture in it, kept as the host keeps both.
       yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
@@ -239,20 +273,22 @@ describe("Download everything", () => {
       const zip = yield* unzip(bytes);
       assert.deepStrictEqual(
         [...zip.keys()],
-        [
-          "README.txt",
-          "kin.jsonl",
-          "contacts.jsonl",
-          "docs/D-1 Brand guide.md",
-          `docs/D-1/${ATTACHMENT}.png`,
-        ],
+        ["README.txt", "kin.jsonl", "docs/D-1 Brand guide.md", `docs/D-1/${ATTACHMENT}.png`],
       );
       assert.strictEqual(
         zip.get("docs/D-1 Brand guide.md")!.toString(),
         "# Brand guide\n\nUse the blue. kin-file:x\n",
       );
       assert.strictEqual(zip.get(`docs/D-1/${ATTACHMENT}.png`)!.toString(), "invented png");
-      assert.include(zip.get("README.txt")!.toString(), "Memory is kept in your memory repository");
+      // What it holds and leaves out reads the same in the zip, in Settings and in the user guide.
+      const guide = NodeFS.readFileSync(
+        NodePath.resolve(import.meta.dirname, "../../../../../docs/user/kin.md"),
+        "utf8",
+      ).replace(/\s+/g, " ");
+      for (const words of [KIN_EXPORT_HOLDS, KIN_EXPORT_LEAVES]) {
+        assert.include(zip.get("README.txt")!.toString(), words);
+        assert.include(guide, words);
+      }
 
       // Nothing kept outside the company's records leaves: no token, key, session or invite.
       assert.notInclude(bytes.toString("latin1"), CANARY);
@@ -275,7 +311,7 @@ describe("Download everything", () => {
         [restored.clients, restored.projects, restored.entries, restored.payments].map(
           (one) => one.create,
         ),
-        [2, 1, 4, 1],
+        [2, 1, 6, 1],
       );
 
       const before = yield* holdings(from);
@@ -296,6 +332,17 @@ describe("Download everything", () => {
         withoutLinks(sample(after.records, ownerInto)),
         withoutLinks(sample(before.records, owner)),
       );
+      // The added way to pay comes back on the list, and the expense paid that way with it.
+      const paidWith = (orgId: KinOrgId) =>
+        sql<{ choices: string; paid: string }>`SELECT
+            (SELECT f.value ->> '$.choices' FROM kin_registers g, json_each(g.definition_json, '$.fields') f
+              WHERE g.org_id = ${orgId} AND g.register_id = 'expenses'
+                AND f.value ->> '$.key' = 'paidWith') AS choices,
+            json_extract(r.fields_json, '$.paidWith') AS paid
+          FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'`;
+      assert.deepStrictEqual(yield* paidWith(into), [
+        { choices: '["card","upi","bank","cash","cheque"]', paid: "cheque" },
+      ]);
       // A link points at the same client again, by its new record.
       const leave = (yield* sql<{ client: string }>`SELECT c.title AS client FROM kin_records r
         JOIN kin_records c ON c.org_id = r.org_id

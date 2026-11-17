@@ -763,7 +763,13 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
           : states[0]!,
     categories: [...new Set([...(preset?.categories ?? []), ...(input.categories ?? [])])],
     fields: [
-      ...(preset?.fields ?? []),
+      // A template's choice field named again with more choices keeps them, as on a list made already.
+      ...(preset?.fields ?? []).map((had) => {
+        const asked = fields.find((one) => one.key === had.key);
+        return had.type === "choice" && asked?.type === "choice"
+          ? { ...had, choices: [...new Set([...(had.choices ?? []), ...(asked.choices ?? [])])] }
+          : had;
+      }),
       ...fields.filter((one) => !(preset?.fields ?? []).some((field) => field.key === one.key)),
     ],
     sensitive: input.sensitive ?? preset?.sensitive ?? amount,
