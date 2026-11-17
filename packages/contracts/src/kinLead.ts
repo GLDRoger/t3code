@@ -227,6 +227,8 @@ export const KinAgentChange = Schema.Struct({
   ),
   /** An add whose only later changes are links. */
   linkedSince: Schema.optional(Schema.Boolean),
+  /** The clients and projects its fields name by key, with titles: only those this viewer sees. */
+  named: Schema.optional(Schema.Array(Schema.Struct({ key: KinRecordKey, title: Schema.String }))),
 });
 export type KinAgentChange = typeof KinAgentChange.Type;
 export const KinAgentPageInput = Schema.Struct({ orgId: KinOrgId, agentId: KinAgentId });

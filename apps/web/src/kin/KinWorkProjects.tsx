@@ -2,7 +2,6 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_WORK_DEFAULT_FILTER,
   KIN_WORK_NEW,
-  KIN_WORK_STALE,
   kinWorkDraftFor,
   type KinWorkDraft,
 } from "@t3tools/client-runtime/kin/kinWork";
@@ -56,6 +55,7 @@ import {
   KinWorkRowSkeletons,
   KinWorkSection,
   KinWorkTimeline,
+  KinWorkStaleLine,
 } from "./KinWorkParts";
 import { KinWorkPlaceLists } from "./KinWorkPlaceLists";
 import { KinWorkRow, KinWorkTaskList } from "./KinWorkTasks";
@@ -245,9 +245,7 @@ function ProjectPage(
         )}
         <p className="text-xs text-muted-foreground tabular-nums">{view.counts}</p>
         {props.pageStale ? (
-          <p role="status" className="text-xs text-muted-foreground">
-            {KIN_WORK_STALE}
-          </p>
+          <KinWorkStaleLine environmentId={environmentId} onRetry={props.onRefresh} />
         ) : null}
         {problem === null ? null : (
           <KinWorkProblem problem={problem} onOpenExisting={props.onOpenProject} />

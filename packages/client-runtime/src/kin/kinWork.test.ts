@@ -38,6 +38,9 @@ import {
   kinWorkOnlyOwner,
   kinWorkScreenState,
   kinWorkShown,
+  kinWorkStaleNotice,
+  KIN_WORK_REFRESH_FAILED,
+  KIN_WORK_STALE,
   type KinWorkNames,
 } from "./kinWork.ts";
 import { KIN_CHANGED } from "./kinAnswers.ts";
@@ -245,6 +248,16 @@ describe("kinWorkScreenState", () => {
       "loading",
     ],
     [
+      "scopes whose read failed on a live connection",
+      { allowed: "failed", link: "connected", live: AsyncResult.initial() },
+      "failed",
+    ],
+    [
+      "scopes whose read failed and no connection",
+      { allowed: "failed", link: "offline", live: AsyncResult.initial() },
+      "offline",
+    ],
+    [
       "counts that couldn't be read",
       { allowed: "granted", link: "connected", live: held(true) },
       "failed",
@@ -263,6 +276,16 @@ describe("kinWorkScreenState", () => {
       _tag: "ready",
       stale,
     });
+  });
+});
+
+describe("kinWorkStaleNotice", () => {
+  it.each([
+    ["offline", { message: KIN_WORK_STALE, retry: false }],
+    ["connected", { message: KIN_WORK_REFRESH_FAILED, retry: true }],
+    ["connecting", null],
+  ] as const)("on a held page that is behind, with the link %s, says %j", (link, notice) => {
+    expect(kinWorkStaleNotice(link)).toEqual(notice);
   });
 });
 

@@ -1,10 +1,9 @@
-import type { KinGate } from "@t3tools/client-runtime/kin/kinAccess";
+import { KIN_GATE_FAILED, type KinGate } from "@t3tools/client-runtime/kin/kinAccess";
 import { KIN_OFFLINE_PAGE, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import {
   KIN_WORK_PRIVATE,
-  KIN_WORK_REFRESH_FAILED,
-  KIN_WORK_STALE,
+  kinWorkStaleNotice,
   type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_COPY, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
@@ -31,7 +30,9 @@ import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { useBarOverlap } from "../../../components/ui/useBarInset";
 import { cn } from "../../../lib/cn";
-import { useKinHostAt } from "../state/useKinHost";
+import { retryKinAccess } from "../state/kinClient";
+import { useKinHost, useKinHostAt } from "../state/useKinHost";
+import { KinLoadFailed } from "./KinLoadFailed";
 import { KinAvatar } from "./KinAvatar";
 import { KinWorkStateSymbol } from "./KinWorkStateSymbol";
 
@@ -365,13 +366,12 @@ export function KinWorkStaleNotice(props: {
   readonly environmentId: EnvironmentId;
   readonly onRetry: () => void;
 }) {
-  const link = kinHostLink(useKinHostAt(props.environmentId));
-  if (link === "offline") return <Notice message={KIN_WORK_STALE} />;
-  if (link === "connecting") return null;
+  const notice = kinWorkStaleNotice(kinHostLink(useKinHostAt(props.environmentId)));
+  if (notice === null) return null;
   return (
     <Notice
-      message={KIN_WORK_REFRESH_FAILED}
-      action={{ label: KIN_RETRY, onPress: props.onRetry }}
+      message={notice.message}
+      {...(notice.retry ? { action: { label: KIN_RETRY, onPress: props.onRetry } } : {})}
     />
   );
 }
@@ -415,6 +415,20 @@ export function KinFoldSection(props: {
   );
 }
 
+/** A gate whose read of what this person may open failed, with a Retry of that read. */
+function KinGateFailed() {
+  const host = useKinHost();
+  return (
+    <KinLoadFailed
+      title={KIN_GATE_FAILED}
+      cause={null}
+      onRetry={() => {
+        if (host._tag === "host") retryKinAccess(host.environmentId);
+      }}
+    />
+  );
+}
+
 /** A gated page before its reads: a spinner, offline, or the page's own refusal. */
 export function KinGateView(props: {
   readonly gate: Exclude<KinGate, null>;
@@ -426,6 +440,7 @@ export function KinGateView(props: {
   if (props.gate === "refused") return <EmptyState variant="plain" {...props.refused} />;
   if (props.gate === "offline")
     return <EmptyState variant="plain" {...(props.offline ?? KIN_OFFLINE_PAGE)} />;
+  if (props.gate === "failed") return <KinGateFailed />;
   return (
     <View
       className="items-center py-12"

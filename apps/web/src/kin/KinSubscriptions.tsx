@@ -9,7 +9,6 @@ import {
   type KinFigureLine,
   type KinSubscriptionRow,
 } from "@t3tools/client-runtime/kin/kinSubscriptions";
-import { KIN_WORK_STALE } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinListDefinition, KinRecordKey } from "@t3tools/contracts";
 import { MessageSquareIcon, PlusIcon } from "lucide-react";
@@ -20,7 +19,13 @@ import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinEstimateText, KinSetRateButton } from "./KinMoneyEstimate";
-import { KinWorkNotice, KinWorkRowSkeletons, KinWorkSection, KinLoadFailed } from "./KinWorkParts";
+import {
+  KinWorkNotice,
+  KinWorkRowSkeletons,
+  KinWorkSection,
+  KinLoadFailed,
+  KinWorkStaleLine,
+} from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinHostConnected } from "./useKinHost";
@@ -345,9 +350,9 @@ function KinSubscriptionsBody(
           )}
         </div>
         {props.stale || state.stale ? (
-          <p role="status" className="px-2 text-xs text-muted-foreground">
-            {KIN_WORK_STALE}
-          </p>
+          <div className="px-2">
+            <KinWorkStaleLine environmentId={environmentId} onRetry={entries.refresh} />
+          </div>
         ) : null}
         {problem === null ? null : (
           <Alert variant="error">
