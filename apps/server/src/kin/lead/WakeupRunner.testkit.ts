@@ -49,6 +49,7 @@ import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
 import { recordAudience, turnAudience } from "./Audience.ts";
 import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import { KinTurnContent } from "./turn/content.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
@@ -586,6 +587,7 @@ function parts(options: HarnessOptions) {
         });
       }),
     ),
+    Layer.succeed(KinTurnContent, KinTurnContent.of({ prepare: Effect.succeed })),
     Layer.mock(Memory.Memory)({
       prepareWakeup:
         options.prepare ??

@@ -3,9 +3,12 @@ import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   createKinGitHubActions,
   createKinGitHubRepoActions,
+  createKinGitHubAppRepoActions,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
+  KIN_GITHUB_APP_REPOS_COPY as PICK,
   KIN_GITHUB_COPY as COPY,
   KIN_GITHUB_WATCH_COPY as WATCH,
+  kinGitHubAccountRepos,
   kinGitHubAccountRows,
   kinGitHubAccountsHint,
   kinGitHubAgentsView,
@@ -131,7 +134,12 @@ function GitHubSection(props: { readonly environmentId: EnvironmentId; readonly 
           <WatchedRepos environmentId={environmentId} orgId={orgId} status={status} />
         ) : null}
         {status?.agents === undefined ? null : (
-          <AgentIdentity status={status} agents={status.agents} />
+          <AgentIdentity
+            environmentId={environmentId}
+            orgId={orgId}
+            status={status}
+            agents={status.agents}
+          />
         )}
         {problem === null ? null : (
           <div className="px-4 pb-3">
@@ -169,6 +177,8 @@ function GitHubSection(props: { readonly environmentId: EnvironmentId; readonly 
 
 /** Who agents work as on GitHub, where the App is missing, and what they lately did as the owner. */
 function AgentIdentity(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
   readonly status: KinGitHubStatus;
   readonly agents: NonNullable<KinGitHubStatus["agents"]>;
 }) {
@@ -176,6 +186,7 @@ function AgentIdentity(props: {
   const view = kinGitHubAgentsView(props.agents, props.status.account?.login ?? null, now);
   const rows = kinGitHubAccountRows(props.agents);
   const hint = kinGitHubAccountsHint(rows);
+  const [picking, setPicking] = useState<string | null>(null);
   return (
     <div className="flex flex-col gap-3 border-t px-4 py-3">
       <div className="flex flex-col gap-1">
@@ -189,7 +200,7 @@ function AgentIdentity(props: {
             {rows.map((row) => (
               <li
                 key={row.key}
-                className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+                className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-4"
               >
                 <div className="flex min-w-0 flex-col gap-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -198,17 +209,39 @@ function AgentIdentity(props: {
                   </div>
                   <p className="text-xs text-muted-foreground">{row.detail}</p>
                 </div>
-                {row.action === null ? null : (
-                  <div className="shrink-0">
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      render={<a href={row.action.url} target="_blank" rel="noreferrer noopener" />}
-                    >
-                      {row.action.label}
-                    </Button>
+                {row.action === null && !row.pickable ? null : (
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    {row.pickable ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        aria-expanded={picking === row.key}
+                        onClick={() => setPicking(picking === row.key ? null : row.key)}
+                      >
+                        {picking === row.key ? PICK.hide : PICK.choose(row.watched)}
+                      </Button>
+                    ) : null}
+                    {row.action === null ? null : (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        render={
+                          <a href={row.action.url} target="_blank" rel="noreferrer noopener" />
+                        }
+                      >
+                        {row.action.label}
+                      </Button>
+                    )}
                   </div>
                 )}
+                {picking === row.key ? (
+                  <AccountRepos
+                    environmentId={props.environmentId}
+                    orgId={props.orgId}
+                    account={row.account}
+                    settingsUrl={row.settingsUrl}
+                  />
+                ) : null}
               </li>
             ))}
           </ul>
@@ -238,6 +271,140 @@ function AgentIdentity(props: {
             ))}
           </ul>
         </div>
+      )}
+    </div>
+  );
+}
+
+/** One account's watched repos, each with a switch that puts the App on it or takes it off. */
+function AccountRepos(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly account: string;
+  readonly settingsUrl: string | null;
+}) {
+  const { environmentId, orgId, account } = props;
+  const reposAtom = kinClient.githubRepos({ environmentId, input: { orgId } });
+  const result = useAtomValue(reposAtom);
+  const reload = useAtomRefresh(reposAtom);
+  const reloadStatus = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const set = useAtomCommand(kinClient.githubAppReposSet, { reportFailure: false });
+  const change = createKinGitHubAppRepoActions({
+    orgId,
+    set: (input) => set({ environmentId, input }),
+    refresh: () => {
+      reload();
+      reloadStatus();
+    },
+  });
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const searchId = useId();
+  const all = Option.getOrNull(AsyncResult.value(result))?.repos ?? null;
+  if (all === null)
+    return AsyncResult.isFailure(result) ? (
+      <div className="flex items-center justify-between gap-3 sm:basis-full">
+        <p className="text-sm text-destructive-foreground">{WATCH.loadFailed}</p>
+        <Button size="xs" variant="outline" onClick={reload}>
+          {KIN_RETRY}
+        </Button>
+      </div>
+    ) : (
+      <p className="text-sm text-muted-foreground sm:basis-full">Loading…</p>
+    );
+  const mine = kinGitHubAccountRepos(all, account, "");
+  const shown = kinGitHubAccountRepos(all, account, query);
+  const on = mine.filter((repo) => repo.agentsAs === "app").map((repo) => repo.repo);
+  const off = mine.filter((repo) => repo.agentsAs !== "app").map((repo) => repo.repo);
+  const run = (repos: ReadonlyArray<string>, putOn: boolean) => {
+    if (busy || repos.length === 0) return;
+    setBusy(true);
+    setProblem(null);
+    void change(account, repos, putOn).then((outcome) => {
+      setBusy(false);
+      setProblem(outcome.problem);
+    });
+  };
+  return (
+    <div className="flex flex-col gap-2 pt-1 sm:basis-full">
+      <p className="text-xs text-muted-foreground">{PICK.hint}</p>
+      <div className="flex flex-wrap items-center gap-2">
+        {mine.length > 8 ? (
+          <div className="min-w-40 flex-1">
+            <Label htmlFor={searchId} className="sr-only">
+              {PICK.search}
+            </Label>
+            <Input
+              id={searchId}
+              size="sm"
+              type="search"
+              placeholder={PICK.search}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+        ) : null}
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy || off.length === 0}
+          onClick={() => run(off, true)}
+        >
+          {PICK.addAll}
+        </Button>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy || on.length === 0}
+          onClick={() => run(on, false)}
+        >
+          {PICK.removeAll}
+        </Button>
+      </div>
+      {shown.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{PICK.none}</p>
+      ) : (
+        <ul className="flex max-h-80 flex-col divide-y overflow-y-auto rounded-md border">
+          {shown.map((repo) => (
+            <li
+              key={repo.repo}
+              className="flex min-h-11 items-center justify-between gap-3 px-3 py-2"
+            >
+              <div className="flex min-w-0 flex-col">
+                <span className="truncate text-sm">{repo.repo}</span>
+                <span className="text-xs text-muted-foreground">
+                  {repo.agentsAs === "app" ? WATCH.asApp : WATCH.asYou}
+                </span>
+              </div>
+              <Switch
+                size="sm"
+                checked={repo.agentsAs === "app"}
+                disabled={busy}
+                aria-label={PICK.appOn(repo.repo)}
+                onCheckedChange={(checked) => run([repo.repo], checked)}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+      {problem === null ? null : (
+        <Alert variant="error">
+          <AlertDescription>
+            <span>{problem}</span>
+            {props.settingsUrl === null ? null : (
+              <span className="mt-2 block">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  render={<a href={props.settingsUrl} target="_blank" rel="noreferrer noopener" />}
+                >
+                  {PICK.openOnGitHub}
+                </Button>
+              </span>
+            )}
+          </AlertDescription>
+        </Alert>
       )}
     </div>
   );
@@ -324,8 +491,19 @@ function RepoList(props: {
                 <span className="truncate text-sm">{repo.repo}</span>
                 {repo.fork ? <Badge variant="outline">{WATCH.fork}</Badge> : null}
               </div>
-              {repo.mentions ? (
-                <span className="text-xs text-muted-foreground">{WATCH.mentions}</span>
+              {repo.mentions || repo.agentsAs !== undefined ? (
+                <span className="text-xs text-muted-foreground">
+                  {[
+                    repo.agentsAs === undefined
+                      ? null
+                      : repo.agentsAs === "app"
+                        ? WATCH.asApp
+                        : WATCH.asYou,
+                    repo.mentions ? WATCH.mentions : null,
+                  ]
+                    .filter(Boolean)
+                    .join(". ")}
+                </span>
               ) : null}
             </div>
             <Switch

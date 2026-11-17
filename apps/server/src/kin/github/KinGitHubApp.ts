@@ -182,6 +182,8 @@ export class KinGitHubApp extends Context.Service<
     readonly on: (repo: string) => Effect.Effect<KinGitHubAppAs | undefined>;
     /** Renews what is due (the App's description, tokens, the shell's files) and records owner switches. */
     readonly refresh: () => Effect.Effect<void>;
+    /** Looks at the App on GitHub now, as after the owner changed where it is installed. */
+    readonly lookAgain: () => Effect.Effect<void>;
   }
 >()("t3/kin/github/KinGitHubApp") {}
 
@@ -567,7 +569,12 @@ export const make = Effect.gen(function* () {
     return yield* Ref.get(current);
   });
 
-  return KinGitHubApp.of({ state, on, refresh });
+  const lookAgain = Effect.fn("KinGitHubApp.lookAgain")(function* () {
+    yield* Ref.set(describedAt, null);
+    yield* refresh();
+  });
+
+  return KinGitHubApp.of({ state, on, refresh, lookAgain });
 });
 
 /** Looks once at startup and then every 30 seconds, for as long as Kin runs. */
