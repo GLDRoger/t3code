@@ -13,7 +13,9 @@ import {
   VideoPreviewModal,
   type VideoPreviewSource,
 } from "../../../components/ui/VideoPreviewModal";
+import * as Effect from "effect/Effect";
 import { prepareTurnAttachments } from "../../../lib/attachmentUpload";
+import { uploadComposerAttachmentShared } from "../../../state/composer-attachment-uploads";
 import { KIN_DRAFT_PREFIX } from "../../../lib/composerAttachmentUploadQueue";
 import {
   composerAttachmentUploadBlockReason,
@@ -48,7 +50,6 @@ import { resolveVoiceComposerPresentation } from "../../voice-input/voiceInputPr
 import {
   appendComposerDraftAttachments,
   clearComposerDraftContent,
-  composerDraftsAtom,
   getComposerDraftSnapshot,
   removeComposerDraftAttachment,
   scheduleUnusedComposerAttachmentCleanup,
@@ -178,7 +179,6 @@ export function KinComposer({
     ownerKey: draftKey,
     label: props.recipient ?? "Kin chat",
     readDraftMessage: () => getComposerDraftSnapshot(draftKey).text,
-    subscribeToDraftChanges: (onChange) => appAtomRegistry.subscribe(composerDraftsAtom, onChange),
     selection,
     onChangeDraftMessage: (text) => setComposerDraftText(draftKey, text),
     onChangeSelection: setSelection,
@@ -254,11 +254,15 @@ export function KinComposer({
     if (attachments.length === 0) return [];
     setSending(true);
     const prepared = await settlePromise(() =>
-      prepareTurnAttachments({
-        environmentId: props.environmentId,
-        attachments,
-        supportsImageUploads: true,
-      }),
+      Effect.runPromise(
+        prepareTurnAttachments({
+          environmentId: props.environmentId,
+          attachments,
+          supportsImageUploads: true,
+          uploadAttachment: (attachment) =>
+            uploadComposerAttachmentShared(props.environmentId, attachment),
+        }),
+      ),
     );
     setSending(false);
     if (AsyncResult.isFailure(prepared)) {

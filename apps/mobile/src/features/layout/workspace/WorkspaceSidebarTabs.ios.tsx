@@ -36,6 +36,7 @@ export function WorkspaceSidebarTabs(props: {
   return (
     <SidebarTabBar
       {...props}
+      maxWidth={layout.variant === "medium" ? 280 : undefined}
       tabs={tabs}
       selectedTab={selectedNavigationTab(
         order,
@@ -58,6 +59,7 @@ export function SidebarTabBar<Tab extends string>(props: {
   readonly onNewTask?: () => void;
   readonly compact?: boolean;
   readonly reserveComposeSpace?: boolean;
+  readonly maxWidth?: number | undefined;
   /** Titles under the icons; the workspace's own dock is icon-only. */
   readonly showsLabels?: boolean;
   /** A short count on a tab, keyed by tab. */
@@ -95,7 +97,7 @@ export function SidebarTabBar<Tab extends string>(props: {
         position: "absolute",
         bottom: 0,
         left: props.compact ? 8 : 0,
-        maxWidth: layout.variant === "medium" ? 280 : undefined,
+        maxWidth: props.maxWidth,
         // Keep the tab icons in place when Compose disappears on other destinations.
         right:
           (props.compact ? 12 : 0) +

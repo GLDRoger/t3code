@@ -334,8 +334,7 @@ export const uploadComposerAttachment = Effect.fn("uploadComposerAttachment")(fu
     );
   }
   return yield* attachmentUploadError(
-    result.step === "resolve-url" &&
-      !mayUpload(environmentId)
+    result.step === "resolve-url" && !mayUpload(environmentId)
       ? new Error("This connection cannot upload attachments.")
       : result.error instanceof Error
         ? result.error

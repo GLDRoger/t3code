@@ -1523,8 +1523,7 @@ export function AgentMessageFoldHeader(props: {
       ? scopeThreadRef(props.environmentId, props.senderThreadId)
       : null,
   );
-  const label =
-    props.label ?? (senderShell?.title.trim() || props.senderTitle?.trim() || "Agent");
+  const label = props.label ?? (senderShell?.title.trim() || props.senderTitle?.trim() || "Agent");
   return (
     <Pressable
       accessibilityRole="button"

@@ -23,7 +23,10 @@ import {
   KinTrimmedText,
 } from "./kinChat.ts";
 import { CanonicalUtcTimestamp, KinLevel } from "./kinLead.ts";
-import { PullRequestMergeMethod } from "./pullRequest.ts";
+
+/** The merge methods GitHub's merge API takes; a signed grant names one of these. */
+export const KinMergeMethod = Schema.Literals(["merge", "squash", "rebase"]);
+export type KinMergeMethod = typeof KinMergeMethod.Type;
 
 const pattern = (regex: RegExp, expected: string) =>
   Schema.String.check(Schema.makeFilter((value: string) => regex.test(value), { expected }));
@@ -99,7 +102,7 @@ export const KinActionTarget = Schema.Union([
     host: Schema.Literal("github.com"),
     repo: RepoSlug,
     number: PositiveInt,
-    mergeMethod: PullRequestMergeMethod,
+    mergeMethod: KinMergeMethod,
     deleteBranchAfter: Schema.Boolean,
   }),
   Schema.TaggedStruct("branch", {
@@ -288,7 +291,7 @@ const KinGrantPayloadFields = {
   target: KinActionTarget,
   headSha: Schema.optional(Sha40),
   base: Schema.optional(BranchName),
-  mergeMethod: Schema.optional(PullRequestMergeMethod),
+  mergeMethod: Schema.optional(KinMergeMethod),
   approver: Schema.Struct({ humanId: KinPersonId, kid: KinKeyThumbprint }),
   decision: Schema.Literal("approve"),
   iat: SignedInt,

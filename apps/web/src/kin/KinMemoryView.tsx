@@ -28,7 +28,7 @@ import type {
 import { LegendList } from "@legendapp/list/react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { GlobeIcon, MessageSquareIcon, SparklesIcon } from "lucide-react";
+import { GlobeIcon, MessageSquareIcon, BrainIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -442,7 +442,7 @@ function KinMemoryItem(props: {
   );
 }
 
-const ORIGIN_ICON = { said: MessageSquareIcon, worked_out: SparklesIcon, outside: GlobeIcon };
+const ORIGIN_ICON = { said: MessageSquareIcon, worked_out: BrainIcon, outside: GlobeIcon };
 
 /** One quiet line: who said it or which agent worked it out, when, and the words if any. */
 function KinMemoryOrigin(props: {

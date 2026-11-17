@@ -516,14 +516,17 @@ it.effect("refuses a queued edit that keeps a file another edit already deleted"
     );
     const captured: OrchestrationV2ServerCommand[] = [];
     const edit = (attachments: ReadonlyArray<typeof kept>) =>
-      dispatchCommand({
-        type: "queued-run.edit",
-        commandId: CommandId.make(`queued-edit-${attachments.length}`),
-        threadId: ThreadId.make("thread-queued-edit"),
-        runId: RunId.make("run-queued-edit"),
-        text: "Edited from a stale view.",
-        attachments,
-      }).pipe(
+      dispatchCommand(
+        {
+          type: "queued-run.edit",
+          commandId: CommandId.make(`queued-edit-${attachments.length}`),
+          threadId: ThreadId.make("thread-queued-edit"),
+          runId: RunId.make("run-queued-edit"),
+          text: "Edited from a stale view.",
+          attachments,
+        },
+        TEST_UPLOAD_OWNER,
+      ).pipe(
         Effect.provide(
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             dispatch: layerFailingDispatchHandler(captured),

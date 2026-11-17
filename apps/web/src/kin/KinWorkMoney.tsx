@@ -24,7 +24,7 @@ import { KIN_GOALS } from "@t3tools/client-runtime/kin/kinAttention";
 import { KIN_BUDGETS, KIN_QUOTES } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { KIN_RECEIPTS } from "@t3tools/client-runtime/kin/kinInvoices";
 import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
-import { ArrowLeftRightIcon, MessageSquareIcon, PlusIcon, SparklesIcon } from "lucide-react";
+import { ArrowLeftRightIcon, MessageSquareIcon, PlusIcon, BotIcon } from "lucide-react";
 import { KIN_CHIEF_OF_STAFF } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { useState } from "react";
 
@@ -303,7 +303,7 @@ export function KinWorkMoney(
           })
         }
       >
-        <SparklesIcon />
+        <BotIcon />
         {KIN_MONEY.createChief}
       </Button>
     ) : null;

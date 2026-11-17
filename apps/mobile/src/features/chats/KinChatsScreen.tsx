@@ -224,7 +224,7 @@ function KinChatsBar(props: {
                   {
                     id: "lead",
                     title: "New agent",
-                    icon: "sparkles",
+                    icon: "robot",
                     onPress: () => navigation.navigate("KinLeadForm", target),
                   },
                 ]

@@ -65,7 +65,7 @@ import {
   MessagesSquareIcon,
   BrainIcon,
   UsersIcon,
-  SparklesIcon,
+  BotIcon,
   UserRoundPlusIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -1835,7 +1835,7 @@ function OpenCommandPaletteDialog(props: {
         value: `action:kin-agent:${agent.agentId}`,
         searchTerms: ["kin", "agent", "model", "character", "pause", agent.name, agent.domain],
         title: `${agent.name}: model, character and settings`,
-        icon: <SparklesIcon className={ITEM_ICON_CLASS} />,
+        icon: <BotIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
           await openKinAgentPage({
             ...kinNewLead,

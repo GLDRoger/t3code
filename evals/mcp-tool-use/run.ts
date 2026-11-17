@@ -3261,7 +3261,9 @@ const main = Effect.gen(function* () {
   const baseKey = ({ setup, prompt }: McpToolUseCase) =>
     `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${setup.world?.kinSession === true}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}`;
   const base = yield* buildFor("top", true, true, false);
-  const bases = new Map<string, Base>([["top:true:true:false:false:false:false:false:false", base]]);
+  const bases = new Map<string, Base>([
+    ["top:true:true:false:false:false:false:false:false", base],
+  ]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
     if (bases.has(key)) continue;

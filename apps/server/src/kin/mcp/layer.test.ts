@@ -1,3 +1,6 @@
+import { EnvironmentThemeService } from "../../environmentTheme.ts";
+import { IssueService } from "../../issue/IssueService.ts";
+import { ThreadIssueService } from "../../orchestration-v2/ThreadIssueService.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { FetchHttpClient } from "effect/http";
@@ -109,6 +112,9 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(McpProviderSessions)({}),
   Layer.mock(OrchestrationEventStore)({}),
   Layer.mock(PeerForwarding)({}),
+  Layer.mock(EnvironmentThemeService)({}),
+  Layer.mock(IssueService)({}),
+  Layer.mock(ThreadIssueService)({}),
   Layer.mock(PeerLinkRequests)({}),
   Layer.mock(PeerLinks)({}),
   Layer.mock(PeerMcpClient)({}),

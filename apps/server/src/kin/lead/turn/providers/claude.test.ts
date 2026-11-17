@@ -84,6 +84,7 @@ it.effect.each([
             ),
           forkSession: () => Effect.die("unused fork"),
           subagentLaunchToolUseId: () => Effect.die("unused lookup"),
+          subagentModel: () => Effect.succeed(null),
           assertComplete: Effect.void,
         }),
       );
@@ -253,6 +254,7 @@ it.effect(
             ),
           forkSession: () => Effect.die("unused fork"),
           subagentLaunchToolUseId: () => Effect.die("unused lookup"),
+          subagentModel: () => Effect.succeed(null),
           assertComplete: Effect.void,
         }),
       );
@@ -440,6 +442,7 @@ it.effect(
             ),
           forkSession: () => Effect.die("unused fork"),
           subagentLaunchToolUseId: () => Effect.die("unused lookup"),
+          subagentModel: () => Effect.succeed(null),
           assertComplete: Effect.void,
         }),
       );

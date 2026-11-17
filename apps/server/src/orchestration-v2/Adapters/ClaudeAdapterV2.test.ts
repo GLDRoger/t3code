@@ -1797,6 +1797,7 @@ describe("ClaudeAdapterV2 executable path", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
+          ProviderInstallationGate.layer,
           NodeServices.layer,
           NodeCrypto.layer,
         ),
