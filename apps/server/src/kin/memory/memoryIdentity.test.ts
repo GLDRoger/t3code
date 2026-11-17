@@ -11,6 +11,7 @@ const appIn = (state: AppState) =>
     state: () => Effect.succeed(state),
     on: () => Effect.undefined,
     refresh: () => Effect.void,
+    lookAgain: () => Effect.void,
   });
 
 const working: AppState = {

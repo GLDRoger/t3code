@@ -1,12 +1,18 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_CHECK_CONNECTION, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   createKinGitHubActions,
   createKinGitHubRepoActions,
+  createKinGitHubAppRepoActions,
+  createKinGitHubAppSetupActions,
+  KIN_GITHUB_APP_SETUP_COPY as SETUP,
+  kinGitHubAppCreatePath,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
+  KIN_GITHUB_APP_REPOS_COPY as PICK,
   KIN_GITHUB_COPY as COPY,
   KIN_GITHUB_WATCH_COPY as WATCH,
+  kinGitHubAccountRepos,
   kinGitHubAccountRows,
   kinGitHubAccountsHint,
   kinGitHubAgentsView,
@@ -21,10 +27,11 @@ import type {
   KinGitHubWatch,
   KinOrgId,
 } from "@t3tools/contracts";
+import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { useState } from "react";
-import { Linking, View } from "react-native";
+import { useRef, useState } from "react";
+import { Linking, type TextInputInstance, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
 import { AppBar } from "../../../components/ui/AppBar";
@@ -39,9 +46,11 @@ import { ListToggleRow } from "../../../components/ui/ListToggleRow";
 import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
+import { SearchField } from "../../../components/ui/SearchField";
 import { SecretTextInput } from "../../../components/ui/SecretTextInput";
 import { useNowMinuteMs } from "../../../lib/clock";
 import { tryCopyTextWithHaptic } from "../../../lib/copyTextWithHaptic";
+import { usePreparedConnection } from "../../../state/session";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import {
@@ -147,21 +156,29 @@ export function KinGitHubSection(props: {
       {status.account?.problem === null && status.watch !== undefined ? (
         <WatchedRepos target={props.target} watch={status.watch} />
       ) : null}
-      {status.agents === undefined ? null : <AgentIdentity agents={status.agents} login={login} />}
+      {status.agents === undefined ? null : (
+        <AgentIdentity agents={status.agents} login={login} target={props.target} />
+      )}
     </View>
   );
 }
 
 /** Who agents work as on GitHub, where the App is missing, and what they lately did as the owner. */
-function AgentIdentity(props: { readonly agents: KinGitHubAgents; readonly login: string | null }) {
+function AgentIdentity(props: {
+  readonly agents: KinGitHubAgents;
+  readonly login: string | null;
+  readonly target: KinConnectionsTarget;
+}) {
   const view = kinGitHubAgentsView(props.agents, props.login, useNowMinuteMs());
   const installUrl = view.installUrl;
   const rows = kinGitHubAccountRows(props.agents);
   const hint = kinGitHubAccountsHint(rows);
+  const [picking, setPicking] = useState<string | null>(null);
   return (
     <>
       <ListSection title={AGENTS.title} footer={view.detail}>
         <ListRowLayout label={view.headline} />
+        <AppSetUp target={props.target} view={view} />
         {installUrl === null ? null : (
           <View className="border-t border-border-subtle">
             <ListActionRow
@@ -181,12 +198,25 @@ function AgentIdentity(props: { readonly agents: KinGitHubAgents; readonly login
                 className={index === 0 ? undefined : "border-t border-border-subtle"}
               >
                 <ListRowLayout label={row.account} detail={row.label} description={row.detail} />
+                {row.pickable ? (
+                  <ListActionRow
+                    label={picking === row.key ? PICK.hide : PICK.choose(row.watched)}
+                    onPress={() => setPicking(picking === row.key ? null : row.key)}
+                  />
+                ) : null}
                 {action === null ? null : (
                   <ListActionRow
                     label={action.label}
                     onPress={() => void Linking.openURL(action.url)}
                   />
                 )}
+                {picking === row.key ? (
+                  <AccountRepos
+                    target={props.target}
+                    account={row.account}
+                    settingsUrl={row.settingsUrl}
+                  />
+                ) : null}
               </View>
             );
           })}
@@ -203,6 +233,92 @@ function AgentIdentity(props: { readonly agents: KinGitHubAgents; readonly login
             </View>
           ))}
         </ListSection>
+      )}
+    </>
+  );
+}
+
+/** Makes Kin's own GitHub App on GitHub, or forgets the one made here. */
+function AppSetUp(props: {
+  readonly target: KinConnectionsTarget;
+  readonly view: ReturnType<typeof kinGitHubAgentsView>;
+}) {
+  const { environmentId, orgId } = props.target;
+  const { view } = props;
+  const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const create = useAtomCommand(kinClient.githubAppCreate, { reportFailure: false });
+  const disconnect = useAtomCommand(kinClient.githubAppDisconnect, { reportFailure: false });
+  const connection = usePreparedConnection(environmentId);
+  const [problem, setProblem] = useState<string | null>(null);
+  const actions = createKinGitHubAppSetupActions({
+    orgId,
+    create: (input) => create({ environmentId, input }),
+    disconnect: (input) => disconnect({ environmentId, input }),
+    refresh: reload,
+  });
+  const forgetting = view.disconnect;
+  const startCreate = async () => {
+    setProblem(null);
+    const outcome = await actions.start();
+    if (!outcome.ok) return setProblem(outcome.problem);
+    const started = outcome.value;
+    Dialog.prompt({
+      title: SETUP.create,
+      message: `${SETUP.createDetail}\n\n${SETUP.nameHint}`,
+      initialValue: started.name,
+      confirmText: SETUP.continue,
+      onConfirm: (name) => {
+        const url = Option.isSome(connection)
+          ? resolveAssetUrl(connection.value.httpBaseUrl, kinGitHubAppCreatePath(started, name))
+          : null;
+        if (url === null) setProblem(KIN_CHECK_CONNECTION);
+        else void Linking.openURL(url);
+      },
+    });
+  };
+  const confirmDisconnect = (name: string) =>
+    Dialog.confirm({
+      title: SETUP.disconnectTitle,
+      message: SETUP.disconnectDetail(name),
+      confirmText: SETUP.disconnect,
+      destructive: true,
+      onConfirm: () =>
+        void actions.disconnect().then((outcome) => {
+          if (!outcome.ok) return setProblem(outcome.problem);
+          const url = outcome.value.settingsUrl;
+          Dialog.alert(SETUP.disconnect, SETUP.disconnected(name), [
+            { text: COPY.done, style: "cancel" },
+            ...(url === null
+              ? []
+              : [{ text: SETUP.appOnGitHub, onPress: () => void Linking.openURL(url) }]),
+          ]);
+        }),
+    });
+  return (
+    <>
+      {view.setUpLine === null ? null : (
+        <View className="border-t border-border-subtle">
+          <ListRowLayout label={view.setUpLine} />
+        </View>
+      )}
+      {problem === null ? null : (
+        <View className="border-t border-border-subtle px-3 py-2">
+          <ErrorBanner message={problem} />
+        </View>
+      )}
+      {view.canCreate ? (
+        <View className="border-t border-border-subtle">
+          <ListActionRow label={SETUP.create} onPress={() => void startCreate()} />
+        </View>
+      ) : null}
+      {forgetting === null ? null : (
+        <View className="border-t border-border-subtle">
+          <ListActionRow
+            label={SETUP.disconnect}
+            tone="danger"
+            onPress={() => confirmDisconnect(forgetting.name)}
+          />
+        </View>
       )}
     </>
   );
@@ -232,9 +348,108 @@ function WatchedRepos(props: {
   );
 }
 
+/** One account's watched repos, each with a switch that puts the App on it or takes it off. */
+function AccountRepos(props: {
+  readonly target: KinConnectionsTarget;
+  readonly account: string;
+  readonly settingsUrl: string | null;
+}) {
+  const { environmentId, orgId } = props.target;
+  const reposAtom = kinClient.githubRepos({ environmentId, input: { orgId } });
+  const result = useAtomValue(reposAtom);
+  const reload = useAtomRefresh(reposAtom);
+  const reloadStatus = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const set = useAtomCommand(kinClient.githubAppReposSet, { reportFailure: false });
+  const change = createKinGitHubAppRepoActions({
+    orgId,
+    set: (input) => set({ environmentId, input }),
+    refresh: () => {
+      reload();
+      reloadStatus();
+    },
+  });
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const searchRef = useRef<TextInputInstance | null>(null);
+  const all = Option.getOrNull(AsyncResult.value(result))?.repos ?? null;
+  if (all === null)
+    return AsyncResult.isFailure(result) ? (
+      <ListActionRow label={KIN_RETRY} description={WATCH.loadFailed} onPress={reload} />
+    ) : (
+      <View className="items-center py-3">
+        <AppActivityIndicator />
+      </View>
+    );
+  const mine = kinGitHubAccountRepos(all, props.account, "");
+  const shown = kinGitHubAccountRepos(all, props.account, query);
+  const on = mine.filter((repo) => repo.agentsAs === "app").map((repo) => repo.repo);
+  const off = mine.filter((repo) => repo.agentsAs !== "app").map((repo) => repo.repo);
+  const run = (repos: ReadonlyArray<string>, putOn: boolean) => {
+    if (busy || repos.length === 0) return;
+    setBusy(true);
+    setProblem(null);
+    void change(props.account, repos, putOn).then((outcome) => {
+      setBusy(false);
+      setProblem(outcome.problem);
+    });
+  };
+  const settingsUrl = props.settingsUrl;
+  return (
+    <View className="border-t border-border-subtle">
+      <View className="px-4 py-3">
+        <Text className="text-sm text-foreground-muted">{PICK.hint}</Text>
+      </View>
+      {mine.length > 8 ? (
+        <View className="px-4 pb-3">
+          <SearchField
+            autoFocus={false}
+            inputRef={searchRef}
+            accessibilityLabel={PICK.search}
+            clearAccessibilityLabel="Clear"
+            placeholder={PICK.search}
+            value={query}
+            onChangeText={setQuery}
+          />
+        </View>
+      ) : null}
+      {off.length === 0 ? null : (
+        <ListActionRow label={PICK.addAll} onPress={() => run(off, true)} />
+      )}
+      {on.length === 0 ? null : (
+        <ListActionRow label={PICK.removeAll} tone="danger" onPress={() => run(on, false)} />
+      )}
+      {shown.length === 0 ? (
+        <View className="px-4 py-3">
+          <Text className="text-foreground-muted">{PICK.none}</Text>
+        </View>
+      ) : (
+        shown.map((repo) => (
+          <ListToggleRow
+            key={repo.repo}
+            label={repo.repo}
+            description={repo.agentsAs === "app" ? WATCH.asApp : WATCH.asYou}
+            disabled={busy}
+            value={repo.agentsAs === "app"}
+            onValueChange={(value) => run([repo.repo], value)}
+          />
+        ))
+      )}
+      {problem === null ? null : <ErrorBanner message={problem} />}
+      {problem === null || settingsUrl === null ? null : (
+        <ListActionRow
+          label={PICK.openOnGitHub}
+          onPress={() => void Linking.openURL(settingsUrl)}
+        />
+      )}
+    </View>
+  );
+}
+
 /** "Fork · Your @-mention calls an agent", or nothing. */
 function repoNote(repo: KinGitHubRepo): string | undefined {
   const parts: Array<string> = [];
+  if (repo.agentsAs !== undefined) parts.push(repo.agentsAs === "app" ? WATCH.asApp : WATCH.asYou);
   if (repo.fork) parts.push(WATCH.fork);
   if (repo.mentions) parts.push(WATCH.mentions);
   return parts.length === 0 ? undefined : parts.join(" · ");

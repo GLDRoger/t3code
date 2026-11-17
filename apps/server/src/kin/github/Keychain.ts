@@ -8,7 +8,10 @@ import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-/** The one keyring item Kin reads: its GitHub App's private key, account `<app id>`. */
+/**
+ * The keyring item hosts set up before November 2026 kept the GitHub App's key in, account
+ * `<app id>`. Kin only reads it, to copy it into its secret store once (see `appKey.ts`).
+ */
 const SERVICE = "kin-github-app";
 
 export class KinKeychainError extends Schema.TaggedError<KinKeychainError>()("KinKeychainError", {

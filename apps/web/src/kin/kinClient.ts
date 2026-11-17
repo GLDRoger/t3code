@@ -597,6 +597,19 @@ export const kinClient = {
     label: "kin:github-repos:set",
     tag: "kin.github.repos.set",
   }),
+  githubAppCreate: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:github-app:create",
+    tag: "kin.github.app.create",
+  }),
+  githubAppDisconnect: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:github-app:disconnect",
+    tag: "kin.github.app.disconnect",
+  }),
+  githubAppReposSet: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:github-app-repos:set",
+    tag: "kin.github.app.repos.set",
+    concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:github-app` },
+  }),
   /** Starts the code sign-in, or connects with a pasted token, which travels once, redacted. */
   githubStart: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:github:start",

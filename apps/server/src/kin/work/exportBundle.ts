@@ -1,4 +1,6 @@
 import {
+  KIN_EXPORT_HOLDS,
+  KIN_EXPORT_LEAVES,
   KIN_EXPORT_ROUTE,
   KinChatError,
   KinDocFile,
@@ -53,7 +55,7 @@ export const EXPORT_READS = [
 ] as const;
 
 /** Rows `kin import` takes as entries; the rest are rows of their own or files here. */
-const NOT_ENTRIES = ["clients", "projects", "contacts", "docs"];
+const NOT_ENTRIES = ["clients", "projects", "docs"];
 const PAGE = 200;
 const LINK_TTL_MS = 10 * 60 * 1000;
 const NUMBER = /^[A-Za-z0-9/-]{1,32}$/;
@@ -179,15 +181,28 @@ const listSpec = (def: ListDef): ImportList => {
   const preset = (Object.hasOwn(PRESETS, def.id) ? PRESETS[def.id as PresetId] : undefined) as
     | (typeof PRESETS)[PresetId]
     | undefined;
-  const fields = def.fields
-    .filter((one) => one.retired !== true && !preset?.fields.some((had) => had.key === one.key))
-    .map((one) => ({
-      label: one.label,
-      type: one.type,
-      ...some("choices", one.choices),
-      ...some("link", one.link),
-      ...(one.sensitive && one.type !== "money" && one.type !== "file" ? { sensitive: true } : {}),
-    }));
+  const fields = def.fields.flatMap((one): Array<NonNullable<ImportList["fields"]>[number]> => {
+    if (one.retired === true) return [];
+    const had = preset?.fields.find((field) => field.key === one.key);
+    if (had !== undefined) {
+      // A template's field comes back with the template; only choices added to it travel.
+      const added = (one.choices ?? []).filter((item) => !(had.choices ?? []).includes(item));
+      return one.type === "choice" && added.length > 0
+        ? [{ label: had.label, type: one.type, choices: added }]
+        : [];
+    }
+    return [
+      {
+        label: one.label,
+        type: one.type,
+        ...some("choices", one.choices),
+        ...some("link", one.link),
+        ...(one.sensitive && one.type !== "money" && one.type !== "file"
+          ? { sensitive: true }
+          : {}),
+      },
+    ];
+  });
   const categories = def.categories.filter((one) => !preset?.categories.includes(one));
   const extras = {
     ...(fields.length === 0 ? {} : { fields }),
@@ -415,21 +430,6 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
     }),
   );
 
-  const contactRows = pages(["contacts"], false).pipe(
-    Stream.map((row) => {
-      const fields = parseFields(row.fieldsJson);
-      return line({
-        source: row.key,
-        name: row.title,
-        ...some("client", row.partyId === null ? undefined : parties.get(row.partyId)),
-        ...Object.fromEntries(
-          Object.entries(fields).filter(([, value]) => typeof value === "string"),
-        ),
-        ...some("notes", row.notes),
-      });
-    }),
-  );
-
   /** Each doc as it reads now: its markdown, or the file it is. */
   const docEntries = pages(["docs"], false).pipe(
     Stream.mapEffect((row) =>
@@ -478,15 +478,15 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
   const readme = [
     `Everything Kin keeps for ${org?.name ?? "the company"}, taken out on ${dayIn(yield* Clock.currentTimeMillis, zone)}.`,
     "",
-    "kin.jsonl  Clients, projects, every list's entries and their payments, in the format `kin import` reads.",
+    KIN_EXPORT_HOLDS,
+    "",
+    KIN_EXPORT_LEAVES,
+    "",
+    "kin.jsonl  Clients, contacts, projects, every list and its entries with their payments, in the format `kin import` reads.",
     "           Restore it on the computer running Kin with: t3 kin import --file kin.jsonl --apply",
-    "contacts.jsonl  People at your clients. The import doesn't read these; they are here to keep.",
+    "           What it makes is owned by whoever imports it.",
     "docs/      Each doc as it reads now, and the files docs show.",
     "files/     Files kept on entries, such as invoice PDFs and receipts.",
-    "",
-    "Memory is kept in your memory repository, so it isn't in here.",
-    "Not included: connection tokens, keys, sign-in sessions, pairing codes, invites and push tokens.",
-    "An import makes everything again owned by whoever imports it; who did what, comments and history stay behind.",
     "",
   ].join("\n");
 
@@ -499,7 +499,6 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
     Stream.fromIterable<ZipEntry<SqlError.SqlError, never>>([
       { name: "README.txt", data: text(readme) },
       { name: "kin.jsonl", data: lines.pipe(Stream.encodeText) },
-      { name: "contacts.jsonl", data: contactRows.pipe(Stream.encodeText) },
     ]).pipe(
       Stream.concat(docEntries),
       // Last: the docs and entries above named the files.

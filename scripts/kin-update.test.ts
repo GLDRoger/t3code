@@ -142,11 +142,14 @@ echo "current $(readlink "$CURRENT" || echo none)"
 echo "database at $(heads): $(sqlite3 "$DB" "SELECT group_concat(body) FROM notes;")"
 echo "starts after rollback stop $(sed -n '/reset-failed/,$p' "$HOME/calls" | grep -c 'start kin-server')"
 ls "$HOME/.t3/userdata" | grep -q 'restoring\\|failed-' && echo "leftovers"
-# Then the recovery the last line prints, once the disk has room again.
-unset -f cp
-export -f mv
+# Then the recovery the last line prints, once the disk has room again, typed into a fresh
+# login shell: no user-bus variables and none of this harness's functions.
+mkdir -p "$HOME/stubs"
+printf '#!/bin/sh\\necho "systemctl $* XDG_RUNTIME_DIR=\${XDG_RUNTIME_DIR:-unset} DBUS_SESSION_BUS_ADDRESS=\${DBUS_SESSION_BUS_ADDRESS:-unset}" >>"$HOME/calls"\\n' >"$HOME/stubs/systemctl"
+printf '#!/bin/sh\\nif [ "$1" = -T ]; then exec python3 -c "import os, sys; os.replace(sys.argv[1], sys.argv[2])" "$2" "$3"; fi\\nexec /bin/mv "$@"\\n' >"$HOME/stubs/mv"
+chmod +x "$HOME/stubs/systemctl" "$HOME/stubs/mv"
 recover="$(tail -n1 "$HOME/said")"
-eval "\${recover#*then run: }" &&
+env -i HOME="$HOME" PATH="$HOME/stubs:$PATH" LC_ALL=C bash --noprofile --norc -l -c "\${recover#*then run: }" &&
   echo "recovered: current $(basename "$(readlink "$CURRENT")"), database at $(heads), kept $(sqlite3 "$DB.failed-bbbbbbbbbbbb" "SELECT max(migration_id) FROM kin_sql_migrations;")"
 echo "last call $(tail -n1 "$HOME/calls")"`);
     expect(out, said).toEqual([
@@ -156,7 +159,7 @@ echo "last call $(tail -n1 "$HOME/calls")"`);
       "database at 149: before the update,by the new build",
       "starts after rollback stop 0",
       "recovered: current old, database at 148, kept 149",
-      "last call systemctl --user start kin-server",
+      `last call systemctl --user start kin-server XDG_RUNTIME_DIR=/run/user/${process.getuid?.()} DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${process.getuid?.()}/bus`,
     ]);
     const last = said.split("\n").find((line) => line.includes("ROLLBACK STOPPED")) ?? "";
     expect(last).toContain("kin-server is NOT running and its data is intact");

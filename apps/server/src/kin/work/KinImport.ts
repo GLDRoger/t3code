@@ -53,7 +53,7 @@ const MAX_LINE_CHARS = 1_000_000;
 const MAX_FILE_BYTES = 1_000_000_000;
 const MAX_LISTED = 2_000;
 const CLOSED: ReadonlyArray<KinRecordState> = ["done", "dropped"];
-const NOT_ENTRIES = ["clients", "projects", "contacts", "docs"];
+const NOT_ENTRIES = ["clients", "projects", "docs"];
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });

@@ -58,6 +58,7 @@ import { reportIssuedWithoutAmount } from "../gendocs/amounts.ts";
 import { countedEntry } from "../work/recordRows.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
+import { KinTurnContent } from "./turn/content.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
 import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import * as RoutineContent from "./RoutineContent.ts";
@@ -257,7 +258,7 @@ const runner = Layer.effectDiscard(
 const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
   entry.pipe(
     Layer.provide(
-      Layer.mergeAll(KinLeadRegistry.layer, KinLeadPrompt.layer).pipe(
+      Layer.mergeAll(KinLeadRegistry.layer, KinLeadPrompt.layer, KinTurnContent.layer).pipe(
         Layer.provideMerge(Layer.mergeAll(Memory.layer, KinChatRepository.layer)),
       ),
     ),

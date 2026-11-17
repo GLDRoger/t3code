@@ -33,7 +33,7 @@ import {
   type ThreadSnapshot,
   type Trigger,
 } from "./githubTriggers.ts";
-import { companyRepo, type KnownRepo, repoList, watchRow } from "./githubWatchStore.ts";
+import { companyRepo, knownRepos, type KnownRepo, repoList, watchRow } from "./githubWatchStore.ts";
 import { gitHubApp } from "./KinGitHubApp.ts";
 
 /**
@@ -93,7 +93,7 @@ const parseGhApi = (out: string): ApiAnswer => {
 };
 
 export interface ApiRequest {
-  readonly method?: "GET" | "POST" | "PUT" | "PATCH";
+  readonly method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly path: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: unknown;
@@ -595,7 +595,9 @@ export const make = Effect.gen(function* () {
         Effect.andThen(row?.problem === null ? refresh.touch(orgId, "connections") : Effect.void),
       );
     let reposChanged = false;
-    if (row.reposAt === null || now - row.reposAt > REPOS_EVERY_MS) {
+    // Repos stored before Kin kept each one's id and account are read again now.
+    const factsMissing = (yield* knownRepos(orgId)).some((entry) => entry.id === undefined);
+    if (row.reposAt === null || now - row.reposAt > REPOS_EVERY_MS || factsMissing) {
       const before = row.reposJson;
       const failed = yield* refreshRepos(orgId, account, now);
       if (failed !== undefined) return yield* fail(failed);

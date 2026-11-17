@@ -2,9 +2,11 @@ import { KinOrgId, type KinGitHubAppAccount, type KinGitHubStatus } from "@t3too
 import { describe, expect, it } from "@effect/vitest";
 
 import {
+  kinGitHubAccountRepos,
   kinGitHubAccountRows,
   kinGitHubAccountsHint,
   kinGitHubAgentsView,
+  kinGitHubAppCreatePath,
   kinGitHubRow,
   kinGitHubSheet,
 } from "./kinGitHub.ts";
@@ -97,6 +99,58 @@ describe("kinGitHubAgentsView", () => {
     ]);
   });
 
+  it("offers Disconnect only for an App made in Kin, and Create only when there is none", () => {
+    const made = kinGitHubAgentsView(
+      {
+        ...app,
+        setUp: {
+          source: "kin",
+          name: "Invented Kin",
+          at: now,
+          by: "Owner",
+          settingsUrl: "https://github.com/settings/apps/invented-kin",
+        },
+      },
+      null,
+      now,
+    );
+    expect([made.canCreate, made.disconnect?.settingsUrl]).toEqual([
+      false,
+      "https://github.com/settings/apps/invented-kin",
+    ]);
+    expect(made.setUpLine).toMatch(/^Invented Kin, set up in Kin by Owner on /);
+    const host = kinGitHubAgentsView(
+      { ...app, setUp: { source: "host", name: null, at: null, by: null, settingsUrl: null } },
+      null,
+      now,
+    );
+    expect([host.canCreate, host.disconnect, host.setUpLine]).toEqual([
+      false,
+      null,
+      "Set up on Kin's computer; it is changed there.",
+    ]);
+    const none = kinGitHubAgentsView(
+      {
+        as: "owner",
+        problem: null,
+        watched: 1,
+        installed: 0,
+        without: [],
+        ownerUses: [],
+        canCreate: true,
+      },
+      null,
+      now,
+    );
+    expect([none.canCreate, none.disconnect]).toEqual([true, null]);
+    expect(
+      kinGitHubAppCreatePath(
+        { path: "/api/kin/github-app/new?state=s", name: "Kin for X" },
+        " A&B ",
+      ),
+    ).toBe("/api/kin/github-app/new?state=s&name=A%26B");
+  });
+
   it("lists what agents did as the owner, newest first", () => {
     const view = kinGitHubAgentsView(
       {
@@ -173,6 +227,10 @@ describe("kinGitHubAccountRows", () => {
     expect(kinGitHubAccountsHint(rows)).toBe(
       "On GitHub, choose All repositories, then confirm. New repos are covered too.",
     );
+    expect(rows.map((entry) => entry.pickable)).toEqual([true, false]);
+    expect(
+      kinGitHubAccountRows({ ...agents, accounts: [{ ...row, canManage: false }] })[0]?.pickable,
+    ).toBe(false);
     // With rows, GitHub's generic install page is not offered as well.
     expect(kinGitHubAgentsView({ ...agents, accounts: [row, org] }, null, 0).installUrl).toBeNull();
   });
@@ -232,5 +290,30 @@ describe("kinGitHubAccountRows", () => {
     const { accounts: _accounts, ...unknown } = { ...agents, accounts: undefined };
     expect(kinGitHubAccountRows(unknown)).toEqual([]);
     expect(kinGitHubAgentsView(unknown, null, 0).installUrl).toBe(agents.installUrl);
+  });
+});
+
+describe("kinGitHubAccountRepos", () => {
+  it("lists one account's watched repos, found by name", () => {
+    const repo = (name: string, watched = true) => ({
+      repo: name,
+      watched,
+      fork: false,
+      mentions: false,
+    });
+    const repos = [
+      repo("invented-owner/blog"),
+      repo("invented-owner/notes"),
+      repo("invented-owner/old", false),
+      repo("invented-co/site"),
+      repo("invented-owner-two/x"),
+    ];
+    expect(kinGitHubAccountRepos(repos, "Invented-Owner", "").map((entry) => entry.repo)).toEqual([
+      "invented-owner/blog",
+      "invented-owner/notes",
+    ]);
+    expect(
+      kinGitHubAccountRepos(repos, "invented-owner", " NOT").map((entry) => entry.repo),
+    ).toEqual(["invented-owner/notes"]);
   });
 });
