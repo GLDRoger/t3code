@@ -13,6 +13,26 @@ export const kinSameTimeZone = (a: string, b: string) => {
   }
 };
 
+// ICU still answers with a zone's old spelling; people know it by the current one.
+const CURRENT_NAMES: Readonly<Record<string, string>> = {
+  "Asia/Calcutta": "Asia/Kolkata",
+  "Asia/Saigon": "Asia/Ho_Chi_Minh",
+  "Asia/Katmandu": "Asia/Kathmandu",
+  "Asia/Rangoon": "Asia/Yangon",
+  "Europe/Kiev": "Europe/Kyiv",
+  "America/Godthab": "America/Nuuk",
+  "America/Buenos_Aires": "America/Argentina/Buenos_Aires",
+  "America/Indianapolis": "America/Indiana/Indianapolis",
+  "America/Louisville": "America/Kentucky/Louisville",
+  "Atlantic/Faeroe": "Atlantic/Faroe",
+  "Pacific/Enderbury": "Pacific/Kanton",
+  "Pacific/Ponape": "Pacific/Pohnpei",
+  "Pacific/Truk": "Pacific/Chuuk",
+};
+
+/** A zone as profiles name it: "Asia/Kolkata", never the old "Asia/Calcutta". */
+export const kinZoneName = (zone: string) => CURRENT_NAMES[zone] ?? zone;
+
 /**
  * The owner's own device keeps the company's zone: once per app run and org, when none was set
  * (the host's stands in) or it differs, this device's zone is stored. A co-owner's never is.
