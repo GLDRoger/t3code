@@ -544,16 +544,15 @@ export function kinWorkRow(
   within?: Pick<KinWorkFilter, "party" | "project"> & { readonly sided?: true },
 ): KinWorkRowView {
   const owner = kinWorkName(record.owner, names);
-  // Inside a project the page already names its client, so its rows don't.
+  // The project, for everyone who is sent it; its client only when there is none. Inside a
+  // project the page already names its client, so its rows don't.
   const inProject = within?.project != null && record.project?.key === within.project.key;
   const about = inProject
     ? null
-    : record.party !== undefined && record.party.key !== within?.party?.key
-      ? record.party.title
-      : record.project !== undefined &&
-          record.project.key !== within?.project?.key &&
-          record.party === undefined
-        ? record.project.title
+    : record.project !== undefined
+      ? record.project.title
+      : record.party !== undefined && record.party.key !== within?.party?.key
+        ? record.party.title
         : null;
   const status = record.working ? "Working on it now" : statusText(record, names);
   const day = kinWorkClosed(record.state) ? null : kinWorkDueText(record, names, now);

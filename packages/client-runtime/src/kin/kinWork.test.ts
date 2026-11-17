@@ -598,7 +598,7 @@ describe("kinWorkRow", () => {
     expect(kinWorkRow(due, far, now).due).toContain("21");
   });
 
-  it("names the client, except in a list of only theirs, and nothing on an older host", () => {
+  it("names the project, else the client except in a list of only theirs, and nothing on an older host", () => {
     const party = {
       recordId: KinRecordId.make("rec-c"),
       key: "C-1",
@@ -612,6 +612,14 @@ describe("kinWorkRow", () => {
       line: "You · Invented Foods · They owe this",
     });
     expect(kinWorkRow(owed, names, now, { party: party, project: null }).about).toBeNull();
+    // Owner and member read the same words: the project when there is one, inside its client too.
+    const project = { recordId: KinRecordId.make("rec-p"), key: "P-1", title: "Invented app" };
+    const ownerSees = kinWorkRow(record({ party, project }), names, now);
+    const memberSees = kinWorkRow(record({ project }), names, now);
+    expect([ownerSees.about, memberSees.about]).toEqual(["Invented app", "Invented app"]);
+    expect(kinWorkRow(record({ party, project }), names, now, { party, project: null }).about).toBe(
+      "Invented app",
+    );
     // A host from before clients sends none of it: the row and the ways in show nothing new.
     expect(kinWorkRow(record(), names, now).line).toBe("You");
     expect(kinWorkHostClients(null)).toBe(false);

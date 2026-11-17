@@ -386,6 +386,7 @@ export function KinMoneyArea(props: Shared) {
   const agent = useKinAskAgent(target);
   const rates = useKinRates(target);
   const ratesAllowed = useAtomValue(kinClient.companyRead.permissionAtom(target.environmentId));
+  const canAddLead = useAtomValue(kinClient.leadCreate.permissionAtom(target.environmentId));
   const now = new Date(useNowMinuteMs());
   const openList = useKinOpenList(target);
   const { names } = props.directory;
@@ -437,26 +438,48 @@ export function KinMoneyArea(props: Shared) {
       />
     </>
   );
+  // Rates live in the company profile; a teammate can't read or set them.
+  const ratesRow = !ratesAllowed ? null : (
+    <KinFoldSection
+      title={KIN_CURRENCY.rates}
+      summary={
+        rates === null || rates.rates.length === 0
+          ? KIN_CURRENCY.setRate
+          : rates.rates.map((rate) => kinRateLine(rate, rates.home)).join(", ")
+      }
+      onOpen={() =>
+        navigation.navigate("KinRates", {
+          environmentId: String(target.environmentId),
+          orgId: String(target.orgId),
+        })
+      }
+    />
+  );
   if (view.empty) {
+    // Adding stays in the bar; before the first agent, the way in is making one.
+    const first = !scope.all ? null : agent !== null ? (
+      <Button
+        tone="primary"
+        icon="bubble.left"
+        label={KIN_MONEY.ask}
+        onPress={() => agent.ask(KIN_MONEY.askMessage)}
+      />
+    ) : canAddLead ? (
+      <Button
+        tone="primary"
+        label={KIN_MONEY.createChief}
+        onPress={() => navigation.navigate("KinLeadForm", { ...target, suggest: "chief" })}
+      />
+    ) : null;
     return (
       <AreaFrame {...frame}>
         <View className="gap-4">{top}</View>
         <EmptyState
           variant="plain"
           {...(kinNothingShown("money", scope) ?? KIN_MONEY.none)}
-          {...(agent === null || !scope.all
-            ? {}
-            : {
-                action: (
-                  <Button
-                    tone="primary"
-                    icon="bubble.left"
-                    label={KIN_MONEY.ask}
-                    onPress={() => agent.ask(KIN_MONEY.askMessage)}
-                  />
-                ),
-              })}
+          {...(first === null ? {} : { action: first })}
         />
+        {ratesRow}
       </AreaFrame>
     );
   }
@@ -629,23 +652,7 @@ export function KinMoneyArea(props: Shared) {
             );
           })}
         </KinFoldSection>
-        {/* Rates live in the company profile; a teammate can't read or set them. */}
-        {!ratesAllowed ? null : (
-          <KinFoldSection
-            title={KIN_CURRENCY.rates}
-            summary={
-              rates === null || rates.rates.length === 0
-                ? KIN_CURRENCY.setRate
-                : rates.rates.map((rate) => kinRateLine(rate, rates.home)).join(", ")
-            }
-            onOpen={() =>
-              navigation.navigate("KinRates", {
-                environmentId: String(target.environmentId),
-                orgId: String(target.orgId),
-              })
-            }
-          />
-        )}
+        {ratesRow}
       </View>
     </AreaFrame>
   );
