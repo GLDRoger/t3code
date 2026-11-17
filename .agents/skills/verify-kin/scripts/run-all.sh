@@ -16,7 +16,8 @@ SCRIPTS=("$@")
   project-people-loop member-sees-agent-name lead-undoes-only-me open-questions github-events
   member-messages-teammate member-refused-client member-suggests-playbook quote-invoice-loop
   social-week
-  hours-two-zones relay-marked asker-is-giver remove-and-bring-back teammate-reminder)
+  hours-two-zones relay-marked asker-is-giver remove-and-bring-back teammate-reminder away-held
+  hand-over-all)
 # Midday on everyone's clock before each script, so the hour it runs at holds nothing back;
 # scripts about hours set their own zones. Etc/GMT-N is UTC+N.
 midday() {
