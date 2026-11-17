@@ -2798,6 +2798,27 @@ it.effect(
         [...new Set(theirs.map((change) => change.key))].sort(),
         [notes.key, "W-3"].sort(),
       );
+      // A move to another project names both by title, but only those this viewer may see.
+      const project = (name: string) =>
+        OwnerClients.createProject([owner], { orgId, name, clientRequestId: name });
+      const from = yield* project("Invented portal");
+      const to = yield* project("Invented rebrand");
+      yield* LeadWork.update(scope, { key: "W-3", sourceEventId: "ask-event", project: from.key });
+      yield* LeadWork.update(scope, { key: "W-3", sourceEventId: "ask-event", project: to.key });
+      const moved = (all: ReadonlyArray<KinAgentChange>) => all[0];
+      assert.deepInclude(moved(yield* read()), {
+        fields: [{ field: "project", from: from.key, to: to.key }],
+        named: [end(from.key, "Invented portal"), end(to.key, "Invented rebrand")],
+      });
+      yield* OwnerClients.projectPeople([owner], {
+        orgId,
+        key: to.key,
+        add: [{ _tag: "person", personId: mateId }],
+      });
+      assert.deepInclude(moved(yield* read(viewerOfPeople([mateId]))), {
+        fields: [{ field: "project", from: from.key, to: to.key }],
+        named: [end(to.key, "Invented rebrand")],
+      });
     }).pipe(Effect.provide(layer)),
 );
 

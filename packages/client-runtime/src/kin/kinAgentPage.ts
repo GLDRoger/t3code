@@ -286,6 +286,10 @@ export function kinAgentChangeLine(
     const principal = /^(person|agent):(.+)$/.exec(shown);
     if (principal !== null && (field === "owner" || field === "waitingOn"))
       return names.get(principal[2]!) ?? (principal[1] === "agent" ? "an agent" : "someone");
+    if (field === "party" || field === "project") {
+      const title = change.named?.find((one) => one.key === shown)?.title;
+      return title === undefined ? shown : short(`${shown} ${title}`);
+    }
     if ((field === "due" || field === "date") && !Number.isNaN(Date.parse(shown)))
       return formatKinWhen(
         new Date(shown),
