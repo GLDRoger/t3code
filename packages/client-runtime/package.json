@@ -850,6 +850,10 @@
     "./kin/kinTemplates": {
       "types": "./src/kin/kinTemplates.ts",
       "default": "./src/kin/kinTemplates.ts"
+    },
+    "./kin/kinUpdated": {
+      "types": "./src/kin/kinUpdated.ts",
+      "default": "./src/kin/kinUpdated.ts"
     }
   },
   "scripts": {
