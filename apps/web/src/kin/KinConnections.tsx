@@ -326,6 +326,7 @@ function AddDialog(props: {
                     setProblem(null);
                     setWaiting(null);
                     setChangingClient(false);
+                    setOwnClient(false);
                     setDraft({ ...kinConnectionDraft(picked.service), key: draft.key });
                   }}
                 >
