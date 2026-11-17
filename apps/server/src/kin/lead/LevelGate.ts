@@ -61,7 +61,7 @@ export type HeldPost = {
   readonly _tag: "held";
   readonly at: number;
   readonly zone: string;
-  readonly why: "quiet" | "off";
+  readonly why: "quiet" | "off" | "away";
 };
 export const isHeld = (posted: KinMessage | HeldPost): posted is HeldPost =>
   "_tag" in posted && posted._tag === "held";

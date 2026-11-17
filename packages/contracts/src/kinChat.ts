@@ -21,6 +21,7 @@ import {
   ChatImageAttachment,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "./chatAttachment.ts";
+import { TimeZone } from "./kinTime.ts";
 
 export const KinOrgId = TrimmedNonEmptyString.pipe(Schema.brand("KinOrgId"));
 export type KinOrgId = typeof KinOrgId.Type;
@@ -249,6 +250,19 @@ export const KinMessageRelay = Schema.Struct({
 });
 export type KinMessageRelay = typeof KinMessageRelay.Type;
 
+/**
+ * A time the body names, such as when a held message arrives: `text` is how the body writes it,
+ * on `zone`'s clock. A client puts the reader's own clock in its place (`kinMessageBody`).
+ */
+export const KinMessageWhen = Schema.Struct({
+  at: IsoDateTime,
+  zone: TimeZone,
+  text: TrimmedNonEmptyString,
+  /** Whose clock `zone` is, when it is a person's: "Zoya Sheikh". */
+  of: Schema.optional(TrimmedNonEmptyString),
+});
+export type KinMessageWhen = typeof KinMessageWhen.Type;
+
 export const KinMessage = Schema.Struct({
   orgId: KinOrgId,
   chatId: KinChatId,
@@ -281,6 +295,8 @@ export const KinMessage = Schema.Struct({
   discussionId: Schema.optional(KinDiscussionId),
   // Absent on a message no agent sent across.
   relay: Schema.optional(KinMessageRelay),
+  // Absent on a message that names no time.
+  when: Schema.optional(KinMessageWhen),
 });
 export type KinMessage = typeof KinMessage.Type;
 

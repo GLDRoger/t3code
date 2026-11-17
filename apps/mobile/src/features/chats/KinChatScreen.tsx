@@ -1,4 +1,5 @@
 import { KIN_PEOPLE_CHAT, kinPeopleChatWith } from "@t3tools/client-runtime/kin/kinPeopleChat";
+import { kinAwayLine } from "@t3tools/client-runtime/kin/kinAway";
 import { kinAccessEndedCopy } from "@t3tools/client-runtime/kin/kinJoin";
 import { useKinAppShell } from "./state/kinChatOnly";
 import { KIN_ONLY } from "../../lib/kinOnly";
@@ -171,6 +172,7 @@ import {
 import { useKinAgentRetire } from "./state/useKinAgentRetire";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinReconnect } from "./state/useKinReconnect";
+import { useKinProfiles } from "./state/useKinProfiles";
 import {
   kinMemberNames,
   kinMentionCandidates,
@@ -308,6 +310,15 @@ function KinLiveChat(props: {
     summary === undefined || viewer.personId === null
       ? null
       : kinPeopleChatWith(summary, new Set([viewer.personId]));
+  const pairProfiles = useKinProfiles(
+    pairWith === null ? null : environmentId,
+    summary === undefined ? null : summary.orgId,
+  ).held;
+  const pairProfile =
+    pairProfiles === null || pairProfiles === undefined
+      ? undefined
+      : pairProfiles.profiles.find((profile) => profile.personId === pairWith);
+  const away = pairProfile === undefined ? null : kinAwayLine(pairProfile, { mine: false });
   const groupResult = useAtomValue(
     environmentId === null || chatId === null || !group
       ? noMembersAtom
@@ -383,7 +394,10 @@ function KinLiveChat(props: {
           environmentId === null || summary === undefined || pairWith === null
             ? null
             : {
-                privacy: KIN_PEOPLE_CHAT.privacy,
+                privacy:
+                  away === null
+                    ? KIN_PEOPLE_CHAT.privacy
+                    : `${away}. Kin holds what can wait until then.`,
                 open: () =>
                   navigation.navigate("KinProfile", {
                     environmentId,

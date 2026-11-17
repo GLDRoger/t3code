@@ -43,7 +43,7 @@ export function useKinOpenHit(target: KinWorkTarget) {
   const base = { environmentId: String(target.environmentId), orgId: String(target.orgId) };
   return (hit: KinSearchHitView) => {
     // What memory keeps opens where the owner sees and forgets it.
-    if (hit.kind === "memory") navigation.navigate("KinMemory", base);
+    if (hit.kind === "memory") navigation.navigate("KinMemory", { ...base, find: hit.title });
     else if (hit.kind === "docs")
       openRecord("KinDoc", {
         ...base,

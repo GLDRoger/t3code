@@ -28,7 +28,14 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { SHARED_REFUSAL, aborted, effectiveAudience, turnAsker, turnPeople } from "./Audience.ts";
+import {
+  SHARED_REFUSAL,
+  aborted,
+  effectiveAudience,
+  turnAsker,
+  turnChat,
+  turnPeople,
+} from "./Audience.ts";
 import { wakeEvent } from "./ChatWake.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
@@ -39,7 +46,7 @@ import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { relayPrefix } from "../reply/promises.ts";
-import { heldUntil, holdFor, holdLine, urgentNow } from "../triggers/quietHold.ts";
+import { heldUntil, holdFor, holdLine, theirTime, urgentNow } from "../triggers/quietHold.ts";
 import { unreadableBy } from "../work/teamView.ts";
 import { TurnEvent } from "./eventIds.ts";
 
@@ -442,6 +449,48 @@ const make = Effect.gen(function* () {
     return { personId: found.item.id, name: found.item.name };
   });
 
+  /**
+   * A held relay's arrival, said by Kin in the asking chat: every reader's client shows the time
+   * on their own clock, naming the receiver's when it differs. Silent: they just asked.
+   */
+  const arrivesNote = Effect.fn("KinHandoff.arrivesNote")(function* (
+    ctx: { readonly orgId: KinOrgId; readonly agentId: KinAgentId; readonly wakeupId: string },
+    name: string,
+    held: { readonly at: number; readonly zone: string; readonly why: "quiet" | "off" | "away" },
+    key: string,
+    audience: "owner" | "chat",
+  ) {
+    const here = yield* turnChat(ctx);
+    if (here === undefined) return;
+    const text = theirTime(held.at, held.zone);
+    const why =
+      held.why === "away"
+        ? `${name} is away`
+        : held.why === "off"
+          ? `Outside ${name}'s working hours`
+          : `In ${name}'s quiet hours`;
+    yield* chat
+      .notice({
+        orgId: ctx.orgId,
+        chatId: KinChatId.make(here.chatId),
+        messageId: KinMessageId.make(`kin-arrives:${key}`),
+        audience,
+        body: `${why}: it arrives at ${text}.`,
+        silent: true,
+        when: {
+          at: DateTime.formatIso(DateTime.makeUnsafe(held.at)),
+          zone: held.zone,
+          text,
+          of: name,
+        },
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't say when a relay arrives", cause),
+        ),
+      );
+  });
+
   const relay = Effect.fn("KinHandoff.relay")(function* (
     scope: McpInvocationScope,
     input: typeof RelayInput.Type,
@@ -506,6 +555,7 @@ const make = Effect.gen(function* () {
               }),
         },
       );
+      if (isHeld(posted)) yield* arrivesNote(ctx, to.name, posted, messageId, "owner").pipe(access);
       return {
         to: to.name,
         sent: true as const,
@@ -569,6 +619,7 @@ const make = Effect.gen(function* () {
         agentId: ctx.agentId,
         relay,
       }).pipe(access);
+      yield* arrivesNote(ctx, to.name, { ...held, at }, messageId, "chat").pipe(access);
       return {
         to: to.name,
         sent: true as const,

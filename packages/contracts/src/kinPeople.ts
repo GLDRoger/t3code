@@ -24,6 +24,7 @@ import {
   KinRoleTags,
   KinTrimmedText,
 } from "./kinChat.ts";
+import { KinDay } from "./kinMoney.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
 import { KinRecordRef } from "./kinWork.ts";
 
@@ -217,6 +218,11 @@ export const KinPersonProfile = Schema.Struct({
    * default: on for everyone but the owner.
    */
   holdOutsideHours: Schema.optional(Schema.Boolean),
+  /**
+   * Away until this day, on their own calendar: Kin holds non-urgent lines until it starts.
+   * Absent once the day has come, and from older hosts.
+   */
+  awayUntil: Schema.optional(KinDay),
   /** The tasks they hold now; only the owner reads it. */
   load: Schema.optional(Schema.Struct({ open: NonNegativeInt, late: NonNegativeInt })),
   /** The reader may change this profile (the check `kin.people.updateProfile` runs); absent from older hosts. */
@@ -247,6 +253,8 @@ export const KinPeopleUpdateProfileInput = Schema.Struct({
   /** Null goes back to the company's. */
   quietHours: Schema.optional(Schema.NullOr(KinPersonQuietHours)),
   holdOutsideHours: Schema.optional(Schema.Boolean),
+  /** Away until this day on their calendar; null is "I'm back". The owner level sets a teammate's. */
+  awayUntil: Schema.optional(Schema.NullOr(KinDay)),
   picture: Schema.optional(Schema.NullOr(KinAttachment)),
 });
 export type KinPeopleUpdateProfileInput = typeof KinPeopleUpdateProfileInput.Type;

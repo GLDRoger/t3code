@@ -17,6 +17,7 @@ import {
   KinDiscussionId,
   KinMessage,
   KinMessageRelay,
+  KinMessageWhen,
   KinMessageRef,
   type KinMessageRefInput,
   KinMessageId,
@@ -177,15 +178,18 @@ const {
   refs: _refs,
   discussionId: _discussionId,
   relay: _relay,
+  when: _when,
   links: _links,
   form: _form,
   ...messageRowFields
 } = KinMessage.fields;
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
+const encodeWhen = Schema.encodeEffect(Schema.fromJsonString(KinMessageWhen));
 const MessageRow = Schema.Struct({
   ...messageRowFields,
   storedDiscussionId: Schema.NullOr(KinDiscussionId),
   storedRelay: Schema.NullOr(Schema.fromJsonString(KinMessageRelay)),
+  storedWhen: Schema.NullOr(Schema.fromJsonString(KinMessageWhen)),
   storedClientMessageId: Schema.NullOr(Schema.String),
   storedAttachments: Schema.NullOr(Schema.fromJsonString(StoredAttachments)),
   storedRefs: Schema.NullOr(Schema.fromJsonString(StoredRefs)),
@@ -202,10 +206,12 @@ const MessageRow = Schema.Struct({
         storedRefs,
         storedDiscussionId,
         storedRelay,
+        storedWhen,
         storedForm,
         ...message
       }): KinMessage => ({
         ...message,
+        ...(storedWhen === null ? {} : { when: storedWhen }),
         ...(storedDiscussionId === null ? {} : { discussionId: storedDiscussionId }),
         ...(storedRelay === null ? {} : { relay: storedRelay }),
         ...(storedForm === null ? {} : { form: storedForm }),
@@ -215,8 +221,18 @@ const MessageRow = Schema.Struct({
           ? { clientMessageId: storedClientMessageId.slice(5) }
           : {}),
       }),
-      encode: ({ attachments, refs, discussionId, relay, links: _links, form, ...message }) => ({
+      encode: ({
+        attachments,
+        refs,
+        discussionId,
+        relay,
+        when,
+        links: _links,
+        form,
+        ...message
+      }) => ({
         ...message,
+        storedWhen: when ?? null,
         storedDiscussionId: discussionId ?? null,
         storedRelay: relay ?? null,
         storedForm: form ?? null,
@@ -228,7 +244,7 @@ const MessageRow = Schema.Struct({
     }),
   ),
 );
-const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", relay_json AS "storedRelay", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
+const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", relay_json AS "storedRelay", when_json AS "storedWhen", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
  WHEN 'agent' THEN json_object('_tag', 'agent', 'agentId', author_agent_id, 'memberId', author_member_id,
  'ownerPersonId', author_owner_person_id, 'threadId', author_thread_id)
  ELSE json_object('_tag', author_kind) END AS author`;
@@ -1803,14 +1819,15 @@ const make = Effect.gen(function* () {
             const inserted =
               yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id, author_agent_id,
  author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, attachments_json, refs_json, intent, mentions_json, reply_to,
- widget_id, floor_run_id, status, sent_by, client_message_id, created_at, edited_at, silent, form, discussion_id, relay_json)
+ widget_id, floor_run_id, status, sent_by, client_message_id, created_at, edited_at, silent, form, discussion_id, relay_json, when_json)
  VALUES (${input.messageId}, ${input.orgId}, ${input.chatId}, ${seq}, ${author._tag},
  ${member?.principal._tag === "person" ? member.principal.personId : null}, ${member?.principal._tag === "agent" ? member.principal.agentId : null},
  ${agent?.ownerPersonId ?? null}, ${author._tag === "agent" ? author.threadId : null},
  ${memberId}, ${member?.role ?? "member"}, ${input.kind}, ${named.body}, ${attachmentsJson}, ${refs.length === 0 ? null : yield* encodeRefs(refs)}, ${input.intent}, ${mentions}, ${input.replyTo},
  ${input.widgetId}, ${input.floorRunId}, ${input.status}, ${input.sentBy}, ${clientId}, ${input.createdAt}, ${input.editedAt},
  ${input.silent === true ? 1 : 0}, ${brief ? "brief" : null}, ${input.discussionId ?? null},
- ${input.relay === undefined ? null : yield* encodeRelay(input.relay)})
+ ${input.relay === undefined ? null : yield* encodeRelay(input.relay)},
+ ${input.when === undefined ? null : yield* encodeWhen(input.when)})
  ON CONFLICT DO NOTHING RETURNING message_id`;
             if (inserted.length === 0)
               return yield* new KinChatError({

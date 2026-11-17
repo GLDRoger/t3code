@@ -18,6 +18,7 @@ import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 
 import { kinAttachmentSummary } from "./kinAttachments.ts";
+import { kinMessageOnMyClock } from "./kinAway.ts";
 import type { KinRouteHost } from "./kinHost.ts";
 import {
   applyKinChatHistory,
@@ -418,11 +419,13 @@ export function buildKinFeedRows(
    */
   openRuns = false,
 ): ReadonlyArray<KinFeedRow> {
-  const visible = messages.filter(
-    (message) =>
-      message.status !== "dismissed" &&
-      !(message.kind === "widget_action" && kinTapAnswersChoice(message.body)),
-  );
+  const visible = messages
+    .filter(
+      (message) =>
+        message.status !== "dismissed" &&
+        !(message.kind === "widget_action" && kinTapAnswersChoice(message.body)),
+    )
+    .map((message) => kinMessageOnMyClock(message));
   const rows: KinFeedRow[] = [];
   const foldKeys = new Set<string>();
   let previousAuthor: string | null = null;

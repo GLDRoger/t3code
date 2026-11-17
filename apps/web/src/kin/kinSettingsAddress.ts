@@ -12,36 +12,59 @@ declare module "@tanstack/react-router" {
 // Settings lives in the address over whatever Kin page is open, as the profile sheet does, so a
 // link opens it on a section and Back closes only Settings.
 const SETTINGS_PARAM = "settings";
+// What Memory opens filtered to, from a search result.
+const FIND_PARAM = "find";
 
 /** The open section: null while Settings is closed, "" when it is open with none chosen. */
 export function kinSettingsSectionIn(searchStr: string): string | null {
   return new URLSearchParams(searchStr).get(SETTINGS_PARAM);
 }
 
-function withSection(href: string, section: string | null): string {
+/** The words Memory opens filtered to, or "". */
+export const kinSettingsFindIn = (searchStr: string): string =>
+  new URLSearchParams(searchStr).get(FIND_PARAM) ?? "";
+
+function withSection(href: string, section: string | null, find?: string): string {
   const url = new URL(href, "http://kin.invalid");
+  url.searchParams.delete(FIND_PARAM);
   if (section === null) url.searchParams.delete(SETTINGS_PARAM);
   else url.searchParams.set(SETTINGS_PARAM, section);
+  if (section !== null && find !== undefined && find !== "") url.searchParams.set(FIND_PARAM, find);
   const search = url.searchParams.toString();
   return `${url.pathname}${search === "" ? "" : `?${search}`}${url.hash}`;
 }
 
 /** Settings on `section` over the Kin page last open: for an address outside Kin's pages. */
-function kinSettingsHref(section: string): string {
-  return withSection(kinListSwitchHref("threads"), section);
+function kinSettingsHref(section: string, find?: string): string {
+  return withSection(kinListSwitchHref("threads"), section, find);
 }
 
-/** Opens Settings on `section` ("" for none chosen) over the page on screen. */
-export function openKinSettings(history: RouterHistory, section = ""): void {
+/**
+ * Opens Settings on `section` ("" for none chosen) over the page on screen; Memory can open
+ * filtered to `find`.
+ */
+export function openKinSettings(history: RouterHistory, section = "", find?: string): void {
   const { pathname, search, hash, state } = history.location;
   if (kinListAt(pathname) !== "kin") {
-    history.push(kinSettingsHref(section));
+    history.push(kinSettingsHref(section, find));
     return;
   }
-  const href = withSection(`${pathname}${search}${hash}`, section);
+  const href = withSection(`${pathname}${search}${hash}`, section, find);
   // From one section to another keeps the one step back to the page underneath.
   if (kinSettingsSectionIn(search) !== null) history.replace(href, state);
   else history.push(href, { ...state, kinSettingsPushed: true });
+}
+
+/** Memory filtered to `find`, in place of the dialog `dialogParam` names, as a search hit opens. */
+export function openKinMemoryInstead(history: RouterHistory, find: string, dialogParam: string) {
+  const { pathname, search, hash, state } = history.location;
+  const params = new URLSearchParams(search);
+  params.delete(dialogParam);
+  const rest = params.toString();
+  history.replace(
+    withSection(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, "memory", find),
+    state,
+  );
 }
 
 export function closeKinSettings(history: RouterHistory): void {

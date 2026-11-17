@@ -43,6 +43,7 @@ import {
   kinPickedModel,
   useKinAgentModelOptions,
 } from "./KinAgentModelRow";
+import { KinAgentChanged } from "./KinAgentChanged";
 import { kinClient, refreshKinAgents } from "./state/kinClient";
 
 const row = (index: number) => (index === 0 ? undefined : "border-t border-border-subtle");
@@ -82,6 +83,15 @@ export function KinAgentSections(props: {
         </View>
       </ListSection>
       <Reach environmentId={environmentId} orgId={orgId} page={page} />
+      {page.changed === undefined ? null : (
+        <KinAgentChanged
+          environmentId={environmentId}
+          orgId={orgId}
+          agentId={lead.agentId}
+          changed={page.changed}
+          onChanged={changed}
+        />
+      )}
       <Pause environmentId={environmentId} orgId={orgId} page={page} onChanged={changed} />
     </>
   );

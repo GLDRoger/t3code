@@ -24,6 +24,7 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
 import * as KinTriggerScheduler from "./KinTriggerScheduler.ts";
+import { reholdEveryoneAfter } from "./quietHold.ts";
 import { KIN_DEFAULT_QUIET_HOURS } from "./quietHours.ts";
 import * as OwnerCheck from "./ownerCheck.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
@@ -235,9 +236,13 @@ const make = Effect.gen(function* () {
         .withTransaction(
           Effect.gen(function* () {
             const settings = yield* decodeSettings(input);
-            yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+            // Lines already held move with the company's clock, earlier when the new hours allow.
+            yield* reholdEveryoneAfter(
+              settings.orgId,
+              sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
       VALUES (${settings.orgId}, ${settings.timeZone}, ${settings.morningBrief}, ${settings.eveningSummary}, ${settings.dream}, ${settings.fullRebuildWeekday}, ${settings.ownerCheckWeekday}, ${settings.ownerCheck}, ${yield* encodeQuietHours(settings.quietHours)})
-      ON CONFLICT (org_id) DO UPDATE SET time_zone = excluded.time_zone, morning_brief = excluded.morning_brief, evening_summary = excluded.evening_summary, dream = excluded.dream, full_rebuild_weekday = excluded.full_rebuild_weekday, owner_check_weekday = excluded.owner_check_weekday, owner_check = excluded.owner_check, quiet_hours_json = excluded.quiet_hours_json RETURNING org_id`;
+      ON CONFLICT (org_id) DO UPDATE SET time_zone = excluded.time_zone, morning_brief = excluded.morning_brief, evening_summary = excluded.evening_summary, dream = excluded.dream, full_rebuild_weekday = excluded.full_rebuild_weekday, owner_check_weekday = excluded.owner_check_weekday, owner_check = excluded.owner_check, quiet_hours_json = excluded.quiet_hours_json RETURNING org_id`,
+            ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
             yield* refresh.touch(settings.orgId, "timeZone");
             yield* reconcile(settings);
           }),

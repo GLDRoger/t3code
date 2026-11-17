@@ -10,7 +10,9 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { characterForTurn, characters, colleagueLine } from "./characters.ts";
-import { workingAt } from "../triggers/quietHours.ts";
+import { validZone } from "../triggers/quietHold.ts";
+import { stillAway, workingAt } from "../triggers/quietHours.ts";
+import { ownerZone } from "../work/recordRows.ts";
 import { describeHours, loads } from "./peopleRead.ts";
 
 const decodeTags = Schema.decodeUnknownOption(Schema.fromJsonString(KinRoleTags));
@@ -91,8 +93,10 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
     timeZone: string | null;
     workHours: string | null;
     talk: string;
+    away: string | null;
   }>`SELECT person_id AS id, display_name AS name, access, role_tags_json AS "roleTags",
-      time_zone AS "timeZone", work_hours_json AS "workHours", talk_style AS talk
+      time_zone AS "timeZone", work_hours_json AS "workHours", talk_style AS talk,
+      away_until AS away
     FROM kin_people p WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
       AND EXISTS (SELECT 1 FROM kin_session_bindings b WHERE b.org_id = p.org_id
         AND b.person_id = p.person_id AND b.revoked_at IS NULL)
@@ -112,7 +116,9 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
         WHERE org_id = ${orgId} AND register_id = 'projects' AND owner_kind = 'person'
           AND state NOT IN ('done', 'dropped') ORDER BY lower(title)`
     : [];
+  const company = people.some((person) => person.away !== null) ? yield* ownerZone(orgId) : "UTC";
   const team = people.map((person) => {
+    const away = stillAway(person.away, validZone(person.timeZone) ?? company, now);
     const tags = decodeTags(person.roleTags);
     const hours = person.workHours === null ? undefined : decodeHours(person.workHours);
     const held = load?.("person", person.id);
@@ -123,10 +129,11 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
         ...(tags._tag === "Some" ? tags.value : []),
         ...(leads.length === 0 ? [] : [`leads ${leads.slice(0, 2).join(", ")}`]),
       ].join(", "),
+      away ? `away until ${person.away}` : undefined,
       hours === undefined || hours._tag === "None"
         ? undefined
         : `${describeHours(hours.value)}${person.timeZone === null ? "" : ` ${person.timeZone}`}${
-            person.timeZone === null
+            person.timeZone === null || away
               ? ""
               : workingAt(hours.value, person.timeZone, now)
                 ? ", working now"

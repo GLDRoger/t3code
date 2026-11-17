@@ -21,6 +21,8 @@ import { type LeadCreator, profileIn, retirable } from "./KinLeadProvision.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import { turnModel } from "./leadModels.ts";
 import { setCharacter } from "./characters.ts";
+import { ownerLevelAgentChanges, ownerLevelUndoAgentChange } from "./agentChanges.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
 
 const CHARACTER_ORIGIN = "kin-character:";
 const CHARACTER_MAX = 20_000;
@@ -90,6 +92,7 @@ export const ownerLevelAgentPage = Effect.fn("KinAgentPage.read")(function* (inp
       paused: row.pausedAt !== null,
     })),
     playbooks: playbooks.map((row) => ({ key: KinRecordKey.make(row.key), title: row.title })),
+    changed: yield* ownerLevelAgentChanges(orgId, agentId).pipe(Effect.mapError(persistence)),
   } satisfies KinAgentPage;
 });
 
@@ -105,5 +108,23 @@ export const ownerLevelSetCharacter = Effect.fn("KinAgentPage.setCharacter")(fun
 }) {
   const { lead, by } = yield* retirable(input);
   yield* setCharacter(lead.orgId, lead.agentId, input.body, by ?? undefined);
+  return yield* ownerLevelAgentPage(input);
+});
+
+/** Puts back one change the agent made (`ownerLevelUndoAgentChange`), checked as its page is. */
+export const ownerLevelUndoChange = Effect.fn("KinAgentPage.undoChange")(function* (input: {
+  readonly by: LeadCreator;
+  readonly orgId: KinOrgId;
+  readonly agentId: KinAgentId;
+  readonly seq: number;
+}) {
+  const { lead, by } = yield* retirable(input);
+  const { owner } = yield* KinIdentity;
+  yield* ownerLevelUndoAgentChange({
+    orgId: lead.orgId,
+    agentId: lead.agentId,
+    seq: input.seq,
+    by: by ?? owner.personId,
+  });
   return yield* ownerLevelAgentPage(input);
 });
