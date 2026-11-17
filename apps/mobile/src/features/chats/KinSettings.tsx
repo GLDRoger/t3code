@@ -137,13 +137,19 @@ export function KinSettings(props: {
   const companyGroup = groups.find((group) => group.id === "company");
   const waiting = state._tag === "ready" ? selectKinInboxView(state.inbox.value).waiting.length : 0;
 
+  // Two computers with one name are told apart by the address their rows show.
+  const nameOf = (environment: EnvironmentPresentation) =>
+    environment.displayUrl !== null &&
+    environments.filter((one) => one.label === environment.label).length > 1
+      ? `${environment.label} (${environment.displayUrl})`
+      : environment.label;
   // The team on screen has its name; an old one this phone still holds goes by its computer and state.
   const teamOf = (environmentId: EnvironmentId) => {
     if (host._tag === "host" && host.environmentId === environmentId) return team;
     const held = environments.find((one) => one.environmentId === environmentId);
     return held === undefined
       ? null
-      : `${held.label} (${CONNECTION_LABEL[held.connection.phase].toLowerCase()})`;
+      : `${nameOf(held)} (${CONNECTION_LABEL[held.connection.phase].toLowerCase()})`;
   };
   const leave = (environmentId: EnvironmentId) =>
     Dialog.alert(
@@ -160,7 +166,7 @@ export function KinSettings(props: {
     );
   const signOut = (environment: EnvironmentPresentation) =>
     Dialog.alert(
-      owned.length === 1 ? "Sign out of your Kin?" : `Sign out of ${environment.label}?`,
+      owned.length === 1 ? "Sign out of your Kin?" : `Sign out of ${nameOf(environment)}?`,
       "This phone forgets the connection and the chats it holds. To come back, connect it again from the computer that runs your Kin.",
       [
         { text: "Cancel", style: "cancel" },
@@ -299,7 +305,7 @@ export function KinSettings(props: {
               key={environment.environmentId}
               tone="danger"
               fullWidth
-              label={owned.length === 1 ? "Sign out" : `Sign out of ${environment.label}`}
+              label={owned.length === 1 ? "Sign out" : `Sign out of ${nameOf(environment)}`}
               onPress={() => signOut(environment)}
             />
           ))}
