@@ -256,6 +256,7 @@ export function kinTasksAttention(
             detail: money === 1 ? "1 thing needs attention" : `${money} things need attention`,
             late,
             open: { type: "money" },
+            count: money,
           },
   };
 }
@@ -354,7 +355,10 @@ export function kinTasksBlock(input: {
 }): {
   readonly attention: ReadonlyArray<KinAttentionRow>;
   readonly needs: ReadonlyArray<KinNeedsYouRow>;
+  /** The things in it, as the Tasks badge counts them: Money's row is as many as it says. */
   readonly total: number;
+  /** Whether rows sit past the first few, so "See all" has something to show. */
+  readonly more: boolean;
 } | null {
   if (!input.ownerLevel) return null;
   const attention = input.attention.filter(
@@ -364,10 +368,11 @@ export function kinTasksBlock(input: {
     (row) => !(row.open.type === "task" && input.onMe.has(row.open.key)),
   );
   if (attention.length === 0 && needs.length === 0 && input.handled === 0) return null;
-  const total = attention.length + needs.length + input.hidden;
+  const rows = attention.length + needs.length + input.hidden;
+  const total = rows + needs.reduce((sum, row) => sum + (row.count ?? 1) - 1, 0);
   // The rows it shows, so the list below keeps every task the block doesn't. A money row leads,
   // so a long run of attention rows never hides it.
-  const limit = input.expanded ? total : KIN_NEEDS_YOU_SHOWN;
+  const limit = input.expanded ? rows : KIN_NEEDS_YOU_SHOWN;
   const lead = needs[0]?.id === "attention:money" ? 1 : 0;
   const shownAttention = attention.slice(0, Math.max(0, limit - lead));
   return {
@@ -377,6 +382,7 @@ export function kinTasksBlock(input: {
       ...needs.slice(lead, lead + Math.max(0, limit - lead - shownAttention.length)),
     ],
     total,
+    more: rows > KIN_NEEDS_YOU_SHOWN,
   };
 }
 

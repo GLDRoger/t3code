@@ -11,7 +11,6 @@ import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { kinDirectory } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
 import {
-  KIN_NEEDS_YOU_SHOWN,
   KIN_WORK_HOME,
   kinNeedsYou,
   type KinNeedsYouRow,
@@ -103,7 +102,10 @@ export function useKinNeedsRows(
 /** Over Tasks, the owner's and a co-owner's: what needs attention that "On me" doesn't hold. */
 export function KinTasksAttention(
   props: KinWorkTarget &
-    NonNullable<ReturnType<typeof useKinNeedsRows>> & { readonly total: number },
+    NonNullable<ReturnType<typeof useKinNeedsRows>> & {
+      readonly total: number;
+      readonly more: boolean;
+    },
 ) {
   const navigation = useNavigation();
   const openRecord = useKinWorkLink();
@@ -161,7 +163,7 @@ export function KinTasksAttention(
             />
           )),
         ]}
-        {total <= KIN_NEEDS_YOU_SHOWN ? null : (
+        {!props.more ? null : (
           <ListActionRow
             label={expanded ? KIN_WORK_HOME.seeFewer : KIN_WORK_HOME.seeAll(total)}
             onPress={() => setExpanded(!expanded)}

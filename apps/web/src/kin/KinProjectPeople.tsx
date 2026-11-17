@@ -109,7 +109,7 @@ export function KinProjectPeopleSection(
           title={KIN_PROJECT_PEOPLE.choose}
           people={props.people}
           names={props.names}
-          on={view.people.map((row) => row.who)}
+          on={view.people}
           busy={busy}
           onSave={async (add) => {
             if (await change({ add })) setAdding(false);
@@ -125,7 +125,7 @@ export function KinProjectPeopleSection(
 export function KinProjectPeoplePicker(props: {
   readonly people: ReadonlyArray<KinPerson> | null;
   readonly names: KinWorkNames;
-  readonly on: ReadonlyArray<KinWorkPrincipal>;
+  readonly on: Parameters<typeof kinProjectPeopleChoices>[0]["on"];
   readonly picked: ReadonlyArray<KinWorkPrincipal>;
   readonly disabled?: boolean;
   readonly onChange: (picked: ReadonlyArray<KinWorkPrincipal>) => void;
@@ -179,7 +179,7 @@ function KinProjectPeopleSheet(props: {
   readonly title: string;
   readonly people: ReadonlyArray<KinPerson> | null;
   readonly names: KinWorkNames;
-  readonly on: ReadonlyArray<KinWorkPrincipal>;
+  readonly on: Parameters<typeof kinProjectPeopleChoices>[0]["on"];
   readonly busy: boolean;
   readonly onSave: (add: ReadonlyArray<KinWorkPrincipal>) => Promise<void>;
   readonly onClose: () => void;

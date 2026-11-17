@@ -134,6 +134,8 @@ export interface KinNeedsYouRow {
   readonly detail: string;
   readonly late: boolean;
   readonly open: KinNeedsYouOpen;
+  /** How many things the row stands for, when it gathers several (Money's "2 things"). */
+  readonly count?: number;
 }
 
 /**

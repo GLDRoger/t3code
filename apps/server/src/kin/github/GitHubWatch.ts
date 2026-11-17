@@ -15,6 +15,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { KinServer } from "../KinServer.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -249,6 +250,7 @@ export const make = Effect.gen(function* () {
   const api = yield* KinGitHubApi;
   const queue = yield* KinEventQueue.KinEventQueue;
   const records = yield* Effect.serviceOption(KinRecords);
+  const refresh = yield* KinRefreshObserver;
 
   const get = (path: string, headers?: Record<string, string>) =>
     api.call({ path, ...(headers === undefined ? {} : { headers }) });
@@ -521,12 +523,18 @@ export const make = Effect.gen(function* () {
       row = yield* watchRow(orgId);
     }
     if (row === undefined || (options?.force !== true && now < row.nextAt)) return;
+    // The Connections screen's watch line: told when it changes, not on every look.
     const fail = (answer: ApiAnswer) =>
       sql`UPDATE kin_github_watch SET problem = ${problemOf(answer)}, next_at = ${now + RETRY_MS}
-        WHERE org_id = ${orgId}`;
+        WHERE org_id = ${orgId}`.pipe(
+        Effect.andThen(row?.problem === null ? refresh.touch(orgId, "connections") : Effect.void),
+      );
+    let reposChanged = false;
     if (row.reposAt === null || now - row.reposAt > REPOS_EVERY_MS) {
+      const before = row.reposJson;
       const failed = yield* refreshRepos(orgId, account, now);
       if (failed !== undefined) return yield* fail(failed);
+      reposChanged = (yield* watchRow(orgId))?.reposJson !== before;
     }
     const repos = yield* repoList(orgId);
     const watched = new Map(
@@ -709,6 +717,8 @@ export const make = Effect.gen(function* () {
           notifications_modified = ${notifications.headers["last-modified"] ?? row.notificationsModified},
           events_etag = ${events.status === 200 || events.status === 304 ? (events.headers.etag ?? row.eventsEtag) : row.eventsEtag}
         WHERE org_id = ${orgId}`;
+    if (row.checkedAt === null || row.problem !== null || reposChanged)
+      yield* refresh.touch(orgId, "connections");
   });
 
   return KinGitHubWatch.of({

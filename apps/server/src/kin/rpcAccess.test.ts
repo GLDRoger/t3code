@@ -58,6 +58,7 @@ const MEMBER = [
   "kin.people.updateProfile",
   "kin.pulse.handle",
   "kin.pulse.read",
+  "kin.pulse.subscribe",
   "kin.push.registerDevice",
   "kin.push.unregisterDevice",
   "kin.push.watch",
