@@ -785,7 +785,7 @@ describe("WakeupRunner", () => {
       );
     }).pipe(Effect.provide(harness({ piUsage: true })), provideDeterministicTestRuntime),
   );
-  it.effect("never launches a lead whose stored model is on a non-Claude instance", () =>
+  it.effect("never launches a lead whose stored model is on a provider it may not run on", () =>
     Effect.gen(function* () {
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
@@ -794,7 +794,7 @@ describe("WakeupRunner", () => {
       yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("codex-lead"));
       const exit = yield* Fiber.await(yield* run());
       assert.strictEqual(exit._tag, "Failure");
-      assert.include(String(exit), "Kin agents run only on Claude");
+      assert.include(String(exit), "Kin agents can't run on codex");
       assert.deepStrictEqual(
         yield* sql`SELECT status, thread_id FROM kin_wakeups WHERE org_id = ${orgId}`,
         [{ status: "failed", thread_id: null }],

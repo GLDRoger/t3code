@@ -23,15 +23,13 @@ export const kinSecretVariables = [
   "OPENAI_API_KEY",
 ];
 
-/** Runs the session's PreToolUse hooks the way Claude Code would; `true` when none denies. */
-export const hookAllows = async (
+/** Runs the session's PreToolUse hooks the way Claude Code would: the first refusal, with its reason. */
+export const hookDecision = async (
   options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions | undefined,
   tool_name: string,
   tool_input: unknown,
-) => {
-  const matchers = options?.hooks?.PreToolUse ?? [];
-  if (matchers.length === 0) return true;
-  for (const matcher of matchers)
+): Promise<"allowed" | { readonly refused: string | undefined }> => {
+  for (const matcher of options?.hooks?.PreToolUse ?? [])
     for (const hook of matcher.hooks) {
       const output = await hook(
         {
@@ -51,7 +49,14 @@ export const hookAllows = async (
         output.hookSpecificOutput?.hookEventName === "PreToolUse" &&
         output.hookSpecificOutput.permissionDecision === "deny"
       )
-        return false;
+        return { refused: output.hookSpecificOutput.permissionDecisionReason };
     }
-  return true;
+  return "allowed";
 };
+
+/** `true` when no PreToolUse hook denies the call. */
+export const hookAllows = async (
+  options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions | undefined,
+  tool_name: string,
+  tool_input: unknown,
+) => (await hookDecision(options, tool_name, tool_input)) === "allowed";

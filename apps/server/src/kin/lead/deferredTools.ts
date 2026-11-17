@@ -1,6 +1,6 @@
 /**
- * Kin tools a Claude lead loads through ToolSearch instead of carrying every turn: rarely used
- * jobs. Every other Kin tool loads upfront (`LeadIsolation` sets the server's `alwaysLoad`), so a
+ * Kin tools a lead finds through its provider's tool search instead of carrying every turn: rarely
+ * used jobs. Every other Kin tool loads up front (each provider's descriptor), so a
  * tool added later is never deferred by default, and a name here that no longer exists is inert.
  */
 export const KIN_DEFERRED_TOOLS: ReadonlySet<string> = new Set([

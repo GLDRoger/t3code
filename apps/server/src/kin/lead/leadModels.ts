@@ -1,5 +1,5 @@
 import type { KinOrgId, ModelSelection, ServerProvider, ServerSettings } from "@t3tools/contracts";
-import { kinAgentDriverAllowed, KinLead } from "@t3tools/contracts";
+import { kinAgentDriverAllowed, KinLead, kinProviderFacts } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -36,7 +36,7 @@ export const kinAgentModels = (
       provider.models.map((model) => ({ instanceId: provider.instanceId, model })),
     );
 
-/** Only Claude and confined Codex sessions get a lead's no-shell tool set; a lead runs on no other. */
+/** An agent runs only on a provider Kin plans its sessions for (`lead/turn/providers.ts`). */
 export const nonClaudeLeadModel = (
   settings: ServerSettings,
   model: ModelSelection,
@@ -47,7 +47,13 @@ export const nonClaudeLeadModel = (
   if (devServer && instanceId === KIN_VERIFY_SCRIPT_INSTANCE_ID && driver === "acpRegistry")
     return undefined;
   if (!kinAgentDriverAllowed(driver, settings.kinNonClaudeAgents))
-    return `Kin agents run only on Claude, and the model's instance ${instanceId} is ${driver === undefined ? "not a configured provider" : `a ${driver} instance`}. Delegated tasks may still use any provider.${driver === "codex" ? " To use Codex, turn on Agents on OpenAI models in Kin's Settings." : ""}`;
+    return `Kin agents can't run on ${instanceId}: ${
+      driver === undefined
+        ? "it isn't a configured provider"
+        : kinProviderFacts(driver) === undefined
+          ? `Kin doesn't run agents on ${driver} yet`
+          : "turn on Agents on other providers in Kin's Settings first"
+    }. Delegated tasks may still use any provider.`;
   return undefined;
 };
 

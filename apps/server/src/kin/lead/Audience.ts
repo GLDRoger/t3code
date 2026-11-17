@@ -435,7 +435,7 @@ export const recordAudience = Effect.fn("KinAudience.recordAudience")(function* 
     WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
 });
 
-/** A shared turn's lead thread; `LeadIsolation` gives it no file tools. */
+/** A shared turn's lead thread; `KinSessions` plans it confined: no file tools. */
 export const SHARED_THREAD_PREFIX = "kin-shared:";
 
 /** The audience the wake-up's prompt was built for; unrecorded reads as shared. */

@@ -1251,7 +1251,7 @@ export class KinLeadPrompt extends Context.Service<
         const lines = snapshot === undefined ? 0 : indexLines(snapshot.index);
         const budgetLeft = Number.parseInt(input.budgetContext ?? "", 10);
 
-        // The instructions travel in the session's system prompt (LeadIsolation); memory changes per head.
+        // The instructions travel in the session's system prompt (`lead/turn/session.ts`); memory changes per head.
         // Every part is the owner's unless marked `shared`; a shared prompt keeps only those.
         // A Team-room turn says what it asks in its own quote; group-chat lines would contradict it.
         const inTeamRoom = laneChat?.teamId === KIN_TEAM_ROOM_TEAM_ID;

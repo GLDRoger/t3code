@@ -73,7 +73,7 @@ const blueAtCentre = (jpeg: Uint8Array) =>
   });
 
 it.effect(
-  "every attachment reaches the provider as text and pictures: a picture stays one, a text PDF is its text and its pages, a scanned one its pages, a compressed one too, and a spreadsheet its extracted text",
+  "every attachment reaches the provider as text and pictures: a picture stays one, one no provider reads is named, a text PDF is its text and its pages, a scanned one its pages, a compressed one too, and a spreadsheet its extracted text",
   () =>
     Effect.gen(function* () {
       const photo: ChatAttachment = {
@@ -82,6 +82,13 @@ it.effect(
         name: "chart.png",
         mimeType: "image/png",
         sizeBytes: 8,
+      };
+      // Claude's adapter fails a whole turn on an image type it can't read.
+      const heic: ChatAttachment = {
+        ...photo,
+        id: "kin-chat-heic",
+        name: "Shelf.heic",
+        mimeType: "image/heic",
       };
       const contract = file("kin-chat-contract-pdf", "Contract.pdf", "application/pdf");
       const lease = file("kin-chat-lease-pdf", "Lease.pdf", "application/pdf");
@@ -98,6 +105,7 @@ it.effect(
       );
       const dir = yield* stored([
         [photo, new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
+        [heic, "heic bytes"],
         [contract, pdf([[[{ x: 72, text: "Retainer: 40 hours a month" }]]])],
         [lease, scanned()],
         [compressed, objectStreams],
@@ -108,7 +116,7 @@ it.effect(
       const content = yield* KinTurnContent;
       const { text, attachments } = yield* content.prepare({
         text: "Read these",
-        attachments: [photo, contract, lease, compressed, sheet, memo],
+        attachments: [photo, heic, contract, lease, compressed, sheet, memo],
       });
       // Only pictures go to the provider: the photo, then each PDF's pages, in order.
       assert.deepStrictEqual(
@@ -121,7 +129,10 @@ it.effect(
         ],
       );
       assert.strictEqual(attachments[1]?.id, pageImageId(contract.id, 1));
-      assert.match(text, /^Read these\n\n\[Attached file "Contract\.pdf" is saved at: /);
+      assert.match(
+        text,
+        /^Read these\n\n\[Attached image "Shelf\.heic" is saved at: [^\n]+\]\n\n\[Attached file "Contract\.pdf" is saved at: /,
+      );
       assert.include(text, '[Text of "Contract.pdf", 1 pages]\n--- Page 1 ---\n');
       assert.include(text, "Retainer: 40 hours a month");
       assert.include(text, '[The PDF "Lease.pdf" has no text layer: read it from its pages.]');
