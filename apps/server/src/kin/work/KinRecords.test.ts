@@ -1559,6 +1559,13 @@ it.effect(
         clientRequestId: "weekly",
       });
       assert.deepStrictEqual(weekly.repeat, { every: "days", days: 7 });
+      // Closed, the next one is made, still in the open for the team as the first was.
+      assert.isTrue(weekly.shared);
+      yield* OwnerWork.update([mate], { orgId, key: weekly.key, rev: weekly.rev, state: "done" });
+      const next = (yield* OwnerWork.list([owner], { orgId })).records.find(
+        (one) => one.title === weekly.title && one.state === "open",
+      );
+      assert.deepInclude(next, { shared: true, repeat: { every: "days", days: 7 } });
       // A task the owner shared with them is theirs to read, not to change.
       yield* OwnerWork.share([owner], { orgId, keys: [owners.key], shared: true });
       const seen = yield* OwnerWork.get([mate], { orgId, key: owners.key });

@@ -280,7 +280,7 @@ export function KinWorkNewDialog(
                   </Select>
                 </div>
               </div>
-              {draft.repeat === null ? null : (
+              {draft.repeat === null || problem !== null ? null : (
                 <p className="text-xs text-muted-foreground">
                   {draft.due === null ? KIN_WORK_REPEAT.needsDue : KIN_WORK_REPEAT.note}
                 </p>

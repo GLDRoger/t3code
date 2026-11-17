@@ -277,7 +277,9 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
     case "private":
       return action.private ? "Kept private." : "No longer private.";
     case "repeat":
-      return action.rule === null ? "No longer repeats." : `${kinRepeatText(action.rule)}.`;
+      return action.rule === null
+        ? "No longer repeats."
+        : `Repeats ${kinRepeatText(action.rule).toLowerCase()}.`;
   }
 }
 
