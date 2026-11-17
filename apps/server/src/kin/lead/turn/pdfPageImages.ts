@@ -1,14 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off -- pdf.js loads its fonts and decoders from files beside its package.
 // oxlint-disable-next-line typescript/triple-slash-reference -- pdf.js ships no types for its worker module.
-/// <reference path="../work/statements/pdfjsWorker.d.ts" />
+/// <reference path="../../work/statements/pdfjsWorker.d.ts" />
 import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
 
-import { inflatedTooFar } from "../work/statements/statementFiles.ts";
+import { inflatedTooFar } from "../../work/statements/statementFiles.ts";
 
 /**
- * What a Codex turn takes of its PDFs as page images. Claude reads up to 100 pages a session as
- * document blocks (`ClaudeAdapterV2`); a page is ~2k tokens to gpt-6.1, whose window is 500k.
+ * What a Kin turn takes of its PDFs as page images, on every provider. A page is ~1-2k tokens;
+ * Claude's adapter carries at most 28 MB of base64 a request, which 20 MB of JPEGs fits.
  */
 export const PDF_PAGE_IMAGES = {
   /** Across all of a turn's PDFs, first attached first. */
@@ -25,8 +25,8 @@ export const PDF_PAGE_IMAGES = {
 export type PageBudget = { pages: number; bytes: number };
 export type RenderedPages = {
   readonly pageCount: number;
-  /** The first pages as base64 JPEGs, as many as the budget held. */
-  readonly images: ReadonlyArray<string>;
+  /** The first pages as JPEGs, as many as the budget held. */
+  readonly images: ReadonlyArray<Uint8Array>;
 };
 
 /** pdf.js's own font and decoder files; without them a PDF with unembedded fonts draws no text. */
@@ -79,7 +79,7 @@ export const renderPdfPages = async (
   });
   try {
     const document = await task.promise;
-    const images: Array<string> = [];
+    const images: Array<Uint8Array> = [];
     for (let number = 1; number <= document.numPages && budget.pages > 0; number += 1) {
       const page = await document.getPage(number);
       const natural = page.getViewport({ scale: 1 });
@@ -99,7 +99,7 @@ export const renderPdfPages = async (
       if (jpeg.byteLength > budget.bytes) break;
       budget.pages -= 1;
       budget.bytes -= jpeg.byteLength;
-      images.push(jpeg.toString("base64"));
+      images.push(jpeg);
     }
     return { pageCount: document.numPages, images };
   } catch {

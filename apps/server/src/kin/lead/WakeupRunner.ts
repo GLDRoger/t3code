@@ -54,6 +54,7 @@ import {
   turnChat,
 } from "./Audience.ts";
 import { KinLeadPrompt } from "./LeadPrompt.ts";
+import { KinTurnContent } from "./turn/content.ts";
 import {
   chooseLeadModel,
   companyDefaultModel,
@@ -251,6 +252,7 @@ const make = Effect.gen(function* () {
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const hooks = yield* Effect.serviceOption(KinWakeupHooks);
   const prompt = yield* KinLeadPrompt;
+  const turnContent = yield* KinTurnContent;
   const identity = yield* KinIdentity.KinIdentity;
   const floor = yield* Floor.KinFloor;
   const registry = yield* KinLeadRegistry.KinLeadRegistry;
@@ -404,8 +406,10 @@ const make = Effect.gen(function* () {
         const n = steering.steers;
         const messageId = MessageId.make(KinIdentity.steerMessageId(wakeupId, n));
         const deliver = Effect.gen(function* () {
-          const text = yield* prompt.steer({ orgId, agentId, wakeupId, events });
-          const attachments = yield* prompt.attachments({ orgId, events });
+          const { text, attachments } = yield* turnContent.prepare({
+            text: yield* prompt.steer({ orgId, agentId, wakeupId, events }),
+            attachments: yield* prompt.attachments({ orgId, events }),
+          });
           const claimed = yield* sql<{ messageId: string }>`
             SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
             WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
@@ -994,7 +998,7 @@ const make = Effect.gen(function* () {
                 return;
               }
             }
-            const text = yield* prompt.build({
+            const built = yield* prompt.build({
               orgId,
               agentId,
               wakeupId,
@@ -1004,8 +1008,12 @@ const make = Effect.gen(function* () {
               routineFacts,
               ...(lane === undefined ? {} : { lane }),
             });
-            // What the people in the chat attached to the messages this turn answers.
-            const attachments = yield* prompt.attachments({ orgId, events });
+            // What the people in the chat attached to the messages this turn answers, as text and
+            // pictures every provider reads alike.
+            const { text, attachments } = yield* turnContent.prepare({
+              text: built,
+              attachments: yield* prompt.attachments({ orgId, events }),
+            });
             // The prompt recorded who reads this turn; a shared one runs without file tools.
             const shared =
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";

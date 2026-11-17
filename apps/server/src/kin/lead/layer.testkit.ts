@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../../config.ts";
+import * as DocumentText from "../../provider/DocumentText.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -20,6 +21,7 @@ export const dormantLeadDependencies = Layer.mergeAll(
   Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
   Layer.mock(VcsProcess.VcsProcess)({}),
   ServerConfig.layerTest(process.cwd(), { prefix: "kin-dormant-lead-" }),
+  Layer.mock(DocumentText.DocumentText)({}),
   // Not a lead dependency: push deep links name the host environment.
   Layer.mock(ServerEnvironment.ServerEnvironment)({
     getEnvironmentId: Effect.succeed(EnvironmentId.make("env_kin")),
