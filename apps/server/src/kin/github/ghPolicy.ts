@@ -246,6 +246,12 @@ const unreadable = (what) => "Kin can't read this GitHub write in full (" + what
 
 const refuse = (message) => {
   process.stderr.write("kin: " + message + "\n");
+  // kin-as-owner leaves out of its record what didn't run.
+  if (process.env.KIN_REFUSED) {
+    try {
+      appendFileSync(process.env.KIN_REFUSED, message + "\n");
+    } catch {}
+  }
   process.exit(1);
 };
 
