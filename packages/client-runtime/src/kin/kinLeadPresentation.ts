@@ -353,7 +353,11 @@ export const KIN_AGENTS_COPY = {
  * last read, so the Agents list and an agent's page say "Working" from this instead.
  */
 export function kinWorkingAgents(
-  chats: ReadonlyArray<KinChatSummary> | null,
+  chats: ReadonlyArray<
+    Pick<KinChatSummary, "working"> & {
+      readonly members: ReadonlyArray<Pick<KinChatSummary["members"][number], "principal">>;
+    }
+  > | null,
 ): ReadonlySet<KinAgentId> {
   const working = new Set<KinAgentId>();
   for (const chat of chats ?? []) {

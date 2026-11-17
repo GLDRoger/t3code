@@ -1,4 +1,4 @@
-import { ProviderInstanceId, type KinAgentId, type KinChatSummary } from "@t3tools/contracts";
+import { KinAgentId, KinPersonId, ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -153,16 +153,15 @@ describe("a first agent's model", () => {
 });
 
 describe("kinWorkingAgents", () => {
-  const member = (principal: KinChatSummary["members"][number]["principal"]) =>
-    ({ principal }) as KinChatSummary["members"][number];
-  const row = (working: boolean | undefined, ...agents: ReadonlyArray<string>) =>
-    ({
-      ...(working === undefined ? {} : { working }),
-      members: [
-        member({ _tag: "person", personId: "owner" as never }),
-        ...agents.map((agentId) => member({ _tag: "agent", agentId: agentId as KinAgentId })),
-      ],
-    }) as KinChatSummary;
+  const row = (working: boolean | undefined, ...agents: ReadonlyArray<string>) => ({
+    ...(working === undefined ? {} : { working }),
+    members: [
+      { principal: { _tag: "person" as const, personId: KinPersonId.make("owner") } },
+      ...agents.map((agentId) => ({
+        principal: { _tag: "agent" as const, agentId: KinAgentId.make(agentId) },
+      })),
+    ],
+  });
 
   it.each([
     ["a direct chat with it is working", [row(true, "finance")], ["finance"]],
