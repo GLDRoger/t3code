@@ -71,16 +71,16 @@ wait_for "select count(*) from kin_messages where author_kind = 'agent' and body
 # 2. "/kin please rename" on that PR: a commit on its branch, and a reply in the thread.
 turn "call-$RUN" "git clone -q '$ORIGIN' '$WORK/w' && cd '$WORK/w' && git checkout -q rename-$RUN &&
 sed -i '' s/helloName/greeting/ hello.js &&
-git -c user.name=invented-owner -c user.email=1+invented-owner@users.noreply.github.com commit -qam 'refactor: rename helloName to greeting' -m 'Co-authored-by: Chief of staff <chief-of-staff@kin.invalid>' &&
+git -c user.name=invented-owner -c user.email=1+invented-owner@users.noreply.github.com commit -qam 'refactor: rename helloName to greeting' &&
 git push -q origin rename-$RUN &&
 gh pr comment $PR --repo $REPO --body \"Renamed helloName to greeting in \$(git rev-parse --short HEAD).\"" \
   "Renamed it on the hello PR."
 world comment "{\"repo\":\"$REPO\",\"number\":$PR,\"author\":\"dev-teammate\",\"association\":\"MEMBER\",\"body\":\"/kin please rename helloName to greeting [kv:call-$RUN]\"}" >/dev/null
 for _ in $(seq 1 90); do [[ -f "$VERIFY/turns/call-$RUN.result.json" ]] && break; sleep 1; done
 [[ -f "$VERIFY/turns/call-$RUN.result.json" ]] || fail "the teammate's /kin didn't start a turn"
-TRAILER="$(git --git-dir "$ORIGIN" log -1 --format='%s|%(trailers:key=Co-authored-by,valueonly)' "rename-$RUN")"
-expect_in "$TRAILER" "refactor: rename helloName to greeting|Chief of staff <chief-of-staff@kin.invalid>" \
-  "no commit with the agent credited on the PR's branch: $TRAILER"
+TRAILER="$(git --git-dir "$ORIGIN" log -1 --format='%s|%(trailers:key=Kin-Agent,valueonly)' "rename-$RUN")"
+expect_in "$TRAILER" "refactor: rename helloName to greeting|Chief of staff" \
+  "no commit marked with the agent's name on the PR's branch: $TRAILER"
 expect_in "$(world show)" "Renamed helloName to greeting in" "no reply in the PR's thread"
 expect_in "$(world show)" "<!-- kin-agent: chief-of-staff -->" "the reply isn't marked"
 

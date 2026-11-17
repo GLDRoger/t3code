@@ -9,7 +9,7 @@ Runs the Kin server from a source build on the always-on Linux machine, as the d
 | `backup.sh`, `kin-backup.{service,timer}` | Nightly backup of `~/.t3/userdata` and `service.env` to an encrypted volume, keeping 14 days.                                                     |
 | `update.sh`                               | As `kin`: builds `kin` in its own worktree, runs the contract tests, then switches `~/kin-current` to it and restarts. Also does the first build. |
 | `restore.md`                              | The restore drill.                                                                                                                                |
-| `retire-workers.sh`                       | As root, once: removes what the retired workers installed and lists what the retired GitHub App left in kin's files.                              |
+| `retire-workers.sh`                       | As root, once: removes what the retired workers installed and lists what they left in kin's files; keeps the GitHub App.                          |
 
 ## A kin shell
 
@@ -153,11 +153,31 @@ The lead's working line shows in the chat as soon as the message is queued, befo
 
 ## Connect GitHub from the phone
 
-Kin uses one GitHub identity: your own login, held by `gh` on this host. In the Kin app (or on the web), **Settings → Connections → GitHub → Connect**, then **Get a code**, open GitHub, enter the code and authorize, granting your organizations if GitHub asks. A classic token with `repo`, `read:org` and `workflow` works instead of a code. The server runs `gh auth login` and `gh auth setup-git` as kin, so git, T3 and Kin's agents act as you on GitHub from then on, and Kin checks your repos about once a minute for what should wake an agent. There is no GitHub App, webhook or bot to set up.
+Kin watches your repos with your own login, held by `gh` on this host. In the Kin app (or on the web), **Settings → Connections → GitHub → Connect**, then **Get a code**, open GitHub, enter the code and authorize, granting your organizations if GitHub asks. A classic token with `repo`, `read:org` and `workflow` works instead of a code. The server runs `gh auth login` and `gh auth setup-git` as kin, and Kin checks your repos about once a minute for what should wake an agent.
 
 **Disconnect** signs this host out of GitHub; revoke GitHub CLI under GitHub's Settings → Applications to end it there too.
 
-**Hosts set up before November 2026** still carry the retired workers and GitHub App. Once `update.sh` has built a current `kin`, run `sudo /root/kin-ops/ops/kin/host/retire-workers.sh` to see what it would remove, then again with `--yes`. It removes the `kin-worker` user, its units, sudoers entry and mount, and never touches kin's home, `~/.t3`, the database or backups. It then lists what only you remove: the `KIN_WORKER_*`, `KIN_GITHUB_*` and `KIN_REPOS` lines in `~/.t3/service.env`, the `kin-github-app` and `kin-owner-merge` keyring items, the old bot account in `gh`, and the "Kin · GitHub App" scheduled task. Then delete the App itself on GitHub: Settings → Developer settings → GitHub Apps → the Kin App → Delete.
+### Agents work as Kin's GitHub App
+
+With a GitHub App set up, agents' commits, pushes, pull requests, comments and reviews show the App as author, with the agent's name on each commit (`Kin-Agent:`) and post. Repos the App isn't installed on, and any command an agent runs with `kin-as-owner`, go out as you; Connections lists those runs. Without an App, everything goes out as you. The App never gets a way to approve, merge or change settings: Kin asks GitHub for tokens without those permissions.
+
+To set one up:
+
+1. On GitHub, Settings → Developer settings → GitHub Apps → New GitHub App. No webhook. Repository permissions: Contents, Pull requests, Issues and Checks read and write; Metadata read. Generate a private key.
+2. Install it on the accounts and repos agents should work in. Connections shows how many watched repos have it and links to install it on more.
+3. As kin, store the key in kin's keyring, which needs a Secret Service its headless session unlocks unprompted, such as `gnome-keyring-daemon` with an empty-password `login` keyring (Connections says when Kin can't read it). From `~/t3code/apps/server`:
+
+   ```bash
+   APP_ID=<app id> KEY=<path to the .pem> node -e 'const fs = require("fs"); const { Entry } = require("@napi-rs/keyring"); const json = JSON.stringify({ privateKeyPem: fs.readFileSync(process.env.KEY, "utf8") }); new Entry("kin-github-app", process.env.APP_ID).setPassword("kin-b64:" + Buffer.from(json).toString("base64"))'
+   ```
+
+   Then delete the `.pem`.
+
+4. Add `KIN_GITHUB_APP_ID=<app id>` and `KIN_GITHUB_BOT_LOGIN=<app slug>[bot]` to `~/.t3/service.env`, then `systemctl --user restart kin-server`.
+
+The key stays in the server; agents' shells only ever hold one-hour tokens.
+
+**Hosts set up before November 2026** still carry the retired workers. Once `update.sh` has built a current `kin`, run `sudo /root/kin-ops/ops/kin/host/retire-workers.sh` to see what it would remove, then again with `--yes`. It removes the `kin-worker` user, its units, sudoers entry and mount, and never touches kin's home, `~/.t3`, the database or backups. It then lists what only you remove: the `KIN_WORKER_*` lines in `~/.t3/service.env`, the `kin-owner-merge` keyring item and the "Kin · GitHub App" scheduled task. Keep the App, its `kin-github-app` keyring item and its `KIN_GITHUB_*` lines.
 
 ## Documents
 

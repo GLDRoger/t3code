@@ -327,19 +327,26 @@ One account is connected at a time; to switch, **Disconnect** and connect again.
 Kin's computer out; to end it on GitHub too, revoke GitHub CLI under GitHub's Settings →
 Applications. If GitHub stops accepting the login, the row says so and offers **Reconnect**.
 
-Once GitHub is connected, an agent works on GitHub as you in chats only you and co-owners can read.
-It clones, branches, commits, pushes, opens pull requests and issues, reviews and comments. On your
+Once GitHub is connected, an agent works on GitHub in chats only you and co-owners can read. It clones, branches, commits, pushes, opens pull requests and issues, reviews and comments. On your
 own and your organizations' repos it just does it; it asks first before acting in someone else's
 repo, changing a repo's settings, secrets or access, deleting a repo, or force-pushing or deleting a
 main branch. Longer work runs as a task in its own checkout, and when it finishes the agent replies
-once with what changed and the pull request. Commits name you as the author and credit the agent
-on a `Co-authored-by` line. Say "commit as yourself" (pull requests and comments still show as you) or "don't credit yourself" and it remembers.
-Teammates' chats and shared rooms still get no shell: what they ask for comes to you.
+once with what changed and the pull request. Teammates' chats and shared rooms still get no shell: what they ask for comes to you.
+
+#### Who agents work as
+
+If your Kin has its own GitHub App, agents' commits, pushes, pull requests, comments and reviews go
+out as that App, so blame and history show what an agent did; each commit carries the agent's name
+(`Kin-Agent: Tech lead`). On repos the App isn't installed on, and without an App, they go out as
+you. When GitHub refuses the App, or you say "do it as me", the agent runs that one command as you
+and says so. **Settings → Connections → GitHub** shows who agents work as, how many watched repos
+have the App with a link to install it on more, and the last few things done as you. The App can't
+approve, merge or change a repo's settings. Your host guide says how to set one up.
 
 #### When things happen on GitHub
 
-With GitHub connected, Kin checks it about once a minute with your login, so there is no app or
-webhook to install. On your repos and your organizations' repos, these start an agent on their own:
+With GitHub connected, Kin checks it about once a minute with your login, so there is no webhook
+to set up. On your repos and your organizations' repos, these start an agent on their own:
 
 - **A teammate opens a pull request**, or marks a draft ready: it is reviewed and the review posted.
   On your own pull requests the review is a comment, since GitHub doesn't let you approve your own.
