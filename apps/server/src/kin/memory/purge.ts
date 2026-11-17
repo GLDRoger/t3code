@@ -249,7 +249,7 @@ const scanBatchBytes = 4 * 1024 * 1024;
 export class KinPurge extends Context.Service<
   KinPurge,
   {
-    /** Writes the plan file a `memory_purge` action targets; the proposer calls it before `request_action`. */
+    /** Writes the plan file a `memory_purge` action targets; the proposer calls it before creating the action. */
     readonly storePlan: (
       plan: PurgePlan,
     ) => Effect.Effect<PurgeTarget, KinPurgeRejected | KinPurgeFailed>;

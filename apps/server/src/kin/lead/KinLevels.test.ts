@@ -216,11 +216,7 @@ it.effect("only KinLevels writes levels, and no agent path reaches its writers",
     ]);
     // Tool handlers and the lead's MCP surface never import the level services.
     const agentFacing = [...sources.keys()].filter(
-      (file) =>
-        file.startsWith("mcp/") ||
-        file.startsWith("lead/mcp/") ||
-        file === "approvals/mcp.ts" ||
-        file === "approvals/RequestAction.ts",
+      (file) => file.startsWith("mcp/") || file.startsWith("lead/mcp/"),
     );
     assert.isNotEmpty(agentFacing);
     for (const file of agentFacing)

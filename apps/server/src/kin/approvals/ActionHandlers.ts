@@ -9,8 +9,6 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import type { CredentialHygienePass } from "./CredentialHygiene.ts";
-
 export const KinExecFailure = Schema.Literals([
   "head_moved",
   "base_changed",
@@ -66,8 +64,6 @@ export interface KinExecutionContext {
   readonly grant: KinGrant;
   /** The owner-signed payload, decoded from `grant.compact` (already verified at submission). */
   readonly payload: Effect.Effect<KinGrantPayload, KinExecError>;
-  /** A hygiene pass from just after the claim, for kinds with `credentialCheck`. */
-  readonly pass: Option.Option<CredentialHygienePass>;
 }
 
 /**
@@ -76,8 +72,6 @@ export interface KinExecutionContext {
  */
 export interface KinActionHandler {
   readonly kind: KinActionKind;
-  /** Runs only on a passing credential hygiene check: every kind that writes to GitHub. */
-  readonly credentialCheck: boolean;
   /** Re-reads live state after the claim; any failure ends the action `failed`. */
   readonly precheck: (action: KinPendingAction) => Effect.Effect<void, KinExecError>;
   /** The side effect. The stop switch was checked just before the executor called it. */

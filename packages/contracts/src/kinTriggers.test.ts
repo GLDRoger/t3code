@@ -38,16 +38,6 @@ const fire = {
   lateByMs: 0,
   payload: { kind: "time", triggerId: "trigger-1", subject: subjects[0] },
 };
-const source = {
-  id: "source-1",
-  orgId: "org-1",
-  repo: "owner/repo",
-  scheduledTaskId: "scheduled-task-1",
-  inboxThreadId: "thread-1",
-  githubHookId: null,
-  botLogin: "kin[bot]",
-  status: "active",
-};
 const githubEvent = {
   orgId: "org-1",
   deliveryId: "github-delivery-1",
@@ -81,7 +71,7 @@ type SchemaName = {
 const samples = {
   KinTriggerId: [Kin.KinTriggerId, ["trigger-1"]],
   KinTriggerFireId: [Kin.KinTriggerFireId, [fire.fireId]],
-  KinWebhookSourceId: [Kin.KinWebhookSourceId, [source.id]],
+  KinWebhookSourceId: [Kin.KinWebhookSourceId, ["source-1"]],
   KinRoutine: [Kin.KinRoutine, Kin.KinRoutine.literals],
   KinWatchdog: [Kin.KinWatchdog, Kin.KinWatchdog.literals],
   KinTriggerSchedule: [Kin.KinTriggerSchedule, schedules],
@@ -107,14 +97,6 @@ const samples = {
       },
     ],
   ],
-  KinWebhookSource: [
-    Kin.KinWebhookSource,
-    ["active", "paused_in_t3", "blocked_by_policy", "missing"].map((status) => ({
-      ...source,
-      status,
-      githubHookId: status === "active" ? null : 123,
-    })),
-  ],
   KinGithubEvent: [
     Kin.KinGithubEvent,
     [
@@ -138,54 +120,7 @@ const samples = {
     Kin.KinOwnerTimeZoneRead,
     [{ orgId: "org-1", timeZone: "Asia/Kolkata", fromHost: true }],
   ],
-  KinGithubWebhookSetupInput: [
-    Kin.KinGithubWebhookSetupInput,
-    [{ orgId: "org-1", projectId: "project-1" }],
-  ],
-  KinGithubWebhookOrgInput: [Kin.KinGithubWebhookOrgInput, [{ orgId: "org-1" }]],
-  KinGithubWebhookSecretInput: [
-    Kin.KinGithubWebhookSecretInput,
-    [{ orgId: "org-1", secret: "0123456789abcdef" }],
-  ],
-  KinGithubWebhookSetup: [
-    Kin.KinGithubWebhookSetup,
-    [
-      { status: "needs_connect" },
-      ...["configured", "needs_secret", "needs_url"].map((status) => ({
-        status,
-        sourceId: Kin.KIN_GITHUB_APP_SOURCE,
-        url: "https://relay.example/v1/hooks/env/task/token",
-      })),
-    ],
-  ],
-  KinGithubWebhookStatus: [
-    Kin.KinGithubWebhookStatus,
-    [
-      { status: "off" },
-      {
-        status: "on",
-        sourceId: Kin.KIN_GITHUB_APP_SOURCE,
-        projectId: "project-1",
-        url: null,
-        enabled: true,
-        secretBound: false,
-        lastDelivery: {
-          receivedAt: "2026-11-10T12:00:00.000Z",
-          outcome: "rejected_signature",
-          signatureVerified: false,
-        },
-      },
-    ],
-  ],
 } satisfies Record<SchemaName, readonly [Schema.Codec<unknown>, ReadonlyArray<unknown>]>;
-
-const secretRejections = [
-  "too-short",
-  " 0123456789abcdef",
-  "0123456789abcdef\n",
-  "01234567 89abcdef",
-  "0123456789\tabcdef",
-];
 
 const rejections = [
   ...[
@@ -208,10 +143,6 @@ const rejections = [
     { schema: Kin.KinGithubEvent, value: { ...githubEvent, receivedAt: invalid } },
   ]),
   ...["", "  \n "].map((value) => ({ schema: Kin.KinTriggerId, value })),
-  ...secretRejections.map((secret) => ({
-    schema: Kin.KinGithubWebhookSecretInput,
-    value: { orgId: "org-1", secret },
-  })),
   ...[0, 59_999, 60_000.5].map((everyMs) => ({
     schema: Kin.KinTriggerSchedule,
     value: { type: "interval", everyMs },
@@ -235,7 +166,6 @@ const rejections = [
   ]),
   { schema: Kin.KinTriggerFired, value: { ...fire, fireId: "" } },
   { schema: Kin.KinTrigger, value: { ...trigger, lastFireId: "" } },
-  { schema: Kin.KinWebhookSource, value: { ...source, id: "" } },
   {
     schema: Kin.KinTriggerFired,
     value: {
@@ -256,7 +186,6 @@ const rejections = [
     })),
   { schema: Kin.KinRoutine, value: "weekly_check" },
   { schema: Kin.KinWatchdog, value: "unknown" },
-  { schema: Kin.KinWebhookSource, value: { ...source, status: "unknown" } },
   { schema: Kin.KinGithubEvent, value: { ...githubEvent, deliveryId: "" } },
   { schema: Kin.KinTriggerSchedule, value: { type: "once" } },
   { schema: Kin.KinTriggerSchedule, value: { type: "webhook" } },
@@ -280,7 +209,6 @@ const rejections = [
   ...[
     { schema: Kin.KinTrigger, value: trigger },
     { schema: Kin.KinTriggerFired, value: fire },
-    { schema: Kin.KinWebhookSource, value: source },
     { schema: Kin.KinGithubEvent, value: githubEvent },
     { schema: Kin.KinTriggerSettings, value: settings },
   ].map(({ schema, value: { orgId: _orgId, ...value } }) => ({ schema, value })),
@@ -299,13 +227,5 @@ describe("Kin trigger contracts", () => {
 
   it.each(rejections)("rejects invalid trigger data %#", ({ schema, value }) => {
     expect(() => Schema.decodeUnknownSync(schema)(value)).toThrow();
-  });
-
-  it.each(secretRejections)("never echoes a rejected webhook secret %#", (secret) => {
-    const decode = Schema.decodeUnknownSync(Kin.KinGithubWebhookSecretInput);
-    expect(() => decode({ orgId: "org-1", secret })).toThrow(
-      "A webhook secret needs at least 16 characters and no whitespace.",
-    );
-    expect(() => decode({ orgId: "org-1", secret })).not.toThrow(secret.trim());
   });
 });

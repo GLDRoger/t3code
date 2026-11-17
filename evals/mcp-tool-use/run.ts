@@ -111,7 +111,6 @@ import {
   RESCUE_PROMPT,
 } from "../../apps/server/src/kin/reply/classify.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
-import { KinApprovalsToolkit } from "../../apps/server/src/kin/approvals/mcp.ts";
 import { AttachmentToolkit } from "../../apps/server/src/mcp/toolkits/attachment/tools.ts";
 import { DeviceToolkit } from "../../apps/server/src/mcp/toolkits/device/tools.ts";
 import { EnvironmentToolkit } from "../../apps/server/src/mcp/toolkits/environment/tools.ts";
@@ -553,7 +552,6 @@ const t3SourceTools: ReadonlyArray<Tool.Any> = [
   DeviceToolkit,
   HtmlToolkit,
   KinChatToolkit,
-  KinApprovalsToolkit,
   KinLeadToolkit,
   KinWorkToolkit,
   KinStatementToolkit,
@@ -630,9 +628,7 @@ const visibleT3Tools = (options: {
                 (name) => tool.name === `${T3_PREFIX}${name}`,
               )
             : false) ||
-          [...Object.keys(KinChatToolkit.tools), ...Object.keys(KinApprovalsToolkit.tools)].some(
-            (name) => tool.name === `${T3_PREFIX}${name}`,
-          ) ||
+          Object.keys(KinChatToolkit.tools).some((name) => tool.name === `${T3_PREFIX}${name}`) ||
           (options.kinLead === true &&
             [
               ...Object.keys(KinLeadToolkit.tools),
@@ -652,7 +648,6 @@ const visibleT3Tools = (options: {
             ...Object.keys(KinDocsToolkit.tools),
             ...Object.keys(KinDocumentToolkit.tools),
             ...Object.keys(KinPulseToolkit.tools),
-            ...Object.keys(KinApprovalsToolkit.tools),
             ...Object.keys(KinConnectionsToolkit.tools),
             ...Object.keys(KinSocialToolkit.tools),
           ].some((name) => tool.name === `${T3_PREFIX}${name}`)) &&
@@ -1853,7 +1848,6 @@ const ANSWERS_IN_CHAT = new Set([
   "kin_chart",
   "kin_visual",
   "kin_react",
-  "request_action",
   "kin_connection_call",
   "kin_connection_offer",
   "kin_document",

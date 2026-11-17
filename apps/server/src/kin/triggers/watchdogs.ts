@@ -8,9 +8,7 @@ import {
   KinPersonId,
   KinWatchdog,
   type KinLeadDomain,
-  type KinWebhookSource,
   type MemoryItemHead,
-  type ScheduledTask,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
@@ -18,7 +16,6 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -27,7 +24,6 @@ import { isSqlError } from "effect/sql/SqlError";
 import * as NodeCrypto from "node:crypto";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
-import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -37,14 +33,7 @@ import { memoryDateMillis } from "../memory/frontMatter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { githubRef } from "./deferralGithub.ts";
-import {
-  type GithubConditionFacts,
-  inRepoScope,
-  KinGithubRepoScope,
-  matchConditions,
-  repoScopeLayer,
-} from "./githubEvents.ts";
-import { KinGithubWebhookLock } from "./githubWebhooks.ts";
+import { repoList } from "../github/githubWatchStore.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerService from "./KinTriggerService.ts";
 import * as KinTriggerStore from "./KinTriggerStore.ts";
@@ -88,8 +77,8 @@ export interface KinWatchdogGithubReaderShape {
   ) => Effect.Effect<ReadonlyArray<GithubItemState>, KinWatchdogGithubError>;
 }
 
-// githubReaders.ts replaces this when the Kin App is configured. Without it the GitHub watchdogs
-// stay off and `github_recheck` requests wait in the inbox.
+// githubReaders.ts replaces this with reads as the owner's GitHub login. Without it the GitHub
+// watchdogs stay off and `github_recheck` requests wait in the inbox.
 export const KinWatchdogGithubReader = Context.Reference<KinWatchdogGithubReaderShape | null>(
   "t3/kin/triggers/watchdogs/KinWatchdogGithubReader",
   { defaultValue: () => null },
@@ -134,45 +123,58 @@ function conditionFactsFromState(repo: string, state: GithubItemState): GithubCo
   };
 }
 
-/** The org's scoped GitHub links on an item, deduplicated. */
-function linksOf(item: MemoryItemHead, repos: ReadonlyArray<string>): ReadonlyArray<Link> {
+/** The repos the owner's watch covers in this org: his and his organisations', minus those he left alone. */
+export const watchedRepos = (orgId: KinOrgId) =>
+  repoList(orgId).pipe(
+    Effect.map((repos) => repos.flatMap((repo) => (repo.watched ? [repo.repo] : []))),
+    Effect.orElseSucceed((): ReadonlyArray<string> => []),
+  );
+
+/** An item's GitHub links, deduplicated. */
+function linksOf(item: MemoryItemHead): ReadonlyArray<Link> {
   const seen = new Map<string, Link>();
   for (const link of item.links) {
     const ref = githubRef(link);
-    if (ref !== undefined && inRepoScope(repos, ref.repo))
-      seen.set(refKey(ref.repo, ref.number), ref);
+    if (ref !== undefined) seen.set(refKey(ref.repo, ref.number), ref);
   }
   return [...seen.values()];
 }
 
-/** The repos a condition can be met in: its own, or every scoped repo. */
+/** The repos a condition can be met in: its own, or every repo the owner's watch covers. */
 function conditionLinks(item: MemoryItemHead, repos: ReadonlyArray<string>): ReadonlyArray<Link> {
   if (item.on === undefined) return [];
   const { repo, number } = item.on;
-  if (repo !== undefined) return inRepoScope(repos, repo) ? [{ repo, number }] : [];
-  return repos.map((scoped) => ({ repo: scoped, number }));
+  if (repo !== undefined) return [{ repo, number }];
+  return repos.map((watched) => ({ repo: watched, number }));
 }
 
-/** Which way, if any, a webhook source has stopped delivering. Only the owner turns it back on. */
-function observedSourceStatus(
-  task: Pick<ScheduledTask, "enabled" | "blockedByPolicy"> | undefined,
-): KinWebhookSource["status"] {
-  if (task === undefined) return "missing";
-  if (task.blockedByPolicy !== undefined) return "blocked_by_policy";
-  return task.enabled ? "active" : "paused_in_t3";
+/** What a condition can test, built from GitHub's state of an item. */
+interface GithubConditionFacts {
+  readonly event: string;
+  readonly action: string | null;
+  readonly repo: string;
+  readonly number: number | null;
+  readonly merged: boolean | null;
 }
 
-const STATUS_NOTICE: Readonly<Record<KinWebhookSource["status"], string>> = {
-  active: "GitHub events reach Kin again.",
-  paused_in_t3:
-    "GitHub events are paused: Kin's GitHub webhook task is turned off in T3's scheduled tasks. Kin won't turn it back on. Turn it on there, or run GitHub setup again.",
-  blocked_by_policy:
-    "GitHub events are blocked: this host's managed policy turns off webhook tasks. Kin will catch up from GitHub when a reader is available.",
-  missing:
-    "GitHub events stopped: Kin's GitHub webhook task was deleted. Run GitHub setup again to recreate it.",
-};
-const SECRET_NOTICE =
-  "GitHub events are refused: Kin's GitHub webhook task has a secret Kin didn't bind. Send the GitHub App's webhook secret to Kin again, or run GitHub setup again.";
+/** Open, valid memory items whose `on` condition the facts satisfy. */
+function matchConditions(
+  facts: GithubConditionFacts,
+  items: ReadonlyArray<MemoryItemHead>,
+): ReadonlyArray<MemoryItemHead> {
+  return items.filter(
+    ({ on, status, invalid_at, superseded_by }) =>
+      on !== undefined &&
+      status === "open" &&
+      invalid_at === null &&
+      superseded_by === null &&
+      on.event === facts.event &&
+      on.action === facts.action &&
+      on.number === facts.number &&
+      (on.merged === undefined || on.merged === facts.merged) &&
+      (on.repo === undefined || on.repo.toLowerCase() === facts.repo.toLowerCase()),
+  );
+}
 
 interface Lead {
   readonly agentId: KinAgentId;
@@ -189,17 +191,7 @@ const make = Effect.gen(function* () {
   const memory = yield* Memory.Memory;
   const chat = yield* Chat.KinChatService;
   const pings = yield* Pings.KinPings;
-  const scope = yield* KinGithubRepoScope;
   const ticks = yield* Scheduler.Scheduler;
-  // Optional, as in githubEvents: lead-only test runtimes have no T3 scheduling.
-  const tasks = yield* Effect.serviceOption(ScheduledTaskService.ScheduledTaskService);
-  if (Option.isNone(tasks))
-    yield* Effect.logWarning(
-      "Kin watchdogs started without T3 scheduled tasks: webhook sources go unreconciled",
-    );
-  // The RPC handlers own this lock; without it a re-key can briefly read as a foreign secret.
-  const lock = yield* Effect.serviceOption(KinGithubWebhookLock);
-
   // GitHub findings go to the engineering lead; overdue promises to the chief of staff.
   const leadOf = Effect.fn("KinWatchdogs.lead")(function* (
     orgId: KinOrgId,
@@ -312,15 +304,19 @@ const make = Effect.gen(function* () {
     const items = yield* openItems(orgId);
     const tracked = items.filter((item) => item.kind === "commitment" || item.kind === "deferral");
     const conditions = items.filter((item) => item.on !== undefined);
+    const repos =
+      conditions.length === 0
+        ? []
+        : yield* watchedRepos(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const wanted = [
-      ...tracked.flatMap((item) => linksOf(item, scope.repos)),
-      ...conditions.flatMap((item) => conditionLinks(item, scope.repos)),
+      ...tracked.flatMap((item) => linksOf(item)),
+      ...conditions.flatMap((item) => conditionLinks(item, repos)),
     ];
     const github = yield* readStates(orgId, reader, wanted);
 
     const findings: Array<Finding> = [];
     for (const item of tracked) {
-      const links = linksOf(item, scope.repos);
+      const links = linksOf(item);
       if (links.length === 0 || links.some(github.failed)) continue;
       const done = links.flatMap((link) => {
         const state = github.state(link);
@@ -337,7 +333,7 @@ const make = Effect.gen(function* () {
       });
     }
     for (const item of conditions)
-      for (const link of conditionLinks(item, scope.repos)) {
+      for (const link of conditionLinks(item, repos)) {
         const state = github.state(link);
         if (state === undefined) continue;
         if (matchConditions(conditionFactsFromState(link.repo, state), [item]).length === 0)
@@ -452,14 +448,14 @@ const make = Effect.gen(function* () {
     const lead = yield* leadOf(orgId);
     if (lead === undefined) return;
     const now = yield* Clock.currentTimeMillis;
-    const items = (yield* openItems(orgId)).filter((item) => linksOf(item, scope.repos).length > 0);
+    const items = (yield* openItems(orgId)).filter((item) => linksOf(item).length > 0);
     const github = yield* readStates(
       orgId,
       reader,
-      items.flatMap((item) => linksOf(item, scope.repos)),
+      items.flatMap((item) => linksOf(item)),
     );
     for (const item of items)
-      for (const link of linksOf(item, scope.repos)) {
+      for (const link of linksOf(item)) {
         const state = github.state(link);
         if (state?.kind !== "pull" || state.state !== "open") continue;
         for (const request of state.reviewRequests) {
@@ -489,20 +485,17 @@ const make = Effect.gen(function* () {
     const soon = (yield* openItems(orgId)).filter((item) => {
       const due = memoryDateMillis(item.due);
       return (
-        item.kind === "objective" &&
-        due > now &&
-        due <= now + 3 * DAY &&
-        linksOf(item, scope.repos).length > 0
+        item.kind === "objective" && due > now && due <= now + 3 * DAY && linksOf(item).length > 0
       );
     });
     if (soon.length === 0) return;
     const github = yield* readStates(
       orgId,
       reader,
-      soon.flatMap((item) => linksOf(item, scope.repos)),
+      soon.flatMap((item) => linksOf(item)),
     );
     for (const item of soon) {
-      const links = linksOf(item, scope.repos);
+      const links = linksOf(item);
       if (links.some(github.failed)) continue;
       const open = links.flatMap((link) => {
         const state = github.state(link);
@@ -533,58 +526,7 @@ const make = Effect.gen(function* () {
     if (indexIsStale(index, yield* Clock.currentTimeMillis)) yield* memory.rebuildIndex(orgId);
   });
 
-  const reconcileSources = Effect.fn("KinWatchdogs.reconcileSources")(function* (orgId: KinOrgId) {
-    const sources = yield* store.listSources(orgId);
-    if (sources.length === 0 || Option.isNone(tasks)) return;
-    const all = (yield* tasks.value.list()).tasks;
-    const lead = yield* leadOf(orgId);
-    const notify = (messageId: string, body: string) =>
-      lead === undefined
-        ? Effect.logWarning("Kin webhook source needs the owner", { orgId, body })
-        : chat
-            .notice({
-              orgId,
-              chatId: lead.chatId,
-              messageId: KinMessageId.make(messageId),
-              audience: "owner",
-              body,
-            })
-            .pipe(Effect.asVoid);
-    for (const source of sources) {
-      const task = all.find((candidate) => candidate.id === source.scheduledTaskId);
-      const status = observedSourceStatus(task);
-      // Reports only: re-enabling, re-keying or rebinding is the owner's call.
-      if (
-        status !== source.status &&
-        (yield* store.setSourceStatus(orgId, source.id, source.status, status))
-      )
-        yield* notify(
-          `kin-reconcile:${orgId}:${source.id}:${status}:${yield* Clock.currentTimeMillis}`,
-          STATUS_NOTICE[status],
-        );
-      if (task === undefined || (yield* store.secretMatchesTask(orgId, source.id))) continue;
-      const [bound] = yield* sql<{ boundAt: number | null }>`SELECT secret_bound_at AS "boundAt"
-        FROM kin_webhook_sources WHERE org_id = ${orgId} AND source_id = ${source.id}
-        ORDER BY source_id`.pipe(NodeSqliteClient.readOnly);
-      // Once per binding: a fresh bind is the only way out, and it gets its own notice if it fails.
-      yield* notify(
-        `kin-reconcile:${orgId}:${source.id}:secret:${bound?.boundAt ?? "unbound"}`,
-        SECRET_NOTICE,
-      );
-    }
-  });
-
   const triggerReconcile = Effect.fn("KinWatchdogs.triggerReconcile")(function* (orgId: KinOrgId) {
-    // Independent halves: a failure in one is logged and the other still runs.
-    yield* (
-      Option.isSome(lock)
-        ? lock.value.withPermits(1)(reconcileSources(orgId))
-        : reconcileSources(orgId)
-    ).pipe(
-      Effect.catch((cause) =>
-        Effect.logWarning("Kin webhook source reconcile failed", { orgId, cause }),
-      ),
-    );
     // Re-arms open deferrals the cache hook missed; a failed read must not disarm everything.
     yield* memory.query(orgId, {}, "triggers").pipe(
       Effect.flatMap((items) => triggers.syncOrg(orgId, items)),
@@ -657,4 +599,3 @@ export const layer = Layer.effect(KinWatchdogs, make).pipe(
   Layer.provide(Layer.mergeAll(Pings.layer, KinTriggerService.layer)),
   Layer.provide(MemoryCache.layer),
 );
-export const runtimeLayer = layer.pipe(Layer.provide(repoScopeLayer));

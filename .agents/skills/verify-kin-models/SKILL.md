@@ -18,7 +18,7 @@ Ten small TLA+ models live in `verification/kin/<name>/`. Each has a `README.md`
 | `discussion`    | `team/turns.ts`, `team/KinTeam.ts`, `team/stakes.ts`, the Team room's viewer rule in `chat/KinChatService.ts` and `chat/KinGroups.ts`, `lead/Handoff.ts` report-back, `lead/WakeupRunner.ts` finish       |
 | `stream`        | `work/workStream.ts`, `KinRecords.ts` ticks (`logChange`, `peopleMoved`, `announce`), `teamView.ts` numbers, client `kinWorkRows.ts` and `kinWorkStream.ts`                                               |
 | `questions`     | `questions/openQuestions.ts`, `questions/rules.ts`, `widgets/choiceCard.ts` expiry, `work/cardAnswers.ts`, `kin_ask` and `kin_ask_close` in `lead/mcp/handlers.ts`, `triggers/deferralFlow.ts` sweep      |
-| `github-events` | `github/GitHubWatch.ts` looks and `handle`, `github/githubTriggers.ts`, `github/agentMark.ts`, `github/ghSign.ts`, the webhook switch in `triggers/githubEvents.ts`                                       |
+| `github-events` | `github/GitHubWatch.ts` looks and `handle`, `github/githubTriggers.ts`, `github/agentMark.ts`, `github/ghSign.ts`                                                                                         |
 | `social`        | `social/SocialService.ts` hand-over, cancel, errors and the pass, `social/cards.ts` taps on the week card, `social/rows.ts` due posts, digest and idempotency key                                         |
 
 Paths are under `apps/server/src` and `apps/server/src/kin`. `MODEL_COVERS` in `scripts/kin-model.ts` lists the same files; `vp run check:changed` runs a model when one of them, its folder or the runner changes, and skips it with "skipped: Java not found" when no Java is installed.

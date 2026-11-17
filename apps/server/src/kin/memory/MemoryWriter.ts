@@ -729,7 +729,7 @@ const make = Effect.gen(function* () {
   });
   const refuseMainWrite = Effect.fn("MemoryWriter.refuseMainWrite")(function* (orgId: KinOrgId) {
     const reason =
-      "Memory writes to the default branch need the Kin GitHub App (TRIG-15); this one was not committed";
+      "Memory writes to the default branch land through a pull request, which isn't set up here (TRIG-15); this one was not committed";
     yield* recovery.notify({ orgId, branch: config.defaultBranch ?? "main", reason });
     return yield* new MemorySyncConflict({ orgId, operation: "push", reason });
   });

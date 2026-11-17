@@ -4,7 +4,6 @@ import * as Routines from "../triggers/routines.ts";
 import * as DeferralFlow from "../triggers/deferralFlow.ts";
 import * as ScheduledTasks from "../triggers/scheduledTasks.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
-import * as GithubEvents from "../triggers/githubEvents.ts";
 import * as Watchdogs from "../triggers/watchdogs.ts";
 import * as GithubReaders from "../triggers/githubReaders.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
@@ -16,7 +15,6 @@ import * as OwnerTimeZone from "../triggers/ownerTimeZone.ts";
 import { forkParked } from "../../serverActivation.ts";
 import * as OwnerNotices from "./OwnerNotices.ts";
 import * as Option from "effect/Option";
-import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -70,9 +68,7 @@ import * as DreamRunner from "../dreaming/DreamRunner.ts";
 import * as DreamSession from "../dreaming/DreamSession.ts";
 import * as Handoff from "./Handoff.ts";
 import * as Team from "../team/KinTeam.ts";
-import * as KinRepoReads from "../github/KinRepoReads.ts";
 import * as GitHubWatch from "../github/GitHubWatch.ts";
-import * as PullRequestCare from "../github/PullRequestCare.ts";
 import * as TaskWake from "./TaskWake.ts";
 import * as DelegatedTasks from "./DelegatedTasks.ts";
 import * as ChatWake from "./ChatWake.ts";
@@ -99,34 +95,12 @@ export function containStartup<A, E, R>(layer: Layer.Layer<A, E, R>) {
   );
 }
 
-// PR care (reviews, links, closing issues); without the Kin App it answers that GitHub isn't connected.
-const pullRequestCare = Layer.unwrap(
-  Effect.gen(function* () {
-    if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID"))))
-      return PullRequestCare.notConnectedLayer;
-    return PullRequestCare.layer.pipe(
-      Layer.provide(Layer.mergeAll(GithubReaders.appLayer, GithubEvents.repoScopeLayer)),
-      Layer.catchCause((cause) =>
-        PullRequestCare.notConnectedLayer.pipe(
-          Layer.tap(() =>
-            Effect.logWarning(
-              "Kin PR care is off: the Kin GitHub App is unavailable",
-              Cause.pretty(cause),
-            ),
-          ),
-        ),
-      ),
-    );
-  }),
-);
 const routineRuntime = Layer.mergeAll(
   Routines.layer,
   DeferralFlow.layer,
   ScheduledTasks.layer,
-  GithubEvents.consumerLayer.pipe(Layer.provide(pullRequestCare)),
   GitHubWatch.liveLayer,
-  PullRequestCare.runtimeLayer.pipe(Layer.provide(pullRequestCare)),
-  Watchdogs.runtimeLayer,
+  Watchdogs.layer,
   KinPulse.layer,
 ).pipe(
   Layer.provideMerge(LeadDelivery.layer),
@@ -297,30 +271,13 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
     Layer.provide(GithubReaders.layer),
   );
 
-// TRIG-15: without the Kin App, memory writes to the default branch are refused unless
-// KIN_MEMORY_DIRECT_PUSH=true, because the memory repo's ruleset rejects a direct push.
+// TRIG-15: memory writes to the default branch land through PRs as the owner, unless
+// KIN_MEMORY_DIRECT_PUSH=true; without his GitHub login each such write is refused.
 const memoryPullRequests = Layer.unwrap(
   Effect.gen(function* () {
     const { directMainPush } = yield* MemoryConfig.MemoryConfig;
-    const off =
-      directMainPush === true
-        ? "memory writes push straight to the default branch"
-        : "memory writes to the default branch are refused unless KIN_MEMORY_DIRECT_PUSH=true";
-    if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID")))) {
-      yield* Effect.logWarning(`Kin memory PRs are off: KIN_GITHUB_APP_ID is unset, so ${off}`);
-      return Layer.empty;
-    }
-    return MemoryPullRequests.layer.pipe(
-      Layer.provide(GithubReaders.appLayer),
-      Layer.catchCause((cause) =>
-        Layer.effectDiscard(
-          Effect.logWarning(
-            `Kin memory PRs are off: the Kin GitHub App is unavailable, so ${off}`,
-            Cause.pretty(cause),
-          ),
-        ),
-      ),
-    );
+    if (directMainPush === true) return Layer.empty;
+    return MemoryPullRequests.layer.pipe(Layer.provide(GitHubWatch.ghApiLayer));
   }),
 );
 
@@ -354,26 +311,6 @@ const toolkit = LeadMemory.layer.pipe(
 );
 
 export const layer = withServices(Layer.merge(runner, ChatWake.layer));
-// A lead's GitHub read tools; without the Kin App they answer that GitHub isn't connected.
-const repoReads = Layer.unwrap(
-  Effect.gen(function* () {
-    if (Option.isNone(yield* Config.option(Config.String("KIN_GITHUB_APP_ID"))))
-      return KinRepoReads.notConnectedLayer;
-    return KinRepoReads.layer.pipe(
-      Layer.provide(Layer.mergeAll(GithubReaders.appLayer, GithubEvents.repoScopeLayer)),
-      Layer.catchCause((cause) =>
-        KinRepoReads.notConnectedLayer.pipe(
-          Layer.tap(() =>
-            Effect.logWarning(
-              "Kin lead GitHub reads are off: the Kin GitHub App is unavailable",
-              Cause.pretty(cause),
-            ),
-          ),
-        ),
-      ),
-    );
-  }),
-);
 // Documents render on this server; agents' own files and recipe drafts come through it too.
 const documents = Render.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(Workspace.layer, Toolchain.layer)),
@@ -459,8 +396,6 @@ const production = withServices(
     Layer.provideMerge(Team.layer),
     Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),
-    Layer.provide(repoReads),
-    Layer.provide(pullRequestCare),
   ),
 );
 

@@ -2,7 +2,6 @@ import { assert, it } from "@effect/vitest";
 import * as Predicate from "effect/Predicate";
 
 import * as Kin from "../layer.ts";
-import { KinApprovalsToolkit } from "../approvals/mcp.ts";
 import { KinDocumentToolkit } from "../gendocs/mcp.ts";
 import { TURN_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
@@ -18,7 +17,6 @@ it("fills the event of every Kin tool that takes one, and of no other", () => {
     KinDocsToolkit,
     KinStatementToolkit,
     KinDocumentToolkit,
-    KinApprovalsToolkit,
     KinPulseToolkit,
   ].flatMap((toolkit) =>
     Object.values(toolkit.tools).flatMap((tool) =>

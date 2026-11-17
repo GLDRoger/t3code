@@ -507,9 +507,9 @@ it.effect.each([
   {
     name: "the reply, a tool, then the same answer again",
     items: (runId: RunId) => [
-      tool("t1", 1, "mcp__kin__kin_github_repos", runId),
+      tool("t1", 1, "mcp__kin__kin_github_watch", runId),
       thought("r1", 2, runId),
-      tool("t2", 3, "mcp__kin__kin_github_prs", runId),
+      tool("t2", 3, "mcp__kin__kin_github_review", runId),
       thought("r2", 4, runId),
       tool("t3", 5, "mcp__kin__kin_cancel", runId),
       text("a", 6, githubAnswer, runId),
@@ -530,7 +530,7 @@ it.effect.each([
     name: "a long message, a tool, then more, as one message",
     items: (runId: RunId) => [
       text("a", 1, githubAnswer, runId),
-      tool("t1", 2, "mcp__kin__kin_github_prs", runId),
+      tool("t1", 2, "mcp__kin__kin_github_review", runId),
       text("b", 3, "And #87 has a second approval now.", runId),
     ],
     expected: [`${githubAnswer}\n\nAnd #87 has a second approval now.`],
@@ -539,7 +539,7 @@ it.effect.each([
     name: "a status line, a tool, then the reply",
     items: (runId: RunId) => [
       text("a", 1, "Checking CI", runId),
-      tool("t1", 2, "mcp__kin__kin_github_runs", runId),
+      tool("t1", 2, "mcp__kin__kin_github_review", runId),
       text("b", 3, "CI is green on main.", runId),
     ],
     expected: ["CI is green on main."],

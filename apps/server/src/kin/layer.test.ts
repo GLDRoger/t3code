@@ -201,39 +201,20 @@ it.effect.each(["disabled", "invalid", "failed"] as const)(
         assert.isTrue(Option.isNone((yield* Kin.KinServer).services));
         const launcher = yield* ThreadLaunch.ThreadLaunchService;
         const management = yield* ThreadManagement.ThreadManagementService;
-        if (mode !== "failed") {
-          // Kin off still wraps dispatch, but only to refuse Kin's own tasks.
-          assert.strictEqual(yield* launcher.launch(input).pipe(Effect.flip), rejected);
-          const kinTask = ScheduledTaskId.make("scheduled-task:kin:schedule:org:sch-off");
-          const refused = yield* launcher
-            .launch({
-              ...input,
-              commandId: CommandId.make(`scheduled-task:${kinTask}:1:manual`),
-              initialMessage: { ...input.initialMessage!, scheduledTaskId: kinTask },
-            })
-            .pipe(Effect.flip);
-          assert.include(String(refused.cause), "Kin scheduled task refused");
-          assert.isDefined(management.sendToThread);
-        } else {
-          const failure = yield* launcher.launch(input).pipe(Effect.flip);
-          assert.notStrictEqual(failure, rejected);
-          assert.include(String(failure.cause), "webhook dispatch refused");
-          const ordinary = {
+        // Kin off or failed still wraps dispatch, but only to refuse Kin's own tasks.
+        assert.strictEqual(yield* launcher.launch(input).pipe(Effect.flip), rejected);
+        const kinTask = ScheduledTaskId.make(`scheduled-task:kin:schedule:org:sch-${mode}`);
+        const refused = yield* launcher
+          .launch({
             ...input,
-            commandId: CommandId.make("ordinary-scheduled"),
-            initialMessage: { ...input.initialMessage, text: "Run", attachments: [] },
-          };
-          assert.strictEqual(yield* launcher.launch(ordinary).pipe(Effect.flip), rejected);
-          assert.strictEqual(seen[0], ordinary);
-          const lookalike = {
-            ...ordinary,
-            commandId: CommandId.make("scheduled-task:other:webhook:x"),
-          };
-          assert.strictEqual(yield* launcher.launch(lookalike).pipe(Effect.flip), rejected);
-        }
+            commandId: CommandId.make(`scheduled-task:${kinTask}:1:manual`),
+            initialMessage: { ...input.initialMessage!, scheduledTaskId: kinTask },
+          })
+          .pipe(Effect.flip);
+        assert.include(String(refused.cause), "Kin scheduled task refused");
+        assert.isDefined(management.sendToThread);
       }).pipe(Effect.provide(runtime));
-      assert.strictEqual(seen.length, mode === "failed" ? 2 : 1);
-      if (mode !== "failed") assert.strictEqual(seen[0], input);
+      assert.deepStrictEqual(seen, [input]);
       assert.strictEqual(logs.length, mode === "disabled" ? 0 : 1);
       if (mode === "invalid") assert.include(JSON.stringify(logs), "invalid KIN_ENABLED");
       if (mode === "failed") assert.include(JSON.stringify(logs), "Kin migration defect");

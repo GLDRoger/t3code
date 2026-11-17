@@ -29,7 +29,6 @@ import { visibleOnKinEndpoint } from "../lead/AgentSession.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as FileSystem from "effect/FileSystem";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
-import * as KinApprovalsMcp from "../approvals/mcp.ts";
 import budget from "./agentContextBudget.json" with { type: "json" };
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
@@ -336,15 +335,15 @@ it.effect.each([true, false])(
           yield* Effect.promise(() => HttpServerResponse.toWeb(toolList).text()),
         ).result.tools.map((tool) => tool.name);
         // The owner's own thread: Kin's tools and T3's, GitHub connected or not.
-        assert.includeMembers(toolNames, ["kin_chat_read", "request_action", "delegate_task"]);
+        assert.includeMembers(toolNames, ["kin_chat_read", "delegate_task"]);
         for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(toolNames, name);
-        // Without the Kin App, its GitHub tools could only say GitHub isn't connected.
+        // Without the owner's GitHub login, its GitHub tools could only say it isn't connected.
         const kinGitHub = Object.keys(KinLeadToolkit.tools).filter((name) =>
           name.startsWith("kin_github_"),
         );
         for (const name of kinGitHub) assert.notInclude(toolNames, name);
-        // With the owner's own login connected, the tools that work through it show; the rest don't.
+        // With the owner's own login connected, they show.
         if (Option.isSome(kin.services)) {
           const login = Context.get(kin.services.value, KinGitHubLogin);
           const signedIn = {
@@ -357,11 +356,10 @@ it.effect.each([true, false])(
             ),
           };
           for (const name of kinGitHub)
-            assert.strictEqual(
+            assert.isTrue(
               yield* visibleOnKinEndpoint(name, threadId).pipe(
                 Effect.provideService(Kin.KinServer, signedIn),
               ),
-              name === "kin_github_watch" || name === "kin_github_review",
               name,
             );
         }
@@ -553,12 +551,8 @@ it.effect("measures the combined agent tool list separately from ordinary thread
       description: tool.description,
       inputSchema: tool.inputSchema,
     }));
-    const kinTools = tools.filter(
-      (tool) =>
-        Object.hasOwn(KinChatToolkit.tools, tool.name) ||
-        Object.hasOwn(KinApprovalsMcp.KinApprovalsToolkit.tools, tool.name),
-    );
-    assert.lengthOf(kinTools, 4);
+    const kinTools = tools.filter((tool) => Object.hasOwn(KinChatToolkit.tools, tool.name));
+    assert.lengthOf(kinTools, 3);
     assert.deepStrictEqual(
       {
         mcpToolListJsonBytes: Buffer.byteLength(JSON.stringify(tools), "utf8"),
@@ -571,7 +565,6 @@ it.effect("measures the combined agent tool list separately from ordinary thread
       Layer.mergeAll(
         McpHttpServer.layerTools,
         McpHttpServer.toolkitRegistration(KinChatToolkit, handlers),
-        KinApprovalsMcp.registration,
       ).pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(Kin.layer),

@@ -108,7 +108,7 @@ export class KinRoutines extends Context.Service<
 
 const isDecodeError = Schema.is(PersistenceDecodeError);
 const isRoutinesError = Schema.is(KinRoutinesError);
-export const isPermanent = (error: unknown) => {
+const isPermanent = (error: unknown) => {
   let current = error;
   for (let depth = 0; depth < 8 && typeof current === "object" && current !== null; depth++) {
     if (Schema.isSchemaError(current) || isDecodeError(current)) return true;

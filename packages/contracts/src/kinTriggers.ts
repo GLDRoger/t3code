@@ -1,13 +1,7 @@
 import * as Schema from "effect/Schema";
 
-import {
-  NonNegativeInt,
-  ProjectId,
-  ScheduledTaskId,
-  ThreadId,
-  TrimmedNonEmptyString,
-} from "./baseSchemas.ts";
-import { KinOrgId, KinPersonId, KinText } from "./kinChat.ts";
+import { NonNegativeInt, ScheduledTaskId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { KinOrgId, KinPersonId } from "./kinChat.ts";
 import { CanonicalUtcTimestamp, GithubRepoSlug, KinMemoryItemId } from "./kinLead.ts";
 import { ScheduledTaskUpsertSchedule, ScheduledTaskWebhookDeliveryId } from "./scheduledTask.ts";
 
@@ -108,74 +102,6 @@ export const KinTriggerFired = Schema.Struct({
   ]),
 });
 export type KinTriggerFired = typeof KinTriggerFired.Type;
-
-export const KinWebhookSource = Schema.Struct({
-  id: KinWebhookSourceId,
-  orgId: KinOrgId,
-  repo: KinText,
-  scheduledTaskId: ScheduledTaskId,
-  inboxThreadId: ThreadId,
-  githubHookId: Schema.NullOr(Schema.Int),
-  botLogin: KinText,
-  status: Schema.Literals(["active", "paused_in_t3", "blocked_by_policy", "missing"]),
-});
-export type KinWebhookSource = typeof KinWebhookSource.Type;
-
-/** `KinWebhookSource.repo` of an org's GitHub App webhook source, which covers every installed repo. */
-export const KIN_GITHUB_APP_SOURCE = "github-app";
-
-export const KinGithubWebhookSetupInput = Schema.Struct({ orgId: KinOrgId, projectId: ProjectId });
-export type KinGithubWebhookSetupInput = typeof KinGithubWebhookSetupInput.Type;
-export const KinGithubWebhookOrgInput = Schema.Struct({ orgId: KinOrgId });
-export type KinGithubWebhookOrgInput = typeof KinGithubWebhookOrgInput.Type;
-// The message names only length and character class: RpcServer returns it to the client verbatim.
-const WebhookSecret = Schema.String.check(
-  Schema.makeFilter((value: string) => value.length >= 16 && !/\s/.test(value), {
-    message: "A webhook secret needs at least 16 characters and no whitespace.",
-  }),
-);
-export const KinGithubWebhookSecretInput = Schema.Struct({
-  orgId: KinOrgId,
-  secret: Schema.RedactedFromValue(WebhookSecret),
-});
-export type KinGithubWebhookSecretInput = typeof KinGithubWebhookSecretInput.Type;
-
-/**
- * `configured`: GitHub and T3 share the secret. `needs_secret`: set this URL and a new secret in
- * the GitHub App's webhook settings, then send the secret. `needs_url`: update only the URL there;
- * a rotate has already retired the old URL, so deliveries fail until GitHub has the new one.
- */
-export const KinGithubWebhookSetup = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("needs_connect") }),
-  Schema.Struct({
-    status: Schema.Literals(["configured", "needs_secret", "needs_url"]),
-    sourceId: KinWebhookSourceId,
-    url: Schema.String,
-  }),
-]);
-export type KinGithubWebhookSetup = typeof KinGithubWebhookSetup.Type;
-
-/** `off`: no GitHub source. A null `url` means T3 Connect is off on this host. */
-export const KinGithubWebhookStatus = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("off") }),
-  Schema.Struct({
-    status: Schema.Literal("on"),
-    sourceId: KinWebhookSourceId,
-    projectId: ProjectId,
-    url: Schema.NullOr(Schema.String),
-    enabled: Schema.Boolean,
-    /** The task's secret is the one Kin bound; while false every delivery refuses. */
-    secretBound: Schema.Boolean,
-    lastDelivery: Schema.NullOr(
-      Schema.Struct({
-        receivedAt: Schema.String,
-        outcome: Schema.String,
-        signatureVerified: Schema.Boolean,
-      }),
-    ),
-  }),
-]);
-export type KinGithubWebhookStatus = typeof KinGithubWebhookStatus.Type;
 
 export const KinGithubEvent = Schema.Struct({
   orgId: KinOrgId,

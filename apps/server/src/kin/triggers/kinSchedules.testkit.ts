@@ -19,7 +19,7 @@ import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import { leadProjectId } from "../lead/leadProject.ts";
 import * as KinSchedules from "./kinSchedules.ts";
 import * as KinTriggerSink from "./KinTriggerSink.ts";
-import { projection } from "./webhooks.testkit.ts";
+import { projection } from "./threadProjection.testkit.ts";
 
 /** Saves and tombstones rows as the real service would, with no native task behind them. */
 export const recordingSchedules = (saves: KinSchedules.SaveInput[], cancels: string[]) =>

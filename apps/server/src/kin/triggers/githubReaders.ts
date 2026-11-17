@@ -1,27 +1,18 @@
 import { type KinOrgId, RepoSlug } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
-import * as Clock from "effect/Clock";
-import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
-import { FetchHttpClient, HttpClient } from "effect/http";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { gitHubAnswer, isGitHubRateLimit } from "../github/githubRest.ts";
-import * as Keychain from "../github/Keychain.ts";
-import * as KinGitHubApp from "../github/KinGitHubApp.ts";
-import type { KinGitHubPermissionSet } from "../github/KinGitHubPermissions.ts";
-import { KinGitHubScope } from "../github/KinGitHubScope.ts";
+import { type ApiAnswer, ghApiLayer, KinGitHubApi } from "../github/GitHubWatch.ts";
 import {
   type GithubLinkState,
   KinDeferralGithubError,
   KinDeferralGithubReader,
   type KinDeferralGithubReaderShape,
 } from "./deferralGithub.ts";
-import { inRepoScope, KinGithubRepoScope, repoScopeLayer } from "./githubEvents.ts";
 import {
   KinRoutineGithubReader,
   type KinRoutineGithubReaderShape,
@@ -32,15 +23,10 @@ import {
   KinWatchdogGithubError,
   KinWatchdogGithubReader,
   type KinWatchdogGithubReaderShape,
+  watchedRepos,
 } from "./watchdogs.ts";
 
 const ITEMS_PER_QUERY = 50;
-const TOKEN_REUSE_MARGIN_MS = 5 * 60_000;
-const READ_PERMISSIONS = {
-  issues: "read",
-  pull_requests: "read",
-} as const satisfies KinGitHubPermissionSet;
-
 // `state` is aliased on pull requests: GraphQL refuses one name with two enum types.
 const ITEM_FRAGMENT = `fragment KinItem on IssueOrPullRequest {
   __typename
@@ -128,12 +114,6 @@ const GraphQlAnswer = Schema.Struct({
 });
 const decodeAnswer = Schema.decodeUnknownOption(GraphQlAnswer);
 
-const ROUTINE_PERMISSIONS = {
-  contents: "read",
-  pull_requests: "read",
-  checks: "read",
-  statuses: "read",
-} as const satisfies KinGitHubPermissionSet;
 export const ROUTINE_QUERY = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
   defaultBranchRef { name target { ... on Commit { statusCheckRollup { state } } } }
   pullRequests(states: [OPEN], first: 50, orderBy: { field: UPDATED_AT, direction: DESC }) {
@@ -189,7 +169,7 @@ const isRepoSlug = Schema.is(RepoSlug);
 
 class KinGithubReadFailed extends Schema.TaggedError<KinGithubReadFailed>()("KinGithubReadFailed", {
   repo: Schema.String,
-  reason: Schema.Literals(["out_of_scope", "token", "rate_limited", "unavailable"]),
+  reason: Schema.Literals(["rate_limited", "unavailable"]),
 }) {}
 
 const lowerState = (item: Item): GithubItemState["state"] => {
@@ -214,34 +194,28 @@ function reviewRequestsOf(pull: typeof Pull.Type): GithubItemState["reviewReques
   });
 }
 
-const make = Effect.gen(function* () {
-  const app = yield* KinGitHubApp.KinGitHubApp;
-  const client = yield* HttpClient.HttpClient;
-  const scope = yield* KinGithubRepoScope;
-  const tokens = new Map<
-    string,
-    { readonly token: Redacted.Redacted<string>; readonly expiresAt: number }
-  >();
+const isRateLimit = (
+  answer: ApiAnswer,
+  errors: ReadonlyArray<{ readonly type?: string | undefined }>,
+) =>
+  answer.status === 429 ||
+  (answer.status === 403 &&
+    (answer.headers["x-ratelimit-remaining"] === "0" ||
+      answer.headers["retry-after"] !== undefined)) ||
+  errors.some((error) => error.type === "RATE_LIMITED");
 
-  /** One read-only `server` token per repo and permission set, reused until shortly before expiry. */
-  const tokenFor = Effect.fn("KinGithubReaders.token")(function* (
-    repo: RepoSlug,
-    permissions: KinGitHubPermissionSet = READ_PERMISSIONS,
-  ) {
-    const key = `${permissions === READ_PERMISSIONS ? "items" : "routine"}:${repo.toLowerCase()}`;
-    const now = yield* Clock.currentTimeMillis;
-    const cached = tokens.get(key);
-    if (cached !== undefined && now < cached.expiresAt - TOKEN_REUSE_MARGIN_MS) return cached.token;
-    tokens.delete(key);
-    const minted = yield* app.installationToken({ repo, permissions, holder: "server" }).pipe(
-      Effect.tapError((error) =>
-        Effect.logWarning("Kin GitHub read token refused", { repo, errorTag: error._tag }),
-      ),
-      Effect.mapError(() => new KinGithubReadFailed({ repo, reason: "token" })),
-    );
-    const expiresAt = Date.parse(minted.expiresAt);
-    if (Number.isFinite(expiresAt)) tokens.set(key, { token: minted.token, expiresAt });
-    return minted.token;
+const make = Effect.gen(function* () {
+  const api = yield* KinGitHubApi;
+  const sql = yield* SqlClient.SqlClient;
+
+  /** One GraphQL read as the owner; a read without his login answers status 0, so unavailable. */
+  const graphql = Effect.fn("KinGithubReaders.graphql")(function* (repo: string, query: string) {
+    const [owner, name] = repo.split("/");
+    return yield* api.call({
+      method: "POST",
+      path: "graphql",
+      body: { query, variables: { owner, name } },
+    });
   });
 
   /** Read-only: the items GitHub knows among `numbers`, keyed by number. Never retried here. */
@@ -249,33 +223,14 @@ const make = Effect.gen(function* () {
     repo: string,
     numbers: ReadonlyArray<number>,
   ) {
-    if (!isRepoSlug(repo) || !inRepoScope(scope.repos, repo))
-      return yield* new KinGithubReadFailed({ repo, reason: "out_of_scope" });
+    if (!isRepoSlug(repo)) return yield* new KinGithubReadFailed({ repo, reason: "unavailable" });
     const wanted = [...new Set(numbers.filter(isItemNumber))];
     const items = new Map<number, Item>();
-    if (wanted.length === 0) return items;
-    const token = yield* tokenFor(repo);
-    const [owner, name] = repo.split("/");
     for (let start = 0; start < wanted.length; start += ITEMS_PER_QUERY) {
-      const answer = yield* gitHubAnswer({
-        client,
-        operation: "graphql.items",
-        method: "POST",
-        path: "/graphql",
-        token,
-        body: {
-          query: itemsQuery(wanted.slice(start, start + ITEMS_PER_QUERY)),
-          variables: { owner, name },
-        },
-      }).pipe(Effect.mapError(() => new KinGithubReadFailed({ repo, reason: "unavailable" })));
-      if (
-        answer.status === 401 ||
-        (answer.status === 403 && answer.message === "Resource not accessible by integration")
-      )
-        tokens.delete(`items:${repo.toLowerCase()}`);
+      const answer = yield* graphql(repo, itemsQuery(wanted.slice(start, start + ITEMS_PER_QUERY)));
       const body = decodeAnswer(answer.body);
       const errors = Option.isSome(body) ? (body.value.errors ?? []) : [];
-      if (isGitHubRateLimit(answer) || errors.some((error) => error.type === "RATE_LIMITED")) {
+      if (isRateLimit(answer, errors)) {
         yield* Effect.logWarning("Kin GitHub read rate-limited; skipping the repo for now", {
           repo,
         });
@@ -355,23 +310,11 @@ const make = Effect.gen(function* () {
     repo: string,
     login: string | null,
   ) {
-    if (!isRepoSlug(repo) || !inRepoScope(scope.repos, repo))
-      return yield* new KinGithubReadFailed({ repo, reason: "out_of_scope" });
-    const token = yield* tokenFor(repo, ROUTINE_PERMISSIONS);
-    const [owner, name] = repo.split("/");
-    const answer = yield* gitHubAnswer({
-      client,
-      operation: "graphql.routine",
-      method: "POST",
-      path: "/graphql",
-      token,
-      body: { query: ROUTINE_QUERY, variables: { owner, name } },
-    }).pipe(Effect.mapError(() => new KinGithubReadFailed({ repo, reason: "unavailable" })));
-    if (answer.status === 401 || answer.status === 403)
-      tokens.delete(`routine:${repo.toLowerCase()}`);
+    if (!isRepoSlug(repo)) return yield* new KinGithubReadFailed({ repo, reason: "unavailable" });
+    const answer = yield* graphql(repo, ROUTINE_QUERY);
     const body = decodeRoutineAnswer(answer.body);
     const errors = Option.isSome(body) ? (body.value.errors ?? []) : [];
-    if (isGitHubRateLimit(answer) || errors.some((error) => error.type === "RATE_LIMITED"))
+    if (isRateLimit(answer, errors))
       return yield* new KinGithubReadFailed({ repo, reason: "rate_limited" });
     const repository = Option.isSome(body) ? body.value.data?.repository : undefined;
     if (answer.status !== 200 || repository == null || errors.length > 0)
@@ -404,7 +347,10 @@ const make = Effect.gen(function* () {
       const ciRed: Array<KinRoutineGithubState["ciRed"][number]> = [];
       let failed = 0;
       let truncated = 0;
-      for (const repo of scope.repos) {
+      const repos = yield* watchedRepos(orgId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      for (const repo of repos) {
         const result = yield* readRoutineRepo(repo, login).pipe(Effect.result);
         if (result._tag === "Failure") {
           failed++;
@@ -424,7 +370,7 @@ const make = Effect.gen(function* () {
         ciRed,
         failedRepos: failed,
         truncatedRepos: truncated,
-        repos: scope.repos.length,
+        repos: repos.length,
       };
     }),
   };
@@ -435,57 +381,6 @@ const make = Effect.gen(function* () {
   );
 });
 
-/** The deferral, watchdog and routine readers over `KinGitHubApp`; needs the App id and its key in the keychain. */
+/** The deferral, watchdog and routine readers, as the owner through his GitHub login. */
 export const readersLayer = Layer.effectContext(make);
-
-const decodeSecrets = Schema.decodeUnknownOption(
-  Schema.fromJsonString(KinGitHubApp.KinGitHubAppSecrets),
-);
-
-/** The Kin App with its id, key check, scope and HTTP client; fails when the key is missing. */
-export const appLayer = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const { appId } = yield* KinGitHubApp.KinGitHubAppConfig;
-    const keychain = yield* Keychain.KinKeychain;
-    const stored = yield* keychain.get("kin-github-app", appId);
-    if (Option.isNone(Option.flatMap(stored, (value) => decodeSecrets(Redacted.value(value)))))
-      return yield* new KinGitHubApp.KinGitHubAppNotConfiguredError({ appId });
-  }),
-).pipe(
-  Layer.provideMerge(KinGitHubApp.layer),
-  Layer.provideMerge(
-    Layer.mergeAll(
-      KinGitHubApp.KinGitHubAppConfig.layer,
-      KinGitHubScope.layer,
-      FetchHttpClient.layer,
-      Keychain.layer,
-    ),
-  ),
-);
-
-/**
- * The real readers when the Kin App is configured. Otherwise, or if the App can't be built, one
- * warning and the fail-closed defaults (deferrals ask, GitHub watchdogs wait).
- */
-export const layer = Layer.unwrap(
-  Effect.gen(function* () {
-    const appId = yield* Config.option(Config.String("KIN_GITHUB_APP_ID"));
-    if (Option.isNone(appId)) {
-      yield* Effect.logWarning(
-        "Kin GitHub reads are off: KIN_GITHUB_APP_ID is unset, so deferrals ask and GitHub watchdogs wait",
-      );
-      return Layer.empty;
-    }
-    return readersLayer.pipe(
-      Layer.provide(Layer.mergeAll(appLayer, repoScopeLayer)),
-      Layer.catchCause((cause) =>
-        Layer.effectDiscard(
-          Effect.logWarning(
-            "Kin GitHub reads are off: the Kin GitHub App is unavailable, so deferrals ask and GitHub watchdogs wait",
-            Cause.pretty(cause),
-          ),
-        ),
-      ),
-    );
-  }),
-);
+export const layer = readersLayer.pipe(Layer.provide(ghApiLayer));

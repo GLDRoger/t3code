@@ -1425,7 +1425,6 @@ describe("GrantVerifier", () => {
     const importers = (target: string) => files.filter((file) => imports(file).includes(target));
     const modelFacing = (file: string) =>
       file.startsWith("mcp/") || file.startsWith("kin/mcp/") || file.startsWith("kin/lead/");
-    const forbidden = (file: string) => modelFacing(file) || file === "kin/approvals/mcp.ts";
 
     // Only check 10 moves an action to `approved`, and only the verifier runs it.
     assert.deepStrictEqual(
@@ -1445,33 +1444,13 @@ describe("GrantVerifier", () => {
     const handlerImporters = importers("kin/approvals/rpcHandlers.ts");
     assert.deepStrictEqual(handlerImporters, ["kin/rpcHandlers.ts"]);
     assert.deepStrictEqual(importers("kin/rpcHandlers.ts"), ["ws.ts"]);
-    // request_action's tool is the one approvals module the model reaches, and it only requests.
-    const approvalsImports = (file: string) =>
-      imports(file).filter((target) => target.startsWith("kin/approvals/"));
+    // The model reaches no approvals module: it can't request, approve or run an action.
     assert.deepStrictEqual(
-      [...new Set(files.filter(modelFacing).flatMap(approvalsImports))],
-      ["kin/approvals/mcp.ts"],
-    );
-    const fromTool = new Set<string>();
-    const pending = ["kin/approvals/mcp.ts"];
-    for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
-      for (const target of approvalsImports(file)) {
-        if (!fromTool.has(target)) pending.push(target);
-        fromTool.add(target);
-      }
-    }
-    assert.deepStrictEqual(
-      [...fromTool].filter(
-        (file) =>
-          [
-            "kin/approvals/GrantVerifier.ts",
-            "kin/approvals/rpcHandlers.ts",
-            "kin/approvals/ApproverKeys.ts",
-            "kin/approvals/layer.ts",
-          ].includes(file) || file.startsWith("kin/approvals/handlers/"),
-      ),
+      files
+        .filter(modelFacing)
+        .flatMap((file) => imports(file).filter((target) => target.startsWith("kin/approvals/"))),
       [],
     );
-    assert.deepStrictEqual([...verifierImporters, ...handlerImporters].filter(forbidden), []);
+    assert.deepStrictEqual([...verifierImporters, ...handlerImporters].filter(modelFacing), []);
   });
 });

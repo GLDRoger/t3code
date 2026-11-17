@@ -4,16 +4,14 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
-import { HttpClient } from "effect/http";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
-import { type GitHubAnswer, gitHubAnswer, repoPath } from "../github/githubRest.ts";
-import { KinGitHubApp } from "../github/KinGitHubApp.ts";
-import { GITHUB_ACTIONS_INTEGRATION_ID } from "../github/KinRulesets.ts";
+import { type ApiAnswer, KinGitHubApi } from "../github/GitHubWatch.ts";
 
+// GitHub Actions' app id: a `memory-check` run from any other app doesn't count.
+const GITHUB_ACTIONS_INTEGRATION_ID = 15368;
 const MEMORY_CHECK_NAME = "memory-check";
 const MEMORY_CHECK_WORKFLOW = ".github/workflows/memory-check.yml";
 
@@ -208,6 +206,25 @@ const PAGE = 100;
 const MAX_RUNS = 10;
 // Every call runs under the landing lock; GitHub's own edge gives up after about 10 seconds.
 const CALL_TIMEOUT: Duration.Input = "30 seconds";
+
+interface GitHubAnswer {
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string | undefined>>;
+  /** GitHub's `message`, or "" when the body has none. Error messages carry no credential. */
+  readonly message: string;
+  readonly body: unknown;
+}
+const ErrorMessage = Schema.Struct({ message: Schema.String });
+const decodeErrorMessage = Schema.decodeUnknownOption(ErrorMessage);
+const answerOf = (answer: ApiAnswer): GitHubAnswer => ({
+  status: answer.status,
+  headers: answer.headers,
+  message: Option.match(decodeErrorMessage(answer.body), {
+    onNone: () => "",
+    onSome: ({ message }) => message,
+  }),
+  body: answer.body,
+});
 /** `memory-check.yml`'s job timeout: past it the check can't pass. */
 const CHECK_DEADLINE: Duration.Input = "15 minutes";
 
@@ -218,8 +235,7 @@ const pastOnePage = (answer: GitHubAnswer, length: number) =>
 export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
   readonly pollInterval: Duration.Input;
 }) {
-  const app = yield* KinGitHubApp;
-  const client = yield* HttpClient.HttpClient;
+  const api = yield* KinGitHubApi;
   const sql = yield* SqlClient.SqlClient;
 
   const connect = Effect.fn("MemoryPullRequests.connect")(function* (
@@ -228,26 +244,10 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
   ) {
     const refuse = (reason: string, url?: string) =>
       new MemoryPullRequestRefused({ orgId, reason, ...(url === undefined ? {} : { url }) });
-    const minted = yield* app
-      .installationToken({
-        repo,
-        permissions: {
-          contents: "write",
-          pull_requests: "write",
-          checks: "read",
-          actions: "read",
-        },
-        holder: "server",
-      })
-      .pipe(
-        Effect.timeout(CALL_TIMEOUT),
-        Effect.mapError((error) =>
-          refuse(`the Kin GitHub App gave no token for ${repo} (${error._tag})`),
-        ),
-      );
-    const token: Redacted.Redacted<string> = minted.token;
-    const base = repoPath(repo);
-    const owner = repo.split("/")[0] ?? "";
+    if ((yield* api.connected()) === null)
+      return yield* refuse("the owner's GitHub isn't connected to Kin");
+    const [owner = "", name = ""] = repo.split("/");
+    const base = `repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
     const fromBranch = (branch: string) => encodeURIComponent(`${owner}:${branch}`);
     const call = (
       operation: string,
@@ -255,15 +255,13 @@ export const make = Effect.fn("MemoryPullRequests.make")(function* (options: {
       path: string,
       body?: unknown,
     ) =>
-      gitHubAnswer({
-        client,
-        operation,
-        method,
-        path: `${base}${path}`,
-        token,
-        timeout: CALL_TIMEOUT,
-        ...(body === undefined ? {} : { body }),
-      }).pipe(Effect.mapError(() => refuse(`could not reach GitHub for ${operation}`)));
+      api.call({ method, path: `${base}${path}`, ...(body === undefined ? {} : { body }) }).pipe(
+        Effect.timeout(CALL_TIMEOUT),
+        Effect.flatMap((answer) =>
+          answer.status === 0 ? Effect.fail(undefined) : Effect.succeed(answerOf(answer)),
+        ),
+        Effect.mapError(() => refuse(`could not reach GitHub for ${operation}`)),
+      );
     const sqlRefusal =
       (operation: string, reason: string) =>
       <A, E>(effect: Effect.Effect<A, E>) =>
